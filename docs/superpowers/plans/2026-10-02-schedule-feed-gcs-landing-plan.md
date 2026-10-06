@@ -93,7 +93,8 @@ brief. Deploying phase 1 alone must be a no-op in production.
 | # | Task | Files | Tests |
 | --- | --- | --- | --- |
 | 2.1 | `object_store = { version = "0.14.2", default-features = false, features = ["gcp"] }` in schedule-ingest. Its dependencies are the ones the aggregator's `aws` feature already brings (`cloud-base`, `reqwest`/rustls, `aws-lc-rs`); confirm nothing new enters `Cargo.lock` with `git diff Cargo.lock`. CRC32C from the locked `crc` 3.3.0 (`CRC_32_ISCSI`), MD5 from the locked `md-5` | `crates/schedule-ingest/Cargo.toml` | `cargo +1.88.0 check -p schedule-ingest`; `cargo deny check` if the repo runs it |
-| 2.2 | Bucket config: `--bucket-source-enabled` (false), `BUCKET_NAME`, `BUCKET_BASE_URL` (empty; tests only), `BUCKET_EXPECTED_KEYS` (the SFTP routing globs), `BUCKET_POLL_INTERVAL_SECS` (300), `BUCKET_DELETE_MIN_AGE_SECS` (3600), `BUCKET_ARCHIVE_KEEP` (5), `BUCKET_MAX_OBJECT_BYTES` (512 MiB), `BUCKET_MAX_DOWNLOADS_PER_POLL` (2), `BUCKET_MAX_DOWNLOAD_BYTES_PER_HOUR` (256 MiB), `BUCKET_MAX_DOWNLOAD_BYTES_PER_DAY` (1 GiB), `BUCKET_MAX_BACKOFF_SECS` (3600). The credential comes only from `GOOGLE_SERVICE_ACCOUNT_PATH` (the mounted key), never a flag. There is no prefix setting: the reader lists the root | `config.rs` | Parse tests; an empty `expectedKeys` is refused |
+| 2.1a | Keyless credentials (spec D14, 2026-10-06): `async-trait` as a direct dependency (already locked through `object_store`); a `WifCredentials(Arc<common::gcp_external_account::ExternalAccountTokenSource>)` implementing `object_store::CredentialProvider<Credential = GcpCredential>` and passed to `GoogleCloudStorageBuilder::with_credentials` (spec §9, "Keyless reader credentials"). The token source itself is already in `crates/common`, tested | `source_gcs.rs` | Wiremock: STS and IAM Credentials fakes plus a fake GCS list; a GCS 401 invalidates and retries once; a 403 sets the revoked gauge without a refresh; `is_access_revoked` failures set it too |
+| 2.2 | Bucket config: `--bucket-source-enabled` (false), `BUCKET_NAME`, `BUCKET_BASE_URL` (empty; tests only), `BUCKET_EXPECTED_KEYS` (the SFTP routing globs), `BUCKET_POLL_INTERVAL_SECS` (300), `BUCKET_DELETE_MIN_AGE_SECS` (3600), `BUCKET_ARCHIVE_KEEP` (5), `BUCKET_MAX_OBJECT_BYTES` (512 MiB), `BUCKET_MAX_DOWNLOADS_PER_POLL` (2), `BUCKET_MAX_DOWNLOAD_BYTES_PER_HOUR` (256 MiB), `BUCKET_MAX_DOWNLOAD_BYTES_PER_DAY` (1 GiB), `BUCKET_MAX_BACKOFF_SECS` (3600). The credential comes only from `GOOGLE_SERVICE_ACCOUNT_PATH` (the mounted key) or, keyless, `GOOGLE_APPLICATION_CREDENTIALS` (an `external_account` configuration; exactly one of the two), never a flag. There is no prefix setting: the reader lists the root | `config.rs` | Parse tests; an empty `expectedKeys` is refused |
 | 2.3 | `GcsSource::poll`: `list_with_delimiter(None)` (the root only; nested names are never seen). Route each name: expected and under `maxObjectBytes` → candidate unless its (name, generation) is in `sources/bucket/.seen`; otherwise **unexpected**: one log line (name escaped and truncated to 256 bytes, size, generation; no content), `schedule_feed_source_unexpected_objects_total`, and queued for deletion. Its own `next_poll_at`, separate from the 120 s watch-dir tick | `source_gcs.rs` (new) | `object_store::memory::InMemory` behind a small `trait ListGet` seam: a new object appears once; a confirmed one never again; nested names ignored; an unexpected name is logged once, never fetched, queued for delete; an oversized expected name is never fetched |
 | 2.4 | `fetch`: object metadata (`size`, `generation`, `crc32c`, `md5Hash`, `timeCreated`) by JSON API GET with the bearer from `GoogleCloudStorage::credentials()`; `get_opts` with `version` = that generation; stream into `.partial-<name>` through a writer hashing SHA-256 and CRC32C; check size, CRC32C and (if present) MD5; fsync; rename into `sources/bucket/archive/`; prune to `archiveKeep`. Count bytes in `schedule_feed_source_downloaded_bytes_total`. Enforce the per-poll, per-hour and per-day caps **before** each GET; on a cap, set `schedule_feed_source_download_capped` and stop until the window passes | `source_gcs.rs` | Hash and size correct; a CRC mismatch is an error and leaves the object; the caps stop a loop (a fake that always reports a new generation downloads at most the cap); a confirmed generation is never fetched again after a restart. Wiremock fake of the JSON and XML endpoints (list, metadata, GET by generation, DELETE with `ifGenerationMatch`; 403, 404, 412) so the real client's error mapping is tested |
 | 2.5 | `settle` and deletion: append to `.seen` (last 200, atomic). Delete confirmed and unexpected objects once `timeCreated + deleteMinAgeSecs` has passed, with JSON API `DELETE ...?ifGenerationMatch=<g>`. 412 → a newer upload exists: log, leave it. 404 → gone: fine. A failed delete never triggers a re-download | `source_gcs.rs` | 412 keeps the newer object and the next poll ingests it; 404 is not an error; the min-age wait; deleting an unexpected object never GETs it |
@@ -178,7 +179,16 @@ matches spec §12.
    Optionally `usageAlerts` with the notification channels.
 4. **DS release values:** `scheduleFeed.bucket.enabled: true`,
    `bucket.name`, `bucket.existingSecret: distant-signal-schedulefeed-bucket`,
-   `bucket.auditLogs.*` if shipping; SFTP left on.
+   `bucket.auditLogs.*` if shipping; SFTP left on. Keyless instead (spec
+   D14, 2026-10-06): `bucket.auth: workloadIdentity`,
+   `bucket.workloadIdentity.credentialConfigMap: <the external_account
+   ConfigMap>`, `scheduleFeed.serviceAccount.create: true`, no
+   `existingSecret`; Ranma provides the ConfigMap (its
+   `credential_source.file` is `/var/run/secrets/distant-signal/gcs-token/token`),
+   the pool provider pinned to `system:serviceaccount:distant-signal:distant-signal-schedulefeed`
+   with allowed audience `gcp-ds-ingest`, and the
+   `roles/iam.workloadIdentityUser` binding on the reader service account.
+   No reader key is created.
 5. **Logging and alerts:** phase 5.2, and route
    `distant-signal.schedule-bucket` through the existing ntfy/Grafana
    path.
@@ -205,6 +215,8 @@ matches spec §12.
 - `charts/ds-ingest-bucket`: `enabled`, `usageAlerts.enabled`,
   `notifications.pubsub.enabled`.
 - `charts/distant-signal`: `scheduleFeed.bucket.enabled`,
-  `bucket.notifications.pubsub.enabled` and `bucket.auditLogs.ship`.
+  `bucket.notifications.pubsub.enabled` and `bucket.auditLogs.ship`; and
+  (2026-10-06) `bucket.auth: workloadIdentity` (default `key`) and
+  `scheduleFeed.serviceAccount.create`.
 
 `scheduleFeed.sftp.enabled` is new but defaults to **on**.
