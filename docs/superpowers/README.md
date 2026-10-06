@@ -44,7 +44,7 @@ column names what was found, not everything the spec proposed. Where a
 spec's counterpart lives outside this repository (the distant-signal-mcp
 server), only this repository's side was checked.
 
-162 specs: 106 implemented, 2 partly, 7 not implemented, 7 superseded, 40 research / review.
+163 specs: 106 implemented, 2 partly, 8 not implemented, 7 superseded, 40 research / review.
 
 | Spec | Status | Evidence / note |
 |---|---|---|
@@ -210,8 +210,9 @@ server), only this repository's side was checked.
 | [2026-09-30-backup-and-observability-gaps-design](specs/2026-09-30-backup-and-observability-gaps-design.md) | implemented | Live on mine-bringer 2026-10-01: pgBackRest PITR (`postgresql.pgbackrest`, tini image, exec grant as designed), explicit CronJob `timeZone` (CI check), Prometheus/Grafana PVCs, cold-archive expiry (`archive.expiry`, 730 d, dry-run), Loki + Alloy (7 d, all namespaces, shared `logging` service); Postgres password, SFTP host key and push password sealed as current values, not rotated; Redis, MCP SQLite and schedulefeed need no backups |
 | [2026-10-01-working-vs-public-times-design](specs/2026-10-01-working-vs-public-times-design.md) | partly | Phase 1 landed (§10): public and exact working times stored, TRUST `gbtt_timestamp` stored, set-down-only stops kept and direction honoured by the planner, additive `public*`/`working*`/`can*` API fields, public times shown first, detailed WTT view. Not yet: delay on public (P5), Delay Repay (P1), planning on public minutes (P6), live overlay, MCP (P7) |
 | [2026-10-02-schedule-feed-gcs-landing-design](specs/2026-10-02-schedule-feed-gcs-landing-design.md) | partly | Now Google Cloud Storage. Decisions D1–D13 recorded 2026-10-02 (dedicated GCP project, Helm via Crossplane, Data Access audit logs, bucket wins, generic repo scope, dedicated in-transit bucket, DTD's service accounts and roles, reader deletes after a verified download, kill switch pauses the bindings). Chart side done: `charts/ds-ingest-bucket` (GCS delivery and audit-log buckets, bucket-level IAM, optional usage alerts and Pub/Sub; off by default, not deployed; checked against provider-upjet-gcp's CRDs by `scripts/check-ingest-bucket-chart.py`; published to the OCI registry), and in `charts/distant-signal` `scheduleFeed.sftp.enabled` (default on), the opt-in `scheduleFeed.bucket.*` values with the ingest env contract and reader-key mount, the `distant-signal.schedule-bucket` alerts, `scripts/check-schedulefeed-chart.py` and `docs/schedule-feed-bucket.md` ([the chart plan](plans/2026-10-02-gcs-landing-bucket-chart-plan.md)). Not yet: the schedule-ingest bucket source (the Rust reader, parent plan phases 1–3 and 5), multi-source dedup, DS-side Pub/Sub values, and Ranma-Config's release values and kill-switch watcher |
+| [2026-10-06-ingest-architecture-design](specs/2026-10-06-ingest-architecture-design.md) | not implemented | Proposed 2026-10-06 ([the plan](plans/2026-10-06-ingest-architecture-plan.md)): ingest out of the public api; a shared `ds-store` crate; direct Postgres writes with per-service roles for schedule-reference, poller-stations, poller-incidents and schedule-ingest (and the TRUST backlog consumer); Redis Streams to an `ingest-writer` for the small producers; direct read-only internal reads; a migrate hook Job, a schema gate, writer-owned loops and an api-maintenance CronJob; per-client Redis ACL users. Nothing built |
 
 ## Plans
 
-79 plans, in `plans/`. Each belongs to the spec with the matching
+80 plans, in `plans/`. Each belongs to the spec with the matching
 topic above; its status is that spec's status.
