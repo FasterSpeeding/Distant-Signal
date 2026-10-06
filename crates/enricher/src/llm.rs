@@ -1,5 +1,5 @@
 //! Client for the generic OpenAI-compatible Chat Completions REST API.
-//! Deliberately vendor-agnostic: `base_url`/`api_key`/`model` are the only
+//! Deliberately vendor-agnostic: `base_url`/credential/`model` are the only
 //! things that vary between a local llama.cpp/vLLM/Ollama server and any
 //! hosted provider that speaks the same schema.
 //!
@@ -190,7 +190,9 @@ pub(crate) struct SeverityAdversarialPeriodVerdict {
 
 pub(crate) struct LlmClient {
     base_url: String,
-    api_key: Option<String>,
+    /// The endpoint's credential (see `auth.rs`): none, `LLM_API_KEY`, or a
+    /// workload-identity-federated `OpenAI` token.
+    auth: crate::auth::LlmAuth,
     model: String,
     http: reqwest::Client,
     /// See [`ProviderPolicy`]; the default is today's behaviour.
@@ -398,6 +400,19 @@ pub(crate) enum LlmCallError {
     Refused {
         refusal: String,
     },
+    /// Workload identity federation could not produce a token (the
+    /// projected token file is unreadable, or a token endpoint refused or
+    /// failed): nothing was sent to the LLM. `stage` is `authentik` or
+    /// `openai`; `kind` is the `enricher_llm_token_exchange_total` outcome.
+    /// Provider-side, so it never feeds the per-text backoff.
+    CredentialUnavailable {
+        stage: &'static str,
+        kind: &'static str,
+    },
+    /// The endpoint answered 401 to a federated token, and again to a
+    /// freshly exchanged one. Provider-side (the mapping, the project or
+    /// the service account), not the text's fault.
+    Unauthorized,
     Other(anyhow::Error),
 }
 
@@ -439,6 +454,16 @@ impl std::fmt::Display for LlmCallError {
                 let shown: String = refusal.chars().take(MAX_REFUSAL_CHARS).collect();
                 write!(f, "LLM refused to answer: {shown:?}")
             }
+            Self::CredentialUnavailable { stage, kind } => write!(
+                f,
+                "no LLM access token: the {stage} token exchange failed ({kind}); see \
+                 enricher_llm_token_exchange_total and docs/enricher-openai.md"
+            ),
+            Self::Unauthorized => write!(
+                f,
+                "LLM endpoint rejected a freshly exchanged access token (401 twice); check the \
+                 OpenAI service account, its project and the WIF mapping"
+            ),
             Self::Other(err) => write!(f, "{err}"),
         }
     }
@@ -457,6 +482,8 @@ impl LlmCallError {
             Self::Status { .. } => "http_error",
             Self::EmptyContent { .. } => "empty_content",
             Self::Refused { .. } => "refused",
+            Self::CredentialUnavailable { .. } => "auth_error",
+            Self::Unauthorized => "unauthorized",
             Self::Other(_) => "error",
         }
     }
@@ -991,12 +1018,19 @@ impl LlmClient {
             .expect("reqwest client with a timeout must build");
         Self {
             base_url,
-            api_key,
+            auth: crate::auth::LlmAuth::from_api_key(api_key),
             model,
             http,
             policy: ProviderPolicy::default(),
             in_flight: None,
         }
+    }
+
+    /// Replaces the credential `new` derived from its `api_key` (e.g. with a
+    /// workload-identity-federated one, `LLM_AUTH`).
+    pub(crate) fn with_auth(mut self, auth: crate::auth::LlmAuth) -> Self {
+        self.auth = auth;
+        self
     }
 
     /// Opts into a non-default [`ProviderPolicy`].
@@ -1022,6 +1056,8 @@ impl LlmClient {
     ///   gateway retries (`max_gateway_retries > 0`, i.e. a provider whose
     ///   gateway is known to cut slow calls) it counts as transient.
     /// - A refusal is the model's answer to this text: not transient.
+    /// - A credential failure (no federated token, or a 401 to a fresh one)
+    ///   is the deployment's problem: transient.
     #[expect(
         clippy::match_same_arms,
         reason = "separate arms document distinct cases"
@@ -1029,6 +1065,7 @@ impl LlmClient {
     pub(crate) fn is_provider_transient(&self, err: &anyhow::Error) -> bool {
         match err.downcast_ref::<LlmCallError>() {
             Some(LlmCallError::RateLimited { .. } | LlmCallError::QuotaExhausted { .. }) => true,
+            Some(LlmCallError::CredentialUnavailable { .. } | LlmCallError::Unauthorized) => true,
             Some(
                 LlmCallError::GatewayUnavailable { status: 504, .. } | LlmCallError::ClientTimeout,
             ) => self.policy.max_gateway_retries > 0,
@@ -1192,25 +1229,58 @@ impl LlmClient {
     /// One HTTP attempt, classified. Every failure after a response arrived
     /// is logged with the response's `x-request-id` (when sent), which is
     /// what a provider's support needs to trace the call.
+    ///
+    /// With a federated credential, a 401 drops the cached token and the
+    /// request is sent once more with a freshly exchanged one; a second 401
+    /// is [`LlmCallError::Unauthorized`]. That happens here, before the
+    /// 429/5xx classification, so it spends none of the provider policy's
+    /// retry budgets. A 403 is never refreshed: a new token for the same
+    /// service account would be refused the same way.
     async fn send_once(
         &self,
         request: &ChatCompletionRequest<'_>,
     ) -> Result<Completion, LlmCallError> {
-        let mut req = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .json(request);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-
-        let response = req.send().await.map_err(|err| {
-            if err.is_timeout() {
-                LlmCallError::ClientTimeout
-            } else {
-                LlmCallError::Other(err.into())
+        let mut refreshed = false;
+        let response = loop {
+            let bearer = self.auth.bearer().await?;
+            let mut req = self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .json(request);
+            if let Some(token) = &bearer {
+                req = req.bearer_auth(token.expose());
             }
-        })?;
+
+            let response = req.send().await.map_err(|err| {
+                if err.is_timeout() {
+                    LlmCallError::ClientTimeout
+                } else {
+                    LlmCallError::Other(err.into())
+                }
+            })?;
+            if response.status() != reqwest::StatusCode::UNAUTHORIZED || !self.auth.is_federated() {
+                break response;
+            }
+            let request_id = request_id(response.headers());
+            if let Some(token) = &bearer {
+                self.auth.invalidate(token);
+            }
+            if refreshed {
+                let err = LlmCallError::Unauthorized;
+                tracing::warn!(
+                    status = 401,
+                    request_id = request_id.as_deref(),
+                    outcome = err.outcome_label(),
+                    "LLM call failed"
+                );
+                return Err(err);
+            }
+            tracing::info!(
+                request_id = request_id.as_deref(),
+                "LLM endpoint returned 401 to the federated token; exchanging a new one"
+            );
+            refreshed = true;
+        };
         let status = response.status();
         let request_id = request_id(response.headers());
         if !status.is_success() {
@@ -1938,7 +2008,7 @@ mod strict_schema_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
@@ -3046,6 +3116,12 @@ mod tests {
                 refusal: "no".into(),
             }
             .outcome_label(),
+            LlmCallError::CredentialUnavailable {
+                stage: "openai",
+                kind: "invalid_grant",
+            }
+            .outcome_label(),
+            LlmCallError::Unauthorized.outcome_label(),
             LlmCallError::Other(anyhow::anyhow!("x")).outcome_label(),
         ];
         assert_eq!(
@@ -3058,9 +3134,227 @@ mod tests {
                 "http_error",
                 "empty_content",
                 "refused",
+                "auth_error",
+                "unauthorized",
                 "error"
             ]
         );
+        let distinct: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(distinct.len(), labels.len());
+    }
+
+    // -- Workload identity federation (auth.rs) --
+
+    /// A client on `server` whose credential is a federated token minted by
+    /// `server`'s `/oauth/token` (kubernetes mode, token file `file`).
+    fn federated_client(server: &MockServer, file: &std::path::Path) -> LlmClient {
+        let source = crate::auth::FederatedTokenSource::new(crate::auth::tests::kubernetes_config(
+            server, file,
+        ))
+        .unwrap();
+        LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+            .with_auth(crate::auth::LlmAuth::Federated(std::sync::Arc::new(source)))
+            .with_provider_policy(fast_retry_policy())
+    }
+
+    /// `/oauth/token` hands out `tokens` in order, the last one forever.
+    async fn mount_exchange(server: &MockServer, tokens: &[&str]) {
+        for (i, token) in tokens.iter().enumerate() {
+            let mock = Mock::given(method("POST"))
+                .and(path("/oauth/token"))
+                .respond_with(crate::auth::tests::openai_token(token, 3600));
+            let mock = if i + 1 < tokens.len() {
+                mock.up_to_n_times(1)
+            } else {
+                mock
+            };
+            mock.mount(server).await;
+        }
+    }
+
+    fn exchanges(requests: &[wiremock::Request]) -> usize {
+        requests
+            .iter()
+            .filter(|r| r.url.path() == "/oauth/token")
+            .count()
+    }
+
+    /// A 401 to a federated token: drop it, exchange once more, resend.
+    /// The provider policy's retry budgets are untouched.
+    #[tokio::test]
+    async fn federated_401_refreshes_once_and_succeeds() {
+        let server = MockServer::start().await;
+        let file = crate::auth::tests::token_file(crate::auth::tests::K8S_TOKEN);
+        mount_exchange(&server, &["oai-old", "oai-new"]).await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer oai-old"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer oai-new"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = federated_client(&server, file.path());
+        let raw = client.primary_raw("s", "d", reference_date()).await;
+        raw.content.unwrap();
+        assert_eq!(raw.retries, 0, "the 401 refresh is not an in-call retry");
+        assert_eq!(raw.attempts.len(), 1);
+        assert_eq!(raw.attempts[0].outcome, "success");
+        assert_eq!(exchanges(&server.received_requests().await.unwrap()), 2);
+    }
+
+    /// A second 401, to a freshly exchanged token, is `Unauthorized`:
+    /// provider-transient, and not retried.
+    #[tokio::test]
+    async fn federated_401_twice_is_unauthorized() {
+        let server = MockServer::start().await;
+        let file = crate::auth::tests::token_file(crate::auth::tests::K8S_TOKEN);
+        mount_exchange(&server, &["oai-1", "oai-2", "oai-3"]).await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = federated_client(&server, file.path());
+        let err = client
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<LlmCallError>(),
+                Some(LlmCallError::Unauthorized)
+            ),
+            "{err:?}"
+        );
+        assert!(client.is_provider_transient(&err));
+        assert_eq!(exchanges(&server.received_requests().await.unwrap()), 2);
+    }
+
+    /// A 403 is not a stale token: no refresh, an ordinary `http_error`.
+    #[tokio::test]
+    async fn federated_403_does_not_refresh() {
+        let server = MockServer::start().await;
+        let file = crate::auth::tests::token_file(crate::auth::tests::K8S_TOKEN);
+        mount_exchange(&server, &["oai-1"]).await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = federated_client(&server, file.path());
+        let err = client
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<LlmCallError>(),
+                Some(LlmCallError::Status { status: 403 })
+            ),
+            "{err:?}"
+        );
+        assert_eq!(exchanges(&server.received_requests().await.unwrap()), 1);
+    }
+
+    /// No token: nothing is sent to the LLM, the outcome is `auth_error`,
+    /// and it is provider-transient (kept out of the per-text backoff).
+    #[tokio::test]
+    async fn no_federated_token_is_an_auth_error_and_sends_nothing() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let client = federated_client(&server, &dir.path().join("absent"));
+        let raw = client.primary_raw("s", "d", reference_date()).await;
+        let err = raw.content.unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<LlmCallError>(),
+                Some(LlmCallError::CredentialUnavailable {
+                    stage: "openai",
+                    kind: "token_file_error"
+                })
+            ),
+            "{err:?}"
+        );
+        assert_eq!(raw.attempts[0].outcome, "auth_error");
+        assert!(client.is_provider_transient(&err));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// `api-key` mode is unchanged: the key goes out as `Bearer <key>`, no
+    /// key means no `Authorization` header, the requests are otherwise
+    /// byte-identical, and a 401 is a plain `http_error` with no retry.
+    #[tokio::test]
+    async fn api_key_mode_requests_are_unchanged() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .mount(&server)
+            .await;
+        let keyed = LlmClient::new(
+            server.uri(),
+            Some("sk-test".into()),
+            "m".into(),
+            DEFAULT_REQUEST_TIMEOUT,
+        );
+        let keyless = LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT);
+        keyed
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap();
+        keyless
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let [with_key, without_key] = requests.as_slice() else {
+            panic!("{requests:?}");
+        };
+        assert_eq!(
+            with_key.headers.get("authorization").unwrap(),
+            "Bearer sk-test"
+        );
+        assert!(without_key.headers.get("authorization").is_none());
+        assert_eq!(with_key.body, without_key.body);
+        let mut other_headers = with_key.headers.clone();
+        other_headers.remove("authorization");
+        assert_eq!(other_headers, without_key.headers);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let keyed = LlmClient::new(
+            server.uri(),
+            Some("sk-test".into()),
+            "m".into(),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+        .with_provider_policy(fast_retry_policy());
+        let err = keyed
+            .extract_primary("s", "d", reference_date())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<LlmCallError>(),
+                Some(LlmCallError::Status { status: 401 })
+            ),
+            "{err:?}"
+        );
+        assert!(!keyed.is_provider_transient(&err));
     }
 
     // -- OpenAI platform specifics (docs/enricher-openai.md) --

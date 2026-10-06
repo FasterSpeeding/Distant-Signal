@@ -4,6 +4,7 @@
 //! docs/superpowers/specs/2026-08-20-incident-nlp-extraction-design.md and
 //! docs/superpowers/specs/2026-08-21-multi-period-extraction-design.md.
 
+mod auth;
 mod churn;
 mod combine;
 mod config;
@@ -57,6 +58,15 @@ async fn run() -> anyhow::Result<()> {
             config.metrics_port,
             &[(&common::metrics::metric_name(LLM_DURATION_METRIC), &buckets)],
         )?;
+    }
+
+    // The LLM credential, validated before anything else connects: a
+    // workload identity mode with a missing ID or an unmounted token file
+    // fails the pod at startup (after the metrics recorder, so its counters
+    // register).
+    let llm_auth = config.llm_auth.auth(config.llm_api_key.as_ref())?;
+    if llm_auth.is_federated() {
+        tracing::info!(auth = ?config.llm_auth.llm_auth, "LLM workload identity federation on");
     }
 
     let (ready, progress) = health_http::spawn_worker(&config.health);
@@ -124,13 +134,13 @@ async fn run() -> anyhow::Result<()> {
     // docs/superpowers/specs/2026-08-21-multi-period-extraction-design.md, §5.
     let llm = LlmClient::new(
         config.llm_base_url.clone(),
-        config
-            .llm_api_key
-            .as_ref()
-            .map(|key| key.expose().to_string()),
+        None,
         config.llm_model.clone(),
         Duration::from_secs(config.llm_request_timeout_secs),
     )
+    // `LLM_AUTH`: in the default `api-key` mode this is `LLM_API_KEY`, mapped
+    // exactly as before.
+    .with_auth(llm_auth)
     // Every provider-policy knob defaults to "off" (see `ProviderPolicy`).
     .with_provider_policy(config.provider.policy());
     let enricher = Arc::new(Enricher {
