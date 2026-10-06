@@ -1050,6 +1050,36 @@ impl LineDefinition {
                 .any(|leg| leg.via.iter().any(|v| v == crs))
     }
 
+    /// The line's route for matching, as the stretches its trains really
+    /// run: its stations in catalogue order with the stations its trains
+    /// pass between each consecutive pair ([`Self::pass_through`]) in
+    /// between, split at every break (consecutive catalogue stations none
+    /// of its trains runs between: a branch boundary in the station order).
+    /// Never shown: see `pass_through`.
+    pub fn route_runs(&self) -> Vec<Vec<&str>> {
+        let mut runs: Vec<Vec<&str>> = Vec::new();
+        let mut current: Vec<&str> = Vec::new();
+        for (i, station) in self.stations.iter().enumerate() {
+            current.push(station.crs.as_str());
+            let Some(next) = self.stations.get(i + 1) else {
+                continue;
+            };
+            for leg in self
+                .pass_through
+                .iter()
+                .filter(|leg| leg.from == station.crs && leg.to == next.crs)
+            {
+                if leg.runs {
+                    current.extend(leg.via.iter().map(String::as_str));
+                } else {
+                    runs.push(std::mem::take(&mut current));
+                }
+            }
+        }
+        runs.push(current);
+        runs
+    }
+
     /// The line's own stations standing for place `crs`: `crs` itself when
     /// it is one of them, else the catalogue stations either side of every
     /// leg its trains run through it on (so evidence, affected stops and
@@ -1184,7 +1214,7 @@ fn attach_pass_through(lines: &mut [LineDefinition], file: &pass_through::PassTh
                     .retain(|crs| !line.stations.iter().any(|s| s.crs == *crs));
                 leg
             })
-            .filter(|leg| !leg.via.is_empty())
+            .filter(|leg| !leg.runs || !leg.via.is_empty())
             .collect();
     }
 }
@@ -2905,6 +2935,7 @@ mod pass_through_attach_tests {
         // LBG-GTW is kept (both ends are stations); ECR-GTW's only station
         // is a stop, so that leg is dropped.
         assert_eq!(line.pass_through.len(), 2);
+        assert_eq!(line.route_runs(), [["LBG", "NXG", "NWD", "ECR", "GTW"]]);
         assert!(line.holds_place("NWD"));
         assert!(line.holds_place("ECR"));
         // A stop, never: not a station, and the evidence is the line's own
@@ -2917,6 +2948,21 @@ mod pass_through_attach_tests {
         let json = serde_json::to_value(line).expect("serialises");
         assert!(json.get("pass_through").is_none(), "{json}");
         assert_eq!(json["stations"].as_array().map(Vec::len), Some(3));
+    }
+
+    #[test]
+    fn breaks_split_the_route() {
+        let dir = catalogue_dir(Some(
+            "source_dates = [\"2026-10-07\"]\n[lines.bml]\nECR-GTW = [\"PUR\"]\n\
+             [breaks]\nbml = [\"LBG-ECR\"]\n",
+        ));
+        let lines = LineDefinition::from_dir(&dir).expect("loads");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            lines[0].route_runs(),
+            [vec!["LBG"], vec!["ECR", "PUR", "GTW"]]
+        );
+        assert!(!lines[0].holds_place("LBG-ECR"));
     }
 
     #[test]

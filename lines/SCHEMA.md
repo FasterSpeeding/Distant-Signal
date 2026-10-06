@@ -141,8 +141,11 @@ lives in a subdirectory so the `*.toml` line glob never reads it as a line.
 for each leg, the most common path of the line's own trains (the trains
 whose route best fits the line) on a representative Wednesday, Saturday
 and Sunday, and keeps only stations in the `stations` reference table. A
-leg none of the line's trains run (a branch boundary in the station order)
-gets nothing.
+pair of consecutive stations none of the line's trains runs between
+directly (a branch boundary in the station order, such as the Brighton Main
+Line's Clapham Junction - London Bridge) is listed under `[breaks]`
+(`southern-brighton-main-line = ["CLJ-LBG"]`), so the matcher never treats
+that stretch as track when it measures how much of a section a line shares.
 
 **Regenerate it** after each timetable change (the December and May
 principal changes, once the new timetable is in `schedule_calling_points_full`,

@@ -32,12 +32,16 @@ use serde::Deserialize;
 pub const PASS_THROUGH_FILE: &str = "generated/pass-through.toml";
 
 /// The stations one line's trains run through between two consecutive
-/// catalogue stations, `from` and `to`, in order from `from`.
+/// catalogue stations, `from` and `to`, in order from `from`; or, with
+/// `runs` false (a "break"), a pair none of the line's trains runs between
+/// directly: a branch boundary in the catalogue's station order, which the
+/// matcher never treats as track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassThroughLeg {
     pub from: String,
     pub to: String,
     pub via: Vec<String>,
+    pub runs: bool,
 }
 
 /// The parsed generated file.
@@ -46,7 +50,7 @@ pub struct PassThrough {
     /// The timetable dates the file was generated from (its header says
     /// when to regenerate it).
     pub source_dates: Vec<String>,
-    /// Line id -> its legs, in file order.
+    /// Line id -> its legs, in file order, then its breaks.
     pub lines: BTreeMap<String, Vec<PassThroughLeg>>,
 }
 
@@ -56,22 +60,42 @@ struct RawFile {
     source_dates: Vec<String>,
     #[serde(default)]
     lines: BTreeMap<String, toml::Table>,
+    #[serde(default)]
+    breaks: BTreeMap<String, Vec<String>>,
+}
+
+/// `"FROM-TO"` as two CRS codes.
+fn leg_ends(line_id: &str, key: &str) -> anyhow::Result<(String, String)> {
+    let Some((from, to)) = key.split_once('-') else {
+        anyhow::bail!("line {line_id}: leg {key:?} is not FROM-TO");
+    };
+    for crs in [from, to] {
+        ensure_crs(line_id, key, crs)?;
+    }
+    Ok((from.to_string(), to.to_string()))
+}
+
+fn ensure_crs(line_id: &str, key: &str, crs: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        crs.len() == 3 && crs.chars().all(|c| c.is_ascii_uppercase()),
+        "line {line_id}: leg {key}: {crs:?} is not a CRS code"
+    );
+    Ok(())
 }
 
 impl PassThrough {
     /// Parses the generated file's text: `source_dates`, then one
     /// `[lines.<id>]` table per line with one `FROM-TO = ["CRS", ...]` key
-    /// per leg. Errors on anything else, so a hand-edited or truncated file
-    /// fails loudly (CI: line-catalogue-validator).
+    /// per leg, then a `[breaks]` table, `<id> = ["FROM-TO", ...]`. Errors
+    /// on anything else, so a hand-edited or truncated file fails loudly
+    /// (CI: line-catalogue-validator).
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         let raw: RawFile = toml::from_str(text)?;
         let mut lines = BTreeMap::new();
         for (line_id, table) in raw.lines {
             let mut legs = Vec::with_capacity(table.len());
             for (key, value) in table {
-                let Some((from, to)) = key.split_once('-') else {
-                    anyhow::bail!("line {line_id}: leg {key:?} is not FROM-TO");
-                };
+                let (from, to) = leg_ends(&line_id, &key)?;
                 let via: Vec<String> = value
                     .as_array()
                     .ok_or_else(|| anyhow::anyhow!("line {line_id}: leg {key} is not a list"))?
@@ -82,19 +106,29 @@ impl PassThrough {
                         })
                     })
                     .collect::<anyhow::Result<_>>()?;
-                for crs in [from, to].into_iter().chain(via.iter().map(String::as_str)) {
-                    anyhow::ensure!(
-                        crs.len() == 3 && crs.chars().all(|c| c.is_ascii_uppercase()),
-                        "line {line_id}: leg {key}: {crs:?} is not a CRS code"
-                    );
+                for crs in &via {
+                    ensure_crs(&line_id, &key, crs)?;
                 }
                 legs.push(PassThroughLeg {
-                    from: from.to_string(),
-                    to: to.to_string(),
+                    from,
+                    to,
                     via,
+                    runs: true,
                 });
             }
             lines.insert(line_id, legs);
+        }
+        for (line_id, pairs) in raw.breaks {
+            let legs: &mut Vec<PassThroughLeg> = lines.entry(line_id.clone()).or_default();
+            for key in pairs {
+                let (from, to) = leg_ends(&line_id, &key)?;
+                legs.push(PassThroughLeg {
+                    from,
+                    to,
+                    via: Vec::new(),
+                    runs: false,
+                });
+            }
         }
         Ok(Self {
             source_dates: raw.source_dates,
@@ -136,6 +170,25 @@ mod tests {
         assert_eq!(legs[0].from, "LBG");
         assert_eq!(legs[0].to, "ECR");
         assert_eq!(legs[0].via, ["NXG", "SYD", "NWD"]);
+        assert!(legs.iter().all(|leg| leg.runs));
+    }
+
+    #[test]
+    fn parses_breaks() {
+        let file = PassThrough::parse(
+            "source_dates = [\"2026-10-07\"]\n[lines.bml]\nLBG-ECR = [\"NXG\"]\n\
+             [breaks]\nbml = [\"CLJ-LBG\"]\nother = [\"AAA-BBB\"]\n",
+        )
+        .expect("parses");
+        let bml = &file.lines["bml"];
+        assert_eq!(bml.len(), 2);
+        assert!(bml[0].runs);
+        assert!(!bml[1].runs);
+        assert_eq!((bml[1].from.as_str(), bml[1].to.as_str()), ("CLJ", "LBG"));
+        assert!(bml[1].via.is_empty());
+        assert_eq!(file.lines["other"].len(), 1);
+        assert!(PassThrough::parse("source_dates = []\n[breaks]\nbml = [\"CLJLBG\"]\n").is_err());
+        assert!(PassThrough::parse("source_dates = []\n[breaks]\nbml = \"CLJ-LBG\"\n").is_err());
     }
 
     #[test]

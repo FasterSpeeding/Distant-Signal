@@ -624,6 +624,11 @@ operators = ["XC"]
         assert!(findings[0].message.contains("no-such-line"));
         assert_eq!(findings[0].line_no, Some(2));
 
+        let body = format!("{PASS_THROUGH_HEADER}[breaks]\nno-such-line = [\"LBG-ECR\"]\n");
+        let findings = pass_through_findings(Some(&body));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Error);
+
         let body = format!("{PASS_THROUGH_HEADER}[lines.test-line]\nLBG-ECR = [\"ZZZ\"]\n");
         let findings = pass_through_findings(Some(&body));
         assert_eq!(findings.len(), 1);

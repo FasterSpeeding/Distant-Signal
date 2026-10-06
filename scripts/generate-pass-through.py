@@ -91,12 +91,17 @@ class Line:
 
 @dataclass
 class Leg:
-    """Stations between two consecutive catalogue stations of a line."""
+    """Stations between two consecutive catalogue stations of a line.
+
+    `runs` is false for a break: none of the line's trains runs directly
+    between the two (a branch boundary in the catalogue's station order).
+    """
 
     origin: str
     destination: str
     via: tuple[str, ...]
     trains: int = 0
+    runs: bool = True
 
 
 @dataclass
@@ -218,14 +223,15 @@ def route_of(paths: Counter[tuple[str, ...]]) -> tuple[tuple[str, ...], int]:
 
 
 def legs_for(index: Index, owned: set[int], line: Line, known: set[str]) -> list[Leg]:
-    """Each consecutive catalogue pair's route, when it has stations.
+    """Each consecutive catalogue pair's route when it has stations, or break.
 
-    Only the line's own trains ([`line_trains`]): a leg none of them runs
-    is a branch boundary in the catalogue's station order (Victoria, Clapham
-    Junction, London Bridge, East Croydon: no Brighton Main Line train runs
-    from Clapham Junction to London Bridge). A line that owns no train at
-    all (an operator code CIF does not use) falls back to any train
-    reaching three of its stations.
+    Only the line's own trains ([`line_trains`]): a pair none of them runs
+    between directly is a break, a branch boundary in the catalogue's
+    station order (Victoria, Clapham Junction, London Bridge, East Croydon:
+    no Brighton Main Line train runs from Clapham Junction to London
+    Bridge). The matcher never treats a stretch across a break as track.
+    A line that owns no train at all (an operator code CIF does not use)
+    falls back to any train reaching three of its stations.
     """
     legs = []
     for a, b in itertools.pairwise(line.stations):
@@ -233,6 +239,7 @@ def legs_for(index: Index, owned: set[int], line: Line, known: set[str]) -> list
             continue
         paths = leg_paths(index, owned or None, line, (a, b), known)
         if not paths:
+            legs.append(Leg(origin=a, destination=b, via=(), runs=False))
             continue
         route, trains = route_of(paths)
         via = tuple(crs for crs in route if crs not in line.stations)
@@ -242,7 +249,11 @@ def legs_for(index: Index, owned: set[int], line: Line, known: set[str]) -> list
 
 
 def render(legs: Mapping[str, Sequence[Leg]], dates: Iterable[dt.date]) -> str:
-    """Render the TOML: one table per line, one `FROM-TO = [via...]` key per leg."""
+    """Render the TOML: per line its `FROM-TO = [via...]` legs, then breaks.
+
+    Legs go in one `[lines.<id>]` table per line; breaks in one `[breaks]`
+    table, `<id> = ["FROM-TO", ...]`.
+    """
     date_list = ", ".join(f'"{d.isoformat()}"' for d in dates)
     out = [
         "# GENERATED FILE -- do not edit by hand.",
@@ -261,12 +272,33 @@ def render(legs: Mapping[str, Sequence[Leg]], dates: Iterable[dt.date]) -> str:
         f"source_dates = [{date_list}]",
     ]
     for line_id in sorted(legs):
-        if not legs[line_id]:
+        running = [leg for leg in legs[line_id] if leg.runs]
+        if not running:
             continue
         out.extend(["", f"[lines.{line_id}]"])
-        for leg in legs[line_id]:
+        for leg in running:
             via = ", ".join(f'"{crs}"' for crs in leg.via)
             out.append(f"{leg.origin}-{leg.destination} = [{via}]")
+    breaks = {
+        line_id: [
+            f'"{leg.origin}-{leg.destination}"' for leg in line_legs if not leg.runs
+        ]
+        for line_id, line_legs in sorted(legs.items())
+    }
+    if any(breaks.values()):
+        out.extend(
+            [
+                "",
+                "# Consecutive catalogue stations none of the line's trains runs",
+                "# between directly (branch boundaries).",
+                "[breaks]",
+            ]
+        )
+        out.extend(
+            f"{line_id} = [{', '.join(pairs)}]"
+            for line_id, pairs in breaks.items()
+            if pairs
+        )
     return "\n".join(out) + "\n"
 
 
@@ -377,8 +409,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(render(legs, dates), encoding="utf-8")
     total = sum(len(leg.via) for line_legs in legs.values() for leg in line_legs)
-    with_legs = sum(1 for line_legs in legs.values() if line_legs)
-    print(f"{args.output}: {total} pass-through stations on {with_legs} lines")
+    with_legs = sum(
+        1 for line_legs in legs.values() if any(leg.via for leg in line_legs)
+    )
+    breaks = sum(1 for line_legs in legs.values() for leg in line_legs if not leg.runs)
+    print(
+        f"{args.output}: {total} pass-through stations on {with_legs} lines,", end=" "
+    )
+    print(f"{breaks} breaks")
     days = ", ".join(d.isoformat() for d in dates)
     print(f"source dates: {days}; {len(index.trains)} trains")
     return 0
