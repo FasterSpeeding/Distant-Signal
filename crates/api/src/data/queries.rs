@@ -82,16 +82,25 @@ struct ExistingIncident {
     summary: String,
     description: String,
     validity_periods: serde_json::Value,
+    is_cleared: bool,
 }
 
 /// Pure diff check, factored out of `upsert_incidents` so it's testable
 /// without a database: an incident is "changed" if it's new, or if its
-/// summary, description, or validity periods differ from what's stored.
+/// summary, description, validity periods or `is_cleared` differ from
+/// what's stored.
+///
+/// `is_cleared` joined the list on 2026-10-06: RDM often clears an incident
+/// by flipping `ClearedIncident` alone, and that wrote no `incident_history`
+/// row, so the history could not say when (or that) it was cleared. The
+/// history consumers (the detail page's diff summary, the replay export
+/// scripts) already carry `is_cleared` per row.
 fn incident_changed(
     existing: Option<&ExistingIncident>,
     summary: &str,
     description: &str,
     validity_periods: &serde_json::Value,
+    is_cleared: bool,
 ) -> bool {
     match existing {
         None => true,
@@ -99,6 +108,7 @@ fn incident_changed(
             row.summary != summary
                 || row.description != description
                 || row.validity_periods != *validity_periods
+                || row.is_cleared != is_cleared
         }
     }
 }
@@ -141,16 +151,49 @@ fn text_changed(existing: Option<&ExistingIncident>, summary: &str, description:
 /// re-sent every cycle. Incidents that have dropped out of the feed keep
 /// whatever was computed when they were last seen, which is why the
 /// backfill binary exists.
-#[expect(
-    clippy::too_many_lines,
-    reason = "long but linear; splitting it would scatter its shared state across helpers"
-)]
+///
+/// Treats the batch as an INCOMPLETE snapshot: it resets the "no longer
+/// listed" state of every incident it names, but never infers that an
+/// absent one has left the feed. See [`upsert_incident_snapshot`].
 pub async fn upsert_incidents(
     pool: &PgPool,
     redis: &redis::Client,
     line_matcher: &common::matcher::LineMatcher,
     incidents: &[IncidentMessage],
 ) -> Result<u64> {
+    let outcome = upsert_incident_snapshot(pool, redis, line_matcher, incidents, false).await?;
+    Ok(outcome.upserted)
+}
+
+/// What [`upsert_incident_snapshot`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IncidentSnapshotOutcome {
+    pub upserted: u64,
+    pub inference: crate::data::incident_removal::Inference,
+}
+
+/// [`upsert_incidents`], then -- once every chunk has committed -- the
+/// "Ended (no longer listed)" inference over the incidents this snapshot
+/// did NOT name, when `complete` (the poller vouches that it is the whole
+/// feed) and the rest of the guard in [`crate::data::incident_removal`]
+/// passes. A chunk failure returns before inference runs, so a partly
+/// written snapshot never marks anything removed.
+///
+/// Every incident the batch names gets `source_missing_polls = 0` and
+/// `source_removed_at = NULL`, complete snapshot or not: being listed is
+/// positive evidence on its own, so a reappearing incident is un-ended at
+/// once.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear; splitting it would scatter its shared state across helpers"
+)]
+pub async fn upsert_incident_snapshot(
+    pool: &PgPool,
+    redis: &redis::Client,
+    line_matcher: &common::matcher::LineMatcher,
+    incidents: &[IncidentMessage],
+    complete: bool,
+) -> Result<IncidentSnapshotOutcome> {
     let mut count = 0u64;
     let mut text_changed_ids = Vec::new();
 
@@ -170,7 +213,8 @@ pub async fn upsert_incidents(
 
         let chunk_ids: Vec<&str> = chunk.iter().map(|i| i.incident_id.as_str()).collect();
         let existing_rows: Vec<ExistingIncident> = sqlx::query_as(
-            "SELECT incident_id, summary, description, validity_periods FROM incidents WHERE incident_id = ANY($1)",
+            "SELECT incident_id, summary, description, validity_periods, is_cleared \
+             FROM incidents WHERE incident_id = ANY($1)",
         )
         .bind(&chunk_ids)
         .fetch_all(&mut *tx)
@@ -207,6 +251,7 @@ pub async fn upsert_incidents(
                 &incident.summary,
                 &incident.description,
                 validity_json,
+                incident.is_cleared,
             ) {
                 changed_rows.push((*incident, validity_json));
             }
@@ -265,7 +310,9 @@ pub async fn upsert_incidents(
                 is_planned        = EXCLUDED.is_planned,
                 is_cleared        = EXCLUDED.is_cleared,
                 fetched_at        = NOW(),
-                affected_lines    = EXCLUDED.affected_lines
+                affected_lines    = EXCLUDED.affected_lines,
+                source_missing_polls = 0,
+                source_removed_at = NULL
             WHERE (incidents.summary, incidents.description, incidents.operators,
                    incidents.affected_stations, incidents.priority,
                    incidents.validity_periods, incidents.is_planned,
@@ -356,8 +403,12 @@ pub async fn upsert_incidents(
         // TOASTed text/array values and touches none of the GIN indexes,
         // instead of the full-row rewrite every incident got every cycle.
         // Rows the upsert just wrote already hold this transaction's NOW().
+        // Being listed also un-ends an incident (`source_missing_polls`,
+        // `source_removed_at`, see `data::incident_removal`); two more
+        // unindexed columns keep this a HOT update.
         sqlx::query(
-            "UPDATE incidents SET fetched_at = NOW() \
+            "UPDATE incidents SET fetched_at = NOW(), source_missing_polls = 0, \
+                    source_removed_at = NULL \
              WHERE incident_id = ANY($1) AND fetched_at <> NOW()",
         )
         .bind(&chunk_ids)
@@ -374,14 +425,22 @@ pub async fn upsert_incidents(
     // incident that a later failure in this same batch rolls back. Publish
     // failure is logged, not propagated -- the hourly sweep (Task 5) is the
     // backstop for a missed publish, so ingestion must not fail because
-    // Redis is briefly unavailable.
-    if text_changed_ids.is_empty() {
-        return Ok(count);
+    // Redis is briefly unavailable. Before the inference below, so an
+    // inference failure (a 500, and a retried POST that finds no text
+    // change left to publish) cannot drop these.
+    if !text_changed_ids.is_empty() {
+        publish_text_changed(redis, text_changed_ids).await;
     }
 
-    publish_text_changed(redis, text_changed_ids).await;
-
-    Ok(count)
+    // Every chunk committed: only now is the snapshot fully written, and
+    // only a fully written snapshot may say what is absent from it.
+    let present_ids: Vec<&str> = incidents.iter().map(|i| i.incident_id.as_str()).collect();
+    let inference =
+        crate::data::incident_removal::infer_removals(pool, &present_ids, complete).await?;
+    Ok(IncidentSnapshotOutcome {
+        upserted: count,
+        inference,
+    })
 }
 
 /// XADDs one `incident-text-changed` entry per id, best effort: every
@@ -5366,6 +5425,10 @@ pub struct IncidentRow {
     pub is_cleared: bool,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
     pub fetched_at: chrono::DateTime<chrono::Utc>,
+    /// When the Knowledgebase feed last listed an incident it has since
+    /// stopped listing without clearing it ("Ended (no longer listed)"),
+    /// see `data::incident_removal`. `None` while it is still listed.
+    pub source_removed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `incident_id` is this table's primary key (see `upsert_incidents`'s own
@@ -5376,7 +5439,8 @@ pub struct IncidentRow {
 pub async fn incident_by_id(pool: &PgPool, incident_id: &str) -> Result<Option<IncidentRow>> {
     let row = sqlx::query_as::<_, IncidentRow>(
         "SELECT incident_id, summary, description, operators, affected_stations, priority, \
-                validity_periods, is_planned, is_cleared, first_seen_at, fetched_at \
+                validity_periods, is_planned, is_cleared, first_seen_at, fetched_at, \
+                source_removed_at \
          FROM incidents WHERE incident_id = $1",
     )
     .bind(incident_id)
@@ -5493,6 +5557,42 @@ pub struct IncidentSummaryRow {
     pub is_cleared: bool,
     pub first_seen_at: chrono::DateTime<chrono::Utc>,
     pub fetched_at: chrono::DateTime<chrono::Utc>,
+    /// See `IncidentRow::source_removed_at`.
+    pub source_removed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// An incident's lifecycle state, as the archive filters on it
+/// (2026-10-06, docs/superpowers/specs/2026-10-06-incident-source-removal-design.md).
+/// The three are disjoint: a listed row's `source_removed_at` is reset to
+/// NULL, and only uncleared rows are ever marked removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncidentState {
+    /// Not cleared by RDM and still listed by the feed.
+    Active,
+    /// RDM set `ClearedIncident` (`is_cleared`).
+    Cleared,
+    /// Left the feed without RDM clearing it (`source_removed_at` set).
+    Ended,
+}
+
+impl IncidentState {
+    /// The wire value, also what `search_incidents` binds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Cleared => "cleared",
+            Self::Ended => "ended",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "active" => Some(Self::Active),
+            "cleared" => Some(Self::Cleared),
+            "ended" => Some(Self::Ended),
+            _ => None,
+        }
+    }
 }
 
 /// Keyset cursor for `search_incidents`, matching
@@ -5561,7 +5661,7 @@ pub async fn search_incidents(
     operators: Option<Vec<String>>,
     line: Option<String>,
     is_planned: Option<bool>,
-    is_cleared: Option<bool>,
+    state: Option<IncidentState>,
     priority_min: Option<i32>,
     priority_max: Option<i32>,
     first_seen_from: Option<chrono::DateTime<chrono::Utc>>,
@@ -5575,12 +5675,16 @@ pub async fn search_incidents(
         r"
             SELECT incident_id, summary, operators, affected_stations,
                    COALESCE(affected_lines, '{}') AS affected_lines,
-                   priority, is_planned, is_cleared, first_seen_at, fetched_at
+                   priority, is_planned, is_cleared, first_seen_at, fetched_at,
+                   source_removed_at
             FROM incidents
             WHERE ($1::text[]      IS NULL OR operators && $1)
               AND ($2::text        IS NULL OR affected_lines @> ARRAY[$2::text])
               AND ($3::boolean     IS NULL OR is_planned = $3)
-              AND ($4::boolean     IS NULL OR is_cleared = $4)
+              AND ($4::text        IS NULL
+                   OR ($4 = 'active'  AND NOT is_cleared AND source_removed_at IS NULL)
+                   OR ($4 = 'cleared' AND is_cleared)
+                   OR ($4 = 'ended'   AND NOT is_cleared AND source_removed_at IS NOT NULL))
               AND ($5::integer     IS NULL OR priority >= $5)
               AND ($6::integer     IS NULL OR priority <= $6)
               AND ($7::timestamptz IS NULL OR first_seen_at >= $7)
@@ -5594,7 +5698,7 @@ pub async fn search_incidents(
     .bind(operators)
     .bind(line)
     .bind(is_planned)
-    .bind(is_cleared)
+    .bind(state.map(IncidentState::as_str))
     .bind(priority_min)
     .bind(priority_max)
     .bind(first_seen_from)
@@ -6330,7 +6434,7 @@ mod incident_search_query_tests {
             None,
             None,
             None,
-            Some(true),
+            Some(IncidentState::Cleared),
             None,
             None,
             None,
@@ -6347,6 +6451,96 @@ mod incident_search_query_tests {
                 .map(|r| r.incident_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["archive-test-i"]
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    /// 2026-10-06: active / cleared / ended are disjoint. "Active" no longer
+    /// means just `NOT is_cleared`: a row the feed stopped listing is
+    /// "ended", not active, whether planned or not.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_state_filter_separates_active_cleared_and_ended() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        for (id, planned, cleared) in [
+            ("archive-test-active", false, false),
+            ("archive-test-cleared", false, true),
+            ("archive-test-ended-u", false, false),
+            ("archive-test-ended-p", true, false),
+        ] {
+            seed_incident(&pool, id, &["VT"], &[], 1, planned, cleared, at(9)).await;
+        }
+        sqlx::query(
+            "UPDATE incidents SET source_removed_at = fetched_at, source_missing_polls = 2 \
+             WHERE incident_id LIKE 'archive-test-ended-%'",
+        )
+        .execute(&pool)
+        .await
+        .expect("mark ended");
+
+        let ids_for = |state: Option<IncidentState>| {
+            let pool = pool.clone();
+            async move {
+                let page = search_incidents(
+                    &pool,
+                    None,
+                    None,
+                    None,
+                    state,
+                    None,
+                    None,
+                    Some(at(0)),
+                    Some(at(23)),
+                    None,
+                    100,
+                )
+                .await
+                .expect("search");
+                let mut ids: Vec<String> =
+                    page.results.into_iter().map(|r| r.incident_id).collect();
+                ids.sort();
+                ids
+            }
+        };
+
+        assert_eq!(
+            ids_for(Some(IncidentState::Active)).await,
+            vec!["archive-test-active"]
+        );
+        assert_eq!(
+            ids_for(Some(IncidentState::Cleared)).await,
+            vec!["archive-test-cleared"]
+        );
+        assert_eq!(
+            ids_for(Some(IncidentState::Ended)).await,
+            vec!["archive-test-ended-p", "archive-test-ended-u"]
+        );
+        assert_eq!(
+            ids_for(None).await.len(),
+            4,
+            "no filter returns every state"
+        );
+
+        let page = search_incidents(
+            &pool,
+            None,
+            None,
+            None,
+            Some(IncidentState::Ended),
+            None,
+            None,
+            Some(at(0)),
+            Some(at(23)),
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        assert!(
+            page.results.iter().all(|r| r.source_removed_at.is_some()),
+            "an ended row carries when the feed last listed it"
         );
         delete_fixtures(&pool).await;
     }
@@ -6792,6 +6986,7 @@ mod tests {
             summary: summary.to_string(),
             description: description.to_string(),
             validity_periods: validity,
+            is_cleared: false,
         }
     }
 
@@ -6801,7 +6996,8 @@ mod tests {
             None,
             "summary",
             "description",
-            &serde_json::json!([])
+            &serde_json::json!([]),
+            false
         ));
     }
 
@@ -6812,7 +7008,8 @@ mod tests {
             Some(&row),
             "summary",
             "description",
-            &serde_json::json!([])
+            &serde_json::json!([]),
+            false
         ));
     }
 
@@ -6823,7 +7020,8 @@ mod tests {
             Some(&row),
             "new summary",
             "description",
-            &serde_json::json!([])
+            &serde_json::json!([]),
+            false
         ));
     }
 
@@ -6834,7 +7032,8 @@ mod tests {
             Some(&row),
             "summary",
             "new description",
-            &serde_json::json!([])
+            &serde_json::json!([]),
+            false
         ));
     }
 
@@ -6846,22 +7045,38 @@ mod tests {
             Some(&row),
             "summary",
             "description",
-            &new_validity
+            &new_validity,
+            false
+        ));
+    }
+
+    /// 2026-10-06: a flag-only clear used to write no history row, so the
+    /// detail page's history could never show when RDM cleared an incident.
+    #[test]
+    fn a_flag_only_clear_is_a_change() {
+        let row = existing("summary", "description", serde_json::json!([]));
+        assert!(incident_changed(
+            Some(&row),
+            "summary",
+            "description",
+            &serde_json::json!([]),
+            true
         ));
     }
 
     #[test]
     fn unrelated_operators_or_stations_changes_are_not_this_functions_concern() {
-        // operators/affected_stations/priority/is_planned/is_cleared changes
-        // still get written to `incidents` (the upsert always overwrites),
-        // they just don't independently trigger a history row per the
-        // brief's spec (only summary/description/validity_periods do).
+        // operators/affected_stations/priority/is_planned changes still get
+        // written to `incidents` (the upsert always overwrites), they just
+        // don't independently trigger a history row per the brief's spec
+        // (only summary/description/validity_periods/is_cleared do).
         let row = existing("summary", "description", serde_json::json!([]));
         assert!(!incident_changed(
             Some(&row),
             "summary",
             "description",
-            &serde_json::json!([])
+            &serde_json::json!([]),
+            false
         ));
     }
 

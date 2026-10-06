@@ -294,6 +294,7 @@ async fn server_main() -> anyhow::Result<()> {
         spawn_metrics_listener(app.config.metrics_port, metrics_handle);
         data::queries::register_schedule_publish_metrics();
         routes::auth::register_user_metrics();
+        data::incident_removal::register_metrics();
         // Before the migrations, so a database that goes away while they
         // run (or right after) already shows as distant_signal_api_db_up 0.
         data::db_health::register_metrics();

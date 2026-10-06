@@ -45,6 +45,7 @@ function detail(overrides: Partial<IncidentDetail> = {}): IncidentDetail {
     isCleared: false,
     firstSeenAt: '2026-08-30T09:00:00Z',
     fetchedAt: '2026-08-31T10:15:00Z',
+    sourceRemovedAt: null,
     currentlyAffectsLines: [{ id: 'south-western', name: 'South Western Main Line' }],
     history: [
       {
@@ -207,6 +208,23 @@ describe('IncidentDetailPage', () => {
       // The line the incident used to affect must not still be listed --
       // a cleared incident with an "ongoing" validity period would
       // otherwise read as a live, unresolved contradiction.
+      expect(screen.queryByText('Currently affects')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'South Western Main Line' })).not.toBeInTheDocument();
+    });
+
+    it('shows an Ended badge, and says since when it is unlisted instead of "Currently affects", for an incident the feed dropped', async () => {
+      vi.mocked(api.getIncident).mockResolvedValue(
+        detail({
+          isCleared: false,
+          sourceRemovedAt: '2026-10-05T22:55:00+00:00',
+          currentlyAffectsLines: [{ id: 'south-western', name: 'South Western Main Line' }],
+        }),
+      );
+      renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
+      expect(document.querySelector('[data-incident-state="ended"]')).not.toBeNull();
+      expect(screen.queryByText('Active')).not.toBeInTheDocument();
+      expect(screen.queryByText('Cleared')).not.toBeInTheDocument();
+      expect(screen.getByText('No longer listed by the source since 5 Oct 2026, 23:55.')).toBeInTheDocument();
       expect(screen.queryByText('Currently affects')).not.toBeInTheDocument();
       expect(screen.queryByRole('link', { name: 'South Western Main Line' })).not.toBeInTheDocument();
     });
