@@ -5,6 +5,7 @@ import {
   fetchTripPlan,
   trainLegsForTracking,
   TripPlanError,
+  TRIP_PLAN_UNAVAILABLE_MESSAGE,
 } from './tripPlan';
 import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
 
@@ -272,6 +273,26 @@ describe('fetchTripPlan', () => {
   // backend-authored ones (400/404). A 500 must now get a generic,
   // honest message instead -- while the real body is still logged to the
   // console so the failure stays debuggable server-side.
+  it('says "temporarily unavailable" for a 503', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () => Promise.resolve('{"error":"service_unavailable","retryable":true}'),
+      } as Response),
+    );
+    const promise = fetchTripPlan({
+      originCrs: 'EUS',
+      destinationCrs: 'MKC',
+      waypointCrs: [],
+      date: '2026-09-23',
+      results: 'fastest',
+    });
+    await expect(promise).rejects.toMatchObject({ status: 503, message: TRIP_PLAN_UNAVAILABLE_MESSAGE });
+  });
+
   it('replaces a non-400/404 error body with a generic message, logging the raw body instead', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.stubGlobal(

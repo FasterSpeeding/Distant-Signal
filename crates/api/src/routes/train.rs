@@ -2086,6 +2086,9 @@ async fn read_single_file_field(
 /// whoever read the log at a pin-creation bug that hadn't happened.
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
     move |err| {
+        if let Some(unavailable) = crate::unavailable::response_for(&err) {
+            return unavailable;
+        }
         tracing::error!(error = ?err, operation, "train tracking request failed");
         (
             StatusCode::INTERNAL_SERVER_ERROR,

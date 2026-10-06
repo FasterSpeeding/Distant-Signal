@@ -106,6 +106,11 @@ export function trainLegsForTracking(itineraries: TripPlanItinerary[]): TrainLeg
   return legs;
 }
 
+/** What the trip planner shows for a 503 (docs/api-changelog.md,
+ * 2026-10-06): Distant Signal is temporarily unavailable, not "no route". */
+export const TRIP_PLAN_UNAVAILABLE_MESSAGE =
+  'Journey planning is temporarily unavailable. Please try again in a minute.';
+
 export class TripPlanError extends Error {
   status: number;
 
@@ -135,6 +140,11 @@ export async function fetchTripPlan(query: TripPlanQuery): Promise<TripPlanRespo
   const response = await fetch(`/api/Trips/plan?${buildTripPlanQuery(query)}`);
   if (!response.ok) {
     const body = await response.text();
+    if (response.status === 503) {
+      // api could not reach its database, or is shedding load: retryable.
+      console.error('fetchTripPlan: api temporarily unavailable (503)', body);
+      throw new TripPlanError(TRIP_PLAN_UNAVAILABLE_MESSAGE, 503);
+    }
     if (response.status !== 400 && response.status !== 404) {
       console.error(`fetchTripPlan: request failed with ${response.status}`, body);
       throw new TripPlanError('Something went wrong planning this trip. Please try again.', response.status);

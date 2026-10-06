@@ -126,6 +126,9 @@ async fn revoke_user_sessions(
                     _ => return error(StatusCode::CONFLICT, "username_ambiguous"),
                 },
                 Err(err) => {
+                    if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                        return unavailable.into_response();
+                    }
                     tracing::error!(error = ?err, "admin revoke: user lookup by username failed");
                     return error(StatusCode::INTERNAL_SERVER_ERROR, "lookup_failed");
                 }
@@ -157,6 +160,9 @@ async fn revoke_user_sessions(
         }
         Ok(None) => error(StatusCode::NOT_FOUND, "user_not_found"),
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return unavailable.into_response();
+            }
             tracing::error!(error = ?err, "admin revoke: failed to revoke sessions");
             error(StatusCode::INTERNAL_SERVER_ERROR, "revoke_failed")
         }

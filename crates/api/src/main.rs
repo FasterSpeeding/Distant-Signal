@@ -299,6 +299,10 @@ async fn server_main() -> anyhow::Result<()> {
         // run (or right after) already shows as distant_signal_api_db_up 0.
         data::db_health::register_metrics();
         data::trust_event_backlog::register_uid_inference_metrics();
+        // Key routes' request series (and the graph-cache outcomes) at 0, so
+        // a rare route's first request after a restart is visible to
+        // increase()/rate(). See `api::route_metrics`.
+        api::route_metrics::register(&app.internal_oauth_routes);
         tokio::spawn(data::db_health::probe_loop(app.database.clone()));
     }
 
@@ -310,6 +314,13 @@ async fn server_main() -> anyhow::Result<()> {
     let expected_browser_origin: Option<std::sync::Arc<str>> =
         api::auth::expected_browser_origin(&app.config.sso_redirect_url).map(Into::into);
     let router = router
+        // 2026-10-01 outage follow-up: a route that could not reach the
+        // database answers 503 + Retry-After (JSON body), not 500. See
+        // `api::unavailable`.
+        .layer(axum::middleware::from_fn_with_state(
+            edge_settings.unavailable_retry_after(),
+            api::unavailable::annotate_unavailable,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             expected_browser_origin,
             api::auth::reject_cross_origin_cookie_mutation,

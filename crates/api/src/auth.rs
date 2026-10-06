@@ -400,6 +400,9 @@ impl FromRequestParts<App> for AuthenticatedUser {
         let session = crate::data::users::get_session_with_user(&app.database, &hashed)
             .await
             .map_err(|err| {
+                if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                    return unavailable;
+                }
                 tracing::error!(error = ?err, "session lookup failed");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1674,7 +1677,10 @@ mod optional_authenticated_user_tests {
                 "a DB error during session lookup must propagate as an error, not collapse \
                  into Ok(None)"
             ),
-            Err(err) => assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR),
+            // `test_app`'s pool cannot connect, so since 2026-10-06 this is
+            // the dependency-unavailable 503 (`crate::unavailable`), still an
+            // error rather than anonymous.
+            Err(err) => assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE),
         }
     }
 }

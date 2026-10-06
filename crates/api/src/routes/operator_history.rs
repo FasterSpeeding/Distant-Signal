@@ -88,6 +88,9 @@ fn network_line_ids(catalogue_lines: &[common::LineDefinition]) -> Vec<String> {
     reason = "used as a map_err callback, which passes the error by value"
 )]
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
+    if let Some(unavailable) = crate::unavailable::response_for(&err) {
+        return unavailable;
+    }
     tracing::error!(error = ?err, "operator/network history query failed");
     (
         StatusCode::INTERNAL_SERVER_ERROR,

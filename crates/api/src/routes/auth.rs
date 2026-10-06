@@ -136,6 +136,9 @@ async fn login(
     )
     .await
     {
+        if let Some(unavailable) = crate::unavailable::response_for(&err) {
+            return unavailable.into_response();
+        }
         tracing::error!(error = ?err, "failed to store login state");
         return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
     }
@@ -228,6 +231,9 @@ async fn callback(
                 .into_response();
         }
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return unavailable.into_response();
+            }
             tracing::error!(error = ?err, "login state lookup failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
@@ -257,6 +263,9 @@ async fn callback(
                 .into_response();
         }
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return unavailable.into_response();
+            }
             tracing::error!(error = ?err, "login state consumption failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
@@ -292,6 +301,9 @@ async fn callback(
     let user = match users::upsert_user(&app.database, &identity).await {
         Ok(u) => u,
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return unavailable.into_response();
+            }
             tracing::error!(error = ?err, "failed to upsert user");
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
@@ -318,6 +330,9 @@ async fn callback(
     )
     .await;
     if let Err(err) = insert_result {
+        if let Some(unavailable) = crate::unavailable::response_for(&err) {
+            return unavailable.into_response();
+        }
         tracing::error!(error = ?err, "failed to create session");
         return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
     }
@@ -402,6 +417,9 @@ async fn logout(State(app): State<App>, headers: axum::http::HeaderMap) -> Respo
 )]
 fn logout_response(deleted: anyhow::Result<()>, secure: bool) -> Response {
     if let Err(err) = deleted {
+        if let Some(unavailable) = crate::unavailable::response_for(&err) {
+            return unavailable.into_response();
+        }
         tracing::error!(
             error = ?err,
             "failed to delete session on logout; keeping the cookie so the user can retry"
@@ -469,6 +487,9 @@ async fn revoke_other_sessions(
     {
         Ok(token) => token,
         Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return unavailable.into_response();
+            }
             tracing::error!(error = ?err, "failed to invalidate and reissue sessions");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -579,6 +600,14 @@ async fn backchannel_logout(
             backchannel_response(StatusCode::OK, None)
         }
         Err(err) => {
+            // Keep this endpoint's own no-store JSON shape; the IdP may retry
+            // a 503 (`Retry-After` comes from `unavailable::annotate_unavailable`).
+            if crate::unavailable::response_for(&err).is_some() {
+                return backchannel_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Some("service_unavailable"),
+                );
+            }
             tracing::error!(error = ?err, "back-channel logout: failed to revoke sessions");
             backchannel_response(StatusCode::INTERNAL_SERVER_ERROR, Some("server_error"))
         }

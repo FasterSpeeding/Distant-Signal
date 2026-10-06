@@ -45,6 +45,7 @@ import {
   getOperatorDailyStats,
   getNetworkDailyStats,
   ApiNotFoundError,
+  ApiUnavailableError,
   ApiUnauthorizedError,
   API_FETCH_TIMEOUT_MS,
   SESSION_FETCH_TIMEOUT_MS,
@@ -206,6 +207,16 @@ describe('api client', () => {
   // returns for a row that published no allowlisted keys -- the page-level
   // wrapper words the two differently, so this must not collapse into a
   // generic Error.
+  // 2026-10-06: api answers 503 + Retry-After when its database is
+  // unavailable; callers can tell that from a 500.
+  it('throws ApiUnavailableError on a 503', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{"error":"service_unavailable","retryable":true}', { status: 503 })),
+    );
+    await expect(getAllLines()).rejects.toBeInstanceOf(ApiUnavailableError);
+  });
+
   it('getStationAccessibility throws ApiNotFoundError on a 404', async () => {
     vi.stubGlobal(
       'fetch',

@@ -183,6 +183,9 @@ async fn require_member(
 /// `routes::train::internal_error`'s own shape exactly.
 fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusCode, String) {
     move |err| {
+        if let Some(unavailable) = crate::unavailable::response_for(&err) {
+            return unavailable;
+        }
         tracing::error!(error = ?err, operation, "group request failed");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
