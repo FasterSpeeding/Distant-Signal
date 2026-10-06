@@ -2442,6 +2442,60 @@ pub struct LineTrainEntries {
 const POPULATION_HAS_SCOPE_SQL: &str = "(jsonb_typeof(p.population) = 'array' \
      AND COALESCE((p.population -> 0) ? 'scope', true))";
 
+/// One decoded row of [`list_line_train_entries`]'s SQL, column for column.
+type LineTrainEntryTuple = (
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+    Option<String>,
+);
+
+/// [`LineTrainEntryTuple`] as a [`LineTrainEntryRow`] (the ordinal and the
+/// population-wide `has_scope` flag dropped).
+fn line_train_entry_row(
+    (
+        _,
+        uid_json,
+        uid,
+        calling_points_json,
+        first_tiploc,
+        last_tiploc,
+        _,
+        scope,
+        direction,
+        run_first_crs,
+        run_last_crs,
+        line_due_time,
+        line_due_day_offset,
+        train_status,
+    ): LineTrainEntryTuple,
+) -> LineTrainEntryRow {
+    LineTrainEntryRow {
+        uid_json,
+        uid,
+        calling_points_json,
+        train_status,
+        first_tiploc,
+        last_tiploc,
+        scope,
+        direction,
+        run_first_crs,
+        run_last_crs,
+        line_due_time,
+        line_due_day_offset,
+    }
+}
+
 /// Every element of one line's population, projected in SQL to what
 /// `GET /public/lines/{id}/trains` actually reads (see
 /// [`LineTrainEntryRow`]), in published array order.
@@ -2463,26 +2517,7 @@ pub async fn list_line_train_entries(
     service_date: chrono::NaiveDate,
     scopes: Option<&[String]>,
 ) -> Result<Option<LineTrainEntries>> {
-    #[expect(
-        clippy::type_complexity,
-        reason = "the tuple mirrors the columns of the SQL row it decodes"
-    )]
-    let rows: Vec<(
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        bool,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i32>,
-        Option<String>,
-    )> = sqlx::query_as(&format!(
+    let rows: Vec<LineTrainEntryTuple> = sqlx::query_as(&format!(
         r"
         SELECT x.ord,
                (x.e -> 'uid')::text,
@@ -2531,37 +2566,7 @@ pub async fn list_line_train_entries(
         .into_iter()
         // The LEFT JOIN's one all-NULL row for an empty population.
         .filter(|row| row.0.is_some())
-        .map(
-            |(
-                _,
-                uid_json,
-                uid,
-                calling_points_json,
-                first_tiploc,
-                last_tiploc,
-                _,
-                scope,
-                direction,
-                run_first_crs,
-                run_last_crs,
-                line_due_time,
-                line_due_day_offset,
-                train_status,
-            )| LineTrainEntryRow {
-                uid_json,
-                uid,
-                calling_points_json,
-                train_status,
-                first_tiploc,
-                last_tiploc,
-                scope,
-                direction,
-                run_first_crs,
-                run_last_crs,
-                line_due_time,
-                line_due_day_offset,
-            },
-        )
+        .map(line_train_entry_row)
         .collect();
     Ok(Some(LineTrainEntries { entries, has_scope }))
 }

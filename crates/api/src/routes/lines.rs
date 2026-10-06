@@ -1204,7 +1204,7 @@ mod tests {
     }
 
     /// The handler takes the membership fields out of the row first; the
-    /// service mode (uid, train_status) must still be read correctly.
+    /// service mode (`uid`, `train_status`) must still be read correctly.
     #[test]
     fn a_line_entry_yields_both_membership_and_service_mode() {
         use crate::data::schedule_services::ServiceMode;
