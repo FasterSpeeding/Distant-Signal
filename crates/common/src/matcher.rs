@@ -11330,26 +11330,58 @@ mod tests {
     }
 
     // Decision 2 must not regress the case cross-country.toml's own
-    // comment documents: "Cross Country Route" names real
-    // Birmingham-Bristol infrastructure, not the CrossCountry brand, and
-    // must keep matching via keyword alone when the incident's structured
-    // operators list agrees (XC).
+    // comment documented: "Cross Country Route" names real
+    // Birmingham-Bristol infrastructure, and an XC incident on it must
+    // still reach the line. Since 2026-10-06 the line has no brand keyword
+    // (an umbrella-style brand match beside station evidence was the
+    // misses study's wrong-line case); it matches by the places named,
+    // with "Birmingham" a city alias for New Street.
     #[test]
     fn decision2_cross_country_route_infrastructure_mention_still_matches() {
         let lines = load_line("cross-country");
         let registry = SegmentRegistry::new(&lines);
         let inc = incident(
             "D2-3",
-            "Cross Country Route disruption",
+            "Cross Country Route disruption between Birmingham and Bristol",
             "Disruption on the Cross Country Route between Birmingham and \
              Bristol due to a landslip.",
             &["XC"],
             &[],
         );
-        let matches = lines_affected_by(&inc, &lines, &registry);
+        let matches = super::lines_affected_by(&inc, &lines, &registry, &real_gazetteer());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line.id, "cross-country");
-        assert_eq!(matches[0].scope, MatchScope::KeywordOnly);
+        assert_ne!(matches[0].scope, MatchScope::KeywordOnly);
+        assert_ne!(matches[0].scope, MatchScope::OperatorOnly);
+    }
+
+    #[test]
+    fn umbrella_brand_names_are_not_line_evidence() {
+        // 03552B44 / 853C6AE3 (2026-10-06 misses study): "Northern services"
+        // and "CrossCountry" name the operator, not the umbrella line; as
+        // keywords they put `northern` / `cross-country` beside the line
+        // really affected.
+        let found = evidence(
+            "Disruption between Selby and Hull",
+            "<p>Northern services between Selby and Hull may be delayed.</p>",
+            &["NT", "TP"],
+        );
+        assert!(!ids(&found).contains(&"northern"), "{found:?}");
+        let found = evidence(
+            "Disruption between Southampton Central and Brockenhurst",
+            "<p>CrossCountry services may be delayed.</p>",
+            &["XC", "SW"],
+        );
+        assert!(ids(&found).contains(&"xc-south-coast"), "{found:?}");
+        assert!(!ids(&found).contains(&"cross-country"), "{found:?}");
+        // A line named in the summary still matches by keyword beside a
+        // place ("Suffragette line" is not an operator brand).
+        let found = evidence(
+            "Disruption to Suffragette line services between Gospel Oak and Barking Riverside",
+            "",
+            &["LO"],
+        );
+        assert_eq!(ids(&found), ["overground-suffragette"]);
     }
 
     // ---------------------------------------------------------------
