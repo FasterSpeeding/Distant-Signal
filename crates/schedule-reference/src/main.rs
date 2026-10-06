@@ -444,7 +444,7 @@ mod telemetry {
     const OUTCOMES: [&str; 4] = [PUBLISHED, RETRYABLE, PERMANENT, REJECTED];
 
     /// Every `product` label value [`product_kind`] can return.
-    const PRODUCT_KINDS: [&str; 10] = [
+    const PRODUCT_KINDS: [&str; 11] = [
         "stanox_crs",
         "tiploc_crs",
         "tiploc_locations",
