@@ -530,6 +530,13 @@ pub struct PublicTrainState {
     /// Its glossary text, under the same rules as `cancel_reason`.
     #[sqlx(skip)]
     pub change_of_origin_reason: Option<String>,
+    /// `serviceMode` (`train`/`replacementBus`/`bus`/`ferry`) and
+    /// `liveTracking` (`false` for a bus or ferry, which TRUST never
+    /// reports), from `schedule_services`; filled after the read by
+    /// `data::schedule_services::attach`. A train when unknown.
+    #[sqlx(skip)]
+    #[serde(flatten)]
+    pub service: crate::data::schedule_services::ServiceModeFields,
 }
 
 /// Whether `(train_uid, service_date)` is a real, CIF-published scheduled
@@ -602,6 +609,7 @@ pub async fn get_public_train_state(
     .await?;
     let mut rows: Vec<PublicTrainState> = row.into_iter().collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    crate::data::schedule_services::attach(pool, &mut rows).await;
     Ok(rows.pop())
 }
 
@@ -654,6 +662,7 @@ pub async fn get_public_train_states_for_line(
     .await?;
     let mut rows = rows;
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    crate::data::schedule_services::attach(pool, &mut rows).await;
     Ok(rows)
 }
 

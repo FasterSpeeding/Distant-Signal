@@ -671,12 +671,15 @@ async fn get_trains_search(
         .await
         .map_err(internal_error)?;
 
+    let mut results: Vec<Value> = page
+        .departures
+        .iter()
+        .map(|row| calling_point_departure_json(row, &station, &destination_names))
+        .collect();
+    crate::data::schedule_services::annotate_uid_rows(&app.database, service_date, &mut results)
+        .await;
     Ok(Json(json!({
-        "results": page
-            .departures
-            .iter()
-            .map(|row| calling_point_departure_json(row, &station, &destination_names))
-            .collect::<Vec<Value>>(),
+        "results": results,
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
     })))
 }

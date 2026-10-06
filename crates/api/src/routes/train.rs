@@ -704,6 +704,7 @@ async fn get_by_tracking_id(
         Some(state) => {
             let state =
                 crate::data::train_operator::attach_to_tracked_state(&app.database, state).await;
+            let state = crate::data::schedule_services::attach_one(&app.database, state).await;
             let state = attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await;
             Ok(Json(
                 crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
@@ -1888,6 +1889,7 @@ mod tests {
 
     fn state(delay_minutes: Option<i32>) -> train_tracking::TrackedTrainState {
         train_tracking::TrackedTrainState {
+            service: crate::data::schedule_services::ServiceModeFields::default(),
             id: 1,
             service_date: "2026-08-29".parse().unwrap(),
             pin_origin_crs: Some("KGX".to_string()),

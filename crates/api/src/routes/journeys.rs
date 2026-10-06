@@ -1395,6 +1395,7 @@ async fn build_journey_detail_response(
     // batched for every leg and applied after the batched stop build so
     // per-stop live status sees the stops.
     crate::data::train_operator::attach_to_tracked_states(&app.database, &mut stop_states).await;
+    crate::data::schedule_services::attach(&app.database, &mut stop_states).await;
     crate::data::train_reasons::attach_to_tracked_states(&app.database, &mut stop_states).await;
     for (index, state) in stop_leg_indexes.into_iter().zip(stop_states) {
         leg_states[index] = Some(state);
@@ -1620,12 +1621,19 @@ async fn get_leg_candidates(
             .await
             .map_err(internal_error("resolve leg candidate destination names"))?;
 
+    let mut results: Vec<serde_json::Value> = page
+        .departures
+        .iter()
+        .map(|row| leg_candidate_json(row, origin_crs, destination_crs, &destination_names))
+        .collect();
+    crate::data::schedule_services::annotate_uid_rows(
+        &app.database,
+        leg.service_date,
+        &mut results,
+    )
+    .await;
     Ok(Json(serde_json::json!({
-        "results": page
-            .departures
-            .iter()
-            .map(|row| leg_candidate_json(row, origin_crs, destination_crs, &destination_names))
-            .collect::<Vec<serde_json::Value>>(),
+        "results": results,
         "nextCursor": page.next_cursor.as_ref().map(crate::routes::trains::encode_cursor),
     })))
 }

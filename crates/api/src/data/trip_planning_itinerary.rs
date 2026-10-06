@@ -109,6 +109,13 @@ pub enum PlannedLeg {
         /// `trip_leg_details::attach_leg_details`; `None` when unknown or
         /// when the stored rows disagree. NOT the TRUST 10-char train id.
         headcode: Option<String>,
+        /// `serviceMode` (`train`/`replacementBus`/`bus`/`ferry`) and
+        /// `liveTracking` (additive, 2026-10-06). `kind` stays `"train"` for
+        /// a bus or ferry leg so existing clients keep working; these say
+        /// what the vehicle really is. Filled in by
+        /// `trip_leg_details::attach_leg_details`; a train until then.
+        #[serde(flatten)]
+        service: crate::data::schedule_services::ServiceModeFields,
         /// Internal (never serialized): the boarding/alighting TIPLOCs and
         /// raw minutes-from-service-day-midnight the planner produced, so
         /// waypoint chaining and the live overlay can work on exact values
@@ -279,6 +286,7 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 public_arrival_day_offset: None,
                 operator: None,
                 headcode: None,
+                service: crate::data::schedule_services::ServiceModeFields::default(),
                 from_tiploc: train.from_tiploc.clone(),
                 to_tiploc: train.to_tiploc.clone(),
                 departure_min: train.departure_min,

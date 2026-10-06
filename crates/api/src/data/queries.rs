@@ -2368,6 +2368,9 @@ pub struct LineTrainEntryRow {
     pub uid: Option<String>,
     /// The entry's `calling_points` as raw JSON text, `None` when absent.
     pub calling_points_json: Option<String>,
+    /// The entry's CIF `train_status` (one character), when present -- the
+    /// service-mode fallback when `schedule_services` has no row.
+    pub train_status: Option<String>,
     /// `tiploc` of the first/last element of `calling_points`, when
     /// `calling_points` is an array and that element's `tiploc` is a string
     /// -- exactly `routes::lines::first_and_last_tiploc`'s old contract.
@@ -2406,6 +2409,7 @@ pub async fn list_line_train_entries(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
     )> = sqlx::query_as(
         r"
         SELECT x.ord,
@@ -2417,7 +2421,9 @@ pub async fn list_line_train_entries(
                     THEN x.e -> 'calling_points' -> 0 ->> 'tiploc' END,
                CASE WHEN jsonb_typeof(x.e -> 'calling_points') = 'array'
                      AND jsonb_typeof(x.e -> 'calling_points' -> -1 -> 'tiploc') = 'string'
-                    THEN x.e -> 'calling_points' -> -1 ->> 'tiploc' END
+                    THEN x.e -> 'calling_points' -> -1 ->> 'tiploc' END,
+               CASE WHEN jsonb_typeof(x.e -> 'train_status') = 'string'
+                    THEN x.e ->> 'train_status' END
         FROM schedule_line_population p
         LEFT JOIN LATERAL jsonb_array_elements(
             CASE WHEN jsonb_typeof(p.population) = 'array' THEN p.population ELSE '[]'::jsonb END
@@ -2438,11 +2444,12 @@ pub async fn list_line_train_entries(
             // The LEFT JOIN's one all-NULL row for an empty population.
             .filter(|(ord, ..)| ord.is_some())
             .map(
-                |(_, uid_json, uid, calling_points_json, first_tiploc, last_tiploc)| {
+                |(_, uid_json, uid, calling_points_json, first_tiploc, last_tiploc, train_status)| {
                     LineTrainEntryRow {
                         uid_json,
                         uid,
                         calling_points_json,
+                        train_status,
                         first_tiploc,
                         last_tiploc,
                     }

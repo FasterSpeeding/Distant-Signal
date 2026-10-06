@@ -1949,6 +1949,13 @@ pub struct TrackedTrainState {
     /// neither backing schedule source had anything).
     #[sqlx(skip)]
     pub may_have_arrived: bool,
+    /// `serviceMode` (`train`/`replacementBus`/`bus`/`ferry`) and
+    /// `liveTracking` (`false` for a bus or ferry, which TRUST never
+    /// reports), from `schedule_services`; filled after the read by
+    /// `data::schedule_services::attach`. A train when unknown.
+    #[sqlx(skip)]
+    #[serde(flatten)]
+    pub service: crate::data::schedule_services::ServiceModeFields,
     /// The operating company's ATOC code (for example `"SW"`), from the CIF
     /// schedule. Serialized as `operatorCode`. Filled after the read by
     /// `data::train_operator`, hence `#[sqlx(skip)]`. `None` when no single
@@ -2104,6 +2111,13 @@ pub struct TrackedTrainListItem {
     /// `/train/[uid]/[date]`'s tracking overlay, which reads this list
     /// rather than `GET /Train/{trackingId}`, warn on delete too).
     pub shared_group_count: i64,
+    /// `serviceMode` (`train`/`replacementBus`/`bus`/`ferry`) and
+    /// `liveTracking` (`false` for a bus or ferry, which TRUST never
+    /// reports), from `schedule_services`; filled after the read by
+    /// `data::schedule_services::attach`. A train when unknown.
+    #[sqlx(skip)]
+    #[serde(flatten)]
+    pub service: crate::data::schedule_services::ServiceModeFields,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for TrackedTrainState {
@@ -2190,6 +2204,7 @@ pub async fn list_tracked_trains_for_user(
     .await?;
     let mut rows = rows;
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    crate::data::schedule_services::attach(pool, &mut rows).await;
     Ok(rows)
 }
 

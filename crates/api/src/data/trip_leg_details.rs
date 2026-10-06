@@ -285,7 +285,35 @@ pub async fn attach_leg_details(
         &operators.into_iter().collect(),
         &unambiguous_headcodes(headcodes),
     );
+    let modes = crate::data::schedule_services::modes_for(pool, date, &uids).await?;
+    apply_service_modes(segments, &modes);
     Ok(())
+}
+
+/// Sets every train leg's [`crate::data::schedule_services::ServiceModeFields`]
+/// from `modes` (non-train uids only; a uid absent from it is a train).
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
+pub fn apply_service_modes(
+    segments: &mut [SegmentResult],
+    modes: &HashMap<String, crate::data::schedule_services::ServiceMode>,
+) {
+    for leg in segments
+        .iter_mut()
+        .flat_map(|segment| &mut segment.itineraries)
+        .flat_map(|itinerary| &mut itinerary.legs)
+    {
+        if let PlannedLeg::Train {
+            train_uid, service, ..
+        } = leg
+        {
+            *service = crate::data::schedule_services::ServiceModeFields(
+                crate::data::schedule_services::mode_in(modes, train_uid),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +339,7 @@ mod tests {
             public_arrival_day_offset: None,
             operator: None,
             headcode: None,
+            service: crate::data::schedule_services::ServiceModeFields::default(),
             from_tiploc: String::new(),
             to_tiploc: String::new(),
             departure_min: 0,
@@ -392,6 +421,31 @@ mod tests {
                 Some(1)
             )
         );
+    }
+
+    /// A bus or ferry leg keeps `kind: "train"` (clients branch on it) and
+    /// gains `serviceMode`/`liveTracking`; a train leg says so too.
+    #[test]
+    fn bus_and_ferry_legs_are_labelled_but_keep_kind_train() {
+        use crate::data::schedule_services::ServiceMode;
+        let mut segments = segments(vec![
+            train_leg("C30818", "08:00:00", "08:30:00", 0),
+            train_leg("C00573", "09:00:00", "10:00:00", 0),
+            train_leg("S00001", "11:00:00", "12:00:00", 0),
+        ]);
+        let modes = HashMap::from([
+            ("C30818".to_string(), ServiceMode::Bus),
+            ("S00001".to_string(), ServiceMode::Ferry),
+        ]);
+        apply_service_modes(&mut segments, &modes);
+        let json = serde_json::to_value(&segments[0].itineraries[0].legs).unwrap();
+        assert_eq!(json[0]["kind"], "train");
+        assert_eq!(json[0]["serviceMode"], "bus");
+        assert_eq!(json[0]["liveTracking"], false);
+        assert_eq!(json[1]["kind"], "train");
+        assert_eq!(json[1]["serviceMode"], "train");
+        assert_eq!(json[1]["liveTracking"], true);
+        assert_eq!(json[2]["serviceMode"], "ferry");
     }
 
     /// The public times come from the boarding and alighting calls, and a

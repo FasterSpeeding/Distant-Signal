@@ -118,6 +118,106 @@ pub fn annotate_json(value: &mut serde_json::Value, mode: ServiceMode) {
     }
 }
 
+/// A read model that carries [`ServiceModeFields`] for one schedule.
+pub trait HasServiceMode {
+    /// The schedule's `(uid, service_date)`, or `None` when it has no uid
+    /// yet (a pending pin), which then stays a train.
+    fn schedule_key(&self) -> Option<(&str, NaiveDate)>;
+    fn set_service_mode(&mut self, mode: ServiceMode);
+}
+
+impl HasServiceMode for crate::data::trains::PublicTrainState {
+    fn schedule_key(&self) -> Option<(&str, NaiveDate)> {
+        Some((self.train_uid.as_str(), self.service_date))
+    }
+
+    fn set_service_mode(&mut self, mode: ServiceMode) {
+        self.service = ServiceModeFields(mode);
+    }
+}
+
+impl HasServiceMode for crate::data::train_tracking::TrackedTrainState {
+    fn schedule_key(&self) -> Option<(&str, NaiveDate)> {
+        self.train_uid
+            .as_deref()
+            .map(|uid| (uid, self.service_date))
+    }
+
+    fn set_service_mode(&mut self, mode: ServiceMode) {
+        self.service = ServiceModeFields(mode);
+    }
+}
+
+impl HasServiceMode for crate::data::train_tracking::TrackedTrainListItem {
+    fn schedule_key(&self) -> Option<(&str, NaiveDate)> {
+        self.train_uid
+            .as_deref()
+            .map(|uid| (uid, self.service_date))
+    }
+
+    fn set_service_mode(&mut self, mode: ServiceMode) {
+        self.service = ServiceModeFields(mode);
+    }
+}
+
+/// Fills every state's [`ServiceModeFields`] with one query. A database
+/// error is logged and leaves them all trains: the label is an
+/// enhancement, never a reason to fail the read.
+pub async fn attach<T: HasServiceMode>(pool: &PgPool, states: &mut [T]) {
+    let pairs: Vec<(String, NaiveDate)> = states
+        .iter()
+        .filter_map(|state| state.schedule_key())
+        .map(|(uid, date)| (uid.to_string(), date))
+        .collect();
+    let modes = match modes_for_pairs(pool, &pairs).await {
+        Ok(modes) => modes,
+        Err(err) => {
+            tracing::warn!(error = ?err, "could not read service modes");
+            return;
+        }
+    };
+    for state in states.iter_mut() {
+        let mode = state
+            .schedule_key()
+            .and_then(|(uid, date)| modes.get(&(uid.to_string(), date)).copied())
+            .unwrap_or_default();
+        state.set_service_mode(mode);
+    }
+}
+
+/// [`attach`] for one state, by value.
+pub async fn attach_one<T: HasServiceMode>(pool: &PgPool, state: T) -> T {
+    let mut states = [state];
+    attach(pool, &mut states).await;
+    let [state] = states;
+    state
+}
+
+/// Adds `serviceMode`/`liveTracking` to every rendered departure row in
+/// `rows` (each carries its schedule's `uid`), with one lookup for the
+/// whole page. A database error is logged and leaves every row a train.
+pub async fn annotate_uid_rows(
+    pool: &PgPool,
+    service_date: NaiveDate,
+    rows: &mut [serde_json::Value],
+) {
+    let mut uids: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.get("uid").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect();
+    uids.sort_unstable();
+    uids.dedup();
+    let modes = modes_for_or_trains(pool, service_date, &uids).await;
+    for row in rows.iter_mut() {
+        let mode = row
+            .get("uid")
+            .and_then(serde_json::Value::as_str)
+            .map_or(ServiceMode::Train, |uid| mode_in(&modes, uid));
+        annotate_json(row, mode);
+    }
+}
+
 /// One published `schedule_services` row -- the wire shape of
 /// `POST /private/schedule-services` (`snake_case`, like every other
 /// `schedule-reference` product).
