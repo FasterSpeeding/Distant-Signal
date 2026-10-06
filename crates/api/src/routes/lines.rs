@@ -125,6 +125,25 @@ struct ScheduleQuery {
     scope: Option<String>,
 }
 
+/// `GET /public/lines/{id}/trains`' query: [`ScheduleQuery`]'s two fields,
+/// plus the opt-in `view=summary` and its parameters (see
+/// [`super::line_trains_summary`]). The summary parameters are only read
+/// with `view=summary`; the default response ignores them, as it always
+/// ignored unknown parameters.
+#[derive(Debug, Deserialize)]
+struct LineTrainsQuery {
+    date: Option<chrono::NaiveDate>,
+    scope: Option<String>,
+    /// `summary` for the slim windowed view; absent or `full` for the
+    /// default (unchanged) response.
+    view: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    direction: Option<String>,
+    at: Option<String>,
+    limit: Option<String>,
+}
+
 /// Response header naming whether a requested `?scope=` filter was applied:
 /// `true`, or `false` when the line's population predates train membership
 /// (published by a `schedule-reference` without it) and so came back whole.
@@ -353,12 +372,12 @@ fn raw_json_or_null(
 /// page passes `scope=line,shared`; see docs/api-changelog.md.
 #[expect(
     clippy::too_many_lines,
-    reason = "one linear pipeline: population, live states, endpoints, modes; splitting scatters it"
+    reason = "the default view's one linear pipeline (population, live states, endpoints, modes); the summary view is its own function"
 )]
 async fn get_line_trains(
     State(app): State<App>,
     Path(id): Path<String>,
-    Query(query): Query<ScheduleQuery>,
+    Query(query): Query<LineTrainsQuery>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     // Same London-local "today" as `get_line_schedule` above, same reason.
@@ -369,11 +388,14 @@ async fn get_line_trains(
     if !readable_line_id(&app, &id, &user).await? {
         return Err(no_population(&id, service_date));
     }
+    let scopes = parse_scope(query.scope.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if super::line_trains_summary::is_summary_view(query.view.as_deref())? {
+        return get_line_trains_summary(&app, &id, service_date, scopes, &query).await;
+    }
     // Projected in SQL to exactly what this route reads -- uid, raw
     // calling points, first/last TIPLOC -- instead of materialising the
     // whole population as a `serde_json::Value` (see
     // `queries::list_line_train_entries`).
-    let scopes = parse_scope(query.scope.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let Some(queries::LineTrainEntries { entries, has_scope }) =
         queries::list_line_train_entries(&app.database, &id, service_date, scopes.as_deref())
             .await
@@ -493,6 +515,38 @@ async fn get_line_trains(
     ))
 }
 
+/// `/trains?view=summary` (2026-10-06): the line page's slim, windowed
+/// view -- see [`super::line_trains_summary`]. `scope` defaults to
+/// `line,shared` here.
+async fn get_line_trains_summary(
+    app: &App,
+    id: &str,
+    service_date: chrono::NaiveDate,
+    scopes: Option<Vec<String>>,
+    query: &LineTrainsQuery,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    use super::line_trains_summary as summary;
+    let params = summary::SummaryParams {
+        window: summary::parse_window(query.from.as_deref(), query.to.as_deref())
+            .map_err(summary::bad_request)?,
+        directions: summary::parse_directions(query.direction.as_deref())
+            .map_err(summary::bad_request)?,
+        at: query
+            .at
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| summary::parse_minute("at", s))
+            .transpose()
+            .map_err(summary::bad_request)?,
+        limit: summary::parse_limit(query.limit.as_deref()).map_err(summary::bad_request)?,
+    };
+    let scopes = scopes.unwrap_or_else(|| vec!["line".to_string(), "shared".to_string()]);
+    summary::build(app, id, service_date, scopes, &params)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| no_population(id, service_date))
+}
+
 /// A `/trains` entry's membership fields, moved out of its row.
 fn membership_json(entry: &mut queries::LineTrainEntryRow) -> LineMembershipJson {
     LineMembershipJson {
@@ -509,7 +563,7 @@ fn membership_json(entry: &mut queries::LineTrainEntryRow) -> LineMembershipJson
 
 /// `body` as a response, with [`SCOPE_APPLIED_HEADER`] when a scope filter
 /// was requested (`applied` is `Some`).
-fn with_scope_applied(
+pub(crate) fn with_scope_applied(
     body: impl axum::response::IntoResponse,
     applied: Option<bool>,
 ) -> axum::response::Response {
@@ -3539,6 +3593,374 @@ mod db_tests {
 
         delete_schedule_population_fixture(&pool, NEW).await;
         delete_schedule_population_fixture(&pool, OLD).await;
+    }
+
+    /// A calling point for the summary tests: a public call at `tiploc`
+    /// (`arr`/`dep` as `HH:MM`), or a pass when both are `None`.
+    fn summary_cp(tiploc: &str, arr: Option<&str>, dep: Option<&str>) -> Value {
+        let t = |v: Option<&str>| v.map(|t| format!("{t}:00"));
+        json!({
+            "tiploc": tiploc, "kind": "Intermediate",
+            "booked_arrival": t(arr), "booked_departure": t(dep),
+            "public_arrival": t(arr), "public_departure": t(dep),
+            "is_half_minute_arrival": false, "is_half_minute_departure": false,
+            "day_offset": 0,
+        })
+    }
+
+    /// The summary tests' catalogue line: WAT - WOK - BSK - WEY.
+    fn summary_line(id: &str) -> common::LineDefinition {
+        let mut line = test_catalogue_line(id, "Summary test line");
+        line.stations = ["WAT", "WOK", "BSK", "WEY"]
+            .into_iter()
+            .map(|crs| common::Station {
+                crs: crs.to_string(),
+                tiploc: None,
+                role: if crs == "WAT" || crs == "WEY" {
+                    "terminus"
+                } else {
+                    "major"
+                }
+                .to_string(),
+                segment: None,
+            })
+            .collect();
+        line
+    }
+
+    const SUMMARY_TIPLOCS: [(&str, &str); 5] = [
+        ("TSLWAT", "WAT"),
+        ("TSLWOK", "WOK"),
+        ("TSLBSK", "BSK"),
+        ("TSLWEY", "WEY"),
+        ("TSLDEP", "XTD"),
+    ];
+
+    async fn summary_cleanup(pool: &PgPool, lines: &[&str]) {
+        for line in lines {
+            delete_schedule_population_fixture(pool, line).await;
+        }
+        sqlx::query("DELETE FROM trains WHERE train_uid LIKE 'TSUM-%'")
+            .execute(pool)
+            .await
+            .expect("cleanup summary trains");
+        sqlx::query("DELETE FROM tiploc_crs WHERE tiploc LIKE 'TSL%'")
+            .execute(pool)
+            .await
+            .expect("cleanup summary crosswalk");
+        sqlx::query("DELETE FROM schedule_services WHERE uid LIKE 'TSUM-%'")
+            .execute(pool)
+            .await
+            .expect("cleanup summary schedule_services");
+    }
+
+    /// `/trains?view=summary`: line-time window, scope default
+    /// `line,shared`, direction filter and counts, on-line stops,
+    /// destinations past a depot, `running` at `at`, live status for the
+    /// listed trains only, `limit`, the pre-membership fallback, parameter
+    /// errors -- and the default response left as it was.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                line_trains_summary_view -- --ignored --test-threads=1`"]
+    #[expect(clippy::too_many_lines, reason = "one fixture, many assertions on it")]
+    async fn line_trains_summary_view() {
+        const LINE: &str = "test-line-summary";
+        const OLD: &str = "test-line-summary-old";
+        let pool = connect().await;
+        summary_cleanup(&pool, &[LINE, OLD]).await;
+        for (tiploc, crs) in SUMMARY_TIPLOCS {
+            sqlx::query(
+                "INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence) \
+                 VALUES ($1, $2, $1, '00000', 0)",
+            )
+            .bind(tiploc)
+            .bind(crs)
+            .execute(&pool)
+            .await
+            .expect("seed crosswalk");
+        }
+        let date = "2026-01-05";
+        let service_date = chrono::NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let down = |dep: &str, wok: &str, bsk: &str, wey: &str| {
+            json!([
+                summary_cp("TSLDEP", None, Some(dep)),
+                summary_cp("TSLWAT", None, Some(dep)),
+                summary_cp("TSLWOK", Some(wok), Some(wok)),
+                summary_cp("TSLBSK", None, None),
+                summary_cp("TSLBSK", Some(bsk), Some(bsk)),
+                summary_cp("TSLWEY", Some(wey), None),
+                summary_cp("TSLDEP", None, None),
+            ])
+        };
+        let entry = |uid: &str, scope: &str, dir: &str, due: &str, cps: Value| {
+            json!({"uid": uid, "calling_points": cps, "operator_atoc": "SW", "train_status": "P",
+                   "scope": scope, "direction": dir, "run_first_crs": "WAT", "run_last_crs": "WEY",
+                   "line_due": {"time": format!("{due}:00"), "day_offset": 0}})
+        };
+        let mut bus = entry(
+            "TSUM-BUS",
+            "shared",
+            "down",
+            "08:30",
+            down("08:30", "08:55", "09:20", "11:00"),
+        );
+        bus["train_status"] = json!("B");
+        bus["operator_atoc"] = json!("XC");
+        let up = json!([
+            summary_cp("TSLWEY", None, Some("09:10")),
+            summary_cp("TSLWAT", Some("11:40"), None),
+        ]);
+        let population = json!([
+            entry(
+                "TSUM-LATE",
+                "line",
+                "down",
+                "12:00",
+                down("12:00", "12:25", "12:50", "14:30")
+            ),
+            entry(
+                "TSUM-DOWN",
+                "line",
+                "down",
+                "08:00",
+                down("08:00", "08:25", "08:50", "10:30")
+            ),
+            bus,
+            entry(
+                "TSUM-TOUCH",
+                "touch",
+                "down",
+                "08:40",
+                down("08:40", "09:05", "09:30", "11:10")
+            ),
+            entry("TSUM-UP", "line", "up", "09:10", up),
+            entry(
+                "TSUM-EARLY",
+                "line",
+                "down",
+                "06:00",
+                down("06:00", "06:25", "06:50", "09:00")
+            ),
+        ]);
+        queries::upsert_schedule_line_population(
+            &pool,
+            LINE,
+            service_date,
+            &population.to_string(),
+        )
+        .await
+        .unwrap();
+        // Live rows for two trains that get listed, and one (TSUM-LATE)
+        // that only the 11:00-13:00 request lists.
+        for (uid, delay) in [("TSUM-DOWN", 5), ("TSUM-LATE", 1), ("TSUM-EARLY", 0)] {
+            let (trains_id,): (i64,) = sqlx::query_as(
+                "INSERT INTO trains (train_uid, service_date, train_id) VALUES ($1, $2, $1) \
+                 RETURNING id",
+            )
+            .bind(uid)
+            .bind(service_date)
+            .fetch_one(&pool)
+            .await
+            .expect("seed trains");
+            sqlx::query(
+                "INSERT INTO train_current_state (trains_id, status, last_reported_location, \
+                     delay_minutes, updated_at) VALUES ($1, 'en_route', 'WOK', $2, NOW())",
+            )
+            .bind(trains_id)
+            .bind(delay)
+            .execute(&pool)
+            .await
+            .expect("seed train_current_state");
+        }
+        // A schedule_services row for TSUM-BUS: its category makes it a
+        // replacement bus, which the population's status `B` alone cannot
+        // say -- both views must read it from there.
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, train_status, \
+                 train_category, stp) VALUES ($1, 'TSUM-BUS', 'replacement_bus', 'B', 'BR', 'O')",
+        )
+        .bind(service_date)
+        .execute(&pool)
+        .await
+        .expect("seed schedule_services");
+        let router = || {
+            test_router(test_app(
+                pool.clone(),
+                vec![summary_line(LINE), summary_line(OLD)],
+            ))
+        };
+        let get = |query: &str| {
+            let router = router();
+            let uri = format!("/public/lines/{LINE}/trains?date={date}&{query}");
+            async move { get_with_scope_header(router, &uri).await }
+        };
+        let uids = |list: &Value| -> Vec<String> {
+            list.as_array()
+                .expect("array")
+                .iter()
+                .map(|t| t["uid"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        // The window, by line time; touch trains out by default.
+        let (status, header, body) = get("view=summary&from=08:00&to=09:00").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(header.as_deref(), Some("true"));
+        assert_eq!(body["scopeApplied"], true);
+        assert_eq!(body["scopes"], json!(["line", "shared"]));
+        assert_eq!(body["window"], json!({"from": "08:00", "to": "09:00"}));
+        assert_eq!(uids(&body["trains"]), ["TSUM-DOWN", "TSUM-BUS"]);
+        assert_eq!(
+            body["counts"],
+            json!({"line": {"down": 1}, "shared": {"down": 1}})
+        );
+        assert_eq!(body["truncated"], false);
+        assert!(body["running"].is_null(), "no `at`, no running list");
+        assert_eq!(
+            body["stations"],
+            json!([
+                {"crs": "WAT", "name": null, "role": "terminus"},
+                {"crs": "WOK", "name": null, "role": "major"},
+                {"crs": "BSK", "name": null, "role": "major"},
+                {"crs": "WEY", "name": null, "role": "terminus"},
+            ])
+        );
+        let first = &body["trains"][0];
+        assert_eq!(first["operator"], "SW");
+        assert_eq!(first["serviceMode"], "train");
+        assert_eq!(first["liveTracking"], true);
+        assert_eq!(first["scope"], "line");
+        assert_eq!(first["direction"], "down");
+        assert_eq!(first["lineDue"], json!({"time": "08:00", "dayOffset": 0}));
+        // The depot at either end is walked past.
+        assert_eq!(first["origin"]["crs"], "WAT");
+        assert_eq!(first["destination"]["crs"], "WEY");
+        assert_eq!(
+            first["onLineStops"],
+            json!([
+                {"crs": "WAT", "time": "08:00", "dayOffset": 0},
+                {"crs": "WOK", "time": "08:25", "dayOffset": 0},
+                {"crs": "BSK", "time": "08:50", "dayOffset": 0},
+                {"crs": "WEY", "time": "10:30", "dayOffset": 0},
+            ])
+        );
+        assert_eq!(first["live"]["status"], "en_route");
+        assert_eq!(first["live"]["delayMinutes"], 5);
+        assert_eq!(first["live"]["cancelled"], false);
+        assert!(
+            first.get("callingPoints").is_none(),
+            "no calling points in the summary"
+        );
+        assert_eq!(body["trains"][1]["serviceMode"], "replacementBus");
+        assert_eq!(body["trains"][1]["liveTracking"], false);
+        assert!(body["trains"][1]["live"].is_null());
+
+        // Direction filter: the counts still cover both directions.
+        let (_, _, body) = get("view=summary&from=08:00&to=10:00&direction=up").await;
+        assert_eq!(uids(&body["trains"]), ["TSUM-UP"]);
+        assert_eq!(
+            body["counts"],
+            json!({"line": {"down": 1, "up": 1}, "shared": {"down": 1}})
+        );
+        assert_eq!(body["trains"][0]["destination"]["crs"], "WAT");
+
+        // `at`: TSUM-EARLY (due 06:00, at WEY 09:00) is running at 08:15
+        // although it is outside the window; TSUM-DOWN is in both.
+        let (_, _, body) = get("view=summary&from=08:00&to=09:00&at=08:15").await;
+        assert_eq!(uids(&body["running"]), ["TSUM-EARLY", "TSUM-DOWN"]);
+        assert_eq!(body["at"], "08:15");
+        assert_eq!(body["running"][0]["live"]["status"], "en_route");
+        assert!(
+            !body.to_string().contains("TSUM-LATE"),
+            "a train outside the window and not running is not in the body"
+        );
+
+        // Scope, limit, a wrapped window.
+        let (_, _, body) = get("view=summary&scope=all&from=08:00&to=09:00&limit=2").await;
+        assert_eq!(uids(&body["trains"]), ["TSUM-DOWN", "TSUM-BUS"]);
+        assert_eq!(body["truncated"], true);
+        assert_eq!(body["counts"]["touch"], json!({"down": 1}));
+        let (_, _, body) = get("view=summary&from=11:00&to=13:00").await;
+        assert_eq!(uids(&body["trains"]), ["TSUM-LATE"]);
+        assert_eq!(body["trains"][0]["live"]["delayMinutes"], 1);
+        let (_, _, body) = get("view=summary&from=23:00&to=01:00").await;
+        assert_eq!(body["window"], json!({"from": "23:00", "to": "25:00"}));
+        assert_eq!(uids(&body["trains"]), Vec::<String>::new());
+
+        // Without a window: everything in scope, by line time.
+        let (_, _, body) = get("view=summary").await;
+        assert_eq!(
+            uids(&body["trains"]),
+            [
+                "TSUM-EARLY",
+                "TSUM-DOWN",
+                "TSUM-BUS",
+                "TSUM-UP",
+                "TSUM-LATE"
+            ]
+        );
+
+        // Parameter errors.
+        for bad in [
+            "view=bogus",
+            "view=summary&from=25:99",
+            "view=summary&direction=north",
+            "view=summary&limit=0",
+            "view=summary&at=7",
+            "view=summary&scope=nope",
+        ] {
+            let (status, _, _) = get(bad).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+
+        // The default response is unchanged: a bare array of every entry,
+        // calling points included, the summary parameters ignored.
+        let (status, header, body) = get("from=08:00&to=09:00&direction=up").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(header, None);
+        let entries = body.as_array().expect("the default body is an array");
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[1]["uid"], "TSUM-DOWN");
+        assert_eq!(entries[1]["callingPoints"], population[1]["calling_points"]);
+        assert_eq!(entries[1]["liveStatus"]["delayMinutes"], 5);
+        assert_eq!(entries[1]["serviceMode"], "train");
+        assert_eq!(entries[2]["uid"], "TSUM-BUS");
+        assert_eq!(entries[2]["serviceMode"], "replacementBus");
+        assert_eq!(entries[2]["liveTracking"], false);
+
+        // A population from before train membership: nothing filtered,
+        // `lineDue` worked out from the calling points.
+        let old = json!([
+            {"uid": "TSUM-OLD", "calling_points": down("07:00", "07:25", "07:50", "09:30")},
+        ]);
+        queries::upsert_schedule_line_population(&pool, OLD, service_date, &old.to_string())
+            .await
+            .unwrap();
+        let (status, header, body) = get_with_scope_header(
+            router(),
+            &format!("/public/lines/{OLD}/trains?date={date}&view=summary&from=06:30&to=07:30"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(header.as_deref(), Some("false"));
+        assert_eq!(body["scopeApplied"], false);
+        assert_eq!(uids(&body["trains"]), ["TSUM-OLD"]);
+        assert_eq!(
+            body["trains"][0]["lineDue"],
+            json!({"time": "07:00", "dayOffset": 0})
+        );
+        assert!(body["trains"][0]["scope"].is_null());
+
+        // No population: the route's 404.
+        let (status, _, _) = get_with_scope_header(
+            router(),
+            &format!("/public/lines/{LINE}/trains?date=2026-01-06&view=summary"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        summary_cleanup(&pool, &[LINE, OLD]).await;
     }
 
     /// Issues `GET /public/lines/{id}/trains`, with an optional `?date=`

@@ -1,300 +1,451 @@
-import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { visibleText } from '@/test/routeText';
 import { LineTrainsResults } from './LineTrainsResults';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
-import type { LineTrainEntry } from '@/lib/types';
-import { byVisibleText } from '@/test/routeText';
+import type { LineTrainsSummary } from '@/lib/types';
+import { parseLinePageParams } from '@/lib/lineTrains';
+import { STATIONS, train } from '@/test/lineTrainsFixtures';
 
 vi.mock('@/lib/api');
 
-// Fixed "now" well before every fixture's scheduled time below (all fixture
-// times are 06:00 or later London-local) -- every test that doesn't care
-// about the upcoming/departed split passes this so its rows land in
-// "upcoming" and render directly, matching this suite's pre-existing
-// expectations. `2026-09-22T00:00:00Z` is 01:00 BST.
-const EARLY_NOW = new Date('2026-09-22T00:00:00Z');
+// 13:00Z on 2026-10-06 is 14:00 BST: the window is 13:30-16:00 (15:00 on a
+// phone).
+const NOW = new Date('2026-10-06T13:00:00Z');
+const DATE = '2026-10-06';
+const ID = 'swr-south-west-main';
 
-function entry(overrides: Partial<LineTrainEntry> = {}): LineTrainEntry {
+function summary(overrides: Partial<LineTrainsSummary> = {}): LineTrainsSummary {
   return {
-    uid: 'C12345',
-    callingPoints: [
-      {
-        tiploc: 'WATRLMN',
-        kind: 'Origin',
-        booked_arrival: null,
-        booked_departure: '08:00:00',
-        is_half_minute_arrival: false,
-        is_half_minute_departure: false,
-        day_offset: 0,
-      },
-    ],
-    scheduleOriginCrs: null,
-    scheduleOriginName: null,
-    scheduleDestinationCrs: null,
-    scheduleDestinationName: null,
-    liveStatus: null,
+    lineId: ID,
+    date: DATE,
+    scopeApplied: true,
+    scopes: ['line', 'shared'],
+    window: { from: '13:30', to: '16:00' },
+    at: '14:00',
+    directions: null,
+    stations: STATIONS,
+    counts: { line: { up: 1, down: 2 } },
+    truncated: false,
+    trains: [],
+    running: [],
     ...overrides,
   };
 }
 
-describe('LineTrainsResults', () => {
-  it('renders the "not available" state on a 404', async () => {
-    vi.mocked(api.getLineTrains).mockRejectedValue(new ApiNotFoundError('not found'));
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText('No scheduled train data is available for this line today.')).toBeInTheDocument();
-  });
+async function render(params: Record<string, string> = {}) {
+  renderWithMantine(
+    await LineTrainsResults({
+      id: ID,
+      date: DATE,
+      now: NOW,
+      params: parseLinePageParams(params),
+      operatorName: (code) => ({ XC: 'CrossCountry', SW: 'South Western Railway' })[code] ?? code,
+    }),
+  );
+}
 
-  it('renders the honest outage state on a non-404 failure', async () => {
-    vi.mocked(api.getLineTrains).mockRejectedValue(new Error('connect ECONNREFUSED'));
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
+/** The rows of the main list, as their visible text. */
+function rowTexts(list: HTMLElement): string[] {
+  return within(list)
+    .getAllByRole('link')
+    .map((link) => visibleText(link));
+}
+
+beforeEach(() => {
+  vi.mocked(api.getLineTrainsSummary).mockReset();
+  vi.mocked(api.searchTrainsBetween).mockReset();
+});
+
+describe('LineTrainsResults', () => {
+  it('renders the "not available" state on a 404 and the outage state otherwise', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockRejectedValue(new ApiNotFoundError('not found'));
+    await render();
+    expect(screen.getByText('No scheduled train data is available for this line today.')).toBeInTheDocument();
+
+    vi.mocked(api.getLineTrainsSummary).mockRejectedValue(new Error('connect ECONNREFUSED'));
+    await render();
     expect(screen.getByText("Today's trains aren't available right now.")).toBeInTheDocument();
   });
 
-  it('renders the empty state for a real 200 [] response', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText('No trains are scheduled on this line today.')).toBeInTheDocument();
-  });
-
-  it('renders a schedule-only row without a route, with the not-live copy', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([entry()]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(/Scheduled — not live yet/)).toBeInTheDocument();
-    expect(screen.getByText(/08:00/)).toBeInTheDocument();
-  });
-
-  it("renders a live row's resolved route and links to /train/{uid}/{date}, with a row-specific accessible name", async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({
-        liveStatus: {
-          trainsId: 1,
-          trainId: '1A11',
-          originCrs: 'WAT',
-          originName: 'London Waterloo',
-          destinationCrs: 'ALT',
-          destinationName: 'Alton',
-          scheduledDeparture: '2026-09-22T08:00:00Z',
-          status: 'en_route',
-          lastReportedLocation: 'Woking',
-          lastEventType: 'DEPARTURE',
-          delayMinutes: 4,
-          nextCallingPoint: 'ALT',
-          etaNext: null,
-          etaSource: null,
-        },
-      }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) → Alton \(ALT\)/))).toBeInTheDocument();
-    expect(screen.getByText(/4m late/)).toBeInTheDocument();
-    const link = screen.getByRole('link', {
-      name: 'View live status for the 08:00 · London Waterloo (WAT) to Alton (ALT)',
+  it('asks for the window around now, with at=now for Running now', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render();
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(ID, {
+      date: DATE,
+      from: '13:30',
+      to: '16:00',
+      at: '14:00',
+      direction: undefined,
     });
-    expect(link).toHaveAttribute('href', '/train/C12345/2026-09-22');
   });
 
-  it('falls back to the schedule-side route when the live record has no schedule match of its own (regression: 2026-09-22 UX review §4.1, "Unknown station")', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({
-        scheduleOriginCrs: 'KGX',
-        scheduleOriginName: 'London Kings Cross',
-        scheduleDestinationCrs: 'YRK',
-        scheduleDestinationName: 'York',
-        liveStatus: {
-          trainsId: 1,
-          trainId: '1A11',
-          originCrs: null,
-          originName: null,
-          destinationCrs: null,
-          destinationName: null,
-          scheduledDeparture: '2026-09-22T08:00:00Z',
-          status: 'en_route',
-          lastReportedLocation: 'Peterborough',
-          lastEventType: 'DEPARTURE',
-          delayMinutes: null,
-          nextCallingPoint: 'YRK',
-          etaNext: null,
-          etaSource: null,
-        },
+  it('lists the line’s own trains by time on the line, with destination and status, each row a link', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [
+          train({
+            uid: 'B',
+            lineDue: { time: '14:35', dayOffset: 0 },
+            live: {
+              status: 'en_route',
+              delayMinutes: 4,
+              delayProvisional: false,
+              cancelled: false,
+              lastReportedLocation: null,
+            },
+          }),
+          train({
+            uid: 'A',
+            direction: 'up',
+            lineDue: { time: '14:05', dayOffset: 0 },
+            destination: { crs: 'WAT', name: 'London Waterloo' },
+          }),
+          train({
+            uid: 'C',
+            lineDue: { time: '15:20', dayOffset: 0 },
+            live: {
+              status: 'cancelled',
+              delayMinutes: null,
+              delayProvisional: false,
+              cancelled: true,
+              lastReportedLocation: null,
+            },
+          }),
+        ],
       }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'ecml', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(byVisibleText(/London Kings Cross \(KGX\) → York \(YRK\)/))).toBeInTheDocument();
-    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
+    );
+    await render();
+    const list = screen.getByRole('list', { name: 'Trains due on the line' });
+    const texts = rowTexts(list);
+    expect(texts[0]).toMatch(/^14:05 London Waterloo Scheduled/);
+    expect(texts[1]).toMatch(/^14:35 Weymouth 4 min late/);
+    expect(texts[2]).toMatch(/^15:20 Weymouth Cancelled/);
+    expect(within(list).getAllByRole('link')[0]).toHaveAttribute('href', `/train/A/${DATE}`);
+    expect(screen.getByText(/Due on the line 13:30–/)).toBeInTheDocument();
   });
 
-  it('falls back to the train UID when neither the live nor the schedule side names a station', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({
-        uid: 'NOROUTE1',
-        liveStatus: {
-          trainsId: 1,
-          trainId: '1A11',
-          originCrs: null,
-          originName: null,
-          destinationCrs: null,
-          destinationName: null,
-          scheduledDeparture: '2026-09-22T08:00:00Z',
-          status: 'en_route',
-          lastReportedLocation: null,
-          lastEventType: null,
-          delayMinutes: null,
-          nextCallingPoint: null,
-          etaNext: null,
-          etaSource: null,
-        },
+  it('marks rows past the phone window so a phone shows an hour', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [
+          train({ uid: 'A', lineDue: { time: '14:50', dayOffset: 0 } }),
+          train({ uid: 'B', lineDue: { time: '15:10', dayOffset: 0 } }),
+        ],
       }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'ecml', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(/Train NOROUTE1/)).toBeInTheDocument();
-    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
+    );
+    const { container } = renderWithMantine(
+      await LineTrainsResults({ id: ID, date: DATE, now: NOW, params: parseLinePageParams({}) }),
+    );
+    expect(container.querySelector('[data-uid="A"]')).not.toHaveAttribute('data-beyond-phone');
+    expect(container.querySelector('[data-uid="B"]')).toHaveAttribute('data-beyond-phone', 'true');
   });
 
-  it('sorts rows by their own scheduled time, not response order', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({ uid: 'LATER', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '10:00:00' }] }),
-      entry({ uid: 'EARLIER', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '06:00:00' }] }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    const links = screen.getAllByRole('link', { name: /View live status/ });
-    expect(links[0]).toHaveAttribute('href', '/train/EARLIER/2026-09-22');
-    expect(links[1]).toHaveAttribute('href', '/train/LATER/2026-09-22');
+  it('has plain Earlier/Later links for desktop (2 h) and phone (1 h), keeping the direction', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render({ dir: 'up' });
+    const earlier = screen.getAllByRole('link', { name: 'Earlier trains' }).map((a) => a.getAttribute('href'));
+    const later = screen.getAllByRole('link', { name: 'Later trains' }).map((a) => a.getAttribute('href'));
+    expect(earlier).toEqual([`/lines/${ID}?dir=up&at=12%3A00#trains`, `/lines/${ID}?dir=up&at=13%3A00#trains`]);
+    expect(later).toEqual([`/lines/${ID}?dir=up&at=16%3A00#trains`, `/lines/${ID}?dir=up&at=15%3A00#trains`]);
+    expect(screen.queryByRole('link', { name: 'Trains due now' })).not.toBeInTheDocument();
   });
 
-  it('renders "Cancelled" for a cancelled service and suppresses the delay figure', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({
-        liveStatus: {
-          trainsId: 1,
-          trainId: '1A11',
-          originCrs: 'WAT',
-          originName: 'London Waterloo',
-          destinationCrs: 'ALT',
-          destinationName: 'Alton',
-          scheduledDeparture: '2026-09-22T08:00:00Z',
-          status: 'cancelled',
-          lastReportedLocation: 'Woking',
-          lastEventType: 'DEPARTURE',
-          delayMinutes: 4,
-          nextCallingPoint: 'ALT',
-          etaNext: null,
-          etaSource: null,
-        },
+  it('pages from a chosen time without a Running now section, with a link back to now', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary({ running: null }));
+    await render({ at: '17:00' });
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(
+      ID,
+      expect.objectContaining({ from: '16:30', to: '19:00', at: undefined }),
+    );
+    expect(screen.getByRole('heading', { name: /Due on the line from 17:00/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Trains due now' })).toHaveAttribute('href', `/lines/${ID}#trains`);
+  });
+
+  it('shows Running now once, not again in the window list', async () => {
+    const running = train({ uid: 'R', lineDue: { time: '13:40', dayOffset: 0 } });
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [running, train({ uid: 'N', lineDue: { time: '14:10', dayOffset: 0 } })],
+        running: [train({ uid: 'E', lineDue: { time: '11:00', dayOffset: 0 } }), running],
       }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(/Cancelled/)).toBeInTheDocument();
-    expect(screen.queryByText(/4m late/)).not.toBeInTheDocument();
+    );
+    const { container } = renderWithMantine(
+      await LineTrainsResults({ id: ID, date: DATE, now: NOW, params: parseLinePageParams({}) }),
+    );
+    expect(screen.getByRole('heading', { name: 'Running now (2)' })).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-uid="R"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-uid="E"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-uid="N"]')).toHaveLength(1);
   });
 
-  it("displays the schedule-side time, not the live service's origin-departure time", async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({
-        // The live row's `scheduledDeparture` is the whole service's ORIGIN
-        // departure time -- deliberately different here from the
-        // schedule-side `booked_departure` at this line's own first calling
-        // point, as happens for a train that originates off-line. Under the
-        // pre-fix code this would have rendered as "08:30" (Europe/London,
-        // BST, formatted via `formatTime`) instead of the schedule-side
-        // "09:15" the row's own sort key is based on.
-        callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '09:15:00' }],
-        liveStatus: {
-          trainsId: 1,
-          trainId: '1A11',
-          originCrs: 'WAT',
-          originName: 'London Waterloo',
-          destinationCrs: 'ALT',
-          destinationName: 'Alton',
-          scheduledDeparture: '2026-09-22T07:30:00Z',
-          status: 'en_route',
-          lastReportedLocation: 'Woking',
-          lastEventType: 'DEPARTURE',
-          delayMinutes: null,
-          nextCallingPoint: 'ALT',
-          etaNext: null,
-          etaSource: null,
-        },
+  it('labels direction tabs by terminus with counts, marks the current one, and shows Loop only when needed', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render({ dir: 'down' });
+    const nav = screen.getByRole('navigation', { name: 'Direction' });
+    const tabs = within(nav).getAllByRole('link');
+    expect(tabs.map((t) => visibleText(t))).toEqual(['All 3', 'Towards London Waterloo 1', 'Towards Weymouth 2']);
+    expect(within(nav).getByRole('link', { name: /Towards Weymouth/ })).toHaveAttribute('aria-current', 'page');
+    expect(within(nav).getByRole('link', { name: /Towards London Waterloo/ })).toHaveAttribute(
+      'href',
+      `/lines/${ID}?dir=up#trains`,
+    );
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(ID, expect.objectContaining({ direction: 'down' }));
+
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary({ counts: { line: { loop: 4 } } }));
+    await render();
+    expect(screen.getAllByRole('link', { name: /^Loop/ }).length).toBeGreaterThan(0);
+  });
+
+  it('collapses shared trains into one group by operator and route', async () => {
+    const xc = (uid: string, time: string) =>
+      train({
+        uid,
+        scope: 'shared',
+        operator: 'XC',
+        lineDue: { time, dayOffset: 0 },
+        origin: { crs: 'MAN', name: 'Manchester Piccadilly' },
+        destination: { crs: 'BMH', name: 'Bournemouth' },
+      });
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({ trains: [train({ uid: 'OWN' }), xc('X1', '14:12'), xc('X2', '15:12')] }),
+    );
+    const { container } = renderWithMantine(
+      await LineTrainsResults({
+        id: ID,
+        date: DATE,
+        now: NOW,
+        params: parseLinePageParams({}),
+        operatorName: (c) => (c === 'XC' ? 'CrossCountry' : c),
       }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(/09:15/)).toBeInTheDocument();
-    expect(screen.queryByText(/08:30/)).not.toBeInTheDocument();
+    );
+    const details = screen.getByText('Also running along part of this line (2)').closest('details');
+    expect(details).not.toHaveAttribute('open');
+    expect(
+      within(details as HTMLElement).getByText('CrossCountry · Manchester Piccadilly → Bournemouth'),
+    ).toBeInTheDocument();
+    expect(
+      within(details as HTMLElement).getByRole('link', { name: /14:12 CrossCountry train to Bournemouth/ }),
+    ).toHaveAttribute('href', `/train/X1/${DATE}`);
+    // Not in the main list.
+    expect(container.querySelector('[data-uid="X1"]')).toBeNull();
   });
 
-  it('shows a date/count/timezone caption plus a last-updated line (regression: 2026-09-22 UX review §4.4, no context line at all)', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([entry()]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText(/1 train scheduled today/)).toBeInTheDocument();
-    expect(screen.getByText(/Times in UK local time/)).toBeInTheDocument();
-    expect(screen.getByText(/^Updated/)).toBeInTheDocument();
+  it('links the hub stations’ timetables instead of listing trains that only touch the line', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render();
+    expect(screen.getByRole('link', { name: 'Other trains at London Waterloo →' })).toHaveAttribute(
+      'href',
+      '/stations/WAT#departures',
+    );
+    expect(screen.getByRole('link', { name: 'Other trains at Woking →' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Other trains at Winchester/ })).not.toBeInTheDocument();
   });
 
-  it('splits departed trains into a collapsed section, upcoming trains shown directly (regression: 2026-09-22 UX review §4.2, past trains first with no cap)', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({ uid: 'DEPARTED', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '06:00:00' }] }),
-      entry({ uid: 'UPCOMING', callingPoints: [{ ...entry().callingPoints![0]!, booked_departure: '20:00:00' }] }),
-    ]);
-    // 12:00 UTC (13:00 BST) is after the departed train's 06:00 and before
-    // the upcoming train's 20:00.
-    const now = new Date('2026-09-22T12:00:00Z');
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now }));
-
-    // The upcoming train renders directly (its link is present and
-    // accessible without any interaction).
-    const links = screen.getAllByRole('link', { name: /View live status/ });
-    const hrefs = links.map((link) => link.getAttribute('href'));
-    expect(hrefs).toContain('/train/UPCOMING/2026-09-22');
-    // The departed train is still in the DOM (inside the collapsed
-    // <details>), just not the page's leading content.
-    expect(hrefs).toContain('/train/DEPARTED/2026-09-22');
-    expect(screen.getByText(/1 earlier train today/)).toBeInTheDocument();
+  it('gives each row a text alternative for its stop strip and hides the visual strip from screen readers', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [
+          train({
+            uid: 'A',
+            lineDue: { time: '14:05', dayOffset: 0 },
+            onLineStops: ['WAT', 'CLJ', 'WOK', 'WIN', 'SOU', 'WEY'].map((crs) => ({
+              crs,
+              time: '14:05',
+              dayOffset: 0,
+            })),
+          }),
+        ],
+      }),
+    );
+    const { container } = renderWithMantine(
+      await LineTrainsResults({ id: ID, date: DATE, now: NOW, params: parseLinePageParams({}) }),
+    );
+    const row = container.querySelector('[data-uid="A"] a') as HTMLElement;
+    expect(row.textContent).toContain(
+      'Then calls at Clapham Junction, Woking, Winchester, Southampton Central and Weymouth',
+    );
+    const strip = within(row).getByText(/Winchester · Southampton Central · Weymouth · \+2 stops/);
+    expect(strip).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it('shows the "no more trains today" message when every train has already departed', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([entry()]);
-    // Well after the fixture's 08:00 departure.
-    const now = new Date('2026-09-22T20:00:00Z');
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now }));
-    expect(screen.getByText('No more trains are scheduled on this line for the rest of today.')).toBeInTheDocument();
-    expect(screen.getByText(/1 earlier train today/)).toBeInTheDocument();
+  it('shows the shared mode badge when the API says the service is a replacement bus', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [train({ uid: 'BUS', serviceMode: 'replacementBus', lineDue: { time: '14:30', dayOffset: 0 } })],
+      }),
+    );
+    const { container } = renderWithMantine(
+      await LineTrainsResults({ id: ID, date: DATE, now: NOW, params: parseLinePageParams({}) }),
+    );
+    const row = container.querySelector('[data-uid="BUS"] a') as HTMLElement;
+    expect(within(row).getByText('Rail replacement bus')).toBeInTheDocument();
+    expect(visibleText(row)).toMatch(/Timetable only/);
+  });
+
+  it('groups by route with a frequency summary in accessible accordions', async () => {
+    const fast = (uid: string, time: string) =>
+      train({
+        uid,
+        lineDue: { time, dayOffset: 0 },
+        onLineStops: ['WAT', 'WOK', 'WEY'].map((crs) => ({ crs, time, dayOffset: 0 })),
+      });
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [
+          fast('F1', '14:05'),
+          fast('F2', '14:35'),
+          fast('F3', '15:05'),
+          train({
+            uid: 'S1',
+            lineDue: { time: '14:20', dayOffset: 0 },
+            onLineStops: ['WAT', 'CLJ', 'WOK', 'BSK', 'WEY'].map((crs) => ({ crs, time: '14:20', dayOffset: 0 })),
+          }),
+        ],
+      }),
+    );
+    await render({ view: 'routes' });
+    const summaryEl = screen.getByText('London Waterloo → Weymouth, fast').closest('summary') as HTMLElement;
+    expect(visibleText(summaryEl)).toBe(
+      'London Waterloo → Weymouth, fast · every 30 min · xx:05, xx:35 · show 3 trains',
+    );
+    expect(summaryEl.closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByText('London Waterloo → Weymouth, stopping')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'By route' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('lists trains between two picked stations from the station search, with live status where known', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [
+          train({
+            uid: 'U1',
+            live: {
+              status: 'en_route',
+              delayMinutes: 2,
+              delayProvisional: false,
+              cancelled: false,
+              lastReportedLocation: null,
+            },
+          }),
+        ],
+      }),
+    );
+    vi.mocked(api.searchTrainsBetween).mockResolvedValue({
+      results: [
+        {
+          uid: 'U1',
+          scheduled: '14:12',
+          publicDeparture: '14:12',
+          stationCrs: 'WOK',
+          originCrs: 'WEY',
+          destinationCrs: 'WAT',
+          destinationName: 'London Waterloo',
+          destinationArrival: '14:40',
+          destinationArrivalDayOffset: 0,
+        },
+        {
+          uid: 'U2',
+          scheduled: '14:20',
+          publicDeparture: null,
+          stationCrs: 'WOK',
+          originCrs: 'POO',
+          destinationCrs: 'WAT',
+          destinationName: 'London Waterloo',
+          destinationArrival: '14:52',
+          destinationArrivalDayOffset: 0,
+        },
+      ],
+      nextCursor: null,
+    });
+    const { container } = renderWithMantine(
+      await LineTrainsResults({
+        id: ID,
+        date: DATE,
+        now: NOW,
+        params: parseLinePageParams({ from: 'WOK', to: 'WAT' }),
+      }),
+    );
+    expect(api.searchTrainsBetween).toHaveBeenCalledWith({
+      station: 'WOK',
+      stopsAt: 'WAT',
+      date: DATE,
+      from: '13:30',
+      to: '16:00',
+      limit: 60,
+    });
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(ID, expect.objectContaining({ direction: undefined }));
+    expect(screen.getByRole('heading', { name: 'Woking to London Waterloo' })).toBeInTheDocument();
+    expect(visibleText(container.querySelector('[data-uid="U1"] a') as HTMLElement)).toMatch(
+      /^14:12 London Waterloo 2 min late/,
+    );
+    expect(visibleText(container.querySelector('[data-uid="U2"] a') as HTMLElement)).toMatch(
+      /^14:20 London Waterloo Scheduled/,
+    );
+    expect(screen.getAllByRole('link', { name: 'Show all trains on this line' })[0]).toHaveAttribute(
+      'href',
+      `/lines/${ID}#trains`,
+    );
+    // The picker is a plain GET form with the line's stations.
+    const from = screen.getByLabelText('From') as HTMLSelectElement;
+    expect(from.form?.getAttribute('method')).toBe('get');
+    expect(from.value).toBe('WOK');
+    expect([...from.options].map((o) => o.value)).toContain('WEY');
+  });
+
+  it('says when the population predates train membership', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary({ scopeApplied: false, counts: {} }));
+    await render();
+    expect(screen.getByText(/every train calling here is listed/)).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Direction' })).not.toBeInTheDocument();
   });
 });
 
 describe('LineTrainsResults: buses and ferries', () => {
-  it('shows a bus with its badge, its schedule route and a "View timetable" link', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({
-        uid: 'C30818',
-        serviceMode: 'bus',
-        liveTracking: false,
-        scheduleOriginCrs: 'WAT',
-        scheduleOriginName: 'London Waterloo',
-        scheduleDestinationCrs: 'WOK',
-        scheduleDestinationName: 'Woking',
+  it('badges a bus and a ferry with the shared ServiceModeBadge, and a train with none', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [
+          train({ uid: 'C30818', serviceMode: 'bus', liveTracking: false, lineDue: { time: '14:10', dayOffset: 0 } }),
+          train({ uid: 'S00002', serviceMode: 'ferry', liveTracking: false, lineDue: { time: '14:20', dayOffset: 0 } }),
+          train({ uid: 'C12345', serviceMode: 'train', liveTracking: true, lineDue: { time: '14:30', dayOffset: 0 } }),
+        ],
       }),
-      entry({ uid: 'C12345', serviceMode: 'train', liveTracking: true }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText('Bus service')).toBeInTheDocument();
-    const timetable = screen.getByRole('link', {
-      name: 'View timetable for the 08:00 · London Waterloo (WAT) to Woking (WOK)',
-    });
-    expect(timetable).toHaveAttribute('href', '/train/C30818/2026-09-22');
-    expect(screen.getByRole('link', { name: /^View live status for the 08:00/ })).toHaveAttribute(
-      'href',
-      '/train/C12345/2026-09-22',
     );
+    const { container } = renderWithMantine(
+      await LineTrainsResults({ id: ID, date: DATE, now: NOW, params: parseLinePageParams({}) }),
+    );
+    const bus = container.querySelector('[data-uid="C30818"] a') as HTMLElement;
+    expect(within(bus).getByText('Bus service')).toBeInTheDocument();
+    expect(bus.querySelector('[data-service-mode="bus"]')).not.toBeNull();
+    expect(visibleText(bus)).toMatch(/Timetable only/);
+    const ferry = container.querySelector('[data-uid="S00002"] a') as HTMLElement;
+    expect(within(ferry).getByText('Ferry')).toBeInTheDocument();
+    const rail = container.querySelector('[data-uid="C12345"] a') as HTMLElement;
+    expect(rail.querySelector('[data-service-mode]')).toBeNull();
+    expect(visibleText(rail)).not.toMatch(/Timetable only/);
   });
 
-  it('names a bus with no resolvable route by its own mode, not "not live yet"', async () => {
-    vi.mocked(api.getLineTrains).mockResolvedValue([
-      entry({ uid: 'S00001', serviceMode: 'ferry', liveTracking: false }),
-    ]);
-    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
-    expect(screen.getByText('Ferry')).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText(/Ferry S00001/))).toBeInTheDocument();
-    expect(screen.queryByText('Scheduled — not live yet')).not.toBeInTheDocument();
+  it('names a ferry with no resolvable destination by its own mode', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
+      summary({
+        trains: [
+          train({
+            uid: 'S00001',
+            serviceMode: 'ferry',
+            liveTracking: false,
+            destination: null,
+            lineDue: { time: '14:10', dayOffset: 0 },
+          }),
+        ],
+      }),
+    );
+    const { container } = renderWithMantine(
+      await LineTrainsResults({ id: ID, date: DATE, now: NOW, params: parseLinePageParams({}) }),
+    );
+    const row = container.querySelector('[data-uid="S00001"] a') as HTMLElement;
+    expect(visibleText(row)).toMatch(/Ferry S00001/);
   });
 });

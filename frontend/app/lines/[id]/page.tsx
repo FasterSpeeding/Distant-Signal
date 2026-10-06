@@ -18,6 +18,7 @@ import { TextLink } from '@/components/TextLink';
 import { worstStatus, severityLabel } from '@/lib/severity';
 import { resolveHalfHourlyRange } from '@/lib/history';
 import { londonDayKey } from '@/lib/dateFormat';
+import { parseLinePageParams } from '@/lib/lineTrains';
 import type { CustomLineDetail, LineDefinitionSummary, LineGroupRef, LineStatusReport, LineSummary } from '@/lib/types';
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
@@ -40,7 +41,7 @@ function TrendsLoadingFallback() {
   );
 }
 
-/** `Suspense` fallback for the "Trains running today" boundary below, same
+/** `Suspense` fallback for the "Trains on this line" boundary below, same
  * shape as `TrendsLoadingFallback` above (own copy rather than a shared one
  * -- the two boundaries' fallback copy is allowed to diverge independently,
  * and a shared helper would tempt someone to parameterise the wording
@@ -48,7 +49,7 @@ function TrendsLoadingFallback() {
 function TrainsLoadingFallback() {
   return (
     <Paper withBorder p="md" role="status" aria-busy="true">
-      <Text c="dimmed">Loading today&apos;s trains…</Text>
+      <Text c="dimmed">Loading trains…</Text>
     </Paper>
   );
 }
@@ -252,8 +253,19 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   };
 }
 
-export default async function LineDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function LineDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  /** `dir`, `at`, `from`, `to`, `view` -- the "Trains on this line"
+   * section's state (`lib/lineTrains.ts`'s `parseLinePageParams`), so a
+   * shared link opens the same view. Optional: tests and the plain
+   * `/lines/{id}` default to now. */
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
+  const trainParams = parseLinePageParams((await searchParams) ?? {});
 
   // A real line id is always a lowercase slug: a catalogue line's id comes
   // straight from its config filename (`lines/*.toml`, e.g.
@@ -551,9 +563,15 @@ export default async function LineDetailPage({ params }: { params: Promise<{ id:
           of the page behind it. */}
       {showTrainsPanel && (
         <Stack gap="xs">
-          <SectionTitle>Trains running today</SectionTitle>
+          <SectionTitle id="trains">Trains on this line</SectionTitle>
           <Suspense fallback={<TrainsLoadingFallback />}>
-            <LineTrainsResults id={id} date={trainsDate} now={new Date(now)} />
+            <LineTrainsResults
+              id={id}
+              date={trainsDate}
+              now={new Date(now)}
+              params={trainParams}
+              operatorName={(code) => operatorLabel(code, tocs)}
+            />
           </Suspense>
         </Stack>
       )}

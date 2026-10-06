@@ -2589,6 +2589,154 @@ pub async fn list_line_train_entries(
     Ok(Some(LineTrainEntries { entries, has_scope }))
 }
 
+/// One element of a line's population as the slim
+/// `GET /public/lines/{id}/trains?view=summary` needs it, projected by
+/// [`list_line_train_summary_rows`]. Only `calling_points_json` is large,
+/// and it is only filled for the entries the caller asked about.
+#[derive(Debug, Clone, Default)]
+pub struct LineTrainSummaryRow {
+    pub uid: Option<String>,
+    pub operator_atoc: Option<String>,
+    /// CIF Train Status (one character), see
+    /// `schedule_query::LinePopulationEntry::train_status`.
+    pub train_status: Option<String>,
+    pub scope: Option<String>,
+    pub direction: Option<String>,
+    pub run_first_crs: Option<String>,
+    pub run_last_crs: Option<String>,
+    /// `line_due.time` as stored (`"HH:MM:SS"`).
+    pub line_due_time: Option<String>,
+    pub line_due_day_offset: Option<i32>,
+    /// The entry's calling points as raw JSON text: only for entries whose
+    /// `line_due` falls in the requested `[due_from, due_to)` minute range,
+    /// or every entry when the population predates `line_due` (the caller
+    /// then works the due time out itself) or no range was given.
+    pub calling_points_json: Option<String>,
+}
+
+/// [`list_line_train_summary_rows`]' result for a population that exists.
+#[derive(Debug)]
+pub struct LineTrainSummaryRows {
+    pub rows: Vec<LineTrainSummaryRow>,
+    /// As [`LineTrainEntries::has_scope`].
+    pub has_scope: bool,
+}
+
+/// Every element of one line's population (narrowed to `scopes` like
+/// [`list_line_train_entries`]), projected to its small fields, with the
+/// calling points only for entries due on the line in
+/// `[due_from, due_to)` minutes after the service date's midnight
+/// (`line_due.day_offset * 1440` + its time). `due_range: None` ships every
+/// entry's calling points. Published array order.
+///
+/// The small fields of every entry come back so the caller can count
+/// trains per scope and direction without shipping the calling points of
+/// trains it will not show -- those are nearly all of a population's
+/// bytes.
+pub async fn list_line_train_summary_rows(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+    scopes: Option<&[String]>,
+    due_range: Option<(i32, i32)>,
+) -> Result<Option<LineTrainSummaryRows>> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "the tuple mirrors the columns of the SQL row it decodes"
+    )]
+    let rows: Vec<(
+        Option<i64>,
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+        Option<String>,
+    )> = sqlx::query_as(&format!(
+        r"
+        WITH {POPULATION_CTE_SQL},
+        entries AS (
+            SELECT x.ord, x.e, pop.has_scope,
+                   CASE WHEN jsonb_typeof(x.e -> 'line_due' -> 'day_offset') = 'number'
+                        THEN (x.e -> 'line_due' ->> 'day_offset')::int ELSE 0 END AS due_offset,
+                   CASE WHEN x.e -> 'line_due' ->> 'time' ~ '^\d{{2}}:\d{{2}}'
+                        THEN substr(x.e -> 'line_due' ->> 'time', 1, 2)::int * 60
+                             + substr(x.e -> 'line_due' ->> 'time', 4, 2)::int END AS due_minute
+            FROM pop
+            LEFT JOIN LATERAL jsonb_array_elements(pop.population) WITH ORDINALITY AS x(e, ord)
+              ON ($3::text[] IS NULL
+                  OR NOT pop.has_scope
+                  OR x.e ->> 'scope' = ANY($3::text[]))
+        )
+        SELECT ord, has_scope,
+               CASE WHEN jsonb_typeof(e -> 'uid') = 'string' THEN e ->> 'uid' END,
+               e ->> 'operator_atoc',
+               e ->> 'train_status',
+               e ->> 'scope',
+               e ->> 'direction',
+               e ->> 'run_first_crs',
+               e ->> 'run_last_crs',
+               e -> 'line_due' ->> 'time',
+               CASE WHEN due_minute IS NOT NULL THEN due_offset END,
+               CASE WHEN $4::int IS NULL
+                      OR NOT has_scope
+                      OR (due_minute IS NOT NULL
+                          AND due_offset * 1440 + due_minute >= $4::int
+                          AND due_offset * 1440 + due_minute < $5::int)
+                    THEN (e -> 'calling_points')::text END
+        FROM entries
+        ORDER BY ord
+        "
+    ))
+    .bind(line_id)
+    .bind(service_date)
+    .bind(scopes)
+    .bind(due_range.map(|(from, _)| from))
+    .bind(due_range.map(|(_, to)| to))
+    .fetch_all(pool)
+    .await?;
+    let Some(has_scope) = rows.first().map(|row| row.1) else {
+        return Ok(None);
+    };
+    let rows = rows
+        .into_iter()
+        .filter(|row| row.0.is_some())
+        .map(
+            |(
+                _,
+                _,
+                uid,
+                operator_atoc,
+                train_status,
+                scope,
+                direction,
+                run_first_crs,
+                run_last_crs,
+                line_due_time,
+                line_due_day_offset,
+                calling_points_json,
+            )| LineTrainSummaryRow {
+                uid,
+                operator_atoc,
+                train_status,
+                scope,
+                direction,
+                run_first_crs,
+                run_last_crs,
+                line_due_time,
+                line_due_day_offset,
+                calling_points_json,
+            },
+        )
+        .collect();
+    Ok(Some(LineTrainSummaryRows { rows, has_scope }))
+}
+
 /// [`get_schedule_line_population`] narrowed IN SQL to the entries whose
 /// `scope` is one of `scopes` (published array order kept), plus whether
 /// the population carries `scope` at all. A population published before

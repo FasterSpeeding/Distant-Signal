@@ -31,10 +31,25 @@ vi.mock('@/lib/api', async () => {
     getLineHalfHourlyStats: vi.fn(),
     getLineHalfHourlyCoverageStats: vi.fn(),
     // Same rationale as `getAllTocs` above: most tests in this file don't
-    // care about the "Trains running today" panel at all, so an empty list
-    // keeps them all passing unmodified. The panel's own describe block
-    // below overrides this per test.
+    // care about the "Trains on this line" panel at all, so an empty
+    // summary keeps them all passing unmodified. The panel's own describe
+    // block below overrides this per test.
     getLineTrains: vi.fn().mockResolvedValue([]),
+    getLineTrainsSummary: vi.fn().mockResolvedValue({
+      lineId: 'x',
+      date: '2026-10-06',
+      scopeApplied: true,
+      scopes: ['line', 'shared'],
+      window: null,
+      at: null,
+      directions: null,
+      stations: [],
+      counts: {},
+      truncated: false,
+      trains: [],
+      running: [],
+    }),
+    searchTrainsBetween: vi.fn(),
   };
 });
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -127,8 +142,8 @@ function halfHourlyCoverageStatsRow(overrides: Partial<LineHalfHourlyCoverageSta
   };
 }
 
-async function renderPage(id = 'custom-my-commute') {
-  const element = await LineDetailPage({ params: Promise.resolve({ id }) });
+async function renderPage(id = 'custom-my-commute', search: Record<string, string> = {}) {
+  const element = await LineDetailPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
   return renderWithMantine(element);
 }
 
@@ -310,50 +325,63 @@ describe('LineDetailPage embedded trends', () => {
 });
 
 // Task 5 of docs/superpowers/sdd/2026-09-22-operator-overview-phase2-per-line-drilldown-plan/
-// -- wires LineTrainsResults into this page. The panel's own rendering
-// (populated list, empty state, error state) is exercised directly in
-// LineTrainsResults.test.tsx; what matters here is only that this page
-// renders the panel and fetches its data for a catalogue line, and that it
-// does neither for a TfL line or a custom line -- both guaranteed 404s from
-// `getLineTrains` (see `isTflLine`/`showTrainsPanel` in page.tsx).
-describe('LineDetailPage Trains running today panel', () => {
+// -- wires LineTrainsResults into this page; renamed "Trains on this line"
+// and moved to the slim summary view on 2026-10-06
+// (docs/superpowers/specs/2026-10-06-line-page-trains-design.md). The
+// panel's own rendering is exercised in LineTrainsResults.test.tsx; what
+// matters here is that this page renders the panel, fetches it for a
+// catalogue line with the URL's parameters, and does neither for a TfL
+// line or a custom line -- both guaranteed 404s.
+describe('LineDetailPage Trains on this line panel', () => {
   beforeEach(() => {
     vi.mocked(api.getAllLines).mockResolvedValue(lines);
     vi.mocked(api.getLineDefinition).mockResolvedValue({ stations: ['WOK', 'CLJ'], operators: ['SW'] });
     vi.mocked(api.getLineHalfHourlyStats).mockResolvedValue([]);
     vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
     vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
-    // `getLineTrains` is one shared `vi.fn()` for the whole file (from the
-    // top-level `vi.mock('@/lib/api', ...)` factory), and this project's
-    // vitest setup does not auto-clear mocks between tests -- same reason
-    // every other `.toHaveBeenCalled()`/`.not.toHaveBeenCalled()` assertion
-    // in this file (see the `notFound` mock's own `mockClear()` calls
-    // throughout) clears its target mock first, rather than trusting call
-    // counts left over from earlier tests/describes in this same file.
-    vi.mocked(api.getLineTrains).mockClear();
+    // One shared `vi.fn()` for the whole file, and this project's vitest
+    // setup does not auto-clear mocks between tests.
+    vi.mocked(api.getLineTrainsSummary).mockClear();
   });
 
-  it('renders the panel and passes it the line id for a catalogue line', async () => {
+  it('renders the panel and fetches the summary view for a catalogue line', async () => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('swr-alton', 'Alton Line')]);
-    vi.mocked(api.getLineTrains).mockResolvedValue([]);
     await renderPage('swr-alton');
-    expect(screen.getByRole('heading', { name: 'Trains running today' })).toBeInTheDocument();
-    expect(api.getLineTrains).toHaveBeenCalledWith('swr-alton', expect.any(String));
+    expect(screen.getByRole('heading', { name: 'Trains on this line' })).toBeInTheDocument();
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(
+      'swr-alton',
+      expect.objectContaining({ date: expect.any(String), from: expect.any(String), to: expect.any(String) }),
+    );
   });
 
-  it('does not render the panel for a TfL line id, and never calls getLineTrains', async () => {
+  it('passes the URL direction and time through, and drops malformed ones', async () => {
+    vi.mocked(api.getLineStatus).mockResolvedValue([report('swr-alton', 'Alton Line')]);
+    await renderPage('swr-alton', { dir: 'up', at: '17:00' });
+    expect(api.getLineTrainsSummary).toHaveBeenLastCalledWith(
+      'swr-alton',
+      expect.objectContaining({ direction: 'up', from: '16:30', to: '19:00', at: undefined }),
+    );
+    cleanup();
+    await renderPage('swr-alton', { dir: 'sideways', at: '99:99' });
+    expect(api.getLineTrainsSummary).toHaveBeenLastCalledWith(
+      'swr-alton',
+      expect.objectContaining({ direction: undefined, at: expect.any(String) }),
+    );
+  });
+
+  it('does not render the panel for a TfL line id, and never fetches trains', async () => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('tfl-victoria', 'Victoria line')]);
     await renderPage('tfl-victoria');
-    expect(screen.queryByRole('heading', { name: 'Trains running today' })).not.toBeInTheDocument();
-    expect(api.getLineTrains).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'Trains on this line' })).not.toBeInTheDocument();
+    expect(api.getLineTrainsSummary).not.toHaveBeenCalled();
   });
 
-  it('does not render the panel for a custom line, and never calls getLineTrains', async () => {
+  it('does not render the panel for a custom line, and never fetches trains', async () => {
     vi.mocked(api.getLineStatus).mockResolvedValue([report('custom-my-commute', 'My Commute')]);
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
     await renderPage('custom-my-commute');
-    expect(screen.queryByRole('heading', { name: 'Trains running today' })).not.toBeInTheDocument();
-    expect(api.getLineTrains).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'Trains on this line' })).not.toBeInTheDocument();
+    expect(api.getLineTrainsSummary).not.toHaveBeenCalled();
   });
 });
 

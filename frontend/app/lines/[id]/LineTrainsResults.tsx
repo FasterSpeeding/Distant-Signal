@@ -1,279 +1,600 @@
-import { Group, Paper, Stack, Text } from '@mantine/core';
-import { ApiNotFoundError, getLineTrains } from '@/lib/api';
-import type { LineTrainEntry } from '@/lib/types';
-import { routeLabel, spokenRoute, UNKNOWN_STATION_LABEL } from '@/lib/stationLabel';
-import { RouteText } from '@/components/RouteArrow';
+import Link from 'next/link';
+import { Group, Paper, Stack, Text, VisuallyHidden } from '@mantine/core';
+import { SectionTitle } from '@/components/SectionTitle';
+import { ApiNotFoundError, getLineTrainsSummary, searchTrainsBetween } from '@/lib/api';
+import type { LineCatalogueStation, LineTrainSummary, LineTrainsSummary, TrainSearchResult } from '@/lib/types';
 import { TextLink } from '@/components/TextLink';
-import { StatusRow } from '@/components/StatusRow';
 import { ServiceModeBadge } from '@/components/ServiceModeBadge';
 import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import { LastUpdated } from '@/components/LastUpdated';
 import { formatDate, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
+import {
+  DAY_MINUTES,
+  directionLabel,
+  directionTabs,
+  formatApiMinute,
+  formatClock,
+  groupPatterns,
+  groupShared,
+  hubStations,
+  lineHref,
+  lineTimeMinute,
+  londonMinuteOfDay,
+  paramsForHref,
+  resolveWindow,
+  sortByLineTime,
+  splitRunning,
+  stationName,
+  type LinePageParams,
+  type TrainWindow,
+} from '@/lib/lineTrains';
+import { LineTrainRow } from './LineTrainRow';
+import classes from './LineTrains.module.css';
 
-/** Every entry's schedule-side first calling point's own booked time
- * ("HH:MM:SS", CIF/UK-local) -- both this row's displayed time and the
- * basis of `scheduleSortKey` below, uniformly whether or not this row has a
- * `liveStatus` yet. Deliberately NOT `entry.liveStatus?.scheduledDeparture`
- * (an RFC3339 instant, only present once a live `trains` row exists, and --
- * for a line whose trains originate off-line -- the whole service's ORIGIN
- * departure time, not necessarily the time THIS line's own first calling
- * point is reached): using it here would let the displayed time disagree
- * with this row's own sort position, which always uses the schedule side.
- * The schedule (`callingPoints`) is this route's backbone -- present on
- * every entry regardless of live-status coverage -- so it is the only
- * source that treats every row the same way. */
-function firstScheduledTime(entry: LineTrainEntry): string {
-  const first = entry.callingPoints?.[0];
-  return first?.booked_departure ?? first?.booked_arrival ?? '';
-}
+const NO_PARAMS: LinePageParams = { dir: null, at: null, from: null, to: null, view: null };
 
-/** Sort key for `firstScheduledTime`, prefixed with `day_offset` so a
- * post-midnight first calling point (`day_offset: 1`, e.g. "00:20:00")
- * sorts after same-day departures rather than lexically to the top of the
- * day. */
-function scheduleSortKey(entry: LineTrainEntry): string {
-  const dayOffset = entry.callingPoints?.[0]?.day_offset ?? 0;
-  return `${dayOffset}${firstScheduledTime(entry)}`;
-}
+/** The trains a station pair search can list in one go. */
+const PAIR_LIMIT = 60;
 
-/** `scheduleSortKey`'s own format ("{dayOffset}HH:MM:SS") for "right now",
- * so the two are directly `localeCompare`-able -- the partition `nowSortKey`
- * exists for (below). Always prefixed `0`: this page shows one rail day at
- * a time and "now" is always read as falling within that day's own
- * same-day portion, same simplification `scheduleSortKey`'s day-offset
- * comment already accepts for a genuine post-midnight service (a visitor
- * loading this page in the small hours of a day whose first calling point
- * is itself day_offset 1 is a rarer edge case than the one this fixes). */
-function nowSortKey(now: Date): string {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London',
-    hourCycle: 'h23',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(now);
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00';
-  return `0${get('hour')}:${get('minute')}:${get('second')}`;
-}
-
-/** The route name for a row that HAS a live record (`live` is non-null) --
- * see the exported component's own branch for the "no live record yet"
- * case, which keeps its separate, honest "Scheduled — not live yet" copy
- * unchanged.
- *
- * Previously this called `routeLabel(live.originCrs, live.originName, …)`
- * directly: a live record with no schedule match of its own has
- * `originCrs: null`, so `routeLabel` returned its bare
- * `UNKNOWN_STATION_LABEL` fallback as the row's ENTIRE label -- eleven of
- * twelve rows in one capture (2026-09-22 UX review §4.1). The schedule side
- * (`entry.scheduleOriginCrs`/`scheduleDestinationCrs`, resolved
- * server-side from `callingPoints`' first/last TIPLOC — see
- * `crates/api/src/render.rs`'s `ScheduleRouteEndpoints`) is present on
- * every entry regardless of live-status coverage, so it is the base label;
- * the live origin/destination only *upgrades* it, and only when BOTH ends
- * resolved. If neither side names a station, the row still identifies the
- * train by its UID rather than printing the bare fallback string as
- * user-facing copy. */
-function liveRowRouteLabel(entry: LineTrainEntry): string {
-  const live = entry.liveStatus;
-  if (live?.originCrs && live?.destinationCrs) {
-    return routeLabel(live.originCrs, live.originName, live.destinationCrs, live.destinationName);
-  }
-  const scheduleLabel = routeLabel(
-    entry.scheduleOriginCrs,
-    entry.scheduleOriginName,
-    entry.scheduleDestinationCrs,
-    entry.scheduleDestinationName,
-  );
-  return scheduleLabel === UNKNOWN_STATION_LABEL ? `Train ${entry.uid}` : scheduleLabel;
-}
-
-/** One row's worth of rendering -- shared between the "upcoming" list and
- * the collapsed "earlier today" list below, so the two can never drift in
- * shape. Reuses `StatusRow` for its shrink guard (2026-09-22 UX review
- * §4.3: a `Group wrap="nowrap"` row with no `flexShrink: 0` on the trailing
- * link let a long route name squeeze "View live status" down to nothing at
- * narrow widths) and passes a row-specific `aria-label` on the link (same
- * review: 12 identical "View live status" links have no distinguishing
- * accessible name of their own). */
-function TrainRow({ train, date }: { train: LineTrainEntry; date: string }) {
-  const live = train.liveStatus;
-  const scheduledTime = firstScheduledTime(train).slice(0, 5) || '?';
-  const isCancelled = live?.status === 'cancelled';
-  // A bus or ferry never gets a live record, so its row names its route
-  // from the schedule instead of "not live yet" -- it never will be.
-  const timetableOnly = isTimetableOnly(train);
-  const scheduleRoute = routeLabel(
-    train.scheduleOriginCrs,
-    train.scheduleOriginName,
-    train.scheduleDestinationCrs,
-    train.scheduleDestinationName,
-  );
-  const routeText = live
-    ? liveRowRouteLabel(train)
-    : timetableOnly
-      ? scheduleRoute === UNKNOWN_STATION_LABEL
-        ? `${serviceNoun(train.serviceMode)} ${train.uid}`
-        : scheduleRoute
-      : 'Scheduled — not live yet';
-  const linkText = timetableOnly ? 'View timetable' : 'View live status';
+function Empty({ children }: { children: React.ReactNode }) {
   return (
-    <StatusRow
-      title={
-        <Text size="sm" style={{ minWidth: 0 }}>
-          {scheduledTime}
-          {' · '}
-          {live || timetableOnly ? (
-            <RouteText>{routeText}</RouteText>
-          ) : (
-            <Text span c="dimmed">
-              {routeText}
-            </Text>
-          )}
-          {isCancelled ? (
-            <Text span c="red">
-              {' '}
-              · Cancelled
-            </Text>
-          ) : (
-            live?.delayMinutes != null &&
-            live.delayMinutes > 0 && (
-              // Coloured, not dimmed: the one live fact a traveller cares
-              // about was previously the same grey as "Scheduled — not live
-              // yet" -- the least important text on the row. `orange`
-              // matches `TrackedTrainStatusBadge`'s own delay colour.
-              <Text span c="orange" fw={500}>
-                {' '}
-                · {live.delayMinutes}m late
-              </Text>
-            )
-          )}
-          {timetableOnly && (
-            <>
-              {' '}
-              <ServiceModeBadge mode={train.serviceMode} />
-            </>
-          )}
-        </Text>
-      }
-      trailing={
-        <TextLink
-          href={`/train/${encodeURIComponent(train.uid)}/${date}`}
-          ariaLabel={`${linkText} for the ${scheduledTime} · ${spokenRoute(routeText)}`}
-        >
-          {linkText}
-        </TextLink>
-      }
-    />
+    <Paper withBorder p="md">
+      <Text c="dimmed">{children}</Text>
+    </Paper>
   );
 }
 
-/** `id`/`date` are both required (not defaulted here) -- `date` in
- * particular is deliberately the caller's own, already-computed
- * `londonDayKey`, not left to `getLineTrains`'s own UTC default, so the
- * date this panel fetches and the date every row's `/train/{uid}/{date}`
- * link points at can never disagree (see `LineDetailPage`'s own comment on
- * this). Rendered inside a `<Suspense>` on `/lines/[id]` (`page.tsx`) --
- * same rationale as `HalfHourlyTrendsResults`: Suspense catches
- * *suspension*, not errors, so every failure branch below must resolve to
- * real markup rather than throw, or a backend outage would blank the whole
- * line page instead of just this panel.
- *
- * `now` is optional (defaults to the real current time) purely so tests can
- * pin the upcoming/departed split below to a deterministic moment; every
- * real caller lets it default -- `LineDetailPage` already computes its own
- * `now` once for `trendsRange`/`IssueList`, but this panel's date-only
- * `date` prop is already what keeps this fetch and its links in sync with
- * that page, and threading a second timestamp through for a purely
- * cosmetic ordering concern isn't worth the extra prop on every other
- * caller. */
-export async function LineTrainsResults({ id, date, now = new Date() }: { id: string; date: string; now?: Date }) {
-  let trains: LineTrainEntry[];
-  try {
-    trains = await getLineTrains(id, date);
-  } catch (err) {
-    if (err instanceof ApiNotFoundError) {
-      // The expected, common case for a custom or TfL line if this
-      // component is ever reached for one despite page.tsx's own gate, and
-      // the equally expected case for a catalogue line with no CIF
-      // schedule population for this exact rail day yet (see
-      // get_line_schedule's own 404 semantics) -- not a claim that
-      // something is broken.
-      return (
-        <Paper withBorder p="md">
-          <Text c="dimmed">No scheduled train data is available for this line today.</Text>
-        </Paper>
-      );
-    }
-    return (
-      <Paper withBorder p="md">
-        <Text c="dimmed">Today&apos;s trains aren&apos;t available right now.</Text>
-      </Paper>
-    );
-  }
+/** The direction chips: plain links (no JavaScript), the current one
+ * marked `aria-current`. */
+function DirectionChips({ id, params, summary }: { id: string; params: LinePageParams; summary: LineTrainsSummary }) {
+  const tabs = directionTabs(summary.counts, summary.stations, summary.scopeApplied);
+  if (tabs.length === 0) return null;
+  return (
+    <nav aria-label="Direction">
+      <ul className={classes.chips}>
+        {tabs.map((tab) => (
+          <li key={tab.dir ?? 'all'}>
+            <Link
+              className={classes.chip}
+              href={lineHref(id, { ...paramsForHref(params), dir: tab.dir })}
+              aria-current={params.dir === tab.dir ? 'page' : undefined}
+            >
+              {tab.label}{' '}
+              <span className={classes.count}>
+                {tab.count}
+                <VisuallyHidden> trains</VisuallyHidden>
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
 
-  if (trains.length === 0) {
-    return (
-      <Paper withBorder p="md">
-        <Text c="dimmed">No trains are scheduled on this line today.</Text>
-      </Paper>
-    );
-  }
+/** "By time" / "By route" -- the same trains, listed or grouped by pattern. */
+function ViewChips({ id, params }: { id: string; params: LinePageParams }) {
+  const options = [
+    { view: null, label: 'By time' },
+    { view: 'routes', label: 'By route' },
+  ] as const;
+  return (
+    <nav aria-label="Group trains">
+      <ul className={classes.chips}>
+        {options.map((option) => (
+          <li key={option.label}>
+            <Link
+              className={classes.chip}
+              href={lineHref(id, { ...paramsForHref(params), view: option.view })}
+              aria-current={params.view === option.view ? 'page' : undefined}
+            >
+              {option.label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
 
-  const sorted = [...trains].sort((a, b) => scheduleSortKey(a).localeCompare(scheduleSortKey(b)));
+function plural(count: number): string {
+  return `${count} train${count === 1 ? '' : 's'}`;
+}
 
-  // Upcoming-first, departed collapsed (2026-09-22 UX review §4.2): a
-  // traveller checking a Severe-delays line in the evening wants the next
-  // departure, not the whole day scrolled from 06:00 -- and the list has no
-  // cap, so on mobile the "Recent trends" charts below it became
-  // effectively unreachable. `nowKey` is comparable against
-  // `scheduleSortKey` directly (same "{dayOffset}HH:MM:SS" shape).
-  const nowKey = nowSortKey(now);
-  const upcoming = sorted.filter((train) => scheduleSortKey(train) >= nowKey);
-  const departed = sorted.filter((train) => scheduleSortKey(train) < nowKey);
+/** " (into tomorrow)" when a window starting today ends after midnight. */
+function intoTomorrow(from: number, to: number): string {
+  return to > DAY_MINUTES && from < DAY_MINUTES ? ' (into tomorrow)' : '';
+}
 
+/** The window in words, and the Earlier / Now / Later links -- desktop and
+ * phone each get their own (the phone window is an hour, not two). */
+function WindowNav({
+  id,
+  params,
+  window,
+  count,
+  phoneCount,
+}: {
+  id: string;
+  params: LinePageParams;
+  window: TrainWindow;
+  count: number;
+  phoneCount: number;
+}) {
+  const base = paramsForHref(params);
+  const at = (minute: number) => lineHref(id, { ...base, at: formatApiMinute(minute) });
+  return (
+    <Group justify="space-between" gap="xs" wrap="wrap">
+      <Text size="sm">
+        Due on the line {formatClock(window.from)}–
+        <span className={classes.desktopOnly}>
+          {formatClock(window.to)}
+          {intoTomorrow(window.from, window.to)} · {plural(count)}
+        </span>
+        <span className={classes.phoneOnly}>
+          {formatClock(window.phoneTo)}
+          {intoTomorrow(window.from, window.phoneTo)} · {plural(phoneCount)}
+        </span>
+      </Text>
+      <Group gap="md" wrap="wrap">
+        <span className={classes.desktopOnly}>
+          <TextLink href={at(window.earlierDesktop)} ariaLabel="Earlier trains">
+            ← Earlier
+          </TextLink>
+        </span>
+        <span className={classes.phoneOnly}>
+          <TextLink href={at(window.earlierPhone)} ariaLabel="Earlier trains">
+            ← Earlier
+          </TextLink>
+        </span>
+        {params.at !== null && (
+          <TextLink href={lineHref(id, { ...base, at: null })} ariaLabel="Trains due now">
+            Now
+          </TextLink>
+        )}
+        <span className={classes.desktopOnly}>
+          <TextLink href={at(window.laterDesktop)} ariaLabel="Later trains">
+            Later →
+          </TextLink>
+        </span>
+        <span className={classes.phoneOnly}>
+          <TextLink href={at(window.laterPhone)} ariaLabel="Later trains">
+            Later →
+          </TextLink>
+        </span>
+      </Group>
+    </Group>
+  );
+}
+
+function TrainList({
+  trains,
+  date,
+  stations,
+  window,
+  label,
+}: {
+  trains: LineTrainSummary[];
+  date: string;
+  stations: LineCatalogueStation[];
+  window?: TrainWindow;
+  label: string;
+}) {
+  return (
+    <ul className={classes.list} aria-label={label}>
+      {trains.map((train) => {
+        const minute = lineTimeMinute(train.lineDue);
+        const beyondPhone = window !== undefined && minute !== null && minute >= window.phoneTo;
+        return <LineTrainRow key={train.uid} train={train} date={date} stations={stations} beyondPhone={beyondPhone} />;
+      })}
+    </ul>
+  );
+}
+
+/** Trains grouped by stopping pattern, each an accordion (native
+ * `<details>`, keyboard- and screen-reader-accessible without script). */
+function PatternGroups({
+  trains,
+  date,
+  stations,
+}: {
+  trains: LineTrainSummary[];
+  date: string;
+  stations: LineCatalogueStation[];
+}) {
+  const groups = groupPatterns(trains);
   return (
     <Stack gap="xs">
-      {/* One dimmed caption covers date, count and timezone at once
-          (2026-09-22 UX review §4.4 -- the panel previously had none of
-          the three); `LastUpdated` alongside it covers the fourth
-          (freshness) with the same component `LineStatusCard` already
-          uses elsewhere. This panel has no per-request fetch timestamp of
-          its own to hand it, but the page it's embedded in has no stale
-          cache either (`getLineTrains` is fetched fresh every request,
-          unlike `withStaleFallback`'s callers) -- so `now`, the moment
-          this render started, is an honest freshness figure, not a
-          borrowed one. */}
-      <Group gap="xs" justify="space-between" wrap="wrap">
-        <Text size="xs" c="dimmed">
-          {formatDate(now)} · {sorted.length} train{sorted.length === 1 ? '' : 's'} scheduled today ·{' '}
-          {TIMES_IN_UK_LOCAL_TIME}
-        </Text>
-        <LastUpdated timestamp={now.toISOString()} />
-      </Group>
-
-      {upcoming.length === 0 ? (
-        <Text size="sm" c="dimmed">
-          No more trains are scheduled on this line for the rest of today.
-        </Text>
-      ) : (
-        upcoming.map((train) => <TrainRow key={train.uid} train={train} date={date} />)
-      )}
-
-      {departed.length > 0 && (
-        <details>
+      {groups.map((group) => (
+        <details key={group.key} className={classes.details}>
           <summary>
+            <Text span fw={500}>
+              {group.route}
+              {group.kind ? `, ${group.kind}` : ''}
+            </Text>
             <Text span size="sm" c="dimmed">
-              {departed.length} earlier train{departed.length === 1 ? '' : 's'} today
+              {' '}
+              · {group.frequency} · show {group.trains.length} train{group.trains.length === 1 ? '' : 's'}
             </Text>
           </summary>
-          <Stack gap="xs" pt="xs">
-            {departed.map((train) => (
-              <TrainRow key={train.uid} train={train} date={date} />
-            ))}
-          </Stack>
+          <div className={classes.detailsBody}>
+            <TrainList trains={group.trains} date={date} stations={stations} label={group.route} />
+          </div>
         </details>
+      ))}
+    </Stack>
+  );
+}
+
+/** "Also running along part of this line (N)": other routes' and other
+ * operators' trains, grouped by operator and route, each train a time
+ * linking to its page. Collapsed by default. */
+function SharedGroup({
+  trains,
+  date,
+  operatorName,
+}: {
+  trains: LineTrainSummary[];
+  date: string;
+  operatorName: (code: string) => string;
+}) {
+  if (trains.length === 0) return null;
+  const groups = groupShared(trains, operatorName);
+  return (
+    <details className={classes.details}>
+      <summary>
+        <Text span fw={500}>
+          Also running along part of this line ({trains.length})
+        </Text>
+      </summary>
+      <Stack gap="sm" className={classes.detailsBody}>
+        {groups.map((group) => (
+          <div key={group.key}>
+            <Text size="sm" fw={500}>
+              {group.operator} · {group.route}
+            </Text>
+            <ul className={classes.timeLinks}>
+              {group.trains.map((train) => {
+                const minute = lineTimeMinute(train.lineDue);
+                const time = minute === null ? '--:--' : formatClock(minute);
+                return (
+                  <li key={train.uid}>
+                    <TextLink
+                      href={`/train/${encodeURIComponent(train.uid)}/${date}`}
+                      ariaLabel={`${time} ${group.operator} ${serviceNoun(train.serviceMode).toLowerCase()} to ${train.destination?.name ?? train.destination?.crs ?? 'unknown'}`}
+                    >
+                      {time}
+                    </TextLink>
+                    {isTimetableOnly(train) && (
+                      <>
+                        {' '}
+                        <ServiceModeBadge mode={train.serviceMode} />
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </Stack>
+    </details>
+  );
+}
+
+/** "Other trains at <station> →": the line's hubs, where the trains that
+ * only touch the line (not listed here) call -- their station timetables. */
+function HubLinks({ stations }: { stations: LineCatalogueStation[] }) {
+  const hubs = hubStations(stations);
+  if (hubs.length === 0) return null;
+  return (
+    <Group gap="md" wrap="wrap">
+      {hubs.map((hub) => (
+        <TextLink key={hub.crs} href={`/stations/${hub.crs}#departures`}>
+          Other trains at {hub.name ?? hub.crs} →
+        </TextLink>
+      ))}
+    </Group>
+  );
+}
+
+/** The optional From/To station picker: a plain GET form, so it works
+ * without JavaScript. */
+function StationPicker({
+  id,
+  params,
+  stations,
+}: {
+  id: string;
+  params: LinePageParams;
+  stations: LineCatalogueStation[];
+}) {
+  const options = stations.filter((s, i) => stations.findIndex((o) => o.crs === s.crs) === i);
+  return (
+    <form action={`/lines/${encodeURIComponent(id)}#trains`} method="get" className={classes.picker}>
+      {params.at !== null && <input type="hidden" name="at" value={formatApiMinute(params.at)} />}
+      <label>
+        <Text span size="sm" display="block">
+          From
+        </Text>
+        <select name="from" defaultValue={params.from ?? ''}>
+          <option value="">Any station</option>
+          {options.map((s) => (
+            <option key={s.crs} value={s.crs}>
+              {s.name ?? s.crs}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <Text span size="sm" display="block">
+          To
+        </Text>
+        <select name="to" defaultValue={params.to ?? ''}>
+          <option value="">Any station</option>
+          {options.map((s) => (
+            <option key={s.crs} value={s.crs}>
+              {s.name ?? s.crs}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button type="submit" className={classes.chip}>
+        Show trains
+      </button>
+    </form>
+  );
+}
+
+/** A station-pair search row as a summary row, with the live status the
+ * line summary has for the same train, when it has one. */
+function pairRow(row: TrainSearchResult, live: Map<string, LineTrainSummary>): LineTrainSummary {
+  const known = live.get(row.uid);
+  return {
+    uid: row.uid,
+    operator: row.operator ?? null,
+    serviceMode: row.serviceMode ?? known?.serviceMode ?? 'train',
+    liveTracking: row.liveTracking ?? known?.liveTracking ?? null,
+    scope: known?.scope ?? null,
+    direction: known?.direction ?? null,
+    lineDue: null,
+    origin: row.originCrs ? { crs: row.originCrs, name: null } : null,
+    destination: row.destinationCrs ? { crs: row.destinationCrs, name: row.destinationName ?? null } : null,
+    onLineStops: [],
+    live: known?.live ?? null,
+  };
+}
+
+type PairRows = { rows: TrainSearchResult[] } | { error: 'unpublished' | 'unavailable' };
+
+/** Trains calling at `from` and later at `to` in the window, from the
+ * indexed station search (`GET /public/trains/search`). */
+async function loadPairRows(date: string, pair: { from: string; to: string }, window: TrainWindow): Promise<PairRows> {
+  try {
+    const page = await searchTrainsBetween({
+      station: pair.from,
+      stopsAt: pair.to,
+      date,
+      from: formatClock(Math.min(window.from, DAY_MINUTES - 1)),
+      to: window.to >= DAY_MINUTES ? '23:59' : formatClock(window.to),
+      limit: PAIR_LIMIT,
+    });
+    return { rows: page.results };
+  } catch (err) {
+    return { error: err instanceof ApiNotFoundError ? 'unpublished' : 'unavailable' };
+  }
+}
+
+function StationPairResults({
+  id,
+  date,
+  params,
+  pair,
+  window,
+  summary,
+  result,
+}: {
+  id: string;
+  date: string;
+  params: LinePageParams;
+  pair: { from: string; to: string };
+  window: TrainWindow;
+  summary: LineTrainsSummary;
+  result: PairRows;
+}) {
+  const fromName = stationName(pair.from, summary.stations);
+  const toName = stationName(pair.to, summary.stations);
+  const clear = lineHref(id, { ...paramsForHref(params), from: null, to: null });
+  if ('error' in result) {
+    return (
+      <Empty>
+        {result.error === 'unpublished'
+          ? 'No timetable is published for today yet.'
+          : 'Trains between these stations aren’t available right now.'}{' '}
+        <TextLink href={clear}>Show all trains on this line</TextLink>
+      </Empty>
+    );
+  }
+  const live = new Map<string, LineTrainSummary>();
+  for (const train of [...summary.trains, ...(summary.running ?? [])]) live.set(train.uid, train);
+  return (
+    <Stack gap="xs">
+      <Group justify="space-between" gap="xs">
+        <SectionTitle order={3}>
+          {fromName} to {toName}
+        </SectionTitle>
+        <TextLink href={clear}>Show all trains on this line</TextLink>
+      </Group>
+      <Text size="sm" c="dimmed">
+        Every train calling at {fromName} and later at {toName}, any operator, leaving {fromName} between{' '}
+        {formatClock(window.from)} and {formatClock(window.to)}. Times are departures from {fromName}.
+      </Text>
+      {result.rows.length === 0 ? (
+        <Empty>
+          No trains from {fromName} to {toName} in this window.
+        </Empty>
+      ) : (
+        <ul className={classes.list} aria-label={`Trains from ${fromName} to ${toName}`}>
+          {result.rows.map((row) => (
+            <LineTrainRow
+              key={row.uid}
+              train={pairRow(row, live)}
+              date={date}
+              stations={summary.stations}
+              timeOverride={(row.publicDeparture ?? row.scheduled ?? '--:--').slice(0, 5)}
+              showStrip={false}
+            />
+          ))}
+        </ul>
       )}
+    </Stack>
+  );
+}
+
+/** "Trains on this line" (docs/superpowers/specs/2026-10-06-line-page-trains-design.md).
+ *
+ * Fetches the slim summary view for a window around `params.at` (default:
+ * now) -- the line's own trains (`scope=line`) in the main list, sorted by
+ * their time on the line; trains that run part of it (`shared`) in a
+ * collapsed group; trains that only touch it not at all, linked through
+ * the hub stations' timetables instead. With no `at`, a "Running now"
+ * section lists the line's trains between their first and last on-line
+ * calls.
+ *
+ * `date` is the caller's London day (see `LineDetailPage`), so the fetch
+ * and every row's `/train/{uid}/{date}` link agree. Rendered inside a
+ * `<Suspense>`: every failure resolves to markup, never a throw.
+ *
+ * `now` is a prop so tests can pin the window. */
+export async function LineTrainsResults({
+  id,
+  date,
+  now = new Date(),
+  params = NO_PARAMS,
+  operatorName = (code: string) => code,
+}: {
+  id: string;
+  date: string;
+  now?: Date;
+  params?: LinePageParams;
+  operatorName?: (code: string) => string;
+}) {
+  const liveView = params.at === null;
+  const nowMinute = londonMinuteOfDay(now);
+  const window = resolveWindow(params.at ?? nowMinute);
+  const pair = params.from && params.to && params.from !== params.to ? { from: params.from, to: params.to } : null;
+
+  let summary: LineTrainsSummary;
+  try {
+    summary = await getLineTrainsSummary(id, {
+      date,
+      from: formatApiMinute(window.from),
+      to: formatApiMinute(window.to),
+      at: liveView ? formatApiMinute(nowMinute) : undefined,
+      direction: pair ? undefined : (params.dir ?? undefined),
+    });
+  } catch (err) {
+    if (err instanceof ApiNotFoundError) {
+      return <Empty>No scheduled train data is available for this line today.</Empty>;
+    }
+    return <Empty>Today&apos;s trains aren&apos;t available right now.</Empty>;
+  }
+
+  const stations = summary.stations;
+  const header = (
+    <Group gap="xs" justify="space-between" wrap="wrap">
+      <Text size="xs" c="dimmed">
+        {formatDate(now)} · times are when each train is due on the line · {TIMES_IN_UK_LOCAL_TIME}
+      </Text>
+      <LastUpdated timestamp={now.toISOString()} />
+    </Group>
+  );
+
+  if (pair) {
+    const result = await loadPairRows(date, pair, window);
+    return (
+      <Stack gap="sm">
+        {header}
+        <StationPicker id={id} params={params} stations={stations} />
+        <StationPairResults
+          id={id}
+          date={date}
+          params={params}
+          pair={pair}
+          window={window}
+          summary={summary}
+          result={result}
+        />
+      </Stack>
+    );
+  }
+
+  const own = sortByLineTime(summary.trains.filter((t) => t.scope !== 'shared'));
+  const shared = summary.trains.filter((t) => t.scope === 'shared');
+  const { running, upcoming } = splitRunning(own, liveView ? summary.running : null);
+  const heading = params.dir ? directionLabel(params.dir, stations) : null;
+
+  return (
+    <Stack gap="sm">
+      {header}
+      <DirectionChips id={id} params={params} summary={summary} />
+      <details className={classes.details}>
+        <summary>
+          <Text span size="sm">
+            Pick stations
+          </Text>
+        </summary>
+        <div className={classes.detailsBody}>
+          <StationPicker id={id} params={params} stations={stations} />
+        </div>
+      </details>
+
+      {running.length > 0 && (
+        <Stack gap="xs">
+          <SectionTitle order={3}>
+            Running now{heading ? ` · ${heading}` : ''} ({running.length})
+          </SectionTitle>
+          <TrainList trains={running} date={date} stations={stations} label="Running now" />
+        </Stack>
+      )}
+
+      <Stack gap="xs">
+        <Group justify="space-between" gap="xs" wrap="wrap">
+          <SectionTitle order={3}>
+            {liveView ? 'Due on the line' : `Due on the line from ${formatClock(window.at)}`}
+            {heading ? ` · ${heading}` : ''}
+          </SectionTitle>
+          <ViewChips id={id} params={params} />
+        </Group>
+        <WindowNav
+          id={id}
+          params={params}
+          window={window}
+          count={upcoming.length}
+          phoneCount={upcoming.filter((t) => (lineTimeMinute(t.lineDue) ?? 0) < window.phoneTo).length}
+        />
+        {upcoming.length === 0 ? (
+          <Empty>No more of this line&apos;s trains are due in this window.</Empty>
+        ) : params.view === 'routes' ? (
+          <PatternGroups trains={upcoming} date={date} stations={stations} />
+        ) : (
+          <TrainList trains={upcoming} date={date} stations={stations} window={window} label="Trains due on the line" />
+        )}
+        {summary.truncated && (
+          <Text size="sm" c="dimmed">
+            Only the first {summary.trains.length} trains are shown; use Later for the rest.
+          </Text>
+        )}
+        {!summary.scopeApplied && (
+          <Text size="sm" c="dimmed">
+            Today&apos;s timetable doesn&apos;t say which trains are this line&apos;s own yet, so every train calling
+            here is listed.
+          </Text>
+        )}
+      </Stack>
+
+      <SharedGroup trains={shared} date={date} operatorName={operatorName} />
+      <HubLinks stations={stations} />
     </Stack>
   );
 }
