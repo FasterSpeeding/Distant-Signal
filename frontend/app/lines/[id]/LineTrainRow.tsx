@@ -34,7 +34,8 @@ export function LineTrainRow({
 }) {
   const minute = lineTimeMinute(train.lineDue);
   const time = timeOverride ?? (minute === null ? '--:--' : formatClock(minute));
-  const destination = train.destination?.name ?? train.destination?.crs ?? `${serviceNoun(train.serviceMode)} ${train.uid}`;
+  const destination =
+    train.destination?.name ?? train.destination?.crs ?? `${serviceNoun(train.serviceMode)} ${train.uid}`;
   const status = liveStatusLabel(train.live, train.serviceMode);
   const timetableOnly = isTimetableOnly(train);
   const strip = stopStrip(train, stations);

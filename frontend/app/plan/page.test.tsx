@@ -18,6 +18,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/suggestions', () => ({
   searchStations: async () => [],
   searchTocs: async () => [],
+  searchPlannerLocations: async () => [],
   getStationNames: async () => new Map<string, string>(),
 }));
 
