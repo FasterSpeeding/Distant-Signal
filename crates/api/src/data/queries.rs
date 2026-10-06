@@ -2496,6 +2496,26 @@ fn line_train_entry_row(
     }
 }
 
+/// A CTE `pop` holding one line's population row for `($1, $2)`: the
+/// population as an array (`'[]'` for anything else) and
+/// [`POPULATION_HAS_SCOPE_SQL`] -- both worked out ONCE.
+///
+/// A per-element expression (a select-list column, a `LATERAL` join
+/// condition) that names `p.population` itself detoasts the whole
+/// population again for every element: about 26 ms per element for the
+/// South West Main Line's 1.7 MB (compressed) population, so the 2,890
+/// entries of `/trains` took minutes and timed out (measured 2026-10-06
+/// on a production-shaped local copy). Through this CTE the per-element
+/// expressions read `pop.has_scope`, a plain boolean, and the population
+/// is expanded once.
+const POPULATION_CTE_SQL: &str = "pop AS MATERIALIZED ( \
+         SELECT CASE WHEN jsonb_typeof(p.population) = 'array' \
+                     THEN p.population ELSE '[]'::jsonb END AS population, \
+                (jsonb_typeof(p.population) = 'array' \
+                 AND COALESCE((p.population -> 0) ? 'scope', true)) AS has_scope \
+         FROM schedule_line_population p \
+         WHERE p.line_id = $1 AND p.service_date = $2)";
+
 /// Every element of one line's population, projected in SQL to what
 /// `GET /public/lines/{id}/trains` actually reads (see
 /// [`LineTrainEntryRow`]), in published array order.
@@ -2519,6 +2539,7 @@ pub async fn list_line_train_entries(
 ) -> Result<Option<LineTrainEntries>> {
     let rows: Vec<LineTrainEntryTuple> = sqlx::query_as(&format!(
         r"
+        WITH {POPULATION_CTE_SQL}
         SELECT x.ord,
                (x.e -> 'uid')::text,
                CASE WHEN jsonb_typeof(x.e -> 'uid') = 'string' THEN x.e ->> 'uid' END,
@@ -2529,7 +2550,7 @@ pub async fn list_line_train_entries(
                CASE WHEN jsonb_typeof(x.e -> 'calling_points') = 'array'
                      AND jsonb_typeof(x.e -> 'calling_points' -> -1 -> 'tiploc') = 'string'
                     THEN x.e -> 'calling_points' -> -1 ->> 'tiploc' END,
-               {POPULATION_HAS_SCOPE_SQL},
+               pop.has_scope,
                x.e ->> 'scope',
                x.e ->> 'direction',
                x.e ->> 'run_first_crs',
@@ -2539,18 +2560,15 @@ pub async fn list_line_train_entries(
                     THEN (x.e -> 'line_due' ->> 'day_offset')::int END,
                CASE WHEN jsonb_typeof(x.e -> 'train_status') = 'string'
                     THEN x.e ->> 'train_status' END
-        FROM schedule_line_population p
-        LEFT JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(p.population) = 'array' THEN p.population ELSE '[]'::jsonb END
-        ) WITH ORDINALITY AS x(e, ord)
+        FROM pop
+        LEFT JOIN LATERAL jsonb_array_elements(pop.population) WITH ORDINALITY AS x(e, ord)
           -- The scope filter lives in the join, not the WHERE, so a filter
           -- that keeps nothing still yields the one all-NULL row (an
           -- existing population, empty after filtering -- not a 404). A
           -- population without `scope` is never filtered.
           ON ($3::text[] IS NULL
-              OR NOT {POPULATION_HAS_SCOPE_SQL}
+              OR NOT pop.has_scope
               OR x.e ->> 'scope' = ANY($3::text[]))
-        WHERE p.line_id = $1 AND p.service_date = $2
         ORDER BY x.ord
         "
     ))
