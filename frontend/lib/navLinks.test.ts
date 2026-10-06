@@ -4,7 +4,9 @@ import {
   accountMenuDestinations,
   CHAT_DESTINATION,
   GROUPS_DESTINATION,
+  isActiveNavHref,
   navDrawerDestinations,
+  PLAN_JOURNEY_DESTINATION,
   PRIMARY_NAV_DESTINATIONS,
   TRACK_JOURNEY_DESTINATION,
   TRACKED_TRAINS_DESTINATION,
@@ -22,6 +24,36 @@ describe('TRACK_JOURNEY_DESTINATION', () => {
   it('is included in the drawer, for every visitor', () => {
     const hrefs = navDrawerDestinations(false, false).map((d) => d.href);
     expect(hrefs).toContain(TRACK_JOURNEY_DESTINATION.href);
+  });
+});
+
+describe('PLAN_JOURNEY_DESTINATION', () => {
+  it('points at the /plan page', () => {
+    expect(PLAN_JOURNEY_DESTINATION).toEqual({ href: '/plan', label: 'Plan a Journey' });
+  });
+
+  it('is not one of the always-inline primary links: the bar adds it itself, from lg up', () => {
+    expect(PRIMARY_NAV_DESTINATIONS).not.toContain(PLAN_JOURNEY_DESTINATION);
+  });
+
+  it('sits straight after "Track a Journey" in the drawer, signed in or not', () => {
+    for (const authenticated of [false, true]) {
+      const drawer = navDrawerDestinations(authenticated, false);
+      const trackIndex = drawer.indexOf(TRACK_JOURNEY_DESTINATION);
+      expect(trackIndex).toBeGreaterThanOrEqual(0);
+      expect(drawer[trackIndex + 1]).toBe(PLAN_JOURNEY_DESTINATION);
+      expect(drawer.filter((d) => d.href === '/plan')).toHaveLength(1);
+    }
+  });
+});
+
+describe('isActiveNavHref', () => {
+  it('matches the exact path only', () => {
+    expect(isActiveNavHref('/plan', '/plan')).toBe(true);
+    expect(isActiveNavHref('/journeys/new', '/plan')).toBe(false);
+    expect(isActiveNavHref('/lines/abc', '/lines')).toBe(false);
+    expect(isActiveNavHref('/lines', '/')).toBe(false);
+    expect(isActiveNavHref(null, '/plan')).toBe(false);
   });
 });
 

@@ -96,7 +96,9 @@ describe('AppNavDrawer', () => {
 
     const current = await screen.findByRole('link', { name: 'Station Lookup' });
     expect(current).toHaveAttribute('data-active', 'true');
+    expect(current).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: 'All Lines' })).not.toHaveAttribute('data-active');
+    expect(screen.getByRole('link', { name: 'All Lines' })).not.toHaveAttribute('aria-current');
   });
 
   it('closes itself once a navigation has happened', async () => {

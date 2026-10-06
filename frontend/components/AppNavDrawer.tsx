@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import { Burger, Drawer, NavLink, Stack, useMantineTheme } from '@mantine/core';
 import type { MantineBreakpoint } from '@mantine/core';
 import { useDisclosure, useMediaQuery } from '@mantine/hooks';
-import type { NavDestination } from '@/lib/navLinks';
+import { isActiveNavHref, type NavDestination } from '@/lib/navLinks';
 
 /** The app's small-screen navigation: a `Burger` in the bar that opens a
  * `Drawer` of full-width, touch-sized links.
@@ -114,10 +114,11 @@ export function AppNavDrawer({
               component={Link}
               href={destination.href}
               label={destination.label}
-              // Marks the row for the page you are already on. Exact
-              // match, not `startsWith`: `/` would otherwise light up on
-              // every route, and `/track/mine` is a leaf anyway.
-              active={pathname === destination.href}
+              // Marks the row for the page you are already on (exact
+              // match -- see `isActiveNavHref`). Mantine's `NavLink` sets
+              // `data-active` for the tint; `aria-current` says it aloud.
+              active={isActiveNavHref(pathname, destination.href)}
+              aria-current={isActiveNavHref(pathname, destination.href) ? 'page' : undefined}
             />
           ))}
         </Stack>

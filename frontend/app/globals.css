@@ -1180,6 +1180,15 @@ a[data-text-link='always'] {
   text-decoration: underline;
 }
 
+/* The nav bar's current page (`PrimaryNavLink` sets `aria-current`). A
+   thicker, always-on underline rather than bold text: bold would widen the
+   label, and the bar's single-row fit is measured to a few pixels (see
+   `AppNavBar.tsx`). */
+a[data-text-link][aria-current='page'] {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+
 /* `TextLink tone="inherit"`: credit and licence links inside dimmed text
    keep their parent's colour (the credit wording is licence text, not a
    call to action), so the underline has to follow that colour rather than
