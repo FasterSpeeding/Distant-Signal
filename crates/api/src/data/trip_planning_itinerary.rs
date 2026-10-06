@@ -590,6 +590,7 @@ impl SegmentSearch<'_> {
             from_tiplocs,
             waypoints: &[],
             to_tiplocs,
+            vias: None,
             arrive_by_min,
             date: self.date,
         }
@@ -940,7 +941,7 @@ pub fn build_restrictions(
         let blocked: HashSet<usize> = avoid
             .iter()
             .flat_map(|tiploc| passes.connections_passing(tiploc))
-            .map(|&index| index as usize)
+            .map(|index| index as usize)
             .collect();
         let uids: HashSet<&str> = blocked
             .iter()
@@ -1052,6 +1053,7 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
         from_tiplocs: &tiplocs[0],
         waypoints: &tiplocs[1..last],
         to_tiplocs: &tiplocs[last],
+        vias: None,
         arrive_by_min: match input.time {
             TimeBound::ArriveBy(deadline) => deadline,
             TimeBound::DepartAfter(_) => 0,
@@ -1064,6 +1066,7 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
         from_tiplocs: &tiplocs[0],
         waypoints: &tiplocs[1..last],
         to_tiplocs: &tiplocs[last],
+        vias: None,
         date: search.date,
     };
     let (overlay, restrictions) = (search.overlay, search.restrictions);

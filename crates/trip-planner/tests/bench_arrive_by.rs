@@ -157,6 +157,7 @@ fn bench_arrive_by_and_restrictions() {
             from_tiplocs: &from,
             waypoints: &[],
             to_tiplocs: &to,
+            vias: None,
             arrive_by_min: deadline,
             date,
         };
@@ -230,6 +231,10 @@ fn bench_arrive_by_and_restrictions() {
 /// old chained CSA (one search per segment) for comparison.
 #[test]
 #[ignore = "benchmark; see the module doc"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one benchmark table, read top to bottom"
+)]
 fn bench_waypoints() {
     use trip_planner::{
         StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
@@ -255,6 +260,7 @@ fn bench_waypoints() {
                 from_tiplocs: &from,
                 waypoints: &waypoints,
                 to_tiplocs: &to,
+                vias: None,
                 date,
             };
             let arrive = ArriveByOptions {
@@ -263,6 +269,7 @@ fn bench_waypoints() {
                 from_tiplocs: &from,
                 waypoints: &waypoints,
                 to_tiplocs: &to,
+                vias: None,
                 arrive_by_min: 1380,
                 date,
             };
