@@ -21,7 +21,9 @@ described:
 - `GET /public/trains/search` rows and
   `GET /Journeys/{journeyId}/legs/{legId}/candidates` rows;
 - `GET /public/stations/{crs}/schedule-departures` rows;
-- `GET /public/lines/{id}/trains` entries (top level, beside `liveStatus`);
+- `GET /public/lines/{id}/trains` entries (top level, beside `liveStatus`
+  and the membership fields; a bus or ferry is never a line's own train,
+  so it comes back `scope: "shared"` or `"touch"`, never `"line"`);
 - `GET /Trips/plan` train legs;
 - `GET /Train/{trackingId}/tickets/{ticketId}/delay-repay`.
 

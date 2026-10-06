@@ -1186,6 +1186,48 @@ mod custom_line_detail_wire_shape_tests {
 mod tests {
     use super::*;
 
+    fn bus_row() -> queries::LineTrainEntryRow {
+        queries::LineTrainEntryRow {
+            uid_json: Some("\"C30818\"".to_owned()),
+            uid: Some("C30818".to_owned()),
+            calling_points_json: Some("[]".to_owned()),
+            train_status: Some("B".to_owned()),
+            first_tiploc: None,
+            last_tiploc: None,
+            scope: Some("shared".to_owned()),
+            direction: Some("up".to_owned()),
+            run_first_crs: Some("WEY".to_owned()),
+            run_last_crs: Some("WAT".to_owned()),
+            line_due_time: Some("06:10:00".to_owned()),
+            line_due_day_offset: Some(0),
+        }
+    }
+
+    /// The handler takes the membership fields out of the row first; the
+    /// service mode (uid, train_status) must still be read correctly.
+    #[test]
+    fn a_line_entry_yields_both_membership_and_service_mode() {
+        use crate::data::schedule_services::ServiceMode;
+        let mut entry = bus_row();
+        let membership = membership_json(&mut entry);
+        assert_eq!(membership.scope.as_deref(), Some("shared"));
+        assert_eq!(
+            membership.line_due.map(|due| due.time).as_deref(),
+            Some("06:10:00")
+        );
+        // No schedule_services row: the population's Train Status decides.
+        assert_eq!(
+            entry_service_mode(&entry, &HashMap::new()),
+            ServiceMode::Bus
+        );
+        // A schedule_services row wins.
+        let modes = HashMap::from([("C30818".to_owned(), ServiceMode::ReplacementBus)]);
+        assert_eq!(
+            entry_service_mode(&entry, &modes),
+            ServiceMode::ReplacementBus
+        );
+    }
+
     #[test]
     fn tfl_names_are_suffixed_to_disambiguate_from_catalogue_lines() {
         // `lines/northern.toml` and `lines/elizabeth-line.toml` share these

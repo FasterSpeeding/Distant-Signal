@@ -1640,6 +1640,36 @@ mod tests {
         assert!(bus["liveStatus"].is_null());
     }
 
+    /// A line's bus carries its membership (`shared`: buses are never a
+    /// line's own trains) and its service mode side by side.
+    #[test]
+    fn line_train_json_flattens_membership_and_service_mode_together() {
+        let json = serde_json::to_value(line_train_json(
+            serde_json::value::to_raw_value("C30818").unwrap(),
+            serde_json::value::to_raw_value(&serde_json::json!([])).unwrap(),
+            None,
+            &ScheduleRouteEndpoints::default(),
+            LineMembershipJson {
+                scope: Some("shared".to_owned()),
+                direction: Some("down".to_owned()),
+                run_first_crs: Some("WAT".to_owned()),
+                run_last_crs: Some("WEY".to_owned()),
+                line_due: Some(LineDueJson {
+                    time: "23:35:00".to_owned(),
+                    day_offset: 0,
+                }),
+            },
+            crate::data::schedule_services::ServiceMode::ReplacementBus,
+        ))
+        .unwrap();
+        assert_eq!(json["scope"], "shared");
+        assert_eq!(json["direction"], "down");
+        assert_eq!(json["runFirstCrs"], "WAT");
+        assert_eq!(json["lineDue"]["time"], "23:35:00");
+        assert_eq!(json["serviceMode"], "replacementBus");
+        assert_eq!(json["liveTracking"], false);
+    }
+
     #[test]
     fn line_train_json_with_no_live_row_passes_the_population_entry_through_and_nulls_live_status()
     {
