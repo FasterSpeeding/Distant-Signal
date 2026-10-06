@@ -3,6 +3,69 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-06: buses and ferries (`serviceMode`, `liveTracking`); no writes on train-page reads
+
+The CIF timetable carries buses and ferries alongside trains (about 9% of
+weekday schedules, 19% on Saturday, 25% on Sunday), and Network Rail's
+live feed never reports any of them. Every surface used to present them as
+trains forever waiting for a movement report.
+
+### New fields: `serviceMode`, `liveTracking`
+
+Added (always present from this release) wherever a scheduled service is
+described:
+
+- `GET /Train/by-uid/{uid}/{date}`;
+- `GET /Train/{trackingId}`, `GET /Train/mine` items and journey legs'
+  tracked-train states;
+- `GET /public/trains/search` rows and
+  `GET /Journeys/{journeyId}/legs/{legId}/candidates` rows;
+- `GET /public/stations/{crs}/schedule-departures` rows;
+- `GET /public/lines/{id}/trains` entries (top level, beside `liveStatus`);
+- `GET /Trips/plan` train legs;
+- `GET /Train/{trackingId}/tickets/{ticketId}/delay-repay`.
+
+```json
+"serviceMode": "replacementBus",
+"liveTracking": false
+```
+
+- `serviceMode` is `train`, `replacementBus` (CIF Train Status `5` or
+  Train Category `BR`), `bus` (any other bus: status `B` or category
+  `BS`) or `ferry` (status `S`/`4`). It is per `(uid, service date)`: an
+  STP overlay can make a train a replacement bus on some dates only.
+- `liveTracking` is `false` exactly when `serviceMode` is not `train`: no
+  live position, delay, platform or arrival will ever arrive for it.
+- **`/Trips/plan` legs keep `kind: "train"`** for a bus or ferry leg, so
+  a client branching on `kind` keeps working; read `serviceMode` to label
+  it.
+- A schedule the backend has no mode for (not yet published for that
+  date) reads as `train`, which is the old behaviour.
+
+### Delay Repay
+
+`GET /Train/{trackingId}/tickets/{ticketId}/delay-repay` for a bus or
+ferry returns `delayMinutes: null`, `estimate: null` and a new
+`unmeasurableReason` string saying the delay cannot be measured;
+`claimUrl` and `disclaimer` are still populated. `unmeasurableReason` is
+`null` for a train.
+
+### Changed behaviour
+
+- **Tracking a bus or ferry.** Allowed, timetable-only: the subscription
+  is schedule-matched from CIF at once and stays `schedule_matched` (it
+  can never become `resolved`). It gets no live alerts and no station-skip
+  alerts.
+- **Recurring-journey auto-commit** picks a train whenever one fits the
+  leg, and a bus or ferry only when none does.
+- **`GET /Train/by-uid/{uid}/{date}` no longer creates a `trains` row.**
+  For a published schedule nobody has tracked and TRUST has not reported,
+  it returns a read-only schedule view with **`trainsId: 0`** (no shared
+  row exists; still a number, as DS-MCP's schema requires) and every live
+  field `null`. Once the train is tracked or reported, `trainsId` is the
+  real row's id. Clients must not treat `trainsId` as stable across that
+  transition (none did: it was never a tracking id).
+
 ## 2026-10-06: incidents on the lines they name; `upcoming` on line status
 
 Design:
