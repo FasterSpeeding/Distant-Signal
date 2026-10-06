@@ -96,6 +96,7 @@ function summary(overrides: Partial<IncidentSearchResponse['results'][number]> =
     isCleared: false,
     firstSeenAt: '2026-08-30T09:00:00Z',
     fetchedAt: '2026-08-31T10:15:00Z',
+    sourceRemovedAt: null as string | null,
     ...overrides,
   };
 }
@@ -312,6 +313,46 @@ describe('IncidentSearchForm', () => {
   // *would* cap the height correctly. That is deliberate rather than
   // incidental: the choice here is "no nested scroller at all, the page
   // scrolls", and `IncidentSearchForm.tsx`'s own comment records why.
+  it('picks Ended in the Status filter and writes state=ended to both the request and the URL', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    await awaitMountSettled();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Ended' }));
+    await clickSearch();
+
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledTimes(1));
+    const url = new URL(`http://localhost${String(replaceMock.mock.calls[0]![0])}`);
+    expect(url.searchParams.get('state')).toBe('ended');
+    const lastFetchUrl = new URL(String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]![0]), 'http://localhost');
+    expect(lastFetchUrl.searchParams.get('state')).toBe('ended');
+  });
+
+  it('badges each row Active, Ended or Cleared, saying when an ended one was last listed', async () => {
+    fetchMock.mockReturnValue(
+      okResponse({
+        results: [
+          summary({ incidentId: 'a', summary: 'Still listed' }),
+          summary({ incidentId: 'e', summary: 'Purged overnight', sourceRemovedAt: '2026-10-05T22:55:00+00:00' }),
+          summary({ incidentId: 'c', summary: 'Cleared by RDM', isCleared: true }),
+        ],
+        nextCursor: null,
+      }),
+    );
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    await clickSearch();
+    await screen.findByText('Purged overnight');
+
+    const states = Array.from(document.querySelectorAll('[data-incident-state]')).map((el) =>
+      el.getAttribute('data-incident-state'),
+    );
+    expect(states).toEqual(['active', 'ended', 'cleared']);
+    expect(document.querySelector('[data-incident-state="ended"]')).toHaveAttribute(
+      'title',
+      'No longer listed by the source since 5 Oct 2026, 23:55',
+    );
+  });
+
   it('renders the results list in the page flow, with no fixed-height or scroll-container ancestor', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [summary({ incidentId: '1' })], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
@@ -725,6 +766,37 @@ describe('IncidentSearchForm', () => {
       expect(screen.getByRole('radio', { name: 'Active' })).toBeChecked();
     });
 
+    it('restores Ended from initialState, which wins over a legacy initialCleared, and searches with state=ended', async () => {
+      fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+      renderWithMantine(
+        <IncidentSearchForm
+          lines={TEST_LINES}
+          tocs={TEST_TOCS}
+          initialFrom="2026-08-01T00:00:00Z"
+          initialState="ended"
+          initialCleared="true"
+        />,
+      );
+      await awaitMountSettled();
+
+      expect(screen.getByRole('radio', { name: 'Ended' })).toBeChecked();
+      const requestedUrl = new URL(fetchMock.mock.calls[0]![0], 'http://localhost');
+      expect(requestedUrl.searchParams.get('state')).toBe('ended');
+      expect(requestedUrl.searchParams.has('cleared')).toBe(false);
+    });
+
+    it('ignores an unknown initialState rather than sending it', async () => {
+      fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+      renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialState="gone" />);
+      await awaitMountSettled();
+
+      for (const name of ['Active', 'Ended', 'Cleared']) {
+        expect(screen.getByRole('radio', { name })).not.toBeChecked();
+      }
+      const requestedUrl = new URL(fetchMock.mock.calls[0]![0], 'http://localhost');
+      expect(requestedUrl.searchParams.has('state')).toBe(false);
+    });
+
     it('falls back to blank instead of crashing on an unparseable initialPriorityMin', async () => {
       fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMin="not-a-number" />);
@@ -779,7 +851,10 @@ describe('IncidentSearchForm', () => {
       // 23:00Z the day before (FE-5).
       expect(requestedUrl.searchParams.get('from')).toBe('2026-07-31T23:00:00.000Z');
       expect(requestedUrl.searchParams.get('planned')).toBe('true');
-      expect(requestedUrl.searchParams.get('cleared')).toBe('false');
+      // The legacy `cleared=false` restores Active, which is now sent as
+      // `state=active` (it no longer includes "Ended" rows).
+      expect(requestedUrl.searchParams.get('state')).toBe('active');
+      expect(requestedUrl.searchParams.has('cleared')).toBe(false);
       expect(requestedUrl.searchParams.get('priority_min')).toBe('2');
       expect(requestedUrl.searchParams.get('priority_max')).toBe('8');
       // The mount effect itself must not touch the URL -- only an explicit

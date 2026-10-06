@@ -306,6 +306,29 @@ ON CONFLICT (incident_id) DO UPDATE SET
     is_planned = EXCLUDED.is_planned, is_cleared = EXCLUDED.is_cleared,
     affected_lines = EXCLUDED.affected_lines, fetched_at = EXCLUDED.fetched_at;
 
+-- An "Ended" incident: planned work the Knowledgebase feed stopped listing
+-- without ever clearing it (it never clears planned work), so the archive's
+-- third badge has something to show. See
+-- docs/superpowers/specs/2026-10-06-incident-source-removal-design.md.
+INSERT INTO incidents (
+    incident_id, summary, description, operators, affected_stations,
+    priority, validity_periods, is_planned, is_cleared, fetched_at, first_seen_at,
+    affected_lines, source_missing_polls, source_removed_at
+) VALUES
+('PREVIEW-INCIDENT-5',
+ 'Planned engineering work: Doncaster to Leeds (no longer listed)',
+ 'Engineering work between Doncaster and Leeds. Buses replace trains.',
+ '{GR}', '{DON,LDS}', 4,
+ '[{"from_date":"2026-09-19T22:00:00Z","to_date":null,"is_now":true}]'::jsonb,
+ TRUE, FALSE, NOW() - interval '3 days', NOW() - interval '6 days', '{lner-ecml}',
+ 2, NOW() - interval '3 days')
+ON CONFLICT (incident_id) DO UPDATE SET
+    summary = EXCLUDED.summary, description = EXCLUDED.description,
+    is_planned = EXCLUDED.is_planned, is_cleared = EXCLUDED.is_cleared,
+    fetched_at = EXCLUDED.fetched_at, affected_lines = EXCLUDED.affected_lines,
+    source_missing_polls = EXCLUDED.source_missing_polls,
+    source_removed_at = EXCLUDED.source_removed_at;
+
 -- -------------------------------------------------------------------------
 -- Scheduled departures -- backs /trains search, the station timetable section
 -- on /stations/[crs], and /lines/[id]'s train list.

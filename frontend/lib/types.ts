@@ -53,6 +53,11 @@ export interface IncidentDetail {
   isCleared: boolean;
   firstSeenAt: string; // RFC3339
   fetchedAt: string; // RFC3339
+  /** RFC3339: when the Knowledgebase feed last listed an incident it has
+   * since stopped listing without clearing it ("Ended"), else `null`. See
+   * `incidentState` (`lib/incidents.ts`). Optional only for a bundle served
+   * against an api that predates it. */
+  sourceRemovedAt?: string | null;
   currentlyAffectsLines: IncidentLineRef[];
   history: IncidentHistoryEntry[];
 }
@@ -80,6 +85,8 @@ export interface IncidentSummary {
   isCleared: boolean;
   firstSeenAt: string; // RFC3339
   fetchedAt: string; // RFC3339
+  /** See `IncidentDetail.sourceRemovedAt`. */
+  sourceRemovedAt?: string | null;
 }
 
 export interface IncidentSearchResponse {

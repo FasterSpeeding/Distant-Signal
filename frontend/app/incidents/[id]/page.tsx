@@ -3,7 +3,9 @@ import { Badge, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getAllTocs, getIncident, getStationName } from '@/lib/api';
+import { endedDescription, incidentState } from '@/lib/incidents';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
+import { IncidentStateBadge } from '@/components/IncidentStateBadge';
 import { ShareButton } from '@/components/ShareButton';
 import { TextLink } from '@/components/TextLink';
 import { formatDateTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
@@ -104,6 +106,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
   ]);
   const tocLookup = tocNameLookup(tocs);
   const stationNamesByCrs = new Map(incident.affectedStations.map((crs, i) => [crs, stationNames[i]]));
+  const state = incidentState(incident);
 
   return (
     <Stack p="lg" gap="md">
@@ -142,10 +145,9 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
             {incident.isPlanned ? 'Planned Work' : 'Real-Time'}
           </Badge>
           {/* Review §3.3's "at-a-glance strip": the archive rows' own
-              Active/Cleared badge, reused verbatim (same colors, same
-              copy) so a reader who has seen the archive recognises it
-              immediately here. */}
-          <Badge color={incident.isCleared ? 'gray' : 'green'}>{incident.isCleared ? 'Cleared' : 'Active'}</Badge>
+              Active/Ended/Cleared badge, the same component, so a reader
+              who has seen the archive recognises it immediately here. */}
+          <IncidentStateBadge isCleared={incident.isCleared} sourceRemovedAt={incident.sourceRemovedAt} />
         </Group>
         <ShareButton />
       </Group>
@@ -210,9 +212,16 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           what "not currently reported on any tracked line" means. Once
           cleared, this whole section says so instead of listing lines that
           are, definitionally, no longer meaningfully "current". */}
-      {incident.isCleared ? (
+      {/* An "Ended" incident (the Knowledgebase feed stopped listing it
+          without clearing it) is no more "current" than a cleared one, so
+          it gets the same treatment, with the words the badge carries. */}
+      {state === 'cleared' ? (
         <Text size="sm" c="dimmed">
           This incident has been cleared.
+        </Text>
+      ) : state === 'ended' && incident.sourceRemovedAt ? (
+        <Text size="sm" c="dimmed">
+          {endedDescription(incident.sourceRemovedAt)}.
         </Text>
       ) : (
         <Stack gap={4}>

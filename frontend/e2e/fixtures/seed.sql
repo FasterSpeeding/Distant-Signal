@@ -132,6 +132,30 @@ ON CONFLICT (incident_id) DO UPDATE SET
   summary = EXCLUDED.summary, description = EXCLUDED.description,
   validity_periods = EXCLUDED.validity_periods, affected_lines = EXCLUDED.affected_lines;
 
+-- An "Ended" incident (left the feed without RDM clearing it), so the
+-- /incidents accessibility scan covers the third state badge too. See
+-- docs/superpowers/specs/2026-10-06-incident-source-removal-design.md.
+INSERT INTO incidents (
+    incident_id, summary, description, operators, affected_stations,
+    priority, validity_periods, is_planned, is_cleared, fetched_at,
+    first_seen_at, affected_lines, source_missing_polls, source_removed_at
+)
+VALUES (
+    'FIXTURE-INCIDENT-ENDED',
+    'Planned engineering work between Peterborough and Grantham',
+    'Fixture incident: planned engineering work the source stopped listing without clearing it.',
+    '{GR}', '{}',
+    4,
+    '[{"from_date":"2026-09-17T22:00:00Z","to_date":null,"is_now":true}]'::jsonb,
+    TRUE, FALSE, NOW() - interval '2 days', NOW() - interval '3 days', '{lner-ecml}',
+    2, NOW() - interval '2 days'
+)
+ON CONFLICT (incident_id) DO UPDATE SET
+  summary = EXCLUDED.summary, description = EXCLUDED.description,
+  validity_periods = EXCLUDED.validity_periods, affected_lines = EXCLUDED.affected_lines,
+  fetched_at = EXCLUDED.fetched_at, source_missing_polls = EXCLUDED.source_missing_polls,
+  source_removed_at = EXCLUDED.source_removed_at;
+
 -- ---------------------------------------------------------------------
 -- Shared train identity + a pinned RESOLVED subscription (the second
 -- train_subscriptions row -- see the unresolved one's comment above for why

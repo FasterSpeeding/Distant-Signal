@@ -19,12 +19,28 @@ import {
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { londonCalendarDay, londonDayEndIso, londonDayStartIso, nowInLondon } from '@/lib/londonWallClock';
+import { IncidentStateBadge } from './IncidentStateBadge';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { formatDateTime } from '@/lib/dateFormat';
 import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
 
 type DatePreset = '7d' | '30d' | '90d' | 'all';
+
+/** The Status filter: `GET /public/incidents`' `state`, or no filter.
+ * "Ended" is an incident the Knowledgebase feed stopped listing without
+ * clearing it (see `incidentState` in `lib/incidents.ts`). */
+type StateFilter = 'all' | 'active' | 'ended' | 'cleared';
+
+/** The Status filter a URL restores: `?state=` when it names a real state,
+ * else the legacy `?cleared=` boolean (`false` = active, `true` = cleared),
+ * else All. Malformed means absent, as for the priority params. */
+function initialStateFilter(state: string | undefined, cleared: string | undefined): StateFilter {
+  if (state === 'active' || state === 'ended' || state === 'cleared') return state;
+  if (cleared === 'false') return 'active';
+  if (cleared === 'true') return 'cleared';
+  return 'all';
+}
 
 /** How many affected-line badges one result row shows before collapsing the
  * rest into a "+N more". An operator-only incident on a large TOC matches
@@ -129,6 +145,7 @@ export function IncidentSearchForm({
   initialTo = '',
   initialPeriod,
   initialPlanned,
+  initialState,
   initialCleared,
   initialPriorityMin,
   initialPriorityMax,
@@ -141,6 +158,10 @@ export function IncidentSearchForm({
   initialTo?: string;
   initialPeriod?: string;
   initialPlanned?: string;
+  /** `?state=active|ended|cleared`, the Status filter's own URL form. */
+  initialState?: string;
+  /** Legacy `?cleared=true|false` (links shared before `state` existed):
+   * read only when `initialState` is absent. */
   initialCleared?: string;
   initialPriorityMin?: string;
   initialPriorityMax?: string;
@@ -180,9 +201,7 @@ export function IncidentSearchForm({
   const [plannedFilter, setPlannedFilter] = useState<'all' | 'planned' | 'realtime'>(
     initialPlanned === 'true' ? 'planned' : initialPlanned === 'false' ? 'realtime' : 'all',
   );
-  const [clearedFilter, setClearedFilter] = useState<'all' | 'active' | 'cleared'>(
-    initialCleared === 'false' ? 'active' : initialCleared === 'true' ? 'cleared' : 'all',
-  );
+  const [stateFilter, setStateFilter] = useState<StateFilter>(initialStateFilter(initialState, initialCleared));
   const [priorityMin, setPriorityMin] = useState<number | ''>(parsePriorityParam(initialPriorityMin));
   const [priorityMax, setPriorityMax] = useState<number | ''>(parsePriorityParam(initialPriorityMax));
   const [results, setResults] = useState<Results>(null);
@@ -236,8 +255,10 @@ export function IncidentSearchForm({
     if (toDate) params.set('to', londonDayEndIso(toDate));
     if (plannedFilter === 'planned') params.set('planned', 'true');
     if (plannedFilter === 'realtime') params.set('planned', 'false');
-    if (clearedFilter === 'active') params.set('cleared', 'false');
-    if (clearedFilter === 'cleared') params.set('cleared', 'true');
+    // `state`, not the legacy `cleared` boolean: `cleared=false` can only
+    // say "not cleared", and "Ended" (no longer listed by the feed) is a
+    // third state of its own.
+    if (stateFilter !== 'all') params.set('state', stateFilter);
     if (priorityMin !== '') params.set('priority_min', String(priorityMin));
     if (priorityMax !== '') params.set('priority_max', String(priorityMax));
     return params;
@@ -332,7 +353,7 @@ export function IncidentSearchForm({
    * but a future change removing that default must not turn this into an
    * unasked-for "search everything" on every page load.
    *
-   * Also restores `plannedFilter`/`clearedFilter`/`priorityMin`/
+   * Also restores `plannedFilter`/`stateFilter`/`priorityMin`/
    * `priorityMax` from the URL now, not just the default 30-day-floor
    * search this comment originally described: once those four fields'
    * own `initialX` props seed the `useState`s above, this same
@@ -517,7 +538,7 @@ export function IncidentSearchForm({
               </Group>
               <Group gap="xs">
                 <Badge color={row.isPlanned ? 'blue' : 'orange'}>{row.isPlanned ? 'Planned Work' : 'Real-Time'}</Badge>
-                <Badge color={row.isCleared ? 'gray' : 'green'}>{row.isCleared ? 'Cleared' : 'Active'}</Badge>
+                <IncidentStateBadge isCleared={row.isCleared} sourceRemovedAt={row.sourceRemovedAt} />
                 {row.operators.map((code) => (
                   <Badge key={code} variant="outline" color="grape">
                     {code}
@@ -712,11 +733,12 @@ export function IncidentSearchForm({
               color="grape"
               // See the Period `SegmentedControl` above for why.
               autoContrast={false}
-              value={clearedFilter}
-              onChange={(value) => setClearedFilter(value as 'all' | 'active' | 'cleared')}
+              value={stateFilter}
+              onChange={(value) => setStateFilter(value as StateFilter)}
               data={[
                 { label: 'All', value: 'all' },
                 { label: 'Active', value: 'active' },
+                { label: 'Ended', value: 'ended' },
                 { label: 'Cleared', value: 'cleared' },
               ]}
             />
