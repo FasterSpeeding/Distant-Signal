@@ -283,15 +283,15 @@ struct Resolution<'a> {
 ///
 /// 1. The summary's places, resolved against every catalogue line. Those
 ///    on in-scope lines go through [`select_lines`].
-/// 2. When the summary also names a place no in-scope line holds and no
-///    in-scope line holds two of its places, the lines of ANY operator
-///    holding two or more of them are used instead, when there are any
-///    (2026-10-06 decision 5: a mis-tagged operator, or a section another
-///    operator runs: 06724BDE, "XC" on "Grantham and Skegness", is the
-///    Poacher line; Shepherds Bush-Watford and Ashford-Rye are Southern's).
-///    Otherwise the in-scope lines from step 1, possibly none: a summary
-///    naming only places the operator does not serve shows nowhere rather
-///    than operator-wide.
+/// 2. When no in-scope line holds any of the summary's places, the lines
+///    of ANY operator holding two or more of them (2026-10-06 decision 5:
+///    a mis-tagged operator, 06724BDE's "XC" on "Grantham and Skegness" is
+///    the Poacher line), else none: a summary naming only places the
+///    operator's lines do not hold shows nowhere rather than operator-wide.
+///    Not when an in-scope line holds one of them: "Reduced Thameslink
+///    service between London Kings Cross and Peterborough" (DB1DA9F3) is
+///    Thameslink's Peterborough line, not every line between Kings Cross
+///    and Peterborough.
 /// 3. A summary naming no place at all: the description's in-scope places
 ///    (descriptions add ticket acceptance and diversion routes, so they are
 ///    read only then, and never across operators).
@@ -342,25 +342,17 @@ fn resolve_places<'a>(
         };
     }
     let in_scope_places = restrict(&summary, |crs| scope_pool.contains(crs));
-    let per_line = select_lines(&in_scope, &in_scope_places);
-    let off_scope = in_scope_places.len() < summary.len();
-    let in_scope_section = per_line
-        .values()
-        .any(|crs| places_held(&in_scope_places, crs) >= 2);
-    if off_scope && !in_scope_section {
-        let any_operator: HashMap<&'a str, Vec<String>> = select_lines(eligible, &summary)
-            .into_iter()
-            .filter(|(_, crs)| places_held(&summary, crs) >= 2)
-            .collect();
-        if !any_operator.is_empty() {
-            return Resolution {
-                per_line: any_operator,
-                named: true,
-            };
-        }
+    if in_scope_places.is_empty() {
+        return Resolution {
+            per_line: select_lines(eligible, &summary)
+                .into_iter()
+                .filter(|(_, crs)| places_held(&summary, crs) >= 2)
+                .collect(),
+            named: true,
+        };
     }
     Resolution {
-        per_line,
+        per_line: select_lines(&in_scope, &in_scope_places),
         named: true,
     }
 }
@@ -12738,6 +12730,18 @@ mod tests {
         // Correctly tagged, the same answer.
         let found = evidence("Disruption between Grantham and Skegness", "", &["EM"]);
         assert_eq!(ids(&found), ["emr-poacher"]);
+        // DB1DA9F3: a Thameslink line holds Peterborough, so the section
+        // does not jump to the lines between Kings Cross and Peterborough.
+        let found = evidence(
+            "Reduced Thameslink service between London Kings Cross and Peterborough",
+            "",
+            &["TL"],
+        );
+        assert!(
+            found.iter().all(|(id, _)| id.starts_with("thameslink-")),
+            "{found:?}"
+        );
+        assert!(!found.is_empty());
     }
 
     #[test]
