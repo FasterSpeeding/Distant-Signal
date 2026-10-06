@@ -137,11 +137,13 @@ station's minimum change time plus `TRIP_PLAN_ROAD_WATER_CHANGE_MINUTES`
 each bus or ferry side: alighting from one to change, and boarding one at a
 change. Bus-to-train is +5, bus-to-bus +10, never at the origin or
 destination. CSA, RAPTOR and the staged search apply it; the arrive-by
-backward scan mirrors it. The bus/ferry services are, for now, the UIDs that
-call at a bus stop or ferry terminal; a rail-replacement bus calling only at
-station TIPLOCs is missed until the per-service mode (a separate change,
-`schedule_services`) can be read instead -- `trip_planning::modal_change_buffer`
-is the one function to switch.
+backward scan mirrors it. The bus/ferry services are the UIDs whose
+`schedule_services` mode (per service date) is `replacement_bus`, `bus` or
+`ferry`, so a rail-replacement bus calling only at station TIPLOCs is caught
+too. A UID with no `schedule_services` row (that date not yet published, or
+the table unreadable) falls back to the original heuristic: it is a bus or
+ferry when it calls at a bus stop or ferry terminal
+(`trip_planning::modal_change_buffer`, merged 2026-10-06).
 
 ## Coverage (2026-10-05 delivery)
 

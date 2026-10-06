@@ -322,31 +322,40 @@ fn parse_road_water_change_minutes(raw: Option<&str>) -> u32 {
     }
 }
 
-/// The date's bus and ferry services, for the change buffer: every UID
-/// calling at a bus stop or ferry terminal (`road_or_water_tiplocs`).
+/// The date's bus and ferry services, for the change buffer.
 ///
-/// An approximation until the schedule's own service mode is stored per
-/// UID: a rail-replacement bus that only calls at station TIPLOCs is not
-/// caught (so its changes cost the rail figure only). Switch this to the
-/// stored mode once that exists; the planner side takes any UID set.
+/// Each UID's published mode (`schedule_services`, `modes`) decides when it
+/// has a row, so a rail-replacement bus calling only at station TIPLOCs gets
+/// the buffer too, and a train that happens to call at a TIPLOC also listed
+/// as a bus stop does not. A UID with no row (the date not yet published,
+/// or a deploy before the first publish) falls back to the old heuristic:
+/// it is a bus or ferry when it calls at a bus stop or ferry terminal
+/// (`road_or_water_tiplocs`).
 #[expect(
     clippy::implicit_hasher,
     reason = "callers always use the default hasher"
 )]
 pub fn modal_change_buffer(
     by_uid: &HashMap<String, Vec<CallingPointForConnections>>,
+    modes: &HashMap<String, crate::data::schedule_services::ServiceMode>,
     road_or_water_tiplocs: &std::collections::HashSet<String>,
     minutes: u32,
 ) -> schedule_query::ModalChangeBuffer {
-    let road_or_water_uids = if minutes == 0 || road_or_water_tiplocs.is_empty() {
+    let road_or_water_uids = if minutes == 0 {
         std::collections::HashSet::new()
     } else {
         by_uid
             .iter()
-            .filter(|(_, points)| {
-                points.iter().any(|point| {
-                    road_or_water_tiplocs.contains(schedule_query::normalize_tiploc(&point.tiploc))
-                })
+            .filter(|(uid, points)| {
+                modes.get(uid.as_str()).map_or_else(
+                    || {
+                        points.iter().any(|point| {
+                            road_or_water_tiplocs
+                                .contains(schedule_query::normalize_tiploc(&point.tiploc))
+                        })
+                    },
+                    |mode| mode.is_timetable_only(),
+                )
             })
             .map(|(uid, _)| uid.clone())
             .collect()
@@ -752,7 +761,7 @@ mod road_or_water_tests {
             ("TRAIN".to_string(), vec![call("LEUCHRS"), call("EDINBUR")]),
         ]);
         let stops = HashSet::from(["SANWBUS".to_string()]);
-        let buffer = modal_change_buffer(&by_uid, &stops, 5);
+        let buffer = modal_change_buffer(&by_uid, &HashMap::new(), &stops, 5);
         assert_eq!(
             buffer.road_or_water_uids,
             HashSet::from(["BUS1".to_string()])
@@ -760,9 +769,42 @@ mod road_or_water_tests {
         assert_eq!(buffer.extra_for("BUS1"), 5);
         assert_eq!(buffer.extra_for("TRAIN"), 0);
         assert!(
-            modal_change_buffer(&by_uid, &stops, 0)
+            modal_change_buffer(&by_uid, &HashMap::new(), &stops, 0)
                 .road_or_water_uids
                 .is_empty()
+        );
+    }
+
+    /// A published mode wins over the bus-stop heuristic both ways; a UID
+    /// with no `schedule_services` row still falls back to it.
+    #[test]
+    fn the_published_service_mode_decides_the_buffer_when_present() {
+        use crate::data::schedule_services::ServiceMode;
+        let by_uid = HashMap::from([
+            // A replacement bus calling only at station TIPLOCs.
+            ("RBUS".to_string(), vec![call("LEUCHRS"), call("CUPR")]),
+            // A train calling at a TIPLOC also listed as a bus stop.
+            ("TRAIN".to_string(), vec![call("SANWBUS"), call("EDINBUR")]),
+            // No row: the heuristic.
+            ("UNPUB".to_string(), vec![call("SANWBUS"), call("LEUCHRS")]),
+            ("FERRY".to_string(), vec![call("ARDROSS"), call("BRODICK")]),
+        ]);
+        let modes = HashMap::from([
+            ("RBUS".to_string(), ServiceMode::ReplacementBus),
+            ("TRAIN".to_string(), ServiceMode::Train),
+            ("FERRY".to_string(), ServiceMode::Ferry),
+        ]);
+        let stops = HashSet::from(["SANWBUS".to_string()]);
+        let buffer = modal_change_buffer(&by_uid, &modes, &stops, 5);
+        assert_eq!(
+            buffer.road_or_water_uids,
+            HashSet::from(["RBUS".to_string(), "UNPUB".to_string(), "FERRY".to_string()])
+        );
+        // No bus stops known at all: published modes still apply.
+        let buffer = modal_change_buffer(&by_uid, &modes, &HashSet::new(), 5);
+        assert_eq!(
+            buffer.road_or_water_uids,
+            HashSet::from(["RBUS".to_string(), "FERRY".to_string()])
         );
     }
 

@@ -338,8 +338,17 @@ async fn get_trip_plan(
             };
             let mut interchange = trip_planning::fetch_interchange_data(&pool).await?;
             let road_or_water = trip_planning::fetch_road_or_water_tiplocs(&pool).await?;
+            // Per-UID published modes; an error degrades to the bus-stop
+            // heuristic for every UID rather than failing the plan.
+            let modes = crate::data::schedule_services::all_modes_for_date(&pool, date)
+                .await
+                .unwrap_or_else(|err| {
+                    tracing::warn!(error = ?err, %date, "could not read service modes");
+                    std::collections::HashMap::new()
+                });
             interchange.modal_change = trip_planning::modal_change_buffer(
                 &calling_points,
+                &modes,
                 &road_or_water,
                 trip_planning::road_water_change_minutes(),
             );

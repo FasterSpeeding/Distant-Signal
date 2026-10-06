@@ -410,6 +410,26 @@ pub async fn modes_for(
         .collect())
 }
 
+/// Every published row's [`ServiceMode`] on `service_date`, `train` rows
+/// included -- unlike [`modes_for`], a uid absent from the map has NO row
+/// (not published yet), so a caller can tell "a train" from "unknown" and
+/// fall back to its own heuristic. Used once per trip-planner graph build
+/// (a day's schedules, ~25-30k rows).
+pub async fn all_modes_for_date(
+    pool: &PgPool,
+    service_date: NaiveDate,
+) -> Result<HashMap<String, ServiceMode>> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT uid, mode FROM schedule_services WHERE service_date = $1")
+            .bind(service_date)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(uid, mode)| (uid, ServiceMode::from_db_str(&mode)))
+        .collect())
+}
+
 /// [`modes_for`] across several service dates at once (a journey's legs).
 pub async fn modes_for_pairs(
     pool: &PgPool,
@@ -697,6 +717,15 @@ mod db_tests {
             mode_for(&pool, "TSS0001", other).await.unwrap(),
             ServiceMode::Bus,
             "another date's rows are untouched"
+        );
+        let all = all_modes_for_date(&pool, date).await.unwrap();
+        assert_eq!(
+            all,
+            HashMap::from([
+                ("TSS0001".to_string(), ServiceMode::Train),
+                ("TSS0002".to_string(), ServiceMode::ReplacementBus),
+            ]),
+            "train rows are included; a dropped row is absent"
         );
         let pairs = vec![
             ("TSS0002".to_string(), date),
