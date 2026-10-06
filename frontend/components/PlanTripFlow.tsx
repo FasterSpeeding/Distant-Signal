@@ -14,7 +14,7 @@ import {
   type TripPlanQuery,
 } from '@/lib/tripPlan';
 import { getStationNames } from '@/lib/suggestions';
-import { codeRouteLabel } from '@/lib/stationLabel';
+import { codeRouteLabel, isTiplocCode } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
@@ -185,8 +185,12 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
             mode: 'knownTrain',
             trainUid: firstLeg.trainUid,
             serviceDate: firstLeg.serviceDate,
-            ...(firstLeg.originCrs ? { originCrs: firstLeg.originCrs } : {}),
-            ...(firstLeg.destinationCrs ? { destinationCrs: firstLeg.destinationCrs } : {}),
+            // A bus stop's `tiploc:` end is no CRS a journey leg can store:
+            // no override for that end.
+            ...(firstLeg.originCrs && !isTiplocCode(firstLeg.originCrs) ? { originCrs: firstLeg.originCrs } : {}),
+            ...(firstLeg.destinationCrs && !isTiplocCode(firstLeg.destinationCrs)
+              ? { destinationCrs: firstLeg.destinationCrs }
+              : {}),
           },
         }),
       });
@@ -239,8 +243,10 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
               mode: 'knownTrain',
               trainUid: leg.trainUid,
               serviceDate: leg.serviceDate,
-              ...(leg.originCrs ? { originCrs: leg.originCrs } : {}),
-              ...(leg.destinationCrs ? { destinationCrs: leg.destinationCrs } : {}),
+              ...(leg.originCrs && !isTiplocCode(leg.originCrs) ? { originCrs: leg.originCrs } : {}),
+              ...(leg.destinationCrs && !isTiplocCode(leg.destinationCrs)
+                ? { destinationCrs: leg.destinationCrs }
+                : {}),
             }),
           });
           // I1: a session can in principle expire mid-sequence too -- same

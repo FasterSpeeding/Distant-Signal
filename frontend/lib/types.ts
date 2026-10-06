@@ -491,6 +491,11 @@ export interface HistoryRetention {
 export interface Suggestion {
   code: string;
   name: string;
+  // Only on a `?stops=true` station search's bus stops and ferry terminals,
+  // whose `code` is `tiploc:TIPLOC` and `name` already says `(bus)` or
+  // `(ferry)`.
+  kind?: 'bus' | 'ferry';
+  parentCrs?: string;
 }
 
 /** A code/name pair from `GET /public/stations/nearby` --
@@ -704,7 +709,19 @@ export interface JourneyStop {
   canBoard?: boolean;
   canAlight?: boolean;
   requestStop?: boolean;
+  // What kind of place this stop is (`crates/api/src/data/journey.rs`'s
+  // `apply_locations`): `station` whenever `crs` is set; for a TIPLOC with no
+  // CRS, from `tiploc_locations` -- a bus stop, ferry terminal, junction...
+  // `name` then carries its display name ("Heathrow Terminal 3 (bus stop)").
+  // Optional: absent from an older backend, `null` when nothing is known.
+  locationType?: LocationType | null;
+  // A bus stop's or ferry terminal's station, to link to in its place.
+  parentCrs?: string | null;
 }
+
+/** `JourneyStop.locationType`. */
+export type LocationType =
+  'station' | 'bus_stop' | 'ferry_terminal' | 'junction' | 'siding' | 'passing_point' | 'other';
 
 /** `JourneyStop.board`: Darwin's view of this train at this stop, from the
  * station's live departure board. Darwin-sourced, unlike the TRUST-derived

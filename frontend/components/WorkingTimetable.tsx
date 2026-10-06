@@ -40,10 +40,12 @@ function WorkingTime({ value }: { value: string | null | undefined }) {
   );
 }
 
-/** A location's label in the detailed view: its station name, else its CRS,
- * else its bare TIPLOC (a junction or other timing point has no station
- * identity at all, and here, unlike the passenger view, it still belongs). */
-function locationLabel(stop: JourneyStop): string {
+/** A location's label in the detailed view: its name -- a station's, or for
+ * a junction, signal or other timing point the `tiploc_locations` name the
+ * API now sends ("Marylebone 10 Signal") -- else its CRS, else its bare
+ * TIPLOC (a TIPLOC no source can name), which here, unlike the passenger
+ * view, still belongs. */
+export function locationLabel(stop: JourneyStop): string {
   return stop.name ?? stop.crs ?? stop.tiploc ?? 'Unknown location';
 }
 

@@ -14,7 +14,7 @@ import {
   VisuallyHidden,
 } from '@mantine/core';
 import { DateInput, TimeInput } from '@mantine/dates';
-import { searchStations } from '@/lib/suggestions';
+import { searchPlannerLocations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { TripPlanQuery } from '@/lib/tripPlan';
@@ -135,13 +135,15 @@ export function PlanTripForm({
   const [results, setResults] = useState<'fastest' | 'options'>('fastest');
   const resultsLabelId = useId();
 
+  // The two ends may also be a bus stop or ferry terminal (a `tiploc:` code,
+  // shown as "Keswick (bus)"): `searchPlannerLocations`.
   const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
     originCrs,
-    searchStations,
+    searchPlannerLocations,
   );
   const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
     destinationCrs,
-    searchStations,
+    searchPlannerLocations,
   );
 
   function addWaypoint() {

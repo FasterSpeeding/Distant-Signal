@@ -1,3 +1,4 @@
+import { isTiplocCode } from './stationLabel';
 import type { NearbyStation, Suggestion } from './types';
 
 /** Client-side fetch through the same-origin `/api/*` proxy
@@ -9,6 +10,18 @@ import type { NearbyStation, Suggestion } from './types';
 export async function searchStations(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
   if (!q.trim()) return [];
   const response = await fetch(`/api/stations?q=${encodeURIComponent(q)}`, { signal });
+  if (!response.ok) return [];
+  return response.json() as Promise<Suggestion[]>;
+}
+
+/** `searchStations` for the journey planner's pickers: the same stations,
+ * then any matching bus stops and ferry terminals (`?stops=true`), whose
+ * `code` is a `tiploc:` code and whose `name` ends `(bus)`/`(ferry)`. Only
+ * the planner may use this: every other picker hands its code to a station
+ * page or board, which a bus stop has none of. */
+export async function searchPlannerLocations(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
+  if (!q.trim()) return [];
+  const response = await fetch(`/api/stations?q=${encodeURIComponent(q)}&stops=true`, { signal });
   if (!response.ok) return [];
   return response.json() as Promise<Suggestion[]>;
 }
@@ -43,7 +56,10 @@ export async function getStationNames(codes: string[], signal?: AbortSignal): Pr
   const entries = await Promise.all(
     unique.map(async (code): Promise<[string, string] | null> => {
       try {
-        const results = await searchStations(code, signal);
+        // A bus stop's `tiploc:` code is found only by the planner search.
+        const results = isTiplocCode(code)
+          ? await searchPlannerLocations(code, signal)
+          : await searchStations(code, signal);
         const match = results.find((s) => s.code.toUpperCase() === code.toUpperCase());
         return match ? [code, match.name] : null;
       } catch {

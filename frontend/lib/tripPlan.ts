@@ -1,3 +1,4 @@
+import { normalizeLocationCode } from './stationLabel';
 import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
 
 /** Every distinct, non-null CRS code a `GET /Trips/plan` response mentions
@@ -48,12 +49,12 @@ export interface TripPlanQuery {
  * (e.g. `lib/trackAgainPrefill.ts`'s own `trackAgainHref`). */
 export function buildTripPlanQuery(query: TripPlanQuery): string {
   const params = new URLSearchParams({
-    origin: query.originCrs.trim().toUpperCase(),
-    destination: query.destinationCrs.trim().toUpperCase(),
+    origin: normalizeLocationCode(query.originCrs),
+    destination: normalizeLocationCode(query.destinationCrs),
     date: query.date,
     results: query.results,
   });
-  const waypoints = query.waypointCrs.map((c) => c.trim().toUpperCase()).filter((c) => c.length > 0);
+  const waypoints = query.waypointCrs.map(normalizeLocationCode).filter((c) => c.length > 0);
   if (waypoints.length > 0) {
     params.set('waypoints', waypoints.join(','));
   }
@@ -63,7 +64,7 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
   if (query.arriveBy) {
     params.set('arriveBy', `${query.arriveBy}:00`);
   }
-  const avoid = (query.avoidCrs ?? []).map((c) => c.trim().toUpperCase()).filter((c) => c.length > 0);
+  const avoid = (query.avoidCrs ?? []).map(normalizeLocationCode).filter((c) => c.length > 0);
   if (avoid.length > 0) {
     params.set('avoid', avoid.join(','));
   }
