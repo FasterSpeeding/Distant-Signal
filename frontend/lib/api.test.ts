@@ -20,6 +20,8 @@ import {
   getCustomLine,
   getLineDefinition,
   getLineTrains,
+  getLineTrainsSummary,
+  searchTrainsBetween,
   getDataFreshness,
   getHistoryRetention,
   getStationName,
@@ -985,6 +987,51 @@ describe('api client', () => {
       vi.fn(async () => new Response('not found', { status: 404 })),
     );
     await expect(getLineTrains('swr-alton')).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('getLineTrainsSummary asks for the summary view with its window, uncached', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ trains: [] }), { status: 200 })),
+    );
+    await getLineTrainsSummary('swr-alton', {
+      date: '2026-10-06',
+      from: '13:30',
+      to: '15:30',
+      at: '14:00',
+      direction: 'up',
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/lines/swr-alton/trains?view=summary&date=2026-10-06&from=13%3A30&to=15%3A30&at=14%3A00&direction=up',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('getLineTrainsSummary throws ApiNotFoundError on a 404', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 })),
+    );
+    await expect(getLineTrainsSummary('swr-alton', { date: '2026-10-06' })).rejects.toBeInstanceOf(ApiNotFoundError);
+  });
+
+  it('searchTrainsBetween calls the indexed station search with stops_at', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ results: [], nextCursor: null }), { status: 200 })),
+    );
+    await searchTrainsBetween({
+      station: 'WOK',
+      stopsAt: 'WAT',
+      date: '2026-10-06',
+      from: '07:30',
+      to: '09:30',
+      limit: 60,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test-api:8080/public/trains/search?station=WOK&stops_at=WAT&date=2026-10-06&from=07%3A30&to=09%3A30&limit=60',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
   });
 
   it('getDataFreshness fetches the correct URL with no caching', async () => {

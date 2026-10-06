@@ -28,6 +28,9 @@ import type {
   TrackedTrainState,
   PublicTrainState,
   LineTrainEntry,
+  LineTrainsSummary,
+  LineDirection,
+  TrainSearchPage,
   TrackedTrainListItem,
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
@@ -735,6 +738,60 @@ export async function getLineTrains(id: string, date?: string): Promise<LineTrai
   return fetchJson<LineTrainEntry[]>(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
+  });
+}
+
+/** `GET /public/lines/{id}/trains?view=summary` -- the line page's slim,
+ * windowed view (2026-10-06): the line's own and shared trains due on the
+ * line in `[from, to)` (`"HH:MM"`, hours past 23 for the next morning),
+ * plus, with `at`, the trains running on the line at that moment. A few
+ * kB where the default response is ~20 MB for a main line. `date` is
+ * always passed explicitly, for the same reason as `getLineTrains`.
+ * 404s (`ApiNotFoundError`) exactly as `getLineTrains` does. */
+export async function getLineTrainsSummary(
+  id: string,
+  options: {
+    date: string;
+    from?: string;
+    to?: string;
+    at?: string;
+    direction?: LineDirection;
+    scope?: string;
+    limit?: number;
+  },
+): Promise<LineTrainsSummary> {
+  const params = new URLSearchParams({ view: 'summary', date: options.date });
+  if (options.scope) params.set('scope', options.scope);
+  if (options.from) params.set('from', options.from);
+  if (options.to) params.set('to', options.to);
+  if (options.at) params.set('at', options.at);
+  if (options.direction) params.set('direction', options.direction);
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  const url = `${baseUrl()}/public/lines/${encodeURIComponent(id)}/trains?${params.toString()}`;
+  return fetchJson<LineTrainsSummary>(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+}
+
+/** `GET /public/trains/search` from the server: trains calling at
+ * `station` and later at `stopsAt`, departing `station` in `[from, to]`
+ * (`"HH:MM"`), on `date`. Timetable rows only (no live status). 404s
+ * (`ApiNotFoundError`) when no schedule is published for the date. */
+export async function searchTrainsBetween(options: {
+  station: string;
+  stopsAt: string;
+  date: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}): Promise<TrainSearchPage> {
+  const params = new URLSearchParams({ station: options.station, stops_at: options.stopsAt, date: options.date });
+  if (options.from) params.set('from', options.from);
+  if (options.to) params.set('to', options.to);
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  return fetchJson<TrainSearchPage>(`${baseUrl()}/public/trains/search?${params.toString()}`, {
+    cache: 'no-store',
   });
 }
 

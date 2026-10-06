@@ -2029,3 +2029,107 @@ export interface LineTrainEntry {
   scheduleDestinationName: string | null;
   liveStatus: LineTrainLiveStatus | null;
 }
+
+/** A train's membership of a line (docs/superpowers/specs/2026-10-06-line-membership-design.md):
+ * `line` one of its own trains, `shared` another route's train running a
+ * stretch of it, `touch` only touching it (a hub call). */
+export type LineTrainScope = 'line' | 'shared' | 'touch';
+
+/** Direction along the line's catalogue station order: `down` from the
+ * first station towards the last, `up` the reverse, `loop` back to where
+ * the run started. */
+export type LineDirection = 'up' | 'down' | 'loop';
+
+/** A time on the line: `"HH:MM"` UK local time, `dayOffset` days after
+ * the service date. */
+export interface LineTime {
+  time: string;
+  dayOffset: number;
+}
+
+/** One public call at one of the line's stations. */
+export interface LineTrainStop extends LineTime {
+  crs: string;
+}
+
+export interface LineStationRef {
+  crs: string;
+  name: string | null;
+}
+
+/** The compact live status of `GET /public/lines/{id}/trains?view=summary`. */
+export interface LineTrainSummaryLive {
+  status: string | null;
+  delayMinutes: number | null;
+  delayProvisional: boolean;
+  cancelled: boolean;
+  lastReportedLocation: string | null;
+}
+
+/** One train of the summary view (`crates/api/src/routes/line_trains_summary.rs`). */
+export interface LineTrainSummary {
+  uid: string;
+  operator: string | null;
+  /** `train`, `replacementBus`, `bus` or `ferry`. */
+  serviceMode: string;
+  scope: LineTrainScope | null;
+  direction: LineDirection | null;
+  /** The first public call on the line: the row's time and sort key. */
+  lineDue: LineTime | null;
+  origin: LineStationRef | null;
+  /** Never null when the train calls on the line. */
+  destination: LineStationRef | null;
+  onLineStops: LineTrainStop[];
+  live: LineTrainSummaryLive | null;
+}
+
+/** A catalogue station of the line, with its `role`
+ * (`terminus`/`major`/`minor`/`junction`, lines/SCHEMA.md). */
+export interface LineCatalogueStation {
+  crs: string;
+  name: string | null;
+  role: string;
+}
+
+/** `GET /public/lines/{id}/trains?view=summary` (2026-10-06). */
+export interface LineTrainsSummary {
+  lineId: string;
+  date: string;
+  /** `false` for a population published before train membership: nothing
+   * was filtered and `scope`/`direction` are null. */
+  scopeApplied: boolean;
+  scopes: LineTrainScope[];
+  /** `"HH:MM"`, hours past 23 for the next morning. */
+  window: { from: string; to: string } | null;
+  at: string | null;
+  directions: LineDirection[] | null;
+  stations: LineCatalogueStation[];
+  /** Trains in the window per scope, then per direction (`none` when a
+   * train has none), before the direction filter. */
+  counts: Partial<Record<string, Partial<Record<string, number>>>>;
+  truncated: boolean;
+  trains: LineTrainSummary[];
+  /** Trains on the line at `at` (only when `at` was given). */
+  running: LineTrainSummary[] | null;
+}
+
+/** One row of `GET /public/trains/search` (`render::calling_point_departure_json`). */
+export interface TrainSearchResult {
+  uid: string;
+  scheduled: string | null;
+  publicDeparture?: string | null;
+  stationCrs: string;
+  originCrs: string | null;
+  destinationCrs: string | null;
+  destinationName?: string | null;
+  destinationArrival: string | null;
+  destinationArrivalDayOffset: number;
+  publicDestinationArrival?: string | null;
+  operator?: string | null;
+  serviceMode?: string;
+}
+
+export interface TrainSearchPage {
+  results: TrainSearchResult[];
+  nextCursor: string | null;
+}
