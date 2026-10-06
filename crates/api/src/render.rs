@@ -493,10 +493,12 @@ pub(crate) fn line_train_json(
     calling_points: Box<serde_json::value::RawValue>,
     live: Option<&crate::data::trains::PublicTrainState>,
     schedule_route: &ScheduleRouteEndpoints,
+    membership: LineMembershipJson,
 ) -> LineTrainJson {
     LineTrainJson {
         uid,
         calling_points,
+        membership,
         schedule_origin_crs: schedule_route.origin_crs.clone(),
         schedule_origin_name: schedule_route.origin_name.clone(),
         schedule_destination_crs: schedule_route.destination_crs.clone(),
@@ -544,6 +546,40 @@ pub(crate) struct LineTrainJson {
     schedule_destination_crs: Option<String>,
     schedule_destination_name: Option<String>,
     live_status: Option<Value>,
+    #[serde(flatten)]
+    membership: LineMembershipJson,
+}
+
+/// A line train's membership of the line, from its population entry
+/// (docs/superpowers/specs/2026-10-06-line-membership-design.md): `scope`
+/// (`line`/`shared`/`touch`), `direction` (`up`/`down`/`loop`, by the
+/// line's catalogue order), the run's first/last line station
+/// (`runFirstCrs`/`runLastCrs`) and `lineDue`, the first public call on
+/// the line. Each field is omitted when absent -- every one of them on a
+/// population published before membership existed, and the run fields
+/// for a `touch` train -- so an old response is byte-for-byte unchanged.
+#[derive(Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LineMembershipJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_first_crs: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_last_crs: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_due: Option<LineDueJson>,
+}
+
+/// `lineDue`: Europe/London local `HH:MM:SS`, `dayOffset` days after the
+/// service date.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LineDueJson {
+    pub time: String,
+    pub day_offset: i32,
 }
 
 #[cfg(test)]
@@ -1554,6 +1590,7 @@ mod tests {
             raw("calling_points"),
             live,
             schedule_route,
+            LineMembershipJson::default(),
         ))
         .unwrap()
     }

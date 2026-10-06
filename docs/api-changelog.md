@@ -3,6 +3,60 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-06: train membership (`scope`) on a line's trains
+
+Design: `docs/superpowers/specs/2026-10-06-line-membership-design.md`.
+
+A line's population (`GET /public/lines/{id}/trains` and `/schedule`) is
+every train touching one of its stations: at a hub, mostly other routes'
+trains. Each entry now says how it belongs to the line.
+
+### New optional query parameter: `scope`
+
+`GET /public/lines/{id}/trains?scope=` and `GET /public/lines/{id}/schedule?scope=`
+filter the entries (in SQL) by membership:
+
+- `line`: the line's own trains;
+- `shared`: runs a stretch of the line but is another route's or another
+  operator's train (CrossCountry along the South West Main Line);
+- `touch`: only touches the line (a hub call, a crossing);
+- comma-separated combinations (`line,shared`), or `all`.
+
+**Without `scope` the response is unchanged**: every entry, no filter. The
+line page passes `scope=line,shared`; touch-only trains are reached from
+station pages. An unknown value is a `400`.
+
+When `scope` is given, the response carries the header
+`x-scope-applied: true`, or `false` when the line's population was
+published before membership existed: then it was NOT filtered and every
+entry is returned. (A header, because both bodies are bare arrays.)
+
+### New fields on `/trains` entries
+
+Each omitted when absent (on an older population, all of them):
+
+```json
+{
+  "scope": "line",
+  "direction": "down",
+  "runFirstCrs": "WAT",
+  "runLastCrs": "WEY",
+  "lineDue": { "time": "23:35:00", "dayOffset": 0 }
+}
+```
+
+- `direction`: `down`/`up` by the line's catalogue station order (the
+  order of `GET /public/lines/{id}/definition`'s `stations`), `loop` when
+  the run starts and ends at the same station.
+- `runFirstCrs`/`runLastCrs`: the first and last line station of the
+  train's run along the line (absent for `touch`).
+- `lineDue`: the train's first public call at one of the line's stations,
+  Europe/London local time, `dayOffset` days after the service date.
+
+`/schedule` entries carry the same data under the population's own
+snake-case names: `scope`, `direction`, `run_first_crs`, `run_last_crs`,
+`line_due` (`{"time", "day_offset"}`).
+
 ## 2026-10-06: incidents on the lines they name; `upcoming` on line status
 
 Design:

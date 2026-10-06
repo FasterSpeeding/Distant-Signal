@@ -27,7 +27,7 @@ use crate::data::{
     queries,
     trains::{self, PublicTrainState},
 };
-use crate::render::{LineTrainJson, ScheduleRouteEndpoints, line_train_json};
+use crate::render::{LineDueJson, LineMembershipJson, ScheduleRouteEndpoints, line_train_json};
 
 pub fn router() -> Router {
     Router::new()
@@ -119,6 +119,48 @@ struct LineDefinitionSummary {
 #[derive(Debug, Deserialize)]
 struct ScheduleQuery {
     date: Option<chrono::NaiveDate>,
+    /// Optional train-membership filter (`line`, `line,shared`, `all`, or
+    /// any comma list of `line`/`shared`/`touch`) -- see [`parse_scope`].
+    /// Absent: every entry, exactly as before the filter existed.
+    scope: Option<String>,
+}
+
+/// Response header naming whether a requested `?scope=` filter was applied:
+/// `true`, or `false` when the line's population predates train membership
+/// (published by a `schedule-reference` without it) and so came back whole.
+/// Only sent when `?scope=` was given. A header, not a body field, because
+/// both routes' bodies are bare arrays whose default shape must not change.
+pub(crate) const SCOPE_APPLIED_HEADER: &str = "x-scope-applied";
+
+/// The train-membership scopes `?scope=` names, as stored in a population
+/// entry's `scope` (see docs/superpowers/specs/2026-10-06-line-membership-design.md):
+/// `line` (the line's own trains), `shared` (run a stretch of it), `touch`
+/// (only touch it). `all` is all three. The line page asks for
+/// `line,shared`. `Ok(None)` when absent (no filtering); `Err` for an
+/// empty or unknown value (a 400).
+fn parse_scope(raw: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    const SCOPES: [&str; 3] = ["line", "shared", "touch"];
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split(',').map(str::trim) {
+        let names: &[&str] = if part.eq_ignore_ascii_case("all") {
+            &SCOPES
+        } else if let Some(name) = SCOPES.iter().find(|s| part.eq_ignore_ascii_case(s)) {
+            std::slice::from_ref(name)
+        } else {
+            return Err(format!(
+                "invalid scope {part:?}: use line, shared, touch (comma-separated) or all"
+            ));
+        };
+        for name in names {
+            if !out.iter().any(|o| o == name) {
+                out.push((*name).to_string());
+            }
+        }
+    }
+    Ok(Some(out))
 }
 
 /// Resolves the effective service date for `GET /lines/{id}/schedule`:
@@ -206,10 +248,6 @@ async fn readable_line_id(
         .map_err(internal_error)
 }
 
-#[expect(
-    clippy::items_after_statements,
-    reason = "a local type or import sits next to its only use"
-)]
 async fn get_line_schedule(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -234,31 +272,45 @@ async fn get_line_schedule(
     // here so the invariant lives where the data is read, and refuse with
     // the same 404 an unpublished `(id, date)` already gets.
     if !readable_line_id(&app, &id, &user).await? {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("no CIF-derived schedule population for line {id} on {service_date}"),
-        ));
+        return Err(no_population(&id, service_date));
     }
-    let Some(population) = queries::get_schedule_line_population(&app.database, &id, service_date)
-        .await
-        .map_err(internal_error)?
-    else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("no CIF-derived schedule population for line {id} on {service_date}"),
-        ));
+    let scopes = parse_scope(query.scope.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let found = match &scopes {
+        None => queries::get_schedule_line_population(&app.database, &id, service_date)
+            .await
+            .map_err(internal_error)?
+            .map(|population| (population, None)),
+        Some(scopes) => {
+            queries::get_schedule_line_population_scoped(&app.database, &id, service_date, scopes)
+                .await
+                .map_err(internal_error)?
+                .map(|(population, applied)| (population, Some(applied)))
+        }
+    };
+    let Some((population, scope_applied)) = found else {
+        return Err(no_population(&id, service_date));
     };
 
     // Relayed as Postgres's own JSON text, not decoded into a
     // `serde_json::Value` and re-serialised: a line's population reaches
     // 31 MB of text, and the `Value` round-trip cost several times that in
     // heap per request. Same JSON value; only whitespace/key order differ.
-    use axum::response::IntoResponse;
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        population,
+    Ok(with_scope_applied(
+        (
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            population,
+        ),
+        scope_applied,
+    ))
+}
+
+/// The 404 both line-population routes give for an unknown, unreadable or
+/// not-yet-published `(id, date)`.
+fn no_population(id: &str, service_date: chrono::NaiveDate) -> (StatusCode, String) {
+    (
+        StatusCode::NOT_FOUND,
+        format!("no CIF-derived schedule population for line {id} on {service_date}"),
     )
-        .into_response())
 }
 
 /// A population entry's field as Postgres rendered it (`(e -> 'x')::text`),
@@ -293,35 +345,37 @@ fn raw_json_or_null(
 /// this handler never writes: a UID with no existing `trains` row simply
 /// renders `liveStatus: null` (an honest, expected gap -- see the spec's
 /// Open question 2), never triggering a `find_or_create_train` upsert.
+///
+/// `?scope=` (2026-10-06, [`parse_scope`]) filters by train membership in
+/// SQL and reports [`SCOPE_APPLIED_HEADER`]; without it the response is
+/// exactly what it was before. Each entry also carries its membership
+/// fields when the population has them (`LineMembershipJson`). The line
+/// page passes `scope=line,shared`; see docs/api-changelog.md.
 async fn get_line_trains(
     State(app): State<App>,
     Path(id): Path<String>,
     Query(query): Query<ScheduleQuery>,
     OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
-) -> Result<Json<Vec<LineTrainJson>>, (StatusCode, String)> {
+) -> Result<axum::response::Response, (StatusCode, String)> {
     // Same London-local "today" as `get_line_schedule` above, same reason.
     let london_today = super::london_today();
     let service_date = resolve_schedule_date(query.date, london_today);
     // Same gate, same rationale, same 404 as `get_line_schedule` above --
     // these two routes read the same table off the same caller-supplied id.
     if !readable_line_id(&app, &id, &user).await? {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("no CIF-derived schedule population for line {id} on {service_date}"),
-        ));
+        return Err(no_population(&id, service_date));
     }
     // Projected in SQL to exactly what this route reads -- uid, raw
     // calling points, first/last TIPLOC -- instead of materialising the
     // whole population as a `serde_json::Value` (see
     // `queries::list_line_train_entries`).
-    let Some(entries) = queries::list_line_train_entries(&app.database, &id, service_date)
-        .await
-        .map_err(internal_error)?
+    let scopes = parse_scope(query.scope.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let Some(queries::LineTrainEntries { entries, has_scope }) =
+        queries::list_line_train_entries(&app.database, &id, service_date, scopes.as_deref())
+            .await
+            .map_err(internal_error)?
     else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("no CIF-derived schedule population for line {id} on {service_date}"),
-        ));
+        return Err(no_population(&id, service_date));
     };
     let uids: Vec<String> = entries.iter().filter_map(|e| e.uid.clone()).collect();
 
@@ -400,7 +454,7 @@ async fn get_line_trains(
     let result = entries
         .into_iter()
         .zip(endpoint_crs.iter())
-        .map(|(entry, (origin_crs, destination_crs))| {
+        .map(|(mut entry, (origin_crs, destination_crs))| {
             let live = entry
                 .uid
                 .as_deref()
@@ -411,13 +465,53 @@ async fn get_line_trains(
                 destination_name: name_of(destination_crs),
                 destination_crs: destination_crs.clone(),
             };
+            let membership = membership_json(&mut entry);
             let uid = raw_json_or_null(entry.uid_json)?;
             let calling_points = raw_json_or_null(entry.calling_points_json)?;
-            Ok(line_train_json(uid, calling_points, live, &schedule_route))
+            Ok(line_train_json(
+                uid,
+                calling_points,
+                live,
+                &schedule_route,
+                membership,
+            ))
         })
         .collect::<Result<Vec<_>, (StatusCode, String)>>()?;
 
-    Ok(Json(result))
+    Ok(with_scope_applied(
+        Json(result),
+        scopes.is_some().then_some(has_scope),
+    ))
+}
+
+/// A `/trains` entry's membership fields, moved out of its row.
+fn membership_json(entry: &mut queries::LineTrainEntryRow) -> LineMembershipJson {
+    LineMembershipJson {
+        scope: entry.scope.take(),
+        direction: entry.direction.take(),
+        run_first_crs: entry.run_first_crs.take(),
+        run_last_crs: entry.run_last_crs.take(),
+        line_due: entry.line_due_time.take().map(|time| LineDueJson {
+            time,
+            day_offset: entry.line_due_day_offset.unwrap_or(0),
+        }),
+    }
+}
+
+/// `body` as a response, with [`SCOPE_APPLIED_HEADER`] when a scope filter
+/// was requested (`applied` is `Some`).
+fn with_scope_applied(
+    body: impl axum::response::IntoResponse,
+    applied: Option<bool>,
+) -> axum::response::Response {
+    let mut response = body.into_response();
+    if let Some(applied) = applied {
+        response.headers_mut().insert(
+            SCOPE_APPLIED_HEADER,
+            axum::http::HeaderValue::from_static(if applied { "true" } else { "false" }),
+        );
+    }
+    response
 }
 
 async fn get_line_definition(
@@ -1271,7 +1365,9 @@ mod db_tests {
     use std::collections::HashMap;
     use tower::ServiceExt;
 
-    use super::{LINES_PRIVATE_CACHE_CONTROL, LINES_PUBLIC_CACHE_CONTROL};
+    use super::{
+        LINES_PRIVATE_CACHE_CONTROL, LINES_PUBLIC_CACHE_CONTROL, SCOPE_APPLIED_HEADER, parse_scope,
+    };
     use crate::app::{App, AppState};
     use crate::auth::hash_session_token;
     use crate::auth::oidc::{OidcClient, OidcConfig};
@@ -2184,6 +2280,8 @@ mod db_tests {
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
             pass_through: Vec::new(),
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
         };
 
         let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
@@ -2234,6 +2332,8 @@ mod db_tests {
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
             pass_through: Vec::new(),
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
         }
     }
 
@@ -2891,7 +2991,7 @@ mod db_tests {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
 
         assert!(
-            queries::list_line_train_entries(&pool, LINE, date)
+            queries::list_line_train_entries(&pool, LINE, date, None)
                 .await
                 .unwrap()
                 .is_none(),
@@ -2915,10 +3015,11 @@ mod db_tests {
             .await
             .unwrap();
 
-        let rows = queries::list_line_train_entries(&pool, LINE, date)
+        let rows = queries::list_line_train_entries(&pool, LINE, date, None)
             .await
             .unwrap()
-            .expect("row exists");
+            .expect("row exists")
+            .entries;
         let s = |v: &str| Some(v.to_string());
         let as_value = |text: &Option<String>| -> Value {
             text.as_deref()
@@ -2962,10 +3063,11 @@ mod db_tests {
         queries::upsert_schedule_line_population(&pool, LINE, date, "[]")
             .await
             .unwrap();
-        let rows = queries::list_line_train_entries(&pool, LINE, date)
+        let rows = queries::list_line_train_entries(&pool, LINE, date, None)
             .await
             .unwrap()
-            .expect("row exists");
+            .expect("row exists")
+            .entries;
         assert!(rows.is_empty());
 
         delete_schedule_population_fixture(&pool, LINE).await;
@@ -3175,6 +3277,193 @@ mod db_tests {
         );
 
         delete_schedule_population_fixture(&pool, "test-schedule-2a-utc-gap").await;
+    }
+
+    #[test]
+    fn parse_scope_accepts_the_documented_values_and_rejects_the_rest() {
+        let v = |s: &[&str]| Some(s.iter().map(ToString::to_string).collect::<Vec<_>>());
+        assert_eq!(parse_scope(None), Ok(None));
+        assert_eq!(parse_scope(Some("line")), Ok(v(&["line"])));
+        assert_eq!(parse_scope(Some("line,shared")), Ok(v(&["line", "shared"])));
+        assert_eq!(
+            parse_scope(Some(" Line , SHARED ")),
+            Ok(v(&["line", "shared"]))
+        );
+        assert_eq!(
+            parse_scope(Some("all")),
+            Ok(v(&["line", "shared", "touch"]))
+        );
+        assert_eq!(
+            parse_scope(Some("line,all")),
+            Ok(v(&["line", "shared", "touch"]))
+        );
+        assert!(parse_scope(Some("")).is_err());
+        assert!(parse_scope(Some("line,bogus")).is_err());
+    }
+
+    /// Issues a GET and returns its status, `x-scope-applied` header and
+    /// JSON body.
+    async fn get_with_scope_header(
+        router: axum::Router,
+        uri: &str,
+    ) -> (StatusCode, Option<String>, Value) {
+        let request = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build request");
+        let response = router.oneshot(request).await.expect("oneshot request");
+        let status = response.status();
+        let header = response
+            .headers()
+            .get(SCOPE_APPLIED_HEADER)
+            .map(|v| v.to_str().expect("ascii header").to_string());
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+        });
+        (status, header, value)
+    }
+
+    /// `?scope=` on `/trains` and `/schedule`: filtered in SQL when the
+    /// population carries train membership, every entry with
+    /// `x-scope-applied: false` when it predates it, and no header and no
+    /// filtering without `?scope=` (the unchanged default).
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                line_scope_filter -- --ignored --test-threads=1`"]
+    async fn line_scope_filter_on_trains_and_schedule() {
+        const NEW: &str = "test-line-scope-new";
+        const OLD: &str = "test-line-scope-old";
+        let pool = connect().await;
+        delete_schedule_population_fixture(&pool, NEW).await;
+        delete_schedule_population_fixture(&pool, OLD).await;
+        let date = "2026-01-03";
+        let service_date = chrono::NaiveDate::from_ymd_opt(2026, 1, 3).unwrap();
+        let cp = json!([{"tiploc": "WATRLMN", "kind": "Origin", "booked_departure": "08:00:00"}]);
+        let new_population = json!([
+            {"uid": "TS-LINE", "calling_points": cp, "scope": "line", "run_first_crs": "WAT",
+             "run_last_crs": "WEY", "direction": "down",
+             "line_due": {"time": "08:00:00", "day_offset": 0}},
+            {"uid": "TS-TOUCH", "calling_points": cp, "scope": "touch",
+             "line_due": {"time": "23:59:00", "day_offset": 1}},
+            {"uid": "TS-SHARED", "calling_points": cp, "scope": "shared", "run_first_crs": "WOK",
+             "run_last_crs": "WAT", "direction": "up"},
+        ]);
+        let old_population = json!([
+            {"uid": "TS-OLD-1", "calling_points": cp},
+            {"uid": "TS-OLD-2", "calling_points": cp},
+        ]);
+        for (line, population) in [(NEW, &new_population), (OLD, &old_population)] {
+            queries::upsert_schedule_line_population(
+                &pool,
+                line,
+                service_date,
+                &population.to_string(),
+            )
+            .await
+            .unwrap();
+        }
+        let router = || test_router(test_app(pool.clone(), vec![]));
+        let uids = |body: &Value| -> Vec<String> {
+            body.as_array()
+                .expect("array body")
+                .iter()
+                .map(|e| e["uid"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        // Default: unchanged -- every entry, no header.
+        let (status, header, body) =
+            get_with_scope_header(router(), &format!("/public/lines/{NEW}/trains?date={date}"))
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(header, None);
+        assert_eq!(uids(&body), ["TS-LINE", "TS-TOUCH", "TS-SHARED"]);
+
+        // The line page's filter.
+        let (status, header, body) = get_with_scope_header(
+            router(),
+            &format!("/public/lines/{NEW}/trains?date={date}&scope=line,shared"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(header.as_deref(), Some("true"));
+        assert_eq!(uids(&body), ["TS-LINE", "TS-SHARED"]);
+        let first = &body[0];
+        assert_eq!(first["scope"], "line");
+        assert_eq!(first["direction"], "down");
+        assert_eq!(first["runFirstCrs"], "WAT");
+        assert_eq!(first["runLastCrs"], "WEY");
+        assert_eq!(
+            first["lineDue"],
+            json!({"time": "08:00:00", "dayOffset": 0})
+        );
+        assert!(
+            body[1].get("lineDue").is_none(),
+            "absent fields are omitted"
+        );
+
+        // `all` keeps everything, and says so.
+        let (_, header, body) = get_with_scope_header(
+            router(),
+            &format!("/public/lines/{NEW}/trains?date={date}&scope=all"),
+        )
+        .await;
+        assert_eq!(header.as_deref(), Some("true"));
+        assert_eq!(uids(&body).len(), 3);
+
+        // /schedule: the raw entries, filtered.
+        let (status, header, body) = get_with_scope_header(
+            router(),
+            &format!("/public/lines/{NEW}/schedule?date={date}&scope=line"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(header.as_deref(), Some("true"));
+        assert_eq!(body, json!([new_population[0]]));
+
+        // A filter that keeps nothing is an empty list, not a 404.
+        queries::upsert_schedule_line_population(
+            &pool,
+            NEW,
+            service_date,
+            &json!([new_population[1]]).to_string(),
+        )
+        .await
+        .unwrap();
+        let (status, _, body) = get_with_scope_header(
+            router(),
+            &format!("/public/lines/{NEW}/trains?date={date}&scope=line"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!([]));
+
+        // A population from before train membership: not filtered, and
+        // reported as not applied.
+        for route in ["trains", "schedule"] {
+            let (status, header, body) = get_with_scope_header(
+                router(),
+                &format!("/public/lines/{OLD}/{route}?date={date}&scope=line"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{route}");
+            assert_eq!(header.as_deref(), Some("false"), "{route}");
+            assert_eq!(uids(&body), ["TS-OLD-1", "TS-OLD-2"], "{route}");
+        }
+
+        let (status, _, _) = get_with_scope_header(
+            router(),
+            &format!("/public/lines/{NEW}/trains?date={date}&scope=bogus"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        delete_schedule_population_fixture(&pool, NEW).await;
+        delete_schedule_population_fixture(&pool, OLD).await;
     }
 
     /// Issues `GET /public/lines/{id}/trains`, with an optional `?date=`

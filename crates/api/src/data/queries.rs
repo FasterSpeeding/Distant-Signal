@@ -2408,7 +2408,36 @@ pub struct LineTrainEntryRow {
     /// -- exactly `routes::lines::first_and_last_tiploc`'s old contract.
     pub first_tiploc: Option<String>,
     pub last_tiploc: Option<String>,
+    /// The entry's train membership of the line (`line`/`shared`/`touch`),
+    /// its run's first/last line station and direction, and its first
+    /// public call on the line (`line_due`, split into time and day
+    /// offset) -- `None` on a population published before
+    /// `schedule-reference` added them (2026-10-06, see
+    /// docs/superpowers/specs/2026-10-06-line-membership-design.md).
+    pub scope: Option<String>,
+    pub direction: Option<String>,
+    pub run_first_crs: Option<String>,
+    pub run_last_crs: Option<String>,
+    pub line_due_time: Option<String>,
+    pub line_due_day_offset: Option<i32>,
 }
+
+/// [`list_line_train_entries`]' result for a population that exists.
+#[derive(Debug)]
+pub struct LineTrainEntries {
+    pub entries: Vec<LineTrainEntryRow>,
+    /// Does the population carry train membership (`scope`)? `false` for
+    /// one published before it existed: then a requested scope filter was
+    /// NOT applied, and every entry came back.
+    pub has_scope: bool,
+}
+
+/// The SQL test for "this population carries train membership": its first
+/// entry has a `scope` key (`schedule-reference` sets it on every entry or
+/// on none). An empty array counts as carrying it (there is nothing to
+/// filter); anything but an array does not.
+const POPULATION_HAS_SCOPE_SQL: &str = "(jsonb_typeof(p.population) = 'array' \
+     AND COALESCE((p.population -> 0) ? 'scope', true))";
 
 /// Every element of one line's population, projected in SQL to what
 /// `GET /public/lines/{id}/trains` actually reads (see
@@ -2429,7 +2458,8 @@ pub async fn list_line_train_entries(
     pool: &PgPool,
     line_id: &str,
     service_date: chrono::NaiveDate,
-) -> Result<Option<Vec<LineTrainEntryRow>>> {
+    scopes: Option<&[String]>,
+) -> Result<Option<LineTrainEntries>> {
     #[expect(
         clippy::type_complexity,
         reason = "the tuple mirrors the columns of the SQL row it decodes"
@@ -2441,7 +2471,14 @@ pub async fn list_line_train_entries(
         Option<String>,
         Option<String>,
         Option<String>,
-    )> = sqlx::query_as(
+        bool,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+    )> = sqlx::query_as(&format!(
         r"
         SELECT x.ord,
                (x.e -> 'uid')::text,
@@ -2452,39 +2489,104 @@ pub async fn list_line_train_entries(
                     THEN x.e -> 'calling_points' -> 0 ->> 'tiploc' END,
                CASE WHEN jsonb_typeof(x.e -> 'calling_points') = 'array'
                      AND jsonb_typeof(x.e -> 'calling_points' -> -1 -> 'tiploc') = 'string'
-                    THEN x.e -> 'calling_points' -> -1 ->> 'tiploc' END
+                    THEN x.e -> 'calling_points' -> -1 ->> 'tiploc' END,
+               {POPULATION_HAS_SCOPE_SQL},
+               x.e ->> 'scope',
+               x.e ->> 'direction',
+               x.e ->> 'run_first_crs',
+               x.e ->> 'run_last_crs',
+               x.e -> 'line_due' ->> 'time',
+               CASE WHEN jsonb_typeof(x.e -> 'line_due' -> 'day_offset') = 'number'
+                    THEN (x.e -> 'line_due' ->> 'day_offset')::int END
         FROM schedule_line_population p
         LEFT JOIN LATERAL jsonb_array_elements(
             CASE WHEN jsonb_typeof(p.population) = 'array' THEN p.population ELSE '[]'::jsonb END
-        ) WITH ORDINALITY AS x(e, ord) ON true
+        ) WITH ORDINALITY AS x(e, ord)
+          -- The scope filter lives in the join, not the WHERE, so a filter
+          -- that keeps nothing still yields the one all-NULL row (an
+          -- existing population, empty after filtering -- not a 404). A
+          -- population without `scope` is never filtered.
+          ON ($3::text[] IS NULL
+              OR NOT {POPULATION_HAS_SCOPE_SQL}
+              OR x.e ->> 'scope' = ANY($3::text[]))
         WHERE p.line_id = $1 AND p.service_date = $2
         ORDER BY x.ord
-        ",
-    )
+        "
+    ))
     .bind(line_id)
     .bind(service_date)
+    .bind(scopes)
     .fetch_all(pool)
     .await?;
-    if rows.is_empty() {
+    let Some(has_scope) = rows.first().map(|row| row.6) else {
         return Ok(None);
-    }
-    Ok(Some(
-        rows.into_iter()
-            // The LEFT JOIN's one all-NULL row for an empty population.
-            .filter(|(ord, ..)| ord.is_some())
-            .map(
-                |(_, uid_json, uid, calling_points_json, first_tiploc, last_tiploc)| {
-                    LineTrainEntryRow {
-                        uid_json,
-                        uid,
-                        calling_points_json,
-                        first_tiploc,
-                        last_tiploc,
-                    }
-                },
-            )
-            .collect(),
+    };
+    let entries = rows
+        .into_iter()
+        // The LEFT JOIN's one all-NULL row for an empty population.
+        .filter(|row| row.0.is_some())
+        .map(
+            |(
+                _,
+                uid_json,
+                uid,
+                calling_points_json,
+                first_tiploc,
+                last_tiploc,
+                _,
+                scope,
+                direction,
+                run_first_crs,
+                run_last_crs,
+                line_due_time,
+                line_due_day_offset,
+            )| LineTrainEntryRow {
+                uid_json,
+                uid,
+                calling_points_json,
+                first_tiploc,
+                last_tiploc,
+                scope,
+                direction,
+                run_first_crs,
+                run_last_crs,
+                line_due_time,
+                line_due_day_offset,
+            },
+        )
+        .collect();
+    Ok(Some(LineTrainEntries { entries, has_scope }))
+}
+
+/// [`get_schedule_line_population`] narrowed IN SQL to the entries whose
+/// `scope` is one of `scopes` (published array order kept), plus whether
+/// the population carries `scope` at all. A population published before
+/// train membership existed comes back whole, with `false`: the caller
+/// reports the filter as not applied rather than returning nothing.
+pub async fn get_schedule_line_population_scoped(
+    pool: &PgPool,
+    line_id: &str,
+    service_date: chrono::NaiveDate,
+    scopes: &[String],
+) -> Result<Option<(String, bool)>> {
+    let row: Option<(String, bool)> = sqlx::query_as(&format!(
+        "SELECT CASE WHEN {POPULATION_HAS_SCOPE_SQL} THEN \
+                    COALESCE( \
+                        (SELECT jsonb_agg(x.e ORDER BY x.ord) \
+                         FROM jsonb_array_elements(p.population) WITH ORDINALITY AS x(e, ord) \
+                         WHERE x.e ->> 'scope' = ANY($3::text[])), \
+                        '[]'::jsonb)::text \
+                ELSE p.population::text END, \
+                {POPULATION_HAS_SCOPE_SQL} \
+         FROM schedule_line_population p \
+         WHERE p.line_id = $1 AND p.service_date = $2"
     ))
+    .bind(line_id)
+    .bind(service_date)
+    .bind(scopes)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 /// Every published line whose `service_date` population contains a schedule

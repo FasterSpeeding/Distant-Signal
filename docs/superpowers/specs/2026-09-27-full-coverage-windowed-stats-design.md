@@ -298,6 +298,47 @@ against 33 Part Suspended). The user's decision:
    since 2026-09-03); "no service between" occurs three times, all
    planned.
 
+## Decisions (2026-10-06, line membership)
+
+Context: §4.1 counts a train for a line when its operator runs the line and
+it calls at two of the line's stations. On a line whose operator also runs
+other routes from the same stations that is still most of the operator's
+trains at the shared end: South West Main Line 998 relevant trains on
+2026-10-06, of which about 320 are its own (the rest are SWR's Portsmouth,
+Alton, Reading and suburban trains calling at Waterloo and Woking). The
+2026-10-06 line-membership design
+(`docs/superpowers/specs/2026-10-06-line-membership-design.md`) gives each
+population entry a `scope`; `scope == "line"` is the line's own trains
+(99.4% precision, 99.8% recall on 12 hand-labelled lines).
+
+1. **Relevance follows train membership, switched in shadow first.**
+   `FULL_COVERAGE_LINE_MEMBERSHIP` (chart
+   `fullCoverageConsumer.windowedStats.lineMembership`):
+   - `legacy` (default): §4.1, unchanged;
+   - `scope`: relevant ⇔ the entry's `scope == "line"`; an entry without
+     `scope` (a population from before it) falls back to §4.1. Buses are
+     still left out (rule 1). A `line` train needs one booked call at a
+     line station (it must be due somewhere), not two: a fast train through
+     the line is the line's own train;
+   - `shadow`: output is `legacy`; both rules are computed per line and
+     date and compared in `full_coverage_consumer_line_membership_trains{line,day,rule}`,
+     `..._differences{line,day,kind=legacy_only|scope_only}`,
+     `..._scoped_entries{line,day}` and an info log
+     (`line membership shadow comparison`) with sample UIDs.
+2. The mode is part of the line geometry's hash, so changing it re-reduces
+   every held population on the next reload; `legacy` hashes exactly as
+   before, so deploying the setting re-downloads nothing.
+3. **Expected effect** (2026-10-06 extract, the consumer's rules applied
+   offline): South West Main Line 998 → 319, Leeds–York 200 → 67,
+   Elizabeth line 678 → 336, Thameslink core 561 → 571 (core trains calling
+   at only one core station now count), CrossCountry 157 → 154, Windsor,
+   Island Line and Cathcart unchanged; all 243 lines 62,930 → 28,319
+   relevant train-line pairs a day (34,919 legacy-only, 308 scope-only).
+4. **To leave shadow**: a few days of shadow logs whose `legacy_only` and
+   `scope_only` samples read as the expected other-route and fast trains,
+   then `scope`. The same §8.4 comparison criteria apply to the windows
+   computed under it.
+
 ## 1. Problem
 
 Full coverage today produces one number per line per rail day:
@@ -581,6 +622,11 @@ lacks both fields. The consumer then applies rule 3 only and records
 presumed cancellation** for that line and date, because buses cannot be
 told apart (§4.3.4). A new consumer against a new population records
 `relevance = 'full'`.
+
+**Superseded in part (2026-10-06):** with
+`FULL_COVERAGE_LINE_MEMBERSHIP=scope`, rules 2 and 3 give way to the
+population's train membership (`scope == "line"`); see "Decisions
+(2026-10-06, line membership)" above.
 
 Rejected: filtering buses out in `schedules_touching` at publish time.
 That would silently change the api's pin matching too, and it hides the
