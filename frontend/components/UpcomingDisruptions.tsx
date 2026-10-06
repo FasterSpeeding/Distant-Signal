@@ -17,18 +17,19 @@ export function UpcomingDisruptions({
   upcoming: UpcomingDisruption[] | undefined;
   compact?: boolean;
 }) {
-  if (!upcoming || upcoming.length === 0) {
+  const next = upcoming?.[0];
+  if (!upcoming || next === undefined) {
     return null;
   }
   if (compact) {
-    const [next, ...rest] = upcoming;
+    const rest = upcoming.length - 1;
     return (
       <Text size="xs" c="dimmed" lineClamp={2} data-upcoming>
         <Text span size="xs" fw={600}>
           Upcoming:
         </Text>{' '}
         {formatUpcomingWhen(next)}, {next.summary}
-        {rest.length > 0 && ` (+${rest.length} more)`}
+        {rest > 0 && ` (+${rest} more)`}
       </Text>
     );
   }
