@@ -2511,6 +2511,7 @@ mod poll_once_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
+            pass_through: Vec::new(),
         }
     }
 
@@ -4879,6 +4880,7 @@ mod per_product_retry_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: true,
+            pass_through: Vec::new(),
         }]);
         mount_all_publishes_ok(&server).await;
 

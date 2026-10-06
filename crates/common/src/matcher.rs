@@ -316,7 +316,12 @@ fn resolve_places<'a>(
     let pool = |lines: &[&LineDefinition]| -> HashSet<String> {
         lines
             .iter()
-            .flat_map(|line| line.stations.iter().map(|s| s.crs.clone()))
+            .flat_map(|line| {
+                line.stations
+                    .iter()
+                    .map(|s| s.crs.clone())
+                    .chain(line.pass_through.iter().flat_map(|leg| leg.via.clone()))
+            })
             .collect()
     };
     let scope_pool = pool(&in_scope);
@@ -337,22 +342,21 @@ fn resolve_places<'a>(
             return nothing(false);
         }
         return Resolution {
-            per_line: select_lines(&in_scope, &description),
+            per_line: evidence_of(select_lines(&in_scope, &description)),
             named: true,
         };
     }
     let in_scope_places = restrict(&summary, |crs| scope_pool.contains(crs));
     if in_scope_places.is_empty() {
+        let mut per_line = select_lines(eligible, &summary);
+        per_line.retain(|line| line.held >= 2);
         return Resolution {
-            per_line: select_lines(eligible, &summary)
-                .into_iter()
-                .filter(|(_, crs)| places_held(&summary, crs) >= 2)
-                .collect(),
+            per_line: evidence_of(per_line),
             named: true,
         };
     }
     Resolution {
-        per_line: select_lines(&in_scope, &in_scope_places),
+        per_line: evidence_of(select_lines(&in_scope, &in_scope_places)),
         named: true,
     }
 }
@@ -364,7 +368,7 @@ fn restrict(places: &[PlaceMention], keep: impl Fn(&str) -> bool) -> Vec<PlaceMe
         .iter()
         .filter_map(|place| {
             let crs: Vec<String> = place.crs.iter().filter(|c| keep(c)).cloned().collect();
-            (!crs.is_empty()).then(|| PlaceMention {
+            (!crs.is_empty()).then_some(PlaceMention {
                 crs,
                 localised: place.localised,
             })
@@ -385,12 +389,23 @@ fn distinct_places(places: Vec<PlaceMention>) -> Vec<PlaceMention> {
     out
 }
 
-/// How many of `places` the evidence codes `crs` of one line cover.
-fn places_held(places: &[PlaceMention], crs: &[String]) -> usize {
-    places
-        .iter()
-        .filter(|place| place.crs.iter().any(|c| crs.contains(c)))
-        .count()
+/// One line [`select_lines`] put the incident on.
+struct LinePlaces<'a> {
+    id: &'a str,
+    /// How many of the named places the line holds.
+    held: usize,
+    /// The line's own stations standing for them
+    /// ([`LineDefinition::stations_for_place`]): the station tier's
+    /// evidence, in place order.
+    stations: Vec<String>,
+}
+
+/// Line id -> its evidence stations.
+fn evidence_of(lines: Vec<LinePlaces<'_>>) -> HashMap<&str, Vec<String>> {
+    lines
+        .into_iter()
+        .map(|line| (line.id, line.stations))
+        .collect()
 }
 
 /// Which of `lines` the named `places` put the incident on, and the codes
@@ -409,15 +424,12 @@ fn places_held(places: &[PlaceMention], crs: &[String]) -> usize {
 ///   Victoria, on four Southern lines, beside Eastbourne), and a place on
 ///   more than [`HUB_LINES`] is dropped when another is on [`HUB_LINES`]
 ///   or fewer. A hub named alone still fans out to all its lines.
-fn select_lines<'a>(
-    lines: &[&'a LineDefinition],
-    places: &[PlaceMention],
-) -> HashMap<&'a str, Vec<String>> {
+fn select_lines<'a>(lines: &[&'a LineDefinition], places: &[PlaceMention]) -> Vec<LinePlaces<'a>> {
     let per_line: Vec<(&'a LineDefinition, Vec<usize>)> = lines
         .iter()
         .map(|line| {
             let held: Vec<usize> = (0..places.len())
-                .filter(|&p| places[p].crs.iter().any(|crs| line.has_station(crs)))
+                .filter(|&p| places[p].crs.iter().any(|crs| line.holds_place(crs)))
                 .collect();
             (*line, held)
         })
@@ -452,15 +464,21 @@ fn select_lines<'a>(
             }
         })
         .map(|(line, held)| {
-            let mut crs: Vec<String> = Vec::new();
-            for p in held {
+            let mut stations: Vec<String> = Vec::new();
+            for &p in &held {
                 for code in &places[p].crs {
-                    if line.has_station(code) && !crs.contains(code) {
-                        crs.push(code.clone());
+                    for station in line.stations_for_place(code) {
+                        if !stations.contains(&station) {
+                            stations.push(station);
+                        }
                     }
                 }
             }
-            (line.id.as_str(), crs)
+            LinePlaces {
+                id: line.id.as_str(),
+                held: held.len(),
+                stations,
+            }
         })
         .collect()
 }
@@ -12495,17 +12513,16 @@ mod tests {
 
     #[test]
     fn woking_brookwood_stays_on_the_lines_through_both() {
-        // 147D1B86: before, all five SW lines operator-wide; now the four
-        // lines that run between Woking and Brookwood, by station.
+        // 147D1B86: before, all five SW lines operator-wide. No catalogue
+        // line lists Brookwood, so until the pass-through stations
+        // (lines/generated/pass-through.toml) only Woking resolved, a hub on
+        // four lines including the Portsmouth Direct, whose trains turn off
+        // to Guildford there. Now the three lines whose trains run through
+        // Brookwood, a two-place section.
         let found = evidence("Disruption between Woking and Brookwood", "", &["SW"]);
         assert_eq!(
             ids(&found),
-            [
-                "swr-alton",
-                "swr-portsmouth-direct",
-                "swr-south-west-main",
-                "swr-west-of-england"
-            ]
+            ["swr-alton", "swr-south-west-main", "swr-west-of-england"]
         );
         assert_no_operator_only(&found);
     }
@@ -12550,7 +12567,12 @@ mod tests {
             "",
             &["WM"],
         );
-        assert_eq!(ids(&found), ["wmr-camp-hill-line", "wmr-cross-city"]);
+        // The Malvern line's trains run through Kings Norton (a
+        // pass-through station between University and Bromsgrove).
+        assert_eq!(
+            ids(&found),
+            ["wmr-camp-hill-line", "wmr-cross-city", "wmr-malvern-line"]
+        );
         // With no place named, LN falls back to every LM line.
         let found = evidence(
             "Disruption to London Northwestern Railway services",
@@ -12658,14 +12680,14 @@ mod tests {
              Victoria.</p>",
             &["SW"],
         );
-        assert_eq!(found.len(), 4, "{found:?}");
+        assert_eq!(found.len(), 3, "{found:?}");
         // A summary without a place: the description supplies it.
         let found = evidence(
             "Disruption to South Western Railway services",
             "<p>A fault between Woking and Brookwood means trains may be delayed.</p>",
             &["SW"],
         );
-        assert_eq!(found.len(), 4, "{found:?}");
+        assert_eq!(found.len(), 3, "{found:?}");
     }
 
     #[test]
@@ -12742,6 +12764,41 @@ mod tests {
             "{found:?}"
         );
         assert!(!found.is_empty());
+    }
+
+    #[test]
+    fn pass_through_stations_put_a_section_on_the_lines_running_through_it() {
+        // 30F25B61 / C279C8AB (2026-10-06 misses study): no Brighton Main
+        // Line or Oxted line stop is named, but their trains run through
+        // New Cross Gate and Norwood Junction between London Bridge and
+        // East Croydon (lines/generated/pass-through.toml).
+        let lines = load_all_lines();
+        let registry = SegmentRegistry::new(&lines);
+        let inc = incident(
+            "30F25B61",
+            "Issue resolved: disruption between London Bridge and Norwood Junction",
+            "",
+            &["SN"],
+            &[],
+        );
+        let found = super::lines_affected_by(&inc, &lines, &registry, &real_gazetteer());
+        let ids: Vec<&str> = found.iter().map(|m| m.line.id.as_str()).collect();
+        for id in ["southern-brighton-main-line", "southern-oxted-uckfield"] {
+            assert!(ids.contains(&id), "{id}: {ids:?}");
+        }
+        // The evidence (and so the affected stops and route) is only ever
+        // the line's own stations.
+        for m in &found {
+            for crs in &m.evidence.stations {
+                assert!(m.line.has_station(crs), "{}: {crs}", m.line.id);
+            }
+        }
+        let bml = found
+            .iter()
+            .find(|m| m.line.id == "southern-brighton-main-line")
+            .expect("matched");
+        assert!(bml.evidence.stations.contains(&"ECR".to_string()));
+        assert!(!bml.evidence.stations.contains(&"NWD".to_string()));
     }
 
     #[test]

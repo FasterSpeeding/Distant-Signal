@@ -1,0 +1,416 @@
+# GENERATED FILE -- do not edit by hand.
+#
+# Stations each catalogue line's trains run through (calling or passing)
+# between two of its consecutive [[stations]], from the CIF timetable.
+# Used ONLY by the incident matcher to resolve places named in incident
+# text (common::station_resolver / common::matcher); never shown as a
+# line's stops. Validated in CI by line-catalogue-validator.
+#
+# Regenerate after each timetable change (December and May) and after
+# changing a line's stations, then commit:
+#   uv run scripts/generate-pass-through.py --database-url <url>
+# (see lines/README.md for running it against production read-only).
+
+source_dates = ["2026-10-07", "2026-10-10", "2026-10-11"]
+
+[lines.cross-country]
+EDB-DUN = ["PST", "DRM"]
+DUN-BWK = ["RSN"]
+DAR-YRK = ["NTR", "THI"]
+WKF-SHF = ["MRP", "SWN", "MHS"]
+BHM-UNI = ["FWY"]
+UNI-WOP = ["SLY", "KNN", "LOB", "BTG", "BMV"]
+WOP-CNM = ["ASC"]
+CNM-BPW = ["GCR", "YAE"]
+BPW-BRI = ["FIT"]
+TAU-EXD = ["TVP"]
+
+[lines.emr-connect]
+STP-LTN = ["KTN", "WHP", "CRI", "HEN", "SAC"]
+LUT-BDM = ["FLT"]
+
+[lines.emr-crewe-derby]
+DBY-LGE = ["SPO"]
+
+[lines.emr-derwent-valley]
+GMB-HAB = ["SLL"]
+BEE-LGE = ["ATB"]
+
+[lines.emr-midland-main-line]
+STP-LTN = ["KTN", "WHP", "CRI", "HEN", "SAC"]
+LUT-BDM = ["FLT"]
+LEI-LBO = ["SIL"]
+LGE-DBY = ["SPO"]
+
+[lines.emr-nottingham-lincoln]
+NCT-CLM = ["NNG"]
+
+[lines.emr-regional]
+WAC-MCO = ["BWD", "DGT"]
+SPT-SHF = ["HAZ", "CLY", "EDL", "BAM", "HSG", "GRN", "DOR"]
+ALF-ILN = ["LGM"]
+NOT-GRA = ["RDF", "BIN", "ALK"]
+PBO-MCH = ["WLE"]
+MCH-ELY = ["MNE"]
+ELY-TTF = ["BND"]
+
+[lines.grand-central]
+KGX-PBO = ["FPK", "AAP", "PBR", "WGC", "SVG", "HIT", "BIW", "SDY", "HUN"]
+PBO-DON = ["GRA", "NNG", "RET"]
+NTR-EAG = ["YRM"]
+EAG-HPL = ["STK"]
+
+[lines.grand-central-bradford]
+KGX-PBO = ["FPK", "AAP", "PBR", "WGC", "SVG", "HIT", "BIW", "SDY", "HUN"]
+PBO-DON = ["GRA", "NNG", "RET"]
+
+[lines.great-northern-kings-lynn]
+FPK-AAP = ["HGY"]
+AAP-PBR = ["NBA"]
+
+[lines.greater-anglia-breckland-line]
+ELY-CMB = ["WBC"]
+
+[lines.greater-anglia-main-line]
+LST-SRA = ["BET"]
+SRA-RMF = ["MYL", "FOG", "IFD"]
+RMF-SNF = ["GDP"]
+
+[lines.greater-anglia-stansted-express]
+LST-TOM = ["BET", "HAC"]
+TOM-HWN = ["BMD", "CHN", "BXB"]
+HWN-BIS = ["HWM", "SAW"]
+
+[lines.greater-anglia-west-anglia]
+LST-SRA = ["BET"]
+
+[lines.gwr-bristol-gloucester]
+FIT-YAE = ["BPW"]
+
+[lines.gwr-cotswold]
+PAD-RDG = ["EAL", "STL", "SLO", "MAI", "TWY"]
+RDG-DID = ["GOR"]
+DID-OXF = ["RAD"]
+
+[lines.gwr-golden-valley]
+PAD-RDG = ["EAL", "STL", "SLO", "MAI", "TWY"]
+RDG-DID = ["GOR"]
+
+[lines.gwr-main-line]
+PAD-RDG = ["EAL", "STL", "SLO", "MAI", "TWY"]
+RDG-DID = ["GOR"]
+
+[lines.gwr-riviera-line]
+EXD-DWW = ["EXT", "MBT", "SCS"]
+
+[lines.gwr-south-wales]
+PAD-RDG = ["EAL", "STL", "SLO", "MAI", "TWY"]
+RDG-DID = ["GOR"]
+CDF-PYC = ["NNP"]
+
+[lines.gwr-thames-valley]
+PAD-STL = ["EAL"]
+
+[lines.gwr-west-of-england]
+PAD-RDG = ["EAL", "STL", "SLO", "MAI", "TWY"]
+RDG-NBY = ["RDW", "THE", "THA"]
+
+[lines.heathrow-express]
+PAD-HXX = ["EAL", "STL"]
+
+[lines.hull-trains]
+KGX-SVG = ["FPK", "AAP", "PBR", "WGC"]
+SVG-GRA = ["HIT", "BIW", "SDY", "HUN", "PBO"]
+GRA-RET = ["NNG"]
+HOW-BUH = ["GBD"]
+
+[lines.lner-ecml]
+KGX-SVG = ["FPK", "AAP", "PBR", "WGC"]
+SVG-PBO = ["HIT", "BIW", "SDY", "HUN"]
+YRK-NTR = ["THI"]
+DUN-EDB = ["DRM", "PST"]
+HYM-INK = ["DAM"]
+INK-KDY = ["BTS"]
+KDY-LEU = ["LDY", "CUP"]
+DEE-ARB = ["BYF", "CAN"]
+MTS-STN = ["LAU"]
+
+[lines.lner-hull]
+KGX-SVG = ["FPK", "AAP", "PBR", "WGC"]
+SVG-PBO = ["HIT", "BIW", "SDY", "HUN"]
+HOW-BUH = ["GBD"]
+
+[lines.lner-leeds]
+KGX-SVG = ["FPK", "AAP", "PBR", "WGC"]
+SVG-PBO = ["HIT", "BIW", "SDY", "HUN"]
+DON-WKF = ["AWK"]
+
+[lines.lner-lincoln]
+KGX-SVG = ["FPK", "AAP", "PBR", "WGC"]
+SVG-PBO = ["HIT", "BIW", "SDY", "HUN"]
+
+[lines.lnwr-birmingham-crewe]
+EUS-WFJ = ["WMB", "HRW"]
+WFJ-LBZ = ["TRI"]
+BHI-BHM = ["SCF"]
+
+[lines.lnwr-euston-tring]
+EUS-HRW = ["WMB"]
+
+[lines.lumo]
+KGX-SVG = ["FPK", "AAP", "PBR", "WGC"]
+SVG-NCL = ["HIT", "BIW", "SDY", "HUN", "PBO", "GRA", "NNG", "RET", "DON", "YRK", "THI", "NTR", "DAR", "DHM"]
+MPT-EDB = ["ALM", "BWK", "RSN", "DUN", "DRM", "PST"]
+HYM-FKK = ["LIN", "PMT"]
+FKK-GLQ = ["CRO", "LNZ", "BBG"]
+
+[lines.northern]
+NLW-MCV = ["ECC", "SFD"]
+MCV-SYB = ["AHN"]
+
+[lines.northern-blackpool]
+MCV-SLD = ["SFD"]
+
+[lines.northern-leeds-york]
+MIK-CHF = ["SIE"]
+
+[lines.northern-liverpool-warrington-manchester]
+FLI-URM = ["CSR"]
+
+[lines.northern-manchester-southport]
+SFD-SNN = ["SLD"]
+
+[lines.northern-wigan-kirkby]
+SFD-SNN = ["SLD"]
+
+[lines.scotrail-ayrshire]
+JHN-KWN = ["LHW", "DLY"]
+
+[lines.scotrail-bathgate]
+BLG-ADR = ["CAY", "SLS", "GAR", "EST", "BAI", "CBS", "COA"]
+
+[lines.scotrail-cathcart-circle]
+PTT-NEI = ["BGY"]
+
+[lines.scotrail-edinburgh-aberdeen]
+KDY-MNC = ["GLT"]
+
+[lines.scotrail-largs-ardrossan]
+JHN-KWN = ["MIN", "HOZ", "LHW", "GLG", "DLY"]
+
+[lines.scotrail-north-clyde]
+BWG-DBC = ["DBE"]
+BLG-SPR = ["DST", "AXP", "BNL"]
+
+[lines.scotrail-shotts]
+CBL-UDD = ["NTN"]
+
+[lines.scotrail-stirling-dunblane]
+HYM-LIN = ["EDP"]
+
+[lines.scotrail-west-highland-fort-william]
+GLQ-DMR = ["MYH", "WES"]
+DBC-HLU = ["DLR"]
+
+[lines.scotrail-west-highland-oban]
+GLQ-DMR = ["MYH", "WES"]
+DBC-HLU = ["DLR"]
+
+[lines.southeastern-chatham]
+VIC-HNH = ["BRX"]
+
+[lines.southeastern-hayes-line]
+LBG-LEW = ["NWX"]
+
+[lines.southeastern-highspeed]
+RAI-SIT = ["NGT"]
+RAM-CBW = ["MSR", "STU"]
+CBW-THP = ["STU", "MSR"]
+
+[lines.southeastern-maidstone-east]
+VIC-HNH = ["BRX"]
+
+[lines.southeastern-main-line]
+GRP-CIT = ["SUP", "ESD"]
+ORP-SEV = ["CLD", "KCK", "DNG"]
+SEV-TON = ["HLB"]
+
+[lines.southeastern-sheerness-line]
+VIC-HNH = ["BRX"]
+
+[lines.southern-brighton-main-line]
+LBG-ECR = ["NXG", "BCY", "HPA", "FOH", "SYD", "PNW", "ANZ", "NWD"]
+ECR-PUR = ["SCY"]
+TBD-HHE = ["BAB"]
+
+[lines.southern-oxted-uckfield]
+LBG-ECR = ["NXG", "SYD", "NWD"]
+
+[lines.swr-alton]
+WIM-SUR = ["NEM"]
+SUR-WOK = ["WAL", "WYB", "BFN", "WBY"]
+WOK-AHV = ["BKO"]
+
+[lines.swr-epsom-mole-valley]
+WAT-CLJ = ["VXH"]
+CLJ-WIM = ["EAD"]
+LHD-DKG = ["BXW"]
+
+[lines.swr-hampton-court-branch]
+WIM-SUR = ["RAY", "NEM", "BRS"]
+
+[lines.swr-new-guildford]
+WAT-CLJ = ["VXH"]
+CLJ-WIM = ["EAD"]
+WIM-SUR = ["RAY", "NEM"]
+
+[lines.swr-portsmouth-direct]
+WIM-SUR = ["NEM"]
+WOK-GLD = ["WPL"]
+GOD-HSL = ["MLF", "WTY"]
+HAV-HLS = ["BDH"]
+
+[lines.swr-south-west-main]
+WIM-SUR = ["NEM"]
+WOK-BSK = ["BKO", "FNB", "FLE", "WNF", "HOK"]
+BSK-WIN = ["MIC"]
+WIN-SOA = ["SHW", "ESL"]
+SOA-SOU = ["SDN"]
+SOU-BCU = ["RDB", "TTN", "ANF", "BEU"]
+BCU-BMH = ["SWY", "NWM", "HNA", "CHR", "POK"]
+BMH-POO = ["BSM", "PKS"]
+POO-WRM = ["HAM", "HOL"]
+WRM-DCH = ["WOO", "MTN"]
+DCH-WEY = ["UPW"]
+
+[lines.swr-west-of-england]
+WIM-SUR = ["NEM"]
+SUR-WOK = ["WAL", "WYB", "BFN"]
+WOK-BSK = ["BKO", "FNB", "FLE", "WNF", "HOK"]
+
+[lines.tfw-heart-of-wales]
+LLE-SWA = ["GWN"]
+
+[lines.thameslink-cambridge]
+RYS-CMS = ["FXN"]
+
+[lines.thameslink-southern]
+LBG-ECR = ["NXG", "SYD", "NWD"]
+
+[lines.tpe-anglo-scottish]
+LIV-SNH = ["EDG", "ROB", "HUY"]
+MAN-MIA = ["HDG"]
+MCO-BON = ["DGT", "SLD"]
+BON-PRE = ["CRL"]
+CRS-MTH = ["SDM"]
+MTH-GLC = ["NTN"]
+
+[lines.tpe-borders]
+ELT-EDB = ["DRM", "PST"]
+
+[lines.tpe-north]
+LIV-NLW = ["EDG", "ROB", "HUY", "RNH", "LEG", "SHJ", "ERL"]
+NLW-MCV = ["ECC", "SFD"]
+MCV-HUD = ["SYB", "GNF", "MSN"]
+HUD-LDS = ["MIR", "DEW", "MLY"]
+YRK-DAR = ["THI", "NTR"]
+
+[lines.tpe-north-hull]
+LIV-LEG = ["EDG", "ROB", "HUY", "RNH"]
+LEG-MCV = ["SHJ", "ERL", "NLW", "ECC", "SFD"]
+SYB-HUD = ["GNF", "MSN"]
+HUD-LDS = ["MIR", "DEW", "MLY"]
+LDS-SBY = ["CRG", "MIK"]
+SBY-BUH = ["HOW", "GBD"]
+
+[lines.tpe-north-scarborough]
+MIA-MCV = ["HDG", "MAN", "MCO", "DGT", "SFD"]
+MCV-HUD = ["SYB", "GNF", "MSN"]
+HUD-DEW = ["MIR"]
+DEW-LDS = ["MLY"]
+
+[lines.tpe-north-teesside]
+MIA-MAN = ["HDG", "GTY"]
+MCO-MCV = ["DGT", "SFD"]
+MCV-HUD = ["SYB", "GNF", "MSN"]
+HUD-DEW = ["MIR"]
+DEW-LDS = ["MLY"]
+MBR-RCC = ["SBK"]
+RCC-SLB = ["LGK"]
+
+[lines.tpe-north-wakefield]
+MAN-SYB = ["ABY", "GUI"]
+CFD-YRK = ["CHF"]
+
+[lines.tpe-south]
+URM-MCO = ["DGT"]
+SPT-SHF = ["HAZ", "CLY", "EDL", "BAM", "HSG", "GRN", "DOR"]
+MHS-DON = ["SWN", "MEX"]
+DON-SCU = ["KKS", "HFS", "CWE"]
+HAB-GMB = ["SLL"]
+
+[lines.wcml]
+EUS-WFJ = ["WMB", "HRW"]
+HML-TRI = ["BKM"]
+TRI-MKC = ["BLY"]
+LTV-STA = ["RGL"]
+CRE-WBQ = ["WSF", "ACB"]
+
+[lines.wcml-birmingham]
+EUS-WFJ = ["WMB", "HRW"]
+TRI-MKC = ["BLY"]
+
+[lines.wcml-liverpool]
+EUS-WFJ = ["WMB", "HRW"]
+TRI-MKC = ["BLY"]
+LTV-STA = ["RGL"]
+CRE-HTF = ["WSF"]
+HTF-RUN = ["ACB"]
+
+[lines.wcml-manchester]
+EUS-WFJ = ["WMB", "HRW"]
+TRI-MKC = ["BLY"]
+LTV-STA = ["RGL"]
+STA-SOT = ["SNE"]
+SOT-MAC = ["KDG", "CNG"]
+CRE-WML = ["SDB", "CEL", "ALD"]
+WML-SPT = ["CHU"]
+
+[lines.wcml-north-wales]
+EUS-WFJ = ["WMB", "HRW"]
+TRI-MKC = ["BLY"]
+LTV-STA = ["RGL"]
+CTR-FLN = ["SHT"]
+RHL-CWB = ["AGL"]
+LLJ-BNG = ["PMW"]
+BNG-HHD = ["LPG", "VAL"]
+
+[lines.wcml-scotland]
+CRS-MTH = ["SDM"]
+MTH-GLC = ["NTN"]
+GLC-HYM = ["NTN", "UDD", "BLH", "HLY", "CRF", "CEA", "HTW", "SHS", "FLD", "BRC", "ADW", "WCL", "LVG", "KKN", "CUH", "WTA", "KGE", "SLA"]
+
+[lines.wmr-darlaston-line]
+TAB-DAS = ["BSC"]
+
+[lines.wmr-malvern-line]
+BHM-UNI = ["FWY"]
+UNI-BMV = ["SLY", "KNN", "LOB", "BTG"]
+
+[lines.xc-cardiff]
+LGE-DBY = ["SPO"]
+DBY-BUT = ["WIL"]
+BHM-UNI = ["FWY"]
+UNI-WOP = ["SLY", "KNN", "LOB", "BTG", "BMV"]
+WOP-CNM = ["ASC"]
+
+[lines.xc-manchester]
+SPT-MAC = ["CHU"]
+MAC-SOT = ["CNG", "KDG"]
+SOT-STA = ["SNE"]
+
+[lines.xc-south-coast]
+BHM-COV = ["SCF", "BHI", "BKW"]
+
+[lines.xc-stansted]
+ELY-CBG = ["WBC", "CMB"]
