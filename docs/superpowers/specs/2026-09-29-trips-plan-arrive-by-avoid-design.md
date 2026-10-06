@@ -36,6 +36,9 @@ GET /Trips/plan?origin=&destination=&date=
     [&results=fastest|options][&maxChanges=0..4][&live=true|false]
 ```
 
+(2026-10-06: `&via=CRS,...` was added and the `maxChanges` ceiling is now
+6; see `2026-10-06-trips-plan-via-and-max-changes-design.md`.)
+
 ### Arrive-by
 
 - `arriveBy` is the latest acceptable arrival at the destination. Sending it
@@ -182,7 +185,8 @@ These shapes are asserted by the DB tests in `crates/api/src/routes/trips.rs`:
 | `avoid` | `avoid` |
 | `avoidStop` | `avoidStop` |
 | `viaStop` | `waypoints` (same meaning: a call, a train continuing through at no change, and the whole-journey change cap) |
-| `via` (pass through) | not supported (see §6) |
+| `via` (pass through) | `via` (2026-10-06, at most 3, in order; see `2026-10-06-trips-plan-via-and-max-changes-design.md`) |
+| `maxChanges` 5 or 6 | `maxChanges=5`/`6` (2026-10-06; the ceiling was 4) |
 | `LON` group code | not expanded: a 400, because `LON` is not a routable CRS |
 | up to 20 via points | up to 20 `waypoints` |
 
@@ -427,7 +431,9 @@ planning-slot semaphore (4 permits) bounds concurrency as before.
 
 ## 6. Not done, and decisions for the user
 
-1. **Pass-through `via`.** A waypoint is satisfied by a call, as in
+1. **Pass-through `via`.** Done 2026-10-06, on the pass index, as search
+   state rather than decoy retries: see `2026-10-06-trips-plan-via-and-max-changes-design.md`. The original note:
+   A waypoint is satisfied by a call, as in
    `viaStop`. `train-mcp`'s pass-through `via` needs its decoy retries
    (`legsTouchTarget`); it could be built on the pass index later.
 2. **Aligned itineraries are a semantic change for multi-segment clients.**

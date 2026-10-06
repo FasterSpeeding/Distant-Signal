@@ -3,6 +3,78 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-06: `/Trips/plan` pass-through `via`; `maxChanges` up to 6
+
+Design:
+`docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md`.
+This closes the two gaps for which DS-MCP's `plan_journey` still used its
+local engine (`dsTripPlanEligible`).
+
+### New parameter: `via`
+
+`GET /Trips/plan?...&via=CRS[,CRS]`: at most 3 stations every journey
+must pass through, in this order.
+
+- **What counts.** Staying aboard a train that runs through without
+  stopping or calls there, or changing or walking there. This is
+  `plan_journey`'s `via` (pass through, stopping or not).
+- **Vias and waypoints.** `waypoints` (must call, in order) and `via` are
+  separate ordered lists that may interleave.
+- **With the avoid lists.** `avoidStop=X` with `via=X` means "pass X
+  without stopping". `avoid=X` with `via=X` is a 400.
+- **Timing points only.** Running through is seen only where CIF records a
+  passing point, at timing points. Elsewhere only a call there counts.
+- **400s:**
+  - an unknown or group code (`via: 'ZZZ' is not a recognised station CRS
+    code`);
+  - more than 3 vias;
+  - the same via twice in a row;
+  - a via equal to the origin or the destination.
+
+### New fields
+
+- Top level: `via`. The vias as applied, uppercased and in order. Always
+  present (`[]`).
+- `journeys[j].viaSatisfiedBy`: present only when `via` is given.
+  `[{crs, segment, leg, how}]`, one entry per via in order.
+  `segments[segment].itineraries[j].legs[leg]` is the leg that first
+  passed it. `how` is one of:
+  - `call`: the train called there;
+  - `pass`: it ran through without calling, or past a cancelled call;
+  - `walk`: a transfer leg into it.
+
+```json
+"via": ["ZVP"],
+"journeys": [{"changeCount": 0, "departure": {...}, "arrival": {...},
+  "totalDurationMinutes": 60,
+  "viaSatisfiedBy": [{"crs": "ZVP", "segment": 0, "leg": 0, "how": "pass"}]}]
+```
+
+### New `noResultReason.constraint`: `via`
+
+An itinerary exists without the vias, but none with them. `values` is the
+single via whose removal alone is enough, or every via. Every segment
+carries it. A `maxChanges` cap, or a time or route that fails even without
+the vias, is reported as before instead.
+
+### Changed: `maxChanges` accepts 0 to 6 (was 0 to 4)
+
+Out of range is a 400: `maxChanges must be a whole number from 0 to 6
+(default 2), not '7'`.
+
+With `results=options`, a new 400 applies when
+`(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) > 126`, with the
+message `... is too large a search ...; use fewer waypoints or vias, a
+lower maxChanges, or results=fastest`. The limits this gives:
+
+- `maxChanges=6`: up to 14 waypoints;
+- `maxChanges=5`: up to 17 waypoints;
+- `maxChanges` 4 or less: 20 waypoints, as before;
+- with 3 vias: 3, 2 and 1 waypoints at `maxChanges` 2, 4 and 6.
+
+`fastest` is not affected. DS-MCP: on this 400, fall back to the local
+engine.
+
 ## 2026-10-06: incidents on the lines they name; `upcoming` on line status
 
 Design:
