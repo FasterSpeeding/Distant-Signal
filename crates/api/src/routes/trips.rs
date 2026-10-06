@@ -60,6 +60,16 @@ const MAX_AVOIDED: usize = 8;
 /// Three is what a ticket routing ("via X, Y and Z") needs in practice.
 const MAX_VIAS: usize = 3;
 
+/// Guard on an `options` search's size: states * rounds, i.e.
+/// `(waypoints + 1) * (vias + 1) * (maxChanges + 2)`, at most 126 -- what 20
+/// waypoints at `maxChanges=4` cost before the ceiling was raised to 6
+/// (2026-10-06). So `maxChanges=6` (8 rounds) allows up to 14 waypoints,
+/// `maxChanges=5` up to 17; with 3 vias, `maxChanges=2` allows 6 waypoints,
+/// 4 allows 4 and 6 allows 2. `fastest` (one CSA sweep, no rounds) is not
+/// limited beyond [`MAX_WAYPOINTS`] and [`MAX_VIAS`]. Measured cost:
+/// docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md.
+const MAX_OPTIONS_SEARCH_SIZE: usize = 126;
+
 /// Global cap on trip plans being computed at once (2026-09-25 review, High
 /// 4c). This is a per-process concurrency gate, NOT a per-IP rate limit --
 /// stated plainly because the two are often conflated: it bounds how much of
@@ -160,7 +170,7 @@ struct TripPlanParams {
     via: Option<String>,
     #[serde(default = "default_results")]
     results: String,
-    /// Optional interchange cap, `?maxChanges=0`..`=4` (inclusive). Absent
+    /// Optional interchange cap, `?maxChanges=0`..`=6` (inclusive). Absent
     /// or empty means [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (2),
     /// exactly this route's behaviour before the parameter existed. Kept as
     /// a raw string and validated by [`parse_max_changes`] rather than
@@ -186,7 +196,7 @@ fn default_results() -> String {
 
 /// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&via=]
 /// [&departAfter=|&arriveBy=][&avoid=][&avoidStop=][&avoidChange=]
-/// [&results=fastest|options][&maxChanges=0..4][&live=true|false]`.
+/// [&results=fastest|options][&maxChanges=0..6][&live=true|false]`.
 ///
 /// - `arriveBy=HH:MM` (2026-09-29): instead of the earliest arrival after
 ///   `departAfter` (exclusive with it: both given is a 400), the
@@ -254,10 +264,13 @@ fn default_results() -> String {
 ///   `cappedByMaxChanges: true` when a strictly faster itinerary needing more
 ///   changes exists.
 /// - `maxChanges`: integer `0..=`[`trip_planning_itinerary::MAX_CHANGES_LIMIT`]
-///   (4); absent/empty => [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`]
-///   (2). Anything else (out of range, negative, non-integer) is a 400 naming
-///   the allowed range, rejected before any database read. The effective
-///   value is echoed back as the response's top-level `maxChanges`.
+///   (6 since 2026-10-06, 4 before); absent/empty =>
+///   [`trip_planning_itinerary::DEFAULT_MAX_CHANGES`] (2). Anything else (out
+///   of range, negative, non-integer) is a 400 naming the allowed range,
+///   rejected before any database read. The effective value is echoed back
+///   as the response's top-level `maxChanges`. With `results=options`, the
+///   combination of waypoints, vias and `maxChanges` must also fit
+///   [`MAX_OPTIONS_SEARCH_SIZE`] (a 400 otherwise).
 ///
 /// **Read this before adding work to this handler.** One request here reads
 /// every `schedule_calling_points_full` row for the requested date (hundreds
@@ -271,14 +284,20 @@ fn default_results() -> String {
 ///    database read -- bounds how many stages the one joint search carries
 ///    (see [`MAX_WAYPOINTS`] for the measured cost). Rejected requests cost
 ///    a string split, not a query.
-/// 2. [`trip_planning_itinerary::MAX_CHANGES_LIMIT`], also checked before any
-///    database read -- bounds how deep each `options`-mode search can go.
-///    RAPTOR does one full sweep of the day's connections per round, and runs
-///    `maxChanges + 2` rounds at most (fewer if a round improves nothing):
-///    6 sweeps at `maxChanges=4` versus 4 at the default of 2 (the whole-day
-///    read and graph build, which dominate memory, are unchanged, and
-///    `fastest` mode's single CSA scan doesn't depend on `maxChanges`).
-///    Per-search memory is one arrival map per round and stage.
+/// 2. [`trip_planning_itinerary::MAX_CHANGES_LIMIT`] and
+///    [`MAX_OPTIONS_SEARCH_SIZE`], also checked before any database read --
+///    bound how deep and how wide each `options`-mode search can go. RAPTOR
+///    does one full sweep of the day's connections per round, and runs
+///    `maxChanges + 2` rounds at most (fewer if a round improves nothing): 8
+///    sweeps at `maxChanges=6`, 6 at 4, 4 at the default of 2. Each sweep
+///    carries one label set per (waypoint stage, via progress) state,
+///    `(waypoints + 1) * (vias + 1)` of them, so the work is about states *
+///    rounds; the guard keeps that at or below what 20 waypoints at
+///    `maxChanges=4` (the most allowed before 2026-10-06) already cost.
+///    (The whole-day read and graph build, which dominate memory, are
+///    unchanged, and `fastest` mode's single CSA scan doesn't depend on
+///    `maxChanges`; with the live overlay, `options` re-plans at most once.)
+///    Per-search memory is one label set per round and state.
 /// 3. [`PLAN_SLOTS`], held across the whole read-plus-compute body -- bounds
 ///    how many of these can be in flight at once, so the peak is a few
 ///    graphs' worth of memory and a few threads, not one per connection. The
@@ -333,6 +352,7 @@ async fn get_trip_plan(
     check_avoid_conflicts(&avoid, &origin, &waypoints, &destination)?;
     let vias = parse_vias(params.via.as_deref())?;
     check_via_conflicts(&vias, &avoid, &origin, &destination)?;
+    check_options_search_size(&params.results, waypoints.len(), vias.len(), max_changes)?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -948,6 +968,33 @@ fn check_via_conflicts(
     Ok(())
 }
 
+/// [`MAX_OPTIONS_SEARCH_SIZE`] for `results=options`: a 400 naming the
+/// numbers and the ways out, before any database read.
+fn check_options_search_size(
+    results: &str,
+    waypoints: usize,
+    vias: usize,
+    max_changes: u32,
+) -> Result<(), (StatusCode, String)> {
+    if results != "options" {
+        return Ok(());
+    }
+    let rounds = trip_planning_itinerary::max_rounds(max_changes) as usize;
+    let size = (waypoints + 1) * (vias + 1) * rounds;
+    if size <= MAX_OPTIONS_SEARCH_SIZE {
+        return Ok(());
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        format!(
+            "results=options with {waypoints} waypoints, {vias} vias and maxChanges={max_changes} \
+             is too large a search ((waypoints + 1) * (vias + 1) * (maxChanges + 2) = {size}, \
+             at most {MAX_OPTIONS_SEARCH_SIZE}); use fewer waypoints or vias, a lower \
+             maxChanges, or results=fastest"
+        ),
+    ))
+}
+
 /// `?departAfter=` / `?arriveBy=`: at most one. Neither means departing
 /// after 00:00, as before.
 fn parse_time_bound(
@@ -1140,7 +1187,7 @@ mod tests {
 
     #[test]
     fn max_changes_accepts_every_value_from_zero_to_the_limit() {
-        assert_eq!(trip_planning_itinerary::MAX_CHANGES_LIMIT, 4);
+        assert_eq!(trip_planning_itinerary::MAX_CHANGES_LIMIT, 6);
         for value in 0..=trip_planning_itinerary::MAX_CHANGES_LIMIT {
             assert_eq!(parse_max_changes(Some(&value.to_string())), Ok(value));
         }
@@ -1150,7 +1197,7 @@ mod tests {
     #[test]
     fn max_changes_out_of_range_or_non_integer_is_a_400_naming_the_range() {
         for bad in [
-            "5",
+            "7",
             "99",
             "-1",
             "abc",
@@ -1163,7 +1210,7 @@ mod tests {
                 parse_max_changes(Some(bad)).expect_err(&format!("'{bad}' must be rejected"));
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
             assert!(
-                message.contains("maxChanges") && message.contains("0 to 4"),
+                message.contains("maxChanges") && message.contains("0 to 6"),
                 "the error must name the parameter and its range: {message}"
             );
         }
@@ -1281,6 +1328,27 @@ mod tests {
         let (status, message) = parse_vias(Some("CRE,cre")).unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(message.contains("twice in a row"), "{message}");
+    }
+
+    #[test]
+    fn the_options_search_size_guard_bounds_waypoints_vias_and_rounds() {
+        // Today's worst case before the raise still fits exactly.
+        assert!(check_options_search_size("options", 20, 0, 4).is_ok());
+        assert!(check_options_search_size("options", 14, 0, 6).is_ok());
+        assert!(check_options_search_size("options", 17, 0, 5).is_ok());
+        assert!(check_options_search_size("options", 6, 3, 2).is_ok());
+        assert!(check_options_search_size("options", 2, 3, 6).is_ok());
+        for (waypoints, vias, max_changes) in [(15, 0, 6), (20, 0, 5), (7, 3, 2), (3, 3, 6)] {
+            let (status, message) =
+                check_options_search_size("options", waypoints, vias, max_changes).unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                message.contains("too large a search") && message.contains("results=fastest"),
+                "{message}"
+            );
+        }
+        // fastest is one sweep whatever maxChanges says.
+        assert!(check_options_search_size("fastest", 20, 3, 6).is_ok());
     }
 
     #[test]
@@ -1862,7 +1930,7 @@ mod db_tests {
                 routes::trips -- --ignored --test-threads=1`"]
     async fn an_invalid_max_changes_is_a_clear_400_before_the_date_is_looked_up() {
         let pool = connect().await;
-        for bad in ["5", "-1", "abc", "2.5", "4294967296"] {
+        for bad in ["7", "-1", "abc", "2.5", "4294967296"] {
             let router = test_router(test_app(pool.clone()));
             let (status, body) = get(
                 router,
@@ -1876,7 +1944,7 @@ mod db_tests {
             );
             let message = body.as_str().expect("plain-text error body");
             assert!(
-                message.contains("maxChanges") && message.contains("0 to 4"),
+                message.contains("maxChanges") && message.contains("0 to 6"),
                 "the error must name the parameter and its range: {message}"
             );
         }
@@ -3236,5 +3304,90 @@ mod db_tests {
         }
 
         cleanup_live(&pool, &uids, "TWVNET").await;
+    }
+
+    /// The raised ceiling end to end: the only ZKA -> ZKZ route takes seven
+    /// trains (six changes, every gap the 5-minute default change time).
+    /// `maxChanges=5` finds nothing and blames the cap; `maxChanges=6` finds
+    /// it. The options search-size guard is a 400 before any read.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn max_changes_five_and_six_end_to_end() {
+        let pool = connect().await;
+        let uids = ["TWK1", "TWK2", "TWK3", "TWK4", "TWK5", "TWK6", "TWK7"];
+        cleanup_live(&pool, &uids, "TWKNET").await;
+        seed_stations(&pool, "TWKNET", &[("ZKA", "TWKS0"), ("ZKZ", "TWKS7")]).await;
+        for (hop, uid) in uids.iter().enumerate() {
+            let departure = format!("{:02}:{:02}:00", 8 + (hop * 15) / 60, (hop * 15) % 60);
+            let arrival = format!(
+                "{:02}:{:02}:00",
+                8 + (hop * 15 + 10) / 60,
+                (hop * 15 + 10) % 60
+            );
+            let (from, to) = (format!("TWKS{hop}"), format!("TWKS{}", hop + 1));
+            seed_schedule(
+                &pool,
+                uid,
+                &[
+                    (0, from.as_str(), "origin", None, Some(departure.as_str())),
+                    (1, to.as_str(), "terminate", Some(arrival.as_str()), None),
+                ],
+            )
+            .await;
+        }
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+        let uri = |query: &str| {
+            format!(
+                "/Trips/plan?origin=ZKA&destination=ZKZ&date={}&results=options&live=false{query}",
+                live_date()
+            )
+        };
+
+        let (status, body) = get(test_router(test_app(pool.clone())), uri("&maxChanges=5")).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(body["maxChanges"], 5);
+        let segment = &body["segments"][0];
+        assert_eq!(segment["itineraries"], serde_json::json!([]), "{body:?}");
+        assert_eq!(segment["cappedByMaxChanges"], true);
+        assert_eq!(segment["noResultReason"]["constraint"], "maxChanges");
+
+        let (status, body) = get(test_router(test_app(pool.clone())), uri("&maxChanges=6")).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(body["maxChanges"], 6);
+        let itineraries = body["segments"][0]["itineraries"]
+            .as_array()
+            .expect("itineraries");
+        assert_eq!(itineraries.len(), 1, "{body:?}");
+        assert_eq!(itineraries[0]["changeCount"], 6);
+        assert_eq!(body["segments"][0]["cappedByMaxChanges"], false);
+        assert_eq!(body["journeys"][0]["changeCount"], 6);
+
+        // Arrive-by agrees.
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            uri("&maxChanges=6&arriveBy=12:00"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(body["journeys"][0]["changeCount"], 6, "{body:?}");
+
+        // The search-size guard: 15 waypoints at maxChanges=6 is too large
+        // (16 * 8 = 128 > 126); fastest is not limited by it.
+        let waypoints = vec!["ZKA"; 15].join(",");
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            uri(&format!("&maxChanges=6&waypoints={waypoints}")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert!(
+            body.as_str()
+                .unwrap_or_default()
+                .contains("too large a search"),
+            "{body:?}"
+        );
+
+        cleanup_live(&pool, &uids, "TWKNET").await;
     }
 }

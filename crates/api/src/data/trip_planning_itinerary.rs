@@ -1,7 +1,7 @@
 //! Turns a raw `trip_planner::Journey`/`RaptorJourney` (TIPLOC-keyed,
 //! minutes-from-midnight) into the CRS/human-time-keyed shape
 //! `routes::trips` serializes, applies this feature's interchange cap
-//! (design spec §4: ≤2 by default, caller-raisable to ≤4 via
+//! (design spec §4: ≤2 by default, caller-raisable to ≤6 via
 //! `?maxChanges=`; a hard filter in `options` mode only, a flag in
 //! `fastest` mode -- see [`plan_segment`]), and chains ordered waypoints
 //! into independently-solved sub-journeys (design spec §4: "Not a
@@ -23,15 +23,16 @@ use trip_planner::{ArriveByOptions, JourneyLeg, RaptorJourney, Restrictions};
 /// see exactly the pre-parameter behaviour.
 pub const DEFAULT_MAX_CHANGES: u32 = 2;
 
-/// Upper bound on a caller-requested `?maxChanges=` -- matches the sibling
-/// `Distant-Signal-MCP` project's own `PLAN_MAX_CHANGES` default of 4 (the
-/// precedent design spec §4 already cites), so that project can route every
-/// `plan_journey` query through `/Trips/plan`. Bounded rather than open
-/// because every extra change is one more full RAPTOR sweep over the day's
-/// connections graph per segment in `options` mode -- see
-/// `routes::trips::get_trip_plan`'s own `DoS` notes for the worst-case
-/// arithmetic.
-pub const MAX_CHANGES_LIMIT: u32 = 4;
+/// Upper bound on a caller-requested `?maxChanges=`. It was 4, the
+/// sibling `Distant-Signal-MCP` project's `PLAN_MAX_CHANGES` default; that
+/// project fell back to its own engine for anything higher. Raised to 6 on
+/// 2026-10-06 so DS serves those requests too (an obscure cross-country
+/// route can need 5 or 6). Bounded rather than open because every extra
+/// change is one more full RAPTOR sweep over the day's connections graph in
+/// `options` mode -- see `routes::trips::get_trip_plan`'s own `DoS` notes for
+/// the worst-case arithmetic, and `routes::trips::MAX_OPTIONS_SEARCH_SIZE`
+/// for the guard that keeps 6 affordable with many waypoints or vias.
+pub const MAX_CHANGES_LIMIT: u32 = 6;
 
 /// Phase 4's own Judgment Call 2: `max_rounds` for RAPTOR is NEVER the
 /// library's own default -- `max_changes + 1` trips needed for
@@ -2107,6 +2108,78 @@ mod tests {
             &[("EUSTON", 0), ("A", 0), ("B", 0), ("C", 0), ("MKC", 0)],
         );
         (connections, interchange)
+    }
+
+    /// A route needing exactly `changes` changes (one train per hop, every
+    /// change free).
+    fn chain_network(changes: u32) -> (Vec<schedule_query::Connection>, InterchangeData) {
+        let stops: Vec<String> = (0..=changes + 1)
+            .map(|i| match i {
+                0 => "EUSTON".to_string(),
+                i if i == changes + 1 => "MKC".to_string(),
+                i => format!("H{i}"),
+            })
+            .collect();
+        let connections = stops
+            .windows(2)
+            .zip(0u32..)
+            .map(|(pair, hop)| {
+                conn(
+                    &format!("U{hop}"),
+                    &pair[0],
+                    &pair[1],
+                    480 + 10 * hop,
+                    490 + 10 * hop,
+                )
+            })
+            .collect();
+        let change_times: Vec<(&str, i32)> = stops.iter().map(|t| (t.as_str(), 0)).collect();
+        let interchange =
+            interchange_with_change_times(&[("EUS", "EUSTON"), ("MKC", "MKC")], &change_times);
+        (connections, interchange)
+    }
+
+    /// The raised ceiling (2026-10-06): 5- and 6-change routes are found
+    /// exactly when `maxChanges` allows them, and flagged as capped one below.
+    #[test]
+    fn options_mode_reaches_five_and_six_changes_under_the_raised_ceiling() {
+        assert_eq!(MAX_CHANGES_LIMIT, 6);
+        for changes in [5, 6] {
+            let (connections, interchange) = chain_network(changes);
+            let plan = |max_changes| {
+                plan_segment(
+                    &connections,
+                    &interchange,
+                    date(),
+                    "EUS",
+                    "MKC",
+                    NaiveTime::MIN,
+                    "options",
+                    max_changes,
+                )
+                .unwrap()
+            };
+            let (found, capped) = plan(changes);
+            assert_eq!(found.len(), 1, "{changes}: {found:?}");
+            assert_eq!(found[0].change_count, changes);
+            assert!(!capped);
+            let (below, capped_below) = plan(changes - 1);
+            assert!(below.is_empty(), "{changes}");
+            assert!(capped_below, "{changes}: the headroom round sees it");
+            // fastest finds it whatever the cap, flagged against it.
+            let (fastest, _) = plan_segment(
+                &connections,
+                &interchange,
+                date(),
+                "EUS",
+                "MKC",
+                NaiveTime::MIN,
+                "fastest",
+                changes - 1,
+            )
+            .unwrap();
+            assert_eq!(fastest[0].exceeds_recommended_changes, Some(true));
+        }
     }
 
     #[test]
