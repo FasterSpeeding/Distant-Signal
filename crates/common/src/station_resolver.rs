@@ -407,32 +407,15 @@ fn strip_markup(text: &str) -> String {
 /// line service" is that line's). A bridge or lightning strike is not
 /// industrial action.
 pub fn has_network_scope_marker(summary: &str, description: &str) -> bool {
-    let text = format!("{} {}", strip_markup(summary), strip_markup(description));
-    let words: Vec<String> = tokenize(&text).into_iter().map(|t| t.word).collect();
-    let has_phrase = |phrase: &[&str]| {
-        words
-            .windows(phrase.len())
-            .any(|w| w.iter().zip(phrase).all(|(a, b)| a == b))
-    };
-    if has_phrase(&["industrial", "action"])
-        || has_phrase(&["strike", "action"])
-        || has_phrase(&["on", "strike"])
-        || has_phrase(&["strike", "day"])
-        || has_phrase(&["strike", "days"])
-        || has_phrase(&["intercity", "routes"])
-        || has_phrase(&["network", "wide"])
-        || has_phrase(&["across", "the", "network"])
+    let words = words_of(summary, description);
+    if is_industrial_action(&words)
+        || has_phrase(&words, &["intercity", "routes"])
+        || has_phrase(&words, &["network", "wide"])
+        || has_phrase(&words, &["across", "the", "network"])
     {
         return true;
     }
     for (i, word) in words.iter().enumerate() {
-        // "strike(s)" right after a union's name: "RMT strike".
-        if (word == "strike" || word == "strikes")
-            && i > 0
-            && ["rmt", "aslef", "tssa", "unite"].contains(&words[i - 1].as_str())
-        {
-            return true;
-        }
         // "across the <up to 4 words> network".
         if word == "across"
             && words.get(i + 1).is_some_and(|w| w == "the")
@@ -477,6 +460,36 @@ pub fn has_network_scope_marker(summary: &str, description: &str) -> bool {
     false
 }
 
+/// Whether the text is about industrial action: "industrial action",
+/// "strike action", "on strike", "strike day(s)", or a union's strike ("RMT
+/// strike"). Not a bridge or lightning strike.
+pub fn mentions_industrial_action(summary: &str, description: &str) -> bool {
+    is_industrial_action(&words_of(summary, description))
+}
+
+fn words_of(summary: &str, description: &str) -> Vec<String> {
+    let text = format!("{} {}", strip_markup(summary), strip_markup(description));
+    tokenize(&text).into_iter().map(|t| t.word).collect()
+}
+
+fn has_phrase(words: &[String], phrase: &[&str]) -> bool {
+    words
+        .windows(phrase.len())
+        .any(|w| w.iter().zip(phrase).all(|(a, b)| a == b))
+}
+
+fn is_industrial_action(words: &[String]) -> bool {
+    has_phrase(words, &["industrial", "action"])
+        || has_phrase(words, &["strike", "action"])
+        || has_phrase(words, &["on", "strike"])
+        || has_phrase(words, &["strike", "day"])
+        || has_phrase(words, &["strike", "days"])
+        || words.windows(2).any(|pair| {
+            ["rmt", "aslef", "tssa", "unite"].contains(&pair[0].as_str())
+                && (pair[1] == "strike" || pair[1] == "strikes")
+        })
+}
+
 /// Words that, right after "all ... services" or "reduced ... service",
 /// show it is about a place: "between Leeds and York", "to Hull".
 const LOCAL_FOLLOWERS: [&str; 11] = [
@@ -487,6 +500,10 @@ const LOCAL_FOLLOWERS: [&str; 11] = [
 /// catalogue or is [`NATIONAL_RAIL_OPERATOR`], so the incident's lines can
 /// only come from its text, searched across every operator. Also true for
 /// an incident with no operators at all.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn needs_all_operator_scope(operators: &[String], known: &HashSet<&str>) -> bool {
     operators.iter().all(|op| {
         let op = effective_operator(op);
