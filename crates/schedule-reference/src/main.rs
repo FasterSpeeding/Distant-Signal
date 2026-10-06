@@ -2511,6 +2511,8 @@ mod poll_once_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
         }
     }
 
@@ -4879,6 +4881,8 @@ mod per_product_retry_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: true,
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
         }]);
         mount_all_publishes_ok(&server).await;
 

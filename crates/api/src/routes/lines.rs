@@ -2183,6 +2183,8 @@ mod db_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
         };
 
         let router = test_router(test_app(pool.clone(), vec![catalogue_line]));
@@ -2232,6 +2234,8 @@ mod db_tests {
             destination_crs_filter: vec![],
             headcode_prefixes: vec![],
             full_coverage_enabled: false,
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
         }
     }
 
