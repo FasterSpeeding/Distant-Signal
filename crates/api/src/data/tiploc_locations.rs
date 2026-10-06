@@ -231,10 +231,11 @@ pub async fn locations_for_tiplocs(
         return Ok(HashMap::new());
     }
     let keys: Vec<String> = tiplocs.iter().map(|t| normalize_code(t)).collect();
-    let rows: Vec<LocationRow> = sqlx::query_as(&format!("{SELECT_LOCATION} WHERE l.tiploc = ANY($1)"))
-        .bind(&keys)
-        .fetch_all(pool)
-        .await?;
+    let rows: Vec<LocationRow> =
+        sqlx::query_as(&format!("{SELECT_LOCATION} WHERE l.tiploc = ANY($1)"))
+            .bind(&keys)
+            .fetch_all(pool)
+            .await?;
     let mut out: HashMap<String, LocationInfo> = rows
         .into_iter()
         .map(|row| (row.tiploc.clone(), LocationInfo::from(row)))
@@ -331,6 +332,21 @@ mod tests {
     }
 
     #[test]
+    fn destination_keys_name_their_tiploc() {
+        use crate::data::queries::tiploc_of_destination_key;
+        assert_eq!(
+            tiploc_of_destination_key("tiploc:HTRBUS3").as_deref(),
+            Some("HTRBUS3")
+        );
+        assert_eq!(
+            tiploc_of_destination_key("~HTRBUS3").as_deref(),
+            Some("HTRBUS3")
+        );
+        assert_eq!(tiploc_of_destination_key("KGX"), None);
+        assert_eq!(tiploc_of_destination_key("~"), None);
+    }
+
+    #[test]
     fn a_location_has_a_tiploc_code_and_a_search_label() {
         let info = LocationInfo {
             tiploc: "KESWICK".to_string(),
@@ -352,7 +368,9 @@ mod db_tests {
 
     async fn connect() -> PgPool {
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for db_tests");
-        PgPool::connect(&url).await.expect("connect to test database")
+        PgPool::connect(&url)
+            .await
+            .expect("connect to test database")
     }
 
     fn record(tiploc: &str, kind: LocationType, display: &str) -> TiplocLocationRecord {
@@ -412,7 +430,11 @@ mod db_tests {
 
         let found = locations_for_tiplocs(
             &pool,
-            &["ztrbus".to_string(), "ZTWBUS".to_string(), "ZTNOPE".to_string()],
+            &[
+                "ztrbus".to_string(),
+                "ZTWBUS".to_string(),
+                "ZTNOPE".to_string(),
+            ],
         )
         .await
         .expect("lookup");
@@ -424,11 +446,18 @@ mod db_tests {
         assert_eq!(found["ZTWBUS"].parent_crs, None);
         assert!(!found.contains_key("ZTNOPE"));
 
-        let search = search_road_or_water(&pool, "zed", 20).await.expect("search");
+        let search = search_road_or_water(&pool, "zed", 20)
+            .await
+            .expect("search");
         let labels: Vec<String> = search.iter().map(LocationInfo::search_label).collect();
-        assert!(labels.contains(&"Zed Island (ferry)".to_string()), "{labels:?}");
+        assert!(
+            labels.contains(&"Zed Island (ferry)".to_string()),
+            "{labels:?}"
+        );
         assert!(labels.contains(&"Zed Town (bus)".to_string()), "{labels:?}");
-        let by_code = search_road_or_water(&pool, "tiploc:ZTFERRY", 20).await.expect("search");
+        let by_code = search_road_or_water(&pool, "tiploc:ZTFERRY", 20)
+            .await
+            .expect("search");
         assert_eq!(by_code[0].tiploc, "ZTFERRY");
         assert_eq!(
             road_or_water_location(&pool, "tiploc:ztrbus")
@@ -439,18 +468,55 @@ mod db_tests {
         );
 
         // A later delivery without ZTWBUS and ZTFERRY prunes them.
-        replace_tiploc_locations(&pool, &[record("ZTRBUS", LocationType::BusStop, "ZED TOWN BUS")])
-            .await
-            .expect("replace again");
-        let left: Vec<String> =
-            sqlx::query_scalar("SELECT tiploc FROM tiploc_locations WHERE tiploc LIKE 'ZT%' ORDER BY 1")
-                .fetch_all(&pool)
-                .await
-                .expect("read");
+        replace_tiploc_locations(
+            &pool,
+            &[record("ZTRBUS", LocationType::BusStop, "ZED TOWN BUS")],
+        )
+        .await
+        .expect("replace again");
+        let left: Vec<String> = sqlx::query_scalar(
+            "SELECT tiploc FROM tiploc_locations WHERE tiploc LIKE 'ZT%' ORDER BY 1",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("read");
         assert_eq!(left, ["ZTRBUS"]);
         // An empty batch never wipes the table.
         assert_eq!(replace_tiploc_locations(&pool, &[]).await.expect("noop"), 0);
 
+        sqlx::query("DELETE FROM tiploc_locations WHERE tiploc LIKE 'ZT%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZTR'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// Station-board and search destinations keyed by a terminus TIPLOC
+    /// (`tiploc:` now, `~` before 2026-10-07) get the location's name.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api tiploc_locations -- --ignored --test-threads=1`"]
+    async fn tiploc_locations_name_tiploc_keyed_destinations() {
+        let pool = connect().await;
+        seed(&pool).await;
+        let names = crate::data::queries::station_names_for_crs_batch(
+            &pool,
+            &[
+                "ZTR".to_string(),
+                "tiploc:ZTRBUS".to_string(),
+                "~ZTFERRY".to_string(),
+                "tiploc:ZTNOPE".to_string(),
+            ],
+        )
+        .await
+        .expect("names");
+        assert_eq!(names["ZTR"], "Zed Town Reading");
+        assert_eq!(names["tiploc:ZTRBUS"], "Zed Town (bus stop)");
+        assert_eq!(names["TIPLOC:ZTRBUS"], "Zed Town (bus stop)");
+        assert_eq!(names["~ZTFERRY"], "Zed Island (ferry terminal)");
+        assert!(!names.contains_key("tiploc:ZTNOPE"));
         sqlx::query("DELETE FROM tiploc_locations WHERE tiploc LIKE 'ZT%'")
             .execute(&pool)
             .await

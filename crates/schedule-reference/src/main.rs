@@ -959,16 +959,20 @@ async fn publish_tiploc_locations(
         parented,
         "built tiploc_locations"
     );
-    match publish_with_retry(&config.publish_retry, product::TIPLOC_LOCATIONS, async || {
-        common::ingest::post_batch(
-            client,
-            &config.tiploc_locations_url,
-            internal_oauth,
-            &records,
-            "tiploc location rows",
-        )
-        .await
-    })
+    match publish_with_retry(
+        &config.publish_retry,
+        product::TIPLOC_LOCATIONS,
+        async || {
+            common::ingest::post_batch(
+                client,
+                &config.tiploc_locations_url,
+                internal_oauth,
+                &records,
+                "tiploc location rows",
+            )
+            .await
+        },
+    )
     .await
     {
         Ok(()) => outcome.succeeded(product::TIPLOC_LOCATIONS),

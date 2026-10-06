@@ -101,9 +101,9 @@ const FERRY_WORDS: &[&str] = &[
 ];
 const JUNCTION_WORDS: &[&str] = &["JN", "JCN", "JNC", "JUNC", "JUNCTION", "JNS"];
 const SIDING_WORDS: &[&str] = &[
-    "SIDINGS", "SIDING", "SDGS", "SDG", "CS", "DEPOT", "DEP", "DPT", "TMD", "LMD", "CARMD", "TRSMD",
-    "EMUD", "DMUD", "MPD", "YARD", "YD", "GOODS", "FREIGHT", "FLT", "DOCK", "DOCKS", "WORKS",
-    "QUARRY",
+    "SIDINGS", "SIDING", "SDGS", "SDG", "CS", "DEPOT", "DEP", "DPT", "TMD", "LMD", "CARMD",
+    "TRSMD", "EMUD", "DMUD", "MPD", "YARD", "YD", "GOODS", "FREIGHT", "FLT", "DOCK", "DOCKS",
+    "WORKS", "QUARRY",
 ];
 const PASSING_WORDS: &[&str] = &[
     "SIGNAL",
@@ -191,7 +191,9 @@ const ABBREVIATIONS: &[(&str, &str)] = &[
 ];
 
 /// Known acronyms that contain a vowel, so the no-vowel rule misses them.
-const ACRONYMS: &[&str] = &["LUL", "DLR", "NEC", "IOW", "IOM", "UK", "NHS", "RAF", "YHA", "EMU", "DMU"];
+const ACRONYMS: &[&str] = &[
+    "LUL", "DLR", "NEC", "IOW", "IOM", "UK", "NHS", "RAF", "YHA", "EMU", "DMU",
+];
 
 /// Cases one alphabetic-or-numeric word (no separators). `first` is whether
 /// it starts the name, or a bracketed or slash-separated part of it.
@@ -336,14 +338,7 @@ const BUS_STATION_SUFFIXES: &[&str] = &[
     "(COACH)",
     "COACH",
 ];
-const BUS_STOP_SUFFIXES: &[&str] = &[
-    "(BUS STOP)",
-    "BUS STOP",
-    "BUSES ONLY",
-    "(BUS)",
-    "BUS",
-    "BS",
-];
+const BUS_STOP_SUFFIXES: &[&str] = &["(BUS STOP)", "BUS STOP", "BUSES ONLY", "(BUS)", "BUS", "BS"];
 
 /// Strips one trailing whole-word marker from `upper` (already upper case),
 /// returning the rest when something was stripped and something is left.
@@ -424,10 +419,7 @@ pub const TIPLOC_CODE_PREFIX: &str = "tiploc:";
 
 /// `tiploc:SANWBUS` for `SANWBUS` (trimmed and upper-cased).
 pub fn tiploc_code(tiploc: &str) -> String {
-    format!(
-        "{TIPLOC_CODE_PREFIX}{}",
-        tiploc.trim().to_ascii_uppercase()
-    )
+    format!("{TIPLOC_CODE_PREFIX}{}", tiploc.trim().to_ascii_uppercase())
 }
 
 /// The TIPLOC in a `tiploc:` code (any case of the prefix), upper-cased;
@@ -551,11 +543,7 @@ mod tests {
                 "Heathrow Terminal 3",
                 "Heathrow Terminal 3 (bus stop)",
             ),
-            (
-                "KESWICK (BUS STATION)",
-                "Keswick",
-                "Keswick (bus station)",
-            ),
+            ("KESWICK (BUS STATION)", "Keswick", "Keswick (bus station)"),
             (
                 "ST ANDREWS BUS STATION",
                 "St Andrews",
@@ -573,11 +561,7 @@ mod tests {
                 "Edinburgh Airport",
                 "Edinburgh Airport (bus stop)",
             ),
-            (
-                "BRECON BUS INTERCHANGE",
-                "Brecon",
-                "Brecon (bus station)",
-            ),
+            ("BRECON BUS INTERCHANGE", "Brecon", "Brecon (bus station)"),
             ("WISBECH (COACH)", "Wisbech", "Wisbech (bus station)"),
             (
                 "HEATHROW TERMINAL 5 BUSES ONLY",
@@ -642,7 +626,10 @@ mod tests {
             ("LONDON ROAD DEPOT", Some(LocationType::Siding)),
             ("MARYLEBONE 10 SIGNAL", Some(LocationType::PassingPoint)),
             ("ERITH LOOP", Some(LocationType::PassingPoint)),
-            ("VIRGINIA WATER SIGNAL 2217", Some(LocationType::PassingPoint)),
+            (
+                "VIRGINIA WATER SIGNAL 2217",
+                Some(LocationType::PassingPoint),
+            ),
             ("CANNA", None),
             ("PRINCES ST GARDENS", None),
         ] {
@@ -672,8 +659,14 @@ mod tests {
     #[test]
     fn tiploc_codes_round_trip_and_never_match_a_crs() {
         assert_eq!(tiploc_code(" sanwbus "), "tiploc:SANWBUS");
-        assert_eq!(tiploc_from_code("tiploc:SANWBUS").as_deref(), Some("SANWBUS"));
-        assert_eq!(tiploc_from_code("TIPLOC:sanwbus").as_deref(), Some("SANWBUS"));
+        assert_eq!(
+            tiploc_from_code("tiploc:SANWBUS").as_deref(),
+            Some("SANWBUS")
+        );
+        assert_eq!(
+            tiploc_from_code("TIPLOC:sanwbus").as_deref(),
+            Some("SANWBUS")
+        );
         assert_eq!(tiploc_from_code("SAO"), None);
         assert_eq!(tiploc_from_code("tiploc:"), None);
         assert_eq!(tiploc_from_code("tiploc:TOOLONGX"), None);

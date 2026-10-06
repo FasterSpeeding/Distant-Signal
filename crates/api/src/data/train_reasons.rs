@@ -495,6 +495,8 @@ mod tests {
         crate::data::journey::JourneyStop {
             crs: None,
             name: None,
+            location_type: None,
+            parent_crs: None,
             tiploc: None,
             kind: None,
             scheduled_arrival: at,

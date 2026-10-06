@@ -92,7 +92,10 @@ fn grid_reference(easting: &str, northing: &str) -> (Option<i32>, Option<i32>) {
     if !(10_000..=17_000).contains(&easting) || !(60_000..=69_998).contains(&northing) {
         return (None, None);
     }
-    (Some((easting - 10_000) * 100), Some((northing - 60_000) * 100))
+    (
+        Some((easting - 10_000) * 100),
+        Some((northing - 60_000) * 100),
+    )
 }
 
 /// How often each kind of service calls at (or, for rail, passes) one
@@ -167,7 +170,8 @@ impl ModeTally {
 }
 
 /// `reference-data/tiploc-parent-stations.csv`, compiled in.
-const CURATED_PARENTS_CSV: &str = include_str!("../../../reference-data/tiploc-parent-stations.csv");
+const CURATED_PARENTS_CSV: &str =
+    include_str!("../../../reference-data/tiploc-parent-stations.csv");
 
 /// TIPLOC -> parent CRS from the curated CSV. Comment (`#`) and blank lines
 /// and the header are skipped; a malformed row is skipped too (the CSV's own
@@ -242,7 +246,8 @@ pub(crate) fn classify(ti: &TiRecord, msn: Option<&MsnRecord>, tally: Tally) -> 
     };
     let rail = tally.rail_calls + tally.rail_passes;
     if rail == 0 && (tally.bus_calls > 0 || tally.ship_calls > 0) {
-        let ferry_named = by_name(location_naming::classify_name) == Some(LocationType::FerryTerminal);
+        let ferry_named =
+            by_name(location_naming::classify_name) == Some(LocationType::FerryTerminal);
         return if tally.ship_calls >= tally.bus_calls || ferry_named {
             LocationType::FerryTerminal
         } else {
@@ -322,7 +327,11 @@ fn parent_for(
     if let Some(code) = code
         && station_crs.contains(code)
     {
-        return Some((code.to_string(), ParentSource::SameTiploc, distance_to(code)));
+        return Some((
+            code.to_string(),
+            ParentSource::SameTiploc,
+            distance_to(code),
+        ));
     }
     if let Some(grid) = grid {
         let nearest = station_grid
@@ -678,7 +687,11 @@ LTMARYLBN 2003 20036     TF
         let records = by_tiploc(&records);
         let parent = |tiploc: &str| {
             let r = records[tiploc];
-            (r.parent_crs.as_deref(), r.parent_source, r.parent_distance_m)
+            (
+                r.parent_crs.as_deref(),
+                r.parent_source,
+                r.parent_distance_m,
+            )
         };
         // MSN files BANSBUS under Banstead's own CRS.
         assert_eq!(
