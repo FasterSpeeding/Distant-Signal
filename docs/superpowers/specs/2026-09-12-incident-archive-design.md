@@ -260,6 +260,15 @@ struct IncidentSearchParams {
 }
 ```
 
+> **Amended 2026-10-06** (see
+> [2026-10-06-incident-source-removal-design.md](2026-10-06-incident-source-removal-design.md)):
+> an incident is now Active, Cleared or Ended. Ended means the Knowledgebase
+> feed stopped listing it without RDM clearing it (`source_removed_at`). A
+> new `state=active|cleared|ended` filter selects one state. `cleared=true`
+> is unchanged; `cleared=false` now means Active only and no longer includes
+> ended rows. Passing both `state` and `cleared` is a `400`. Rows carry
+> `sourceRemovedAt`.
+
 **The `line` filter is a named approximation, not matcher parity — this
 must be visible to the user, not just documented here.** Per Correction 1,
 this reuses the matcher's own `StationHit` tier only (an incident matches

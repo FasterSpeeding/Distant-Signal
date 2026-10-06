@@ -3,6 +3,47 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-06: incidents can be "Ended (no longer listed)"
+
+Design:
+`docs/superpowers/specs/2026-10-06-incident-source-removal-design.md`.
+
+RDM's Knowledgebase feed drops incidents (nightly, and planned work is never
+cleared) without ever setting `ClearedIncident`. DS used to show such an
+incident as active forever. An incident is now in one of three states:
+
+| State | `isCleared` | `sourceRemovedAt` |
+| --- | --- | --- |
+| Active | `false` | `null` |
+| Cleared (RDM cleared it) | `true` | `null` |
+| Ended (the feed stopped listing it without clearing it) | `false` | when the feed last listed it |
+
+### New field
+
+- `sourceRemovedAt` (RFC3339 or `null`) on `GET /public/incidents` rows and
+  on `GET /public/incidents/{incidentId}`.
+
+A client that treats `isCleared: false` as "live" should also check that
+`sourceRemovedAt` is `null`.
+
+### New filter
+
+- `GET /public/incidents?state=active|cleared|ended`. Any other value is a
+  `400`.
+
+### Changed meaning
+
+- `cleared=false` now returns Active incidents only, not Ended ones.
+  `cleared=true` is unchanged. `cleared` is kept as the legacy spelling of
+  `state=active`/`state=cleared`.
+- Passing both `state` and `cleared` is a `400`.
+
+### History
+
+A change of `isCleared` alone now adds an entry to the detail's `history`,
+so the history shows when RDM cleared an incident. Becoming Ended adds no
+entry.
+
 ## 2026-10-01: public times, phase 2
 
 Design: `docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md`

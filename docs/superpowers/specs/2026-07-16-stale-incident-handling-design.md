@@ -181,3 +181,20 @@ cleared rows at the SQL layer, so by the time an incident reaches
   tests of query functions like the `load_incidents` SQL change, or whether
   it's thin enough to cover via the migration plus manual verification only
   — confirm against existing test conventions during planning.
+
+## Decision (2026-10-06): implicit removal is now in scope
+
+The non-goal above ("No 'hasn't been refreshed in N poll cycles ⇒ implicitly
+cleared' signal — a different, unconfirmed failure mode") is reversed.
+Production data on 2026-10-06 confirmed the failure mode. The Knowledgebase
+feed purges incidents nightly (~22:57-23:00 UTC) whatever their state, and
+never clears planned ones, so 407 rows (9 unplanned, 398 planned) had left
+the feed without `ClearedIncident` and stayed "active" forever.
+
+The user decided that such an incident is a distinct state, "Ended (no
+longer listed)", and not "Cleared": `is_cleared` stays RDM's own fact. It is
+inferred only from complete poller snapshots, and only once the incident is
+missing from 2 consecutive ones.
+[2026-10-06-incident-source-removal-design.md](2026-10-06-incident-source-removal-design.md)
+has the design. `load_incidents` now also requires
+`source_removed_at IS NULL`.
