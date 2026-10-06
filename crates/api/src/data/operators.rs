@@ -311,6 +311,7 @@ mod build_rollup_tests {
             operators: operators.iter().map(ToString::to_string).collect(),
             statuses,
             computed_at: Utc::now(),
+            upcoming: vec![],
         }
     }
 

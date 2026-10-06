@@ -165,6 +165,18 @@ pub async fn upsert_incidents(
     Ok(outcome.upserted)
 }
 
+/// Every station's name (the `stations` reference table), for resolving
+/// the places an incident names (`common::station_resolver`). The same
+/// query as the aggregator's `load_station_names`.
+pub async fn load_station_gazetteer(
+    pool: &PgPool,
+) -> Result<common::station_resolver::StationGazetteer> {
+    let rows: Vec<(String, String)> = sqlx::query_as("SELECT crs::text, name FROM stations")
+        .fetch_all(pool)
+        .await?;
+    Ok(common::station_resolver::StationGazetteer::new(rows))
+}
+
 /// What [`upsert_incident_snapshot`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IncidentSnapshotOutcome {
@@ -202,9 +214,21 @@ pub async fn upsert_incident_snapshot(
     // locks (see the doc comment above), so pure CPU work that needs no
     // database at all has no business running inside one -- even work this
     // cheap (a substring scan per catalogue line).
+    //
+    // The station names resolve the places each incident names (2026-10-06,
+    // `common::station_resolver`), exactly as the aggregator does every
+    // cycle, so `affected_lines` and the live statuses agree. Read per
+    // snapshot (about 2,600 short rows every 5 minutes) rather than cached,
+    // so a reference-data refresh applies at once. Fail-open: without them
+    // the matcher falls back to its pre-2026-10-06 answer for this poll,
+    // and the next poll recomputes every live row anyway.
+    let gazetteer = load_station_gazetteer(pool).await.unwrap_or_else(|err| {
+        tracing::warn!(error = ?err, "failed to load station names; incident places are not resolved this poll");
+        common::station_resolver::StationGazetteer::default()
+    });
     let affected_lines: Vec<Vec<String>> = incidents
         .iter()
-        .map(|incident| line_matcher.affected_line_ids(incident))
+        .map(|incident| line_matcher.affected_line_ids(incident, &gazetteer))
         .collect();
 
     for (chunk_index, chunk) in incidents.chunks(UPSERT_CHUNK_SIZE).enumerate() {
@@ -289,13 +313,13 @@ pub async fn upsert_incident_snapshot(
             INSERT INTO incidents (
                 incident_id, summary, description, operators, affected_stations,
                 priority, validity_periods, is_planned, is_cleared, fetched_at,
-                first_seen_at, affected_lines
+                first_seen_at, affected_lines, active_since
             )
             SELECT i.incident_id, i.summary, i.description,
                    ARRAY(SELECT jsonb_array_elements_text(i.operators)),
                    ARRAY(SELECT jsonb_array_elements_text(i.affected_stations)),
                    i.priority, i.validity_periods, i.is_planned, i.is_cleared, NOW(), NOW(),
-                   ARRAY(SELECT jsonb_array_elements_text(i.affected_lines))
+                   ARRAY(SELECT jsonb_array_elements_text(i.affected_lines)), NOW()
               FROM UNNEST($1::text[], $2::text[], $3::text[], $4::jsonb[], $5::jsonb[],
                           $6::int4[], $7::jsonb[], $8::bool[], $9::bool[], $10::jsonb[])
                    AS i(incident_id, summary, description, operators, affected_stations,
@@ -312,7 +336,19 @@ pub async fn upsert_incident_snapshot(
                 fetched_at        = NOW(),
                 affected_lines    = EXCLUDED.affected_lines,
                 source_missing_polls = 0,
-                source_removed_at = NULL
+                source_removed_at = NULL,
+                -- The rail-day cutoff's anchor (2026-10-06,
+                -- `20261006130000_incidents_active_since.sql`): re-armed by
+                -- a reopen (cleared -> uncleared) or by new text while
+                -- uncleared. `incidents.*` here is the row as it was.
+                active_since      = CASE
+                    WHEN EXCLUDED.is_cleared THEN incidents.active_since
+                    WHEN incidents.is_cleared
+                      OR (incidents.summary, incidents.description)
+                         IS DISTINCT FROM (EXCLUDED.summary, EXCLUDED.description)
+                    THEN NOW()
+                    ELSE incidents.active_since
+                END
             WHERE (incidents.summary, incidents.description, incidents.operators,
                    incidents.affected_stations, incidents.priority,
                    incidents.validity_periods, incidents.is_planned,
@@ -4854,6 +4890,9 @@ pub struct LineStatusRow {
     pub operators: Vec<String>,
     pub statuses: Vec<common::LineStatus>,
     pub computed_at: chrono::DateTime<chrono::Utc>,
+    /// `line_status.upcoming` (2026-10-06): future disruption notes beside
+    /// the statuses, soonest first. Empty for a `TfL` row.
+    pub upcoming: Vec<common::UpcomingDisruption>,
 }
 
 #[expect(
@@ -4863,13 +4902,22 @@ pub struct LineStatusRow {
 fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
     use sqlx::Row;
     let statuses_json: serde_json::Value = row.try_get("statuses")?;
+    let upcoming_json: serde_json::Value = row.try_get("upcoming")?;
+    let id: String = row.try_get("line_id")?;
+    // A note, not the status: a shape this build cannot read is logged and
+    // dropped rather than failing the whole line-status response.
+    let upcoming = serde_json::from_value(upcoming_json).unwrap_or_else(|err| {
+        tracing::warn!(error = %err, line_id = %id, "unreadable line_status.upcoming; omitting it");
+        Vec::new()
+    });
     Ok(LineStatusRow {
-        id: row.try_get("line_id")?,
+        id,
         name: row.try_get("name")?,
         mode_name: row.try_get("mode_name")?,
         operators: row.try_get("operators")?,
         statuses: serde_json::from_value(statuses_json)?,
         computed_at: row.try_get("computed_at")?,
+        upcoming,
     })
 }
 
@@ -4879,7 +4927,8 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
 /// National Rail and the five `TfL` modes in one round trip.
 pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
-        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE mode_name = ANY($1)",
+        "SELECT line_id, name, mode_name, operators, statuses, computed_at, upcoming \
+         FROM line_status WHERE mode_name = ANY($1)",
     )
     .bind(modes)
     .fetch_all(pool)
@@ -4889,7 +4938,8 @@ pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Ve
 
 pub async fn line_status_for_ids(pool: &PgPool, ids: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
-        "SELECT line_id, name, mode_name, operators, statuses, computed_at FROM line_status WHERE line_id = ANY($1)",
+        "SELECT line_id, name, mode_name, operators, statuses, computed_at, upcoming \
+         FROM line_status WHERE line_id = ANY($1)",
     )
     .bind(ids)
     .fetch_all(pool)
@@ -13763,6 +13813,232 @@ mod db_review_guard_and_normalisation_tests {
             .execute(&pool)
             .await
             .unwrap();
+    }
+
+    /// `active_since`, the rail-day cutoff's anchor (2026-10-06): stamped on
+    /// insert, kept by an unchanged or validity-only re-post and by a clear,
+    /// and re-armed by a text change while uncleared and by a reopen
+    /// (the B852BEF3 shape: cleared, then listed uncleared days later).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn incidents_upsert_maintains_active_since() {
+        const ID: &str = "TEST-ACTIVE-SINCE";
+        let pool = test_pool().await;
+        let matcher = common::matcher::LineMatcher::new(&[]);
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis = redis::Client::open(redis_url).expect("parse redis url");
+        let mut incident = IncidentMessage {
+            incident_id: ID.to_string(),
+            summary: "Disruption between Purley and Gatwick Airport".to_string(),
+            description: "Delays expected until 09:30".to_string(),
+            operators: vec!["SN".to_string()],
+            affected_stations: vec![],
+            priority: 2,
+            validity: vec![],
+            is_planned: false,
+            is_cleared: false,
+        };
+        let active_since = |pool: PgPool| async move {
+            sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+                "SELECT active_since FROM incidents WHERE incident_id = $1",
+            )
+            .bind(ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .expect("active_since is set on every upsert path")
+        };
+        // Backdate the anchor so every re-arm is visible as a move forward.
+        let backdate = |pool: PgPool| async move {
+            sqlx::query(
+                "UPDATE incidents SET active_since = NOW() - INTERVAL '3 days' \
+                 WHERE incident_id = $1",
+            )
+            .bind(ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        };
+        let post = |incident: IncidentMessage| {
+            let (pool, redis, matcher) = (pool.clone(), redis.clone(), &matcher);
+            async move {
+                upsert_incidents(&pool, &redis, matcher, std::slice::from_ref(&incident))
+                    .await
+                    .unwrap();
+            }
+        };
+
+        post(incident.clone()).await;
+        let inserted = active_since(pool.clone()).await;
+        assert!(inserted > chrono::Utc::now() - chrono::Duration::minutes(5));
+
+        // Unchanged, then a validity-only change: the anchor stays.
+        backdate(pool.clone()).await;
+        let old = active_since(pool.clone()).await;
+        post(incident.clone()).await;
+        assert_eq!(active_since(pool.clone()).await, old, "unchanged re-post");
+        incident.validity = vec![common::ValidityPeriod {
+            from_date: chrono::Utc::now(),
+            to_date: None,
+            is_now: true,
+        }];
+        post(incident.clone()).await;
+        assert_eq!(active_since(pool.clone()).await, old, "validity-only edit");
+
+        // New text while uncleared: re-armed.
+        incident.description = "Delays expected until 11:30".to_string();
+        post(incident.clone()).await;
+        assert!(active_since(pool.clone()).await > old, "text edit re-arms");
+
+        // Cleared (with new text): kept.
+        backdate(pool.clone()).await;
+        let old = active_since(pool.clone()).await;
+        incident.is_cleared = true;
+        incident.summary = "Disruption between Purley and Gatwick Airport cleared".to_string();
+        post(incident.clone()).await;
+        assert_eq!(active_since(pool.clone()).await, old, "a clear keeps it");
+
+        // Reopened with the SAME text as when it was cleared: re-armed.
+        incident.is_cleared = false;
+        post(incident.clone()).await;
+        assert!(active_since(pool.clone()).await > old, "a reopen re-arms");
+
+        sqlx::query("DELETE FROM incident_history WHERE incident_id = $1")
+            .bind(ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM incidents WHERE incident_id = $1")
+            .bind(ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// `20261006130100_incidents_active_since_backfill.sql`, re-run over
+    /// seeded rows: a live unplanned incident takes its latest reopen or
+    /// text change from `incident_history`; a planned one, a cleared one and
+    /// one without history keep NULL (read as `first_seen_at`).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a seed-run-assert scenario reads top to bottom"
+    )]
+    async fn active_since_backfill_takes_the_latest_reopen_or_text_change() {
+        let pool = test_pool().await;
+        let ids = [
+            "TEST-AS-BF-LIVE",
+            "TEST-AS-BF-PLANNED",
+            "TEST-AS-BF-CLEARED",
+            "TEST-AS-BF-NOHIST",
+        ];
+        for id in ids {
+            sqlx::query("DELETE FROM incident_history WHERE incident_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM incidents WHERE incident_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let base = chrono::Utc::now() - chrono::Duration::days(5);
+        for (id, planned, cleared) in [
+            (ids[0], false, false),
+            (ids[1], true, false),
+            (ids[2], false, true),
+            (ids[3], false, false),
+        ] {
+            sqlx::query(
+                "INSERT INTO incidents (incident_id, summary, description, operators, \
+                     affected_stations, priority, validity_periods, is_planned, is_cleared, \
+                     first_seen_at) \
+                 VALUES ($1, 'B', 'b', '{SN}', '{}', 0, '[]', $2, $3, $4)",
+            )
+            .bind(id)
+            .bind(planned)
+            .bind(cleared)
+            .bind(base)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // LIVE: first seen (A), cleared, reopened (A), text change to B, then
+        // a validity-only snapshot. The text change is the latest arming.
+        // PLANNED and CLEARED get the same history; NOHIST none.
+        let history = [
+            (0, "A", false),
+            (24, "A", true),
+            (72, "A", false),
+            (96, "B", false),
+            (108, "B", false),
+        ];
+        for id in &ids[..3] {
+            for (hours, text, cleared) in history {
+                sqlx::query(
+                    "INSERT INTO incident_history (incident_id, summary, description, operators, \
+                         affected_stations, priority, is_planned, is_cleared, recorded_at) \
+                     VALUES ($1, $2, lower($2), '{SN}', '{}', 0, false, $3, $4)",
+                )
+                .bind(*id)
+                .bind(text)
+                .bind(cleared)
+                .bind(base + chrono::Duration::hours(hours))
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261006130100_incidents_active_since_backfill.sql"
+        ))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let read = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+                    "SELECT active_since FROM incidents WHERE incident_id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let live = read("TEST-AS-BF-LIVE").await.expect("backfilled");
+        let expected = base + chrono::Duration::days(4);
+        assert!(
+            (live - expected).num_milliseconds().abs() < 1000,
+            "{live} should be the text change at {expected}"
+        );
+        assert_eq!(read("TEST-AS-BF-PLANNED").await, None);
+        assert_eq!(read("TEST-AS-BF-CLEARED").await, None);
+        assert_eq!(read("TEST-AS-BF-NOHIST").await, None);
+
+        for id in ids {
+            sqlx::query("DELETE FROM incident_history WHERE incident_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM incidents WHERE incident_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
     }
 
     #[tokio::test]

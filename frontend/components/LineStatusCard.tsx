@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { StatusBadge } from './StatusBadge';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 import { LastUpdated } from './LastUpdated';
+import { UpcomingDisruptions } from './UpcomingDisruptions';
 import { worstStatus } from '@/lib/severity';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport } from '@/lib/types';
@@ -55,6 +56,8 @@ export function LineStatusCard({ report }: { report: LineStatusReport }) {
         <Text size="xs" c="dimmed">
           {formatSampleSummary(representative)}
         </Text>
+        {/* A note, not a status: the badge above never reflects it. */}
+        <UpcomingDisruptions upcoming={report.upcoming} compact />
         <LastUpdated timestamp={report.computedAt} />
       </Stack>
     </Card>

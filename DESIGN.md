@@ -241,9 +241,17 @@ When the matcher considers an incident against a line, it produces one of:
 The caps are measured with `common::severity_rank`, not the raw severity
 number (see 5.4).
 
-The matcher applies one further rule: **drop an `OPERATOR_ONLY` match
-when another line sharing one of its operator codes got a more precise
-match for the same incident**. This is what stops a single-station
+Since 2026-10-06 the station tiers are fed by the places an incident's
+text names (`common::station_resolver`: station names and aliases from the
+`stations` reference data, scoped to the incident's operators' lines; `ZN`
+and unknown operators across every line). When a place resolves, the
+incident is local and gets no `OPERATOR_ONLY` matches at all, unless its
+summary is network-wide (industrial action, a reduced timetable, ...). See
+`docs/superpowers/specs/2026-10-06-incident-line-evidence-design.md`.
+
+When no place resolves, the matcher applies one further rule: **drop an
+`OPERATOR_ONLY` match when another line sharing one of its operator codes
+got a more precise match for the same incident**. This is what stops a single-station
 incident on the Alton branch from also flagging South West Main and
 Portsmouth Direct just because they share the SW operator code. The rule
 is scoped per operator: a precise hit for one operator must not remove a
@@ -530,17 +538,12 @@ that lives next to the line definition. Defaults exist for the common case.
 
 ## 10. Known gaps and follow-ups
 
-- **CRS extraction from incident prose.** Knowledgebase incidents
-  reference stations by name in free text. We need a station-name → CRS
-  lookup with fuzzy matching ("Watford Junction", "Wat Junction", "WFJ"
-  all → WFJ). Use the `network-rail-gis` or equivalent reference data.
-  Still open. Note what this does *not* block any more: the incident
-  archive's Line filter used to depend on it (it matched a line's CRS list
-  against `incidents.affected_stations`, a column nothing populates, and so
-  returned zero rows for every line) and now does not — it matches
-  `incidents.affected_lines`, written at ingest by `common::matcher`. What
-  CRS extraction would still buy is the matcher's station/segment tiers,
-  which no production incident reaches today.
+- **CRS extraction from incident prose.** Built 2026-10-06
+  (`common::station_resolver`, exact names and aliases from the `stations`
+  table, no fuzzy matching). Still open: misspellings and abbreviations
+  ("Wat Junction") resolve to nothing, and a place name that is not a
+  station ("the Sussex area") leaves the incident on the operator-wide
+  fallback.
 - **Branching lines.** Current model handles linear lines well and
   shared-trunk-then-branch decently. True multi-branch lines (e.g. a
   service that splits at Haslemere with portions to different
