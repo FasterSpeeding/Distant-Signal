@@ -77,6 +77,12 @@ The matcher classifies every incident-to-line match by scope:
   suppressed entirely if another line sharing one of its operator codes got
   a more precise match for the same incident.
 
+Knowledgebase incidents carry no station codes, so the station tiers are fed
+by the stations an incident's text names, resolved against the station
+reference data. An incident naming a place is shown only on the lines through
+it; it is shown operator-wide only when its text is network-wide (industrial
+action, a reduced timetable) or names no place at all.
+
 The last point matters: it's what stops an incident on the Alton branch
 from also flagging South West Main and Portsmouth Direct just because all
 three share the `SW` operator code.

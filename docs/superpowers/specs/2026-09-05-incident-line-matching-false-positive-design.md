@@ -442,3 +442,22 @@ implementation rather than assuming.
 4. Add six new tests (one an exact-incident regression guard, five
    isolating each decision and its "must not regress" counterpart);
    confirm two existing tests are unaffected.
+
+## Decision (2026-10-06): Tier 1 is reachable, operator-only is a fallback
+
+The non-goal above ("Tier 1 ... is confirmed always dead in production")
+is superseded by
+[2026-10-06-incident-line-evidence-design.md](2026-10-06-incident-line-evidence-design.md):
+`common::station_resolver` resolves the station names in an incident's
+summary (or description) against the `stations` reference data, scoped to
+the incident's operators' lines, and feeds them to Tier 1 as if they were
+`affected_stations`. Decisions 1 and 2 here still hold, with three changes:
+
+- Decision 1's per-operator retain now applies only when no place
+  resolved. When a place resolved (and the text has no network-scope
+  marker) every operator-only match is dropped, for every operator; with a
+  marker, every operator-only match stays.
+- Decision 2's contradiction gate does not apply when every operator code
+  is `ZN` ("National Rail") or unknown to the catalogue: such an incident
+  makes no claim about which catalogue operator it concerns.
+- Operator codes are mapped first (`LN`, `WM` -> `LM`).

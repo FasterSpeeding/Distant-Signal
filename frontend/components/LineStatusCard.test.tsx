@@ -40,6 +40,29 @@ describe('LineStatusCard', () => {
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
   });
 
+  it('shows an upcoming note beside a Good Service badge without changing it', () => {
+    renderWithMantine(
+      <LineStatusCard
+        report={{
+          ...report,
+          lineStatuses: [],
+          upcoming: [
+            {
+              from: '2026-10-10T23:00:00Z',
+              to: '2026-10-11T23:00:00Z',
+              summary: 'Industrial action on Sunday 11 October',
+              incidentId: '1D3D4694',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(document.querySelector('[data-upcoming]')?.textContent).toBe(
+      'Upcoming: Sun 11 Oct, Industrial action on Sunday 11 October',
+    );
+  });
+
   it('renders a Good Service badge when there are no statuses', () => {
     renderWithMantine(<LineStatusCard report={{ ...report, lineStatuses: [] }} />);
     expect(screen.getByText('Good Service')).toBeInTheDocument();

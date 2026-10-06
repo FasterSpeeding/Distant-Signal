@@ -826,3 +826,21 @@ for what the sweep is already designed to do.
    the call count fixed at three regardless of period count (the higher-
    priority constraint per item 5's cost/timeout framing), at the cost of
    giving up that future parallelization option.
+
+## Decision (2026-10-06): how the aggregator reads period dates
+
+From [2026-10-06-incident-line-evidence-design.md](2026-10-06-incident-line-evidence-design.md)
+§4, in `aggregation::period_bounds` (used by `period_phase` and the line's
+`upcoming` notes):
+
+- a `from_date`/`to_date` at exactly 00:00 UTC is read as that date's
+  Europe/London midnight (strike days came back as UTC midnights);
+- `to_date <= from_date` is the whole London day of `from_date` (a
+  zero-length "Sunday 11 October" range never became `Active`);
+- a period whose `scope_description` says normal service or the normal
+  timetable resumes is dropped when parsed (the model labels it `ongoing`).
+
+§4's phases otherwise stand. The rail-day cutoff exemption that reads them
+changed too: see the 2026-07-16 stale-incident spec's 2026-10-06 decision.
+The enricher's reference date is now when the current text first appeared
+(`queries::IncidentState::reference_date`), not `first_seen_at`.

@@ -3,6 +3,68 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-06: incidents on the lines they name; `upcoming` on line status
+
+Design:
+`docs/superpowers/specs/2026-10-06-incident-line-evidence-design.md`.
+
+### New field: `upcoming`
+
+`GET /Line/Mode/{mode}/Status` and `GET /Line/{ids}/Status` reports gain
+`upcoming`: disruptions announced for the line that have not started yet,
+soonest first, at most 5. Always present; `[]` when there are none (and
+always `[]` for a `TfL` line).
+
+```json
+"upcoming": [
+  {
+    "from": "2026-10-10T23:00:00+00:00",
+    "to": "2026-10-11T23:00:00+00:00",
+    "summary": "Industrial action to affect TransPennine Express services on Sunday 11, 18 and 25 October",
+    "incidentId": "1D3D4694..."
+  }
+]
+```
+
+- `from`/`to` are RFC3339; `to` is exclusive and may be `null`. A whole-day
+  event runs from one Europe/London midnight to the next.
+- An entry is a note, not a status: it never changes `lineStatuses` or a
+  severity. When the day comes, the incident appears in `lineStatuses` as
+  usual (and drops out of `upcoming`).
+- Listed: unplanned incidents with a high-confidence period that has not
+  started yet, for industrial action at any distance, otherwise starting
+  within 14 days. `incidentId` is the `GET /public/incidents/{incidentId}`
+  id.
+
+### Changed behaviour (no shape change)
+
+- **Which lines an incident is on.** An unplanned incident is on the lines
+  its text gives evidence for: the stations it names (resolved against the
+  station reference data), a line keyword or brand, or a closed section.
+  It is on every line of its operator only for a network-wide notice
+  (industrial action, a reduced timetable, "across the ... network", ...)
+  or when it names no place at all. Before, most incidents were on every
+  line of their operator ("(operator-wide report)" in `reason`). This
+  changes `lineStatuses`, `affectedLines` on `GET /public/incidents` rows
+  (and its `line` filter), and the detail's `currentlyAffectsLines` alike.
+  Archived rows keep their stored `affectedLines` until
+  `backfill_incident_lines` is re-run. `LN`/`WM` incidents
+  now reach the `LM` lines, and `ZN` ("National Rail") incidents reach the
+  lines whose stations they name.
+- **How long an unplanned incident shows.** Until the 02:00 rail-day
+  boundary after it was listed, reopened or last re-worded (it used to be
+  after it was first seen, ever). After that, only while a dated period of
+  it is in progress (a stated end date or a weekly schedule window), or
+  while it says it lasts "until further notice" (then at most Reduced
+  Service, with "(long-running notice)" in `reason`).
+- **Not in effect today.** A long-running notice whose schedule window
+  excludes now (a Sunday under a Monday-Saturday window) still shows, with
+  a `validityPeriods[0].fromDate` at its next window start and
+  `isNow: false`; live data does not escalate it, and the line can also
+  show its own `ldbws-inferred` status.
+- **A notice about the future** (every period still to come, e.g. a strike
+  next week) is no longer a status at all; see `upcoming`.
+
 ## 2026-10-06: incidents can be "Ended (no longer listed)"
 
 Design:

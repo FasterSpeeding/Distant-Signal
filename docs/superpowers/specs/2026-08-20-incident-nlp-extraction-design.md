@@ -550,3 +550,14 @@ reliability — but it's worth being deliberate about how many distinct
 models get loaded back-to-back against a shared self-hosted endpoint,
 especially since production `enricher` traffic should mostly only ever
 request one configured model repeatedly, not swap between many.
+
+## Decision (2026-10-06): reference date
+
+The reference date given to the primary pass for relative and year-less
+dates is now when the incident's current summary and description were
+first recorded (the earliest `incident_history` row of the latest run with
+that text), falling back to `first_seen_at`. 6C20E627's "today", published
+on 16 Sep, had been read against its 9 Sep first sighting. No
+`model_version` bump: see
+[2026-10-06-incident-line-evidence-design.md](2026-10-06-incident-line-evidence-design.md)
+§6.

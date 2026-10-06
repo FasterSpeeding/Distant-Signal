@@ -124,6 +124,12 @@ answer" but "no answer at all".
 
 ## When to re-run
 
+After deploying the 2026-10-06 matcher (places named in the text resolved
+against the `stations` table,
+`docs/superpowers/specs/2026-10-06-incident-line-evidence-design.md`):
+archived rows keep the old operator-wide answer until re-run. The binary
+reads the `stations` table itself and fails if it cannot.
+
 Any time `lines/*.toml` changes in a way that affects matching —
 `operators`, `match_keywords`, `excluded_keywords`, or a station's
 `segment`. Live incidents pick the change up on the next poll on their own;

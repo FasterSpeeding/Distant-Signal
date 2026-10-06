@@ -142,6 +142,17 @@ export interface LineStatus {
   fullCoverageAvailability: FullCoverageAvailability;
 }
 
+/** One of a line's `upcoming` notes (docs/api-changelog.md, 2026-10-06):
+ * a disruption announced for the line that has not started yet. Never part
+ * of `lineStatuses` or a severity. `to` is exclusive; `null` means no
+ * stated end. */
+export interface UpcomingDisruption {
+  from: string;
+  to: string | null;
+  summary: string;
+  incidentId: string;
+}
+
 export interface LineStatusReport {
   $type: string;
   id: string;
@@ -157,6 +168,9 @@ export interface LineStatusReport {
    * page rather than merged into it, since only this report's own
    * `lineStatuses` carries real `sampleStats`. */
   tflStatus?: LineStatus[];
+  /** Soonest first. Optional: absent from history entries and from an api
+   * older than 2026-10-06. */
+  upcoming?: UpcomingDisruption[];
 }
 
 export type LineStatusHistoryEntry = LineStatusReport;

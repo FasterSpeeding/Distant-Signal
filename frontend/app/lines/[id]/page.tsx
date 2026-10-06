@@ -10,6 +10,7 @@ import { categoryLabel, operatorLabel, tocNameLookup } from '@/lib/displayLabels
 import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
+import { UpcomingDisruptions } from '@/components/UpcomingDisruptions';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { ShareButton } from '@/components/ShareButton';
@@ -522,6 +523,7 @@ export default async function LineDetailPage({ params }: { params: Promise<{ id:
               what the optional `lines` on IssueItem is for on the station
               page. */}
           <IssueList items={statusResult.report.lineStatuses.map((status) => ({ status }))} now={now} />
+          <UpcomingDisruptions upcoming={statusResult.report.upcoming} />
         </>
       ) : (
         <Text c="dimmed">{NO_STATUS_BODY}</Text>

@@ -265,3 +265,13 @@ was passed and the status actually has one).
   needs saturating/truncating semantics specified precisely, or plain `as`
   casts suffice given these are always whole numbers in practice — a
   planning-time detail.
+
+## Decision (2026-10-06): `upcoming` beside `lineStatuses`
+
+Each aggregator cycle also writes `line_status.upcoming`: the line's notes
+of disruptions announced but not started (an unplanned incident's
+high-confidence future period: industrial action, or a dated period within
+14 days). The read endpoints render it as `upcoming` next to
+`lineStatuses`; it never feeds a severity. See
+[2026-10-06-incident-line-evidence-design.md](2026-10-06-incident-line-evidence-design.md)
+§5 and docs/api-changelog.md.
