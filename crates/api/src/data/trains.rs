@@ -543,12 +543,11 @@ pub struct PublicTrainState {
 /// train, per `schedule_destination_departures` -- the same product the
 /// `/trains` search page itself reads
 /// (`queries::search_schedule_destination_departures`). The sole caller is
-/// `routes::train::get_by_uid_and_date`'s read-triggered `find_or_create_train`
-/// upsert: a GET must be able to conjure a shared `trains` row into
-/// existence for an identity a search result actually pointed at (see that
-/// route's own doc comment for the bug this closes), but never for an
-/// arbitrary string someone puts in the URL -- this is the gate that tells
-/// those two cases apart.
+/// `routes::train::get_by_uid_and_date`'s schedule-only view: a GET must be
+/// able to show a train a search result actually pointed at (see that
+/// route's own doc comment), but never invent one for an arbitrary string
+/// someone puts in the URL -- this is the gate that tells those two cases
+/// apart. (Until 2026-10-06 that view was a `trains` row the GET created.)
 ///
 /// Deliberately a bare existence probe scoped to `train_uid` +
 /// `service_date` only, ignoring `destination_crs`/`origin_crs`/`scheduled`
