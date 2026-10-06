@@ -458,7 +458,7 @@ HTTP read API are all implemented (`crates/poller-incidents`,
 §10 for what's actually still open.
 
 **Stage 2 — broaden the line catalogue.** Largely done: `lines/` now
-holds 243 line definitions. The steps still apply to each new line.
+holds 245 line definitions. The steps still apply to each new line.
 1. Add the busiest 15-20 lines first. Major main lines (ECML, GWML,
    Midland Main Line) and busy commuter routes (Brighton Main Line,
    Chiltern, Northern City Line).
@@ -549,7 +549,7 @@ that lives next to the line definition. Defaults exist for the common case.
   service that splits at Haslemere with portions to different
   destinations) aren't modelled directly — define each branch as a
   separate line with a shared trunk segment.
-- **Line catalogue is still growing.** 243 line definitions today,
+- **Line catalogue is still growing.** 245 line definitions today,
   covering the major TOCs and regional networks; new routes still need
   hand-authoring.
 - **Severity for engineering works.** Currently mapped to PLANNED_CLOSURE

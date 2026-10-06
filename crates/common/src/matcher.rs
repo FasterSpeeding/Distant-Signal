@@ -7249,6 +7249,9 @@ mod tests {
                 "southeastern-highspeed".to_string(),
                 "southeastern-maidstone-east".to_string(),
                 "southeastern-canterbury-west".to_string(),
+                // 2026-10-06: Southern's Marshlink line starts here, on
+                // its own segment (station overlap only).
+                "southern-marshlink".to_string(),
             ])
         );
         for m in &matches {
@@ -8835,10 +8838,15 @@ mod tests {
                 "thameslink-southern".to_string(),
                 "southern-brighton-main-line".to_string(),
                 "southern-oxted-uckfield".to_string(),
+                // 2026-10-06: Southern's West London line ends here, on
+                // its own segment.
+                "southern-west-london".to_string(),
             ])
         );
         for m in &matches {
-            let expected = if m.line.id == "southern-oxted-uckfield" {
+            let expected = if ["southern-oxted-uckfield", "southern-west-london"]
+                .contains(&m.line.id.as_str())
+            {
                 MatchScope::ExclusiveSegment
             } else {
                 MatchScope::SharedSegment
@@ -10804,6 +10812,12 @@ mod tests {
                 "southern-brighton-main-line".to_string(),
                 "southern-metro-crystal-palace".to_string(),
                 "southern-metro-sutton".to_string(),
+                // 2026-10-06: Southern's West London line (sharing the
+                // Mildmay line's Clapham branch segment, so both are now
+                // SharedSegment here) and the Oxted line (which calls at
+                // Clapham Junction on its own Victoria approach segment).
+                "southern-west-london".to_string(),
+                "southern-oxted-uckfield".to_string(),
             ])
         );
         for m in &matches {
@@ -10824,6 +10838,8 @@ mod tests {
                 "swr-epsom-mole-valley",
                 "southern-metro-crystal-palace",
                 "southern-metro-sutton",
+                "southern-west-london",
+                "overground-mildmay",
             ]
             .contains(&m.line.id.as_str())
             {
@@ -12816,6 +12832,94 @@ mod tests {
         // Named alone, the hub still fans out.
         let found = evidence("Disruption at London Victoria", "", &["SN"]);
         assert!(found.len() >= 3, "{found:?}");
+    }
+
+    fn station_list(id: &str) -> Vec<String> {
+        load_line(id)[id]
+            .stations
+            .iter()
+            .map(|s| s.crs.clone())
+            .collect()
+    }
+
+    #[test]
+    fn lines_added_from_the_timetable_have_their_real_calling_points() {
+        // 2026-10-06 misses study, each checked against the CIF timetable
+        // (schedule_calling_points_full, 7/10/11 Oct 2026; see the files).
+        assert_eq!(
+            station_list("southern-west-london"),
+            [
+                "WFJ", "HRW", "WMB", "SPB", "KPA", "WBP", "IMW", "CLJ", "BAL", "SRC", "NRB", "TTH",
+                "SRS", "ECR"
+            ]
+        );
+        assert_eq!(
+            station_list("southern-marshlink"),
+            [
+                "AFK", "HMT", "APD", "RYE", "WSE", "DLH", "TOK", "ORE", "HGS"
+            ]
+        );
+        let oxted = station_list("southern-oxted-uckfield");
+        assert_eq!(oxted[..3], ["VIC", "CLJ", "LBG"]);
+        let scarborough = station_list("tpe-north-scarborough");
+        assert_eq!(scarborough[..3], ["MIA", "MAN", "MCV"]);
+        assert!(station_list("southern-coastway-east").ends_with(&["HGS".into(), "ORE".into()]));
+        let wakefield = station_list("northern-wakefield-line");
+        assert!(wakefield.ends_with(&["SES".into(), "AWK".into(), "BYK".into(), "DON".into()]));
+        assert_eq!(
+            station_list("gwr-bristol-gloucester"),
+            ["BRI", "FIT", "BPW", "YAE", "CDU", "GCR", "CNM"]
+        );
+    }
+
+    #[test]
+    fn incidents_on_the_added_lines_find_them() {
+        // 5BB09F13 / 7C6D2415: no Southern line held either place.
+        let found = evidence(
+            "No Southern trains between Shepherds Bush and Watford Junction until approximately \
+             17:00",
+            "",
+            &["SN"],
+        );
+        assert_eq!(ids(&found), ["southern-west-london"]);
+        // 5D2795F5.
+        let found = evidence(
+            "Disruption between Ashford International and Rye expected until 18:00",
+            "",
+            &["SN"],
+        );
+        assert_eq!(ids(&found), ["southern-marshlink"]);
+        // 0B8DB84A: the Wakefield line's Doncaster fork.
+        let found = evidence(
+            "Major disruption between Wakefield Westgate and Doncaster expected until 10:30",
+            "",
+            &["XC", "GR", "NT"],
+        );
+        assert!(
+            ids(&found).contains(&"northern-wakefield-line"),
+            "{found:?}"
+        );
+        // B0080AB8: Bristol Parkway and Cheltenham Spa are now on the line.
+        let found = evidence(
+            "Disruption between Cheltenham Spa / Gloucester and Bristol Parkway expected until \
+             18:00",
+            "",
+            &["XC", "GW"],
+        );
+        assert!(ids(&found).contains(&"gwr-bristol-gloucester"), "{found:?}");
+        // 5930CC6A: the Oxted line calls at Clapham Junction.
+        let found = evidence(
+            "Major disruption between Clapham Junction and London Victoria",
+            "",
+            &["GX", "SN"],
+        );
+        assert!(
+            ids(&found).contains(&"southern-oxted-uckfield"),
+            "{found:?}"
+        );
+        // 5977B842: the Scarborough line's Airport workings.
+        let found = evidence("Disruption at Manchester Piccadilly", "", &["TP"]);
+        assert!(ids(&found).contains(&"tpe-north-scarborough"), "{found:?}");
     }
 
     #[test]

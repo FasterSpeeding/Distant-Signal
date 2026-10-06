@@ -9,7 +9,7 @@
 # Regenerate after each timetable change (December and May) and after
 # changing a line's stations, then commit:
 #   uv run scripts/generate-pass-through.py --database-url <url>
-# (see lines/README.md for running it against production read-only).
+# (see lines/SCHEMA.md for running it against production read-only).
 
 source_dates = ["2026-10-07", "2026-10-10", "2026-10-11"]
 
@@ -83,9 +83,6 @@ HWN-BIS = ["HWM", "SAW"]
 
 [lines.greater-anglia-west-anglia]
 LST-SRA = ["BET"]
-
-[lines.gwr-bristol-gloucester]
-FIT-YAE = ["BPW"]
 
 [lines.gwr-cotswold]
 PAD-RDG = ["EAL", "STL", "SLO", "MAI", "TWY"]
@@ -324,7 +321,8 @@ LDS-SBY = ["CRG", "MIK"]
 SBY-BUH = ["HOW", "GBD"]
 
 [lines.tpe-north-scarborough]
-MIA-MCV = ["HDG", "MAN", "MCO", "DGT", "SFD"]
+MIA-MAN = ["HDG"]
+MAN-MCV = ["MCO", "DGT", "SFD"]
 MCV-HUD = ["SYB", "GNF", "MSN"]
 HUD-DEW = ["MIR"]
 DEW-LDS = ["MLY"]
