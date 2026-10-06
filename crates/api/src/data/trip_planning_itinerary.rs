@@ -367,16 +367,15 @@ fn resolve_segment_tiplocs(
     origin_crs: &str,
     destination_crs: &str,
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    let from_tiplocs = interchange
-        .crs_to_tiplocs
-        .get(&origin_crs.to_ascii_uppercase())
-        .cloned()
-        .unwrap_or_default();
-    let to_tiplocs = interchange
-        .crs_to_tiplocs
-        .get(&destination_crs.to_ascii_uppercase())
-        .cloned()
-        .unwrap_or_default();
+    let lookup = |code: &str| {
+        interchange
+            .crs_to_tiplocs
+            .get(&common::location_naming::normalize_location_code(code))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let from_tiplocs = lookup(origin_crs);
+    let to_tiplocs = lookup(destination_crs);
     if from_tiplocs.is_empty() {
         return Err(format!(
             "'{origin_crs}' is not a recognised station CRS code"

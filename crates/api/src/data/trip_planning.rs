@@ -220,6 +220,11 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
         }
     }
 
+    // Bus stops and ferry terminals with no CRS of their own become end
+    // points under their `tiploc:` code (`add_road_or_water_endpoints`).
+    let locations = crate::data::tiploc_locations::road_or_water_locations(pool).await?;
+    add_road_or_water_endpoints(&mut tiploc_to_crs, &mut crs_to_tiplocs, &locations);
+
     let fixed_link_rows: Vec<FixedLinkRow> = sqlx::query_as(
         "SELECT from_crs, to_crs, mode, minutes, valid_from, valid_to, days_mask FROM fixed_links",
     )
@@ -247,6 +252,120 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
         crs_to_tiplocs,
         fixed_links_from_crs,
     })
+}
+
+/// Makes every bus stop and ferry terminal in `locations` that has no CRS
+/// in the crosswalks a planner end point of its own: `tiploc:SANWBUS` ->
+/// `[SANWBUS]` in `crs_to_tiplocs`, and the reverse in `tiploc_to_crs`, so
+/// `?origin=tiploc:SANWBUS` resolves and a leg ending there reports that
+/// code. One TIPLOC per code, so it has no same-station siblings; changes
+/// there use its own MSN change time (often the 98/99 "no interchange"
+/// sentinel, which still allows starting or ending a journey there). A stop
+/// whose TIPLOC already maps to a station CRS stays part of that station.
+///
+/// Why a TIPLOC rather than the stop's MSN code (`SAO`): MSN codes share
+/// the CRS namespace (a stop's code can be another station's CRS) and are
+/// not unique per stop, while the TIPLOC is what the timetable itself
+/// names. See docs/superpowers/specs/2026-10-06-tiploc-locations-design.md.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
+pub fn add_road_or_water_endpoints(
+    tiploc_to_crs: &mut HashMap<String, String>,
+    crs_to_tiplocs: &mut HashMap<String, Vec<String>>,
+    locations: &[crate::data::tiploc_locations::LocationInfo],
+) {
+    for location in locations {
+        if !location.location_type.is_road_or_water()
+            || tiploc_to_crs.contains_key(&location.tiploc)
+        {
+            continue;
+        }
+        let code = location.code();
+        tiploc_to_crs.insert(location.tiploc.clone(), code.clone());
+        crs_to_tiplocs.insert(code, vec![location.tiploc.clone()]);
+    }
+}
+
+/// `TRIP_PLAN_ROAD_WATER_CHANGE_MINUTES` (chart
+/// `api.tripPlanRoadWaterChangeMinutes`): the extra change time on each bus
+/// or ferry side of a change, clamped to `0..=30`, default 5. See
+/// `schedule_query::ModalChangeBuffer`.
+pub const ROAD_WATER_CHANGE_MINUTES_ENV: &str = "TRIP_PLAN_ROAD_WATER_CHANGE_MINUTES";
+pub const DEFAULT_ROAD_WATER_CHANGE_MINUTES: u32 = 5;
+const MAX_ROAD_WATER_CHANGE_MINUTES: u32 = 30;
+
+/// The configured buffer, read once.
+pub fn road_water_change_minutes() -> u32 {
+    static MINUTES: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| {
+        parse_road_water_change_minutes(
+            std::env::var(ROAD_WATER_CHANGE_MINUTES_ENV).ok().as_deref(),
+        )
+    });
+    *MINUTES
+}
+
+fn parse_road_water_change_minutes(raw: Option<&str>) -> u32 {
+    match raw.map(str::trim) {
+        None | Some("") => DEFAULT_ROAD_WATER_CHANGE_MINUTES,
+        Some(raw) => raw.parse::<u32>().map_or_else(
+            |_| {
+                tracing::warn!(
+                    raw,
+                    "invalid {ROAD_WATER_CHANGE_MINUTES_ENV}; using the default"
+                );
+                DEFAULT_ROAD_WATER_CHANGE_MINUTES
+            },
+            |minutes| minutes.min(MAX_ROAD_WATER_CHANGE_MINUTES),
+        ),
+    }
+}
+
+/// The date's bus and ferry services, for the change buffer: every UID
+/// calling at a bus stop or ferry terminal (`road_or_water_tiplocs`).
+///
+/// An approximation until the schedule's own service mode is stored per
+/// UID: a rail-replacement bus that only calls at station TIPLOCs is not
+/// caught (so its changes cost the rail figure only). Switch this to the
+/// stored mode once that exists; the planner side takes any UID set.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
+pub fn modal_change_buffer(
+    by_uid: &HashMap<String, Vec<CallingPointForConnections>>,
+    road_or_water_tiplocs: &std::collections::HashSet<String>,
+    minutes: u32,
+) -> schedule_query::ModalChangeBuffer {
+    let road_or_water_uids = if minutes == 0 || road_or_water_tiplocs.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        by_uid
+            .iter()
+            .filter(|(_, points)| {
+                points.iter().any(|point| {
+                    road_or_water_tiplocs.contains(schedule_query::normalize_tiploc(&point.tiploc))
+                })
+            })
+            .map(|(uid, _)| uid.clone())
+            .collect()
+    };
+    schedule_query::ModalChangeBuffer {
+        road_or_water_uids,
+        minutes,
+    }
+}
+
+/// Every bus stop's and ferry terminal's TIPLOC.
+pub async fn fetch_road_or_water_tiplocs(
+    pool: &PgPool,
+) -> Result<std::collections::HashSet<String>> {
+    Ok(crate::data::tiploc_locations::road_or_water_locations(pool)
+        .await?
+        .into_iter()
+        .map(|location| location.tiploc)
+        .collect())
 }
 
 /// A service date's connections graph and the interchange data it is
@@ -568,6 +687,93 @@ mod graph_cache_tests {
             (101, CacheOutcome::Built)
         );
         assert!(cache.cached_dates().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod road_or_water_tests {
+    use std::collections::HashSet;
+
+    use super::*;
+    use crate::data::tiploc_locations::LocationInfo;
+    use common::location_naming::LocationType;
+
+    fn location(tiploc: &str, kind: LocationType) -> LocationInfo {
+        LocationInfo {
+            tiploc: tiploc.to_string(),
+            name: tiploc.to_string(),
+            display_name: tiploc.to_string(),
+            location_type: kind,
+            parent_crs: None,
+            parent_name: None,
+        }
+    }
+
+    #[test]
+    fn bus_stops_without_a_crs_become_tiploc_coded_end_points() {
+        let mut tiploc_to_crs = HashMap::from([("BANSBUS".to_string(), "BAD".to_string())]);
+        let mut crs_to_tiplocs = HashMap::from([("BAD".to_string(), vec!["BANSBUS".to_string()])]);
+        add_road_or_water_endpoints(
+            &mut tiploc_to_crs,
+            &mut crs_to_tiplocs,
+            &[
+                location("SANWBUS", LocationType::BusStop),
+                location("BDICK", LocationType::FerryTerminal),
+                location("BANSBUS", LocationType::BusStop),
+                location("MARY10", LocationType::PassingPoint),
+            ],
+        );
+        assert_eq!(crs_to_tiplocs["tiploc:SANWBUS"], ["SANWBUS"]);
+        assert_eq!(tiploc_to_crs["SANWBUS"], "tiploc:SANWBUS");
+        assert_eq!(crs_to_tiplocs["tiploc:BDICK"], ["BDICK"]);
+        // Already a station's TIPLOC: stays with the station.
+        assert_eq!(tiploc_to_crs["BANSBUS"], "BAD");
+        assert!(!crs_to_tiplocs.contains_key("tiploc:BANSBUS"));
+        assert!(!crs_to_tiplocs.contains_key("tiploc:MARY10"));
+    }
+
+    fn call(tiploc: &str) -> CallingPointForConnections {
+        CallingPointForConnections {
+            tiploc: tiploc.to_string(),
+            booked_arrival: None,
+            booked_departure: None,
+            day_offset: 0,
+            can_board: true,
+            can_alight: true,
+            public_arrival: None,
+            public_departure: None,
+        }
+    }
+
+    #[test]
+    fn services_calling_at_a_bus_stop_get_the_buffer() {
+        let by_uid = HashMap::from([
+            ("BUS1".to_string(), vec![call("SANWBUS"), call("LEUCHRS")]),
+            ("TRAIN".to_string(), vec![call("LEUCHRS"), call("EDINBUR")]),
+        ]);
+        let stops = HashSet::from(["SANWBUS".to_string()]);
+        let buffer = modal_change_buffer(&by_uid, &stops, 5);
+        assert_eq!(
+            buffer.road_or_water_uids,
+            HashSet::from(["BUS1".to_string()])
+        );
+        assert_eq!(buffer.extra_for("BUS1"), 5);
+        assert_eq!(buffer.extra_for("TRAIN"), 0);
+        assert!(
+            modal_change_buffer(&by_uid, &stops, 0)
+                .road_or_water_uids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_buffer_setting_defaults_and_clamps() {
+        assert_eq!(parse_road_water_change_minutes(None), 5);
+        assert_eq!(parse_road_water_change_minutes(Some(" ")), 5);
+        assert_eq!(parse_road_water_change_minutes(Some("0")), 0);
+        assert_eq!(parse_road_water_change_minutes(Some("8")), 8);
+        assert_eq!(parse_road_water_change_minutes(Some("99")), 30);
+        assert_eq!(parse_road_water_change_minutes(Some("-1")), 5);
     }
 }
 

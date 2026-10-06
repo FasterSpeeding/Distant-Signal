@@ -298,8 +298,9 @@ async fn get_trip_plan(
     let max_changes = parse_max_changes(params.max_changes.as_deref())?;
     let live_requested = parse_live(params.live.as_deref())?;
     let time = parse_time_bound(params.depart_after, params.arrive_by)?;
-    let origin = params.origin.trim().to_ascii_uppercase();
-    let destination = params.destination.trim().to_ascii_uppercase();
+    // A CRS, or a bus stop's or ferry terminal's `tiploc:` code.
+    let origin = common::location_naming::normalize_location_code(&params.origin);
+    let destination = common::location_naming::normalize_location_code(&params.destination);
     let avoid = trip_planning_itinerary::AvoidLists {
         avoid: parse_station_list("avoid", params.avoid.as_deref())?,
         avoid_stop: parse_station_list("avoidStop", params.avoid_stop.as_deref())?,
@@ -335,7 +336,13 @@ async fn get_trip_plan(
             else {
                 return Ok(None);
             };
-            let interchange = trip_planning::fetch_interchange_data(&pool).await?;
+            let mut interchange = trip_planning::fetch_interchange_data(&pool).await?;
+            let road_or_water = trip_planning::fetch_road_or_water_tiplocs(&pool).await?;
+            interchange.modal_change = trip_planning::modal_change_buffer(
+                &calling_points,
+                &road_or_water,
+                trip_planning::road_water_change_minutes(),
+            );
             // The sort over every calling point of the day, on the blocking
             // pool (bound 4 in this fn's doc comment).
             let (connections, passes) = tokio::task::spawn_blocking(move || {
@@ -770,7 +777,7 @@ fn parse_waypoints(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_ascii_uppercase)
+        .map(common::location_naming::normalize_location_code)
         .collect();
 
     if waypoints.len() > *WAYPOINT_LIMIT {
@@ -797,7 +804,7 @@ fn parse_station_list(name: &str, raw: Option<&str>) -> Result<Vec<String>, (Sta
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let code = code.to_ascii_uppercase();
+        let code = common::location_naming::normalize_location_code(code);
         if !codes.contains(&code) {
             codes.push(code);
         }
@@ -1561,6 +1568,174 @@ mod db_tests {
             .await
             .ok();
         sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPLAN-ZZ%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// A bus stop as origin and as destination (`tiploc:` codes, any case),
+    /// modelled on St Andrews bus station -> Leuchars -> Edinburgh, with the
+    /// default 5-minute bus change buffer: the bus reaches Leuchars at 07:11,
+    /// so the 07:17 train (enough for the 5-minute change alone) is missed
+    /// and the 07:30 taken.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn a_bus_stop_is_a_planner_origin_and_destination_with_the_change_buffer() {
+        let pool = connect().await;
+        let date = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        let rows: &[(&str, i16, &str, &str, Option<&str>, Option<&str>)] = &[
+            ("TESTBUS1", 0, "ZSANBUS", "origin", None, Some("07:00:00")),
+            (
+                "TESTBUS1",
+                1,
+                "ZLEUCHR",
+                "terminate",
+                Some("07:11:00"),
+                None,
+            ),
+            ("TESTRL17", 0, "ZLEUCHR", "origin", None, Some("07:17:00")),
+            (
+                "TESTRL17",
+                1,
+                "ZEDINBR",
+                "terminate",
+                Some("08:10:00"),
+                None,
+            ),
+            ("TESTRL30", 0, "ZLEUCHR", "origin", None, Some("07:30:00")),
+            (
+                "TESTRL30",
+                1,
+                "ZEDINBR",
+                "terminate",
+                Some("08:25:00"),
+                None,
+            ),
+            ("TESTRL08", 0, "ZEDINBR", "origin", None, Some("08:00:00")),
+            (
+                "TESTRL08",
+                1,
+                "ZLEUCHR",
+                "terminate",
+                Some("08:50:00"),
+                None,
+            ),
+            ("TESTBUS2", 0, "ZLEUCHR", "origin", None, Some("08:56:00")),
+            (
+                "TESTBUS2",
+                1,
+                "ZSANBUS",
+                "terminate",
+                Some("09:07:00"),
+                None,
+            ),
+            ("TESTBUS3", 0, "ZLEUCHR", "origin", None, Some("09:00:00")),
+            (
+                "TESTBUS3",
+                1,
+                "ZSANBUS",
+                "terminate",
+                Some("09:11:00"),
+                None,
+            ),
+        ];
+        for (uid, seq, tiploc, kind, arrival, departure) in rows {
+            sqlx::query(
+                "INSERT INTO schedule_calling_points_full \
+                 (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+                 VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, 0) ON CONFLICT DO NOTHING",
+            )
+            .bind(date)
+            .bind(uid)
+            .bind(seq)
+            .bind(tiploc)
+            .bind(kind)
+            .bind(arrival)
+            .bind(departure)
+            .execute(&pool)
+            .await
+            .expect("seed calling point");
+        }
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTBUS-ZLE', 'ZLE', 'ZLEUCHR', 'ZED LEUCHARS', 1), \
+                    ('TESTBUS-ZED', 'ZED', 'ZEDINBR', 'ZED EDINBURGH', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        sqlx::query(
+            "INSERT INTO tiploc_locations (tiploc, location_type, name, display_name, \
+                 msn_code, bus_calls, source_sequence) \
+             VALUES ('ZSANBUS', 'bus_stop', 'Zed Andrews', 'Zed Andrews (bus station)', \
+                     'ZSA', 2, 980) \
+             ON CONFLICT (tiploc) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed tiploc_locations");
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = get(
+            router.clone(),
+            format!(
+                "/Trips/plan?origin=tiploc:ZSANBUS&destination=ZED&date={date}\
+                 &departAfter=06:30&live=false"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let segment = &body["segments"][0];
+        assert_eq!(segment["originCrs"], "tiploc:ZSANBUS");
+        let legs = segment["itineraries"][0]["legs"].as_array().expect("legs");
+        let uids: Vec<&str> = legs
+            .iter()
+            .filter_map(|leg| leg["trainUid"].as_str())
+            .collect();
+        assert_eq!(uids, ["TESTBUS1", "TESTRL30"], "{body:?}");
+        assert_eq!(legs[0]["originCrs"], "tiploc:ZSANBUS");
+        assert_eq!(legs[0]["destinationCrs"], "ZLE");
+
+        // Back again, to the bus stop: the 08:50 arrival + 5 (change) + 5
+        // (onto a bus) misses the 08:56 bus and takes the 09:00.
+        let (status, body) = get(
+            router.clone(),
+            format!(
+                "/Trips/plan?origin=ZED&destination=TIPLOC:zsanbus&date={date}\
+                 &departAfter=07:45&live=false"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let segment = &body["segments"][0];
+        assert_eq!(segment["destinationCrs"], "tiploc:ZSANBUS");
+        let uids: Vec<&str> = segment["itineraries"][0]["legs"]
+            .as_array()
+            .expect("legs")
+            .iter()
+            .filter_map(|leg| leg["trainUid"].as_str())
+            .collect();
+        assert_eq!(uids, ["TESTRL08", "TESTBUS3"], "{body:?}");
+
+        // An unknown stop is the usual clear 400.
+        let (status, _) = get(
+            router,
+            format!("/Trips/plan?origin=tiploc:ZNOSUCH&destination=ZED&date={date}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'TESTBUS%' OR uid LIKE 'TESTRL%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTBUS-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM tiploc_locations WHERE tiploc = 'ZSANBUS'")
             .execute(&pool)
             .await
             .ok();
