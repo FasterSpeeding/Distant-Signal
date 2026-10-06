@@ -664,6 +664,40 @@ upgrade with `requirePass=false` (Redis restarts without a password),
 update the Secret and `kubectl rollout restart` the six client
 Deployments, then upgrade with `requirePass=true`.
 
+## Redis ACL users (optional)
+
+Off by default (`redis.acl.enabled: false`); with it off nothing below
+renders. It builds on `redis.auth`: each client gets its own Redis user
+with only the commands and keys it needs, and the shared `default` user can
+then be turned off. The users and their rights are in
+`files/redis-users.acl.tpl`; `crates/common/tests/redis_acl.rs` checks
+them against a real Redis.
+
+With `redis.acl.enabled` (and the bundled Redis), an initContainer renders
+`users.acl` into a memory-backed emptyDir from one password per user in
+`redis.acl.existingSecret` (`<user>-password`, required), and Redis starts
+with `--aclfile` instead of `--requirepass`. Its probes authenticate as
+`ds-admin`. `redis.acl.clients.<client>` gives that client `REDIS_USERNAME`
+and its own `REDIS_PASSWORD`.
+
+The four-step, no-downtime rollout (`stage: open`, then the clients one by
+one, then `stage: narrow`, then `defaultUser: "off"`), its checks and its
+rollback are in `docs/redis-acl.md`.
+
+## Per-service Postgres roles (optional)
+
+Off by default (`postgresql.roles.perService.enabled: false`). Stage 0b of
+`docs/postgres-app-role.md`: on top of `postgresql.roles`, each DB service
+(api, aggregator, enricher, notifier) can connect as its own role, a member
+of `distant_signal_app` with no grants of its own, so `pg_stat_statements`
+and `pg_stat_activity` attribute every query to its service. The roles and
+the grants they will later be narrowed to are in `files/db-grants.yaml`;
+`scripts/gen-db-grants.py` renders them into `files/postgres-grants.sql`,
+which the role setup Job runs. `perService.<service>.connect` moves one
+service at a time; with the api on its own role its pool is
+`perService.api.maxConnections` (16). The render fails if the connection
+limits of every role in use exceed `max_connections` minus 3.
+
 ## Password encoding caveat
 
 `DATABASE_URL` is a URL. A password containing any of `@ : / ? # [ ] %` must

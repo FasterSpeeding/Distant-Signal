@@ -56,6 +56,30 @@ branches to merge (D4).
 
 ## Phase 0: prerequisites
 
+**Status (2026-10-06): the DS side is built, every switch off.** 0b.1–0b.7
+and 0c.1–0c.4 are done (`db-grants.yaml`, `gen-db-grants.py`,
+`postgresql.roles.perService`, `observe-role-usage.py`,
+`test-postgres-roles.py --mode per-service`, `redis.acl`,
+`redis_url_with_credentials`, `crates/common/tests/redis_acl.rs`,
+`docs/redis-acl.md`), with CI. Ranma's order: `docs/ingest-phase0-runbook.md`.
+Differences from the table below:
+
+- 0b.5: the existing INF-7 pool check stays in `api-deployment.yaml` (it
+  now uses the api's effective pool); the new role-limit sum is a separate
+  helper, `distant-signal.postgresRoleBudgetCheck`, counting only the roles
+  a client actually connects as.
+- 0c.1: the api reads `REDIS_USERNAME` from the environment instead of a
+  new `Config` field, so the ~20 api test modules that build `Config` are
+  untouched while api branches are in flight (D4); it moves into `Config`
+  in phase 1A.
+- 0c.3: the conformance test creates the users with `ACL SETUSER` (under a
+  random prefix) on CI's Redis service instead of starting a server with the
+  file; the file itself is checked by `check-ingest-phase0-chart.py` against
+  `render-redis-acl.py`, and was booted once by hand on valkey.
+- Not in phase 0 (unchanged plan): the migrate hook Job, the schema gate and
+  `api.migrateOnStartup` (1B.1–1B.4, they need `ds-migrate`); the pool
+  metrics (1A.11). 0a and 0d are Ranma's.
+
 ### 0a. The Postgres role split (Ranma; DS supports)
 
 | # | Task | Files | Tests / verification |
