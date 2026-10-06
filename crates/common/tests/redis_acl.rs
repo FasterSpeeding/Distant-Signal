@@ -27,6 +27,13 @@
 //! `REDIS_URL` (default `redis://localhost:6379`) and `REDIS_PASSWORD`, if
 //! set, name an admin connection: the `default` user, allowed `ACL SETUSER`.
 
+#![expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    reason = "test code: a panic is the right failure, and one test walks every user in turn"
+)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -67,7 +74,12 @@ fn prefixed_rules(rules: &str, prefix: &str) -> Vec<String> {
     let mut selector: Option<String> = None;
     for token in rules.split_whitespace() {
         let token = match token.find('~') {
-            Some(tilde) if token[..tilde].trim_start_matches('(').chars().all(|c| "%RW".contains(c)) => {
+            Some(tilde)
+                if token[..tilde]
+                    .trim_start_matches('(')
+                    .chars()
+                    .all(|c| "%RW".contains(c)) =>
+            {
                 format!("{}{prefix}{}", &token[..=tilde], &token[tilde + 1..])
             }
             _ => token.to_owned(),
@@ -162,22 +174,6 @@ impl Harness {
         conn
     }
 
-    /// Run `args` as `conn`; anything but NOPERM/NOAUTH counts as allowed
-    /// (BUSYGROUP, an empty reply, a missing group...).
-    fn allowed(&self, user: &str, conn: &mut redis::Connection, args: &[&str]) {
-        let mut cmd = redis::cmd(args[0]);
-        for arg in &args[1..] {
-            cmd.arg(*arg);
-        }
-        if let Err(e) = cmd.query::<redis::Value>(conn) {
-            let text = e.to_string();
-            assert!(
-                !text.contains("NOPERM") && !text.contains("NOAUTH"),
-                "{user} must be allowed {args:?}: {text}"
-            );
-        }
-    }
-
     /// `ACL DRYRUN` must refuse `args` for `user` (nothing is executed).
     fn forbidden(&mut self, user: &str, args: &[&str]) {
         let mut cmd = redis::cmd("ACL");
@@ -192,14 +188,19 @@ impl Harness {
             Ok(redis::Value::BulkString(b)) => b.as_slice() != b"OK",
             Ok(_) | Err(_) => true,
         };
-        assert!(refused, "{user} must NOT be allowed {args:?}, but ACL DRYRUN said {reply:?}");
+        assert!(
+            refused,
+            "{user} must NOT be allowed {args:?}, but ACL DRYRUN said {reply:?}"
+        );
     }
 
     fn cleanup(&mut self) {
         let users: Vec<String> = self.passwords.keys().map(|u| self.user(u)).collect();
         if !users.is_empty() {
-            let _: redis::RedisResult<i64> =
-                redis::cmd("ACL").arg("DELUSER").arg(&users).query(&mut self.admin);
+            let _: redis::RedisResult<i64> = redis::cmd("ACL")
+                .arg("DELUSER")
+                .arg(&users)
+                .query(&mut self.admin);
         }
         let keys: Vec<String> = redis::cmd("KEYS")
             .arg(format!("{}*", self.prefix))
@@ -217,6 +218,22 @@ impl Drop for Harness {
     }
 }
 
+/// Run `args` as `conn`; anything but NOPERM/NOAUTH counts as allowed
+/// (BUSYGROUP, an empty reply, a missing group...).
+fn allowed(user: &str, conn: &mut redis::Connection, args: &[&str]) {
+    let mut cmd = redis::cmd(args[0]);
+    for arg in &args[1..] {
+        cmd.arg(*arg);
+    }
+    if let Err(e) = cmd.query::<redis::Value>(conn) {
+        let text = e.to_string();
+        assert!(
+            !text.contains("NOPERM") && !text.contains("NOAUTH"),
+            "{user} must be allowed {args:?}: {text}"
+        );
+    }
+}
+
 fn rand_u32() -> u32 {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
@@ -231,7 +248,7 @@ fn rand_u32() -> u32 {
     value
 }
 
-/// The movement-events consumers' sequence (RedisStreamMovementFeed,
+/// The movement-events consumers' sequence (`RedisStreamMovementFeed`,
 /// crates/movement-feed/src/redis_stream.rs): group create, the startup
 /// checks, read, ack, claim, pending, replay by XRANGE, and the dead-letter
 /// write.
@@ -244,10 +261,41 @@ fn movement_consumer(h: &mut Harness, user: &str) {
         vec!["XINFO", "GROUPS", &stream],
         vec!["EXISTS", &stream],
         vec!["XINFO", "STREAM", &stream],
-        vec!["XREADGROUP", "GROUP", user, "c1", "COUNT", "16", "BLOCK", "1", "STREAMS", &stream, ">"],
-        vec!["XREADGROUP", "GROUP", user, "c1", "COUNT", "16", "STREAMS", &stream, "0"],
+        vec![
+            "XREADGROUP",
+            "GROUP",
+            user,
+            "c1",
+            "COUNT",
+            "16",
+            "BLOCK",
+            "1",
+            "STREAMS",
+            &stream,
+            ">",
+        ],
+        vec![
+            "XREADGROUP",
+            "GROUP",
+            user,
+            "c1",
+            "COUNT",
+            "16",
+            "STREAMS",
+            &stream,
+            "0",
+        ],
         vec!["XACK", &stream, user, "0-1"],
-        vec!["XAUTOCLAIM", &stream, user, "c1", "1000", "0-0", "COUNT", "10"],
+        vec![
+            "XAUTOCLAIM",
+            &stream,
+            user,
+            "c1",
+            "1000",
+            "0-0",
+            "COUNT",
+            "10",
+        ],
         vec!["XCLAIM", &stream, user, "c1", "1000", "0-1"],
         vec!["XPENDING", &stream, user],
         vec!["XPENDING", &stream, user, "-", "+", "10", "c1"],
@@ -256,7 +304,7 @@ fn movement_consumer(h: &mut Harness, user: &str) {
         vec!["XLEN", &dlq],
         vec!["XADD", &dlq, "*", "group", user, "reason", "test"],
     ] {
-        h.allowed(user, &mut c, &args);
+        allowed(user, &mut c, &args);
     }
     for args in [
         vec!["XADD", stream.as_str(), "*", "type", "x"],
@@ -297,7 +345,10 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
         "ingest-writer",
         "ds-admin",
     ] {
-        assert!(names.contains(&expected), "{expected} missing from the template: {names:?}");
+        assert!(
+            names.contains(&expected),
+            "{expected} missing from the template: {names:?}"
+        );
     }
     for user in &all {
         h.create(user);
@@ -312,9 +363,28 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
         let user = "movement-relay";
         let mut c = h.connect(user);
         for args in [
-            vec!["XGROUP", "CREATE", &stream, "trust-consumer", "$", "MKSTREAM"],
-            vec!["XADD", &stream, "MAXLEN", "~", "100", "*", "type", "x", "payload", "y"],
-            vec!["XADD", &stream, "NOMKSTREAM", "MAXLEN", "~", "100", "*", "type", "x"],
+            vec![
+                "XGROUP",
+                "CREATE",
+                &stream,
+                "trust-consumer",
+                "$",
+                "MKSTREAM",
+            ],
+            vec![
+                "XADD", &stream, "MAXLEN", "~", "100", "*", "type", "x", "payload", "y",
+            ],
+            vec![
+                "XADD",
+                &stream,
+                "NOMKSTREAM",
+                "MAXLEN",
+                "~",
+                "100",
+                "*",
+                "type",
+                "x",
+            ],
             vec!["XTRIM", &stream, "MAXLEN", "~", "100"],
             vec!["XLEN", &stream],
             vec!["XLEN", &dlq],
@@ -325,10 +395,18 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
             vec!["XRANGE", &dlq, "-", "+", "COUNT", "1"],
             vec!["EXISTS", &stream],
         ] {
-            h.allowed(user, &mut c, &args);
+            allowed(user, &mut c, &args);
         }
         for args in [
-            vec!["XREADGROUP", "GROUP", "trust-consumer", "c", "STREAMS", stream.as_str(), ">"],
+            vec![
+                "XREADGROUP",
+                "GROUP",
+                "trust-consumer",
+                "c",
+                "STREAMS",
+                stream.as_str(),
+                ">",
+            ],
             vec!["XADD", itc.as_str(), "*", "a", "b"],
             vec!["DEL", stream.as_str()],
             vec!["XGROUP", "DESTROY", stream.as_str(), "trust-consumer"],
@@ -338,7 +416,11 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
         }
     }
 
-    for user in ["trust-consumer", "trust-backlog-consumer", "full-coverage-consumer"] {
+    for user in [
+        "trust-consumer",
+        "trust-backlog-consumer",
+        "full-coverage-consumer",
+    ] {
         movement_consumer(&mut h, user);
     }
     // Phase 3a: full-coverage-consumer's own ingest stream (spec §7.1). D1:
@@ -346,12 +428,16 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
     {
         let fc = h.key("ds:ingest:full-coverage");
         let mut c = h.connect("full-coverage-consumer");
-        h.allowed(
+        allowed(
             "full-coverage-consumer",
             &mut c,
             &["XADD", &fc, "MAXLEN", "~", "360", "*", "v", "1"],
         );
-        h.allowed("full-coverage-consumer", &mut c, &["XREVRANGE", &fc, "+", "-", "COUNT", "1"]);
+        allowed(
+            "full-coverage-consumer",
+            &mut c,
+            &["XREVRANGE", &fc, "+", "-", "COUNT", "1"],
+        );
         h.forbidden("full-coverage-consumer", &["XTRIM", &fc, "MAXLEN", "0"]);
         for user in ["trust-consumer", "trust-backlog-consumer"] {
             h.forbidden(user, &["XADD", &fc, "*", "v", "1"]);
@@ -369,15 +455,44 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
             vec!["XINFO", "GROUPS", &itc],
             vec!["EXISTS", &itc],
             vec!["XINFO", "STREAM", &itc],
-            vec!["XREADGROUP", "GROUP", "enricher", "e1", "COUNT", "1", "BLOCK", "1", "STREAMS", &itc, ">"],
+            vec![
+                "XREADGROUP",
+                "GROUP",
+                "enricher",
+                "e1",
+                "COUNT",
+                "1",
+                "BLOCK",
+                "1",
+                "STREAMS",
+                &itc,
+                ">",
+            ],
             vec!["XACK", &itc, "enricher", "0-1"],
-            vec!["XAUTOCLAIM", &itc, "enricher", "e1", "1000", "0-0", "COUNT", "10"],
+            vec![
+                "XAUTOCLAIM",
+                &itc,
+                "enricher",
+                "e1",
+                "1000",
+                "0-0",
+                "COUNT",
+                "10",
+            ],
         ] {
-            h.allowed(user, &mut c, &args);
+            allowed(user, &mut c, &args);
         }
         for args in [
             vec!["XADD", itc.as_str(), "*", "a", "b"],
-            vec!["XREADGROUP", "GROUP", "x", "c", "STREAMS", stream.as_str(), ">"],
+            vec![
+                "XREADGROUP",
+                "GROUP",
+                "x",
+                "c",
+                "STREAMS",
+                stream.as_str(),
+                ">",
+            ],
             vec!["FLUSHALL"],
         ] {
             h.forbidden(user, &args);
@@ -388,7 +503,20 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
     // MAXLEN ~ N (crates/api/src/data/queries.rs). Write only.
     for user in ["api", "poller-incidents"] {
         let mut c = h.connect(user);
-        h.allowed(user, &mut c, &["XADD", &itc, "MAXLEN", "~", "10000", "*", "incident_id", "x"]);
+        allowed(
+            user,
+            &mut c,
+            &[
+                "XADD",
+                &itc,
+                "MAXLEN",
+                "~",
+                "10000",
+                "*",
+                "incident_id",
+                "x",
+            ],
+        );
         for args in [
             vec!["XRANGE", itc.as_str(), "-", "+"],
             vec!["XLEN", itc.as_str()],
@@ -419,7 +547,7 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
             vec!["TYPE", &stream],
             vec!["MEMORY", "USAGE", &stream],
         ] {
-            h.allowed(user, &mut c, &args);
+            allowed(user, &mut c, &args);
         }
         for args in [
             vec!["XADD", stream.as_str(), "*", "a", "b"],
@@ -437,15 +565,31 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
         ("poller-ldbws", "ds:ingest:station-samples", "ds:ingest:tfl"),
         ("poller-tfl", "ds:ingest:tfl", "ds:ingest:station-samples"),
         ("poller-tocs", "ds:ingest:reference", "ds:ingest:tfl"),
-        ("poller-irish-rail-gtfs", "ds:ingest:island-of-ireland", "ds:ingest:tfl"),
-        ("poller-irish-rail-live", "ds:ingest:island-of-ireland", "ds:ingest:tfl"),
-        ("poller-nir-stations", "ds:ingest:island-of-ireland", "ds:ingest:tfl"),
+        (
+            "poller-irish-rail-gtfs",
+            "ds:ingest:island-of-ireland",
+            "ds:ingest:tfl",
+        ),
+        (
+            "poller-irish-rail-live",
+            "ds:ingest:island-of-ireland",
+            "ds:ingest:tfl",
+        ),
+        (
+            "poller-nir-stations",
+            "ds:ingest:island-of-ireland",
+            "ds:ingest:tfl",
+        ),
     ] {
         let own = h.key(own);
         let other = h.key(other);
         let mut c = h.connect(user);
-        h.allowed(user, &mut c, &["XADD", &own, "MAXLEN", "~", "720", "*", "v", "1"]);
-        h.allowed(user, &mut c, &["XREVRANGE", &own, "+", "-", "COUNT", "1"]);
+        allowed(
+            user,
+            &mut c,
+            &["XADD", &own, "MAXLEN", "~", "720", "*", "v", "1"],
+        );
+        allowed(user, &mut c, &["XREVRANGE", &own, "+", "-", "COUNT", "1"]);
         for args in [
             vec!["XADD", other.as_str(), "*", "v", "1"],
             vec!["XTRIM", own.as_str(), "MAXLEN", "0"],
@@ -465,9 +609,30 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
         let d = h.key("ds:dlq:station-samples");
         for args in [
             vec!["XGROUP", "CREATE", &s, "ingest-writer", "0", "MKSTREAM"],
-            vec!["XREADGROUP", "GROUP", "ingest-writer", "w1", "COUNT", "16", "BLOCK", "1", "STREAMS", &s, ">"],
+            vec![
+                "XREADGROUP",
+                "GROUP",
+                "ingest-writer",
+                "w1",
+                "COUNT",
+                "16",
+                "BLOCK",
+                "1",
+                "STREAMS",
+                &s,
+                ">",
+            ],
             vec!["XACK", &s, "ingest-writer", "0-1"],
-            vec!["XAUTOCLAIM", &s, "ingest-writer", "w1", "300000", "0-0", "COUNT", "100"],
+            vec![
+                "XAUTOCLAIM",
+                &s,
+                "ingest-writer",
+                "w1",
+                "300000",
+                "0-0",
+                "COUNT",
+                "100",
+            ],
             vec!["XCLAIM", &s, "ingest-writer", "w1", "1000", "0-1"],
             vec!["XPENDING", &s, "ingest-writer"],
             vec!["XINFO", "STREAM", &s],
@@ -481,11 +646,19 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
             vec!["XDEL", &d, "0-1"],
             vec!["MEMORY", "USAGE", &s],
         ] {
-            h.allowed(user, &mut c, &args);
+            allowed(user, &mut c, &args);
         }
         for args in [
             vec!["XADD", stream.as_str(), "*", "v", "1"],
-            vec!["XREADGROUP", "GROUP", "g", "c", "STREAMS", stream.as_str(), ">"],
+            vec![
+                "XREADGROUP",
+                "GROUP",
+                "g",
+                "c",
+                "STREAMS",
+                stream.as_str(),
+                ">",
+            ],
             vec!["XADD", itc.as_str(), "*", "v", "1"],
             vec!["FLUSHALL"],
         ] {
@@ -496,7 +669,7 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
     // ds-admin: everything (checked without running anything destructive).
     {
         let mut c = h.connect("ds-admin");
-        h.allowed("ds-admin", &mut c, &["CONFIG", "GET", "maxmemory"]);
+        allowed("ds-admin", &mut c, &["CONFIG", "GET", "maxmemory"]);
     }
 }
 
@@ -506,20 +679,33 @@ fn the_template_is_well_formed() {
     assert!(!all.is_empty());
     let mut seen = std::collections::BTreeSet::new();
     for user in &all {
-        assert!(seen.insert(user.name.clone()), "duplicate user {}", user.name);
+        assert!(
+            seen.insert(user.name.clone()),
+            "duplicate user {}",
+            user.name
+        );
         assert!(
             ["client", "final", "admin"].contains(&user.kind.as_str()),
             "{}: kind {}",
             user.name,
             user.kind
         );
-        assert_ne!(user.name, "default", "default is rendered from redis.acl.defaultUser");
+        assert_ne!(
+            user.name, "default",
+            "default is rendered from redis.acl.defaultUser"
+        );
         if user.kind == "admin" {
             assert!(user.rules.is_empty(), "{}: admin takes no rules", user.name);
             continue;
         }
         // Every non-admin user has the handshake and no blanket rights.
-        for needed in ["+ping", "+hello", "+auth", "+client|setinfo", "+client|setname"] {
+        for needed in [
+            "+ping",
+            "+hello",
+            "+auth",
+            "+client|setinfo",
+            "+client|setname",
+        ] {
             assert!(user.rules.contains(needed), "{} lacks {needed}", user.name);
         }
         assert!(!user.rules.contains("+@all"), "{}: +@all", user.name);
@@ -527,7 +713,11 @@ fn the_template_is_well_formed() {
         let args = prefixed_rules(&user.rules, "p:");
         for arg in &args {
             if let Some(tilde) = arg.find('~') {
-                assert!(arg[tilde + 1..].starts_with("p:"), "{}: unprefixed {arg}", user.name);
+                assert!(
+                    arg[tilde + 1..].starts_with("p:"),
+                    "{}: unprefixed {arg}",
+                    user.name
+                );
             }
         }
     }

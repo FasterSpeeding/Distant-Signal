@@ -131,8 +131,7 @@ pub fn redis_url_with_credentials(
         );
     }
     // Both are percent-encoded here and decoded again by the redis crate.
-    if url.set_username(username).is_err() || url.set_password(Some(password.expose())).is_err()
-    {
+    if url.set_username(username).is_err() || url.set_password(Some(password.expose())).is_err() {
         bail!("REDIS_URL cannot carry credentials (it has no host)");
     }
     Ok(Secret::new(String::from(url)))
@@ -290,9 +289,10 @@ mod tests {
     #[test]
     fn a_username_needs_a_password_and_a_credential_free_url() {
         for password in [None, Some(Secret::default())] {
-            let err = redis_url_with_credentials("redis://redis:6379", Some("api"), password.as_ref())
-                .unwrap_err()
-                .to_string();
+            let err =
+                redis_url_with_credentials("redis://redis:6379", Some("api"), password.as_ref())
+                    .unwrap_err()
+                    .to_string();
             assert!(err.contains("REDIS_PASSWORD is not"), "{err}");
         }
         for url in ["redis://someone@redis:6379", "redis://:inline@redis:6379"] {
