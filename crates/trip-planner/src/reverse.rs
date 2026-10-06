@@ -626,7 +626,7 @@ mod tests {
 
     fn interchange(change_times: &[(&str, i32)]) -> InterchangeData {
         InterchangeData {
-            modal_change: Default::default(),
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: change_times
                 .iter()
                 .map(|(t, m)| ((*t).to_string(), *m))

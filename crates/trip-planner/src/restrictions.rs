@@ -233,7 +233,7 @@ mod tests {
     fn both(connections: &[Connection], restrictions: &Restrictions) -> (Vec<String>, Vec<String>) {
         use crate::{JourneyLeg, RaptorOptions, ScanOptions};
         let interchange = schedule_query::InterchangeData {
-            modal_change: Default::default(),
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),
@@ -364,7 +364,7 @@ mod tests {
             )]),
         );
         let interchange = schedule_query::InterchangeData {
-            modal_change: Default::default(),
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),

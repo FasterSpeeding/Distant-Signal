@@ -1490,7 +1490,7 @@ mod tests {
             conn("U2", "B", "C", 500, 520),
         ];
         let mut interchange = InterchangeData {
-            modal_change: Default::default(),
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),
@@ -1586,7 +1586,7 @@ mod tests {
         };
         let connections = vec![conn("U1", "A", "B", 480, 490)];
         let mut interchange = InterchangeData {
-            modal_change: Default::default(),
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),

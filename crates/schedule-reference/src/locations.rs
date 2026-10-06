@@ -133,6 +133,7 @@ impl ModeTally {
     }
 
     /// Tallies every schedule in CIF text, one line at a time.
+    #[cfg(test)]
     pub(crate) fn from_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Self {
         let mut tally = Self::default();
         let mut parser = schedule_query::ScheduleRecordParser::default();
@@ -502,10 +503,11 @@ LTMARYLBN 2003 20036     TF
     /// The lines above, re-padded to the real records' 80 bytes (the
     /// source file keeps no trailing spaces).
     fn ti() -> Vec<TiRecord> {
-        let padded: String = TI_LINES
-            .lines()
-            .map(|line| format!("{line:<80}\n"))
-            .collect();
+        use std::fmt::Write as _;
+        let mut padded = String::new();
+        for line in TI_LINES.lines() {
+            writeln!(padded, "{line:<80}").unwrap();
+        }
         parse_ti_lines(&padded)
     }
 

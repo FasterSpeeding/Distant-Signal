@@ -1581,6 +1581,11 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::type_complexity,
+        reason = "test code: one seeded network and three requests against it"
+    )]
     async fn a_bus_stop_is_a_planner_origin_and_destination_with_the_change_buffer() {
         let pool = connect().await;
         let date = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();

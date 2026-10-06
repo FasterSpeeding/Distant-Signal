@@ -23,6 +23,10 @@ use crate::data::queries::normalize_code;
 /// TIPLOC (rows that did not change keep their `updated_at`), then delete
 /// every TIPLOC `records` does not list. An empty `records` is refused by
 /// the route before this is reached; here it is a no-op, never a wipe.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one 20-column upsert, its binds and the prune; splitting would scatter the column list"
+)]
 pub async fn replace_tiploc_locations(
     pool: &PgPool,
     records: &[common::TiplocLocationRecord],

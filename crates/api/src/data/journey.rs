@@ -2325,6 +2325,7 @@ mod tests {
     /// `station`.
     #[test]
     fn locations_name_and_type_every_stop_without_a_station_name() {
+        use common::location_naming::LocationType;
         let service_date: NaiveDate = "2026-10-07".parse().unwrap();
         let tiploc_to_crs: HashMap<String, String> = [("RDNGSTN".to_string(), "RDG".to_string())]
             .into_iter()
@@ -2355,7 +2356,6 @@ mod tests {
         apply_station_names(&mut stops, &names);
         apply_locations(&mut stops, &locations);
 
-        use common::location_naming::LocationType;
         assert_eq!(
             stops[0].name.as_deref(),
             Some("Heathrow Terminal 3 (bus stop)")

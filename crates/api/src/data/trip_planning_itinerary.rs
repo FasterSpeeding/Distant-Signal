@@ -1716,7 +1716,7 @@ mod tests {
         change_times: &[(&str, i32)],
     ) -> InterchangeData {
         let mut data = InterchangeData {
-            modal_change: Default::default(),
+            modal_change: schedule_query::ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),

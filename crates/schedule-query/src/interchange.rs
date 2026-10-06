@@ -273,7 +273,7 @@ mod tests {
 
     fn empty_data() -> InterchangeData {
         InterchangeData {
-            modal_change: Default::default(),
+            modal_change: ModalChangeBuffer::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),
