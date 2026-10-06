@@ -1359,6 +1359,11 @@ api:
   # grows with their number; 20 measured under ~0.35 s (fastest) and ~2 s
   # (options) on a production-scale day.
   tripPlanMaxWaypoints: 20
+  # -- Largest `results=options` /Trips/plan search allowed:
+  # (waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) must not exceed it
+  # (a 400 otherwise). 252 is twice what 20 waypoints at maxChanges=4 cost;
+  # values outside 8-504 are clamped. `fastest` is not limited by it.
+  tripPlanMaxOptionsSearchSize: 252
   # -- /Trips/plan live overlay
   # (docs/superpowers/specs/2026-09-28-trips-plan-live-overlay-design.md):
   # for today's and yesterday's service dates, TRUST and Darwin facts are

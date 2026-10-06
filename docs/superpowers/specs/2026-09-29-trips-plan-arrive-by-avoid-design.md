@@ -186,7 +186,7 @@ These shapes are asserted by the DB tests in `crates/api/src/routes/trips.rs`:
 | `avoidStop` | `avoidStop` |
 | `viaStop` | `waypoints` (same meaning: a call, a train continuing through at no change, and the whole-journey change cap) |
 | `via` (pass through) | `via` (2026-10-06, at most 3, in order; see `2026-10-06-trips-plan-via-and-max-changes-design.md`) |
-| `maxChanges` 5 or 6 | `maxChanges=5`/`6` (2026-10-06; the ceiling was 4) |
+| `maxChanges` 5 or 6 | `maxChanges=5`/`6` (2026-10-06; the ceiling was 4). With `results=options`, the waypoints, vias and `maxChanges` must fit the search-size guard (default 252, see the 2026-10-06 spec §4.4) |
 | `LON` group code | not expanded: a 400, because `LON` is not a routable CRS |
 | up to 20 via points | up to 20 `waypoints` |
 

@@ -63,14 +63,15 @@ Out of range is a 400: `maxChanges must be a whole number from 0 to 6
 (default 2), not '7'`.
 
 With `results=options`, a new 400 applies when
-`(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) > 126`, with the
-message `... is too large a search ...; use fewer waypoints or vias, a
-lower maxChanges, or results=fastest`. The limits this gives:
+`(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` is over the
+deployment's bound: 252 by default, configurable in the chart as
+`api.tripPlanMaxOptionsSearchSize` (8-504). The message is `... is too
+large a search (... = N, at most 252); use fewer waypoints or vias, a
+lower maxChanges, or results=fastest`. The limits at the default:
 
-- `maxChanges=6`: up to 14 waypoints;
-- `maxChanges=5`: up to 17 waypoints;
-- `maxChanges` 4 or less: 20 waypoints, as before;
-- with 3 vias: 3, 2 and 1 waypoints at `maxChanges` 2, 4 and 6.
+- without vias: all 20 waypoints, at any `maxChanges`;
+- with 1 via: 20, 13, 11 and 9 waypoints at `maxChanges` 2, 4, 5 and 6;
+- with 3 vias: 8, 5, 4 and 3 waypoints at `maxChanges` 2, 4, 5 and 6.
 
 `fastest` is not affected. DS-MCP: on this 400, fall back to the local
 engine.

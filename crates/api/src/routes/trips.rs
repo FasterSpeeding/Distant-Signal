@@ -61,18 +61,38 @@ const MAX_AVOIDED: usize = 8;
 const MAX_VIAS: usize = 3;
 
 /// Guard on an `options` search's size, about states * rounds:
-/// `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)`, at most 126 --
-/// what 20 waypoints at `maxChanges=4` cost before the ceiling was raised
-/// to 6 (2026-10-06). A via counts double: its progress is reached all
-/// over the network (any train passing it), where a waypoint stage only
-/// fills in once the waypoint is reached, and measured, 4 waypoints and 3
-/// vias cost 2-3.5x what 20 waypoints alone do. So `maxChanges=6` (8
-/// rounds) allows up to 14 waypoints and `maxChanges=5` up to 17; with 3
-/// vias, `maxChanges=2` allows 3 waypoints, 4 allows 2 and 6 allows 1.
-/// `fastest` (one CSA sweep, no rounds) is not limited beyond
-/// [`MAX_WAYPOINTS`] and [`MAX_VIAS`]. Measured cost:
+/// `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)`. A via counts
+/// double: its progress is reached all over the network (any train passing
+/// it), where a waypoint stage only fills in once the waypoint is reached;
+/// measured, 4 waypoints and 3 vias cost 2-3.5x what 20 waypoints alone do.
+///
+/// The default bound is 252, twice what 20 waypoints at `maxChanges=4` (the
+/// worst case before the ceiling was raised to 6) cost: the user's decision
+/// of 2026-10-06. Without vias that never binds below [`MAX_WAYPOINTS`];
+/// with 1 via, `maxChanges` 2/4/5/6 allow 20/13/11/9 waypoints; with 3
+/// vias, 8/5/4/3. `fastest` (one CSA sweep, no rounds) is not limited
+/// beyond [`MAX_WAYPOINTS`] and [`MAX_VIAS`].
+///
+/// `TRIP_PLAN_MAX_OPTIONS_SEARCH_SIZE` (chart `api.tripPlanMaxOptionsSearchSize`)
+/// sets it, clamped to [`MIN_OPTIONS_SEARCH_SIZE`]..=[`MAX_OPTIONS_SEARCH_SIZE`];
+/// see [`OPTIONS_SEARCH_SIZE_LIMIT`]. Measured cost:
 /// docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md.
-const MAX_OPTIONS_SEARCH_SIZE: usize = 126;
+const DEFAULT_OPTIONS_SEARCH_SIZE: usize = 252;
+/// The lowest bound accepted: every request with no waypoints and no vias
+/// still fits at any allowed `maxChanges` (1 * 1 * 8).
+const MIN_OPTIONS_SEARCH_SIZE: usize = 8;
+/// The highest bound accepted: four times the pre-2026-10-06 worst case,
+/// about 4x the latency of 20 waypoints at `maxChanges=4`.
+const MAX_OPTIONS_SEARCH_SIZE: usize = 504;
+const OPTIONS_SEARCH_SIZE_ENV: &str = "TRIP_PLAN_MAX_OPTIONS_SEARCH_SIZE";
+
+/// The options search-size bound in effect: `TRIP_PLAN_MAX_OPTIONS_SEARCH_SIZE`,
+/// clamped to `MIN_OPTIONS_SEARCH_SIZE..=MAX_OPTIONS_SEARCH_SIZE`, default
+/// [`DEFAULT_OPTIONS_SEARCH_SIZE`].
+static OPTIONS_SEARCH_SIZE_LIMIT: LazyLock<usize> = LazyLock::new(|| {
+    env_or_default(OPTIONS_SEARCH_SIZE_ENV, DEFAULT_OPTIONS_SEARCH_SIZE)
+        .clamp(MIN_OPTIONS_SEARCH_SIZE, MAX_OPTIONS_SEARCH_SIZE)
+});
 
 /// Global cap on trip plans being computed at once (2026-09-25 review, High
 /// 4c). This is a per-process concurrency gate, NOT a per-IP rate limit --
@@ -274,7 +294,7 @@ fn default_results() -> String {
 ///   rejected before any database read. The effective value is echoed back
 ///   as the response's top-level `maxChanges`. With `results=options`, the
 ///   combination of waypoints, vias and `maxChanges` must also fit
-///   [`MAX_OPTIONS_SEARCH_SIZE`] (a 400 otherwise).
+///   [`OPTIONS_SEARCH_SIZE_LIMIT`] (a 400 otherwise).
 ///
 /// **Read this before adding work to this handler.** One request here reads
 /// every `schedule_calling_points_full` row for the requested date (hundreds
@@ -289,7 +309,7 @@ fn default_results() -> String {
 ///    (see [`MAX_WAYPOINTS`] for the measured cost). Rejected requests cost
 ///    a string split, not a query.
 /// 2. [`trip_planning_itinerary::MAX_CHANGES_LIMIT`] and
-///    [`MAX_OPTIONS_SEARCH_SIZE`], also checked before any database read --
+///    [`OPTIONS_SEARCH_SIZE_LIMIT`], also checked before any database read --
 ///    bound how deep and how wide each `options`-mode search can go. RAPTOR
 ///    does one full sweep of the day's connections per round, and runs
 ///    `maxChanges + 2` rounds at most (fewer if a round improves nothing): 8
@@ -357,7 +377,13 @@ async fn get_trip_plan(
     check_avoid_conflicts(&avoid, &origin, &waypoints, &destination)?;
     let vias = parse_vias(params.via.as_deref())?;
     check_via_conflicts(&vias, &avoid, &origin, &destination)?;
-    check_options_search_size(&params.results, waypoints.len(), vias.len(), max_changes)?;
+    check_options_search_size(
+        &params.results,
+        waypoints.len(),
+        vias.len(),
+        max_changes,
+        *OPTIONS_SEARCH_SIZE_LIMIT,
+    )?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -973,20 +999,21 @@ fn check_via_conflicts(
     Ok(())
 }
 
-/// [`MAX_OPTIONS_SEARCH_SIZE`] for `results=options`: a 400 naming the
-/// numbers and the ways out, before any database read.
+/// [`OPTIONS_SEARCH_SIZE_LIMIT`] (`limit`) for `results=options`: a 400
+/// naming the numbers and the ways out, before any database read.
 fn check_options_search_size(
     results: &str,
     waypoints: usize,
     vias: usize,
     max_changes: u32,
+    limit: usize,
 ) -> Result<(), (StatusCode, String)> {
     if results != "options" {
         return Ok(());
     }
     let rounds = trip_planning_itinerary::max_rounds(max_changes) as usize;
     let size = (waypoints + 1) * (2 * vias + 1) * rounds;
-    if size <= MAX_OPTIONS_SEARCH_SIZE {
+    if size <= limit {
         return Ok(());
     }
     Err((
@@ -994,7 +1021,7 @@ fn check_options_search_size(
         format!(
             "results=options with {waypoints} waypoints, {vias} vias and maxChanges={max_changes} \
              is too large a search ((waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) = {size}, \
-             at most {MAX_OPTIONS_SEARCH_SIZE}); use fewer waypoints or vias, a lower \
+             at most {limit}); use fewer waypoints or vias, a lower \
              maxChanges, or results=fastest"
         ),
     ))
@@ -1337,33 +1364,49 @@ mod tests {
 
     #[test]
     fn the_options_search_size_guard_bounds_waypoints_vias_and_rounds() {
-        // Today's worst case before the raise still fits exactly.
-        assert!(check_options_search_size("options", 20, 0, 4).is_ok());
-        assert!(check_options_search_size("options", 14, 0, 6).is_ok());
-        assert!(check_options_search_size("options", 17, 0, 5).is_ok());
-        assert!(check_options_search_size("options", 3, 3, 2).is_ok());
-        assert!(check_options_search_size("options", 2, 3, 4).is_ok());
-        assert!(check_options_search_size("options", 1, 3, 6).is_ok());
-        assert!(check_options_search_size("options", 0, 3, 6).is_ok());
-        assert!(check_options_search_size("options", 6, 1, 4).is_ok());
+        let limit = DEFAULT_OPTIONS_SEARCH_SIZE;
+        assert_eq!(limit, 252);
+        let fits = |waypoints, vias, max_changes| {
+            check_options_search_size("options", waypoints, vias, max_changes, limit).is_ok()
+        };
+        // No vias: every waypoint count allowed, at any maxChanges.
+        for max_changes in 0..=trip_planning_itinerary::MAX_CHANGES_LIMIT {
+            assert!(fits(MAX_WAYPOINTS, 0, max_changes), "{max_changes}");
+        }
+        // At the bound exactly, and one waypoint over it.
         for (waypoints, vias, max_changes) in [
-            (15, 0, 6),
-            (20, 0, 5),
-            (4, 3, 2),
-            (3, 3, 4),
-            (2, 3, 6),
-            (7, 1, 4),
+            (20, 1, 2), // 21 * 3 * 4 = 252
+            (13, 1, 4), // 14 * 3 * 6 = 252
+            (11, 1, 5), // 12 * 3 * 7 = 252
+            (9, 1, 6),  // 10 * 3 * 8 = 240
+            (8, 3, 2),  // 9 * 7 * 4 = 252
+            (5, 3, 4),  // 6 * 7 * 6 = 252
+            (4, 3, 5),  // 5 * 7 * 7 = 245
+            (3, 3, 6),  // 4 * 7 * 8 = 224
         ] {
+            assert!(
+                fits(waypoints, vias, max_changes),
+                "{waypoints} {vias} {max_changes}"
+            );
             let (status, message) =
-                check_options_search_size("options", waypoints, vias, max_changes).unwrap_err();
+                check_options_search_size("options", waypoints + 1, vias, max_changes, limit)
+                    .unwrap_err();
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(
-                message.contains("too large a search") && message.contains("results=fastest"),
+                message.contains("too large a search")
+                    && message.contains("at most 252")
+                    && message.contains("results=fastest"),
                 "{message}"
             );
         }
         // fastest is one sweep whatever maxChanges says.
-        assert!(check_options_search_size("fastest", 20, 3, 6).is_ok());
+        assert!(check_options_search_size("fastest", 20, 3, 6, limit).is_ok());
+        // The configurable bound is honoured, and its floor still admits a
+        // direct plan at the highest maxChanges.
+        assert!(check_options_search_size("options", 0, 0, 6, MIN_OPTIONS_SEARCH_SIZE).is_ok());
+        assert!(check_options_search_size("options", 1, 0, 6, MIN_OPTIONS_SEARCH_SIZE).is_err());
+        assert!(check_options_search_size("options", 20, 3, 6, MAX_OPTIONS_SEARCH_SIZE).is_err());
+        assert!(check_options_search_size("options", 8, 3, 6, MAX_OPTIONS_SEARCH_SIZE).is_ok());
     }
 
     #[test]
@@ -3387,12 +3430,11 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK, "{body:?}");
         assert_eq!(body["journeys"][0]["changeCount"], 6, "{body:?}");
 
-        // The search-size guard: 15 waypoints at maxChanges=6 is too large
-        // (16 * 8 = 128 > 126); fastest is not limited by it.
-        let waypoints = vec!["ZKA"; 15].join(",");
+        // The search-size guard: 4 waypoints and 3 vias at maxChanges=6 is
+        // too large (5 * 7 * 8 = 280 > 252); fastest is not limited by it.
         let (status, body) = get(
             test_router(test_app(pool.clone())),
-            uri(&format!("&maxChanges=6&waypoints={waypoints}")),
+            uri("&maxChanges=6&waypoints=ZQA,ZQB,ZQC,ZQD&via=ZQE,ZQF,ZQG"),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");

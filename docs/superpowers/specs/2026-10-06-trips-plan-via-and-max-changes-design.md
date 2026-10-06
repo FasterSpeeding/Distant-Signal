@@ -106,10 +106,11 @@ The order of the checks follows §3.4 of the 2026-09-29 spec:
 - Out of range is a 400: `maxChanges must be a whole number from 0 to 6
   (default 2), not '7'`.
 - **Guard (new).** With `results=options`, a 400 is returned when
-  `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` is over 126:
-  `results=options with 15 waypoints, 0 vias and maxChanges=6 is too large
-  a search (... = 128, at most 126); use fewer waypoints or vias, a lower
-  maxChanges, or results=fastest`. §4 explains the limit.
+  `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` is over the bound,
+  252 by default (`api.tripPlanMaxOptionsSearchSize`): `results=options
+  with 4 waypoints, 3 vias and maxChanges=6 is too large a search (... =
+  280, at most 252); use fewer waypoints or vias, a lower maxChanges, or
+  results=fastest`. §4.4 explains the limit.
 
 ### Examples (for the MCP team)
 
@@ -330,18 +331,37 @@ For comparison, CSA (`fastest`, independent of `maxChanges`) in run B:
   options with one live re-plan is about 2 x 8-10 s under this load, about
   4-5 s on a quiet host. That is too much for one unauthenticated request.
 
-### 4.4 The guard (`MAX_OPTIONS_SEARCH_SIZE`, `routes::trips`)
+### 4.4 The guard (`OPTIONS_SEARCH_SIZE_LIMIT`, `routes::trips`)
 
 `results=options` requires
-`(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) <= 126`. The bound is
-what 20 waypoints at `maxChanges=4` (the most allowed before) already
-cost. The via weight of 2 is the measured via-to-waypoint state cost.
+`(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) <= bound`. The via
+weight of 2 is the measured via-to-waypoint state cost.
 
-| | maxChanges 2 | 4 | 5 | 6 |
+**Decision, 2026-10-06 (user).** The bound is 252: twice what 20
+waypoints at `maxChanges=4` (the most allowed before the raise) already
+cost. It was first set at 126, exactly that cost. It is configurable:
+
+- chart `api.tripPlanMaxOptionsSearchSize`;
+- env `TRIP_PLAN_MAX_OPTIONS_SEARCH_SIZE`;
+- default 252, clamped to 8-504. 8 still admits a direct plan (no
+  waypoints, no vias) at `maxChanges=6`. 504 is four times the old worst
+  case.
+
+The resulting limits at the default bound (also capped at 20 waypoints):
+
+| max waypoints | maxChanges 2 | 4 | 5 | 6 |
 |---|---|---|---|---|
-| max waypoints, 0 vias | 20 | 20 | 17 | 14 |
-| max waypoints, 1 via | 9 | 6 | 5 | 4 |
-| max waypoints, 3 vias | 3 | 2 | 1 | 1 |
+| 0 vias | 20 | 20 | 20 | 20 (30 by the formula) |
+| 1 via | 20 | 13 | 11 | 9 |
+| 2 vias | 11 | 7 | 6 | 5 |
+| 3 vias | 8 | 5 | 4 | 3 |
+
+**Expected worst case.** The largest admitted options searches, such as
+5 waypoints and 3 vias at `maxChanges=4`, or 20 waypoints at
+`maxChanges=6`, should cost about twice the old worst case. That is
+roughly 4 s on a quiet host (20 waypoints at `maxChanges=4` was 1.9 s in
+the 2026-09-29 spec), and about 8 s with the one live re-plan `options`
+allows. The planning-slot semaphore (4 permits) still bounds concurrency.
 
 - The guard is a 400 before any database read. The message names the
   numbers and the ways out: fewer waypoints or vias, a lower
@@ -389,7 +409,9 @@ No code was copied. The `Distant-Signal-MCP` checkout was only read.
   comma-separated and in order. DS takes at most 3; keep the local engine
   for more.
 - `DS_TRIP_PLAN_MAX_CHANGES` can become 6.
-- `results=options` requests over the size guard (§4.4) get a 400
+- `results=options` requests over the size guard (§4.4; default bound
+  252, so e.g. up to 20 waypoints without vias at any `maxChanges`, and
+  8/5/3 waypoints with 3 vias at `maxChanges` 2/4/6) get a 400
   mentioning `too large a search`. Fall back to the local engine for
   those, as for any other DS failure.
 - A via at a station that is not a CIF timing point for the trains
