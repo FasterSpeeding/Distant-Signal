@@ -285,56 +285,81 @@ fn resolve_places<'a>(
     // The summary is the headline and names the disrupted place; the
     // description often adds ticket acceptance and diversion routes, so it
     // is read only when the summary names no place in scope.
-    let mut named = gazetteer.stations_in(&incident.summary, |crs| pool.contains(crs));
+    let mut named = gazetteer.places_in(&incident.summary, |crs| pool.contains(crs), true);
     if named.is_empty() {
-        named = gazetteer.stations_in(&incident.description, |crs| pool.contains(crs));
+        named = gazetteer.places_in(&incident.description, |crs| pool.contains(crs), false);
     }
     if named.is_empty() {
         return HashMap::new();
     }
-    let per_line: Vec<(&'a str, Vec<String>)> = in_scope
+    // Per line, the places (mentions) it holds. Counted by place, not by
+    // code: "London St Pancras" (two codes) or "Heathrow Airport" (three)
+    // is one place, so naming it alone is never a two-place section.
+    let per_line: Vec<(&'a str, Vec<usize>)> = in_scope
         .iter()
         .map(|line| {
-            let hits: Vec<String> = named
-                .iter()
-                .filter(|crs| line.has_station(crs))
-                .cloned()
+            let held: Vec<usize> = (0..named.len())
+                .filter(|&p| named[p].crs.iter().any(|crs| line.has_station(crs)))
                 .collect();
-            (line.id.as_str(), hits)
+            (line.id.as_str(), held)
         })
         .collect();
+    let distinct = |held: &[usize]| {
+        let mut places: Vec<&Vec<String>> = held.iter().map(|&p| &named[p].crs).collect();
+        places.sort();
+        places.dedup();
+        places.len()
+    };
     let best = per_line
         .iter()
-        .map(|(_, hits)| hits.len())
+        .map(|(_, held)| distinct(held))
         .max()
         .unwrap_or(0);
-    if best >= 2 {
-        return per_line
-            .into_iter()
-            .filter(|(_, hits)| hits.len() >= 2)
-            .collect();
-    }
-    // No line holds two of the places. A place on more than `HUB_LINES`
-    // lines in scope (a London terminus, say) is then dropped when a more
-    // local one was also named: "between Ore / Eastbourne and London
-    // Victoria" is about the Eastbourne lines, not every line into
-    // Victoria. A hub named alone still fans out to all its lines.
-    let lines_holding = |crs: &str| {
+    let lines_holding = |place: usize| {
         per_line
             .iter()
-            .filter(|(_, hits)| hits.iter().any(|h| h == crs))
+            .filter(|(_, held)| held.contains(&place))
             .count()
     };
-    let local: Vec<&String> = named
-        .iter()
-        .filter(|crs| (1..=HUB_LINES).contains(&lines_holding(crs)))
-        .collect();
-    let has_hub = named.iter().any(|crs| lines_holding(crs) > HUB_LINES);
-    per_line
-        .into_iter()
-        .filter(|(_, hits)| {
-            !hits.is_empty()
-                && (!has_hub || local.is_empty() || hits.iter().any(|h| local.contains(&h)))
+    let keep: Vec<(&'a str, Vec<usize>)> = if best >= 2 {
+        per_line
+            .into_iter()
+            .filter(|(_, held)| distinct(held) >= 2)
+            .collect()
+    } else {
+        // No line holds two of the places. A place on more than
+        // `HUB_LINES` lines in scope (a London terminus, say) is then
+        // dropped when a more local one was also named: "between Ore /
+        // Eastbourne and London Victoria" is about the Eastbourne lines,
+        // not every line into Victoria. A hub named alone still fans out
+        // to all its lines.
+        let local: Vec<usize> = (0..named.len())
+            .filter(|&p| (1..=HUB_LINES).contains(&lines_holding(p)))
+            .collect();
+        let has_hub = (0..named.len()).any(|p| lines_holding(p) > HUB_LINES);
+        per_line
+            .into_iter()
+            .filter(|(_, held)| {
+                !held.is_empty()
+                    && (!has_hub || local.is_empty() || held.iter().any(|p| local.contains(p)))
+            })
+            .collect()
+    };
+    keep.into_iter()
+        .map(|(id, held)| {
+            let line = in_scope
+                .iter()
+                .find(|line| line.id == id)
+                .expect("per_line ids come from in_scope");
+            let mut crs: Vec<String> = Vec::new();
+            for p in held {
+                for code in &named[p].crs {
+                    if line.has_station(code) && !crs.contains(code) {
+                        crs.push(code.clone());
+                    }
+                }
+            }
+            (id, crs)
         })
         .collect()
 }
@@ -12384,6 +12409,31 @@ mod tests {
         assert_eq!(ids(&found), ["merseyrail-wirral"]);
         let found = evidence("Disruption at Liverpool James Street", "", &["ME"]);
         assert_eq!(ids(&found), ["merseyrail-wirral"]);
+    }
+
+    #[test]
+    fn bare_london_is_each_lines_own_terminus_at_a_section_end() {
+        // 4582FCFA: "between Stevenage and London". Before 2026-10-06 (the
+        // fix), Stevenage alone resolved, a one-place hub.
+        let found = evidence(
+            "Disruption between Stevenage and London expected until 15:00",
+            "",
+            &["GN", "GC", "HT", "GR", "LD", "TL"],
+        );
+        let found_ids = ids(&found);
+        for id in [
+            "great-northern-kings-lynn",
+            "lner-ecml",
+            "thameslink-cambridge",
+        ] {
+            assert!(found_ids.contains(&id), "{id}: {found_ids:?}");
+        }
+        assert_no_operator_only(&found);
+        // Every place named is one place, however many codes it has: the
+        // Heathrow lines hold all three Heathrow stations, but "Heathrow
+        // Airport" alone is a hub, not a section.
+        let found = evidence("Disruption at Heathrow Airport", "", &["XR", "HX"]);
+        assert_eq!(ids(&found), ["elizabeth-heathrow", "heathrow-express"]);
     }
 
     #[test]
