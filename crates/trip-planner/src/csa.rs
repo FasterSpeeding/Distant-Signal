@@ -156,7 +156,12 @@ impl Scan<'_> {
     /// `NoInterchange` regardless of arrival -- direct translation of
     /// `csa.ts`'s own `Infinity` return, just as `Option::None` instead of
     /// a float sentinel.
-    fn ready_source_at(&self, tiploc: &str) -> Option<ReadySource> {
+    ///
+    /// A change onto or off a bus or ferry also owes
+    /// `interchange.modal_change` (see `schedule_query::ModalChangeBuffer`):
+    /// `boarding_uid`'s side here, and the arriving service's side read off
+    /// `arrived_via`.
+    fn ready_source_at(&self, tiploc: &str, boarding_uid: &str) -> Option<ReadySource> {
         // Normalize defensively at this module's own boundary, matching
         // `schedule_query::interchange`'s own "callers should still
         // normalize, but correctness must not depend on their remembering
@@ -178,11 +183,18 @@ impl Scan<'_> {
         let ChangeTime::Finite(change_time) = minimum_change_time(self.interchange, tiploc) else {
             return None;
         };
+        let change_time = change_time + self.interchange.modal_change.extra_for(boarding_uid);
+        let alighting_extra = |at: &str| match self.arrived_via.get(at) {
+            Some(ArrivalSource::Train(connection, _)) => {
+                self.interchange.modal_change.extra_for(&connection.uid)
+            }
+            _ => 0,
+        };
 
         let mut best: Option<ReadySource> = None;
         if let Some(&arrival) = self.earliest_arrival.get(tiploc) {
             best = Some(ReadySource {
-                time: arrival + change_time,
+                time: arrival + change_time + alighting_extra(tiploc),
                 from: tiploc.to_string(),
             });
         }
@@ -190,7 +202,7 @@ impl Scan<'_> {
             let Some(&sibling_arrival) = self.earliest_arrival.get(sibling) else {
                 continue;
             };
-            let candidate = sibling_arrival + change_time;
+            let candidate = sibling_arrival + change_time + alighting_extra(sibling);
             if best.as_ref().is_none_or(|b| candidate < b.time) {
                 best = Some(ReadySource {
                     time: candidate,
@@ -375,7 +387,8 @@ pub fn scan_connections_restricted(
             if !connection.can_board {
                 continue;
             }
-            let Some(source) = scan.ready_source_at(&connection.from_tiploc) else {
+            let Some(source) = scan.ready_source_at(&connection.from_tiploc, &connection.uid)
+            else {
                 continue;
             };
             if source.time > connection.departure_min {
@@ -489,6 +502,7 @@ mod tests {
 
     fn empty_interchange() -> InterchangeData {
         InterchangeData {
+            modal_change: Default::default(),
             change_time_by_tiploc: HashMap::new(),
             tiploc_to_crs: HashMap::new(),
             crs_to_tiplocs: HashMap::new(),

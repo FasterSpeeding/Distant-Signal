@@ -241,6 +241,7 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
     }
 
     Ok(InterchangeData {
+        modal_change: Default::default(),
         change_time_by_tiploc,
         tiploc_to_crs,
         crs_to_tiplocs,

@@ -83,7 +83,8 @@ pub use connections::{
     build_connections_with_passes,
 };
 pub use interchange::{
-    ChangeTime, FixedLink, InterchangeData, fixed_links_from, minimum_change_time, sibling_tiplocs,
+    ChangeTime, FixedLink, InterchangeData, ModalChangeBuffer, fixed_links_from,
+    minimum_change_time, sibling_tiplocs,
 };
 pub use parse::{ScheduleRecordParser, parse_schedule_records};
 pub use records::{

@@ -104,6 +104,9 @@ struct Reverse<'a> {
     origin: HashSet<String>,
     /// `targets[s]`: waypoint `s`'s TIPLOCs.
     targets: Vec<HashSet<String>>,
+    /// The destination's TIPLOCs: arriving there by bus or ferry is no
+    /// change, so it owes no buffer.
+    destinations: HashSet<String>,
     /// to-CRS -> every CRS with at least one fixed link into it.
     links_into: HashMap<&'a str, Vec<&'a str>>,
 }
@@ -131,6 +134,7 @@ impl<'a> Reverse<'a> {
             date: options.date,
             origin: set(options.from_tiplocs),
             targets: options.waypoints.iter().map(|w| set(w)).collect(),
+            destinations: set(options.to_tiplocs),
             links_into,
         }
     }
@@ -262,11 +266,28 @@ impl<'a> Reverse<'a> {
             ok_stages.clear();
             {
                 let labels = previous.unwrap_or(&*current);
+                // The mirror of the forward searches' bus and ferry buffer
+                // on the alighting side: owed unless this is the arrival.
+                // As going forward, none at the destination, nor at the
+                // waypoint the stage calls at (the forward searches advance
+                // through it without a change label).
+                let alighting_extra = |stage: usize| {
+                    let arriving = if stage + 1 == stages {
+                        self.destinations.contains(to)
+                    } else {
+                        self.targets[stage].contains(to)
+                    };
+                    if arriving {
+                        0
+                    } else {
+                        self.interchange.modal_change.extra_for(uid)
+                    }
+                };
                 for stage in 0..stages {
                     let alight = connection.can_alight
-                        && labels.latest_arrival[stage]
-                            .get(to)
-                            .is_some_and(|&latest| connection.arrival_min <= latest);
+                        && labels.latest_arrival[stage].get(to).is_some_and(|&latest| {
+                            connection.arrival_min + alighting_extra(stage) <= latest
+                        });
                     let stay = aboard_ok[stage].contains(uid);
                     let through = stage + 1 < stages
                         && self.targets[stage].contains(to)
@@ -301,6 +322,7 @@ impl<'a> Reverse<'a> {
                 ) else {
                     continue;
                 };
+                let change = change + self.interchange.modal_change.extra_for(uid);
                 let Some(ready_by) = connection.departure_min.checked_sub(change) else {
                     continue;
                 };
@@ -604,6 +626,7 @@ mod tests {
 
     fn interchange(change_times: &[(&str, i32)]) -> InterchangeData {
         InterchangeData {
+            modal_change: Default::default(),
             change_time_by_tiploc: change_times
                 .iter()
                 .map(|(t, m)| ((*t).to_string(), *m))

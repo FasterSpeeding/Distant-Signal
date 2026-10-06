@@ -94,6 +94,7 @@ fn network() -> (Vec<Connection>, InterchangeData) {
         (a.departure_min, &a.uid, &a.from_tiploc).cmp(&(b.departure_min, &b.uid, &b.from_tiploc))
     });
     let mut interchange = InterchangeData {
+        modal_change: Default::default(),
         change_time_by_tiploc: HashMap::new(),
         tiploc_to_crs: HashMap::new(),
         crs_to_tiplocs: HashMap::new(),

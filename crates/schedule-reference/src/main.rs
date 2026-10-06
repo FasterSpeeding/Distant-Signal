@@ -3797,6 +3797,7 @@ LTWVRMPTN 2211 22113     TF";
             to: &str,
         ) -> Option<trip_planner::Journey> {
             let interchange = schedule_query::InterchangeData {
+                modal_change: Default::default(),
                 change_time_by_tiploc: std::collections::HashMap::new(),
                 tiploc_to_crs: std::collections::HashMap::new(),
                 crs_to_tiplocs: std::collections::HashMap::new(),
