@@ -453,7 +453,7 @@ fn bench_max_changes_and_vias() {
                 let mut values: Vec<Duration> = rows.iter().map(|row| row[i].0).collect();
                 values.sort();
                 let found: usize = rows.iter().map(|row| usize::from(row[i].1 > 0)).sum();
-                format!("{:>7.0?} max {:>7.0?} {found}/3", values[1], values[2])
+                format!("{:>7.1?} max {:>7.1?} {found}/3", values[1], values[2])
             };
             println!(
                 "{waypoint_count:>3} wp {via_count:>2} via | {} | {} | {} | {} | {} | {}",

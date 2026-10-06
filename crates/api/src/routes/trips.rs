@@ -60,13 +60,17 @@ const MAX_AVOIDED: usize = 8;
 /// Three is what a ticket routing ("via X, Y and Z") needs in practice.
 const MAX_VIAS: usize = 3;
 
-/// Guard on an `options` search's size: states * rounds, i.e.
-/// `(waypoints + 1) * (vias + 1) * (maxChanges + 2)`, at most 126 -- what 20
-/// waypoints at `maxChanges=4` cost before the ceiling was raised to 6
-/// (2026-10-06). So `maxChanges=6` (8 rounds) allows up to 14 waypoints,
-/// `maxChanges=5` up to 17; with 3 vias, `maxChanges=2` allows 6 waypoints,
-/// 4 allows 4 and 6 allows 2. `fastest` (one CSA sweep, no rounds) is not
-/// limited beyond [`MAX_WAYPOINTS`] and [`MAX_VIAS`]. Measured cost:
+/// Guard on an `options` search's size, about states * rounds:
+/// `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)`, at most 126 --
+/// what 20 waypoints at `maxChanges=4` cost before the ceiling was raised
+/// to 6 (2026-10-06). A via counts double: its progress is reached all
+/// over the network (any train passing it), where a waypoint stage only
+/// fills in once the waypoint is reached, and measured, 4 waypoints and 3
+/// vias cost 2-3.5x what 20 waypoints alone do. So `maxChanges=6` (8
+/// rounds) allows up to 14 waypoints and `maxChanges=5` up to 17; with 3
+/// vias, `maxChanges=2` allows 3 waypoints, 4 allows 2 and 6 allows 1.
+/// `fastest` (one CSA sweep, no rounds) is not limited beyond
+/// [`MAX_WAYPOINTS`] and [`MAX_VIAS`]. Measured cost:
 /// docs/superpowers/specs/2026-10-06-trips-plan-via-and-max-changes-design.md.
 const MAX_OPTIONS_SEARCH_SIZE: usize = 126;
 
@@ -292,7 +296,8 @@ fn default_results() -> String {
 ///    sweeps at `maxChanges=6`, 6 at 4, 4 at the default of 2. Each sweep
 ///    carries one label set per (waypoint stage, via progress) state,
 ///    `(waypoints + 1) * (vias + 1)` of them, so the work is about states *
-///    rounds; the guard keeps that at or below what 20 waypoints at
+///    rounds (a via state weighing about two waypoint states); the guard
+///    keeps that at or below what 20 waypoints at
 ///    `maxChanges=4` (the most allowed before 2026-10-06) already cost.
 ///    (The whole-day read and graph build, which dominate memory, are
 ///    unchanged, and `fastest` mode's single CSA scan doesn't depend on
@@ -980,7 +985,7 @@ fn check_options_search_size(
         return Ok(());
     }
     let rounds = trip_planning_itinerary::max_rounds(max_changes) as usize;
-    let size = (waypoints + 1) * (vias + 1) * rounds;
+    let size = (waypoints + 1) * (2 * vias + 1) * rounds;
     if size <= MAX_OPTIONS_SEARCH_SIZE {
         return Ok(());
     }
@@ -988,7 +993,7 @@ fn check_options_search_size(
         StatusCode::BAD_REQUEST,
         format!(
             "results=options with {waypoints} waypoints, {vias} vias and maxChanges={max_changes} \
-             is too large a search ((waypoints + 1) * (vias + 1) * (maxChanges + 2) = {size}, \
+             is too large a search ((waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) = {size}, \
              at most {MAX_OPTIONS_SEARCH_SIZE}); use fewer waypoints or vias, a lower \
              maxChanges, or results=fastest"
         ),
@@ -1336,9 +1341,19 @@ mod tests {
         assert!(check_options_search_size("options", 20, 0, 4).is_ok());
         assert!(check_options_search_size("options", 14, 0, 6).is_ok());
         assert!(check_options_search_size("options", 17, 0, 5).is_ok());
-        assert!(check_options_search_size("options", 6, 3, 2).is_ok());
-        assert!(check_options_search_size("options", 2, 3, 6).is_ok());
-        for (waypoints, vias, max_changes) in [(15, 0, 6), (20, 0, 5), (7, 3, 2), (3, 3, 6)] {
+        assert!(check_options_search_size("options", 3, 3, 2).is_ok());
+        assert!(check_options_search_size("options", 2, 3, 4).is_ok());
+        assert!(check_options_search_size("options", 1, 3, 6).is_ok());
+        assert!(check_options_search_size("options", 0, 3, 6).is_ok());
+        assert!(check_options_search_size("options", 6, 1, 4).is_ok());
+        for (waypoints, vias, max_changes) in [
+            (15, 0, 6),
+            (20, 0, 5),
+            (4, 3, 2),
+            (3, 3, 4),
+            (2, 3, 6),
+            (7, 1, 4),
+        ] {
             let (status, message) =
                 check_options_search_size("options", waypoints, vias, max_changes).unwrap_err();
             assert_eq!(status, StatusCode::BAD_REQUEST);
