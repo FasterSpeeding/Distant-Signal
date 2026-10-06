@@ -274,13 +274,18 @@ pub(crate) async fn load_custom_lines(pool: &PgPool) -> Result<Vec<common::Custo
 }
 
 /// Every station's name (`stations`, the station reference feed), for
-/// resolving "No trains between X and Y" against a line
-/// (`no_trains::closed_section`). About 2,600 short rows.
-pub(crate) async fn load_station_names(pool: &PgPool) -> Result<crate::no_trains::StationNames> {
+/// resolving the places an incident names (`common::station_resolver`, the
+/// matcher's station evidence since 2026-10-06) and "No trains between X
+/// and Y" against a line (`no_trains::closed_section`). About 2,600 short
+/// rows. The api's `load_station_gazetteer` runs the same query at ingest,
+/// so `incidents.affected_lines` and the live statuses agree.
+pub(crate) async fn load_station_names(
+    pool: &PgPool,
+) -> Result<crate::no_trains::StationGazetteer> {
     let rows: Vec<(String, String)> = sqlx::query_as("SELECT crs::text, name FROM stations")
         .fetch_all(pool)
         .await?;
-    Ok(crate::no_trains::StationNames::new(rows))
+    Ok(crate::no_trains::StationGazetteer::new(rows))
 }
 
 /// Every `full_coverage_line_stats` row with `availability = 'available'`
@@ -2128,7 +2133,7 @@ mod tests {
             &samples,
             &registry,
             &defaults,
-            &crate::no_trains::StationNames::default(),
+            &crate::no_trains::StationGazetteer::default(),
         );
         let report1 = reports1.get(LINE_ID).expect("line should have a report");
         assert_eq!(
@@ -2160,7 +2165,7 @@ mod tests {
             &samples,
             &registry,
             &defaults,
-            &crate::no_trains::StationNames::default(),
+            &crate::no_trains::StationGazetteer::default(),
         );
         let report2 = reports2.get(LINE_ID).expect("line should have a report");
         let fresh_from_date_cycle_2 = serde_json::to_value(report2.statuses[0].validity.from_date)

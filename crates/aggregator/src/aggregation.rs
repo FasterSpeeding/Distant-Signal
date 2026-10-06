@@ -26,7 +26,7 @@ use serde::Deserialize;
 use common::matcher::{Match, MatchScope, lines_affected_by};
 use common::segments::SegmentRegistry;
 
-use crate::no_trains::{StationNames, closed_section};
+use crate::no_trains::{StationGazetteer, closed_section};
 use crate::queries::LoadedIncident;
 
 /// Merges DB-stored custom lines into the static catalogue, converting
@@ -57,7 +57,7 @@ pub(crate) fn aggregate(
     samples: &HashMap<String, StationSample>,
     registry: &SegmentRegistry,
     defaults: &Defaults,
-    station_names: &StationNames,
+    station_names: &StationGazetteer,
 ) -> HashMap<String, LineStatusReport> {
     let mut reports: HashMap<String, LineStatusReport> = lines
         .values()
@@ -81,7 +81,7 @@ pub(crate) fn aggregate(
     // if the incident didn't exist.
     let now = Utc::now();
     for loaded in incidents.iter().filter(|loaded| is_active(loaded, now)) {
-        for m in lines_affected_by(&loaded.message, lines, registry) {
+        for m in lines_affected_by(&loaded.message, lines, registry, station_names) {
             let status = status_from_incident(&m, loaded, now, station_names);
             reports.get_mut(&m.line.id).unwrap().statuses.push(status);
         }
@@ -151,7 +151,7 @@ fn status_from_incident(
     m: &Match<'_>,
     loaded: &LoadedIncident,
     now: DateTime<Utc>,
-    station_names: &StationNames,
+    station_names: &StationGazetteer,
 ) -> LineStatus {
     let incident = &loaded.message;
     // "No trains between X and Y" with both ends on this line (2026-10-02,
@@ -170,18 +170,20 @@ fn status_from_incident(
         base_severity = section.severity;
     }
     let (extracted_severity, extraction_annotation) = apply_extraction(base_severity, loaded, now);
-    let severity = match (&section, m.scope) {
-        // The weak scopes are capped at the section's own severity rather
-        // than at Minor / Severe Delays: a short section of a long line
-        // stays Reduced Service even if the text also says "suspended".
-        (Some(section), MatchScope::OperatorOnly | MatchScope::KeywordOnly) => {
-            demote_to_floor(extracted_severity, section.severity)
-        }
-        _ => demote_for_scope(extracted_severity, m.scope),
+    let severity = match &section {
+        // Capped at the section's own severity rather than at the scope's
+        // cap: a short section of a long line stays Reduced Service even if
+        // the text also says "suspended". Every scope since 2026-10-06: the
+        // section's ends now usually resolve to station evidence for this
+        // line (`common::station_resolver`), which is no reason to show the
+        // whole line at the section's text severity.
+        Some(section) => demote_to_floor(extracted_severity, section.severity),
+        None => demote_for_scope(extracted_severity, m.scope),
     };
 
     let (affected_stations, affected_routes) = match &section {
-        Some(section) if m.evidence.stations.is_empty() => (
+        // The whole closed section, not just the two ends the text named.
+        Some(section) => (
             section.stations.clone(),
             vec![AffectedRoute {
                 from_crs: section.from_crs.clone(),
@@ -197,7 +199,9 @@ fn status_from_incident(
 
     let mut reason = incident.summary.clone();
     match (m.scope, &section) {
-        (MatchScope::SharedSegment, _) => {
+        // A closed section names its own extent ("part of the line" below);
+        // the lines matched by its two ends are the ones it affects.
+        (MatchScope::SharedSegment, None) => {
             reason.push_str(" (shared trunk — also affects other lines)");
         }
         // Resolved to this line's stations: no longer just operator-wide.
@@ -1694,7 +1698,7 @@ mod tests {
             &HashMap::new(),
             &registry,
             &defaults,
-            &StationNames::default(),
+            &StationGazetteer::default(),
         )
     }
 
@@ -1769,8 +1773,8 @@ mod tests {
 
     // --- "No trains between X and Y" (2026-10-02) ---
 
-    fn station_names() -> StationNames {
-        StationNames::new([
+    fn station_names() -> StationGazetteer {
+        StationGazetteer::new([
             ("PAR", "Par"),
             ("NQY", "Newquay"),
             ("LYP", "Lymington Pier"),
@@ -1785,7 +1789,7 @@ mod tests {
     fn aggregate_with_names(
         lines: &HashMap<String, LineDefinition>,
         incidents: &[IncidentMessage],
-        names: &StationNames,
+        names: &StationGazetteer,
     ) -> HashMap<String, LineStatusReport> {
         let registry = SegmentRegistry::new(lines);
         let loaded: Vec<LoadedIncident> = incidents
@@ -1807,6 +1811,13 @@ mod tests {
         )
     }
 
+    fn has_kb_status(reports: &HashMap<String, LineStatusReport>, line: &str) -> bool {
+        reports[line]
+            .statuses
+            .iter()
+            .any(|s| s.data_quality == DataQuality::Knowledgebase)
+    }
+
     fn kb_status<'a>(reports: &'a HashMap<String, LineStatusReport>, line: &str) -> &'a LineStatus {
         reports[line]
             .statuses
@@ -1815,9 +1826,11 @@ mod tests {
             .unwrap_or_else(|| panic!("{line} has no incident status"))
     }
 
-    /// The Atlantic Coast case: an operator-wide report that closes the
-    /// whole branch is Part Suspended on that line, scoped to its stations;
-    /// GWR's other lines (no Par AND Newquay) stay Minor Delays.
+    /// The Atlantic Coast case: a report that closes the whole branch is
+    /// Part Suspended on that line, scoped to its stations. Since
+    /// 2026-10-06 the two named places are also the incident's line
+    /// evidence, so GWR's other lines (no Par AND Newquay) no longer get an
+    /// operator-wide Minor Delays status at all.
     #[test]
     fn no_trains_between_a_branchs_ends_is_part_suspended() {
         let lines = load_all_lines();
@@ -1846,9 +1859,8 @@ mod tests {
             ("PAR", "NQY")
         );
         // Par is on the Cornish main line too, Newquay is not.
-        let other = kb_status(&reports, "gwr-cornish-main-line");
-        assert_eq!(other.severity, Severity::MinorDelays);
-        assert!(other.reason.ends_with("(operator-wide report)"));
+        assert!(!has_kb_status(&reports, "gwr-cornish-main-line"));
+        assert!(!has_kb_status(&reports, "gwr-main-line"));
 
         let inc = incident(
             "NT-2",
@@ -1867,7 +1879,8 @@ mod tests {
     /// Virginia Water to Weybridge is 4 of the Chertsey loop's 23
     /// stations: Reduced Service, naming the section, not the whole line at
     /// the Severe tier. Lines with only one end (Hounslow loop, Waterloo -
-    /// Reading) are unchanged.
+    /// Reading) are not affected (2026-10-06: no operator-wide fallback once
+    /// a place resolves).
     #[test]
     fn a_short_section_of_a_busy_line_is_reduced_service() {
         let lines = load_all_lines();
@@ -1894,14 +1907,10 @@ mod tests {
             "swr-waterloo-reading",
             "swr-south-west-main",
         ] {
-            assert_eq!(
-                kb_status(&reports, line_id).severity,
-                Severity::MinorDelays,
-                "{line_id}"
-            );
+            assert!(!has_kb_status(&reports, line_id), "{line_id}");
         }
         // "suspended" in the text does not lift a short section past its
-        // own severity under a weak match.
+        // own severity, whatever the match's scope.
         let inc = incident(
             "NT-4",
             "No trains between Virginia Water and Weybridge: services suspended",
@@ -1919,7 +1928,7 @@ mod tests {
     #[test]
     fn unresolved_cleared_planned_or_nameless_no_trains_reports_are_unchanged() {
         let lines = load_all_lines();
-        let unchanged = |summary: &str, planned: bool, names: &StationNames| {
+        let unchanged = |summary: &str, planned: bool, names: &StationGazetteer| {
             let mut inc = incident("NT-5", summary, "", &["GW"], &[]);
             inc.is_planned = planned;
             let reports = aggregate_with_names(&lines, &[inc], names);
@@ -1929,11 +1938,22 @@ mod tests {
                 .find(|s| s.disruption.is_some())
                 .map(|s| (s.severity, s.reason.clone()))
         };
-        // Looe is not a known name here; Liskeard is not on the line.
+        // Looe is not a known name here; Liskeard is not on the line, but
+        // it resolves to the lines it is on, so the Atlantic Coast line is
+        // not touched at all (2026-10-06).
+        assert_eq!(
+            unchanged(
+                "No trains between Liskeard and Looe",
+                false,
+                &station_names(),
+            ),
+            None
+        );
+        // With no station names at all, the operator-wide fallback.
         let (sev, reason) = unchanged(
             "No trains between Liskeard and Looe",
             false,
-            &station_names(),
+            &StationGazetteer::default(),
         )
         .unwrap();
         assert_eq!(sev, Severity::MinorDelays);
@@ -1948,7 +1968,7 @@ mod tests {
         let (sev, _) = unchanged(
             "No trains between Par and Newquay",
             false,
-            &StationNames::default(),
+            &StationGazetteer::default(),
         )
         .unwrap();
         assert_eq!(sev, Severity::MinorDelays, "no station names loaded");
@@ -2968,7 +2988,7 @@ mod tests {
             &samples,
             &registry,
             &defaults,
-            &StationNames::default(),
+            &StationGazetteer::default(),
         );
         let alton = &reports["swr-alton"];
         assert_eq!(
@@ -3046,7 +3066,7 @@ mod tests {
             &samples,
             &registry,
             &defaults,
-            &StationNames::default(),
+            &StationGazetteer::default(),
         );
         let alton = &reports["swr-alton"];
         let planned = alton
@@ -3085,7 +3105,7 @@ mod tests {
             &samples,
             &registry,
             &Defaults::default(),
-            &StationNames::default(),
+            &StationGazetteer::default(),
         );
         let alton = &reports["swr-alton"];
         assert_eq!(alton.statuses.len(), 1, "{:?}", alton.statuses);
@@ -3160,7 +3180,7 @@ mod tests {
             &samples,
             &registry,
             &defaults,
-            &StationNames::default(),
+            &StationGazetteer::default(),
         );
         assert_eq!(
             reports["swr-alton"].worst_severity(),
@@ -3420,7 +3440,7 @@ mod tests {
             &HashMap::new(),
             &registry,
             &defaults,
-            &StationNames::default(),
+            &StationGazetteer::default(),
         );
         for line_id in ["swr-south-west-main", "swr-portsmouth-direct", "swr-alton"] {
             assert_eq!(
@@ -3995,7 +4015,7 @@ mod tests {
             &HashMap::new(),
             &registry,
             &defaults,
-            &StationNames::default(),
+            &StationGazetteer::default(),
         );
         assert_eq!(
             reports["swr-alton"].worst_severity(),
@@ -4530,7 +4550,7 @@ mod tests {
             },
         };
 
-        let status = status_from_incident(&m, &loaded, now, &StationNames::default());
+        let status = status_from_incident(&m, &loaded, now, &StationGazetteer::default());
 
         assert_eq!(
             status.disruption.unwrap().impact_type.as_deref(),

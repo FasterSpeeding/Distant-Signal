@@ -165,6 +165,18 @@ pub async fn upsert_incidents(
     Ok(outcome.upserted)
 }
 
+/// Every station's name (the `stations` reference table), for resolving
+/// the places an incident names (`common::station_resolver`). The same
+/// query as the aggregator's `load_station_names`.
+pub async fn load_station_gazetteer(
+    pool: &PgPool,
+) -> Result<common::station_resolver::StationGazetteer> {
+    let rows: Vec<(String, String)> = sqlx::query_as("SELECT crs::text, name FROM stations")
+        .fetch_all(pool)
+        .await?;
+    Ok(common::station_resolver::StationGazetteer::new(rows))
+}
+
 /// What [`upsert_incident_snapshot`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IncidentSnapshotOutcome {
@@ -202,9 +214,21 @@ pub async fn upsert_incident_snapshot(
     // locks (see the doc comment above), so pure CPU work that needs no
     // database at all has no business running inside one -- even work this
     // cheap (a substring scan per catalogue line).
+    //
+    // The station names resolve the places each incident names (2026-10-06,
+    // `common::station_resolver`), exactly as the aggregator does every
+    // cycle, so `affected_lines` and the live statuses agree. Read per
+    // snapshot (about 2,600 short rows every 5 minutes) rather than cached,
+    // so a reference-data refresh applies at once. Fail-open: without them
+    // the matcher falls back to its pre-2026-10-06 answer for this poll,
+    // and the next poll recomputes every live row anyway.
+    let gazetteer = load_station_gazetteer(pool).await.unwrap_or_else(|err| {
+        tracing::warn!(error = ?err, "failed to load station names; incident places are not resolved this poll");
+        common::station_resolver::StationGazetteer::default()
+    });
     let affected_lines: Vec<Vec<String>> = incidents
         .iter()
-        .map(|incident| line_matcher.affected_line_ids(incident))
+        .map(|incident| line_matcher.affected_line_ids(incident, &gazetteer))
         .collect();
 
     for (chunk_index, chunk) in incidents.chunks(UPSERT_CHUNK_SIZE).enumerate() {

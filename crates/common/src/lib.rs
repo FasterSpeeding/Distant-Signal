@@ -34,6 +34,7 @@ pub mod secret;
 pub mod segments;
 pub mod service_args;
 pub mod startup;
+pub mod station_resolver;
 pub mod test_paths;
 pub mod text_hash;
 pub mod trust_timestamp;

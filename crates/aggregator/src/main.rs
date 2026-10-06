@@ -476,14 +476,16 @@ async fn run_cycle(
     // the same live-only view. See `aggregation::drop_stale_samples`.
     let stale_samples_dropped = aggregation::drop_stale_samples(&mut samples, chrono::Utc::now());
 
-    // Station names resolve "No trains between X and Y" against each
-    // matched line (`no_trains`). Fail-open: without them such incidents
-    // are classified exactly as before.
+    // Station names resolve the places each incident names into line
+    // evidence (`common::station_resolver`), and "No trains between X and
+    // Y" against each matched line (`no_trains`). Fail-open: without them
+    // every incident is matched and classified as before 2026-10-06
+    // (keyword, else operator-wide).
     let station_names = queries::load_station_names(pool)
         .await
         .unwrap_or_else(|err| {
             tracing::warn!(error = ?err, "failed to load station names; \"no trains between\" incidents are not resolved this cycle");
-            no_trains::StationNames::default()
+            no_trains::StationGazetteer::default()
         });
     let mut reports = aggregation::aggregate(
         &lines,
