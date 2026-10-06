@@ -891,3 +891,77 @@ describe('TrainJourney suppressTrainUidHeading', () => {
     expect(screen.getByText('Train C21373')).toBeInTheDocument();
   });
 });
+
+describe('TrainJourney: buses and ferries (timetable-only)', () => {
+  const stops = [
+    journeyStop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin', scheduledDeparture: '2026-08-28T08:00:00Z' }),
+    journeyStop({ crs: 'WOK', name: 'Woking', kind: 'Terminate', scheduledArrival: '2026-08-28T08:40:00Z' }),
+  ];
+
+  it.each([
+    ['replacementBus', 'Rail replacement bus', 'Bus C30818'],
+    ['bus', 'Bus service', 'Bus C30818'],
+    ['ferry', 'Ferry', 'Ferry C30818'],
+  ] as const)('%s: labels the mode and says it is timetabled only', (mode, label, heading) => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'C30818',
+          serviceMode: mode,
+          liveTracking: false,
+          journeyStops: stops,
+        })}
+      />,
+    );
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getByText(heading)).toBeInTheDocument();
+    expect(screen.getByText(/Timetabled only — buses and ferries aren't tracked live/)).toBeInTheDocument();
+  });
+
+  it.each(['pending', 'schedule_matched', 'resolved'] as const)(
+    '%s: no waiting states and no live progress, but the timetable stays',
+    (resolutionStatus) => {
+      renderWithMantine(
+        <TrainJourney
+          state={baseState({
+            resolutionStatus,
+            trainUid: 'C30818',
+            status: resolutionStatus === 'resolved' ? 'awaiting_activation' : null,
+            serviceMode: 'bus',
+            liveTracking: false,
+            journeyStops: stops,
+          })}
+        />,
+      );
+      expect(screen.queryByText('Waiting to hear from Network Rail')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Waiting for Network Rail/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/waiting for its first movement report/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('No movement data reported yet.')).not.toBeInTheDocument();
+      expect(screen.queryByRole('group', { name: /Journey progress/ })).not.toBeInTheDocument();
+      expect(screen.getAllByText(/Woking/).length).toBeGreaterThan(0);
+    },
+  );
+
+  it('suppressTrainUidHeading hides the "Bus {uid}" line, keeping the badge', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'C30818',
+          serviceMode: 'bus',
+          liveTracking: false,
+        })}
+        suppressTrainUidHeading
+      />,
+    );
+    expect(screen.queryByText('Bus C30818')).not.toBeInTheDocument();
+    expect(screen.getByText('Bus service')).toBeInTheDocument();
+  });
+
+  it('a train (or an older backend with no serviceMode) keeps the live states', () => {
+    renderWithMantine(<TrainJourney state={baseState({ serviceMode: 'train', liveTracking: true })} />);
+    expect(screen.getByText('Waiting to hear from Network Rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('timetable-only')).not.toBeInTheDocument();
+  });
+});

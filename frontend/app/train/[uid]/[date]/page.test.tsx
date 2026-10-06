@@ -635,3 +635,52 @@ describe('header and timetable departure times', () => {
     expect(headerTime).toBe('19:32');
   });
 });
+
+describe('TrackedTrainByUidPage: buses and ferries', () => {
+  // The schedule-only view of an untracked bus: no shared row
+  // (`trainsId: 0`), no live fields.
+  const bus = (serviceMode: 'replacementBus' | 'bus' | 'ferry') =>
+    publicTrainState({
+      trainsId: 0,
+      trainUid: 'C30818',
+      trainId: null,
+      status: null,
+      lastReportedLocation: null,
+      lastEventType: null,
+      delayMinutes: null,
+      nextCallingPoint: null,
+      serviceMode,
+      liveTracking: false,
+    });
+
+  it.each([
+    ['replacementBus', 'Rail replacement bus C30818', 'Track this bus'],
+    ['bus', 'Bus service C30818', 'Track this bus'],
+    ['ferry', 'Ferry C30818', 'Track this ferry'],
+  ] as const)('%s: the header uses the mode label and the page says timetabled only', async (mode, heading, button) => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(bus(mode));
+    await renderPage('C30818');
+    expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument();
+    expect(screen.getByText(/Timetabled only — buses and ferries aren't tracked live/)).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: button })).toBeInTheDocument();
+    expect(screen.getByText(/there are no live alerts for buses and ferries/)).toBeInTheDocument();
+  });
+
+  it('a train keeps the "Train {uid}" header', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({ serviceMode: 'train', liveTracking: true }),
+    );
+    await renderPage();
+    expect(screen.getByRole('heading', { level: 1, name: 'Train W12345' })).toBeInTheDocument();
+  });
+
+  it('the summary and metadata say a bus is timetabled only', async () => {
+    const state = toJourneyState(bus('bus'));
+    expect(state.serviceMode).toBe('bus');
+    expect(trainStatusSummary(state)).toBe("Bus service: Timetabled only — buses and ferries aren't tracked live.");
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(bus('ferry'));
+    const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'C30818', date: '2026-08-31' }) });
+    expect(metadata.description).toBe("Ferry: Timetabled only — buses and ferries aren't tracked live.");
+  });
+});

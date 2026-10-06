@@ -5,6 +5,8 @@ import { JourneyTimeline, isGenuineCallingPoint, type JourneyEndpointNames } fro
 import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { RouteText } from './RouteArrow';
+import { ServiceModeBadge } from './ServiceModeBadge';
+import { isTimetableOnly, serviceNoun, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
 import type { TrainJourneyState } from '@/lib/types';
 
 /** Renders one train's journey through every state the backend can
@@ -81,6 +83,24 @@ export function TrainJourney({
   // it, never turn it back into `null`.
   const visibleJourneyStops = state.journeyStops?.filter(isGenuineCallingPoint) ?? null;
 
+  // A bus or ferry is never reported live: no waiting/pending states, no
+  // live summary or progress bar -- only what it is and its timetable.
+  if (isTimetableOnly(state)) {
+    return (
+      <Stack gap="sm">
+        <TimetableOnlyMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
+        {visibleJourneyStops && (
+          <JourneyTimeline
+            stops={visibleJourneyStops}
+            endpointNames={endpointNames}
+            skippedCrs={skippedCrs}
+            legDestinationCrs={legDestinationCrs}
+          />
+        )}
+      </Stack>
+    );
+  }
+
   return (
     <Stack gap="sm">
       <StatusMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
@@ -104,6 +124,36 @@ export function TrainJourney({
           legDestinationCrs={legDestinationCrs}
         />
       )}
+    </Stack>
+  );
+}
+
+/** The status block for a bus or ferry: its mode badge, its route, and
+ * that it is timetabled only -- in place of every live-tracking state
+ * ("Waiting to hear from Network Rail", "waiting for its first movement
+ * report", ...), none of which can ever change for a service TRUST never
+ * reports. */
+function TimetableOnlyMessage({
+  state,
+  suppressTrainUidHeading,
+}: {
+  state: TrainJourneyState;
+  suppressTrainUidHeading: boolean;
+}) {
+  return (
+    <Stack gap="sm" data-testid="timetable-only">
+      <Group gap="xs">
+        <ServiceModeBadge mode={state.serviceMode} />
+        {!suppressTrainUidHeading && (
+          <Text fw={500}>
+            {serviceNoun(state.serviceMode)} {state.trainUid}
+          </Text>
+        )}
+      </Group>
+      <Text size="sm" c="dimmed">
+        <RouteText>{trackedTrainDisplayName(state)}</RouteText>
+      </Text>
+      <Text size="sm">{TIMETABLE_ONLY_MESSAGE}. These are the scheduled times.</Text>
     </Stack>
   );
 }

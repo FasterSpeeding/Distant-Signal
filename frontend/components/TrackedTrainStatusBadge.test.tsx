@@ -60,3 +60,22 @@ describe('TrackedTrainStatusBadge', () => {
     expect(container.querySelectorAll('.mantine-Badge-root')).toHaveLength(0);
   });
 });
+
+describe('TrackedTrainStatusBadge: buses and ferries', () => {
+  it('a tracked bus shows its mode and "Timetabled only", not a stuck match status', () => {
+    renderWithMantine(
+      <TrackedTrainStatusBadge
+        train={{
+          resolutionStatus: 'schedule_matched',
+          status: null,
+          delayMinutes: null,
+          serviceMode: 'replacementBus',
+          liveTracking: false,
+        }}
+      />,
+    );
+    expect(screen.getByText('Rail replacement bus')).toBeInTheDocument();
+    expect(screen.getByText('Timetabled only')).toBeInTheDocument();
+    expect(screen.queryByText('Matched to schedule')).not.toBeInTheDocument();
+  });
+});

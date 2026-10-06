@@ -5,7 +5,10 @@ import { Accordion, AccordionControl, AccordionItem, AccordionPanel, Alert, Grou
 import { nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
 import { RouteArrow } from './RouteArrow';
+import { ServiceModeBadge } from './ServiceModeBadge';
 import { TextLink } from './TextLink';
+import { isTimetableOnly } from '@/lib/serviceMode';
+import type { ServiceModeFields } from '@/lib/types';
 
 /** Wire shape of `GET /public/trains/search`
  * (`crates/api/src/render.rs::calling_point_departure_json`), reused
@@ -16,7 +19,7 @@ import { TextLink } from './TextLink';
  * `date`, so `destinationArrival`/`destinationArrivalDayOffset` are kept
  * for shape-fidelity with the wire response but unused here, same as
  * `TrainSearchForm.tsx`'s own posture for the latter field. */
-interface TrainSearchRow {
+interface TrainSearchRow extends ServiceModeFields {
   uid: string;
   scheduled: string;
   /** The public (timetable) departure, shown in place of `scheduled` (the
@@ -223,11 +226,16 @@ export function StationTimetable({ crs }: { crs: string }) {
       <Stack gap="xs">
         {results.rows.map((row) => (
           <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
-            <Text size="sm">
-              {row.publicDeparture ?? row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs}{' '}
-              <RouteArrow /> {row.destinationCrs ?? '?'}
-            </Text>
-            <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>View live status</TextLink>
+            <Group gap="xs" wrap="wrap">
+              <Text size="sm">
+                {row.publicDeparture ?? row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs}{' '}
+                <RouteArrow /> {row.destinationCrs ?? '?'}
+              </Text>
+              <ServiceModeBadge mode={row.serviceMode} />
+            </Group>
+            <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
+              {isTimetableOnly(row) ? 'View timetable' : 'View live status'}
+            </TextLink>
           </Group>
         ))}
         <LoadMoreControl

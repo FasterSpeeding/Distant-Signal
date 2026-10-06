@@ -5,6 +5,8 @@ import { routeLabel, spokenRoute, UNKNOWN_STATION_LABEL } from '@/lib/stationLab
 import { RouteText } from '@/components/RouteArrow';
 import { TextLink } from '@/components/TextLink';
 import { StatusRow } from '@/components/StatusRow';
+import { ServiceModeBadge } from '@/components/ServiceModeBadge';
+import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import { LastUpdated } from '@/components/LastUpdated';
 import { formatDate, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 
@@ -98,14 +100,30 @@ function TrainRow({ train, date }: { train: LineTrainEntry; date: string }) {
   const live = train.liveStatus;
   const scheduledTime = firstScheduledTime(train).slice(0, 5) || '?';
   const isCancelled = live?.status === 'cancelled';
-  const routeText = live ? liveRowRouteLabel(train) : 'Scheduled — not live yet';
+  // A bus or ferry never gets a live record, so its row names its route
+  // from the schedule instead of "not live yet" -- it never will be.
+  const timetableOnly = isTimetableOnly(train);
+  const scheduleRoute = routeLabel(
+    train.scheduleOriginCrs,
+    train.scheduleOriginName,
+    train.scheduleDestinationCrs,
+    train.scheduleDestinationName,
+  );
+  const routeText = live
+    ? liveRowRouteLabel(train)
+    : timetableOnly
+      ? scheduleRoute === UNKNOWN_STATION_LABEL
+        ? `${serviceNoun(train.serviceMode)} ${train.uid}`
+        : scheduleRoute
+      : 'Scheduled — not live yet';
+  const linkText = timetableOnly ? 'View timetable' : 'View live status';
   return (
     <StatusRow
       title={
         <Text size="sm" style={{ minWidth: 0 }}>
           {scheduledTime}
           {' · '}
-          {live ? (
+          {live || timetableOnly ? (
             <RouteText>{routeText}</RouteText>
           ) : (
             <Text span c="dimmed">
@@ -130,14 +148,20 @@ function TrainRow({ train, date }: { train: LineTrainEntry; date: string }) {
               </Text>
             )
           )}
+          {timetableOnly && (
+            <>
+              {' '}
+              <ServiceModeBadge mode={train.serviceMode} />
+            </>
+          )}
         </Text>
       }
       trailing={
         <TextLink
           href={`/train/${encodeURIComponent(train.uid)}/${date}`}
-          ariaLabel={`View live status for the ${scheduledTime} · ${spokenRoute(routeText)}`}
+          ariaLabel={`${linkText} for the ${scheduledTime} · ${spokenRoute(routeText)}`}
         >
-          View live status
+          {linkText}
         </TextLink>
       }
     />

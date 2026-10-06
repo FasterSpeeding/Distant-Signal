@@ -147,3 +147,25 @@ describe('ItineraryOption', () => {
     expect(screen.getByText(byVisibleText('08:00 EUS → MKC 08:50'))).toBeInTheDocument();
   });
 });
+
+describe('ItineraryOption: bus and ferry legs', () => {
+  it('labels a bus and a ferry leg, and leaves a train leg unlabelled', () => {
+    const [trainLeg] = trainItinerary.legs;
+    if (!trainLeg || trainLeg.kind !== 'train') throw new Error('fixture');
+    const itinerary: TripPlanItinerary = {
+      legs: [
+        { ...trainLeg, serviceMode: 'train', liveTracking: true },
+        { ...trainLeg, trainUid: 'C30818', serviceMode: 'replacementBus', liveTracking: false },
+        { ...trainLeg, trainUid: 'S00001', serviceMode: 'ferry', liveTracking: false },
+      ],
+      changeCount: 2,
+      totalDurationMinutes: 50,
+    };
+    renderWithMantine(<ItineraryOption itinerary={itinerary} selected={false} onSelect={vi.fn()} />);
+    expect(screen.getByText('Rail replacement bus')).toBeInTheDocument();
+    expect(screen.getByText('Ferry')).toBeInTheDocument();
+    expect(screen.queryByText('Bus service')).not.toBeInTheDocument();
+    // A bus/ferry leg is still a selectable, trackable leg.
+    expect(screen.getByRole('radio')).not.toBeDisabled();
+  });
+});

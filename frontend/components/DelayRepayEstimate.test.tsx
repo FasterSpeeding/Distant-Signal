@@ -147,3 +147,25 @@ describe('DelayRepayEstimate', () => {
     expect(screen.getByText(/may differ from the operator.s own records/)).toBeInTheDocument();
   });
 });
+
+describe('DelayRepayEstimate: bus and ferry legs', () => {
+  it('explains a bus leg cannot be measured, and still links to the claim', () => {
+    renderWithMantine(
+      <DelayRepayEstimate
+        response={response({
+          serviceMode: 'replacementBus',
+          liveTracking: false,
+          unmeasurableReason: "Buses and ferries aren't tracked live, so we can't measure a delay on this leg.",
+        })}
+      />,
+    );
+    expect(screen.getByText(/Rail replacement bus: Buses and ferries aren't tracked live/)).toBeInTheDocument();
+    expect(screen.queryByText(/No delay data recorded yet/)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /See how to claim from the operator/ })).toBeInTheDocument();
+  });
+
+  it('falls back to its own wording for a ferry when the backend sends no reason', () => {
+    renderWithMantine(<DelayRepayEstimate response={response({ serviceMode: 'ferry', liveTracking: false })} />);
+    expect(screen.getByText(/Ferry: buses and ferries aren't tracked live/)).toBeInTheDocument();
+  });
+});

@@ -1,4 +1,7 @@
 import { Badge, Group } from '@mantine/core';
+import { ServiceModeBadge } from './ServiceModeBadge';
+import { isTimetableOnly } from '@/lib/serviceMode';
+import type { ServiceModeFields } from '@/lib/types';
 
 // Short, human badge words -- the single copy every page that renders a
 // tracked train's status badge shares. Previously duplicated verbatim
@@ -29,8 +32,21 @@ const STATUS_LABELS: Record<string, string> = {
 export function TrackedTrainStatusBadge({
   train,
 }: {
-  train: { resolutionStatus: string; status: string | null; delayMinutes: number | null };
+  train: { resolutionStatus: string; status: string | null; delayMinutes: number | null } & ServiceModeFields;
 }) {
+  // A tracked bus or ferry never moves past "matched to schedule": say what
+  // it is and that it is timetabled only, instead of a status that reads
+  // as stuck.
+  if (isTimetableOnly(train)) {
+    return (
+      <Group gap={6} wrap="nowrap">
+        <ServiceModeBadge mode={train.serviceMode} />
+        <Badge color="gray" variant="light" tt="none">
+          Timetabled only
+        </Badge>
+      </Group>
+    );
+  }
   // pending/unresolved show the resolution status itself -- no journey
   // status exists yet for either. Once resolved, the journey status plus a
   // delay badge takes over. No "active only" filter and no attempt to

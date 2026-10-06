@@ -261,3 +261,40 @@ describe('LineTrainsResults', () => {
     expect(screen.getByText(/1 earlier train today/)).toBeInTheDocument();
   });
 });
+
+describe('LineTrainsResults: buses and ferries', () => {
+  it('shows a bus with its badge, its schedule route and a "View timetable" link', async () => {
+    vi.mocked(api.getLineTrains).mockResolvedValue([
+      entry({
+        uid: 'C30818',
+        serviceMode: 'bus',
+        liveTracking: false,
+        scheduleOriginCrs: 'WAT',
+        scheduleOriginName: 'London Waterloo',
+        scheduleDestinationCrs: 'WOK',
+        scheduleDestinationName: 'Woking',
+      }),
+      entry({ uid: 'C12345', serviceMode: 'train', liveTracking: true }),
+    ]);
+    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
+    expect(screen.getByText('Bus service')).toBeInTheDocument();
+    const timetable = screen.getByRole('link', {
+      name: 'View timetable for the 08:00 · London Waterloo (WAT) to Woking (WOK)',
+    });
+    expect(timetable).toHaveAttribute('href', '/train/C30818/2026-09-22');
+    expect(screen.getByRole('link', { name: /^View live status for the 08:00/ })).toHaveAttribute(
+      'href',
+      '/train/C12345/2026-09-22',
+    );
+  });
+
+  it('names a bus with no resolvable route by its own mode, not "not live yet"', async () => {
+    vi.mocked(api.getLineTrains).mockResolvedValue([
+      entry({ uid: 'S00001', serviceMode: 'ferry', liveTracking: false }),
+    ]);
+    renderWithMantine(await LineTrainsResults({ id: 'swr-alton', date: '2026-09-22', now: EARLY_NOW }));
+    expect(screen.getByText('Ferry')).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/Ferry S00001/))).toBeInTheDocument();
+    expect(screen.queryByText('Scheduled — not live yet')).not.toBeInTheDocument();
+  });
+});
