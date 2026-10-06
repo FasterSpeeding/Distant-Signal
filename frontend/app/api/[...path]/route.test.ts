@@ -331,6 +331,23 @@ describe('/api/[...path] proxy', () => {
       expect(res.headers.get('x-generated-at')).toBe('2026-09-28T13:40:05Z');
     });
 
+    it("passes a 503's status, JSON body and Retry-After through (api's database is unavailable)", async () => {
+      const body = '{"error":"service_unavailable","retryable":true}';
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(body, {
+          status: 503,
+          headers: { 'Content-Type': 'application/json', 'Retry-After': '30' },
+        }),
+      );
+      const res = await GET(makeRequest('/api/Trips/plan?origin=EUS&destination=MKC&date=2026-10-06'), {
+        params: Promise.resolve({ path: ['Trips', 'plan'] }),
+      });
+      expect(res.status).toBe(503);
+      expect(res.headers.get('retry-after')).toBe('30');
+      expect(res.headers.get('content-type')).toBe('application/json');
+      expect(await res.text()).toBe(body);
+    });
+
     it('403s a DELETE whose Origin does not match', async () => {
       const req = makeRequest('/api/Train/1', {
         method: 'DELETE',

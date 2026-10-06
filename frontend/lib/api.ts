@@ -75,6 +75,12 @@ export class ApiUnauthorizedError extends Error {}
  * two different page states. */
 export class ApiForbiddenError extends Error {}
 
+/** Thrown when the API responds 503: Distant Signal is temporarily
+ * unavailable (its database is down, or a route is shedding load) and the
+ * request is worth retrying later, unlike a 500. See docs/api-changelog.md
+ * (2026-10-06). */
+export class ApiUnavailableError extends Error {}
+
 function baseUrl(): string {
   const url = process.env.API_BASE_URL;
   if (!url) {
@@ -92,6 +98,7 @@ function errorForResponse(url: string, response: Response): Error {
   if (response.status === 404) return new ApiNotFoundError(message);
   if (response.status === 401) return new ApiUnauthorizedError(message);
   if (response.status === 403) return new ApiForbiddenError(message);
+  if (response.status === 503) return new ApiUnavailableError(message);
   return new Error(message);
 }
 

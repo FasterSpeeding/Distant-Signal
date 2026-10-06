@@ -413,7 +413,9 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   // link) and nothing caches a copy of someone's personal data.
   // `X-Generated-At` is when a live departure board was polled
   // (`GET /public/stations/{crs}/departures`); its body is a bare array.
-  for (const name of ['Content-Disposition', 'Cache-Control', 'X-Generated-At']) {
+  // `Retry-After` comes with api's 503 (a dependency is unavailable, see
+  // docs/api-changelog.md 2026-10-06) and 429, so a client can wait it out.
+  for (const name of ['Content-Disposition', 'Cache-Control', 'X-Generated-At', 'Retry-After']) {
     const value = response.headers.get(name);
     if (value) {
       responseHeaders.set(name, value);
