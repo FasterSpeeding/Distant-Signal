@@ -1,6 +1,8 @@
 import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
+import { TextLink } from '@/components/TextLink';
+import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 
 /** `/journeys/new` -- the app's primary, nav-linked entry point for
  * tracking something (`lib/navLinks.ts`'s `TRACK_JOURNEY_DESTINATION`).
@@ -87,7 +89,11 @@ export default function JourneysNewPage() {
       </Text>
       <Text size="sm" c="dimmed">
         Tracking a journey needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
-        aren&apos;t already signed in.
+        aren&apos;t already signed in. Just looking for routes?{' '}
+        <TextLink href={PLAN_JOURNEY_DESTINATION.href} underline="always" inline>
+          Plan a journey
+        </TextLink>{' '}
+        — no account needed.
       </Text>
       <JourneyCreationFlow />
     </Stack>

@@ -62,6 +62,7 @@ export function TextLink({
   onKeyDown,
   title,
   ariaLabel,
+  ariaCurrent,
   external = false,
 }: {
   href: string;
@@ -131,6 +132,10 @@ export function TextLink({
   // shape -- N identically-worded links whose distinguishing text is always
   // a sibling `<Text>` -- so they share one prop rather than two.
   ariaLabel?: string;
+  // `aria-current="page"` for a nav link pointing at the page being shown
+  // (`PrimaryNavLink`). `globals.css` keys the active underline off it, so
+  // the state is announced and drawn by the same attribute.
+  ariaCurrent?: 'page';
   tone?: 'anchor' | 'inherit';
   external?: boolean;
 }) {
@@ -161,6 +166,7 @@ export function TextLink({
     onKeyDown,
     title,
     'aria-label': ariaLabel,
+    'aria-current': ariaCurrent,
   };
   if (HAS_URL_SCHEME.test(href)) {
     return <a {...anchorProps}>{text}</a>;

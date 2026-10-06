@@ -86,6 +86,16 @@ const nextConfig = {
         destination: '/track/mine',
         permanent: true,
       },
+      // The planner's own page is `/plan` (see app/plan/page.tsx for why a
+      // route rather than a mode switch); this keeps the mode-switch URL
+      // working for anyone who links to it. Not permanent, so the alias
+      // can be dropped later without browsers having cached it.
+      {
+        source: '/journeys/new',
+        has: [{ type: 'query', key: 'mode', value: 'plan' }],
+        destination: '/plan',
+        permanent: false,
+      },
     ];
   },
   // /sw.js's own byte content changes on every deploy (scripts/

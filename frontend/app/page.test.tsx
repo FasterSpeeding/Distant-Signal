@@ -171,6 +171,22 @@ describe('DashboardPage', () => {
     expect(screen.queryByRole('heading', { name: 'Distant Signal' })).not.toBeInTheDocument();
   });
 
+  it('offers the planner, which needs no account, to signed-out and signed-in visitors alike', async () => {
+    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
+    vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
+    for (const authenticated of [false, true]) {
+      vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+        authenticated,
+        id: authenticated ? 'u1' : null,
+        username: authenticated ? 'a' : null,
+        name: authenticated ? 'A' : null,
+      });
+      const { unmount } = renderWithMantine(await DashboardPage());
+      expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
+      unmount();
+    }
+  });
+
   it('anonymous, all lines good: shows the no-disruption message, not a raw empty state', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: false,

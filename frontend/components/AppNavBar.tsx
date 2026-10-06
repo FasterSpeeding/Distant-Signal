@@ -5,9 +5,15 @@ import { AppNavDrawer } from './AppNavDrawer';
 import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
 import { PrideToggle } from './PrideToggle';
-import { TextLink } from './TextLink';
+import { PrimaryNavLink } from './PrimaryNavLink';
 import { ThemeToggle } from './ThemeToggle';
-import { navDrawerDestinations, PRIMARY_NAV_DESTINATIONS, TRACKED_TRAINS_DESTINATION } from '@/lib/navLinks';
+import {
+  navDrawerDestinations,
+  PLAN_JOURNEY_DESTINATION,
+  PRIMARY_NAV_DESTINATIONS,
+  TRACK_JOURNEY_DESTINATION,
+  TRACKED_TRAINS_DESTINATION,
+} from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 /** The site header, lifted out of `app/layout.tsx` so the whole bar can
@@ -83,6 +89,13 @@ const BAR_MIN_HEIGHT = 60;
  * both engines, so a regression fails a test rather than shipping. */
 const NAV_BREAKPOINT = 'md';
 
+/** Where `PLAN_JOURNEY_DESTINATION` joins the inline bar. `lg` (1200px) is
+ * where the 1140px container stops growing, so the bar's available width
+ * is the same 1100px at every viewport from here up -- one measurement
+ * covers them all. Below it (992-1199px) the bar has no room for another
+ * label; see the slack table below. */
+const PLAN_LINK_BREAKPOINT = 'lg';
+
 // A note on the gaps below, because they were measured rather than
 // picked, and because the obvious way to write them does not work.
 //
@@ -148,6 +161,16 @@ const NAV_BREAKPOINT = 'md';
 //
 // Every row is a single row -- that is asserted, not assumed, by
 // e2e/nav.spec.ts in both engines.
+//
+// `PLAN_JOURNEY_DESTINATION` (2026-10-06): re-measured against a rendered
+// bar (Chromium and Firefox) before adding it, the anonymous bar had
+// drifted to ~1px of slack at 992px and ~33px at 1024px -- other entries
+// had grown since the table above was taken -- and ~149px at 1100px of
+// available width. "Plan a Journey" plus its gap costs ~115px, so it can
+// only go inline from `PLAN_LINK_BREAKPOINT` up, where it leaves a ~30px
+// margin (the same working margin quoted above). Between `md` and that
+// breakpoint it is reached from the pages that start a journey instead;
+// below `md` the drawer lists it.
 
 export function AppNavBar({
   session,
@@ -230,11 +253,18 @@ export function AppNavBar({
               array's own comment. */}
           <Group gap="xs" wrap="nowrap">
             <Group gap="xs" wrap="nowrap" visibleFrom={NAV_BREAKPOINT}>
-              {PRIMARY_NAV_DESTINATIONS.map((destination) => (
-                <TextLink key={destination.href} href={destination.href}>
-                  {destination.label}
-                </TextLink>
-              ))}
+              {PRIMARY_NAV_DESTINATIONS.flatMap((destination) => [
+                <PrimaryNavLink key={destination.href} {...destination} />,
+                // Straight after "Track a Journey", wide screens only --
+                // see `PLAN_LINK_BREAKPOINT`.
+                ...(destination === TRACK_JOURNEY_DESTINATION
+                  ? [
+                      <Box key={PLAN_JOURNEY_DESTINATION.href} visibleFrom={PLAN_LINK_BREAKPOINT}>
+                        <PrimaryNavLink {...PLAN_JOURNEY_DESTINATION} />
+                      </Box>,
+                    ]
+                  : []),
+              ])}
               {/* Inline for anonymous visitors only. It is deliberately
                   always-reachable (see `TRACKED_TRAINS_DESTINATION`'s own
                   doc comment for the decision and the spec that reversed
@@ -244,9 +274,7 @@ export function AppNavBar({
                   every logged-out desktop visitor. A logged-in visitor
                   gets it in the account menu instead, which is part of
                   what buys the authenticated bar its missing 12px. */}
-              {!session.authenticated && (
-                <TextLink href={TRACKED_TRAINS_DESTINATION.href}>{TRACKED_TRAINS_DESTINATION.label}</TextLink>
-              )}
+              {!session.authenticated && <PrimaryNavLink {...TRACKED_TRAINS_DESTINATION} />}
             </Group>
             {/* The three always-on icon controls, grouped tightly: they
                 are one cluster of same-sized square buttons rather than

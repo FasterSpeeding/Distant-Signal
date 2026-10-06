@@ -1,17 +1,19 @@
 import { readFileSync } from 'node:fs';
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { screen, fireEvent, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AppNavBar } from './AppNavBar';
-import { PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
+import { PLAN_JOURNEY_DESTINATION, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 // LoginLink / AccountMenu / AppNavDrawer all reach for App Router hooks
 // that throw outside a real Next.js tree -- same stub as the rest of this
 // directory's tests.
+// Mutable so the active-state cases below can put the visitor on a page.
+let pathname = '/';
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
-  usePathname: () => '/',
+  usePathname: () => pathname,
   useSearchParams: () => new URLSearchParams(''),
 }));
 
@@ -37,6 +39,10 @@ function barLinkNames() {
 }
 
 describe('AppNavBar', () => {
+  beforeEach(() => {
+    pathname = '/';
+  });
+
   it('renders its links inside a navigation landmark', () => {
     renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
     expect(screen.getByRole('navigation')).toBeInTheDocument();
@@ -103,6 +109,62 @@ describe('AppNavBar', () => {
     expect(screen.getByRole('button', { name: /^Theme:/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Pride/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
+  });
+
+  describe('the "Plan a Journey" entry', () => {
+    it('links to /plan for anyone, straight after "Track a Journey"', () => {
+      for (const session of [loggedOut, loggedIn]) {
+        const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
+        const names = barLinkNames();
+        expect(names[names.indexOf('Track a Journey') + 1]).toBe('Plan a Journey');
+        expect(screen.getByRole('link', { name: 'Plan a Journey' })).toHaveAttribute('href', '/plan');
+        unmount();
+      }
+    });
+
+    it('is shown inline only from lg up, where the bar has room for it', () => {
+      // Below lg the bar measures a pixel or two of slack (AppNavBar.tsx's
+      // PLAN_LINK_BREAKPOINT comment); jsdom has no layout, so pin the
+      // class Mantine's `visibleFrom` emits rather than a width.
+      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+      const link = screen.getByRole('link', { name: 'Plan a Journey' });
+      expect(link.closest('.mantine-visible-from-lg')).not.toBeNull();
+      expect(screen.getByRole('link', { name: 'Track a Journey' }).closest('.mantine-visible-from-lg')).toBeNull();
+    });
+
+    it('marks itself as the current page on /plan, and nothing else', () => {
+      pathname = '/plan';
+      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+      expect(screen.getByRole('link', { name: 'Plan a Journey' })).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByRole('link', { name: 'Track a Journey' })).not.toHaveAttribute('aria-current');
+    });
+
+    it('is not marked current on /journeys/new', () => {
+      pathname = '/journeys/new';
+      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+      expect(screen.getByRole('link', { name: 'Track a Journey' })).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByRole('link', { name: 'Plan a Journey' })).not.toHaveAttribute('aria-current');
+    });
+
+    it('is in the drawer, marked current on /plan', async () => {
+      pathname = '/plan';
+      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Navigation menu' }));
+      const drawer = await screen.findByRole('dialog');
+      const link = within(drawer).getByRole('link', { name: PLAN_JOURNEY_DESTINATION.label });
+      expect(link).toHaveAttribute('href', '/plan');
+      expect(link).toHaveAttribute('aria-current', 'page');
+      expect(link).toHaveAttribute('data-active', 'true');
+    });
+  });
+
+  it('marks no bar link as current on a page the bar does not list', () => {
+    pathname = '/';
+    renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+    const current = within(screen.getByRole('navigation'))
+      .getAllByRole('link')
+      .filter((link) => link.getAttribute('aria-current') === 'page');
+    expect(current).toEqual([]);
   });
 
   describe('the drawer it hands the small-screen navigation to', () => {

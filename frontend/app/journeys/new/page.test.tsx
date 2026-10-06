@@ -31,6 +31,12 @@ describe('JourneysNewPage', () => {
     expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
   });
 
+  it('points a visitor who only wants routes at /plan, which needs no account', () => {
+    renderWithMantine(<JourneysNewPage />);
+    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
+    expect(screen.getByText(/no account needed/)).toBeInTheDocument();
+  });
+
   it('exports metadata matching its own heading', () => {
     expect(metadata.title).toContain('Track a Journey');
   });

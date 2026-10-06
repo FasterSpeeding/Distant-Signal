@@ -42,6 +42,27 @@ export interface NavDestination {
  * pre-fill query params for no benefit. */
 export const TRACK_JOURNEY_DESTINATION: NavDestination = { href: '/journeys/new', label: 'Track a Journey' };
 
+/** `/plan` (`app/plan/page.tsx`): the trip planner on a page of its own.
+ * Planning (`GET /Trips/plan`) needs no account, but before this route the
+ * planner was only reachable by opening "Track a Journey" -- whose copy
+ * says an account is needed -- and flipping its mode toggle. Labelled in
+ * Title Case to sit beside `TRACK_JOURNEY_DESTINATION`.
+ *
+ * Not in `PRIMARY_NAV_DESTINATIONS`: the bar between `md` and `lg` has no
+ * room for it (measured slack at 992px is a pixel or two). `AppNavBar`
+ * shows it inline from `lg` up, where the container stops growing and
+ * there is room; the drawer always lists it; and the pages that start a
+ * journey (home, `/journeys/new`, `/track/mine`, `/stations/[crs]`) link to
+ * it, which covers the `md`-to-`lg` band. */
+export const PLAN_JOURNEY_DESTINATION: NavDestination = { href: '/plan', label: 'Plan a Journey' };
+
+/** Whether a nav entry marks the current page. Exact match, not
+ * `startsWith`: `/` would otherwise light up on every route. Shared by the
+ * bar (`PrimaryNavLink`) and the drawer so the two agree. */
+export function isActiveNavHref(pathname: string | null, href: string): boolean {
+  return pathname === href;
+}
+
 /** Always visible to everyone, logged in or not. Rendered inline in the
  * bar at `md` and up, and in the drawer below it.
  *
@@ -163,13 +184,18 @@ export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Chat' }
  * menu, just above the session actions. */
 export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'Account & data' };
 
-/** What the mobile drawer lists: every primary destination, plus the
- * per-account ones the bar hands to the account menu on desktop. The
+/** What the mobile drawer lists: every primary destination, the planner
+ * (`PLAN_JOURNEY_DESTINATION`), plus the per-account ones the bar hands to
+ * the account menu on desktop. The
  * drawer is the ONLY nav surface below `md`, so it has to carry the union
  * — a destination missing here is unreachable from the nav on a phone. */
 export function navDrawerDestinations(authenticated: boolean, chatAllowed: boolean): NavDestination[] {
   return [
-    ...PRIMARY_NAV_DESTINATIONS,
+    // Planning sits straight after tracking: they are the two ways to start
+    // a journey.
+    ...PRIMARY_NAV_DESTINATIONS.flatMap((destination) =>
+      destination === TRACK_JOURNEY_DESTINATION ? [destination, PLAN_JOURNEY_DESTINATION] : [destination],
+    ),
     TRACKED_TRAINS_DESTINATION,
     ...(authenticated ? [GROUPS_DESTINATION] : []),
     ...(chatAllowed ? [CHAT_DESTINATION] : []),

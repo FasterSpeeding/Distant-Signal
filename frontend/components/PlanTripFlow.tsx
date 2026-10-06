@@ -44,7 +44,14 @@ interface SegmentSelection {
  * gone. Deferring the call until the visitor acknowledges the message
  * keeps `onCreated` called exactly once overall, per Judgment Call 2 --
  * just later. */
-export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyResponse) => void }) {
+export function PlanTripFlow({
+  onCreated,
+  initialOriginCrs,
+}: {
+  onCreated: (result: CreateJourneyResponse) => void;
+  /** Pre-fills the From field (`/plan?from=CRS`). */
+  initialOriginCrs?: string;
+}) {
   const [plan, setPlan] = useState<TripPlanResponse | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   // CRS -> full name, resolved client-side once `plan` loads -- unlike
@@ -301,7 +308,7 @@ export function PlanTripFlow({ onCreated }: { onCreated: (result: CreateJourneyR
 
   return (
     <Stack gap="md">
-      <PlanTripForm onSubmit={handleSearch} searching={searching} />
+      <PlanTripForm onSubmit={handleSearch} searching={searching} initialOriginCrs={initialOriginCrs} />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
           {planError}

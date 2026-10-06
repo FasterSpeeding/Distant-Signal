@@ -94,11 +94,14 @@ function XIcon() {
 export function PlanTripForm({
   onSubmit,
   searching = false,
+  initialOriginCrs = '',
 }: {
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
+  /** The From field's starting value; only read on mount. */
+  initialOriginCrs?: string;
 }) {
-  const [originCrs, setOriginCrs] = useState('');
+  const [originCrs, setOriginCrs] = useState(initialOriginCrs);
   const [destinationCrs, setDestinationCrs] = useState('');
   const [waypoints, setWaypoints] = useState<string[]>([]);
   // `string | null` ("YYYY-MM-DD"), not `Date | null`: `@mantine/dates`
