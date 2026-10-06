@@ -802,6 +802,7 @@ mod tests {
                 .collect(),
             content: None,
             error: None,
+            usage: None,
         }
     }
 

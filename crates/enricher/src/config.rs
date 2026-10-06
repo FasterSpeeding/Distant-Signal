@@ -159,6 +159,24 @@ impl ProviderPolicyConfig {
             rate_limit_min_wait: std::time::Duration::from_secs(self.llm_rate_limit_retry_secs),
             max_rate_limit_retries: self.llm_rate_limit_retries,
             max_gateway_retries: self.llm_gateway_retries,
+            gateway_backoff: crate::llm::DEFAULT_GATEWAY_BACKOFF,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `LLM_REASONING_EFFORT=none` (`OpenAI`'s gpt-6-luna, see
+    /// docs/enricher-openai.md) is accepted as-is: the knob is free text,
+    /// passed through to `reasoning_effort` unchanged.
+    #[test]
+    fn reasoning_effort_none_is_accepted_and_passed_through() {
+        let config =
+            ProviderPolicyConfig::parse_from(["enricher", "--llm-reasoning-effort", "none"]);
+        let policy = config.policy();
+        assert_eq!(policy.reasoning_effort.as_deref(), Some("none"));
+        assert_eq!(policy.max_tokens, None, "LLM_MAX_TOKENS stays unset");
     }
 }

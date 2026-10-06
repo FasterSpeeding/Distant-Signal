@@ -130,6 +130,7 @@ impl Target {
             rate_limit_min_wait: Duration::from_secs(self.rate_limit_retry_secs),
             max_rate_limit_retries: self.rate_limit_retries,
             max_gateway_retries: self.gateway_retries,
+            gateway_backoff: crate::llm::DEFAULT_GATEWAY_BACKOFF,
         }
     }
 
