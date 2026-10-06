@@ -21,6 +21,7 @@ import { LoginLink } from '@/components/LoginLink';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
+import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
@@ -282,6 +283,11 @@ export default async function DashboardPage() {
         <RightNowModule summary={rightNow} />
 
         <Group gap="lg">
+          {/* First: planning is the one journey feature that works without
+              an account, so it is the one worth offering here. Also covers
+              the 992-1199px band where the nav bar has no room for it (see
+              `PLAN_JOURNEY_DESTINATION`). */}
+          <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
           <TextLink href="/lines">Browse all lines</TextLink>
           <TextLink href="/stations">Look up a station</TextLink>
           {/* Review M8: the anonymous homepage is the only place that can
@@ -461,7 +467,10 @@ export default async function DashboardPage() {
 
   return (
     <Stack p="lg" gap="xl">
-      <Group justify="flex-end">
+      {/* The planner link mirrors the anonymous branch's quick link above,
+          for the 992-1199px band where the nav bar can't fit it. */}
+      <Group justify="space-between">
+        <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
         <NotificationsToggle />
       </Group>
 

@@ -181,6 +181,7 @@ export default async function MyTrackedTrainsPage() {
         <Title order={1}>My Trains &amp; Tickets</Title>
         <Group gap="md">
           <TextLink href="/track">Track a new train</TextLink>
+          <TextLink href="/plan">Plan a journey</TextLink>
           <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
         </Group>
       </Group>

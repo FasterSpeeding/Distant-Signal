@@ -84,6 +84,11 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
   });
 
+  it('offers to plan a journey from this station, pre-filling it as the origin', async () => {
+    await renderPage();
+    expect(screen.getByRole('link', { name: 'Plan a journey from here' })).toHaveAttribute('href', '/plan?origin=KGX');
+  });
+
   it("renders the station's disruptions normally", async () => {
     await renderPage();
     expect(screen.getByRole('heading', { name: 'London Kings Cross (KGX)', level: 1 })).toBeInTheDocument();

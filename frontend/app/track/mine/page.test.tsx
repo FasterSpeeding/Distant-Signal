@@ -406,6 +406,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     renderWithMantine(await MyTrackedTrainsPage());
     expect(screen.getByRole('link', { name: 'Track a new train' })).toHaveAttribute('href', '/track');
     expect(screen.getByRole('link', { name: 'Add a ticket' })).toHaveAttribute('href', '/track/mine/add-ticket');
+    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
   });
 
   it('renders "Manage your journey templates" link even when nothingToShow is true (empty state)', async () => {
