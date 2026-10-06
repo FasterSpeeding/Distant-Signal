@@ -47,13 +47,25 @@ import type { CreateJourneyResponse, JourneyDetail } from '@/lib/types';
  * not strand the user with no way forward. "Add a leg" DOES stay hidden
  * in that case -- `journeyCanAddLeg` has nothing honest to evaluate
  * without a fetched `JourneyDetail` -- but a Retry button offers a way
- * out of that narrower gap without losing the journey itself. */
-export function JourneyCreationFlow() {
+ * out of that narrower gap without losing the journey itself.
+ *
+ * `planOnly` is `/plan`'s mode: the planner straight away, with no "I know
+ * my route" toggle (that page's job is planning; "Track a Journey" is one
+ * link away). `planOrigin` pre-fills the planner's From field, for
+ * `/plan?from=CRS` links such as a station page's "Plan a journey from
+ * here". Both leave the after-creation view above unchanged. */
+export function JourneyCreationFlow({
+  planOnly = false,
+  planOrigin,
+}: {
+  planOnly?: boolean;
+  planOrigin?: string;
+} = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
-  const [entryMode, setEntryMode] = useState<'known' | 'plan'>('known');
+  const [entryMode, setEntryMode] = useState<'known' | 'plan'>(planOnly ? 'plan' : 'known');
   const entryModeLabelId = useId();
 
   async function refreshJourney(id: number) {
@@ -81,6 +93,10 @@ export function JourneyCreationFlow() {
 
   function handleLegAdded() {
     if (journeyId !== null) void refreshJourney(journeyId);
+  }
+
+  if (journeyId === null && planOnly) {
+    return <PlanTripFlow onCreated={handleLegOneCreated} initialOriginCrs={planOrigin} />;
   }
 
   if (journeyId === null) {
