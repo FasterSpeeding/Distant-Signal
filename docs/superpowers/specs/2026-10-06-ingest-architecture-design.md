@@ -1,6 +1,8 @@
 # Ingest architecture: take ingest out of the public api
 
-Design, 2026-10-06. Status: **proposed**. Nothing here is built.
+Design, 2026-10-06. Status: **accepted**; the user's decisions are in
+[§16, Decisions (2026-10-06)](#decisions-2026-10-06). Phase 0 is being
+built (chart and tooling, all off by default); nothing else is built.
 [The plan](../plans/2026-10-06-ingest-architecture-plan.md) is how to
 build it, phase by phase.
 
@@ -113,10 +115,16 @@ grows by sqlx.
 **The same argument applies to `trust-consumer`'s train events and
 forward signals.** It also reads `movement-events`, so a second stream is
 also a double hop. The user's target names train events as a stream
-producer, so this design keeps them on a stream (`ds:ingest:train-events`,
-§7). The volume is tiny (no train-event POSTs in the 24 h measured; 21
-active subscriptions). Moving them to direct writes is open question Q1;
-either way works.
+producer, so this design first kept them on a stream
+(`ds:ingest:train-events`, §7). The volume is tiny (no train-event POSTs
+in the 24 h measured; 21 active subscriptions).
+
+**Decided (D1, 2026-10-06): trust-consumer writes its train events and
+forward signals directly to Postgres**, exactly like the backlog: its own
+role `distant_signal_trust_consumer`, XACK of `movement-events` only after
+the commit, and back-off on a transient DB failure. There is no
+`ds:ingest:train-events` stream. Where later sections still describe that
+stream, D1 overrides them.
 
 ### R2. Internal reads go direct to Postgres, through narrow views
 
@@ -333,7 +341,7 @@ flowchart LR
   subgraph Stream producers
     LD[poller-ldbws] -->|XADD| R
     FC[full-coverage-consumer] -->|XADD| R
-    TC[trust-consumer] -->|XADD| R
+    TC[trust-consumer] -->|role trust_consumer, D1| PG
     TFL[poller-tfl] -->|XADD| R
     TOCS[poller-tocs] -->|XADD| R
     IOI[island-of-Ireland pollers] -->|XADD| R
@@ -577,7 +585,7 @@ referential-integrity triggers as the table owner.
 | `distant_signal_schedule_ingest` | schedule-ingest | 2d |
 | `distant_signal_trust_backlog` | trust-backlog-consumer | 3b |
 | `distant_signal_full_coverage_ro` | full-coverage-consumer | 4 |
-| `distant_signal_trust_consumer_ro` | trust-consumer | 4 |
+| `distant_signal_trust_consumer` | trust-consumer: train events and forward signals (direct, D1), plus its reads | 3b (reads from 4) |
 | `distant_signal_ldbws_ro` | poller-ldbws | 4 |
 | `distant_signal_aggregator`, `_enricher`, `_notifier` | the three existing workers | 0b (observed), narrowed in 5 |
 | `distant_signal_exporter`, `_dump`, `_backup` | as today | 0a |
@@ -680,13 +688,13 @@ to sum every role's limit. It fails the render if the sum exceeds
 | stations | 1 | 2 | |
 | incidents | 2 | 3 | the upsert plus inference |
 | full_coverage_ro | 2 | 3 | |
-| trust_consumer_ro | 1 | 2 | |
+| trust_consumer | 2 | 3 | D1: direct train-event writes plus the reads |
 | ldbws_ro | 1 | 2 | |
 | aggregator | 8 | 9 | from 10; observed 4 |
 | notifier | 4 | 5 | from 5 |
 | enricher | 3 | 4 | from 5; observed 1 |
 | exporter, dump, backup | – | 3, 2, 4 | as today |
-| **Sum of limits** | | **92** | 5 spare, plus the 3 reserved for superusers |
+| **Sum of limits** | | **93** | 4 spare, plus the 3 reserved for superusers (92 before D1 made trust-consumer a writer) |
 
 The api's pool drops from 50 to 16. Measured use with all ingest included
 is 6. The pool metrics (§14.2) are added in phase 1A, so this is checked
@@ -703,7 +711,7 @@ existing `movement-events` and `incident-text-changed` keep their names.
 |---|---|---|---|---|---|---|
 | `ds:ingest:station-samples` | `station-samples/1` | poller-ldbws | 1 snapshot/min, sent in chunks of 100 stations (6 entries) | about 500 KB raw, about 60–80 KB gzip | `MAXLEN ~ 720` | 2 h, about 55 MB worst case |
 | `ds:ingest:full-coverage` | `full-coverage-stats/1`, `full-coverage-window-stats/1`, `station-full-coverage-samples/1` | full-coverage-consumer | 3 entries/min | 80/290/640 KB raw, about 10/40/80 KB gzip | `MAXLEN ~ 360` | 2 h, about 16 MB |
-| `ds:ingest:train-events` | `train-events/1`, `train-forward-signals/1` | trust-consumer | event-driven, low | under 16 KB | `MINID` now − 24 h, and `MAXLEN ~ 100000` | 24 h (the TRUST 1-day safeguard) |
+| ~~`ds:ingest:train-events`~~ | dropped by D1: trust-consumer writes train events and forward signals directly | | | | | |
 | `ds:ingest:tfl` | `tfl-line-status/1` | poller-tfl | 1/5 min | 10 KB raw, under 2 KB gzip | `MAXLEN ~ 288` | 24 h, under 1 MB |
 | `ds:ingest:reference` | `tocs/1` | poller-tocs | daily | about 3 KB | `MAXLEN ~ 30` | 30 days |
 | `ds:ingest:island-of-ireland` | `ioi-stations/1`, `ioi-lines/1`, `ioi-station-samples/1` | the three IoI pollers (disabled) | per poller | small | `MAXLEN ~ 2000` | sized when enabled |
@@ -899,7 +907,7 @@ file (§8.4).
 | User | Used by | Permissions |
 |---|---|---|
 | `movement-relay` | movement-relay | `~movement-events ~movement-events-deadletter +xadd +xtrim +xgroup|create +xinfo|stream +xinfo|groups +xlen +xrange +exists +type +info` (INFO for the AOF gauges) |
-| `trust-consumer` | trust-consumer | `~movement-events +xreadgroup +xack +xautoclaim +xclaim +xpending +xgroup|create +xgroup|createconsumer +xinfo|stream +xinfo|groups +xlen +xrange`, then `(%RW~movement-events-deadletter +xadd +xlen)`, then `(%RW~ds:ingest:train-events +xadd +xrevrange)` |
+| `trust-consumer` | trust-consumer | `~movement-events +xreadgroup +xack +xautoclaim +xclaim +xpending +xgroup|create +xgroup|createconsumer +xinfo|stream +xinfo|groups +xlen +xrange`, then `(%RW~movement-events-deadletter +xadd +xlen)`. No ingest-stream selector (D1: direct writer) |
 | `full-coverage-consumer` | full-coverage-consumer | as trust-consumer, with the last selector on `ds:ingest:full-coverage` |
 | `trust-backlog-consumer` | trust-backlog-consumer | as trust-consumer, without an ingest-stream selector (direct writer, R1) |
 | `enricher` | enricher | `~incident-text-changed +xreadgroup +xack +xautoclaim +xgroup|create +xinfo|stream +xinfo|groups +xlen +xrange` |
@@ -1216,9 +1224,8 @@ image.
   over the `ds-store` function the `/private` handler calls today. Two
   examples:
   - `station-samples/1 → ds_store::samples::upsert_station_samples`;
-  - `train-events/1 → ds_store::tracking::upsert_train_events_batch`, with
-    rejected rows sent to the dead-letter stream, mirroring
-    `post_train_events`.
+  - `tfl-line-status/1 → ds_store::samples::upsert_tfl_line_status`.
+    (`train-events/1` is gone: D1 made trust-consumer a direct writer.)
 - **Housekeeping:**
   - pruning `ingest_dedup`;
   - `MINID` trims of `train-events` and the dead-letter streams;
@@ -1397,8 +1404,8 @@ today's behaviour.
 
 | Switch (env / chart value) | Values | Component |
 |---|---|---|
-| `INGEST_SINK` / `<component>.ingest.sink` | `http`, `db` | schedule-reference, schedule-ingest, poller-stations, poller-incidents, trust-backlog-consumer |
-| `INGEST_SINK` / `<component>.ingest.sink` | `http`, `http+shadow` (HTTP authoritative, plus an XADD copy), `stream` | poller-ldbws, full-coverage-consumer, trust-consumer, poller-tfl, poller-tocs, IoI pollers |
+| `INGEST_SINK` / `<component>.ingest.sink` | `http`, `db` | schedule-reference, schedule-ingest, poller-stations, poller-incidents, trust-backlog-consumer, trust-consumer (D1) |
+| `INGEST_SINK` / `<component>.ingest.sink` | `http`, `http+shadow` (HTTP authoritative, plus an XADD copy), `stream` | poller-ldbws, full-coverage-consumer, poller-tfl, poller-tocs, IoI pollers |
 | `INGEST_WRITER_STREAMS` / `ingestWriter.streams.<name>` | `off`, `shadow`, `apply` | ingest-writer |
 | `ingestWriter.loops.enabled` and `API_BACKGROUND_LOOPS` | bool | writer, api |
 | `POPULATION_SOURCE`, `TRACKED_TRAINS_SOURCE`, `SAMPLE_STATIONS_SOURCE`, `STANOX_CRS_SOURCE` / `<component>.internalReads.source` | `http`, `db` | the readers |
@@ -1614,7 +1621,7 @@ time, typically 3–7 days per switch.
 | | |
 |---|---|
 | Entry | Phase 0c users exist; the writer is running (1B); `common::ingest_stream` is in |
-| Work | 3a (8–9 d): the envelope crate, the writer's stream runtime (groups, PEL-first retry, claim, dead letters, dedup, metrics, alerts), the dead-letter runbook; then station samples and full coverage (shadow, then flip). 3b (3–4 d): trust-backlog-consumer direct (R1), then trust-consumer train events and forward signals on `ds:ingest:train-events`. 3c (3–4 d): TfL, tocs and IoI |
+| Work | 3a (8–9 d): the envelope crate, the writer's stream runtime (groups, PEL-first retry, claim, dead letters, dedup, metrics, alerts), the dead-letter runbook; then station samples and full coverage (shadow, then flip). 3b (3–4 d): trust-backlog-consumer direct (R1), then trust-consumer's train events and forward signals direct (D1). 3c (3–4 d): TfL, tocs and IoI |
 | Exit (each stream) | 3 days in shadow with `messages_total{outcome="applied"}` in shadow equal to the HTTP request count, and 0 dead letters. After the flip: 7 days with no backlog, stalled or dead-letter alert; the api route at 0 requests |
 | Tests | envelope unit tests; writer tests against local valkey/redis (ignored): the order, PEL-first retry, XAUTOCLAIM after a simulated crash, dedup, oversize to the dead-letter stream, unsupported schema left pending, `MAXLEN` trimming; producer tests for latest-only buffering and no-ACK-before-XADD; the backlog consumer's direct sink against a DB, with the transient/data error split and backoff |
 | Risk | Redis memory (caps plus an alert). Writer lag hides stale data (the stalled alert). A duplicate apply (`ingest_dedup`) |
@@ -1651,19 +1658,33 @@ time, typically 3–7 days per switch.
 | Two loop runners during the cutover | low | duplicate sweeps | advisory locks in both places |
 | Hook timeouts in Flux | medium | a stuck release | HelmRelease timeout of 20 m; `activeDeadlineSeconds` |
 
+### Decisions (2026-10-06)
+
+The user decided the following on 2026-10-06. They override anything
+earlier in this document that disagrees.
+
+| # | Decision | Answers | Where it lands |
+|---|---|---|---|
+| D1 | **trust-consumer writes its train events and forward signals directly to Postgres**, like the TRUST backlog (R1), not through a new stream. It gets the role `distant_signal_trust_consumer` (pool 2, limit 3), ACKs `movement-events` only after the commit, and backs off on a transient DB failure. `ds:ingest:train-events` and its dead-letter stream are dropped; the trust-consumer Redis user has no ingest-stream selector | Q1 | §2 R1, §6.3, §6.6, §7.1, §8.2, §13.1; plan 3b |
+| D2 | **Migrations run in a Helm hook Job** (`pre-upgrade,post-install`). The owner credentials live only in that Job's pod. Every DB service waits in-process for the schema version (the schema gate, §12.2). Ranma raises the HelmRelease `timeout` to about 20 minutes | Q4 | §12.1–12.2; plan 1B.1–1B.4. The Job needs the `ds-migrate` binary (1B.1), so the Job, the gate and `api.migrateOnStartup` ship in phase 1B, not phase 0. Ranma may raise the timeout any time before |
+| D3 | **The public api moves to `RollingUpdate` with one replica**, once migrations and the background loops are out of it (phase 1B) | Q11 | §12.4; plan 1B.10 |
+| D4 | **Phase 0 proceeds now.** Phase 1A (the `ds-store` extraction) starts only after the in-flight api branches merge (bus service mode, bus-stop naming, the line page, trip-planner via, the outage follow-ups), to avoid large conflicts. Phase 0 does not move `crates/api` code | – | plan phase 0 and 1A |
+
+Questions not listed stay open, with the defaults below.
+
 ### Open questions for the user
 
-| # | Question | Default if not answered |
+| # | Question | Default if not answered, or the decision |
 |---|---|---|
-| Q1 | Should trust-consumer's train events and forward signals also write directly (like the backlog, R1), instead of `ds:ingest:train-events`? | stream, per the stated target |
+| Q1 | Should trust-consumer's train events and forward signals also write directly (like the backlog, R1), instead of `ds:ingest:train-events`? | **Decided (D1): direct writes**, no `ds:ingest:train-events` |
 | Q2 | Is schedule-ingest acceptable as a fourth direct writer (CORPUS plus feed markers), and tocs on a small stream (R4)? | yes |
 | Q3 | User-data sweeps as an api-image CronJob rather than in the writer (R3)? | CronJob |
-| Q4 | Migrations as a Helm `pre-upgrade`/`post-install` hook Job, with the HelmRelease timeout raised to 20 m in Ranma? | yes |
+| Q4 | Migrations as a Helm `pre-upgrade`/`post-install` hook Job, with the HelmRelease timeout raised to 20 m in Ranma? | **Decided (D2): yes**; the Job and the schema gate ship in phase 1B |
 | Q5 | Accept the incidents display-time approximation for rows absent from an *incomplete* snapshot (§9.4)? | yes |
 | Q6 | Apply the same "write only changed rows" fix to `station_samples`, `station_full_coverage_samples` and `full_coverage_line_window_stats` in phase 3a (about 17M HOT updates per 42 h)? | yes, behind its own switch |
 | Q7 | Redis: a 128 MB budget for ingest streams, gzip above 8 KiB, and 2-hour caps for snapshot domains? | yes |
 | Q8 | Use Postgres RLS to pin the writer to TfL rows in `line_status`? | no |
 | Q9 | Should the disabled island-of-Ireland producers be migrated, or their routes deleted in phase 5 until they are re-enabled? | migrate, untested in production |
 | Q10 | Move `crates/api/migrations` to `crates/ds-store/migrations` (touches CI scripts and tests), or leave it? | leave |
-| Q11 | Should the api move to `RollingUpdate` (and two replicas) once phase 1B lands? | `RollingUpdate`, one replica |
+| Q11 | Should the api move to `RollingUpdate` (and two replicas) once phase 1B lands? | **Decided (D3): `RollingUpdate`, one replica**, after phase 1B |
 | Q12 | Ranma: one SealedSecret holding every service's DB password, or one per service? | one per service (rotation without restarting others) |

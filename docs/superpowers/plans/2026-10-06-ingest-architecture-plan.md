@@ -12,7 +12,9 @@ Read the spec first. Section numbers (§) below refer to it.
 - Internal reads are direct and read-only (R2).
 - Migrations and loops have one owner each (R3).
 
-Nothing is built. All phases are open.
+Decisions D1–D4 (spec §16, 2026-10-06) apply. Phase 0 is in progress
+(chart and tooling, off by default). Phase 1A waits for the in-flight api
+branches to merge (D4).
 
 ## Ground rules for whoever executes this
 
@@ -355,14 +357,14 @@ Rollback: producer `http`.
 |---|---|---|---|
 | 3b.1 | trust-backlog-consumer: a `BacklogSink` trait (`HttpSink` as today; `DbSink` calling `upsert_trust_event_backlog_batch`, then `ingest_shared_movements_batch` for the accepted rows, then `upsert_reasons`, keeping the exact `rejected` handling of `post_trust_event_backlog`); a transient failure means **pause** (backoff 1 s → 60 s) before the next read; STANOX/CRS from `list_stanox_crs` under `db`; pool 3 | `crates/trust-backlog-consumer/src/{sink.rs,main.rs,queries.rs,config.rs}` | DB: same rows as the HTTP route for a fixture batch; a data-error row is rejected and dead-lettered while the rest commit; a transient error leaves the batch un-ACKed and backs off; `deliver_batch` tests over both sinks |
 | 3b.2 | Chart: role env, netpol egress postgres, postgres ingress; narrow the role (spec §6.4). `API_CALL_OPERATIONS` and the chart alert list gain `db_write` and `db_write_reasons` | templates, `db-grants.yaml`, `templates/prometheusrule.yaml` | the existing "chart alerts on every operation" test |
-| 3b.3 | Writer handlers `train-events/1` (`upsert_train_events_batch`, rejected rows to the dead-letter stream) and `train-forward-signals/1` (`insert_forward_signals` under `ingest_dedup`) | `crates/ingest-writer/src/handlers/train_events.rs` | DB: replaying the same entry twice inserts one forward signal |
-| 3b.4 | trust-consumer: `INGEST_SINK` for train events and forward signals; under `stream`, XADD to `ds:ingest:train-events` and **ACK `movement-events` only after the XADD succeeds** | `crates/trust-consumer/src/{main.rs,queries.rs}` | Redis-gated: XADD failure means no ACK; redelivery after a restart XADDs again with the same `key` |
+| 3b.3 | (D1) trust-consumer: a `TrainEventSink` (`HttpSink` as today; `DbSink` calling `upsert_train_events_batch` and `insert_forward_signals` in one transaction, rejected rows dead-lettered as today); **ACK `movement-events` only after the commit**; a transient failure backs off (1 s → 60 s) before the next read; pool 2 | `crates/trust-consumer/src/{sink.rs,main.rs,queries.rs,config.rs}` | DB: same rows as the HTTP routes for a fixture batch; a redelivered entry inserts one forward signal (dedup by the movement entry id); a DB failure means no ACK |
+| 3b.4 | Chart: the `trust_consumer` role env, netpol egress postgres, postgres ingress; narrow the role | templates, `db-grants.yaml` | `helm template`; per-role suite |
 
 Rollout:
 
 1. backlog `sink=db`, 7 days (watch the movement lag, `db_writes_total`,
    and backlog rows per hour against the about 30k/h baseline);
-2. then the train-events pair as in 3a.
+2. then trust-consumer `sink=db` (D1), 7 days.
 
 Exit: the api's `/private/trust-event-backlog`, `/train-reasons`,
 `/train-events` and `/train-forward-signals` at 0 for 7 days.
