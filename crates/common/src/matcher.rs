@@ -411,9 +411,12 @@ fn places_held(places: &[PlaceMention], crs: &[String]) -> usize {
 /// - **Sections.** If any line holds two or more of the places ("between
 ///   Purley and Gatwick Airport"), only lines holding two or more count.
 /// - **Hubs.** Otherwise every line holding one counts ("at Clapham
-///   Junction"), except a hub beside a local place: a place on more than
-///   [`HUB_LINES`] is dropped when another is on [`HUB_LINES`] or fewer.
-///   A hub named alone still fans out to all its lines.
+///   Junction"), except a hub beside a local place: a place on
+///   [`RELATIVE_HUB_LINES`] or more of `lines` is dropped when another
+///   named place is on only one (2026-10-06 decision 6: CD74FB58's
+///   Victoria, on four Southern lines, beside Eastbourne), and a place on
+///   more than [`HUB_LINES`] is dropped when another is on [`HUB_LINES`]
+///   or fewer. A hub named alone still fans out to all its lines.
 fn select_lines<'a>(
     lines: &[&'a LineDefinition],
     places: &[PlaceMention],
@@ -441,10 +444,11 @@ fn select_lines<'a>(
                 .count()
         })
         .collect();
+    let has_single = lines_holding.contains(&1);
     let has_local = lines_holding.iter().any(|n| (1..=HUB_LINES).contains(n));
     let dropped: Vec<bool> = lines_holding
         .iter()
-        .map(|&n| has_local && n > HUB_LINES)
+        .map(|&n| (has_single && n >= RELATIVE_HUB_LINES) || (has_local && n > HUB_LINES))
         .collect();
     per_line
         .into_iter()
@@ -472,6 +476,10 @@ fn select_lines<'a>(
 /// See [`select_lines`]: a place on more lines than this is a hub beside
 /// any place on this many or fewer.
 const HUB_LINES: usize = 4;
+
+/// See [`select_lines`]: a place on this many lines or more is a hub beside
+/// a place on only one (2026-10-06 decision 6).
+const RELATIVE_HUB_LINES: usize = 3;
 
 fn match_one<'a>(
     line: &'a LineDefinition,
@@ -12730,6 +12738,23 @@ mod tests {
         // Correctly tagged, the same answer.
         let found = evidence("Disruption between Grantham and Skegness", "", &["EM"]);
         assert_eq!(ids(&found), ["emr-poacher"]);
+    }
+
+    #[test]
+    fn a_hub_beside_a_place_on_one_line_is_dropped() {
+        // CD74FB58 (2026-10-06 decision 6): Victoria is on four Southern
+        // lines, Eastbourne on one. Under the absolute rule alone (a hub is
+        // on more than four lines) Victoria fanned out to all four.
+        let found = evidence(
+            "Temporary changes to weekday off-peak services between Eastbourne and London \
+             Victoria from Monday 14 September",
+            "",
+            &["SN"],
+        );
+        assert_eq!(ids(&found), ["southern-coastway-east"]);
+        // Named alone, the hub still fans out.
+        let found = evidence("Disruption at London Victoria", "", &["SN"]);
+        assert!(found.len() >= 3, "{found:?}");
     }
 
     #[test]
