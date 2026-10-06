@@ -504,8 +504,8 @@ fn record_llm_call_metrics(call: &'static str, elapsed: Duration, outcome: &'sta
 
 /// `success` plus the typed `llm::LlmCallError` labels (`rate_limited`,
 /// `quota_exhausted`, `gateway_error`, `timeout`, `http_error`,
-/// `empty_content`, `refused`), falling back to `error` (malformed JSON,
-/// connection refused, ...).
+/// `empty_content`, `refused`, `auth_error`, `unauthorized`), falling back
+/// to `error` (malformed JSON, connection refused, ...).
 fn llm_outcome<T>(result: &anyhow::Result<T>) -> &'static str {
     match result {
         Ok(_) => "success",
