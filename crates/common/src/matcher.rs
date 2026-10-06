@@ -44,7 +44,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::segments::SegmentRegistry;
 use crate::station_resolver::{
-    StationGazetteer, effective_operator, has_network_scope_marker, needs_all_operator_scope,
+    PlaceMention, StationGazetteer, effective_operator, has_network_scope_marker,
+    needs_all_operator_scope,
 };
 use crate::{IncidentMessage, LineDefinition};
 
@@ -128,7 +129,10 @@ pub fn lines_affected_by<'a>(
 
     let mut out: Vec<Match<'a>> = Vec::new();
     for line in eligible {
-        let place_hits = places.get(line.id.as_str()).map_or(&[][..], Vec::as_slice);
+        let place_hits = places
+            .per_line
+            .get(line.id.as_str())
+            .map_or(&[][..], Vec::as_slice);
         if let Some(m) = match_one(line, incident, registry, &haystack, &scope, place_hits) {
             out.push(m);
         }
@@ -140,9 +144,10 @@ pub fn lines_affected_by<'a>(
     if has_network_scope_marker(&incident.summary, &incident.description) {
         return out;
     }
-    // A place resolved: the incident is local, so the operator-wide
-    // fallback does not apply to any operator.
-    if !places.is_empty() {
+    // A place named: the incident is local, so the operator-wide fallback
+    // does not apply to any operator, even when no line holds the place
+    // (2026-10-06 decision 5).
+    if places.named {
         out.retain(|m| m.scope != MatchScope::OperatorOnly);
         return out;
     }
@@ -261,111 +266,211 @@ impl OperatorScope {
     }
 }
 
-/// The places the incident names, per line: line id -> the resolved CRS
-/// codes on that line, for every line with enough of them (module docs:
-/// two or more when any line has two or more, else one). Empty when
-/// nothing resolved.
+/// What an incident's text says about places: the lines it puts them on,
+/// and whether it named any place at all.
+struct Resolution<'a> {
+    /// Line id -> the CRS codes of that line's stations the text names,
+    /// for every line with enough of them ([`resolve_places`]).
+    per_line: HashMap<&'a str, Vec<String>>,
+    /// The text names a place (the summary any place on a catalogue line,
+    /// or else the description one in scope): the incident is local, so
+    /// the operator-wide fallback does not apply even when `per_line` is
+    /// empty (2026-10-06 decision 5).
+    named: bool,
+}
+
+/// The places the incident names, per line (module docs).
+///
+/// 1. The summary's places, resolved against every catalogue line. Those
+///    on in-scope lines go through [`select_lines`].
+/// 2. When the summary also names a place no in-scope line holds and no
+///    in-scope line holds two of its places, the lines of ANY operator
+///    holding two or more of them are used instead, when there are any
+///    (2026-10-06 decision 5: a mis-tagged operator, or a section another
+///    operator runs: 06724BDE, "XC" on "Grantham and Skegness", is the
+///    Poacher line; Shepherds Bush-Watford and Ashford-Rye are Southern's).
+///    Otherwise the in-scope lines from step 1, possibly none: a summary
+///    naming only places the operator does not serve shows nowhere rather
+///    than operator-wide.
+/// 3. A summary naming no place at all: the description's in-scope places
+///    (descriptions add ticket acceptance and diversion routes, so they are
+///    read only then, and never across operators).
 fn resolve_places<'a>(
     incident: &IncidentMessage,
     eligible: &[&'a LineDefinition],
     scope: &OperatorScope,
     gazetteer: &StationGazetteer,
-) -> HashMap<&'a str, Vec<String>> {
+) -> Resolution<'a> {
+    let nothing = |named| Resolution {
+        per_line: HashMap::new(),
+        named,
+    };
     if gazetteer.is_empty() {
-        return HashMap::new();
+        return nothing(false);
     }
     let in_scope: Vec<&'a LineDefinition> = eligible
         .iter()
         .copied()
         .filter(|line| scope.covers(line))
         .collect();
-    let pool: HashSet<&str> = in_scope
+    let pool = |lines: &[&LineDefinition]| -> HashSet<String> {
+        lines
+            .iter()
+            .flat_map(|line| line.stations.iter().map(|s| s.crs.clone()))
+            .collect()
+    };
+    let scope_pool = pool(&in_scope);
+    let catalogue_pool = pool(eligible);
+
+    let summary = distinct_places(gazetteer.places_in(
+        &incident.summary,
+        |crs| catalogue_pool.contains(crs),
+        true,
+    ));
+    if summary.is_empty() {
+        let description = distinct_places(gazetteer.places_in(
+            &incident.description,
+            |crs| scope_pool.contains(crs),
+            false,
+        ));
+        if description.is_empty() {
+            return nothing(false);
+        }
+        return Resolution {
+            per_line: select_lines(&in_scope, &description),
+            named: true,
+        };
+    }
+    let in_scope_places = restrict(&summary, |crs| scope_pool.contains(crs));
+    let per_line = select_lines(&in_scope, &in_scope_places);
+    let off_scope = in_scope_places.len() < summary.len();
+    let in_scope_section = per_line
+        .values()
+        .any(|crs| places_held(&in_scope_places, crs) >= 2);
+    if off_scope && !in_scope_section {
+        let any_operator: HashMap<&'a str, Vec<String>> = select_lines(eligible, &summary)
+            .into_iter()
+            .filter(|(_, crs)| places_held(&summary, crs) >= 2)
+            .collect();
+        if !any_operator.is_empty() {
+            return Resolution {
+                per_line: any_operator,
+                named: true,
+            };
+        }
+    }
+    Resolution {
+        per_line,
+        named: true,
+    }
+}
+
+/// `places` with each mention's codes narrowed to those `keep` accepts,
+/// dropping mentions left with none.
+fn restrict(places: &[PlaceMention], keep: impl Fn(&str) -> bool) -> Vec<PlaceMention> {
+    places
         .iter()
-        .flat_map(|line| line.stations.iter().map(|s| s.crs.as_str()))
-        .collect();
-    // The summary is the headline and names the disrupted place; the
-    // description often adds ticket acceptance and diversion routes, so it
-    // is read only when the summary names no place in scope.
-    let mut named = gazetteer.places_in(&incident.summary, |crs| pool.contains(crs), true);
-    if named.is_empty() {
-        named = gazetteer.places_in(&incident.description, |crs| pool.contains(crs), false);
+        .filter_map(|place| {
+            let crs: Vec<String> = place.crs.iter().filter(|c| keep(c)).cloned().collect();
+            (!crs.is_empty()).then(|| PlaceMention {
+                crs,
+                localised: place.localised,
+            })
+        })
+        .collect()
+}
+
+/// Each place once (a place named twice is one place), localised if any
+/// mention of it was.
+fn distinct_places(places: Vec<PlaceMention>) -> Vec<PlaceMention> {
+    let mut out: Vec<PlaceMention> = Vec::new();
+    for place in places {
+        match out.iter_mut().find(|p| p.crs == place.crs) {
+            Some(seen) => seen.localised |= place.localised,
+            None => out.push(place),
+        }
     }
-    if named.is_empty() {
-        return HashMap::new();
-    }
-    // Per line, the places (mentions) it holds. Counted by place, not by
-    // code: "London St Pancras" (two codes) or "Heathrow Airport" (three)
-    // is one place, so naming it alone is never a two-place section.
-    let per_line: Vec<(&'a str, Vec<usize>)> = in_scope
+    out
+}
+
+/// How many of `places` the evidence codes `crs` of one line cover.
+fn places_held(places: &[PlaceMention], crs: &[String]) -> usize {
+    places
+        .iter()
+        .filter(|place| place.crs.iter().any(|c| crs.contains(c)))
+        .count()
+}
+
+/// Which of `lines` the named `places` put the incident on, and the codes
+/// of each one's stations they name.
+///
+/// Counted by place, not by code: "London St Pancras" (two codes) or
+/// "Heathrow Airport" (three) is one place, so naming it alone is never a
+/// two-place section.
+///
+/// - **Sections.** If any line holds two or more of the places ("between
+///   Purley and Gatwick Airport"), only lines holding two or more count.
+/// - **Hubs.** Otherwise every line holding one counts ("at Clapham
+///   Junction"), except a hub beside a local place: a place on more than
+///   [`HUB_LINES`] is dropped when another is on [`HUB_LINES`] or fewer.
+///   A hub named alone still fans out to all its lines.
+fn select_lines<'a>(
+    lines: &[&'a LineDefinition],
+    places: &[PlaceMention],
+) -> HashMap<&'a str, Vec<String>> {
+    let per_line: Vec<(&'a LineDefinition, Vec<usize>)> = lines
         .iter()
         .map(|line| {
-            let held: Vec<usize> = (0..named.len())
-                .filter(|&p| named[p].crs.iter().any(|crs| line.has_station(crs)))
+            let held: Vec<usize> = (0..places.len())
+                .filter(|&p| places[p].crs.iter().any(|crs| line.has_station(crs)))
                 .collect();
-            (line.id.as_str(), held)
+            (*line, held)
         })
+        .filter(|(_, held)| !held.is_empty())
         .collect();
-    let distinct = |held: &[usize]| {
-        let mut places: Vec<&Vec<String>> = held.iter().map(|&p| &named[p].crs).collect();
-        places.sort();
-        places.dedup();
-        places.len()
-    };
     let best = per_line
         .iter()
-        .map(|(_, held)| distinct(held))
+        .map(|(_, held)| held.len())
         .max()
         .unwrap_or(0);
-    let lines_holding = |place: usize| {
-        per_line
-            .iter()
-            .filter(|(_, held)| held.contains(&place))
-            .count()
-    };
-    let keep: Vec<(&'a str, Vec<usize>)> = if best >= 2 {
-        per_line
-            .into_iter()
-            .filter(|(_, held)| distinct(held) >= 2)
-            .collect()
-    } else {
-        // No line holds two of the places. A place on more than
-        // `HUB_LINES` lines in scope (a London terminus, say) is then
-        // dropped when a more local one was also named: "between Ore /
-        // Eastbourne and London Victoria" is about the Eastbourne lines,
-        // not every line into Victoria. A hub named alone still fans out
-        // to all its lines.
-        let local: Vec<usize> = (0..named.len())
-            .filter(|&p| (1..=HUB_LINES).contains(&lines_holding(p)))
-            .collect();
-        let has_hub = (0..named.len()).any(|p| lines_holding(p) > HUB_LINES);
-        per_line
-            .into_iter()
-            .filter(|(_, held)| {
-                !held.is_empty()
-                    && (!has_hub || local.is_empty() || held.iter().any(|p| local.contains(p)))
-            })
-            .collect()
-    };
-    keep.into_iter()
-        .map(|(id, held)| {
-            let line = in_scope
+    let lines_holding: Vec<usize> = (0..places.len())
+        .map(|p| {
+            per_line
                 .iter()
-                .find(|line| line.id == id)
-                .expect("per_line ids come from in_scope");
+                .filter(|(_, held)| held.contains(&p))
+                .count()
+        })
+        .collect();
+    let has_local = lines_holding.iter().any(|n| (1..=HUB_LINES).contains(n));
+    let dropped: Vec<bool> = lines_holding
+        .iter()
+        .map(|&n| has_local && n > HUB_LINES)
+        .collect();
+    per_line
+        .into_iter()
+        .filter(|(_, held)| {
+            if best >= 2 {
+                held.len() >= 2
+            } else {
+                held.iter().any(|&p| !dropped[p])
+            }
+        })
+        .map(|(line, held)| {
             let mut crs: Vec<String> = Vec::new();
             for p in held {
-                for code in &named[p].crs {
+                for code in &places[p].crs {
                     if line.has_station(code) && !crs.contains(code) {
                         crs.push(code.clone());
                     }
                 }
             }
-            (id, crs)
+            (line.id.as_str(), crs)
         })
         .collect()
 }
 
-/// See [`resolve_places`]: a place on more lines than this is a hub.
+/// See [`select_lines`]: a place on more lines than this is a hub beside
+/// any place on this many or fewer.
 const HUB_LINES: usize = 4;
 
 fn match_one<'a>(
@@ -12607,5 +12712,38 @@ mod tests {
         let found = evidence("Disruption to Southern services", "", &["SN"]);
         assert!(found.len() > 5, "{found:?}");
         assert_all_operator_only(&found);
+    }
+
+    #[test]
+    fn places_no_in_scope_line_holds_use_any_operators_section() {
+        // 06724BDE, one text version tagged "XC": no CrossCountry line
+        // holds Grantham or Skegness, the Poacher line holds both. Before
+        // 2026-10-06 decision 5, every XC line operator-wide.
+        let found = evidence(
+            "Lines reopened: disruption between Grantham and Skegness expected until 19:00",
+            "<p>Tickets are valid on CrossCountry services between Birmingham New Street \
+             and Derby.</p>",
+            &["XC"],
+        );
+        assert_eq!(ids(&found), ["emr-poacher"]);
+        assert_no_operator_only(&found);
+        // Correctly tagged, the same answer.
+        let found = evidence("Disruption between Grantham and Skegness", "", &["EM"]);
+        assert_eq!(ids(&found), ["emr-poacher"]);
+    }
+
+    #[test]
+    fn a_summary_naming_only_places_off_the_operators_lines_shows_nowhere() {
+        // Not operator-wide (2026-10-06 decision 5): the summary names a
+        // place, so the incident is local, and no line holds two of them.
+        let found = evidence("Disruption at Skegness", "", &["XC"]);
+        assert!(found.is_empty(), "{found:?}");
+        // The description is not read once the summary names a place.
+        let found = evidence(
+            "Disruption at Skegness",
+            "<p>A fault between Birmingham New Street and Derby.</p>",
+            &["XC"],
+        );
+        assert!(found.is_empty(), "{found:?}");
     }
 }
