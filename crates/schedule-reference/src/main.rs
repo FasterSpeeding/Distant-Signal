@@ -443,7 +443,7 @@ mod telemetry {
     const OUTCOMES: [&str; 4] = [PUBLISHED, RETRYABLE, PERMANENT, REJECTED];
 
     /// Every `product` label value [`product_kind`] can return.
-    const PRODUCT_KINDS: [&str; 9] = [
+    const PRODUCT_KINDS: [&str; 10] = [
         "stanox_crs",
         "tiploc_crs",
         "fixed_links",
@@ -451,6 +451,7 @@ mod telemetry {
         "schedule_network_departures",
         "schedule_destination_departures",
         "schedule_calling_points_full",
+        "schedule_services",
         "all_cif_derived",
         "other",
     ];
@@ -541,6 +542,10 @@ mod product {
 
     pub(crate) fn calling_points_full(date: chrono::NaiveDate) -> String {
         format!("schedule_calling_points_full/{date}")
+    }
+
+    pub(crate) fn services(date: chrono::NaiveDate) -> String {
+        format!("schedule_services/{date}")
     }
 }
 
@@ -1270,6 +1275,7 @@ async fn publish_cif_derived_products(
             [
                 product::destination_departures(date),
                 product::calling_points_full(date),
+                product::services(date),
             ]
         }))
         .collect();
@@ -1382,6 +1388,18 @@ async fn publish_cif_derived_products(
         // directly above -- one pass, multiple outputs, this file's own
         // established precedent.
         publish_schedule_calling_points_full(
+            client,
+            config,
+            &index,
+            date,
+            internal_oauth,
+            window_has_schedules,
+            outcome,
+        )
+        .await;
+        // Fifth: every schedule's service mode for the date, so `api` can
+        // label buses and ferries (TRUST never reports them).
+        publish_schedule_services(
             client,
             config,
             &index,
@@ -2043,6 +2061,105 @@ async fn publish_schedule_calling_points_full(
             "schedule-derived full calling-point rows",
             FINAL_CHUNK_REQUEST_TIMEOUT,
             empty_publish(date, window_has_schedules),
+        )
+        .await
+    })
+    .await;
+    match result {
+        Ok(()) => outcome.succeeded(key),
+        Err(err) => outcome.failed(key, &err),
+    }
+}
+
+/// One `schedule_services` row per non-cancelled schedule running on
+/// `date` -- the STP winner's service mode (see
+/// [`schedule_query::service_mode`]) and the CIF facts it was derived from.
+/// Sorted by uid so a republish of an unchanged day is byte-identical.
+fn schedule_services_rows(
+    index: &schedule_query::ScheduleIndex,
+    date: chrono::NaiveDate,
+) -> Vec<serde_json::Value> {
+    let mut resolved: Vec<schedule_query::ResolvedSchedule> = index
+        .uids()
+        .filter_map(|uid| index.schedule_for_uid(uid, date))
+        .filter(|resolved| !resolved.cancelled)
+        .collect();
+    resolved.sort_unstable_by(|a, b| a.uid.cmp(&b.uid));
+    resolved
+        .iter()
+        .map(|resolved| {
+            serde_json::json!({
+                "service_date": date,
+                "uid": resolved.uid,
+                "mode": resolved.service_mode().as_str(),
+                "train_status": resolved.train_status.map(String::from),
+                "train_category": resolved.train_category.as_deref(),
+                "headcode": resolved.headcode,
+                "rsid": resolved.rsid,
+                "operator_atoc": resolved.operator_atoc,
+                "stp": stp_code(resolved.stp_indicator),
+            })
+        })
+        .collect()
+}
+
+/// The CIF letter for a published (never cancelled) STP indicator.
+fn stp_code(stp: schedule_query::StpIndicator) -> &'static str {
+    match stp {
+        schedule_query::StpIndicator::Permanent => "P",
+        schedule_query::StpIndicator::Overlay => "O",
+        schedule_query::StpIndicator::New => "N",
+        schedule_query::StpIndicator::Cancellation => "C",
+    }
+}
+
+/// Publishes [`schedule_services_rows`] for `date` in one request (a day is
+/// ~30k narrow rows; `api` replaces the date atomically). An empty day is
+/// published as empty only when the window has schedules at all (PL-14,
+/// the same guard as the chunked products); otherwise nothing is sent, the
+/// previous rows stay, and the product is recorded as failed.
+async fn publish_schedule_services(
+    client: &Client,
+    config: &Config,
+    index: &schedule_query::ScheduleIndex,
+    date: chrono::NaiveDate,
+    internal_oauth: &common::oauth_client::OAuthTokenCache,
+    window_has_schedules: bool,
+    outcome: &mut CycleOutcome,
+) {
+    let key = product::services(date);
+    if outcome.is_published(&key) {
+        return;
+    }
+    let rows = schedule_services_rows(index, date);
+    if rows.is_empty() && !window_has_schedules {
+        outcome.failed(
+            key,
+            &anyhow::Error::new(RefusedToClear(
+                "no schedule_services rows for this date or any date of the publish window; \
+                 not clearing the date's previous rows"
+                    .to_string(),
+            )),
+        );
+        return;
+    }
+    let separator = if config.schedule_services_url.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    let url = format!(
+        "{}{separator}service_date={date}",
+        config.schedule_services_url
+    );
+    let result = publish_with_retry(&config.publish_retry, &key, async || {
+        common::ingest::post_batch_with_timeout(
+            client,
+            &url,
+            internal_oauth,
+            &rows,
+            "schedule service-mode rows",
+            Some(FINAL_CHUNK_REQUEST_TIMEOUT),
         )
         .await
     })
@@ -3455,6 +3572,62 @@ mod poll_once_tests {
     /// trip-planning connections graph reads, and before this fix it
     /// included every CIF calling point regardless of public/non-public
     /// Activity code).
+    mod schedule_services_rows_tests {
+        use super::*;
+
+        const BS_C00573_PERMANENT: &str =
+            "BSNC005732605172612060000001 PXX1S003101121194800 DMU    125      S A T        P";
+        const LO_EUSTON: &str = "LOEUSTON  0822 08227  C      TB";
+        const LT_EUSTON: &str = "LTEUSTON  0804 08079     TF";
+
+        /// The real C30818 bus `BS` prefix (status `B`, category `BS`,
+        /// headcode `0B00`) with its dates/days widened to cover the
+        /// C00573 fixture's Sunday, blank-padded to 80 bytes.
+        fn bs_bus() -> String {
+            let line = format!("{}{:>44}", "BSNC308182605172612111111111 BBS0B00", "P");
+            assert_eq!(line.len(), 80);
+            line
+        }
+
+        #[test]
+        fn one_row_per_running_schedule_with_its_mode() {
+            let text = format!(
+                "{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LT_EUSTON}\n{}\n{LO_EUSTON}\n{LT_EUSTON}",
+                bs_bus()
+            );
+            let index = schedule_query::ScheduleIndex::from_text(&text);
+            let rows = schedule_services_rows(
+                &index,
+                chrono::NaiveDate::from_ymd_opt(2026, 5, 17).unwrap(),
+            );
+            assert_eq!(rows.len(), 2, "{rows:?}");
+            assert_eq!(rows[0]["uid"], "C00573");
+            assert_eq!(rows[0]["mode"], "train");
+            assert_eq!(rows[0]["train_status"], "P");
+            assert_eq!(rows[0]["train_category"], "XX");
+            assert_eq!(rows[0]["headcode"], "1S00");
+            assert_eq!(rows[0]["stp"], "P");
+            assert_eq!(rows[1]["uid"], "C30818");
+            assert_eq!(rows[1]["mode"], "bus");
+            assert_eq!(rows[1]["train_status"], "B");
+            assert_eq!(rows[1]["train_category"], "BS");
+            assert_eq!(rows[1]["headcode"], "0B00");
+            assert_eq!(rows[1]["service_date"], "2026-05-17");
+        }
+
+        #[test]
+        fn a_day_the_schedules_do_not_run_has_no_rows() {
+            let text = format!("{BS_C00573_PERMANENT}\n{LO_EUSTON}\n{LT_EUSTON}");
+            let index = schedule_query::ScheduleIndex::from_text(&text);
+            // 2026-05-18 is a Monday; C00573 runs Sundays only.
+            let rows = schedule_services_rows(
+                &index,
+                chrono::NaiveDate::from_ymd_opt(2026, 5, 18).unwrap(),
+            );
+            assert!(rows.is_empty());
+        }
+    }
+
     mod schedule_calling_points_full_rows_tests {
         use super::*;
 
@@ -3888,6 +4061,7 @@ LTWVRMPTN 2211 22113     TF";
             schedule_calling_points_full_url: format!(
                 "{base}/private/schedule-calling-points-full"
             ),
+            schedule_services_url: format!("{base}/private/schedule-services"),
             tiploc_crs_url: format!("{base}/private/tiploc-crs"),
             schedule_reference_publishes_url: format!(
                 "{base}/private/schedule-reference-publishes"
@@ -4372,6 +4546,7 @@ mod poll_once_retry_tests {
             "/private/schedule-network-departures",
             "/private/schedule-destination-departures",
             "/private/schedule-calling-points-full",
+            "/private/schedule-services",
             "/private/schedule-reference-publishes",
         ] {
             wiremock::Mock::given(wiremock::matchers::method("POST"))

@@ -120,6 +120,17 @@ pub(crate) struct Config {
     )]
     pub schedule_calling_points_full_url: String,
 
+    /// The `api` crate's ingestion endpoint for the per-date service-mode
+    /// publish (`schedule_services`: train, replacement bus, bus or ferry per
+    /// schedule). POST-only, one request per service date with
+    /// `?service_date=`, same writer credential as every publish above.
+    #[arg(
+        env = "SCHEDULE_SERVICES_URL",
+        long,
+        default_value = "http://api:8080/private/schedule-services"
+    )]
+    pub schedule_services_url: String,
+
     /// The `api` crate's ingestion endpoint for this service's seventh
     /// responsibility (Task 4 of the TIPLOC-primary CRS crosswalk plan): the
     /// richer, TIPLOC-primary CRS crosswalk publish, run alongside (not
