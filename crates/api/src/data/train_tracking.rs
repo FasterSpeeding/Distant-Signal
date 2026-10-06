@@ -842,6 +842,13 @@ impl From<TrackedTrainRow> for TrackedTrainRef {
 /// subscription for several days out has no legitimate reason to be in this
 /// set yet; it becomes "active" the day this floor/ceiling window reaches
 /// it, same as any other.
+///
+/// **Buses and ferries are excluded (2026-10-06).** A subscription whose
+/// shared row is a bus or ferry on its date (`schedule_services.mode <>
+/// 'train'`) is timetable-only: TRUST never activates or reports one, so
+/// carrying it in `trust-consumer`'s index only cost a lookup per reload
+/// for something that can never match. A row with no `schedule_services`
+/// entry stays in, as a train.
 pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<TrackedTrainRef>> {
     let rows = sqlx::query_as::<_, TrackedTrainRow>(
         "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_scheduled_departure, \
@@ -853,7 +860,11 @@ pub async fn list_active_tracked_trains(pool: &PgPool) -> anyhow::Result<Vec<Tra
          WHERE tt.resolution_status != 'unresolved' \
            AND tt.service_date >= CURRENT_DATE - INTERVAL '2 days' \
            AND tt.service_date <= CURRENT_DATE + INTERVAL '1 day' \
-           AND (cs.status IS NULL OR cs.status NOT IN ('completed', 'cancelled'))",
+           AND (cs.status IS NULL OR cs.status NOT IN ('completed', 'cancelled')) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM schedule_services ss \
+               WHERE ss.service_date = tr.service_date AND ss.uid = tr.train_uid \
+                 AND ss.mode <> 'train')",
     )
     .fetch_all(pool)
     .await?;
@@ -7448,6 +7459,83 @@ mod db_tests {
         );
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// A tracked bus (or ferry) is timetable-only: it stays out of the
+    /// active set trust-consumer matches against, and out of the
+    /// reconciliation sweep's enrichment candidates, so neither re-selects
+    /// it every tick. A tracked train on the same day stays in both.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                tracked_buses_are_excluded_from_the_live_sweeps -- --ignored --test-threads=1`"]
+    async fn tracked_buses_are_excluded_from_the_live_sweeps() {
+        let pool = connect().await;
+        let user_id = "TEST-BUS-SWEEP";
+        seed_user(&pool, user_id).await;
+        let today = db_today(&pool).await;
+        let bus_uid = "TBUSSWP1";
+        let train_uid = "TBUSSWP2";
+        sqlx::query("DELETE FROM trains WHERE train_uid IN ($1, $2)")
+            .bind(bus_uid)
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, train_status, stp) \
+             VALUES ($1, $2, 'bus', 'B', 'P'), ($1, $3, 'train', 'P', 'P') \
+             ON CONFLICT (service_date, uid) DO UPDATE SET mode = EXCLUDED.mode",
+        )
+        .bind(today)
+        .bind(bus_uid)
+        .bind(train_uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let bus_trains_id = crate::data::trains::find_or_create_train(&pool, bus_uid, today)
+            .await
+            .unwrap();
+        let train_trains_id = crate::data::trains::find_or_create_train(&pool, train_uid, today)
+            .await
+            .unwrap();
+        let bus_sub = create_subscription_for_train(&pool, bus_trains_id, user_id)
+            .await
+            .unwrap();
+        let train_sub = create_subscription_for_train(&pool, train_trains_id, user_id)
+            .await
+            .unwrap();
+
+        let refs = list_active_tracked_trains(&pool).await.unwrap();
+        assert!(
+            refs.iter().any(|r| r.id == train_sub),
+            "the train stays active"
+        );
+        assert!(
+            !refs.iter().any(|r| r.id == bus_sub),
+            "a bus is never activated by TRUST, so it is not in the active set"
+        );
+
+        let candidates =
+            crate::data::reconciliation::enrichment_candidate_ids_for_tests(&pool).await;
+        assert!(candidates.contains(&train_trains_id));
+        assert!(
+            !candidates.contains(&bus_trains_id),
+            "a bus is not re-selected by the enrichment sweep"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        sqlx::query("DELETE FROM trains WHERE train_uid IN ($1, $2)")
+            .bind(bus_uid)
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM schedule_services WHERE uid IN ($1, $2)")
+            .bind(bus_uid)
+            .bind(train_uid)
+            .execute(&pool)
+            .await
+            .ok();
     }
 
     /// **The 2026-09-26 review's finding H3 regression test**, the future

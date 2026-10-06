@@ -191,7 +191,19 @@ struct DelayRepayEstimateResponse {
     // Constraints.
     claim_url: String,
     disclaimer: &'static str,
+    /// `serviceMode`/`liveTracking` of the tracked service (2026-10-06).
+    #[serde(flatten)]
+    service: crate::data::schedule_services::ServiceModeFields,
+    /// Why there is no delay at all, when that is known up front: a bus or
+    /// ferry is never reported live, so its delay cannot be measured.
+    /// `None` for a train.
+    unmeasurable_reason: Option<&'static str>,
 }
+
+/// [`DelayRepayEstimateResponse::unmeasurable_reason`] for a bus or ferry.
+const TIMETABLE_ONLY_DELAY_REPAY_REASON: &str = "Buses and ferries aren't tracked live, so \
+    we can't measure a delay on this leg. If it ran late, claim with the operator using the \
+    times you recorded.";
 
 async fn post_ticket(
     State(app): State<App>,
@@ -459,7 +471,26 @@ async fn get_delay_repay_estimate(
             "no tracked train with that id".to_string(),
         ))?;
 
+    let mode = match state.train_uid.as_deref() {
+        Some(uid) => {
+            crate::data::schedule_services::mode_for_or_train(
+                &app.database,
+                uid,
+                state.service_date,
+            )
+            .await
+        }
+        None => crate::data::schedule_services::ServiceMode::Train,
+    };
     let measured_at_crs = delay_repay_destination(&ticket, &state);
+    if mode.is_timetable_only() {
+        return Ok(Json(build_delay_repay_response(
+            &ticket,
+            None,
+            measured_at_crs,
+            mode,
+        )));
+    }
     let target = crate::data::stop_delay::target(
         state.trains_id,
         state.train_uid.as_deref(),
@@ -483,6 +514,7 @@ async fn get_delay_repay_estimate(
         &ticket,
         delay,
         measured_at_crs,
+        mode,
     )))
 }
 
@@ -511,11 +543,15 @@ fn delay_repay_destination(
 /// whole feature's "the estimator's own call sites stay provably
 /// read-only/pure" posture (see `delay_repay_rules`'s module doc).
 /// `delay` is the delay against the public arrival at `measured_at_crs`.
+/// A bus or ferry (`mode`) never has a delay: the caller passes `None`, and
+/// the response says why in `unmeasurable_reason`.
 fn build_delay_repay_response(
     ticket: &train_tracking::TrackedTrainTicket,
     delay: Option<crate::data::stop_delay::StopDelay>,
     measured_at_crs: Option<String>,
+    mode: crate::data::schedule_services::ServiceMode,
 ) -> DelayRepayEstimateResponse {
+    let delay = delay.filter(|_| mode.live_tracking());
     let estimate = delay_repay_rules::estimate_for(ticket.operator.as_deref(), delay);
     let claim_url = ticket.operator.as_deref().map_or(
         delay_repay_rules::GENERIC_CLAIM_URL,
@@ -531,6 +567,10 @@ fn build_delay_repay_response(
         estimate,
         claim_url: claim_url.to_string(),
         disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
+        service: crate::data::schedule_services::ServiceModeFields(mode),
+        unmeasurable_reason: mode
+            .is_timetable_only()
+            .then_some(TIMETABLE_ONLY_DELAY_REPAY_REASON),
     }
 }
 
@@ -1194,6 +1234,16 @@ pub(crate) async fn enrich_shared_train(
         }
     }
 
+    // A bus or ferry is timetable-only: TRUST has no history to replay and
+    // never will, and the reconciliation sweep skips it, so its schedule is
+    // matched here, once, straight from CIF.
+    let mode =
+        crate::data::schedule_services::mode_for_or_train(&app.database, train_uid, date).await;
+    if mode.is_timetable_only() {
+        enrich_timetable_only_service(app, trains_id, train_uid, date).await;
+        return;
+    }
+
     let outcome = match crate::data::trust_event_backlog_match::attempt_backlog_match_by_uid(
         &app.database,
         tracking_id,
@@ -1251,6 +1301,69 @@ pub(crate) async fn enrich_shared_train(
         ),
         Err(err) => {
             tracing::warn!(error = ?err, train_uid, "schedule match failed for a shared train row");
+        }
+    }
+}
+
+/// [`enrich_shared_train`] for a bus or ferry: schedule-match the shared
+/// row from its CIF true-origin departure immediately (no TRUST grace
+/// period to wait out), and move every `'pending'` subscriber to
+/// `'schedule_matched'` -- the furthest a timetable-only service ever gets,
+/// since nothing can ever resolve it to `'resolved'`. Best-effort and
+/// logged, like the train path: the subscription the caller asked for
+/// stands whatever happens here.
+async fn enrich_timetable_only_service(
+    app: &App,
+    trains_id: i64,
+    train_uid: &str,
+    date: NaiveDate,
+) {
+    let origin = match crate::data::reconciliation::true_origin_departure(
+        &app.database,
+        train_uid,
+        date,
+    )
+    .await
+    {
+        Ok(Some(origin)) => origin,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(error = ?err, train_uid, "true-origin lookup failed for a bus/ferry");
+            return;
+        }
+    };
+    let (origin_crs, scheduled) = origin;
+    let Some(scheduled_departure) = eta_blend::london_to_utc(date.and_time(scheduled)) else {
+        return;
+    };
+    match schedule_matching::attempt_schedule_match_for_shared_train(
+        &app.database,
+        train_uid,
+        &origin_crs,
+        scheduled_departure,
+        date,
+        &app.schedule_crs_line_index,
+    )
+    .await
+    {
+        Ok(true) => {
+            if let Err(err) = sqlx::query(
+                "UPDATE train_subscriptions SET resolution_status = 'schedule_matched' \
+                 WHERE trains_id = $1 AND resolution_status = 'pending'",
+            )
+            .bind(trains_id)
+            .execute(&app.database)
+            .await
+            {
+                tracing::warn!(error = ?err, trains_id, "could not advance bus/ferry subscribers");
+            }
+        }
+        Ok(false) => tracing::debug!(
+            train_uid,
+            "no schedule match for a bus/ferry; its page uses the published calling points"
+        ),
+        Err(err) => {
+            tracing::warn!(error = ?err, train_uid, "schedule match failed for a bus/ferry");
         }
     }
 }
@@ -2111,6 +2224,7 @@ mod tests {
             &ticket(Some("LNER")),
             Some(arrived(45)),
             Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
         );
 
         let estimate = response
@@ -2149,6 +2263,7 @@ mod tests {
             &ticket(Some("Southeastern")),
             projected,
             Some("ASH".into()),
+            crate::data::schedule_services::ServiceMode::Train,
         );
         assert!(response.provisional);
         let estimate = response.estimate.unwrap();
@@ -2167,6 +2282,7 @@ mod tests {
             &ticket(Some("Southeastern")),
             Some(arrived(14)),
             Some("ASH".into()),
+            crate::data::schedule_services::ServiceMode::Train,
         );
         assert!(!response.provisional);
         assert_eq!(
@@ -2200,12 +2316,53 @@ mod tests {
 
     #[test]
     fn no_operator_on_the_ticket_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
-        let response =
-            build_delay_repay_response(&ticket(None), Some(arrived(45)), Some("EDB".into()));
+        let response = build_delay_repay_response(
+            &ticket(None),
+            Some(arrived(45)),
+            Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
+        );
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
         assert!(!response.disclaimer.is_empty());
+    }
+
+    /// A bus or ferry leg is never measured: no delay, no estimate, a
+    /// reason saying why, and still the claim link and disclaimer.
+    #[test]
+    fn a_bus_leg_says_its_delay_cannot_be_measured() {
+        for mode in [
+            crate::data::schedule_services::ServiceMode::ReplacementBus,
+            crate::data::schedule_services::ServiceMode::Bus,
+            crate::data::schedule_services::ServiceMode::Ferry,
+        ] {
+            let response = build_delay_repay_response(
+                &ticket(Some("LNER")),
+                Some(arrived(45)),
+                Some("EDB".into()),
+                mode,
+            );
+            assert_eq!(response.delay_minutes, None);
+            assert_eq!(response.estimate, None);
+            assert_eq!(response.measured_at_crs, None);
+            assert_eq!(
+                response.unmeasurable_reason,
+                Some(TIMETABLE_ONLY_DELAY_REPAY_REASON)
+            );
+            assert!(!response.claim_url.is_empty());
+            let json = serde_json::to_value(&response).unwrap();
+            assert_eq!(json["liveTracking"], false);
+            assert!(json["unmeasurableReason"].is_string());
+        }
+        let train = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            Some(arrived(45)),
+            Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
+        );
+        assert_eq!(train.unmeasurable_reason, None);
+        assert!(train.estimate.is_some());
     }
 
     // --- ScheduleMatchFailureCache (negative cache for
@@ -2293,7 +2450,12 @@ mod tests {
     fn an_unresolved_delay_yields_no_estimate_but_claim_url_and_disclaimer_are_still_populated() {
         // Safety property #3: a caller must never see a bare/absent
         // caveat, even when the train hasn't resolved/reported a delay yet.
-        let response = build_delay_repay_response(&ticket(Some("LNER")), None, Some("EDB".into()));
+        let response = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            None,
+            Some("EDB".into()),
+            crate::data::schedule_services::ServiceMode::Train,
+        );
 
         assert_eq!(response.estimate, None);
         assert_eq!(response.delay_minutes, None);
