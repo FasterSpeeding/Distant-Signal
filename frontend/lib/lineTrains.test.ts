@@ -205,7 +205,9 @@ describe('stop strip', () => {
 describe('pattern grouping', () => {
   it('summarises a regular interval with its minutes past the hour', () => {
     expect(frequencySummary([485, 515, 545, 575])).toBe('every 30 min · xx:05, xx:35');
-    expect(frequencySummary([480, 495, 510])).toBe('every 15 min · xx:00, xx:15, xx:30, xx:45');
+    expect(frequencySummary([480, 495, 510])).toBe('every 15 min · xx:00, xx:15, xx:30');
+    // A minute's drift reads as one slot.
+    expect(frequencySummary([993, 1022, 1053, 1082])).toBe('every 30 min · xx:02, xx:33');
     expect(frequencySummary([480, 520, 560])).toBe('every 40 min');
     expect(frequencySummary([480, 500, 560])).toBe('3 trains');
     expect(frequencySummary([480, 510])).toBe('2 trains');

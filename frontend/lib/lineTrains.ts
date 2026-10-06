@@ -302,10 +302,13 @@ export function frequencySummary(minutes: number[]): string {
   const interval = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
   if (interval < 5 || gaps.some((g) => Math.abs(g - interval) > 1)) return count;
   if (60 % interval !== 0) return `every ${interval} min`;
-  const pasts = [...new Set(sorted.map((m) => m % interval))]
-    .sort((a, b) => a - b)
-    .flatMap((offset) => Array.from({ length: 60 / interval }, (_, k) => offset + k * interval));
-  const distinct = [...new Set(pasts)].sort((a, b) => a - b);
+  // Minutes past the hour of the trains themselves, a minute's drift
+  // folded into the earlier one (xx:02 and xx:03 read as xx:02).
+  const distinct: number[] = [];
+  for (const past of sorted.map((m) => m % 60).sort((x, y) => x - y)) {
+    const prev = distinct.at(-1);
+    if (prev === undefined || past - prev > 1) distinct.push(past);
+  }
   return `every ${interval} min · ${distinct.map((m) => `xx:${String(m).padStart(2, '0')}`).join(', ')}`;
 }
 
