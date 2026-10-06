@@ -195,6 +195,40 @@ pub struct IncidentSnapshotOutcome {
 /// `source_removed_at = NULL`, complete snapshot or not: being listed is
 /// positive evidence on its own, so a reappearing incident is un-ended at
 /// once.
+/// Gauge: how many of the live incidents in the latest Knowledgebase poll
+/// name no place the matcher resolves (and are not network-wide), so fall
+/// back to every line of their operators (2026-10-06 decision 9). Set on
+/// every snapshot POST. No labels: the phrase it missed goes to the debug
+/// log, never into a label (unbounded cardinality).
+pub const INCIDENTS_WITHOUT_PLACE_METRIC: &str = "api_incidents_without_resolved_place";
+
+/// Sets [`INCIDENTS_WITHOUT_PLACE_METRIC`] for this poll's live (uncleared)
+/// incidents and logs each one's summary at debug level, for finding the
+/// phrasings the resolver misses.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "metric gauges take f64; a poll holds a few hundred incidents"
+)]
+fn record_unresolved_places(
+    line_matcher: &common::matcher::LineMatcher,
+    incidents: &[IncidentMessage],
+    gazetteer: &common::station_resolver::StationGazetteer,
+) {
+    let mut unresolved = 0usize;
+    for incident in incidents.iter().filter(|i| !i.is_cleared) {
+        if line_matcher.names_no_resolvable_place(incident, gazetteer) {
+            unresolved += 1;
+            tracing::debug!(
+                incident_id = %incident.incident_id,
+                summary = %incident.summary,
+                "incident names no resolvable place; shown on every line of its operators"
+            );
+        }
+    }
+    metrics::gauge!(common::metrics::metric_name(INCIDENTS_WITHOUT_PLACE_METRIC))
+        .set(unresolved as f64);
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "long but linear; splitting it would scatter its shared state across helpers"
@@ -230,6 +264,7 @@ pub async fn upsert_incident_snapshot(
         .iter()
         .map(|incident| line_matcher.affected_line_ids(incident, &gazetteer))
         .collect();
+    record_unresolved_places(line_matcher, incidents, &gazetteer);
 
     for (chunk_index, chunk) in incidents.chunks(UPSERT_CHUNK_SIZE).enumerate() {
         let chunk_offset = chunk_index * UPSERT_CHUNK_SIZE;

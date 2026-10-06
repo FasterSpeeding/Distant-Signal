@@ -105,26 +105,7 @@ pub fn lines_affected_by<'a>(
     gazetteer: &StationGazetteer,
 ) -> Vec<Match<'a>> {
     let haystack = format!("{} {}", incident.summary, incident.description).to_lowercase();
-    let mut operators: Vec<String> = incident
-        .operators
-        .iter()
-        .map(|op| effective_operator(op).to_string())
-        .collect();
-    operators.sort();
-    operators.dedup();
-    let known: HashSet<&str> = lines
-        .values()
-        .flat_map(|line| line.operators.iter().map(String::as_str))
-        .collect();
-    let scope = OperatorScope {
-        all_operators: needs_all_operator_scope(&operators, &known),
-        operators,
-    };
-    let summary = incident.summary.to_lowercase();
-    let eligible: Vec<&'a LineDefinition> = lines
-        .values()
-        .filter(|line| !is_excluded(line, &summary))
-        .collect();
+    let (scope, eligible) = scope_and_eligible(incident, lines);
     let places = resolve_places(incident, &eligible, &scope, gazetteer);
 
     let mut out: Vec<Match<'a>> = Vec::new();
@@ -183,6 +164,35 @@ pub fn lines_affected_by<'a>(
     });
 
     out
+}
+
+/// The incident's operator scope, and the lines its summary does not veto
+/// ([`is_excluded`]).
+fn scope_and_eligible<'a>(
+    incident: &IncidentMessage,
+    lines: &'a HashMap<String, LineDefinition>,
+) -> (OperatorScope, Vec<&'a LineDefinition>) {
+    let mut operators: Vec<String> = incident
+        .operators
+        .iter()
+        .map(|op| effective_operator(op).to_string())
+        .collect();
+    operators.sort();
+    operators.dedup();
+    let known: HashSet<&str> = lines
+        .values()
+        .flat_map(|line| line.operators.iter().map(String::as_str))
+        .collect();
+    let scope = OperatorScope {
+        all_operators: needs_all_operator_scope(&operators, &known),
+        operators,
+    };
+    let summary = incident.summary.to_lowercase();
+    let eligible: Vec<&'a LineDefinition> = lines
+        .values()
+        .filter(|line| !is_excluded(line, &summary))
+        .collect();
+    (scope, eligible)
 }
 
 /// Owns a line catalogue and its derived [`SegmentRegistry`] so a caller
@@ -248,6 +258,29 @@ impl LineMatcher {
     /// attribution (see `api::data::incident_line_backfill`).
     pub fn line_count(&self) -> usize {
         self.lines.len()
+    }
+
+    /// Whether the incident's text is local yet names no place the matcher
+    /// can resolve: no network-scope marker, and neither the summary nor
+    /// (the summary naming none) the description's first paragraph names a
+    /// station of a catalogue line. Such an incident falls back to every
+    /// line of its operators. Counted per poll by the api
+    /// (2026-10-06 decision 9), so the phrasings the resolver misses
+    /// ("in the Sussex area", "Guilford") become visible and fixable.
+    /// False with an empty gazetteer (nothing could resolve; that failure
+    /// is logged where the gazetteer loads).
+    pub fn names_no_resolvable_place(
+        &self,
+        incident: &IncidentMessage,
+        gazetteer: &StationGazetteer,
+    ) -> bool {
+        if gazetteer.is_empty()
+            || has_network_scope_marker(&incident.summary, &incident.description)
+        {
+            return false;
+        }
+        let (scope, eligible) = scope_and_eligible(incident, &self.lines);
+        !resolve_places(incident, &eligible, &scope, gazetteer).named
     }
 }
 
@@ -13230,6 +13263,43 @@ mod tests {
         // 5977B842: the Scarborough line's Airport workings.
         let found = evidence("Disruption at Manchester Piccadilly", "", &["TP"]);
         assert!(ids(&found).contains(&"tpe-north-scarborough"), "{found:?}");
+    }
+
+    #[test]
+    fn incidents_naming_no_resolvable_place_are_flagged() {
+        let lines: Vec<LineDefinition> = load_all_lines().into_values().collect();
+        let matcher = LineMatcher::new(&lines);
+        let gazetteer = real_gazetteer();
+        let flagged = |summary: &str, description: &str| {
+            matcher.names_no_resolvable_place(
+                &incident("U", summary, description, &["SN"], &[]),
+                &gazetteer,
+            )
+        };
+        // C70BA3DB: a region, not a station.
+        assert!(flagged(
+            "Disruption to Southern services in the Sussex area",
+            "<p>Issues with communications systems in the Sussex area.</p>"
+        ));
+        assert!(!flagged(
+            "Disruption between Purley and Gatwick Airport",
+            ""
+        ));
+        // The description's lead names the place.
+        assert!(!flagged(
+            "Disruption to Southern services",
+            "<p>A fault at Three Bridges.</p>"
+        ));
+        // A network-wide notice needs no place.
+        assert!(!flagged(
+            "Industrial action affecting Southern services",
+            ""
+        ));
+        // Without station names nothing resolves, and nothing is flagged.
+        assert!(!matcher.names_no_resolvable_place(
+            &incident("U", "Disruption in the Sussex area", "", &["SN"], &[]),
+            &StationGazetteer::default()
+        ));
     }
 
     #[test]
