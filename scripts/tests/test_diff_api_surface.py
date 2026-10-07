@@ -135,6 +135,23 @@ class SurfaceTest(unittest.TestCase):
         flags = {t.text: t.test for t in tokens if t.kind == "str"}
         self.assertEqual(flags, {"SELECT 1": True, "SELECT 2": False})
 
+    def test_the_test_support_feature_cfgs_are_test_code(self) -> None:
+        """ds-store's `test-support` fixtures are test code; other cfgs are not."""
+        tokens = surface.tokenize(
+            "crates/ds-store/src/x.rs",
+            '#[cfg(any(test, feature = "test-support"))]\nfn a() { "SELECT 1"; }\n'
+            '#[cfg(feature = "test-support")]\nfn b() { "SELECT 2"; }\n'
+            '#[cfg(feature = "postgres")]\nfn c() { "SELECT 3"; }\n'
+            '#[cfg(any(test, feature = "other"))]\nfn d() { "SELECT 4"; }',
+        )
+        flags = {
+            t.text: t.test for t in tokens if t.kind == "str" and "SELECT" in t.text
+        }
+        self.assertEqual(
+            flags,
+            {"SELECT 1": True, "SELECT 2": True, "SELECT 3": False, "SELECT 4": False},
+        )
+
     def test_cfg_test_file_modules_are_test_code(self) -> None:
         """`#[cfg(test)] mod x;` makes x.rs (and its children) test code."""
         files = {
