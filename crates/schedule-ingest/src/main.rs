@@ -42,6 +42,7 @@ mod corpus;
 mod delivery;
 mod pattern;
 mod scan;
+mod sink;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -57,6 +58,7 @@ use pattern::{FilePattern, Routing};
 use reqwest::Client;
 use scan::{StabilityTracker, scan_incoming};
 use serde::Serialize;
+use sink::{IngestSink, SinkError};
 
 /// Per-request timeout — matches the other pollers' identical rationale
 /// (comfortably short relative to `poll_interval_secs`'s default of two
@@ -152,8 +154,23 @@ async fn run() -> anyhow::Result<()> {
         tracing::info!(pattern = %config.corpus.corpus_file_pattern, "CORPUS ingest enabled");
     }
 
-    let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-    let internal_oauth = config.internal_oauth.token_cache();
+    // Plan 2d.1: api's routes (`http`, the default) or Postgres (`db`).
+    let sink = match config.ingest_sink {
+        sink::SinkKind::Http => sink::Sink::Http(sink::HttpSink::new(
+            Client::builder().timeout(REQUEST_TIMEOUT).build()?,
+            config.api_ingest_url.clone(),
+            config.corpus.corpus_api_url.clone(),
+            config.internal_oauth.token_cache(),
+        )),
+        sink::SinkKind::Db => {
+            let database_url = config
+                .database_url
+                .as_ref()
+                .context("INGEST_SINK=db needs DATABASE_URL")?;
+            tracing::info!("INGEST_SINK=db: feed markers and CORPUS loads go to Postgres directly");
+            sink::Sink::Db(sink::DbSink::connect(database_url, &progress).await?)
+        }
+    };
     // Registered at 0 so the alert's increase() sees the first rejection.
     metrics::counter!(common::metrics::metric_name(ZIP_REJECTED_METRIC)).increment(0);
     metrics::counter!(common::metrics::metric_name(INGEST_REJECTED_METRIC)).increment(0);
@@ -204,10 +221,9 @@ async fn run() -> anyhow::Result<()> {
         let cycle_start = Instant::now();
 
         if let Err(err) = run_scan_cycle(
-            &client,
+            &sink,
             &config,
             &routing,
-            &internal_oauth,
             &mut tracker,
             &mut known_stable,
             &mut known_stray_files,
@@ -222,12 +238,11 @@ async fn run() -> anyhow::Result<()> {
         }
         if config.corpus.corpus_ingest_enabled
             && let Err(err) = corpus::run_corpus_cycle(
-                &client,
+                &sink,
                 &config.watch_dir,
                 &config.storage_dir,
                 &config.corpus,
                 &routing,
-                &internal_oauth,
                 config.stability_cycles,
                 &mut corpus_state,
             )
@@ -261,10 +276,9 @@ async fn run() -> anyhow::Result<()> {
     reason = "each argument is an independent input from the single caller; a struct would only wrap them; metric gauges take f64, and these counts and timestamps stay far below 2^52; long but linear; splitting it would scatter its shared state across helpers"
 )]
 async fn run_scan_cycle(
-    client: &Client,
+    sink: &impl IngestSink,
     config: &Config,
     routing: &Routing,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     tracker: &mut StabilityTracker,
     known_stable: &mut HashSet<String>,
     known_stray_files: &mut HashSet<String>,
@@ -282,7 +296,7 @@ async fn run_scan_cycle(
     // documented in this module's doc comment) -- a real but narrow gap,
     // not silently pretended away.
     if let Some(pending) = pending_post.take() {
-        match post_ingest(client, config, internal_oauth, &pending).await {
+        match sink.record_feed_ingest(&pending).await {
             Ok(()) => {
                 tracing::info!(
                     delivered_at = %pending.delivered_at,
@@ -540,7 +554,7 @@ async fn run_scan_cycle(
         source_sha256: delivered.sha256.clone(),
     };
 
-    match post_ingest(client, config, internal_oauth, &request).await {
+    match sink.record_feed_ingest(&request).await {
         Ok(()) => {
             tracing::info!(
                 delivered_at = %delivered_at,
@@ -603,19 +617,17 @@ const INGEST_REJECTED_METRIC: &str = "schedule_feed_ingest_rejected_total";
 /// (api down, a timeout, 5xx, 401/403/404/408/429) is queued and retried
 /// every cycle; a data rejection (400/413/422) would be refused the same
 /// way every time, so the delivery is quarantined like a rejected zip
-/// until a new upload replaces it, and counted for the alert.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "callers hand over values they no longer need"
-)]
+/// until a new upload replaces it, and counted for the alert. Under
+/// `INGEST_SINK=db` the same split comes from the route's checks and the
+/// SQLSTATE ([`SinkError`]).
 fn queue_or_quarantine_failed_post(
-    err: anyhow::Error,
+    err: SinkError,
     request: ScheduleFeedIngestRequest,
     pending_post: &mut Option<ScheduleFeedIngestRequest>,
     rejected_mtime: &mut Option<SystemTime>,
 ) {
-    match common::ingest::classify_failure(&err) {
-        common::ingest::FailureClass::Rejected => {
+    match err {
+        SinkError::Rejected(err) => {
             tracing::error!(
                 error = ?err,
                 delivered_at = %request.delivered_at,
@@ -632,7 +644,7 @@ fn queue_or_quarantine_failed_post(
             *rejected_mtime = Some(SystemTime::from(request.delivered_at));
             *pending_post = None;
         }
-        common::ingest::FailureClass::Transient => {
+        SinkError::Transient(err) => {
             tracing::error!(
                 error = ?err,
                 delivered_at = %request.delivered_at,
@@ -641,36 +653,6 @@ fn queue_or_quarantine_failed_post(
             *pending_post = Some(request);
         }
     }
-}
-
-/// POSTs one completed delivery record to `config.api_ingest_url`.
-///
-/// Deliberately **not** `common::ingest::post_batch`: that helper always
-/// serializes `items: &[T]` as a JSON *array*, but the `api` crate's
-/// `ScheduleFeedIngestRequest` (see `crates/api/src/routes/ingest.rs`)
-/// expects a single JSON *object* — one record per verified delivery, not a
-/// per-cycle batch of reference rows like every other poller sends. Wrapping
-/// a single record in a one-element slice would change the wire shape
-/// rather than match it, so this is a small bespoke POST instead (mirroring
-/// `post_batch`'s own request-building/error-handling shape, just without
-/// the `&[T]` framing).
-async fn post_ingest(
-    client: &Client,
-    config: &Config,
-    tokens: &common::oauth_client::OAuthTokenCache,
-    request: &ScheduleFeedIngestRequest,
-) -> anyhow::Result<()> {
-    common::ingest::post_json(client, &config.api_ingest_url, tokens, request)
-        .await
-        // `context`, not a fresh `anyhow!`: the `HttpStatusError` underneath
-        // must survive for `classify_failure` (N-2).
-        .context("schedule feed ingest POST failed")?;
-    tracing::info!(
-        delivered_at = %request.delivered_at,
-        files = request.files.len(),
-        "posted schedule feed ingest to api"
-    );
-    Ok(())
 }
 
 /// Mirrors `crates/api/src/routes/ingest.rs`'s private
@@ -1032,6 +1014,8 @@ mod tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let internal_oauth = test_oauth();
 
+        let sink = test_sink(&config, client, internal_oauth);
+
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1043,10 +1027,9 @@ mod tests {
         // cycles reach stability.
         for _ in 0..2 {
             run_scan_cycle(
-                &client,
+                &sink,
                 &config,
                 &Routing::defaults(),
-                &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1101,6 +1084,7 @@ mod tests {
         let config = test_config(watch_dir.path(), storage_dir.path());
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let internal_oauth = test_oauth();
+        let sink = test_sink(&config, client, internal_oauth);
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1109,10 +1093,9 @@ mod tests {
         let mut rejected_mtime = None;
         for _ in 0..2 {
             run_scan_cycle(
-                &client,
+                &sink,
                 &config,
                 &Routing::defaults(),
-                &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1162,6 +1145,7 @@ mod tests {
         config.max_extracted_bytes = 12;
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let internal_oauth = test_oauth();
+        let sink = test_sink(&config, client, internal_oauth);
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1171,10 +1155,9 @@ mod tests {
 
         for _ in 0..4 {
             run_scan_cycle(
-                &client,
+                &sink,
                 &config,
                 &Routing::defaults(),
-                &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1209,6 +1192,7 @@ mod tests {
         let config = test_config(watch_dir.path(), storage_dir.path());
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let internal_oauth = test_oauth();
+        let sink = test_sink(&config, client, internal_oauth);
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1219,10 +1203,9 @@ mod tests {
         let mut marker_stamp = None;
         for cycle in 0..6 {
             run_scan_cycle(
-                &client,
+                &sink,
                 &config,
                 &Routing::defaults(),
-                &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1302,6 +1285,8 @@ mod tests {
             // Deliberately an address nothing listens on -- these tests
             // only exercise up to the POST attempt, not a real server.
             api_ingest_url: "http://127.0.0.1:1/schedule-feed-ingests".to_string(),
+            ingest_sink: sink::SinkKind::Http,
+            database_url: None,
             internal_oauth: common::oauth_client::InternalOAuthArgs {
                 internal_oauth_token_url: "http://127.0.0.1:1/token".to_string(),
                 internal_oauth_client_id: "test-client".to_string(),
@@ -1362,6 +1347,7 @@ mod tests {
                     password: "test-password".to_string(),
                 },
             );
+            let sink = test_sink(&config, client, internal_oauth);
             let mut tracker = StabilityTracker::new();
             let mut known_stable = HashSet::new();
             let mut known_stray_files = HashSet::new();
@@ -1371,10 +1357,9 @@ mod tests {
 
             for _ in 0..5 {
                 run_scan_cycle(
-                    &client,
+                    &sink,
                     &config,
                     &Routing::defaults(),
-                    &internal_oauth,
                     &mut tracker,
                     &mut known_stable,
                     &mut known_stray_files,
@@ -1454,6 +1439,7 @@ mod tests {
                     password: "test-password".to_string(),
                 },
             );
+            let sink = test_sink(&config, client, internal_oauth);
             let mut tracker = StabilityTracker::new();
             let mut known_stable = HashSet::new();
             let mut known_stray_files = HashSet::new();
@@ -1464,10 +1450,9 @@ mod tests {
             let (guard, logs) = audit::tests::capture_default();
             for _ in 0..4 {
                 run_scan_cycle(
-                    &client,
+                    &sink,
                     &config,
                     &Routing::defaults(),
-                    &internal_oauth,
                     &mut tracker,
                     &mut known_stable,
                     &mut known_stray_files,
@@ -1547,8 +1532,7 @@ mod tests {
     /// `Process` over the same directories is a pod restart.
     struct Process {
         config: Config,
-        client: Client,
-        oauth: common::oauth_client::OAuthTokenCache,
+        sink: sink::HttpSink,
         tracker: StabilityTracker,
         known_stable: HashSet<String>,
         known_stray_files: HashSet<String>,
@@ -1565,10 +1549,10 @@ mod tests {
         ) -> Self {
             let mut config = test_config(watch_dir, storage_dir);
             config.api_ingest_url = format!("{}/schedule-feed-ingests", server.uri());
-            Self {
-                config,
-                client: Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap(),
-                oauth: common::oauth_client::OAuthTokenCache::new(
+            let sink = test_sink(
+                &config,
+                Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap(),
+                common::oauth_client::OAuthTokenCache::new(
                     common::oauth_client::OAuthCredentials {
                         token_url: format!("{}/token", server.uri()),
                         client_id: "test-client".to_string(),
@@ -1577,6 +1561,10 @@ mod tests {
                         password: "test-password".to_string(),
                     },
                 ),
+            );
+            Self {
+                config,
+                sink,
                 tracker: StabilityTracker::new(),
                 known_stable: HashSet::new(),
                 known_stray_files: HashSet::new(),
@@ -1591,10 +1579,9 @@ mod tests {
         async fn final_check_cycle(&mut self) -> Vec<serde_json::Value> {
             let (guard, logs) = audit::tests::capture_default();
             run_scan_cycle(
-                &self.client,
+                &self.sink,
                 &self.config,
                 &Routing::defaults(),
-                &self.oauth,
                 &mut self.tracker,
                 &mut self.known_stable,
                 &mut self.known_stray_files,
@@ -1762,6 +1749,7 @@ mod tests {
         let config = test_config(watch_dir, storage_dir);
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let internal_oauth = test_oauth();
+        let sink = test_sink(&config, client, internal_oauth);
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1771,10 +1759,9 @@ mod tests {
         let (guard, logs) = audit::tests::capture_default();
         for _ in 0..cycles {
             run_scan_cycle(
-                &client,
+                &sink,
                 &config,
                 &Routing::defaults(),
-                &internal_oauth,
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1873,6 +1860,20 @@ mod tests {
             .collect();
         dirs.sort();
         assert_eq!(dirs, ["20200101T000000Z"]);
+    }
+
+    /// The HTTP sink `main` builds from `config` (`INGEST_SINK=http`).
+    fn test_sink(
+        config: &Config,
+        client: Client,
+        tokens: common::oauth_client::OAuthTokenCache,
+    ) -> sink::HttpSink {
+        sink::HttpSink::new(
+            client,
+            config.api_ingest_url.clone(),
+            config.corpus.corpus_api_url.clone(),
+            tokens,
+        )
     }
 
     fn test_oauth() -> common::oauth_client::OAuthTokenCache {

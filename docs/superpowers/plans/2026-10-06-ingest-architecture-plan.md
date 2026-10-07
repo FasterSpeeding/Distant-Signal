@@ -544,6 +544,37 @@ Rollback: heartbeat `true` (instant), then `sink=http`.
 
 ### 2d. schedule-ingest: CORPUS and feed markers
 
+**Status (2026-10-07): 2d.1 and 2d.2 are built, off by default**
+(`scheduleFeed.ingest.sink: http`). Differences from the table below:
+
+- 2d.1: the sink is `crates/schedule-ingest/src/sink.rs` (`IngestSink`,
+  `HttpSink`, `DbSink`, `INGEST_SINK=http|db`, `DATABASE_URL`, pool 1, the
+  schema gate as `DbRole::ScheduleIngest`). `SinkError` has only
+  `Rejected` and `Transient`: neither route has a busy or timeout answer,
+  and the callers treated both as transient already. Under `db` a class
+  22/23 SQLSTATE is `Rejected` (the route answered 500, so transient);
+  the checks run first, so only a CHECK the checks do not mirror can hit
+  it. The route's inline CORPUS provenance check moved to
+  `ds_store::corpus::corpus_provenance_problem` (the route now calls it);
+  `corpus_delivery_problem` is `corpus_load_problem` on borrowed parts.
+  schedule-ingest's own `CorpusLocation` is now `ds_store`'s.
+- 2d.1, the gauge and the comparison: `refresh_last_delivery_metric`
+  already ran on the writer's CORPUS tick (1B.6). The comparison is
+  `ds_store::loops::corpus_crosswalk_comparing`, the writer's CORPUS loop
+  now: it runs `log_after_load` whenever the newest delivery differs from
+  the one it last compared (also once per writer start). The api keeps
+  both after its route, so with the writer on and `sink: http` a load is
+  compared twice; the api's startup one-shot is unchanged.
+- 2d.2: the role is `narrow` straight away (the flip exercises the final
+  grants) and also needs SIUD on `corpus_crosswalk_build`,
+  `corpus_tiploc_crs`, `corpus_stanox_crs` and S on `stations`: the load
+  rewrites the crosswalk in its own transaction, which spec §6.4 leaves
+  out. `postgresql.roles.perService.schedule_ingest` (`connect` needs
+  `sink: db`); the NetworkPolicy Postgres egress and ingress for
+  `schedulefeed` render with `sink: db`; the pool counts in INF-7 and the
+  app role's computed limit. CI runs `sink::db_tests` as the superuser and
+  as the narrow role (`--mode per-service`).
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 2d.1 | Sink trait for `/private/corpus-locations` and `/private/schedule-feed-ingests`; `DbSink` calls `replace_corpus_locations_with_provenance` (with `corpus_load_problem`) and `insert_schedule_feed_ingest` (with `schedule_feed_ingest_problem`); `refresh_last_delivery_metric` and `log_after_load` move to the writer's crosswalk tick | `crates/schedule-ingest/src/{sink.rs,…}` | both sinks; validation errors identical |

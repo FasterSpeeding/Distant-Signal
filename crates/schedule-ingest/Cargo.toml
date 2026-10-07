@@ -13,6 +13,9 @@ chrono-tz = "0.10"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 common = { path = "../common" }
 dotenvy = "0.15.7"
+# `INGEST_SINK=db` (ingest architecture plan 2d.1, `sink.rs`): the feed
+# marker and CORPUS writes, their validation, the pool and the schema gate.
+ds-store = { path = "../ds-store" }
 # CORPUS extracts arrive gzipped (`corpus.rs`); same spec as `crates/api`.
 flate2 = "1"
 metrics = "0.24"
@@ -22,6 +25,8 @@ serde_json = "1.0.149"
 # SHA-256 of every delivered file (`audit.rs`); same spec as `crates/api`
 # and `crates/common`.
 sha2 = "0.10"
+# The DB sink's pool and SQLSTATE classification; the ingest-writer's spec.
+sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1.44"
 # Same version/feature spec as `crates/api`'s existing direct dependency

@@ -535,9 +535,6 @@ async fn get_active_tracked_trains(
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
 use ds_store::schedule::ScheduleFeedIngestRequest;
 
-// Moved to `ds_store::corpus` (ingest architecture plan 1A.6).
-use ds_store::corpus::is_sha256_hex;
-
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
 use ds_store::schedule::schedule_feed_ingest_problem;
 
@@ -690,13 +687,8 @@ async fn post_corpus_locations(
     if let Some(problem) = corpus_load_problem(&req) {
         return Err((StatusCode::BAD_REQUEST, problem));
     }
-    if req.sha256.as_deref().is_some_and(|s| !is_sha256_hex(s))
-        || req.source_bytes.is_some_and(|b| i64::try_from(b).is_err())
-    {
-        return Err((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "sha256 must be 64 lowercase hex digits and source_bytes in range".to_string(),
-        ));
+    if let Some(problem) = corpus_provenance_problem(req.sha256.as_deref(), req.source_bytes) {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, problem));
     }
     let upserted = crate::data::corpus::replace_corpus_locations_with_provenance(
         &app.database,
@@ -732,8 +724,9 @@ async fn post_corpus_locations(
     Ok(Json(UpsertResponse { upserted }))
 }
 
-// Moved to `ds_store::corpus` (ingest architecture plan 1A.6).
-use ds_store::corpus::corpus_load_problem;
+// Moved to `ds_store::corpus` (ingest architecture plan 1A.6); the
+// provenance check joined it in plan 2d.1, for schedule-ingest's direct sink.
+use ds_store::corpus::{corpus_load_problem, corpus_provenance_problem};
 
 /// `crates/schedule-reference`'s per-cycle fixed-links batch -- see
 /// `queries::upsert_fixed_links`.
