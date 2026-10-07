@@ -5,4 +5,14 @@
 //! reference-publish markers, and `schedule_feed_ingest_problem`
 //! (spec §5.2).
 //!
-//! Empty until plan task 1A.7 moves it in.
+//! Filled by plan task 1A.7. The submodules live under `schedule/`; every
+//! item is re-exported here, so callers name `ds_store::schedule::…`.
+//!
+//! - `markers`: the feed-ingest and reference-publish markers.
+
+mod markers;
+
+pub use markers::{
+    ScheduleFeedSource, insert_schedule_feed_ingest, insert_schedule_reference_publish,
+    last_completed_schedule_reference_publish, last_schedule_feed_fetch,
+};
