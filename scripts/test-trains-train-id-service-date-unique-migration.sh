@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Local reproduction + verification harness for
-# crates/api/migrations/20260925221500_close_out_trains_train_id_service_date_collisions.sql --
+# crates/ds-store/migrations/20260925221500_close_out_trains_train_id_service_date_collisions.sql --
 # the delete-both-sides-of-any-collision + subscription-detach migration
 # that now runs immediately before
 # 20260925222000_trains_train_id_service_date_unique.sql's
@@ -34,7 +34,7 @@ PG_ADMIN_URL="postgres://postgres:postgres@localhost:5432/postgres"
 TEST_DB="ds_trains_unique_migration_test_$$"
 TEST_URL="postgres://postgres:postgres@localhost:5432/${TEST_DB}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MIGRATIONS_DIR="${REPO_ROOT}/crates/api/migrations"
+MIGRATIONS_DIR="${REPO_ROOT}/crates/ds-store/migrations"
 TARGET_MIGRATION="${MIGRATIONS_DIR}/20260925221500_close_out_trains_train_id_service_date_collisions.sql"
 PRE_TARGET_VERSION="20260925221000"
 # Fail fast if the migration under test was renamed or removed.

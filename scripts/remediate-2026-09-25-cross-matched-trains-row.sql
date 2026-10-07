@@ -2,7 +2,7 @@
 -- Remediation: unglue the 2026-09-25 cross-matched `trains` row(s)
 -- =============================================================================
 --
--- SUPERSEDED: `crates/api/migrations/20260925221500_close_out_trains_train_id_service_date_collisions.sql`
+-- SUPERSEDED: `crates/ds-store/migrations/20260925221500_close_out_trains_train_id_service_date_collisions.sql`
 -- (which runs immediately before
 -- `20260925222000_trains_train_id_service_date_unique.sql`'s unique index
 -- build) now closes out this exact incident (and every other `(train_id,
@@ -35,7 +35,7 @@
 -- Both write paths that could cause this have since been patched with an
 -- application-level veto (`is_provable_identity_contradiction` in both
 -- modules named above), and a schema-level backstop
--- (`crates/api/migrations/20260925222000_trains_train_id_service_date_unique.sql`,
+-- (`crates/ds-store/migrations/20260925222000_trains_train_id_service_date_unique.sql`,
 -- `UNIQUE (train_id, service_date) WHERE train_id IS NOT NULL`) makes this
 -- whole bug class structurally impossible going forward. Neither of those
 -- fixes touches EXISTING corrupted data -- that migration's own header
@@ -75,7 +75,7 @@
 -- the `is_provable_identity_contradiction` veto) can correctly re-resolve it
 -- the next time a live TRUST Activation or a backlog sweep reaches it. This
 -- is a plain, one-time DATA fix -- it does NOT belong in
--- `crates/api/migrations/`, changes no schema, and touches no code.
+-- `crates/ds-store/migrations/`, changes no schema, and touches no code.
 --
 -- WHAT THIS SCRIPT DELIBERATELY DOES NOT TOUCH
 -- ----------------------------------------------
@@ -193,7 +193,7 @@
 -- HOW TO RUN
 -- -----------
 -- This is a plain SQL script, not a `sqlx` migration -- do not add it to
--- `crates/api/migrations/`. Run it with `psql` directly against production,
+-- `crates/ds-store/migrations/`. Run it with `psql` directly against production,
 -- as a human who has ALREADY run the dry-run query above and confirmed its
 -- output:
 --

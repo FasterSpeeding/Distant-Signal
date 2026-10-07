@@ -282,7 +282,7 @@ async fn upsert(
     .expect("upsert")
 }
 
-#[sqlx::test(migrations = "./migrations")]
+#[sqlx::test(migrations = "../ds-store/migrations")]
 #[ignore = "needs DATABASE_URL (a role that can create databases)"]
 async fn the_writer_derives_replaces_per_date_and_skips_identical_publishes(pool: PgPool) {
     seed_reference(&pool).await;
@@ -458,7 +458,7 @@ const TIMETABLE_QUERIES: &[&str] = &[
     "after=480.TT-D0800A&limit=2",
 ];
 
-#[sqlx::test(migrations = "./migrations")]
+#[sqlx::test(migrations = "../ds-store/migrations")]
 #[ignore = "needs DATABASE_URL (a role that can create databases)"]
 async fn the_table_and_the_population_give_the_same_bodies(pool: PgPool) {
     seed_reference(&pool).await;
@@ -538,7 +538,7 @@ fn app_with(pool: &PgPool, line: common::LineDefinition) -> crate::app::App {
     app(pool, vec![line])
 }
 
-#[sqlx::test(migrations = "./migrations")]
+#[sqlx::test(migrations = "../ds-store/migrations")]
 #[ignore = "needs DATABASE_URL (a role that can create databases)"]
 async fn the_timetable_pages_and_filters_like_its_reference(pool: PgPool) {
     seed_reference(&pool).await;

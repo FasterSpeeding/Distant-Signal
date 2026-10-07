@@ -26,19 +26,25 @@ use sqlx::{Connection, Row};
 const MIGRATIONS: &[(&str, &str)] = &[
     (
         "20260904100000_full_coverage_line_stats.sql",
-        include_str!("../migrations/20260904100000_full_coverage_line_stats.sql"),
+        include_str!("../../ds-store/migrations/20260904100000_full_coverage_line_stats.sql"),
     ),
     (
         "20260927050000_full_coverage_line_stats_partial.sql",
-        include_str!("../migrations/20260927050000_full_coverage_line_stats_partial.sql"),
+        include_str!(
+            "../../ds-store/migrations/20260927050000_full_coverage_line_stats_partial.sql"
+        ),
     ),
     (
         "20260927050100_full_coverage_line_stats_line_date_key.sql",
-        include_str!("../migrations/20260927050100_full_coverage_line_stats_line_date_key.sql"),
+        include_str!(
+            "../../ds-store/migrations/20260927050100_full_coverage_line_stats_line_date_key.sql"
+        ),
     ),
     (
         "20260927050200_full_coverage_line_stats_line_date_pkey.sql",
-        include_str!("../migrations/20260927050200_full_coverage_line_stats_line_date_pkey.sql"),
+        include_str!(
+            "../../ds-store/migrations/20260927050200_full_coverage_line_stats_line_date_pkey.sql"
+        ),
     ),
 ];
 
