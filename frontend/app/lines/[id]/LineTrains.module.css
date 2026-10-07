@@ -53,6 +53,12 @@
   white-space: nowrap;
 }
 
+.arrival {
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 .status {
   grid-area: status;
   white-space: nowrap;

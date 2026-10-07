@@ -378,3 +378,104 @@ export function liveStatusLabel(
   }
   return { text: 'Scheduled', tone: 'none' };
 }
+
+/** The query of `GET /public/lines/{id}/timetable`, shared by the server
+ * fetch below and the page's client-side "Load more" (through the
+ * `/api` proxy). Empty values are left out. */
+export function lineTimetableQuery(options: {
+  date: string;
+  dir?: LineDirection | null;
+  from?: string | null;
+  to?: string | null;
+  at?: string | null;
+  scope?: string | null;
+  after?: string | null;
+  limit?: number;
+}): string {
+  const params = new URLSearchParams({ date: options.date });
+  if (options.scope) params.set('scope', options.scope);
+  if (options.dir) params.set('dir', options.dir);
+  if (options.from) params.set('from', options.from);
+  if (options.to) params.set('to', options.to);
+  if (options.at) params.set('at', options.at);
+  if (options.after) params.set('after', options.after);
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  return params.toString();
+}
+
+/** Which trains the full-day timetable lists: the line's own (default),
+ * or other trains running a stretch of it. */
+export type TimetableScope = 'line' | 'shared';
+
+/** `/lines/{id}/timetable`'s URL parameters, sanitised (anything
+ * malformed is dropped, never passed to the API). */
+export interface TimetablePageParams {
+  /** `YYYY-MM-DD`; `null` for today. */
+  date: string | null;
+  dir: LineDirection | null;
+  from: string | null;
+  to: string | null;
+  /** First time listed (minutes after the date's midnight). */
+  at: number | null;
+  scope: TimetableScope;
+  /** A `nextCursor` (the no-JavaScript "next trains" link). */
+  after: string | null;
+}
+
+function validDate(raw: string | undefined): string | null {
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const parsed = new Date(`${raw}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== raw ? null : raw;
+}
+
+export function parseTimetableParams(raw: Record<string, string | string[] | undefined>): TimetablePageParams {
+  const line = parseLinePageParams(raw);
+  const after = first(raw.after);
+  return {
+    date: validDate(first(raw.date)),
+    dir: line.dir,
+    from: line.from,
+    to: line.to,
+    at: line.at,
+    scope: first(raw.scope) === 'shared' ? 'shared' : 'line',
+    after: after && /^\d{1,4}\.[A-Za-z0-9-]{1,16}$/.test(after) ? after : null,
+  };
+}
+
+/** `/lines/{id}/timetable` with `params`, empty values (and the default
+ * scope) left out. */
+export function timetableHref(id: string, params: Partial<Record<keyof TimetablePageParams, string | null>>): string {
+  const query = new URLSearchParams();
+  for (const key of ['date', 'dir', 'from', 'to', 'at', 'scope', 'after'] as const) {
+    const value = params[key];
+    if (value && !(key === 'scope' && value === 'line')) query.set(key, value);
+  }
+  const qs = query.toString();
+  return `/lines/${encodeURIComponent(id)}/timetable${qs ? `?${qs}` : ''}`;
+}
+
+/** The current timetable params as `timetableHref` input (no cursor: a
+ * filter change starts from the top). */
+export function timetableParamsForHref(
+  params: TimetablePageParams,
+): Partial<Record<keyof TimetablePageParams, string | null>> {
+  return {
+    date: params.date,
+    dir: params.dir,
+    from: params.from,
+    to: params.to,
+    at: params.at === null ? null : formatApiMinute(params.at),
+    scope: params.scope,
+  };
+}
+
+/** The timetable link on the line page: the line page's direction and
+ * stations, from the start of its current window. */
+export function lineTimetableLink(id: string, params: LinePageParams, windowFrom: number): string {
+  return timetableHref(id, {
+    dir: params.dir,
+    from: params.from,
+    to: params.to,
+    at: formatApiMinute(windowFrom),
+  });
+}

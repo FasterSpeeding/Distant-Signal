@@ -21,6 +21,7 @@ export function LineTrainRow({
   beyondPhone = false,
   timeOverride,
   showStrip = true,
+  arrival,
 }: {
   train: LineTrainSummary;
   date: string;
@@ -31,6 +32,9 @@ export function LineTrainRow({
   /** `false` for a row with no on-line stops of its own (a station-pair
    * search row). */
   showStrip?: boolean;
+  /** The arrival at a picked destination station (`HH:MM`), shown after
+   * the destination. */
+  arrival?: string;
 }) {
   const minute = lineTimeMinute(train.lineDue);
   const time = timeOverride ?? (minute === null ? '--:--' : formatClock(minute));
@@ -58,6 +62,13 @@ export function LineTrainRow({
         <span className={classes.dest}>
           <VisuallyHidden>to </VisuallyHidden>
           {destination}
+          {arrival && (
+            <span className={classes.arrival}>
+              {' '}
+              <span aria-hidden="true">· arr</span>
+              <VisuallyHidden>, arriving at</VisuallyHidden> {arrival}
+            </span>
+          )}
           {timetableOnly && (
             <>
               {' '}

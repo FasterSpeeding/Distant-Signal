@@ -244,6 +244,15 @@ describe('LineTrainsResults', () => {
     expect(screen.queryByRole('link', { name: /Other trains at Winchester/ })).not.toBeInTheDocument();
   });
 
+  it('links the full day’s timetable with the current direction and the window’s start', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render({ dir: 'down' });
+    expect(screen.getByRole('link', { name: "Full day's timetable →" })).toHaveAttribute(
+      'href',
+      `/lines/${ID}/timetable?dir=down&at=13%3A30`,
+    );
+  });
+
   it('gives each row a text alternative for its stop strip and hides the visual strip from screen readers', async () => {
     vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
       summary({

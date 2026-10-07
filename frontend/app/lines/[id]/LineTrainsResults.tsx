@@ -19,6 +19,7 @@ import {
   hubStations,
   lineHref,
   lineTimeMinute,
+  lineTimetableLink,
   londonMinuteOfDay,
   paramsForHref,
   resolveWindow,
@@ -501,6 +502,9 @@ export async function LineTrainsResults({
   }
 
   const stations = summary.stations;
+  const timetableLink = (
+    <TextLink href={lineTimetableLink(id, params, window.from)}>Full day&apos;s timetable →</TextLink>
+  );
   const header = (
     <Group gap="xs" justify="space-between" wrap="wrap">
       <Text size="xs" c="dimmed">
@@ -525,6 +529,7 @@ export async function LineTrainsResults({
           summary={summary}
           result={result}
         />
+        {timetableLink}
       </Stack>
     );
   }
@@ -580,6 +585,7 @@ export async function LineTrainsResults({
         ) : (
           <TrainList trains={upcoming} date={date} stations={stations} window={window} label="Trains due on the line" />
         )}
+        {timetableLink}
         {summary.truncated && (
           <Text size="sm" c="dimmed">
             Only the first {summary.trains.length} trains are shown; use Later for the rest.
