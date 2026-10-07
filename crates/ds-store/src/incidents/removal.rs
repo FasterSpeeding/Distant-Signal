@@ -12,7 +12,7 @@
 //!
 //! Absence is evidence only when the snapshot is the whole feed, so
 //! inference runs once per POST, after every chunk of
-//! `queries::upsert_incident_snapshot` has committed, and only when ALL of:
+//! [`super::upsert_incident_snapshot`] has committed, and only when ALL of:
 //!
 //! 1. the poller says the snapshot is complete (`IncidentSnapshot::complete`:
 //!    no malformed `<PtIncident>` skipped, document not truncated). An older
