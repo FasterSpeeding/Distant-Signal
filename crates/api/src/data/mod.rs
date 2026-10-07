@@ -19,6 +19,7 @@ pub mod journey_leg_proposal;
 pub mod journey_templates;
 pub mod journeys;
 pub mod legacy_backfill;
+pub mod line_train_summaries;
 pub mod notifications;
 pub mod notifier_forward_queue;
 pub mod operators;
