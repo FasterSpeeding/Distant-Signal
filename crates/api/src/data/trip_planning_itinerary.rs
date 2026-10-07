@@ -483,10 +483,21 @@ impl SegmentSearch<'_> {
     ) -> Result<(Vec<PlannedItinerary>, bool), String> {
         let (from_tiplocs, to_tiplocs) =
             resolve_segment_tiplocs(self.interchange, origin_crs, destination_crs)?;
+        self.search_tiplocs(&from_tiplocs, &to_tiplocs, bound)
+    }
+
+    /// [`Self::search`] between resolved TIPLOC sets (either end may be an
+    /// OR choice of stations, a group waypoint's).
+    pub fn search_tiplocs(
+        &self,
+        from_tiplocs: &[String],
+        to_tiplocs: &[String],
+        bound: TimeBound,
+    ) -> Result<(Vec<PlannedItinerary>, bool), String> {
         match (self.results, bound) {
             ("fastest", _) => {
                 let Some(journey) =
-                    self.fastest(&from_tiplocs, &to_tiplocs, bound, self.restrictions)
+                    self.fastest(from_tiplocs, to_tiplocs, bound, self.restrictions)
                 else {
                     return Ok((Vec::new(), false));
                 };
@@ -511,8 +522,8 @@ impl SegmentSearch<'_> {
                     trip_planner::RaptorOptions {
                         connections: self.connections,
                         interchange: self.interchange,
-                        from_tiplocs: &from_tiplocs,
-                        to_tiplocs: &to_tiplocs,
+                        from_tiplocs,
+                        to_tiplocs,
                         departure_min,
                         date: self.date,
                         max_rounds: max_rounds(self.max_changes),
@@ -537,7 +548,7 @@ impl SegmentSearch<'_> {
                 Ok((self.itineraries(within_cap), capped))
             }
             ("options", TimeBound::ArriveBy(arrive_by_min)) => {
-                let options = self.arrive_by_options(&from_tiplocs, &to_tiplocs, arrive_by_min);
+                let options = self.arrive_by_options(from_tiplocs, to_tiplocs, arrive_by_min);
                 let latest = trip_planner::latest_departures_by_trips(
                     &options,
                     self.overlay,
@@ -842,6 +853,7 @@ pub fn plan_via_waypoints_with_overlay(
         avoid: &AvoidLists::default(),
         origin_crs,
         waypoints,
+        waypoint_codes: None,
         destination_crs,
         vias: &[],
         via_search: None,
@@ -1101,6 +1113,7 @@ pub fn build_vias(
 }
 
 /// Everything [`plan_trip`] needs.
+#[derive(Clone, Copy)]
 pub struct TripPlanInput<'a> {
     /// `search.restrictions` must be [`build_restrictions`] of `avoid`.
     pub search: SegmentSearch<'a>,
@@ -1109,7 +1122,14 @@ pub struct TripPlanInput<'a> {
     pub passes: Option<&'a schedule_query::PassIndex>,
     pub avoid: &'a AvoidLists,
     pub origin_crs: &'a str,
+    /// Each waypoint's label: its CRS, or for an OR choice (2026-10-07)
+    /// its label as applied (`KGX|EUS`, `group:LON`), which is what the
+    /// segments are then named by.
     pub waypoints: &'a [String],
+    /// Each waypoint's station codes, aligned with `waypoints` (2026-10-07):
+    /// several for an OR choice, which is satisfied by stopping at ANY of
+    /// them. `None`: every waypoint is the one station its label names.
+    pub waypoint_codes: Option<&'a [Vec<String>]>,
     pub destination_crs: &'a str,
     /// `?via=`: CRS codes to pass through, in order.
     pub vias: &'a [String],
@@ -1118,6 +1138,201 @@ pub struct TripPlanInput<'a> {
     /// Applies to the first segment (`DepartAfter`) or the last
     /// (`ArriveBy`); the others are chained from their neighbour.
     pub time: TimeBound,
+}
+
+impl TripPlanInput<'_> {
+    /// The stations of waypoint `index`, when it is an OR choice
+    /// (2026-10-07); `None` for a single station.
+    fn waypoint_choice(&self, index: usize) -> Option<&[String]> {
+        waypoint_choice(self.waypoints, self.waypoint_codes, index)
+    }
+
+    /// Every TIPLOC of one segment end: the origin, the destination or a
+    /// waypoint's label (an OR choice's being the union of its stations').
+    fn stop_tiplocs(&self, stop: &str) -> Result<Vec<String>, String> {
+        let choice = self
+            .waypoints
+            .iter()
+            .position(|label| label == stop)
+            .and_then(|index| self.waypoint_choice(index));
+        let Some(codes) = choice else {
+            return resolve_code_tiplocs(self.search.interchange, stop);
+        };
+        let mut tiplocs = Vec::new();
+        for code in codes {
+            tiplocs.extend(resolve_code_tiplocs(self.search.interchange, code)?);
+        }
+        Ok(tiplocs)
+    }
+
+    /// [`resolve_segment_tiplocs`], for ends that may be OR choices.
+    fn segment_tiplocs(&self, from: &str, to: &str) -> Result<(Vec<String>, Vec<String>), String> {
+        Ok((self.stop_tiplocs(from)?, self.stop_tiplocs(to)?))
+    }
+}
+
+/// See [`TripPlanInput::waypoint_choice`]: an entry is a choice when its
+/// codes are not just its label (several stations, or one left of a group
+/// whose other members were dropped).
+fn waypoint_choice<'c>(
+    labels: &[String],
+    codes: Option<&'c [Vec<String>]>,
+    index: usize,
+) -> Option<&'c [String]> {
+    let codes = codes?.get(index)?;
+    let label = labels.get(index)?;
+    (codes.len() != 1 || codes[0] != *label).then_some(codes.as_slice())
+}
+
+/// The waypoints an END of the trip satisfies (2026-10-07, the DS-MCP's
+/// decision): an OR-choice FIRST waypoint with the origin among its
+/// stations is satisfied there (every journey starts there), and an
+/// OR-choice LAST waypoint with the destination among them is satisfied
+/// there. Those are not searched for and get no segment. `(first, last)`:
+/// the index of each, if any. Any other member equal to an end (a choice
+/// that is not first or last) is an ordinary stop: the journey must come
+/// back to it.
+pub fn waypoints_at_ends(
+    origin: &str,
+    labels: &[String],
+    codes: Option<&[Vec<String>]>,
+    destination: &str,
+) -> (Option<usize>, Option<usize>) {
+    let has = |index: usize, end: &str| {
+        waypoint_choice(labels, codes, index).is_some_and(|codes| codes.iter().any(|c| c == end))
+    };
+    let first = (!labels.is_empty() && has(0, origin)).then_some(0);
+    let last = labels
+        .len()
+        .checked_sub(1)
+        .filter(|&last| first != Some(last) && has(last, destination));
+    (first, last)
+}
+
+/// Every TIPLOC of one station code, or the "not a recognised station
+/// CRS code" message.
+fn resolve_code_tiplocs(interchange: &InterchangeData, code: &str) -> Result<Vec<String>, String> {
+    let tiplocs = interchange
+        .crs_to_tiplocs
+        .get(&common::location_naming::normalize_location_code(code))
+        .cloned()
+        .unwrap_or_default();
+    if tiplocs.is_empty() {
+        return Err(format!("'{code}' is not a recognised station CRS code"));
+    }
+    Ok(tiplocs)
+}
+
+/// Where a journey stopped for one requested waypoint (2026-10-07): served
+/// as `journeys[j].waypointSatisfiedBy[k]` for `waypoints[k]` when any
+/// waypoint is an OR choice.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaypointSatisfied {
+    /// The waypoint as requested (`KGX`, `KGX|EUS`, `group:LON`).
+    pub crs: String,
+    /// The station the journey stopped at for it: the member, for a choice.
+    /// `null` only if its TIPLOC has no code (not expected).
+    pub matched_crs: Option<String>,
+    /// The segment that ends there (the next one starts there). For one
+    /// satisfied at the origin, 0 (which starts there); at the destination,
+    /// the last segment.
+    pub segment: usize,
+    /// `call` (a train took the traveller there: they alighted, or stayed
+    /// aboard when the next segment `continuesPreviousTrain`), `walk` (a
+    /// transfer leg into it), `origin` or `destination` (an end of the trip
+    /// is a member; see [`waypoints_at_ends`]).
+    pub how: &'static str,
+}
+
+/// For each journey of an aligned plan (see [`journey_summaries`]), where
+/// it stopped for each requested waypoint, in order. `segments` must be
+/// [`plan_trip`]'s for the same `origin`, `labels`, `codes` and
+/// `destination`. Empty when the segments are not aligned.
+pub fn waypoint_satisfied_by(
+    segments: &[SegmentResult],
+    interchange: &InterchangeData,
+    origin: &str,
+    labels: &[String],
+    codes: Option<&[Vec<String>]>,
+    destination: &str,
+) -> Vec<Vec<WaypointSatisfied>> {
+    let Some(count) = segments.first().map(|s| s.itineraries.len()) else {
+        return Vec::new();
+    };
+    if segments.iter().any(|s| s.itineraries.len() != count) {
+        return Vec::new();
+    }
+    let (first, last) = waypoints_at_ends(origin, labels, codes, destination);
+    (0..count)
+        .map(|j| {
+            let mut segment = 0;
+            labels
+                .iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    let at_end = |matched: &str, segment: usize, how| WaypointSatisfied {
+                        crs: label.clone(),
+                        matched_crs: Some(matched.to_string()),
+                        segment,
+                        how,
+                    };
+                    if first == Some(index) {
+                        return at_end(origin, 0, "origin");
+                    }
+                    if last == Some(index) {
+                        return at_end(destination, segments.len() - 1, "destination");
+                    }
+                    let k = segment;
+                    segment += 1;
+                    let part = segments.get(k).map(|s| &s.itineraries[j]);
+                    let next = segments.get(k + 1).map(|s| &s.itineraries[j]);
+                    let tiploc = part
+                        .and_then(|p| p.arrival_tiploc.as_deref())
+                        .or_else(|| next.and_then(|n| n.departure_tiploc.as_deref()));
+                    let walked = part
+                        .and_then(|p| p.legs.last())
+                        .is_some_and(|leg| matches!(leg, PlannedLeg::Transfer { .. }));
+                    WaypointSatisfied {
+                        crs: label.clone(),
+                        matched_crs: tiploc.and_then(|t| crs_for_tiploc(interchange, t)),
+                        segment: k,
+                        how: if walked { "walk" } else { "call" },
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Two adjacent waypoints, one of them an OR choice, that share a station
+/// (2026-10-07): one stop there would satisfy both, which says nothing
+/// (and would leave an empty segment). `Err` is the message of a 400. Two
+/// single stations repeated are [`plan_trip`]'s own "is the waypoint before
+/// it" 400, unchanged.
+pub fn check_adjacent_waypoints(labels: &[String], codes: &[Vec<String>]) -> Result<(), String> {
+    for index in 1..labels.len().min(codes.len()) {
+        let choices = [
+            waypoint_choice(labels, Some(codes), index - 1),
+            waypoint_choice(labels, Some(codes), index),
+        ];
+        if choices.iter().all(Option::is_none) {
+            continue;
+        }
+        if let Some(shared) = codes[index]
+            .iter()
+            .find(|code| codes[index - 1].contains(code))
+        {
+            return Err(format!(
+                "waypoints: '{}' and '{}' are next to each other and share '{shared}'; one stop \
+                 there would satisfy both, so name stations they do not share or put another \
+                 waypoint between them",
+                labels[index - 1],
+                labels[index]
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The whole `/Trips/plan` computation: `origin -> waypoints... ->
@@ -1151,11 +1366,56 @@ pub struct TripPlanInput<'a> {
 /// code is a 400 naming the first segment that has one. A waypoint equal to
 /// the origin, the destination or the waypoint before it is a 400 too, and
 /// so is a via equal to the origin or the destination.
+///
+/// A waypoint may be an OR choice of stations (2026-10-07,
+/// `waypoint_codes`): the journey stops at ANY of them, the member reached
+/// first, and its segments are named by the choice's label. An OR-choice
+/// first (last) waypoint with the origin (destination) among its stations
+/// is satisfied there, and is left out of the search and the segments
+/// ([`waypoints_at_ends`]); [`waypoint_satisfied_by`] reports every one.
+pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
+    let (first, last) = waypoints_at_ends(
+        input.origin_crs,
+        input.waypoints,
+        input.waypoint_codes,
+        input.destination_crs,
+    );
+    if first.is_none() && last.is_none() {
+        return plan_trip_joint(input);
+    }
+    // A waypoint an end satisfies is not searched for and gets no segment
+    // (see [`waypoints_at_ends`]); its stations are still validated.
+    let keep = |index: &usize| first != Some(*index) && last != Some(*index);
+    for index in [first, last].into_iter().flatten() {
+        for code in input.waypoint_choice(index).unwrap_or_default() {
+            resolve_code_tiplocs(input.search.interchange, code)
+                .map_err(|msg| format!("waypoints: {msg}"))?;
+        }
+    }
+    let count = input.waypoints.len();
+    let labels: Vec<String> = (0..count)
+        .filter(keep)
+        .map(|index| input.waypoints[index].clone())
+        .collect();
+    let codes: Option<Vec<Vec<String>>> = input.waypoint_codes.map(|codes| {
+        (0..count)
+            .filter(keep)
+            .map(|index| codes[index].clone())
+            .collect()
+    });
+    plan_trip_joint(&TripPlanInput {
+        waypoints: &labels,
+        waypoint_codes: codes.as_deref(),
+        ..*input
+    })
+}
+
+/// [`plan_trip`] once no waypoint is satisfied at an end.
 #[expect(
     clippy::too_many_lines,
     reason = "long but linear; splitting it would scatter its shared state across helpers"
 )]
-pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
+fn plan_trip_joint(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
     if input.waypoints.is_empty() && input.vias.is_empty() {
         return plan_chained(input);
     }
@@ -1167,7 +1427,8 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
     let pairs: Vec<(&str, &str)> = stops.windows(2).map(|pair| (pair[0], pair[1])).collect();
     let mut tiplocs: Vec<Vec<String>> = Vec::with_capacity(stops.len());
     for &(from, to) in &pairs {
-        let (from_tiplocs, to_tiplocs) = resolve_segment_tiplocs(interchange, from, to)
+        let (from_tiplocs, to_tiplocs) = input
+            .segment_tiplocs(from, to)
             .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
         if tiplocs.is_empty() {
             tiplocs.push(from_tiplocs);
@@ -1175,6 +1436,14 @@ pub fn plan_trip(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String
         tiplocs.push(to_tiplocs);
     }
     for (index, waypoint) in input.waypoints.iter().enumerate() {
+        // An OR choice's conflicts are `routes::trips`' checks (members in
+        // an avoid list dropped, an end satisfying it, adjacent choices
+        // sharing a station: [`check_adjacent_waypoints`]). A choice's label
+        // never equals a single station's, so the checks below only ever
+        // compare single stations.
+        if input.waypoint_choice(index).is_some() {
+            continue;
+        }
         let clash = if waypoint.eq_ignore_ascii_case(input.origin_crs) {
             Some("the origin")
         } else if waypoint.eq_ignore_ascii_case(input.destination_crs) {
@@ -1704,16 +1973,26 @@ pub fn journey_summaries(
 /// [`chain_deadline_min`] of the one after it; when a segment finds nothing,
 /// every EARLIER one is validated but not searched. The avoid lists apply
 /// to every segment.
+///
+/// An OR-choice waypoint (2026-10-07) is a segment end of every station it
+/// names, so a chained segment may leave from a different member than the
+/// previous one reached. That is looser than the joint search, which is
+/// fine for what this is used for with waypoints: finding the segment an
+/// infeasible plan fails on.
 fn plan_chained(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String> {
     let interchange = input.search.interchange;
     let mut stops: Vec<&str> = vec![input.origin_crs];
     stops.extend(input.waypoints.iter().map(String::as_str));
     stops.push(input.destination_crs);
     let pairs: Vec<(&str, &str)> = stops.windows(2).map(|pair| (pair[0], pair[1])).collect();
-    for &(from, to) in &pairs {
-        resolve_segment_tiplocs(interchange, from, to)
-            .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
-    }
+    let resolved = pairs
+        .iter()
+        .map(|&(from, to)| {
+            input
+                .segment_tiplocs(from, to)
+                .map_err(|msg| format!("{from} -> {to}: {msg}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let empty = |from: &str, to: &str| SegmentResult {
         origin_crs: from.to_string(),
@@ -1728,7 +2007,7 @@ fn plan_chained(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String>
     let mut segments: Vec<SegmentResult> = Vec::with_capacity(pairs.len());
     match input.time {
         TimeBound::DepartAfter(first) => {
-            for &(from, to) in &pairs {
+            for (&(from, to), (from_tiplocs, to_tiplocs)) in pairs.iter().zip(&resolved) {
                 let start = match segments.last() {
                     None => Some(first),
                     Some(previous) => chain_ready_min(&previous.itineraries, interchange),
@@ -1739,7 +2018,7 @@ fn plan_chained(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String>
                 };
                 let (itineraries, capped) = input
                     .search
-                    .search(from, to, TimeBound::DepartAfter(start))
+                    .search_tiplocs(from_tiplocs, to_tiplocs, TimeBound::DepartAfter(start))
                     .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
                 segments.push(SegmentResult {
                     itineraries,
@@ -1750,7 +2029,7 @@ fn plan_chained(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String>
             }
         }
         TimeBound::ArriveBy(last) => {
-            for &(from, to) in pairs.iter().rev() {
+            for (&(from, to), (from_tiplocs, to_tiplocs)) in pairs.iter().zip(&resolved).rev() {
                 let deadline = match segments.last() {
                     None => Some(last),
                     Some(next) => chain_deadline_min(&next.itineraries, interchange),
@@ -1761,7 +2040,7 @@ fn plan_chained(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, String>
                 };
                 let (itineraries, capped) = input
                     .search
-                    .search(from, to, TimeBound::ArriveBy(deadline))
+                    .search_tiplocs(from_tiplocs, to_tiplocs, TimeBound::ArriveBy(deadline))
                     .map_err(|msg| format!("{from} -> {to}: {msg}"))?;
                 segments.push(SegmentResult {
                     itineraries,
@@ -1873,8 +2152,7 @@ fn explain_empty_segment(
         };
     }
 
-    let Ok((from_tiplocs, to_tiplocs)) = resolve_segment_tiplocs(search.interchange, from, to)
-    else {
+    let Ok((from_tiplocs, to_tiplocs)) = input.segment_tiplocs(from, to) else {
         // Validated before any search; unreachable.
         return NoResultReason {
             constraint: "noRoute",
@@ -2699,6 +2977,7 @@ mod tests {
             avoid,
             origin_crs: "EUS",
             waypoints: &waypoints,
+            waypoint_codes: None,
             destination_crs: "MAN",
             vias: &[],
             via_search: None,
@@ -3070,6 +3349,7 @@ mod tests {
             avoid: &AvoidLists::default(),
             origin_crs: "EUS",
             waypoints: &[],
+            waypoint_codes: None,
             destination_crs: "MKC",
             vias: &[],
             via_search: None,
@@ -3109,6 +3389,7 @@ mod tests {
             avoid: &AvoidLists::default(),
             origin_crs: "EUS",
             waypoints: &waypoints,
+            waypoint_codes: None,
             destination_crs: "MAN",
             vias: &[],
             via_search: None,
@@ -3363,6 +3644,7 @@ mod tests {
             avoid,
             origin_crs: "EUS",
             waypoints: &waypoints,
+            waypoint_codes: None,
             destination_crs: "MAN",
             vias: &vias,
             via_search: via_search.as_ref(),
@@ -3782,5 +4064,149 @@ mod tests {
             .unwrap_err();
             assert!(err.contains(needle) && err.contains("via"), "{err}");
         }
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+
+    /// OR-choice waypoints (2026-10-07): only a FIRST choice holding the
+    /// origin, or a LAST holding the destination, is satisfied at that end.
+    #[test]
+    fn only_a_first_or_last_choice_is_satisfied_at_an_end() {
+        let labels = strings(&["KGX|EUS", "YRK", "EDB|NCL"]);
+        let codes = vec![
+            strings(&["KGX", "EUS"]),
+            strings(&["YRK"]),
+            strings(&["EDB", "NCL"]),
+        ];
+        let ends =
+            |origin, destination| waypoints_at_ends(origin, &labels, Some(&codes), destination);
+        assert_eq!(ends("KGX", "EDB"), (Some(0), Some(2)));
+        assert_eq!(ends("EUS", "GLC"), (Some(0), None));
+        assert_eq!(ends("PBO", "NCL"), (None, Some(2)));
+        assert_eq!(ends("YRK", "YRK"), (None, None));
+        // Single stations never: they are 400s ("is the origin").
+        assert_eq!(
+            waypoints_at_ends("KGX", &strings(&["KGX"]), Some(&[strings(&["KGX"])]), "EDB"),
+            (None, None)
+        );
+        assert_eq!(waypoints_at_ends("KGX", &labels, None, "EDB"), (None, None));
+        // One choice holding both ends is satisfied at the origin.
+        let one = strings(&["KGX|EDB"]);
+        let one_codes = vec![strings(&["KGX", "EDB"])];
+        assert_eq!(
+            waypoints_at_ends("KGX", &one, Some(&one_codes), "EDB"),
+            (Some(0), None)
+        );
+        // A choice whose other members were dropped is still a choice.
+        let dropped = strings(&["KGX|EUS"]);
+        let dropped_codes = vec![strings(&["KGX"])];
+        assert_eq!(
+            waypoints_at_ends("KGX", &dropped, Some(&dropped_codes), "EDB"),
+            (Some(0), None)
+        );
+    }
+
+    #[test]
+    fn adjacent_waypoints_sharing_a_station_are_rejected_when_one_is_a_choice() {
+        let check = |labels: &[&str], codes: &[&[&str]]| {
+            let codes: Vec<Vec<String>> = codes.iter().map(|c| strings(c)).collect();
+            check_adjacent_waypoints(&strings(labels), &codes)
+        };
+        assert!(check(&["KGX|EUS", "STP|PAD"], &[&["KGX", "EUS"], &["STP", "PAD"]]).is_ok());
+        assert!(check(&["YRK", "YRK"], &[&["YRK"], &["YRK"]]).is_ok());
+        assert!(
+            check(
+                &["KGX|EUS", "YRK", "EUS|PAD"],
+                &[&["KGX", "EUS"], &["YRK"], &["EUS", "PAD"]]
+            )
+            .is_ok()
+        );
+        let err = check(&["YRK", "KGX|YRK"], &[&["YRK"], &["KGX", "YRK"]]).unwrap_err();
+        assert!(
+            err.starts_with(
+                "waypoints: 'YRK' and 'KGX|YRK' are next to each other and share 'YRK'"
+            ),
+            "{err}"
+        );
+    }
+
+    /// Where each journey stopped for each waypoint: the end of its
+    /// segment (the member), a walk into it, or an end of the trip.
+    #[test]
+    fn waypoint_satisfied_by_reports_the_member_or_the_end() {
+        let interchange =
+            interchange_with(&[("EUS", "EUSTON"), ("MKC", "MILTNKC"), ("MAN", "MANCPIC")]);
+        let itinerary = |legs: Vec<PlannedLeg>, from: &str, to: &str| PlannedItinerary {
+            legs,
+            change_count: 0,
+            total_duration_minutes: 10,
+            exceeds_recommended_changes: None,
+            departure_min: 0,
+            arrival_min: 10,
+            arrival_tiploc: Some(to.to_string()),
+            departure_tiploc: Some(from.to_string()),
+            live_feasible: None,
+            continues_previous_train: false,
+            via_satisfied_by: Vec::new(),
+        };
+        let walk = PlannedLeg::Transfer {
+            mode: "WALK".to_string(),
+            origin_crs: None,
+            destination_crs: None,
+            minutes: 5,
+        };
+        let segment = |from: &str, to: &str, itineraries| SegmentResult {
+            origin_crs: from.to_string(),
+            destination_crs: to.to_string(),
+            itineraries,
+            capped_by_max_changes: false,
+            depart_after_min: None,
+            arrive_by_min: None,
+            no_result_reason: None,
+        };
+        // origin EUS; waypoints [EUS|WFJ (at the origin), MKC|STA]; MAN.
+        let segments = vec![
+            segment(
+                "EUS",
+                "MKC|STA",
+                vec![
+                    itinerary(Vec::new(), "EUSTON", "MILTNKC"),
+                    itinerary(vec![walk], "EUSTON", "MILTNKC"),
+                ],
+            ),
+            segment(
+                "MKC|STA",
+                "MAN",
+                vec![
+                    itinerary(Vec::new(), "MILTNKC", "MANCPIC"),
+                    itinerary(Vec::new(), "MILTNKC", "MANCPIC"),
+                ],
+            ),
+        ];
+        let labels = strings(&["EUS|WFJ", "MKC|STA"]);
+        let codes = vec![strings(&["EUS", "WFJ"]), strings(&["MKC", "STA"])];
+        let stops =
+            waypoint_satisfied_by(&segments, &interchange, "EUS", &labels, Some(&codes), "MAN");
+        let at = |crs: &str, matched: &str, segment, how| WaypointSatisfied {
+            crs: crs.to_string(),
+            matched_crs: Some(matched.to_string()),
+            segment,
+            how,
+        };
+        assert_eq!(
+            stops,
+            vec![
+                vec![
+                    at("EUS|WFJ", "EUS", 0, "origin"),
+                    at("MKC|STA", "MKC", 0, "call")
+                ],
+                vec![
+                    at("EUS|WFJ", "EUS", 0, "origin"),
+                    at("MKC|STA", "MKC", 0, "walk")
+                ],
+            ]
+        );
     }
 }

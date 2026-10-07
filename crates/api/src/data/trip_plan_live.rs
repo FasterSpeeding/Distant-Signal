@@ -1615,6 +1615,7 @@ mod tests {
                 avoid: &AvoidLists::default(),
                 origin_crs: "AAA",
                 waypoints: &[],
+                waypoint_codes: None,
                 destination_crs: "BBB",
                 vias: &[],
                 via_search: None,

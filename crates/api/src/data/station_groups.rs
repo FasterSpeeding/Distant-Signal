@@ -60,6 +60,69 @@ pub fn groups() -> &'static BTreeMap<String, Vec<String>> {
     &GROUPS
 }
 
+/// What a person calls each group (2026-10-07, `GET /Trips/station-groups`).
+/// A group missing here is named by its code.
+const GROUP_NAMES: &[(&str, &str)] = &[("LON", "London Terminals")];
+
+/// Member CRS -> its name as the CSV gives it (the third column).
+static MEMBER_NAMES: LazyLock<BTreeMap<String, String>> = LazyLock::new(|| {
+    STATION_GROUPS_CSV
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("group,"))
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, ',').skip(1);
+            let crs = fields.next()?.trim();
+            let name = fields.next()?.trim();
+            (!name.is_empty()).then(|| (crs.to_string(), name.to_string()))
+        })
+        .collect()
+});
+
+/// One member of a [`GroupInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GroupMember {
+    pub crs: String,
+    /// The CSV's name for it; `null` when it gives none.
+    pub name: Option<String>,
+}
+
+/// One group as `GET /Trips/station-groups` serves it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct GroupInfo {
+    /// The group's name in a request: `LON`.
+    pub group: String,
+    /// The entry that names it in `via`, `waypoints` or an avoid list:
+    /// `group:LON`.
+    pub code: String,
+    /// What a person calls it: `London Terminals` (the code when unnamed).
+    pub name: String,
+    /// In file order.
+    pub members: Vec<GroupMember>,
+}
+
+/// Every group, in name order, for `GET /Trips/station-groups`.
+pub fn catalogue() -> Vec<GroupInfo> {
+    groups()
+        .iter()
+        .map(|(group, members)| GroupInfo {
+            group: group.clone(),
+            code: format!("{GROUP_PREFIX}{group}"),
+            name: GROUP_NAMES
+                .iter()
+                .find(|(code, _)| code == group)
+                .map_or_else(|| group.clone(), |(_, name)| (*name).to_string()),
+            members: members
+                .iter()
+                .map(|crs| GroupMember {
+                    crs: crs.clone(),
+                    name: MEMBER_NAMES.get(crs).cloned(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// One request entry, parsed: see the module doc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StationChoice {
@@ -158,6 +221,29 @@ mod tests {
             "KGX", "STP", "EUS", "PAD", "WAT", "VIC", "LBG", "WAE", "VXH",
         ] {
             assert!(london.iter().any(|m| m == crs), "{crs}");
+        }
+    }
+
+    #[test]
+    fn the_catalogue_names_every_group_and_member() {
+        let catalogue = catalogue();
+        let london = catalogue.iter().find(|g| g.group == "LON").expect("LON");
+        assert_eq!(london.code, "group:LON");
+        assert_eq!(london.name, "London Terminals");
+        assert_eq!(london.members.len(), 18);
+        assert_eq!(
+            london.members[0],
+            GroupMember {
+                crs: "BFR".to_string(),
+                name: Some("London Blackfriars".to_string()),
+            }
+        );
+        assert!(london.members.iter().all(|m| m.name.is_some()));
+        for (group, _) in GROUP_NAMES {
+            assert!(
+                groups().contains_key(*group),
+                "{group} is named but has no rows"
+            );
         }
     }
 

@@ -171,7 +171,34 @@ fn env_or_default<T: std::str::FromStr + std::fmt::Display + Copy>(name: &str, d
 }
 
 pub fn router() -> crate::app::Router {
-    crate::app::Router::new().route("/Trips/plan", axum::routing::get(get_trip_plan))
+    crate::app::Router::new()
+        .route("/Trips/plan", axum::routing::get(get_trip_plan))
+        .route(
+            "/Trips/station-groups",
+            axum::routing::get(get_station_groups),
+        )
+}
+
+/// `Cache-Control` for [`get_station_groups`]: the groups are compiled in
+/// and change only with a deploy; an hour, as for the other reference
+/// catalogues (`routes::island_of_ireland::CATALOGUE_CACHE_CONTROL`).
+const STATION_GROUPS_CACHE_CONTROL: &str = "public, max-age=3600";
+
+/// `GET /Trips/station-groups` (2026-10-07): every named station group
+/// `/Trips/plan` accepts as `group:NAME` in `via`, `waypoints` and the
+/// avoid lists, with its members, for a picker. Unauthenticated, no
+/// database read: `reference-data/station-groups.csv`, compiled in.
+async fn get_station_groups() -> (
+    [(axum::http::header::HeaderName, &'static str); 1],
+    Json<serde_json::Value>,
+) {
+    (
+        [(
+            axum::http::header::CACHE_CONTROL,
+            STATION_GROUPS_CACHE_CONTROL,
+        )],
+        Json(serde_json::json!({ "groups": station_groups::catalogue() })),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,8 +427,16 @@ async fn get_trip_plan(
         avoid_stop: parse_station_list("avoidStop", params.avoid_stop.as_deref())?,
         avoid_change: parse_station_list("avoidChange", params.avoid_change.as_deref())?,
     };
-    check_avoid_conflicts(&avoid_choices, &origin, &waypoints, &destination)?;
+    // Single-station waypoints keep their avoid-list 400; an OR choice's
+    // avoided members are dropped instead (`apply_waypoint_choices`).
+    let single_waypoints: Vec<String> = waypoints
+        .iter()
+        .filter(|waypoint| waypoint.is_single_station())
+        .map(|waypoint| waypoint.label.clone())
+        .collect();
+    check_avoid_conflicts(&avoid_choices, &origin, &single_waypoints, &destination)?;
     let avoid = avoid_choices.applied();
+    let waypoint_codes = apply_waypoint_choices(&waypoints, &avoid)?;
     let via_choices = parse_vias(params.via.as_deref())?;
     check_via_conflicts(&via_choices, &avoid, &origin, &destination)?;
     // A group via is ONE via to the search (one progress step), measured to
@@ -413,7 +448,14 @@ async fn get_trip_plan(
         max_changes,
         *OPTIONS_SEARCH_SIZE_LIMIT,
     )?;
-    let station_groups = used_station_groups(via_choices.iter().chain(avoid_choices.all()));
+    let station_groups = used_station_groups(
+        via_choices
+            .iter()
+            .chain(&waypoints)
+            .chain(avoid_choices.all()),
+    );
+    let has_waypoint_choice = waypoints.iter().any(|w| !w.is_single_station());
+    let waypoints: Vec<String> = waypoints.into_iter().map(|w| w.label).collect();
     let vias: Vec<String> = via_choices.iter().map(|via| via.label.clone()).collect();
     let via_codes: Vec<Vec<String>> = via_choices.into_iter().map(|via| via.codes).collect();
 
@@ -540,6 +582,7 @@ async fn get_trip_plan(
         origin,
         destination,
         waypoints,
+        waypoint_codes: has_waypoint_choice.then_some(waypoint_codes),
         time,
         avoid,
         restrictions,
@@ -607,6 +650,18 @@ async fn get_trip_plan(
         .await
         .map_err(internal_error("attach trip leg details"))?;
 
+    let waypoint_stops = if request.waypoint_codes.is_some() {
+        trip_planning_itinerary::waypoint_satisfied_by(
+            &segments,
+            &graph.interchange,
+            &request.origin,
+            &request.waypoints,
+            request.waypoint_codes.as_deref(),
+            &request.destination,
+        )
+    } else {
+        Vec::new()
+    };
     let mut body = serde_json::json!({
         "results": params.results,
         "maxChanges": max_changes,
@@ -622,7 +677,8 @@ async fn get_trip_plan(
         // Additive (2026-10-06): the pass-through vias as applied.
         "via": request.vias,
         // Additive (2026-10-07): each station group the request named
-        // (`group:NAME` in `via` or an avoid list) -> its member CRS codes,
+        // (`group:NAME` in `via`, `waypoints` or an avoid list) -> its
+        // member CRS codes,
         // as expanded. `{}` when none.
         "stationGroups": station_groups,
         "segments": segments.iter().map(|segment| serde_json::json!({
@@ -648,7 +704,8 @@ async fn get_trip_plan(
         // segment -- with their end-to-end change count.
         "journeys": trip_planning_itinerary::journey_summaries(&segments, &graph.interchange)
             .iter()
-            .map(|journey| {
+            .enumerate()
+            .map(|(j, journey)| {
                 let mut value = serde_json::json!({
                     "changeCount": journey.change_count,
                     "departure": segment_clock(journey.departure_min),
@@ -666,6 +723,12 @@ async fn get_trip_plan(
                 if !request.vias.is_empty() {
                     value["viaSatisfiedBy"] = serde_json::json!(journey.via_satisfied_by);
                 }
+                // Additive (2026-10-07), only when a waypoint is an OR
+                // choice: for each waypoint in order, where the journey
+                // stopped for it.
+                if let Some(stops) = waypoint_stops.get(j) {
+                    value["waypointSatisfiedBy"] = serde_json::json!(stops);
+                }
                 value
             })
             .collect::<Vec<_>>(),
@@ -681,7 +744,12 @@ struct PlanRequest {
     date: NaiveDate,
     origin: String,
     destination: String,
+    /// Each waypoint's label (its CRS, or an OR choice's: `KGX|EUS`,
+    /// `group:LON`).
     waypoints: Vec<String>,
+    /// Each waypoint's codes as applied (avoided members dropped), when
+    /// any waypoint is an OR choice; `None` otherwise.
+    waypoint_codes: Option<Vec<Vec<String>>>,
     time: trip_planning_itinerary::TimeBound,
     avoid: trip_planning_itinerary::AvoidLists,
     /// `build_restrictions(avoid)`, `None` when no list is given.
@@ -723,6 +791,7 @@ async fn run_plan(
             avoid: &request.avoid,
             origin_crs: &request.origin,
             waypoints: &request.waypoints,
+            waypoint_codes: request.waypoint_codes.as_deref(),
             destination_crs: &request.destination,
             vias: &request.vias,
             via_search: request.via_search.as_deref(),
@@ -917,41 +986,90 @@ async fn plan_live(
 /// silently dropping waypoints would return an itinerary that answers a
 /// different question than the one asked, which for a journey planner is
 /// worse than an error.
-fn parse_waypoints(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String)> {
-    let waypoints: Vec<String> = raw
+fn parse_waypoints(raw: Option<&str>) -> Result<Vec<StationChoice>, (StatusCode, String)> {
+    let bad = |message: String| (StatusCode::BAD_REQUEST, message);
+    let entries: Vec<&str> = raw
         .unwrap_or("")
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(common::location_naming::normalize_location_code)
         .collect();
 
-    if waypoints.len() > *WAYPOINT_LIMIT {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "too many waypoints: {} given, at most {} allowed",
-                waypoints.len(),
-                *WAYPOINT_LIMIT
-            ),
-        ));
+    if entries.len() > *WAYPOINT_LIMIT {
+        return Err(bad(format!(
+            "too many waypoints: {} given, at most {} allowed",
+            entries.len(),
+            *WAYPOINT_LIMIT
+        )));
     }
-    // OR choices (2026-10-07) are via-only for now: a clear 400 rather than
-    // "not a recognised station CRS code" for `group:LON` or `KGX|EUS`.
-    if let Some(choice) = waypoints.iter().find(|w| {
-        w.contains('|')
-            || w.get(..station_groups::GROUP_PREFIX.len())
-                .is_some_and(|p| p.eq_ignore_ascii_case(station_groups::GROUP_PREFIX))
-    }) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "waypoints: '{choice}' is a choice of stations; waypoints take single stations \
-                 (station groups and '|' are supported in via and, groups only, the avoid lists)"
-            ),
-        ));
+    // OR choices (2026-10-07): `KGX|EUS`, `group:LON`, as for `via`. A
+    // choice is ONE waypoint, of at most MAX_VIA_ALTERNATIVES stations, all
+    // the waypoints together at most MAX_VIA_STATIONS.
+    let waypoints = entries
+        .into_iter()
+        .map(|entry| station_groups::parse_choice("waypoints", entry, true).map_err(bad))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(waypoint) = waypoints
+        .iter()
+        .find(|waypoint| waypoint.codes.len() > MAX_VIA_ALTERNATIVES)
+    {
+        return Err(bad(format!(
+            "waypoints: '{}' stands for {} stations, at most {MAX_VIA_ALTERNATIVES} allowed in one \
+             waypoint",
+            waypoint.label,
+            waypoint.codes.len()
+        )));
+    }
+    let total: usize = waypoints.iter().map(|waypoint| waypoint.codes.len()).sum();
+    if total > MAX_VIA_STATIONS {
+        return Err(bad(format!(
+            "waypoints: the waypoints stand for {total} stations together, at most \
+             {MAX_VIA_STATIONS} allowed"
+        )));
     }
     Ok(waypoints)
+}
+
+/// The OR-choice waypoints (2026-10-07) against the avoid lists: a member
+/// in any avoid list is dropped (a stop there is not allowed, and an
+/// avoided member is just never used, as for a via); a choice left with
+/// none is a 400. Then two adjacent waypoints, one a choice, that share a
+/// station are a 400 ([`trip_planning_itinerary::check_adjacent_waypoints`]).
+/// Returns each waypoint's codes as applied. Single-station waypoints are
+/// untouched: [`check_avoid_conflicts`] and `plan_trip` keep their 400s.
+fn apply_waypoint_choices(
+    waypoints: &[StationChoice],
+    avoid: &trip_planning_itinerary::AvoidLists,
+) -> Result<Vec<Vec<String>>, (StatusCode, String)> {
+    let avoided = |code: &String| avoid.lists().iter().any(|(_, list)| list.contains(code));
+    let mut applied: Vec<Vec<String>> = Vec::with_capacity(waypoints.len());
+    for waypoint in waypoints {
+        if waypoint.is_single_station() {
+            applied.push(waypoint.codes.clone());
+            continue;
+        }
+        let codes: Vec<String> = waypoint
+            .codes
+            .iter()
+            .filter(|code| !avoided(code))
+            .cloned()
+            .collect();
+        if codes.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "waypoints: every station of '{}' is in an avoid list; a trip cannot stop at \
+                     one and avoid them all",
+                    waypoint.label
+                ),
+            ));
+        }
+        applied.push(codes);
+    }
+    let labels: Vec<String> = waypoints.iter().map(|w| w.label.clone()).collect();
+    trip_planning_itinerary::check_adjacent_waypoints(&labels, &applied)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    Ok(applied)
 }
 
 /// Splits, trims and normalises one avoid list (`name` is its wire name,
@@ -1387,15 +1505,17 @@ mod tests {
         let raw = ["yrk"; MAX_WAYPOINTS].join(" , ");
         let waypoints = parse_waypoints(Some(&raw)).expect("exactly the cap is allowed");
         assert_eq!(waypoints.len(), MAX_WAYPOINTS);
-        assert!(waypoints.iter().all(|crs| crs == "YRK"));
-
-        assert_eq!(
-            parse_waypoints(None).expect("absent is fine"),
-            Vec::<String>::new()
+        assert!(
+            waypoints
+                .iter()
+                .all(|w| w.label == "YRK" && w.is_single_station())
         );
-        assert_eq!(
-            parse_waypoints(Some(" ,, ")).expect("empty entries are dropped"),
-            Vec::<String>::new()
+
+        assert!(parse_waypoints(None).expect("absent is fine").is_empty());
+        assert!(
+            parse_waypoints(Some(" ,, "))
+                .expect("empty entries are dropped")
+                .is_empty()
         );
     }
 
@@ -1659,15 +1779,93 @@ mod tests {
         // Still at most three vias, a group counting as one.
         let (_, message) = err("group:LON,KGX,EUS,PAD");
         assert!(message.contains("at most 3"), "{message}");
-        // Waypoints take single stations only (for now).
-        for raw in ["YRK,group:lon", "KGX|EUS"] {
-            let (status, message) = parse_waypoints(Some(raw)).unwrap_err();
-            assert_eq!(status, StatusCode::BAD_REQUEST);
-            assert!(
-                message.contains("waypoints take single stations"),
-                "{message}"
-            );
-        }
+    }
+
+    /// Waypoints take OR choices too (2026-10-07): a choice is one
+    /// waypoint against the cap, of at most 24 stations, and all the
+    /// waypoints together stand for at most 54.
+    #[test]
+    fn waypoint_choices_parse_and_are_capped() {
+        let waypoints = parse_waypoints(Some("YRK, group:lon ,kgx|eus")).expect("valid");
+        let labels: Vec<&str> = waypoints.iter().map(|w| w.label.as_str()).collect();
+        assert_eq!(labels, vec!["YRK", "group:LON", "KGX|EUS"]);
+        assert_eq!(waypoints[1].codes.len(), 18);
+        assert!(waypoints[0].is_single_station() && !waypoints[2].is_single_station());
+
+        let err = |raw: &str| parse_waypoints(Some(raw)).unwrap_err();
+        let (status, message) = err("group:LON|Z01|Z02|Z03|Z04|Z05|Z06|Z07");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            message,
+            "waypoints: 'group:LON|Z01|Z02|Z03|Z04|Z05|Z06|Z07' stands for 25 stations, at most \
+             24 allowed in one waypoint"
+        );
+        let (_, message) = err("group:LON,YRK,group:LON,NCL,group:LON");
+        assert_eq!(
+            message,
+            "waypoints: the waypoints stand for 56 stations together, at most 54 allowed"
+        );
+        let (_, message) = err("group:NOWHERE");
+        assert!(message.starts_with("waypoints: 'group:NOWHERE' is not a known station group"));
+        let (_, message) = err("KGX|");
+        assert_eq!(message, "waypoints: 'KGX|' has an empty alternative");
+        // A group is one waypoint against the count cap.
+        let many = vec!["group:LON"; MAX_WAYPOINTS + 1].join(",");
+        let (_, message) = err(&many);
+        assert!(
+            message.starts_with("too many waypoints: 21 given"),
+            "{message}"
+        );
+        assert!(parse_waypoints(Some("group:LON,YRK,group:LON,NCL")).is_ok());
+    }
+
+    /// A choice's avoided members are dropped (a 400 only when none is
+    /// left); adjacent waypoints sharing a station, one of them a choice,
+    /// are a 400. Two equal single stations are still `plan_trip`'s 400.
+    #[test]
+    fn waypoint_choices_drop_avoided_members_and_must_not_overlap() {
+        let lists = |avoid: &[&str], avoid_stop: &[&str]| trip_planning_itinerary::AvoidLists {
+            avoid: avoid.iter().map(ToString::to_string).collect(),
+            avoid_stop: avoid_stop.iter().map(ToString::to_string).collect(),
+            avoid_change: Vec::new(),
+        };
+        let apply = |raw: &str, avoid: &trip_planning_itinerary::AvoidLists| {
+            apply_waypoint_choices(&parse_waypoints(Some(raw)).unwrap(), avoid)
+        };
+        let applied = apply("YRK,KGX|EUS|STP", &lists(&["EUS"], &["STP"])).unwrap();
+        assert_eq!(
+            applied,
+            vec![vec!["YRK".to_string()], vec!["KGX".to_string()]]
+        );
+        let applied = apply("group:LON", &lists(&["KGX"], &[])).unwrap();
+        assert_eq!(applied[0].len(), 17);
+
+        let (status, message) = apply("KGX|EUS", &lists(&["KGX"], &["EUS"])).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            message,
+            "waypoints: every station of 'KGX|EUS' is in an avoid list; a trip cannot stop at \
+             one and avoid them all"
+        );
+
+        let none = lists(&[], &[]);
+        let (_, message) = apply("group:LON,KGX", &none).unwrap_err();
+        assert_eq!(
+            message,
+            "waypoints: 'group:LON' and 'KGX' are next to each other and share 'KGX'; one stop \
+             there would satisfy both, so name stations they do not share or put another \
+             waypoint between them"
+        );
+        let (_, message) = apply("KGX|EUS,group:LON", &none).unwrap_err();
+        assert!(
+            message.contains("'KGX|EUS' and 'group:LON' are next to each other"),
+            "{message}"
+        );
+        assert!(apply("group:LON,CBG,group:LON", &none).is_ok());
+        // Dropping the shared member resolves it.
+        assert!(apply("KGX|EUS,STP|KGX", &lists(&["KGX"], &[])).is_ok());
+        // Two single stations: left to plan_trip ("is the waypoint before it").
+        assert!(apply("YRK,YRK", &none).is_ok());
     }
 
     /// An OR choice may include the origin or the destination (satisfied
@@ -1993,6 +2191,44 @@ mod db_tests {
     /// for this date" read -- proven by using a date nothing is published for
     /// (which would otherwise 404) and asserting a 400 instead. A rejected
     /// request must not have cost a whole-day row read.
+    /// `GET /Trips/station-groups` (2026-10-07): the compiled-in groups,
+    /// cacheable, with no database read (the pool here connects nowhere).
+    #[tokio::test]
+    async fn station_groups_are_listed_without_a_database() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let request = Request::builder()
+            .uri("/Trips/station-groups")
+            .body(Body::empty())
+            .expect("build request");
+        let response = test_router(test_app(pool))
+            .oneshot(request)
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=3600")
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: Value = serde_json::from_slice(&bytes).expect("json");
+        let london = &body["groups"][0];
+        assert_eq!(london["group"], "LON");
+        assert_eq!(london["code"], "group:LON");
+        assert_eq!(london["name"], "London Terminals");
+        assert_eq!(london["members"].as_array().map(Vec::len), Some(18));
+        assert_eq!(
+            london["members"][6],
+            serde_json::json!({"crs": "KGX", "name": "London Kings Cross"})
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
@@ -4199,6 +4435,217 @@ mod db_tests {
         }
 
         cleanup_live(&pool, &uids, "TWVNET").await;
+    }
+
+    /// OR-choice waypoints (2026-10-07) end to end: TWGW1 (10:00) calls at
+    /// ZG1, TWGW2 (10:30) at ZG2, both on to ZGC. `waypoints=ZG1|ZG2` stops
+    /// at whichever member the journey reaches, reported per journey; an
+    /// end in a first or last choice satisfies it there; the 400s.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end scenario, read top to bottom"
+    )]
+    async fn group_waypoints_end_to_end() {
+        let pool = connect().await;
+        let uids = ["TWGW1", "TWGW2"];
+        cleanup_live(&pool, &uids, "TWGNET").await;
+        seed_stations(
+            &pool,
+            "TWGNET",
+            &[
+                ("ZGA", "TWGA"),
+                ("ZG1", "TWG1"),
+                ("ZG2", "TWG2"),
+                ("ZGC", "TWGC"),
+                ("ZGX", "TWGX"),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TWGW1",
+            &[
+                (0, "TWGA", "origin", None, Some("10:00:00")),
+                (
+                    1,
+                    "TWG1",
+                    "intermediate",
+                    Some("10:20:00"),
+                    Some("10:21:00"),
+                ),
+                (2, "TWGC", "terminate", Some("11:00:00"), None),
+            ],
+        )
+        .await;
+        seed_schedule(
+            &pool,
+            "TWGW2",
+            &[
+                (0, "TWGA", "origin", None, Some("10:30:00")),
+                (
+                    1,
+                    "TWG2",
+                    "intermediate",
+                    Some("10:50:00"),
+                    Some("10:51:00"),
+                ),
+                (2, "TWGC", "terminate", Some("11:30:00"), None),
+            ],
+        )
+        .await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+        let uri = |query: &str| {
+            format!(
+                "/Trips/plan?origin=ZGA&destination=ZGC&date={}&live=false{query}",
+                live_date()
+            )
+        };
+        let stop = |crs: &str, matched: &str, segment: usize, how: &str| {
+            serde_json::json!({
+                "crs": crs, "matchedCrs": matched, "segment": segment, "how": how
+            })
+        };
+
+        for (query, uid, member) in [
+            ("&waypoints=zg1%7Czg2&departAfter=09:45", "TWGW1", "ZG1"),
+            ("&waypoints=ZG1|ZG2&departAfter=10:10", "TWGW2", "ZG2"),
+            ("&waypoints=ZG1|ZG2&arriveBy=11:45", "TWGW2", "ZG2"),
+            ("&waypoints=ZG1|ZG2&arriveBy=11:10", "TWGW1", "ZG1"),
+            (
+                "&waypoints=ZG1|ZG2&departAfter=09:45&results=options",
+                "TWGW1",
+                "ZG1",
+            ),
+            // An avoided member is dropped, not a 400.
+            (
+                "&waypoints=ZG1|ZG2&avoid=ZG1&departAfter=09:45",
+                "TWGW2",
+                "ZG2",
+            ),
+            // With a via: only TWGW2 passes ZG2.
+            (
+                "&waypoints=ZG1|ZG2&via=ZG2&departAfter=09:45",
+                "TWGW2",
+                "ZG2",
+            ),
+        ] {
+            let (status, body) = get(test_router(test_app(pool.clone())), uri(query)).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body:?}");
+            let segments = body["segments"].as_array().expect("segments");
+            assert_eq!(segments.len(), 2, "{query}: {body:?}");
+            assert_eq!(segments[0]["destinationCrs"], "ZG1|ZG2", "{query}");
+            assert_eq!(segments[1]["originCrs"], "ZG1|ZG2", "{query}");
+            assert_eq!(train_uids(&body, 0), [uid], "{query}: {body:?}");
+            assert_eq!(train_uids(&body, 1), [uid], "{query}: {body:?}");
+            assert_eq!(
+                segments[1]["itineraries"][0]["continuesPreviousTrain"],
+                true
+            );
+            assert_eq!(
+                body["journeys"][0]["waypointSatisfiedBy"],
+                serde_json::json!([stop("ZG1|ZG2", member, 0, "call")]),
+                "{query}: {body:?}"
+            );
+            assert_eq!(body["journeys"][0]["changeCount"], 0, "{query}");
+            assert_eq!(body["stationGroups"], serde_json::json!({}), "{query}");
+        }
+
+        // An end in a first (last) choice satisfies it there: no segment
+        // for it, and the journey is the plain fastest one.
+        for (query, satisfied) in [
+            (
+                "&waypoints=ZGX|ZGA&departAfter=09:45",
+                stop("ZGX|ZGA", "ZGA", 0, "origin"),
+            ),
+            (
+                "&waypoints=ZGC|ZGX&departAfter=09:45",
+                stop("ZGC|ZGX", "ZGC", 0, "destination"),
+            ),
+        ] {
+            let (status, body) = get(test_router(test_app(pool.clone())), uri(query)).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body:?}");
+            assert_eq!(
+                body["segments"].as_array().map(Vec::len),
+                Some(1),
+                "{query}"
+            );
+            assert_eq!(train_uids(&body, 0), ["TWGW1"], "{query}: {body:?}");
+            assert_eq!(
+                body["journeys"][0]["waypointSatisfiedBy"],
+                serde_json::json!([satisfied]),
+                "{query}: {body:?}"
+            );
+        }
+        // Then a real stop after the origin's: segments 0 and 1.
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            uri("&waypoints=ZGX|ZGA,ZG2&departAfter=09:45"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(train_uids(&body, 0), ["TWGW2"], "{body:?}");
+        assert_eq!(
+            body["journeys"][0]["waypointSatisfiedBy"],
+            serde_json::json!([
+                stop("ZGX|ZGA", "ZGA", 0, "origin"),
+                stop("ZG2", "ZG2", 0, "call")
+            ]),
+            "{body:?}"
+        );
+
+        // Single-station waypoints: no `waypointSatisfiedBy`, as before.
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            uri("&waypoints=ZG2&departAfter=09:45"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert!(body["journeys"][0].get("waypointSatisfiedBy").is_none());
+
+        // No member is called at: a 200 with every segment explained.
+        let (status, body) = get(
+            test_router(test_app(pool.clone())),
+            uri("&waypoints=ZGX|ZG1&avoid=ZG1&departAfter=09:45"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(body["journeys"], serde_json::json!([]));
+        for segment in body["segments"].as_array().expect("segments") {
+            assert!(
+                segment["noResultReason"]["constraint"].is_string(),
+                "{body:?}"
+            );
+        }
+
+        for (query, needle) in [
+            (
+                "&waypoints=ZZQ%7CZG1",
+                "'ZZQ' is not a recognised station CRS code",
+            ),
+            ("&waypoints=group:NOPE", "not a known station group"),
+            (
+                "&waypoints=ZG1%7CZG2&avoid=ZG1&avoidStop=ZG2",
+                "every station of 'ZG1|ZG2' is in an avoid list",
+            ),
+            (
+                "&waypoints=ZG1%7CZG2,ZG2",
+                "'ZG1|ZG2' and 'ZG2' are next to each other and share 'ZG2'",
+            ),
+            // Single stations: the messages from before groups.
+            ("&waypoints=ZGA", "waypoint 'ZGA' is the origin"),
+            ("&waypoints=ZG1,ZG1", "is the waypoint before it"),
+            ("&waypoints=ZG1&avoid=ZG1", "avoid: 'ZG1' is a waypoint"),
+        ] {
+            let (status, body) = get(test_router(test_app(pool.clone())), uri(query)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body:?}");
+            let message = body.as_str().unwrap_or_default();
+            assert!(message.contains(needle), "{query}: {message}");
+        }
+
+        cleanup_live(&pool, &uids, "TWGNET").await;
     }
 
     /// The raised ceiling end to end: the only ZKA -> ZKZ route takes seven
