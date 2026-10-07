@@ -202,6 +202,10 @@ async fn get_tfl_line_status_last_fetched(
 /// - before that, a bare `[IncidentMessage, ...]` array. Still accepted, as
 ///   an INCOMPLETE snapshot, so an older poller keeps ingesting during a
 ///   rollout but can never make an absent incident read as ended.
+///
+/// Writes it with `queries::upsert_incident_snapshot`: apply, publish the
+/// text changes, infer removals, in that order (plan 2c.1). poller-incidents'
+/// DB sink (`INGEST_SINK=db`) does the same without this endpoint.
 async fn post_incidents(
     State(app): State<App>,
     Json(body): Json<serde_json::Value>,
@@ -219,6 +223,7 @@ async fn post_incidents(
         &app.line_matcher,
         &snapshot.incidents,
         snapshot.complete,
+        queries::RowHeartbeat::from_flag(app.config.incidents_row_heartbeat),
     )
     .await
     .map_err(internal_error)?;
@@ -1357,6 +1362,7 @@ mod db_tests {
             backlog_match_sweep_interval_secs: 300,
             session_cleanup_interval_secs: 3600,
             background_loops: true,
+            incidents_row_heartbeat: true,
             past_travel_retention_days: 548,
             stale_push_subscription_days: 365,
             inactive_account_retention_days: 0,

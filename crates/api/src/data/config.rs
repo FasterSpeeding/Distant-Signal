@@ -473,6 +473,17 @@ pub struct ServiceArguments {
     #[arg(long, env = "API_BACKGROUND_LOOPS", default_value_t = true, action = clap::ArgAction::Set)]
     pub background_loops: bool,
 
+    /// `POST /private/incidents`' row heartbeat (ingest architecture plan
+    /// 2c.6; `ds_store::incidents::RowHeartbeat`). **On by default**
+    /// (today's behaviour): every listed incident gets `fetched_at = NOW()`
+    /// on every poll, about 600k row updates a day. Off: only changed rows
+    /// are written and the display time comes from
+    /// `incident_feed_state.last_snapshot_at`. The chart renders it from
+    /// `pollers.incidents.ingest.rowHeartbeat`, the same value
+    /// poller-incidents' DB sink reads, so the two writers cannot disagree.
+    #[arg(long, env = "INCIDENTS_ROW_HEARTBEAT", default_value_t = true, action = clap::ArgAction::Set)]
+    pub incidents_row_heartbeat: bool,
+
     /// Personal-data retention (UK legal audit LEG-5, 2026-09-27): days
     /// after its travel date that a tracked train (with its attached
     /// tickets, notification state and group shares), a standalone ticket,
@@ -803,6 +814,27 @@ mod chart_env_wiring_tests {
         assert!(
             block.contains("- name: API_BACKGROUND_LOOPS"),
             "the chart renders API_BACKGROUND_LOOPS (when api.backgroundLoops is false)"
+        );
+    }
+
+    /// Plan 2c.6: `INCIDENTS_ROW_HEARTBEAT` defaults to true (today's
+    /// behaviour), takes an explicit value, and the chart can turn it off.
+    #[test]
+    fn incidents_row_heartbeat_default_on_and_the_env_name_is_stable() {
+        let command = ServiceArguments::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "incidents_row_heartbeat")
+            .expect("incidents_row_heartbeat is declared");
+        assert_eq!(
+            arg.get_env().and_then(|env| env.to_str()),
+            Some("INCIDENTS_ROW_HEARTBEAT")
+        );
+        assert_eq!(arg.get_default_values(), ["true"]);
+        assert!(matches!(arg.get_action(), clap::ArgAction::Set));
+        assert!(
+            api_container_block().contains("- name: INCIDENTS_ROW_HEARTBEAT"),
+            "the chart renders INCIDENTS_ROW_HEARTBEAT (when pollers.incidents.ingest.rowHeartbeat is false)"
         );
     }
 
