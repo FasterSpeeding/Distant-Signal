@@ -86,6 +86,8 @@ pub enum DbRole {
     Enricher,
     Notifier,
     Writer,
+    /// poller-incidents' DB sink (plan 2c.3).
+    Incidents,
 }
 
 impl DbRole {
@@ -97,6 +99,7 @@ impl DbRole {
             Self::Enricher => "enricher",
             Self::Notifier => "notifier",
             Self::Writer => "writer",
+            Self::Incidents => "incidents",
         }
     }
 
@@ -319,6 +322,7 @@ mod tests {
             DbRole::Enricher,
             DbRole::Notifier,
             DbRole::Writer,
+            DbRole::Incidents,
         ] {
             assert!(privileges_for(role.key()).is_some(), "{role:?}");
             assert!(!role.required_privileges().is_empty(), "{role:?}");
@@ -344,6 +348,12 @@ mod tests {
         assert!(has(DbRole::Aggregator, "tocs", "SELECT"));
         // ...but not on a personal one.
         assert!(!has(DbRole::Aggregator, "users", "SELECT"));
+        // poller-incidents (narrow, plan 2c.3): its own tables and the
+        // gazetteer, nothing else.
+        assert!(has(DbRole::Incidents, "incident_feed_state", "UPDATE"));
+        assert!(has(DbRole::Incidents, "stations", "SELECT"));
+        assert!(!has(DbRole::Incidents, "stations", "UPDATE"));
+        assert!(!has(DbRole::Incidents, "tocs", "SELECT"));
         // No role is required to hold anything on the migrations table
         // beyond what the version query itself needs.
         assert!(
