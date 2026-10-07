@@ -20,7 +20,9 @@ the Rust sources of `crates/api` and `crates/ds-store` (src, tests, bins):
   keyword, or a statement starting with a lower-case one), whitespace
   collapsed, with how often it occurs; plus the contents of `.sql` files
   pulled in with `include_str!`. Literals in test code (`tests/`,
-  `benches/`, `#[cfg(test)]` items) are listed separately as test-sql.
+  `benches/`, `#[cfg(test)]` items, and ds-store's
+  `#[cfg(any(test, feature = "test-support"))]` fixtures) are listed
+  separately as test-sql.
 
 Why static, not a scrape of a running api: `/metrics` shows a series only
 after its first observation unless it was registered at zero, so a scrape
@@ -341,10 +343,37 @@ def matching(tokens: Sequence[Token], start: int) -> int:
     return len(tokens) - 1
 
 
+# The test-only cfgs: `#[cfg(test)]`, and ds-store's shared DB-test
+# fixtures, built for its own tests and (through its `test-support` feature,
+# which only dev-dependencies enable) for other crates' tests.
+TEST_CFGS = (
+    ["#", "[", "cfg", "(", "test", ")", "]"],
+    ["#", "[", "cfg", "(", "feature", "=", "test-support", ")", "]"],
+    [
+        "#",
+        "[",
+        "cfg",
+        "(",
+        "any",
+        "(",
+        "test",
+        ",",
+        "feature",
+        "=",
+        "test-support",
+        ")",
+        ")",
+        "]",
+    ],
+)
+
+
 def is_cfg_test(tokens: Sequence[Token], index: int) -> bool:
-    """Return whether `#[cfg(test)]` starts at `index`."""
-    texts = [token.text for token in tokens[index : index + 7]]
-    return texts == ["#", "[", "cfg", "(", "test", ")", "]"]
+    """Return whether a test-only cfg (see TEST_CFGS) starts at `index`."""
+    return any(
+        [token.text for token in tokens[index : index + len(cfg)]] == cfg
+        for cfg in TEST_CFGS
+    )
 
 
 def mark_test_items(tokens: list[Token]) -> list[str]:

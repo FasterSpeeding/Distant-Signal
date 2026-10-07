@@ -191,48 +191,7 @@ pub async fn closed_day_rows_for_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn row(line_id: &str, computed_at: &str, total: u32) -> FullCoverageWindowStatsRow {
-        FullCoverageWindowStatsRow {
-            line_id: line_id.to_string(),
-            window_kind: FullCoverageWindowKind::Recent,
-            service_date: "2026-09-27".parse().unwrap(),
-            window_start: "2026-09-27T10:50:00Z".parse().unwrap(),
-            window_end: "2026-09-27T11:50:00Z".parse().unwrap(),
-            computed_at: computed_at.parse().unwrap(),
-            counts: FullCoverageWindowCounts {
-                total,
-                on_time: total,
-                ..Default::default()
-            },
-            relevance: "full".to_string(),
-            presumed_enabled: true,
-            partial: false,
-            feed_stale: false,
-            stats_version: 2,
-        }
-    }
-
-    #[test]
-    fn buckets_are_15_minutes_and_computed_from_computed_at() {
-        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
-        assert_eq!(
-            bucket_start(at("2026-09-27T12:14:59Z")),
-            at("2026-09-27T12:00:00Z")
-        );
-        assert_eq!(
-            bucket_start(at("2026-09-27T12:15:00Z")),
-            at("2026-09-27T12:15:00Z")
-        );
-    }
-
-    #[test]
-    fn validation_rejects_an_unknown_relevance() {
-        assert!(validate(&[row("line-a", "2026-09-27T12:00:00Z", 1)]).is_ok());
-        let mut bad = row("line-a", "2026-09-27T12:00:00Z", 1);
-        bad.relevance = "everything".to_string();
-        assert!(validate(&[bad]).is_err());
-    }
+    use ds_store::test_support::full_coverage_window_row as row;
 
     async fn connect() -> PgPool {
         let database_url =

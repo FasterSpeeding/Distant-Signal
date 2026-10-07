@@ -78,8 +78,9 @@ trust-schema = { path = "../trust-schema" }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-# `test-helpers`: `ds_store::sweeps::reconciliation::enrichment_candidate_ids_for_tests`.
-ds-store = { path = "../ds-store", features = ["test-helpers"] }
+# `test-support`: the shared DB-test fixtures (`ds_store::test_support`) and
+# `ds_store::sweeps::reconciliation::enrichment_candidate_ids_for_tests`.
+ds-store = { path = "../ds-store", features = ["test-support"] }
 wiremock = "0.6"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
