@@ -12,6 +12,11 @@
 //! Never edit a fixture to make a test pass: a change here is a new
 //! envelope or schema version.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "test code: a panic is the right failure"
+)]
+
 use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};

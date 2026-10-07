@@ -562,6 +562,7 @@ impl StreamConsumer {
         let min_idle = u64::try_from(self.config.claim_min_idle.as_millis()).unwrap_or(u64::MAX);
         let mut cursor = "0-0".to_owned();
         let mut claimed = 0;
+        let mut trimmed = 0;
         // Bounded: each pass moves up to 100; a huge PEL is finished next
         // sweep.
         for _ in 0..100 {
@@ -586,6 +587,12 @@ impl StreamConsumer {
             if let Some(Value::Array(ids)) = parts.get(1) {
                 claimed += ids.len();
             }
+            // Redis 7+ also drops pending entries that `MAXLEN` trimmed away
+            // from the PEL, and lists them here (valkey does so whatever
+            // their idle time).
+            if let Some(Value::Array(deleted)) = parts.get(2) {
+                trimmed += deleted.len();
+            }
             if next == "0-0" {
                 break;
             }
@@ -593,6 +600,16 @@ impl StreamConsumer {
         }
         if claimed > 0 {
             tracing::info!(stream = %self.config.stream, claimed, "reclaimed idle pending ingest entries");
+        }
+        if trimmed > 0 {
+            for _ in 0..trimmed {
+                metrics::consumed(&self.config.stream, "unknown", "trimmed");
+            }
+            tracing::warn!(
+                stream = %self.config.stream,
+                trimmed,
+                "pending ingest entries were trimmed before they were applied"
+            );
         }
         Ok(claimed)
     }
