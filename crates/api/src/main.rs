@@ -418,28 +418,92 @@ where
     serve().await
 }
 
-/// The four background sweeps (the session-cleanup one also runs the
-/// dead-link prune and the personal-data retention sweep). Only called once migrations have run -- see
-/// [`run_startup`].
+/// The api's background loops (the session-cleanup one also runs the
+/// dead-link prune and the personal-data retention sweep). Only called once
+/// migrations have run -- see [`run_startup`].
+///
+/// `API_BACKGROUND_LOOPS=false` (plan 1B.7) starts none of them: the
+/// ingest-writer's loops and the `apiMaintenance` `CronJob` run them instead.
+///
+/// The schedule-match, reconciliation and backlog-match sweeps and the
+/// one-shot CORPUS crosswalk check are `ds_store::loops`, the same loops the
+/// ingest-writer runs, under the same advisory locks: on one lock connection
+/// held out of the api's own pool (`LockSession::from_pool`, so the
+/// connection budgets are unchanged), each runs only while this process
+/// holds its lock, so with the writer's loops on too each sweep runs in one
+/// process at a time (spec §12.3). A held lock is kept until the process
+/// exits. The CORPUS check takes its lock only for the
+/// one run, so the writer's 10-minute loop is never kept off it.
 fn spawn_background_loops(app: &App) {
-    tokio::spawn(schedule_match_sweep_loop(app.clone()));
-    tokio::spawn(reconciliation_sweep_loop(app.clone()));
-    tokio::spawn(backlog_match_sweep_loop(app.clone()));
+    if !app.config.background_loops {
+        tracing::info!(
+            "API_BACKGROUND_LOOPS is false: the api runs no background loops \
+             (the ingest-writer and the api-maintenance CronJob run them)"
+        );
+        return;
+    }
+    let runner = api_loop_runner(app);
+    let session = std::sync::Arc::clone(runner.session());
+    // The periodic sweeps, for the life of the process (dropping the
+    // `RunningLoops` would abort them).
+    tokio::spawn(
+        runner
+            .spawn(BACKGROUND_LOOP_STALL_AFTER)
+            .run_until_all_end(),
+    );
     tokio::spawn(session_cleanup_sweep_loop(app.clone()));
-    // One-shot: rebuilds the CORPUS crosswalk if the stored one predates the
-    // newest delivery or this build's rules (one MAX() when no CORPUS), then
-    // seeds the CORPUS freshness gauge.
+    // One-shot, alongside them: rebuilds the CORPUS crosswalk if the stored
+    // one predates the newest delivery or this build's rules (one MAX()
+    // when no CORPUS), then seeds the CORPUS freshness gauge from the
+    // durable marker, so the staleness alert survives restarts between
+    // monthly deliveries -- unless the ingest-writer holds the loop's lock
+    // (it does both every 10 minutes).
     let pool = app.database.clone();
     tokio::spawn(async move {
-        if let Err(err) = data::corpus_crosswalk::rebuild_if_stale(&pool).await {
-            tracing::error!(error = ?err, "CORPUS crosswalk startup rebuild failed");
-        }
-        // Seeds the CORPUS freshness gauge from the durable marker, so the
-        // staleness alert survives restarts between monthly deliveries.
-        if let Err(err) = data::corpus::refresh_last_delivery_metric(&pool).await {
-            tracing::error!(error = ?err, "CORPUS freshness gauge startup read failed");
+        let corpus =
+            ds_store::loops::corpus_crosswalk(ds_store::loops::CORPUS_CROSSWALK_DEFAULT_INTERVAL);
+        if ds_store::loops::runner::run_once(&pool, &session, &corpus).await
+            == ds_store::loops::TickOutcome::Skipped
+        {
+            tracing::info!(
+                "CORPUS crosswalk startup check skipped: another process holds its lock"
+            );
         }
     });
+}
+
+/// The api has no per-loop liveness (its `/livez` is the HTTP listener), so
+/// the runner's stall tracking is unused; any value works.
+const BACKGROUND_LOOP_STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The api's runner with its three periodic sweeps registered: the same
+/// `ds_store::loops` specs, intervals and locks as the ingest-writer's.
+fn api_loop_runner(app: &App) -> ds_store::loops::LoopRunner {
+    let pool = app.database.clone();
+    let mut runner = ds_store::loops::LoopRunner::new(
+        pool.clone(),
+        ds_store::loops::LockSession::from_pool(pool),
+    );
+    let index: ds_store::loops::CrsLineIndex =
+        std::sync::Arc::new(app.schedule_crs_line_index.clone());
+    let intervals = ds_store::loops::TrainLoopIntervals {
+        schedule_match: std::time::Duration::from_secs(app.config.schedule_match_interval_secs),
+        reconciliation: std::time::Duration::from_secs(
+            app.config.reconciliation_sweep_interval_secs,
+        ),
+        schedule_enrichment_grace: chrono::Duration::minutes(
+            app.config.schedule_enrichment_grace_minutes,
+        ),
+        backlog_match: std::time::Duration::from_secs(app.config.backlog_match_sweep_interval_secs),
+    };
+    for spec in ds_store::loops::periodic_sweeps(intervals, &index) {
+        // A zero interval: the old loops panicked in `tokio::time::interval`
+        // at once; now that sweep is logged and left off.
+        if let Err(err) = runner.register(spec) {
+            tracing::error!(error = ?err, "background loop not started");
+        }
+    }
+    runner
 }
 
 /// Starts api's own internal-only `/metrics` listener on a SEPARATE port
@@ -489,8 +553,9 @@ fn spawn_metrics_listener(port: u16, metrics_handle: PrometheusHandle) {
 
 /// Builds a background-sweep-loop `tokio::time::Interval`, ticking every
 /// `interval_secs` -- with `MissedTickBehavior::Delay` rather than the
-/// default `Burst`. Shared by all four sweep loops below (they mirror
-/// each other's shape exactly, per their own doc comments).
+/// default `Burst`. Used by `session_cleanup_sweep_loop`; the three
+/// train-domain sweeps' runner (`ds_store::loops`) sets `Delay` the same
+/// way.
 ///
 /// `Burst` fires every missed tick back-to-back with zero gap once a cycle
 /// overruns its own interval (a slow DB sweep query, a stuck connection) --
@@ -512,108 +577,17 @@ fn sweep_interval(interval_secs: u64) -> tokio::time::Interval {
     interval
 }
 
-/// Periodic retry of Decision 3's schedule-first match against every
-/// still-`pending`, never-schedule-matched tracked-train row -- the
-/// mechanism that makes this feature retroactive-capable for a pin
-/// created before its schedule's population was published, or before
-/// this feature shipped at all (Decision 6 of
-/// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md).
-/// Mirrors `crates/enricher/src/main.rs`'s own `sweep_loop` shape -- the
-/// established precedent in this workspace for "a service that is mostly
-/// a request/response server also runs one background interval loop."
-async fn schedule_match_sweep_loop(app: App) {
-    let mut interval = sweep_interval(app.config.schedule_match_interval_secs);
-    loop {
-        interval.tick().await;
-        match data::schedule_matching::run_schedule_match_sweep(
-            &app.database,
-            &app.schedule_crs_line_index,
-        )
-        .await
-        {
-            Ok(matched) if matched > 0 => {
-                tracing::info!(matched, "schedule-match sweep resolved pending pins");
-            }
-            Ok(_) => {}
-            Err(err) => {
-                tracing::error!(error = ?err, "schedule-match sweep failed; will retry next interval");
-            }
-        }
-    }
-}
-
-/// Periodic retry of two independent, confirmed stalls in tracked-train
-/// state -- see
-/// docs/superpowers/specs/2026-09-08-tracked-train-reconciliation-design.md.
-/// Mirrors `schedule_match_sweep_loop`'s own shape exactly: same "a
-/// request/response server also runs a background interval loop" pattern
-/// this workspace already established.
-async fn reconciliation_sweep_loop(app: App) {
-    let mut interval = sweep_interval(app.config.reconciliation_sweep_interval_secs);
-    let grace_period = chrono::Duration::minutes(app.config.schedule_enrichment_grace_minutes);
-    loop {
-        interval.tick().await;
-        match data::reconciliation::run_reconciliation_sweep(
-            &app.database,
-            &app.schedule_crs_line_index,
-            grace_period,
-        )
-        .await
-        {
-            Ok(result)
-                if result.resolution_status_reconciled > 0
-                    || result.schedule_enrichment_matched > 0 =>
-            {
-                tracing::info!(
-                    resolution_status_reconciled = result.resolution_status_reconciled,
-                    schedule_enrichment_matched = result.schedule_enrichment_matched,
-                    "reconciliation sweep made progress on stuck tracked-train state"
-                );
-            }
-            Ok(_) => {}
-            Err(err) => {
-                tracing::error!(error = ?err, "reconciliation sweep failed; will retry next interval");
-            }
-        }
-    }
-}
-
-/// Periodic retry of `attempt_backlog_match` for every still-`pending` pin
-/// it hasn't yet resolved -- the fix for a confirmed gap named in full on
-/// `data::trust_event_backlog_match::run_backlog_match_sweep`'s own doc
-/// comment: that function was previously only ever invoked once,
-/// synchronously, at pin-creation time, with no retry for a train whose
-/// real departure fell outside `common::MATCH_TOLERANCE` of its scheduled
-/// time (routine under disruption). Mirrors `schedule_match_sweep_loop`'s
-/// own shape exactly -- same "a request/response server also runs a
-/// background interval loop" pattern this workspace already established
-/// for both sibling sweeps above.
-async fn backlog_match_sweep_loop(app: App) {
-    let mut interval = sweep_interval(app.config.backlog_match_sweep_interval_secs);
-    loop {
-        interval.tick().await;
-        match data::trust_event_backlog_match::run_backlog_match_sweep(&app.database).await {
-            Ok(matched) if matched > 0 => {
-                tracing::info!(matched, "backlog-match sweep resolved pending pins");
-            }
-            Ok(_) => {}
-            Err(err) => {
-                tracing::error!(error = ?err, "backlog-match sweep failed; will retry next interval");
-            }
-        }
-    }
-}
-
 /// Periodic sweep deleting `sessions` rows past their `expires_at`
 /// (`data::users::prune_expired_sessions`) -- part of the fix for "no
 /// server-side session revocation" (2026-09-25 security review): an
 /// expired row was already excluded from every lookup
 /// (`get_session_with_user`'s own `WHERE expires_at > NOW()`), but
 /// nothing ever actually deleted it, so the table only ever grew.
-/// Mirrors `schedule_match_sweep_loop`'s own shape exactly -- same "a
-/// request/response server also runs a background interval loop" pattern
-/// this workspace already established, and the same one this crate's own
-/// three sibling sweeps above already follow. Unlike those three, this
+/// Same "a request/response server also runs a background interval loop"
+/// pattern as the three train-domain sweeps (`ds_store::loops`). Unlike
+/// those three, it takes no advisory lock: every api replica runs it (as
+/// before), and the `apiMaintenance` `CronJob` replaces it (plan 1B.8),
+/// behind `API_BACKGROUND_LOOPS`. This
 /// sweep never resolves anything a user is waiting on, so its own
 /// `session_cleanup_interval_secs` defaults to a much coarser cadence
 /// (1 hour) than theirs (5 minutes).
@@ -722,12 +696,11 @@ mod sweep_interval_tests {
     use super::sweep_interval;
 
     /// Regression for the "L1 -- `MissedTickBehavior::Burst` still default"
-    /// finding: every sweep loop above shares this one interval builder, so
-    /// asserting it here covers all four (`schedule_match_sweep_loop`,
-    /// `reconciliation_sweep_loop`, `backlog_match_sweep_loop`,
-    /// `session_cleanup_sweep_loop`) -- each must opt into `Delay`, not
+    /// finding: `session_cleanup_sweep_loop` must opt into `Delay`, not
     /// leave `Burst` as the default, so an overrun sweep doesn't fire a
-    /// burst of back-to-back catch-up cycles against the database.
+    /// burst of back-to-back catch-up cycles against the database (the
+    /// train-domain sweeps' runner, `ds_store::loops::runner::run_loop`,
+    /// does the same).
     #[tokio::test]
     async fn sweep_interval_defaults_to_delay_not_burst_on_a_missed_tick() {
         let interval = sweep_interval(60);
