@@ -13,12 +13,16 @@ mod config;
 mod discovery;
 mod locations;
 mod parser;
+mod sink;
 
 use std::time::Duration;
 
 use clap::Parser;
 use config::Config;
 use reqwest::Client;
+#[cfg(test)]
+use sink::first_chunk_url;
+use sink::{ChunkPart, DatedProduct, HttpSink, LinePopulation, PublishSink, SinkError};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -33,7 +37,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const FINAL_CHUNK_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// A publish failure that must NOT be retried within this cycle -- see
-/// [`publish_with_retry`] and [`final_chunk_failure_defers_to_next_cycle`].
+/// [`publish_with_retry`] and [`SinkError::defers_final_chunk`].
 /// Still an ordinary retryable failure for [`CycleOutcome`]: the next cycle
 /// republishes the product.
 #[derive(Debug)]
@@ -71,34 +75,6 @@ impl std::fmt::Display for RefusedToClear {
 }
 
 impl std::error::Error for RefusedToClear {}
-
-/// Whether a failed FINAL chunk means `api` may still be (or just was) busy
-/// with that product's delete, so an immediate in-cycle retry -- a whole new
-/// publish, re-staging every key and ending in another full delete -- would
-/// only add load (the 2026-09-27 incident):
-///
-/// * the request timed out on this side: the server may well still be
-///   executing the delete;
-/// * 409: another final chunk of the product is still deleting
-///   (`api`'s advisory lock refused this one);
-/// * 503: the delete hit `api`'s statement timeout and was rolled back --
-///   the same delete would very likely time out again right now.
-///
-/// Anything else (a 502 from an `api` restart, a deadlock's 500, a
-/// connection refused) is still retried in-cycle as before.
-fn final_chunk_failure_defers_to_next_cycle(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        cause
-            .downcast_ref::<reqwest::Error>()
-            .is_some_and(reqwest::Error::is_timeout)
-            || cause
-                .downcast_ref::<common::ingest::HttpStatusError>()
-                .is_some_and(|e| {
-                    e.status == reqwest::StatusCode::CONFLICT
-                        || e.status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                })
-    })
-}
 
 /// Builds the poll-cycle `tokio::time::Interval`, ticking every
 /// `poll_interval` -- with `MissedTickBehavior::Delay` rather than the
@@ -140,12 +116,26 @@ async fn run() -> anyhow::Result<()> {
     let progress = health_http::spawn_liveness(&config.health);
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
+    let sink = HttpSink::new(
+        &client,
+        &config,
+        &internal_oauth,
+        FINAL_CHUNK_REQUEST_TIMEOUT,
+    );
+    run_with(&sink, &config, &progress).await
+}
+
+/// The service loop over whichever [`PublishSink`] `run` built: seed the
+/// dedup marker, then one [`poll_once`] per interval, forever.
+async fn run_with(
+    sink: &impl PublishSink,
+    config: &Config,
+    progress: &health_http::Progress,
+) -> anyhow::Result<()> {
     let mut interval = poll_interval(config.poll_interval_secs);
     let mut state = PublishState {
-        // Waiting (with backoff) for api to answer is not a stall.
-        last_processed_delivery: progress
-            .idle(seed_and_report(&client, &config, &internal_oauth))
-            .await,
+        // Waiting (with backoff) for the marker read is not a stall.
+        last_processed_delivery: progress.idle(seed_and_report(sink, config)).await,
         partial: None,
     };
     if let Some(delivery) = &state.last_processed_delivery {
@@ -163,7 +153,7 @@ async fn run() -> anyhow::Result<()> {
     loop {
         progress.idle(interval.tick()).await;
         let cycle_start = std::time::Instant::now();
-        let result = poll_once(&client, &config, &mut state, &internal_oauth).await;
+        let result = poll_once(sink, config, &mut state).await;
         progress.beat();
         metrics::histogram!(common::metrics::metric_name(
             "schedule_reference_cycle_duration_seconds"
@@ -351,7 +341,7 @@ impl CycleOutcome {
             self.permanent(product);
             return;
         }
-        match common::ingest::classify_failure(err) {
+        match sink::classify(err) {
             common::ingest::FailureClass::Rejected => {
                 tracing::error!(
                     error = ?err,
@@ -615,10 +605,7 @@ async fn publish_with_retry(
                 );
                 return Err(err);
             }
-            Err(err)
-                if common::ingest::classify_failure(&err)
-                    == common::ingest::FailureClass::Rejected =>
-            {
+            Err(err) if sink::classify(&err) == common::ingest::FailureClass::Rejected => {
                 // DQ6/SCHED-1: api refused the data itself; the same request
                 // is refused the same way however often it is sent.
                 return Err(err);
@@ -651,10 +638,9 @@ async fn publish_with_retry(
     reason = "long but linear; splitting it would scatter its shared state across helpers"
 )]
 async fn poll_once(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     state: &mut PublishState,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
 ) -> anyhow::Result<()> {
     let Some(delivery) = discovery::latest_complete_delivery(&config.storage_dir)? else {
         tracing::debug!("no complete MCA+MSN delivery directory found yet");
@@ -728,14 +714,7 @@ async fn poll_once(
     // this one is retried on the next.
     if !outcome.is_published(product::STANOX_CRS) {
         match publish_with_retry(&config.publish_retry, product::STANOX_CRS, async || {
-            common::ingest::post_batch(
-                client,
-                &config.api_ingest_url,
-                internal_oauth,
-                &records,
-                "stanox/crs rows",
-            )
-            .await
+            Ok(sink.stanox_crs(&records).await?)
         })
         .await
         {
@@ -766,14 +745,7 @@ async fn poll_once(
 
     if !outcome.is_published(product::TIPLOC_CRS) {
         match publish_with_retry(&config.publish_retry, product::TIPLOC_CRS, async || {
-            common::ingest::post_batch(
-                client,
-                &config.tiploc_crs_url,
-                internal_oauth,
-                &tiploc_crs_records,
-                "tiploc/crs rows",
-            )
-            .await
+            Ok(sink.tiploc_crs(&tiploc_crs_records).await?)
         })
         .await
         {
@@ -784,12 +756,11 @@ async fn poll_once(
 
     if !outcome.is_published(product::TIPLOC_LOCATIONS) {
         publish_tiploc_locations(
-            client,
+            sink,
             config,
             &delivery.mca_path,
             &ti_records,
             &a_text,
-            internal_oauth,
             source_sequence,
             &mut outcome,
         )
@@ -799,15 +770,7 @@ async fn poll_once(
     if outcome.is_published(product::FIXED_LINKS) {
         tracing::debug!("fixed links already published for this delivery; skipping");
     } else if let Some(alf_path) = &delivery.alf_path {
-        publish_fixed_links(
-            client,
-            config,
-            alf_path,
-            internal_oauth,
-            source_sequence,
-            &mut outcome,
-        )
-        .await;
+        publish_fixed_links(sink, config, alf_path, source_sequence, &mut outcome).await;
     } else {
         tracing::warn!(
             delivery = %delivery.dir_name,
@@ -817,10 +780,9 @@ async fn poll_once(
     }
 
     publish_cif_derived_products(
-        client,
+        sink,
         config,
         &delivery.mca_path,
-        internal_oauth,
         &records,
         &tiploc_crs_records,
         &mut outcome,
@@ -862,7 +824,7 @@ async fn poll_once(
 
     if outcome.fully_published() {
         telemetry::set_last_published_delivery(&delivery.dir_name);
-        record_completed_publish(client, config, internal_oauth, &delivery.dir_name).await;
+        record_completed_publish(sink, &delivery.dir_name).await;
     }
 
     Ok(())
@@ -878,23 +840,8 @@ async fn poll_once(
 /// complete. Wasteful for one cycle, never data loss. Failing
 /// the cycle over it would be strictly worse: it would turn a bookkeeping
 /// blip into a retry of a publish that already succeeded.
-async fn record_completed_publish(
-    client: &Client,
-    config: &Config,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
-    delivery: &str,
-) {
-    let body = common::ingest::ScheduleReferencePublishRequest {
-        delivery: delivery.to_string(),
-    };
-    match common::ingest::post_json(
-        client,
-        &config.schedule_reference_publishes_url,
-        internal_oauth,
-        &body,
-    )
-    .await
-    {
+async fn record_completed_publish(sink: &impl PublishSink, delivery: &str) {
+    match sink.record_completed_publish(delivery).await {
         Ok(()) => tracing::info!(
             delivery = %delivery,
             "recorded this delivery's completed publish cycle with api; a restart will not \
@@ -921,12 +868,11 @@ async fn record_completed_publish(
     reason = "each argument is an independent input from the single caller; a struct would only wrap them"
 )]
 async fn publish_tiploc_locations(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     mca_path: &std::path::Path,
     ti_records: &[parser::TiRecord],
     msn_text: &str,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     source_sequence: i32,
     outcome: &mut CycleOutcome,
 ) {
@@ -967,16 +913,7 @@ async fn publish_tiploc_locations(
     match publish_with_retry(
         &config.publish_retry,
         product::TIPLOC_LOCATIONS,
-        async || {
-            common::ingest::post_batch(
-                client,
-                &config.tiploc_locations_url,
-                internal_oauth,
-                &records,
-                "tiploc location rows",
-            )
-            .await
-        },
+        async || Ok(sink.tiploc_locations(&records).await?),
     )
     .await
     {
@@ -1019,10 +956,9 @@ async fn publish_tiploc_locations(
 /// over one such blip is exactly the failure class this file's 2026-09-25
 /// rework exists to close.
 async fn publish_fixed_links(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     alf_path: &std::path::Path,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     source_sequence: i32,
     outcome: &mut CycleOutcome,
 ) {
@@ -1061,14 +997,7 @@ async fn publish_fixed_links(
         .collect();
 
     match publish_with_retry(&config.publish_retry, product::FIXED_LINKS, async || {
-        common::ingest::post_batch(
-            client,
-            &config.fixed_links_url,
-            internal_oauth,
-            &records,
-            "fixed-link rows",
-        )
-        .await
+        Ok(sink.fixed_links(&records).await?)
     })
     .await
     {
@@ -1083,14 +1012,10 @@ async fn publish_fixed_links(
 /// wait is `progress.idle`, so the liveness endpoint is healthy throughout
 /// it; without this gauge "never managed to seed" (api or the `IdP` down for
 /// hours) looked exactly like "idle between deliveries".
-async fn seed_and_report(
-    client: &Client,
-    config: &Config,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
-) -> Option<String> {
+async fn seed_and_report(sink: &impl PublishSink, config: &Config) -> Option<String> {
     metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(0.0);
     telemetry::register();
-    let seeded = seed_last_processed_delivery(client, config, internal_oauth).await;
+    let seeded = seed_last_processed_delivery(sink, config).await;
     metrics::gauge!(common::metrics::metric_name(SEEDED_METRIC)).set(1.0);
     if let Some(delivery) = &seeded {
         telemetry::set_last_published_delivery(delivery);
@@ -1154,21 +1079,11 @@ const SEEDED_METRIC: &str = "schedule_reference_seeded";
 /// do before this answer arrives: wait for it, with capped exponential
 /// backoff and jitter ([`Config::startup_backoff`]), logging each failure at
 /// `warn`.
-async fn seed_last_processed_delivery(
-    client: &Client,
-    config: &Config,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
-) -> Option<String> {
+async fn seed_last_processed_delivery(sink: &impl PublishSink, config: &Config) -> Option<String> {
     let mut failures: u32 = 0;
     loop {
-        match common::ingest::get_json::<common::ingest::LastCompletedPublishResponse>(
-            client,
-            &config.schedule_reference_publishes_url,
-            internal_oauth,
-        )
-        .await
-        {
-            Ok(response) => {
+        match sink.last_completed_publish().await {
+            Ok(delivery) => {
                 if failures > 0 {
                     tracing::info!(
                         failed_attempts = failures,
@@ -1176,7 +1091,7 @@ async fn seed_last_processed_delivery(
                          retrying"
                     );
                 }
-                return response.delivery;
+                return delivery;
             }
             Err(err) => {
                 let delay = config.startup_backoff.delay(failures);
@@ -1341,10 +1256,9 @@ fn log_new_unresolved_booked_tiplocs(
 /// `crs_to_tiploc_map` (see that function's own doc comment for the
 /// `AFK`/`EBD`/`SFA`/`POO`-class gap this closes).
 async fn publish_cif_derived_products(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     mca_path: &std::path::Path,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     stanox_crs_records: &[common::StanoxCrsRecord],
     tiploc_crs_records: &[common::TiplocCrsRecord],
     outcome: &mut CycleOutcome,
@@ -1417,26 +1331,17 @@ async fn publish_cif_derived_products(
     log_new_unresolved_booked_tiplocs(&index, today, tiploc_crs_records);
 
     publish_schedule_line_population(
-        client,
+        sink,
         config,
         &index,
         today,
         stanox_crs_records,
         tiploc_crs_records,
-        internal_oauth,
         outcome,
     )
     .await;
-    publish_schedule_network_departures(
-        client,
-        config,
-        &index,
-        today,
-        tiploc_crs_records,
-        internal_oauth,
-        outcome,
-    )
-    .await;
+    publish_schedule_network_departures(sink, config, &index, today, tiploc_crs_records, outcome)
+        .await;
     // Third CIF-derived product off the SAME one-per-cycle ScheduleIndex --
     // the design doc's Approach B is explicit that this must not trigger a
     // second parse or a resident index. Unlike the two products above (line
@@ -1465,12 +1370,11 @@ async fn publish_cif_derived_products(
     });
     for date in dates {
         publish_schedule_destination_departures(
-            client,
+            sink,
             config,
             &index,
             date,
             tiploc_crs_records,
-            internal_oauth,
             window_has_schedules,
             outcome,
         )
@@ -1480,27 +1384,17 @@ async fn publish_cif_derived_products(
         // directly above -- one pass, multiple outputs, this file's own
         // established precedent.
         publish_schedule_calling_points_full(
-            client,
+            sink,
             config,
             &index,
             date,
-            internal_oauth,
             window_has_schedules,
             outcome,
         )
         .await;
         // Fifth: every schedule's service mode for the date, so `api` can
         // label buses and ferries (TRUST never reports them).
-        publish_schedule_services(
-            client,
-            config,
-            &index,
-            date,
-            internal_oauth,
-            window_has_schedules,
-            outcome,
-        )
-        .await;
+        publish_schedule_services(sink, config, &index, date, window_has_schedules, outcome).await;
     }
 }
 
@@ -1508,7 +1402,7 @@ async fn publish_cif_derived_products(
 /// `index`/`today` are shared, caller-supplied inputs (built once by
 /// `publish_cif_derived_products`) rather than rebuilt here on every call.
 /// The JSON body shape (`line_id`/`service_date`/`population`) and the
-/// individual-object POST (`post_schedule_line_population`) are unchanged
+/// individual-object POST ([`PublishSink::line_population`]) are unchanged
 /// from before this plan's Task 3.
 ///
 /// As of the 2026-09-09 tiploc-schedule-matching-gap fix, this now also
@@ -1563,13 +1457,12 @@ async fn publish_cif_derived_products(
     reason = "each argument is an independent input from the single caller; a struct would only wrap them; see the doc comment"
 )]
 async fn publish_schedule_line_population(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
     stanox_crs_records: &[common::StanoxCrsRecord],
     tiploc_crs_records: &[common::TiplocCrsRecord],
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     outcome: &mut CycleOutcome,
 ) {
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
@@ -1599,20 +1492,14 @@ async fn publish_schedule_line_population(
             }
             let population = line_population_entries(index, date, &day, members);
             log_membership(&line.id, date, &population);
-            let body = serde_json::json!({
-                "line_id": line.id,
-                "service_date": date,
-                "population": population,
-            });
+            let body = LinePopulation {
+                line_id: line.id.clone(),
+                service_date: date,
+                population: serde_json::json!(population),
+            };
             drop(population);
             match publish_with_retry(&config.publish_retry, &key, async || {
-                post_schedule_line_population(
-                    client,
-                    &config.schedule_line_population_url,
-                    internal_oauth,
-                    &body,
-                )
-                .await
+                Ok(sink.line_population(&body).await?)
             })
             .await
             {
@@ -1833,12 +1720,11 @@ const MAX_DEPARTURES_PER_STATION: usize = 10; // mirrors poller-ldbws's own
 /// simultaneously (e.g. Vauxhall's `VAUXHLM`/`VAUXHLW`); the batching,
 /// capping and POST shape described just above are unchanged.
 async fn publish_schedule_network_departures(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
     tiploc_crs_records: &[common::TiplocCrsRecord],
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     outcome: &mut CycleOutcome,
 ) {
     let key = product::network_departures(today);
@@ -1860,14 +1746,7 @@ async fn publish_schedule_network_departures(
     let rows = schedule_network_departures_rows(by_crs, today);
 
     match publish_with_retry(&config.publish_retry, &key, async || {
-        common::ingest::post_batch(
-            client,
-            &config.schedule_network_departures_url,
-            internal_oauth,
-            &rows,
-            "schedule-derived network departures rows",
-        )
-        .await
+        Ok(sink.network_departures(&rows).await?)
     })
     .await
     {
@@ -2044,12 +1923,11 @@ fn schedule_destination_departures_row_iter(
     reason = "each argument is an independent input from the single caller; a struct would only wrap them"
 )]
 async fn publish_schedule_destination_departures(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     today: chrono::NaiveDate,
     tiploc_crs_records: &[common::TiplocCrsRecord],
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     window_has_schedules: bool,
     outcome: &mut CycleOutcome,
 ) {
@@ -2078,12 +1956,9 @@ async fn publish_schedule_destination_departures(
             schedule_query::departures_by_destination_crs(index, today, now, &tiploc_to_crs);
         let rows = schedule_destination_departures_row_iter(by_destination, today);
         post_date_scoped_row_stream(
-            client,
-            &config.schedule_destination_departures_url,
-            internal_oauth,
+            sink,
+            DatedProduct::DestinationDepartures,
             rows,
-            "schedule-derived destination departures rows",
-            FINAL_CHUNK_REQUEST_TIMEOUT,
             empty_publish(today, window_has_schedules),
         )
         .await
@@ -2257,11 +2132,10 @@ fn schedule_calling_points_full_row_iter(
 /// offer to route a passenger through a stop CIF says they can never
 /// actually board or alight at.
 async fn publish_schedule_calling_points_full(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     date: chrono::NaiveDate,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     window_has_schedules: bool,
     outcome: &mut CycleOutcome,
 ) {
@@ -2274,12 +2148,9 @@ async fn publish_schedule_calling_points_full(
     let result = publish_with_retry(&config.publish_retry, &key, async || {
         let rows = schedule_calling_points_full_row_iter(index, date);
         post_date_scoped_row_stream(
-            client,
-            &config.schedule_calling_points_full_url,
-            internal_oauth,
+            sink,
+            DatedProduct::CallingPointsFull,
             rows,
-            "schedule-derived full calling-point rows",
-            FINAL_CHUNK_REQUEST_TIMEOUT,
             empty_publish(date, window_has_schedules),
         )
         .await
@@ -2339,11 +2210,10 @@ fn stp_code(stp: schedule_query::StpIndicator) -> &'static str {
 /// the same guard as the chunked products); otherwise nothing is sent, the
 /// previous rows stay, and the product is recorded as failed.
 async fn publish_schedule_services(
-    client: &Client,
+    sink: &impl PublishSink,
     config: &Config,
     index: &schedule_query::ScheduleIndex,
     date: chrono::NaiveDate,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     window_has_schedules: bool,
     outcome: &mut CycleOutcome,
 ) {
@@ -2363,25 +2233,8 @@ async fn publish_schedule_services(
         );
         return;
     }
-    let separator = if config.schedule_services_url.contains('?') {
-        '&'
-    } else {
-        '?'
-    };
-    let url = format!(
-        "{}{separator}service_date={date}",
-        config.schedule_services_url
-    );
     let result = publish_with_retry(&config.publish_retry, &key, async || {
-        common::ingest::post_batch_with_timeout(
-            client,
-            &url,
-            internal_oauth,
-            &rows,
-            "schedule service-mode rows",
-            Some(FINAL_CHUNK_REQUEST_TIMEOUT),
-        )
-        .await
+        Ok(sink.services(date, &rows).await?)
     })
     .await;
     match result {
@@ -2534,18 +2387,27 @@ async fn post_date_scoped_rows_in_chunks(
     url: &str,
     tokens: &common::oauth_client::OAuthTokenCache,
     rows: &[serde_json::Value],
-    noun: &str,
 ) -> anyhow::Result<()> {
     post_date_scoped_row_stream(
-        client,
-        url,
-        tokens,
-        rows.iter(),
-        noun,
-        FINAL_CHUNK_REQUEST_TIMEOUT,
+        &test_http_sink(client, url, tokens, FINAL_CHUNK_REQUEST_TIMEOUT),
+        DatedProduct::CallingPointsFull,
+        rows.iter().cloned(),
         EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).expect("valid date")),
     )
     .await
+}
+
+/// An [`HttpSink`] whose two chunked products both post to `url` (the
+/// chunk-protocol tests mount one route), with `final_chunk_timeout`.
+#[cfg(test)]
+fn test_http_sink<'a>(
+    client: &'a Client,
+    url: &str,
+    tokens: &'a common::oauth_client::OAuthTokenCache,
+    final_chunk_timeout: Duration,
+) -> HttpSink<'a> {
+    let config = poll_once_tests::test_config_for_server("http://unused.invalid");
+    HttpSink::new(client, &config, tokens, final_chunk_timeout).with_dated_url(url)
 }
 
 /// [`post_date_scoped_rows_in_chunks`], pulling rows from an iterator one
@@ -2567,33 +2429,33 @@ async fn post_date_scoped_rows_in_chunks(
 /// iterator's size hint is (always, for the slice wrapper above) and `?`
 /// otherwise.
 ///
-/// The final chunk is sent with `final_chunk_timeout` (production:
-/// [`FINAL_CHUNK_REQUEST_TIMEOUT`]) instead of the client's own timeout, and
-/// a final-chunk failure that [`final_chunk_failure_defers_to_next_cycle`]
-/// is returned as [`DeferToNextCycle`].
-async fn post_date_scoped_row_stream<T: serde::Serialize>(
-    client: &Client,
-    url: &str,
-    tokens: &common::oauth_client::OAuthTokenCache,
-    rows: impl Iterator<Item = T>,
-    noun: &str,
-    final_chunk_timeout: Duration,
+/// Each chunk goes to `sink` ([`PublishSink::publish_part`]); the
+/// `HttpSink` sends the final chunk with [`FINAL_CHUNK_REQUEST_TIMEOUT`]
+/// instead of the client's own timeout. A final-chunk failure that
+/// [`SinkError::defers_final_chunk`] (`Busy` or `Timeout`: the delete may
+/// still be running, or just timed out) is returned as
+/// [`DeferToNextCycle`]; any other failure keeps its [`SinkError`] under
+/// the chunk's context, for `sink::classify`.
+async fn post_date_scoped_row_stream(
+    sink: &impl PublishSink,
+    product: DatedProduct,
+    rows: impl Iterator<Item = serde_json::Value>,
     empty: EmptyPublish,
 ) -> anyhow::Result<()> {
+    let noun = product.noun();
     let mut rows = rows.peekable();
     let exact_total = match rows.size_hint() {
         (lower, Some(upper)) if lower == upper => Some(lower),
         _ => None,
     };
 
-    // PL-14: a date with no rows is published as exactly that -- one POST
+    // PL-14: a date with no rows is published as exactly that -- one chunk
     // with no rows that is both the first and the final chunk
-    // (`total_rows=0`) and names its `service_date`, so `api` deletes the
-    // previous publish's rows for the date instead of keeping them as stale
-    // data. It used to be a bare `first_chunk=true` POST with no publish_id
-    // or date, which `api` could only treat as a no-op. Unless the caller
-    // says the whole window looks broken (`EmptyPublish::Refuse`), in which
-    // case nothing is sent and the previous rows stay.
+    // (`total_rows=0`) and names its `service_date`, so the sink deletes
+    // the previous publish's rows for the date instead of keeping them as
+    // stale data. Unless the caller says the whole window looks broken
+    // (`EmptyPublish::Refuse`), in which case nothing is sent and the
+    // previous rows stay.
     if rows.peek().is_none() {
         let service_date = match empty {
             EmptyPublish::Clear(service_date) => service_date,
@@ -2604,29 +2466,21 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
                 ))));
             }
         };
-        let empty: [T; 0] = [];
-        let separator = if url.contains('?') { '&' } else { '?' };
-        let clear_url = format!(
-            "{url}{separator}first_chunk=true&publish_id={}&last_chunk=true&total_rows=0\
-             &service_date={service_date}",
-            new_publish_id()
-        );
-        return common::ingest::post_batch_with_timeout(
-            client,
-            &clear_url,
-            tokens,
-            &empty,
-            noun,
-            Some(final_chunk_timeout),
-        )
-        .await
-        .map_err(|err| {
-            if final_chunk_failure_defers_to_next_cycle(&err) {
+        let publish_id = new_publish_id();
+        let part = ChunkPart {
+            publish_id: &publish_id,
+            first_chunk: true,
+            final_total_rows: Some(0),
+            empty_service_date: Some(service_date),
+        };
+        return sink.publish_part(product, &[], part).await.map_err(|err| {
+            if err.defers_final_chunk() {
                 anyhow::Error::new(DeferToNextCycle(format!(
                     "empty publish of {noun} for {service_date} failed: {err}"
                 )))
             } else {
-                err.context(format!("empty publish of {noun} for {service_date} failed"))
+                anyhow::Error::new(err)
+                    .context(format!("empty publish of {noun} for {service_date} failed"))
             }
         });
     }
@@ -2634,7 +2488,7 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
     let publish_id = new_publish_id();
     let mut posted_rows = 0usize;
     let mut index = 0usize;
-    let mut chunk: Vec<T> = Vec::with_capacity(PUBLISH_CHUNK_ROWS);
+    let mut chunk: Vec<serde_json::Value> = Vec::with_capacity(PUBLISH_CHUNK_ROWS);
     loop {
         chunk.clear();
         chunk.extend(rows.by_ref().take(PUBLISH_CHUNK_ROWS));
@@ -2650,30 +2504,30 @@ async fn post_date_scoped_row_stream<T: serde::Serialize>(
                 |total| total.div_ceil(PUBLISH_CHUNK_ROWS).to_string(),
             )
         };
-        common::ingest::post_batch_with_timeout(
-            client,
-            &diff_chunk_url(url, &publish_id, first_chunk, final_total_rows),
-            tokens,
-            &chunk,
-            noun,
-            last_chunk.then_some(final_chunk_timeout),
-        )
-        .await
-        .map_err(|err| {
-            let message = format!(
-                "chunk {}/{chunk_count} ({} rows, first_chunk={first_chunk}, \
-                 publish_id={publish_id}) failed: {err}",
-                index + 1,
-                chunk.len(),
-            );
-            if last_chunk && final_chunk_failure_defers_to_next_cycle(&err) {
-                anyhow::Error::new(DeferToNextCycle(message))
-            } else {
-                // `context`, not a fresh error: the HTTP status underneath
-                // must survive for `classify_failure` (DQ6/SCHED-1).
-                err.context(message)
-            }
-        })?;
+        let part = ChunkPart {
+            publish_id: &publish_id,
+            first_chunk,
+            final_total_rows,
+            empty_service_date: None,
+        };
+        sink.publish_part(product, &chunk, part)
+            .await
+            .map_err(|err: SinkError| {
+                let message = format!(
+                    "chunk {}/{chunk_count} ({} rows, first_chunk={first_chunk}, \
+                     publish_id={publish_id}) failed: {err}",
+                    index + 1,
+                    chunk.len(),
+                );
+                if last_chunk && err.defers_final_chunk() {
+                    anyhow::Error::new(DeferToNextCycle(message))
+                } else {
+                    // `context`, not a fresh error: the `SinkError`
+                    // underneath must survive for `sink::classify`
+                    // (DQ6/SCHED-1).
+                    anyhow::Error::new(err).context(message)
+                }
+            })?;
         if last_chunk {
             return Ok(());
         }
@@ -2700,54 +2554,6 @@ fn new_publish_id() -> String {
     let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
     format!("sr-{nanos}-{}-{sequence}", std::process::id())
-}
-
-/// Appends the `first_chunk` query parameter of
-/// [`post_date_scoped_rows_in_chunks`]'s contract. Handles a URL
-/// that already carries a query string, since these URLs come from
-/// configuration and nothing stops an operator setting one.
-fn first_chunk_url(url: &str, first_chunk: bool) -> String {
-    let separator = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{separator}first_chunk={first_chunk}")
-}
-
-/// The full per-chunk URL for [`post_date_scoped_rows_in_chunks`]:
-/// [`first_chunk_url`] plus the diff protocol's `publish_id`, and on the
-/// final chunk (`final_total_rows: Some(total)`) `last_chunk=true` and
-/// `total_rows`.
-#[expect(
-    clippy::format_push_string,
-    reason = "short strings off the hot path; format! reads clearer"
-)]
-fn diff_chunk_url(
-    url: &str,
-    publish_id: &str,
-    first_chunk: bool,
-    final_total_rows: Option<usize>,
-) -> String {
-    let mut chunk_url = format!(
-        "{}&publish_id={publish_id}",
-        first_chunk_url(url, first_chunk)
-    );
-    if let Some(total_rows) = final_total_rows {
-        chunk_url.push_str(&format!("&last_chunk=true&total_rows={total_rows}"));
-    }
-    chunk_url
-}
-
-/// A single-object POST (not a batch array) -- `common::ingest::post_batch`
-/// serializes a slice as a JSON array, which doesn't fit this route's body
-/// shape, so this is a small bespoke sibling rather than a forced reuse.
-async fn post_schedule_line_population(
-    client: &Client,
-    url: &str,
-    tokens: &common::oauth_client::OAuthTokenCache,
-    body: &serde_json::Value,
-) -> anyhow::Result<()> {
-    use anyhow::Context as _;
-    common::ingest::post_json(client, url, tokens, body)
-        .await
-        .context("schedule-line-population POST failed")
 }
 
 /// Best-effort extraction of the digits embedded in a real delivery's own
@@ -4355,6 +4161,16 @@ LTWVRMPTN 2211 22113     TF";
         }
     }
 
+    /// The production [`HttpSink`] over `config`'s URLs (the protocol tests
+    /// drive every publish through it, as `run` does).
+    pub(super) fn http_sink<'a>(
+        client: &'a Client,
+        config: &Config,
+        tokens: &'a common::oauth_client::OAuthTokenCache,
+    ) -> HttpSink<'a> {
+        HttpSink::new(client, config, tokens, FINAL_CHUNK_REQUEST_TIMEOUT)
+    }
+
     /// Millisecond-scale backoff so retry tests do not wait out the
     /// production schedule.
     pub(super) const FAST_BACKOFF: common::backoff::Backoff =
@@ -4453,7 +4269,7 @@ LTWVRMPTN 2211 22113     TF";
         let tokens = mock_token_cache(&server).await;
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let config = test_config_for_server(&server.uri());
-        seed_and_report(&client, &config, &tokens).await;
+        seed_and_report(&http_sink(&client, &config, &tokens), &config).await;
 
         let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
         let mut outcome = CycleOutcome::default();
@@ -4494,7 +4310,10 @@ LTWVRMPTN 2211 22113     TF";
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let config = test_config_for_server(&server.uri());
 
-        assert_eq!(seed_and_report(&client, &config, &tokens).await, None);
+        assert_eq!(
+            seed_and_report(&http_sink(&client, &config, &tokens), &config).await,
+            None
+        );
         let rendered = handle.render();
         assert!(
             rendered.contains("distant_signal_schedule_reference_seeded 1"),
@@ -4524,7 +4343,8 @@ LTWVRMPTN 2211 22113     TF";
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let config = test_config_for_server(&server.uri());
 
-        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
+        let seeded =
+            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await;
 
         assert_eq!(
             seeded,
@@ -4574,7 +4394,8 @@ LTWVRMPTN 2211 22113     TF";
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let config = test_config_for_server(&server.uri());
 
-        let seeded = seed_last_processed_delivery(&client, &config, &tokens).await;
+        let seeded =
+            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await;
 
         assert_eq!(
             seeded, None,
@@ -4616,7 +4437,7 @@ LTWVRMPTN 2211 22113     TF";
         let config = test_config_for_server(&server.uri());
 
         assert_eq!(
-            seed_last_processed_delivery(&client, &config, &tokens).await,
+            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await,
             None,
             "an empty schedule_reference_publishes table must fall back to None/first-run behavior"
         );
@@ -4658,7 +4479,7 @@ LTWVRMPTN 2211 22113     TF";
         let config = test_config_for_server(&server.uri());
 
         assert_eq!(
-            seed_last_processed_delivery(&client, &config, &tokens).await,
+            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await,
             Some("20260926T200045Z".to_string()),
             "a transient fetch failure must be retried, not treated as a first run"
         );
@@ -4697,7 +4518,7 @@ LTWVRMPTN 2211 22113     TF";
         let config = test_config_for_server(&server.uri());
 
         assert_eq!(
-            seed_last_processed_delivery(&client, &config, &tokens).await,
+            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await,
             None
         );
         let token_posts = server
@@ -4731,7 +4552,7 @@ LTWVRMPTN 2211 22113     TF";
 
         let result = tokio::time::timeout(
             Duration::from_millis(300),
-            seed_last_processed_delivery(&client, &config, &tokens),
+            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config),
         )
         .await;
 
@@ -4753,6 +4574,7 @@ LTWVRMPTN 2211 22113     TF";
 /// the sequencing between them.
 #[cfg(test)]
 mod poll_once_retry_tests {
+    use super::poll_once_tests::http_sink;
     use super::*;
 
     /// One real, minimal delivery directory of the exact shape
@@ -4861,7 +4683,7 @@ mod poll_once_retry_tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("a failed publish is logged and accumulated, never a hard cycle error");
 
@@ -4899,7 +4721,7 @@ mod poll_once_retry_tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle");
 
@@ -4915,7 +4737,7 @@ mod poll_once_retry_tests {
         );
 
         let stanox_posts_after_first_cycle = posts_to(&server, "/private/stanox-crs").await;
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("second cycle");
         assert_eq!(
@@ -4952,7 +4774,7 @@ mod poll_once_retry_tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle");
 
@@ -4985,6 +4807,7 @@ mod poll_once_retry_tests {
 )]
 mod per_product_retry_tests {
     use super::poll_once_retry_tests::{mount_all_publishes_ok, posts_to, write_fixture_delivery};
+    use super::poll_once_tests::http_sink;
     use super::*;
     use std::collections::HashSet;
 
@@ -5043,7 +4866,7 @@ mod per_product_retry_tests {
         mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle");
 
@@ -5083,7 +4906,7 @@ mod per_product_retry_tests {
         mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 1");
 
@@ -5106,7 +4929,7 @@ mod per_product_retry_tests {
         let _ = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 2");
 
@@ -5146,7 +4969,7 @@ mod per_product_retry_tests {
         mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 1");
         assert_eq!(state.last_processed_delivery, None);
@@ -5155,7 +4978,7 @@ mod per_product_retry_tests {
         let _ = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 2");
 
@@ -5194,7 +5017,7 @@ mod per_product_retry_tests {
         mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 1");
 
@@ -5218,7 +5041,7 @@ mod per_product_retry_tests {
         );
 
         // The next cycle sees the delivery as processed: nothing is resent.
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 2");
         assert_eq!(posts_to(&server, "/private/tiploc-crs").await, 1);
@@ -5237,7 +5060,7 @@ mod per_product_retry_tests {
             mount_all_publishes_ok(&server).await;
 
             let mut state = PublishState::default();
-            poll_once(&client, &config, &mut state, &tokens)
+            poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
                 .await
                 .expect("cycle");
 
@@ -5270,7 +5093,7 @@ mod per_product_retry_tests {
         mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 1");
         assert_eq!(state.last_processed_delivery, None);
@@ -5279,7 +5102,7 @@ mod per_product_retry_tests {
         let _ = poll_once_tests::mock_token_cache(&server).await;
         mount_all_publishes_ok(&server).await;
 
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle 2");
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
@@ -5327,7 +5150,7 @@ mod per_product_retry_tests {
         mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle");
 
@@ -5377,7 +5200,7 @@ mod per_product_retry_tests {
                 rejected: HashSet::default(),
             }),
         };
-        poll_once(&client, &config, &mut state, &tokens)
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
             .await
             .expect("cycle");
 
@@ -5464,15 +5287,9 @@ mod chunked_publish_tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let url = format!("{}/private/chunked", server.uri());
 
-        post_date_scoped_rows_in_chunks(
-            &client,
-            &url,
-            &tokens,
-            &rows(PUBLISH_CHUNK_ROWS * 2 + 1),
-            "test rows",
-        )
-        .await
-        .expect("all chunks accepted");
+        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(PUBLISH_CHUNK_ROWS * 2 + 1))
+            .await
+            .expect("all chunks accepted");
 
         let posts = capture_posts(&server, "/private/chunked").await;
         assert_eq!(posts.len(), 3, "2*chunk+1 rows must be split into 3 POSTs");
@@ -5560,7 +5377,7 @@ mod chunked_publish_tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let url = format!("{}/private/chunked", server.uri());
 
-        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(10), "test rows")
+        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(10))
             .await
             .expect("accepted");
 
@@ -5589,7 +5406,7 @@ mod chunked_publish_tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let url = format!("{}/private/chunked", server.uri());
 
-        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &[], "test rows")
+        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &[])
             .await
             .expect("accepted");
 
@@ -5615,12 +5432,9 @@ mod chunked_publish_tests {
         let url = format!("{}/private/chunked", server.uri());
 
         let err = post_date_scoped_row_stream(
-            &client,
-            &url,
-            &tokens,
+            &test_http_sink(&client, &url, &tokens, FINAL_CHUNK_REQUEST_TIMEOUT),
+            DatedProduct::CallingPointsFull,
             std::iter::empty::<serde_json::Value>(),
-            "test rows",
-            FINAL_CHUNK_REQUEST_TIMEOUT,
             EmptyPublish::Refuse,
         )
         .await
@@ -5649,7 +5463,7 @@ mod chunked_publish_tests {
         let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let url = format!("{}/private/chunked", server.uri());
 
-        let err = post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(5), "test rows")
+        let err = post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(5))
             .await
             .expect_err("a 413 must not be swallowed");
         let message = format!("{err}");
@@ -5708,12 +5522,9 @@ mod final_chunk_retry_tests {
 
         let result = publish_with_retry(&retry(), "test/2026-09-27", async || {
             post_date_scoped_row_stream(
-                &client,
-                &url,
-                &tokens,
-                rows.iter(),
-                "test rows",
-                final_chunk_timeout,
+                &test_http_sink(&client, &url, &tokens, final_chunk_timeout),
+                DatedProduct::CallingPointsFull,
+                rows.iter().cloned(),
                 EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
             )
             .await
@@ -5784,12 +5595,9 @@ mod final_chunk_retry_tests {
         let url = format!("{}/private/chunked", server.uri());
 
         post_date_scoped_row_stream(
-            &client,
-            &url,
-            &tokens,
-            rows(3).iter(),
-            "test rows",
-            Duration::from_secs(5),
+            &test_http_sink(&client, &url, &tokens, Duration::from_secs(5)),
+            DatedProduct::CallingPointsFull,
+            rows(3).into_iter(),
             EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
         )
         .await
