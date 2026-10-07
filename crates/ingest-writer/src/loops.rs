@@ -15,7 +15,10 @@
 //! while `API_BACKGROUND_LOOPS` is on (plan 1B.7), so each sweep runs in
 //! one process at a time. The CORPUS check runs here every 10 minutes; the
 //! api runs it once at startup, under the same lock, and after each
-//! stations or CORPUS POST.
+//! stations or CORPUS POST. With poller-stations on `INGEST_SINK=db` (plan
+//! 2b) there is no stations POST: this loop is then what gives a new
+//! station its crosswalk fills, within 10 minutes (spec §9.3), so it must
+//! be on (`INGEST_WRITER_LOOPS`) before that flip.
 //!
 //! The `CronJob` sweeps (expired sessions, dead links, personal data) never
 //! come here: they need `DELETE` on user tables the writer role must not
