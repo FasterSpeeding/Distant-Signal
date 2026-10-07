@@ -153,9 +153,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
 
   useEffect(() => {
     if (!serverUrl) return; // initial state is already the error
-    if (exchangeRef.current === null) {
-      exchangeRef.current = startExchange(serverUrl);
-    }
+    exchangeRef.current ??= startExchange(serverUrl);
     const exchange = exchangeRef.current;
     if (exchange.kind === 'error') {
       setState({ kind: 'error', message: exchange.message });

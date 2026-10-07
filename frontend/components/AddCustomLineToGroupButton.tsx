@@ -47,7 +47,7 @@ export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupI
         setLoading(false);
         return;
       }
-      const all: LineSummary[] = await response.json();
+      const all = (await response.json()) as LineSummary[];
       setLines(all.filter((l) => l.source === 'custom' && !excludeLineIds.includes(l.id)));
       setLoading(false);
     } catch {

@@ -107,7 +107,7 @@ export function TrackThisTrainButton({
       });
 
       if (response.ok) {
-        const result: CreateJourneyResponse = await response.json();
+        const result = (await response.json()) as CreateJourneyResponse;
         if (attachTicketId !== undefined) {
           // Best-effort, exactly as before -- tracking has already
           // succeeded above. Still keyed on `trackingId`, not the new

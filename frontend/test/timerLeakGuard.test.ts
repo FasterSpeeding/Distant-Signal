@@ -29,7 +29,7 @@ function fakeTarget() {
 describe('installTimerLeakGuard', () => {
   it('forgets a timer once it fires or is cleared', async () => {
     const { target } = fakeTarget();
-    const guard = installTimerLeakGuard(target as unknown as typeof globalThis);
+    const guard = installTimerLeakGuard(target);
     const fired = vi.fn();
     target.setTimeout(fired, 0);
     const cleared = target.setTimeout(() => {}, 10_000);
@@ -42,7 +42,7 @@ describe('installTimerLeakGuard', () => {
 
   it('cancels pending frames before they can schedule timers, then pending timers', async () => {
     const { target, runFrames, frameCallbacks } = fakeTarget();
-    const guard = installTimerLeakGuard(target as unknown as typeof globalThis);
+    const guard = installTimerLeakGuard(target);
     const leaked = vi.fn();
     // Mantine's shape: rAF -> setTimeout.
     target.requestAnimationFrame(() => target.setTimeout(leaked, 0));
@@ -58,7 +58,7 @@ describe('installTimerLeakGuard', () => {
 
   it('passes extra arguments through to the handler', async () => {
     const { target } = fakeTarget();
-    installTimerLeakGuard(target as unknown as typeof globalThis);
+    installTimerLeakGuard(target);
     const handler = vi.fn();
     (target.setTimeout as (h: (...a: unknown[]) => void, ms: number, ...a: unknown[]) => unknown)(handler, 0, 'a', 1);
     await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 5));

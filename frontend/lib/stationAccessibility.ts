@@ -851,7 +851,7 @@ function renderFields(value: Record<string, unknown>, depth: number, topKey?: st
     // the generic path below would otherwise relabel it with the exact
     // same word the group entry already used one line above. Only compared
     // at depth 0 -- see `renderAccessibilityValue`'s doc comment.
-    if (depth === 0 && topKey !== undefined && key.toLowerCase() === topKey.toLowerCase()) {
+    if (depth === 0 && key.toLowerCase() === topKey?.toLowerCase()) {
       pushWithoutLabel(fields, own, depth);
       continue;
     }

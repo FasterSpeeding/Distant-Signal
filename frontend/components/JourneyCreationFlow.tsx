@@ -81,7 +81,7 @@ export function JourneyCreationFlow({
         setJourneyLoadError(true);
         return;
       }
-      const data: JourneyDetail = await response.json();
+      const data = (await response.json()) as JourneyDetail;
       setJourney(data);
     } catch {
       setJourneyLoadError(true);
@@ -121,7 +121,7 @@ export function JourneyCreationFlow({
         <SegmentedControl
           aria-labelledby={entryModeLabelId}
           value={entryMode}
-          onChange={(value) => setEntryMode(value as 'known' | 'plan')}
+          onChange={(value) => setEntryMode(value)}
           data={[
             { label: 'I know my route', value: 'known' },
             { label: 'Plan a route for me', value: 'plan' },

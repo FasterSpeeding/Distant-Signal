@@ -62,6 +62,9 @@ export function errorText(err: unknown): string {
 
 function safeString(value: unknown): string {
   try {
+    // Objects go through JSON.stringify; only functions, symbols and
+    // primitives reach String(), and none of them prints as [object Object].
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- see above
     return typeof value === 'object' ? JSON.stringify(value) : String(value);
   } catch {
     return String(value);

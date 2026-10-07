@@ -12,6 +12,16 @@ const SERVICE_WORKER_FILES = [
   'public/sw-cache-rules.test.js',
   'types/service-worker.d.ts',
 ];
+// Vitest suites, their shared helpers and setup, and the Playwright specs.
+const TEST_FILES = [
+  '**/*.test.{ts,tsx}',
+  'test/**/*.{ts,tsx}',
+  'e2e/**/*.ts',
+  'vitest.setup.ts',
+  'vitest.setup.test.ts',
+  'vitest.config.ts',
+  'playwright.config.ts',
+];
 const NODE_SCRIPT_FILES = [
   'scripts/stamp-sw-version.mjs',
   'e2e/screenshots/take-screenshots.mjs',
@@ -96,22 +106,90 @@ const eslintConfig = defineConfig([
     },
   },
 
-  // Deviation from the guide: the app's TypeScript stays on
-  // eslint-config-next's typescript-eslint `recommended` set rather than
-  // strictTypeChecked + stylisticTypeChecked. Measured 2026-10-01 with
-  // typescript-eslint 8.70.0: 1741 findings across app/, components/, lib/
-  // and tests (no-non-null-assertion 483, no-confusing-void-expression 301,
-  // require-await 224, no-unnecessary-type-assertion 103,
-  // non-nullable-type-assertion-style 86, no-empty-function 73, no-unsafe-*
-  // ~170, no-misused-promises 63, ...), about 1170 of them in tests. That is
-  // its own change; until then only the scripts below get the strict presets.
-  //
-  // typescript-eslint's strictest type-aware presets for the scripts above,
-  // each linted against the tsconfig that type-checks it. JavaScript has no
-  // compiler of its own, so these rules (floating promises, unsafe `any`
-  // flow, needless conditions) catch what tsc's checkJs cannot. Scoped to
-  // the scripts only: enabling them for the whole app is a separate, much
-  // larger change.
+  // typescript-eslint's strictest type-aware presets for the app's
+  // TypeScript, as the guide recommends. projectService lints each file
+  // against tsconfig.json; the service-worker types have their own program
+  // below.
+  {
+    files: ['**/*.{ts,tsx,mts,cts}'],
+    ignores: SERVICE_WORKER_FILES,
+    extends: [tseslint.configs.strictTypeChecked, tseslint.configs.stylisticTypeChecked],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+    },
+    rules: {
+      // A number always stringifies losslessly. Nullish, any, boolean and
+      // objects stay banned (the guide's setting, as for the scripts below).
+      '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
+      // `onClick={() => setOpen(true)}`: an arrow shorthand that returns a
+      // setter's `void` is React's everyday idiom, not a confused void. The
+      // rule still flags `return voidCall()` and void in expressions. (302
+      // findings otherwise, all of this shape.)
+      '@typescript-eslint/no-confusing-void-expression': ['error', { ignoreArrowShorthand: true }],
+      // JSX event props (`onClick={async () => ...}`) may be async: React
+      // ignores the handler's return value (63 findings otherwise, all of
+      // this shape). Such a handler must still catch its own errors.
+      // Promises passed anywhere else that expects a void callback
+      // (setTimeout, addEventListener, array methods) stay errors.
+      '@typescript-eslint/no-misused-promises': ['error', { checksVoidReturn: { attributes: false } }],
+      // `name?.trim() || username?.trim() || 'Signed in'`: on strings, `||`
+      // deliberately treats '' as missing too, which `??` would not.
+      '@typescript-eslint/prefer-nullish-coalescing': ['error', { ignorePrimitives: { string: true } }],
+      // Fights no-non-null-assertion: it rewrites `x as T` to `x!`, which
+      // the other rule bans (typescript-eslint's own docs: use one or the
+      // other).
+      '@typescript-eslint/non-nullable-type-assertion-style': 'off',
+      // DEFERRED (off for now; follow-up): 44 findings in 19 non-test files
+      // (measured 2026-10-07), three quarters of them `arr[i]!` /
+      // `map.get(k)!` after a bounds or has() check, i.e. the
+      // noUncheckedIndexedAccess fight the guide describes. Each needs a
+      // real guard or a restructure, not a mechanical edit. Tests turn it
+      // off for good, below.
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      // DEFERRED (off for now; follow-up): 46 findings in 27 files
+      // (measured 2026-10-07, tests included). Most are
+      // `?.` / `??` guards on API response fields whose TypeScript types say
+      // non-null while the server can still omit them; dropping a guard
+      // changes runtime behaviour, so each site needs a decision (tighten
+      // the type to optional, or drop the guard), not an autofix.
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+    },
+  },
+  // Tests: the guide's test-only relaxations. vi.fn(async () => ...) mocks
+  // an async interface with a synchronous body; mocked fetch and JSON
+  // bodies are `any` that the test asserts on straight away; `x!` follows an
+  // expect() that already proved x is there; no-op arrow stubs.
+  {
+    files: TEST_FILES,
+    rules: {
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      // Same reason as the three above: vi.mock factories forward to an
+      // untyped vi.fn() (`usePathname: () => mockUsePathname()`), and
+      // mock.calls entries are `any`.
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      // `expect(obj.method).toHaveBeenCalled()` reads a method without
+      // calling it; that is how Vitest spies are asserted on, and `this`
+      // never matters there.
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      // Plus anonymous `function () {}`: stubs assigned onto globals
+      // (window.PushManager) must be constructible, which arrows are not.
+      '@typescript-eslint/no-empty-function': ['error', { allow: ['arrowFunctions', 'functions'] }],
+      // fetch mocks' first argument is typed `RequestInfo | URL`, and the
+      // tests stringify it to assert the URL. The code under test passes a
+      // string or URL; a Request would fail the assertion anyway.
+      '@typescript-eslint/no-base-to-string': 'off',
+    },
+  },
+
+  // The same presets for the plain-JS scripts, each linted against the
+  // tsconfig that type-checks it. JavaScript has no compiler of its own, so
+  // these rules (floating promises, unsafe `any` flow, needless conditions)
+  // catch what tsc's checkJs cannot.
   {
     files: SERVICE_WORKER_FILES,
     extends: [tseslint.configs.strictTypeChecked, tseslint.configs.stylisticTypeChecked],

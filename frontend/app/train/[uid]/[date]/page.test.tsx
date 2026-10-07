@@ -622,7 +622,7 @@ describe('header and timetable departure times', () => {
     await renderPage();
 
     const header = screen.getByText(byVisibleText(/London Waterloo \(WAT\) → Woking \(WOK\)/));
-    const headerTime = header.textContent?.match(/(\d{2}:\d{2})\s*$/)?.[1];
+    const headerTime = /(\d{2}:\d{2})\s*$/.exec(header.textContent)?.[1];
 
     const row = screen.getAllByRole('row').find((r) => within(r).queryByText('London Waterloo') !== null);
     expect(row).toBeDefined();

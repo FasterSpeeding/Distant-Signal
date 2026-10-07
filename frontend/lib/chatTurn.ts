@@ -204,7 +204,7 @@ export function buildRunnableTools(
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description ?? '',
-    input_schema: tool.inputSchema as Anthropic.Beta.Messages.BetaTool['input_schema'],
+    input_schema: tool.inputSchema,
     parse: (content: unknown) => content as Record<string, unknown>,
     run: async (args: Record<string, unknown>) => {
       // DQ12 (FE-6): anything not known to be read-only needs the
@@ -227,7 +227,7 @@ export function buildRunnableTools(
       }
       const content = Array.isArray(result.content) ? result.content : [];
       const text = content
-        .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+        .filter((block: { type?: unknown }): block is { type: 'text'; text: string } => block.type === 'text')
         .map((block) => block.text)
         .join('\n');
       if (result.isError) {
@@ -268,7 +268,7 @@ export async function* runChatTurn(opts: RunChatTurnOptions): AsyncGenerator<Cha
 
     const pendingToolResults: ChatEvent[] = [];
     const runnableTools = buildRunnableTools(
-      tools as McpToolDefinition[],
+      tools,
       mcpClient,
       (event) => {
         pendingToolResults.push(event);

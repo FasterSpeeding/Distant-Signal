@@ -45,7 +45,7 @@ function mockFetchByUrl(
   return vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (/\/api\/Train\/tickets\/\d+\/attach$/.test(url)) return Promise.resolve(attach());
-    if (/\/api\/Journeys$/.test(url)) return Promise.resolve(track());
+    if (url.endsWith('/api/Journeys')) return Promise.resolve(track());
     throw new Error(`unexpected fetch for ${url}`);
   });
 }
@@ -169,7 +169,7 @@ describe('TrackThisTrainButton', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (/\/api\/Journeys$/.test(url)) return pending;
+        if (url.endsWith('/api/Journeys')) return pending;
         throw new Error(`unexpected fetch for ${url}`);
       }),
     );
@@ -203,7 +203,7 @@ describe('TrackThisTrainButton', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Track this train' }));
 
       expect((await screen.findAllByLabelText('Track into')).length).toBeGreaterThan(0);
-      const trackCalls = fetchMock.mock.calls.filter((args: unknown[]) => /\/api\/Journeys$/.test(String(args[0])));
+      const trackCalls = fetchMock.mock.calls.filter((args: unknown[]) => String(args[0]).endsWith('/api/Journeys'));
       expect(trackCalls).toHaveLength(0);
       expect(pushMock).not.toHaveBeenCalled();
     });
@@ -227,14 +227,14 @@ describe('TrackThisTrainButton', () => {
     it('choosing a group tracks the train, then shares it into that group, then navigates', async () => {
       const fetchMock = vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (/\/api\/Journeys$/.test(url)) {
+        if (url.endsWith('/api/Journeys')) {
           return Promise.resolve(
             new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
               status: 200,
             }),
           );
         }
-        if (/\/api\/groups\/grp-1\/trains$/.test(url)) return Promise.resolve(new Response(null, { status: 204 }));
+        if (url.endsWith('/api/groups/grp-1/trains')) return Promise.resolve(new Response(null, { status: 204 }));
         throw new Error(`unexpected fetch for ${url}`);
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -267,14 +267,14 @@ describe('TrackThisTrainButton', () => {
     it('a group-share failure still navigates, without showing a track-failed error', async () => {
       const fetchMock = vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
-        if (/\/api\/Journeys$/.test(url)) {
+        if (url.endsWith('/api/Journeys')) {
           return Promise.resolve(
             new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {
               status: 200,
             }),
           );
         }
-        if (/\/groups\/grp-1\/trains$/.test(url)) return Promise.reject(new Error('network blip'));
+        if (url.endsWith('/groups/grp-1/trains')) return Promise.reject(new Error('network blip'));
         throw new Error(`unexpected fetch for ${url}`);
       });
       vi.stubGlobal('fetch', fetchMock);

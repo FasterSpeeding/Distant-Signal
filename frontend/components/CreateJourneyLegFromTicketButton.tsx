@@ -54,7 +54,7 @@ export function CreateJourneyLegFromTicketButton({ ticketId }: { ticketId: numbe
         );
         return;
       }
-      const proposal: JourneyLegProposal = await response.json();
+      const proposal = (await response.json()) as JourneyLegProposal;
 
       const params = new URLSearchParams();
       params.set('mode', 'window');

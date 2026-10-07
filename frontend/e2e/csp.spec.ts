@@ -21,7 +21,7 @@ async function watchCsp(page: Page): Promise<() => Promise<string[]>> {
   page.on('console', (msg) => {
     const text = msg.text();
     // See the eval note in the init script below.
-    if (/unsafe-eval/.test(text)) return;
+    if (text.includes('unsafe-eval')) return;
     if (/Content Security Policy|Refused to (execute|load|apply|connect)/i.test(text)) {
       consoleViolations.push(text);
     }
@@ -109,7 +109,7 @@ test.describe('Content-Security-Policy', () => {
     // AutoRefresh refreshes immediately when a tab becomes visible again;
     // fake a hide/show rather than waiting out the 30s interval.
     const refresh = page.waitForResponse(
-      (res) => new URL(res.url()).pathname === '/stations' && res.request().headers()['rsc'] === '1',
+      (res) => new URL(res.url()).pathname === '/stations' && res.request().headers().rsc === '1',
     );
     await page.evaluate(() => {
       const setVisibility = (state: DocumentVisibilityState) => {

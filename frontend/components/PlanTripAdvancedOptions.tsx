@@ -88,10 +88,7 @@ export function advancedOptionErrors(
 
 /** One line saying which advanced options are set, for the collapsed
  * section: e.g. "Pass through STA · Max 1 change". */
-export function advancedOptionsSummary(
-  options: TripPlanAdvancedOptions,
-  names: Map<string, string> = new Map(),
-): string {
+export function advancedOptionsSummary(options: TripPlanAdvancedOptions, names = new Map<string, string>()): string {
   const parts: string[] = [];
   const list = (codes: string[] | undefined) => (codes ?? []).map((code) => names.get(code) ?? code).join(', ');
   if (options.viaCrs?.length) parts.push(`Pass through ${list(options.viaCrs)}`);

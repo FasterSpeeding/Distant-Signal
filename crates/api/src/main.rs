@@ -145,7 +145,7 @@ fn main() -> std::process::ExitCode {
     reason = "long but linear; splitting it would scatter its shared state across helpers"
 )]
 async fn server_main() -> anyhow::Result<()> {
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
 
     // API-1: tracing FIRST, so nothing logged during `AppState::init` (the
     // INF-5 Postgres wait included), the migrations or a sweep's first tick

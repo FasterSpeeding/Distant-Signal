@@ -372,7 +372,7 @@ describe('IncidentSearchForm', () => {
     for (
       let node: HTMLElement | null = list as HTMLElement;
       node !== null;
-      node = node === form ? null : (node.parentElement as HTMLElement | null)
+      node = node === form ? null : node.parentElement
     ) {
       // Mantine's own scroll viewport, whatever set it up.
       expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);
@@ -751,8 +751,8 @@ describe('IncidentSearchForm', () => {
 
       expect(screen.getByRole('radio', { name: 'Planned work' })).toBeChecked();
       expect(screen.getByRole('radio', { name: 'Cleared' })).toBeChecked();
-      expect((screen.getByLabelText('Minimum') as HTMLInputElement).value).toBe('2');
-      expect((screen.getByLabelText('Maximum') as HTMLInputElement).value).toBe('8');
+      expect(screen.getByLabelText<HTMLInputElement>('Minimum').value).toBe('2');
+      expect(screen.getByLabelText<HTMLInputElement>('Maximum').value).toBe('8');
     });
 
     it('restores the realtime/active branch of Type and Status from initial props', async () => {
@@ -802,7 +802,7 @@ describe('IncidentSearchForm', () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMin="not-a-number" />);
       await awaitMountSettled();
 
-      expect((screen.getByLabelText('Minimum') as HTMLInputElement).value).toBe('');
+      expect(screen.getByLabelText<HTMLInputElement>('Minimum').value).toBe('');
       // A garbage value must not have blocked the mount-time auto-search
       // either -- it is treated as absent, not as an error.
       expect(screen.queryByText('Search failed')).not.toBeInTheDocument();
@@ -819,7 +819,7 @@ describe('IncidentSearchForm', () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMin="" />);
       await awaitMountSettled();
 
-      expect((screen.getByLabelText('Minimum') as HTMLInputElement).value).toBe('');
+      expect(screen.getByLabelText<HTMLInputElement>('Minimum').value).toBe('');
     });
 
     it('falls back to blank on an initialPriorityMax of "Infinity", rather than treating it as a real bound', async () => {
@@ -827,7 +827,7 @@ describe('IncidentSearchForm', () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialPriorityMax="Infinity" />);
       await awaitMountSettled();
 
-      expect((screen.getByLabelText('Maximum') as HTMLInputElement).value).toBe('');
+      expect(screen.getByLabelText<HTMLInputElement>('Maximum').value).toBe('');
     });
 
     it('auto-runs the search on mount exactly once, with all four newly-restored filters in the query string', async () => {

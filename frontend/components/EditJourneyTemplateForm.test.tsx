@@ -261,7 +261,7 @@ describe('EditJourneyTemplateForm', () => {
     // An hour with no minutes -- a native `<input type="time">` reports
     // `value` as `''` here (indistinguishable from untouched) but sets
     // `validity.badInput`, which is what `TimeFilterInput` actually reads.
-    const departFrom = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+    const departFrom = screen.getByLabelText<HTMLInputElement>('Earliest departure (optional)');
     setBadInput(departFrom, true);
     fireEvent.change(departFrom, { target: { value: '' } });
 
@@ -316,7 +316,7 @@ describe('EditJourneyTemplateForm', () => {
     // `TimeFilterInput.test.tsx`'s own incomplete-time tests: setting an
     // already-empty field to '' again is a no-op DOM-wise and would never
     // fire a change event to begin with.
-    const departFromFields = screen.getAllByLabelText('Earliest departure (optional)') as HTMLInputElement[];
+    const departFromFields = screen.getAllByLabelText<HTMLInputElement>('Earliest departure (optional)');
     setBadInput(departFromFields[0]!, false);
     fireEvent.change(departFromFields[0]!, { target: { value: '08:00' } });
     setBadInput(departFromFields[0]!, true);

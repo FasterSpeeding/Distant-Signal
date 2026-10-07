@@ -74,7 +74,7 @@ vi.mock('@mantine/dates', async (importOriginal) => ({
  * ENVELOPE, not a bare array: `results` plus a `nextCursor` that is an
  * explicit `null` on the last page. */
 function searchBody(
-  rows: Array<{
+  rows: {
     uid: string;
     scheduled: string;
     stationCrs: string;
@@ -82,7 +82,7 @@ function searchBody(
     destinationCrs: string | null;
     destinationName?: string | null;
     destinationArrival?: string | null;
-  }>,
+  }[],
   nextCursor: string | null = null,
 ) {
   return JSON.stringify({
@@ -122,7 +122,7 @@ function mockFetchByUrl(options: { search?: (url: string) => Response; track?: (
     // leg) instead of the old by-uid track route -- see
     // TrackThisTrainButton.test.tsx's own `mockFetchByUrl` for the same
     // rewire.
-    if (/\/api\/Journeys$/.test(url)) return Promise.resolve(track());
+    if (url.endsWith('/api/Journeys')) return Promise.resolve(track());
     throw new Error(`unexpected fetch for ${url}`);
   });
 }
@@ -391,7 +391,7 @@ describe('TrainSearchForm', () => {
       // mount-time auto-search, not just the incomplete time under test.
       await awaitMountSettled();
 
-      const input = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      const input = screen.getByLabelText('Earliest departure (optional)');
       // A real browser reports a half-entered time ("09:--") as `''` with
       // `validity.badInput` set; jsdom models neither, so the flag is
       // forced. Without the wiring this test covers, `''` is
@@ -408,7 +408,7 @@ describe('TrainSearchForm', () => {
       vi.stubGlobal('fetch', fetchMock);
       renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
-      const input = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      const input = screen.getByLabelText('Earliest departure (optional)');
       Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true }) });
       fireEvent.blur(input);
 
@@ -428,7 +428,7 @@ describe('TrainSearchForm', () => {
       // mount-time auto-search, not just the condition under test.
       await awaitMountSettled();
 
-      const arrival = screen.getByLabelText('Earliest arrival (optional)') as HTMLInputElement;
+      const arrival = screen.getByLabelText('Earliest arrival (optional)');
       Object.defineProperty(arrival, 'validity', { configurable: true, get: () => ({ badInput: true }) });
       fireEvent.blur(arrival);
       expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
@@ -592,7 +592,7 @@ describe('TrainSearchForm', () => {
     for (
       let node: HTMLElement | null = list as HTMLElement;
       node !== null;
-      node = node === form ? null : (node.parentElement as HTMLElement | null)
+      node = node === form ? null : node.parentElement
     ) {
       // Mantine's own scroll viewport, whatever set it up.
       expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);

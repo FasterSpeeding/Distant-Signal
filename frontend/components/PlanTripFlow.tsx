@@ -238,7 +238,7 @@ export function PlanTripFlow({
       if (!createResponse.ok) {
         throw new Error(await createResponse.text());
       }
-      const created: CreateJourneyResponse = await createResponse.json();
+      const created = (await createResponse.json()) as CreateJourneyResponse;
 
       for (let i = 1; i < trainLegs.length; i += 1) {
         const leg = trainLegs[i]!;
@@ -358,53 +358,52 @@ export function PlanTripFlow({
           </List>
         </Alert>
       )}
-      {plan &&
-        plan.segments.map((segment, segmentIndex) => {
-          // Computed once per segment -- reused for both the heading and
-          // the "no route found" alert below, so the two can never drift
-          // out of sync with each other's formatting.
-          const segmentLabel = codeRouteLabel(
-            segment.originCrs,
-            stationNames.get(segment.originCrs),
-            segment.destinationCrs,
-            stationNames.get(segment.destinationCrs),
-          );
-          return (
-            <Stack key={segmentIndex} gap="xs">
-              <Text fw={600}>
-                <RouteText>{segmentLabel}</RouteText>
+      {plan?.segments.map((segment, segmentIndex) => {
+        // Computed once per segment -- reused for both the heading and
+        // the "no route found" alert below, so the two can never drift
+        // out of sync with each other's formatting.
+        const segmentLabel = codeRouteLabel(
+          segment.originCrs,
+          stationNames.get(segment.originCrs),
+          segment.destinationCrs,
+          stationNames.get(segment.destinationCrs),
+        );
+        return (
+          <Stack key={segmentIndex} gap="xs">
+            <Text fw={600}>
+              <RouteText>{segmentLabel}</RouteText>
+            </Text>
+            {segment.itineraries.length === 0 && (
+              <Alert color="yellow">
+                No route found for <RouteText>{segmentLabel}</RouteText>.
+                {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
+                {segment.noResultReason && hintFor(segment.noResultReason) && (
+                  <Text size="sm" mt={4}>
+                    {hintFor(segment.noResultReason)}
+                  </Text>
+                )}
+              </Alert>
+            )}
+            {segment.cappedByMaxChanges && (
+              <Text size="xs" c="orange">
+                A faster route exists with more changes than shown below.
               </Text>
-              {segment.itineraries.length === 0 && (
-                <Alert color="yellow">
-                  No route found for <RouteText>{segmentLabel}</RouteText>.
-                  {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
-                  {segment.noResultReason && hintFor(segment.noResultReason) && (
-                    <Text size="sm" mt={4}>
-                      {hintFor(segment.noResultReason)}
-                    </Text>
-                  )}
-                </Alert>
-              )}
-              {segment.cappedByMaxChanges && (
-                <Text size="xs" c="orange">
-                  A faster route exists with more changes than shown below.
-                </Text>
-              )}
-              {segment.itineraries.map((itinerary, itineraryIndex) => (
-                <ItineraryOption
-                  key={itineraryIndex}
-                  itinerary={itinerary}
-                  selected={selections[segmentIndex]?.itinerary === itinerary}
-                  onSelect={() => selectItinerary(segmentIndex, itinerary)}
-                  stationNames={stationNames}
-                  viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
-                    (via) => via.segment === segmentIndex,
-                  )}
-                />
-              ))}
-            </Stack>
-          );
-        })}
+            )}
+            {segment.itineraries.map((itinerary, itineraryIndex) => (
+              <ItineraryOption
+                key={itineraryIndex}
+                itinerary={itinerary}
+                selected={selections[segmentIndex]?.itinerary === itinerary}
+                onSelect={() => selectItinerary(segmentIndex, itinerary)}
+                stationNames={stationNames}
+                viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
+                  (via) => via.segment === segmentIndex,
+                )}
+              />
+            ))}
+          </Stack>
+        );
+      })}
       {creationError && (
         <Alert color="red" title="Some legs could not be created">
           {creationError}

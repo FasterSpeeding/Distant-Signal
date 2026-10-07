@@ -238,10 +238,10 @@ describe('auth Suspense fallback colour', () => {
     const navBarSource = readFileSync('components/AppNavBar.tsx', 'utf8');
     const textLinkSource = readFileSync('components/TextLink.tsx', 'utf8');
     // Whitespace-tolerant so Prettier's line-wrapping of the JSX can't break it.
-    const fallbackMatch = navBarSource.match(
-      /<Suspense\s+fallback=\{\s*<Text size="sm" c="([^"]+)">\s*Log in\s*<\/Text>\s*\}\s*>/,
+    const fallbackMatch = /<Suspense\s+fallback=\{\s*<Text size="sm" c="([^"]+)">\s*Log in\s*<\/Text>\s*\}\s*>/.exec(
+      navBarSource,
     );
-    const textLinkMatch = textLinkSource.match(/const ANCHOR_COLOR = '([^']+)'/);
+    const textLinkMatch = /const ANCHOR_COLOR = '([^']+)'/.exec(textLinkSource);
     expect(fallbackMatch).not.toBeNull();
     expect(textLinkMatch).not.toBeNull();
     expect(fallbackMatch?.[1]).toBe(textLinkMatch?.[1]);

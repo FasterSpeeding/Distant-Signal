@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useState, type SubmitEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Alert,
@@ -555,11 +555,13 @@ export function TrackTrainForm({
           return fetch(`/api/stations/${crs}/schedule-departures`, { signal: controller.signal }).then((cifRes) => {
             if (cifRes.status === 404) {
               setPickerLoading(false);
-              return setPicker('unavailable');
+              setPicker('unavailable');
+              return;
             }
             if (!cifRes.ok) {
               setPickerLoading(false);
-              return setPicker(null);
+              setPicker(null);
+              return;
             }
             return cifRes.json().then((rows: ScheduleDepartureRow[]) => {
               setPickerLoading(false);
@@ -569,7 +571,8 @@ export function TrackTrainForm({
         }
         if (!res.ok) {
           setPickerLoading(false);
-          return setPicker(null);
+          setPicker(null);
+          return;
         }
         return res.json().then((rows: DepartureRow[]) => {
           setPickerLoading(false);
@@ -744,7 +747,7 @@ export function TrackTrainForm({
       });
 
       if (response.ok) {
-        const result: CreateJourneyResponse = await response.json();
+        const result = (await response.json()) as CreateJourneyResponse;
         if (attachTicketId !== undefined && result.trackingId !== null) {
           try {
             await fetch(`/api/Train/tickets/${attachTicketId}/attach`, {
@@ -798,7 +801,7 @@ export function TrackTrainForm({
    * to Phase 4. The parameter is kept, unused, purely so `handleSubmit`'s
    * dispatch to either `submitTrack`/`submitWindow` can share one call
    * shape without a branch on arity. */
-  async function submitWindow(groupId: string | null) {
+  async function submitWindow(_groupId: string | null) {
     if (!canSubmitWindow) return;
     setSubmitting(true);
     needsLoginState.reset();
@@ -821,12 +824,12 @@ export function TrackTrainForm({
         body: JSON.stringify(body),
       });
       if (response.ok) {
-        const result: CreateJourneyResponse = await response.json();
+        const result = (await response.json()) as CreateJourneyResponse;
         // No trackingId yet (an open leg has no train bound) -- so no
         // ticket-attach or group-share follow-up is possible here, unlike
         // submitTrack/pin mode. The journey view itself (Task 17) is where
         // a candidate gets picked next.
-        void groupId; // reserved for a future group-share-on-window-search follow-up
+        // `_groupId` is reserved for a future group-share-on-window-search follow-up.
         if (onCreated) {
           onCreated(result);
         } else {
@@ -871,7 +874,7 @@ export function TrackTrainForm({
    * and surfaces the same `fieldError` `Alert` a failed backend
    * validation already renders, so a click always gets a visible result
    * instead of silently doing nothing behind an near-invisible control. */
-  function handleSubmit(event: FormEvent) {
+  function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     if (submitting) return;
     if (mode === 'window') {
@@ -1239,7 +1242,7 @@ export function TrackTrainForm({
         <SegmentedControl
           aria-labelledby={modeLabelId}
           value={mode}
-          onChange={(value) => setMode(value as 'pick' | 'window')}
+          onChange={(value) => setMode(value)}
           data={[
             { label: 'I know the train', value: 'pick' },
             { label: 'Search a time window', value: 'window' },

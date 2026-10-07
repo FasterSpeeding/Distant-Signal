@@ -111,7 +111,7 @@ describe('PlanPage (/plan)', () => {
   it('lets a signed-out visitor plan and see results, asking them to log in only on "Track this journey"', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(plan) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(plan) })
       .mockResolvedValueOnce(new Response('no session', { status: 401 }));
     vi.stubGlobal('fetch', fetchMock);
 

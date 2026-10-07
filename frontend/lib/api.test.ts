@@ -604,6 +604,8 @@ describe('api client', () => {
       return vi.fn(
         (_url: string, init?: RequestInit) =>
           new Promise<Response>((_resolve, reject) => {
+            // Like fetch: an abort rejects with the signal's reason (a DOMException).
+            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- see above
             init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
           }),
       );

@@ -33,7 +33,7 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run() -> anyhow::Result<()> {
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
     common::logging::init_with_filter(
         "backfill-trains",
         common::logging::EnvFilter::try_from_default_env()

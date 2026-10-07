@@ -154,7 +154,7 @@ describe('backend reachability threading', () => {
     // Both calls sit inside the SAME `Promise.all([...])` -- not a second,
     // separately-awaited call outside it, which would be a sequential wait
     // stacked on top of the session fetch rather than a concurrent one.
-    const promiseAllMatch = source.match(/Promise\.all\(\[([\s\S]*?)\]\)/);
+    const promiseAllMatch = /Promise\.all\(\[([\s\S]*?)\]\)/.exec(source);
     expect(promiseAllMatch).not.toBeNull();
     const body = promiseAllMatch![1];
     expect(body).toMatch(/getSessionOrLoggedOut\(\)/);

@@ -66,7 +66,10 @@ async function lookupStation(crs: string): Promise<StationLookup> {
  * stale-serving it (see that function's own doc comment: it's "a
  * meaningful application state," not a connectivity blip), so catching it
  * here is exactly where that state should land. */
-type StationDisruptions = { reports: LineStatusReport[]; coverage: 'covered' | 'none' };
+interface StationDisruptions {
+  reports: LineStatusReport[];
+  coverage: 'covered' | 'none';
+}
 
 async function fetchStationDisruptions(crs: string): Promise<StationDisruptions> {
   try {

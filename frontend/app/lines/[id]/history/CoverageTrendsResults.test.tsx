@@ -15,14 +15,14 @@ vi.mock('@/lib/api');
 
 // Same rationale/shape as TrendsResults.test.tsx's own LineChart mock --
 // see that file's comment for the full reasoning.
-type MockLineChartProps = {
+interface MockLineChartProps {
   data: unknown[];
   series: { name: string; strokeDasharray?: string | number }[];
   connectNulls?: boolean;
   withLegend?: boolean;
   valueFormatter?: (value: number) => string;
   xAxisProps?: unknown;
-};
+}
 
 const lineChartMock = vi.fn((props: MockLineChartProps) => (
   <div

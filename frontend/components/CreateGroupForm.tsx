@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useState, type SubmitEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Stack, TextInput } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -25,7 +25,7 @@ export function CreateGroupForm() {
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
 
-  async function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     setSubmitting(true);
     setError(null);
@@ -46,7 +46,7 @@ export function CreateGroupForm() {
         setSubmitting(false);
         return;
       }
-      const created: { id: string } = await response.json();
+      const created = (await response.json()) as { id: string };
       try {
         await fetch(`/api/groups/${created.id}/invite-link`, { method: 'POST' });
       } catch {
