@@ -1,0 +1,31 @@
+# Named station groups for GET /Trips/plan (`via=group:LON`, `avoid=group:LON`,
+# ...): a group stands for ANY of its member stations (OR semantics). Compiled
+# into the api (crates/api/src/data/station_groups.rs); its test checks every
+# row. See docs/superpowers/specs/2026-10-07-trips-plan-or-group-vias-design.md.
+#
+# LON: the eighteen "London Terminals" of the National Rail Routeing Guide
+# (fares group NLC 1072, what a ticket "via/not via London Terminals" means).
+# Domain knowledge, not derivable from CIF/CORPUS/MSN: re-verify against the
+# Routeing Guide if in doubt. Same list as DS-MCP's LONDON_TERMINALS
+# (src/timetable/plan/constraints.ts), checked 2026-10-07.
+#
+# group: 2-12 characters A-Z/0-9; crs: a 3-letter station CRS code.
+group,crs,name
+LON,BFR,London Blackfriars
+LON,CST,London Cannon Street
+LON,CHX,London Charing Cross
+LON,CTK,City Thameslink
+LON,EUS,London Euston
+LON,FST,London Fenchurch Street
+LON,KGX,London Kings Cross
+LON,LST,London Liverpool Street
+LON,LBG,London Bridge
+LON,MYB,London Marylebone
+LON,MOG,Moorgate
+LON,OLD,Old Street
+LON,PAD,London Paddington
+LON,STP,London St Pancras International
+LON,VXH,Vauxhall
+LON,VIC,London Victoria
+LON,WAT,London Waterloo
+LON,WAE,London Waterloo East
