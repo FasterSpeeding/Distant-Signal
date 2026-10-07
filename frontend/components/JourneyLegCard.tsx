@@ -81,9 +81,9 @@ function windowSummary(leg: JourneyLegDetail): string | null {
     windowSideSummary('departing', leg.departAfter, leg.departBefore),
     windowSideSummary('arriving', leg.arriveAfter, leg.arriveBefore),
   ].filter((part): part is string => part !== null);
-  if (parts.length === 0) return null;
   const [first, ...rest] = parts;
-  const capitalised = first!.charAt(0).toUpperCase() + first!.slice(1);
+  if (first === undefined) return null;
+  const capitalised = first.charAt(0).toUpperCase() + first.slice(1);
   return [capitalised, ...rest].join(' · ');
 }
 

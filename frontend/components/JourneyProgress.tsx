@@ -97,7 +97,8 @@ interface JourneyProgressProps {
  * confirmed yet) is a legitimate, common return value, not an error case. */
 function lastReachedIndex(stops: JourneyStop[]): number {
   for (let i = stops.length - 1; i >= 0; i--) {
-    if (stops[i]!.actualArrival !== null || stops[i]!.actualDeparture !== null || stops[i]!.lastEventType === 'PASS') {
+    const stop = stops[i];
+    if (stop && (stop.actualArrival !== null || stop.actualDeparture !== null || stop.lastEventType === 'PASS')) {
       return i;
     }
   }
@@ -141,10 +142,11 @@ function reportedLocationIndex(
   const target = lastReportedLocation?.trim().toLowerCase();
   if (!target) return -1;
   for (let i = stops.length - 1; i >= 0; i--) {
-    const label = resolvedStopLabel(stops[i]!, i, stops.length, endpointNames);
+    const stop = stops[i];
+    if (!stop) continue;
+    const label = resolvedStopLabel(stop, i, stops.length, endpointNames);
     if (label?.trim().toLowerCase() === target) return i;
-    const crs = stops[i]!.crs;
-    if (crs?.trim().toLowerCase() === target) return i;
+    if (stop.crs?.trim().toLowerCase() === target) return i;
   }
   return -1;
 }
@@ -256,12 +258,14 @@ function progressCopy(
    * which this app reserves for a stop the overlay itself confirmed. */
   markerFromReportedLocation: boolean,
 ): ProgressCopy {
-  if (stops.length === 0) {
+  const terminus = stops[stops.length - 1];
+  if (terminus === undefined) {
     return { caption: 'Not yet started.', ariaLabel: 'Journey progress: not yet started' };
   }
 
   const total = stops.length;
-  const markerName = lastIndex >= 0 ? journeyStopLabel(stops[lastIndex]!, lastIndex, total, endpointNames) : null;
+  const markerStop = lastIndex >= 0 ? stops[lastIndex] : undefined;
+  const markerName = markerStop ? journeyStopLabel(markerStop, lastIndex, total, endpointNames) : null;
   const stopNumber = lastIndex + 1;
 
   if (status === 'cancelled') {
@@ -278,7 +282,7 @@ function progressCopy(
   }
 
   if (status === 'completed') {
-    const terminusName = journeyStopLabel(stops[total - 1]!, total - 1, total, endpointNames);
+    const terminusName = journeyStopLabel(terminus, total - 1, total, endpointNames);
     return {
       caption: `Arrived at ${terminusName}.`,
       ariaLabel: `Journey progress: arrived at ${terminusName}`,

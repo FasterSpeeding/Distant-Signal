@@ -139,13 +139,6 @@ const eslintConfig = defineConfig([
       // the other rule bans (typescript-eslint's own docs: use one or the
       // other).
       '@typescript-eslint/non-nullable-type-assertion-style': 'off',
-      // DEFERRED (off for now; follow-up): 44 findings in 19 non-test files
-      // (measured 2026-10-07), three quarters of them `arr[i]!` /
-      // `map.get(k)!` after a bounds or has() check, i.e. the
-      // noUncheckedIndexedAccess fight the guide describes. Each needs a
-      // real guard or a restructure, not a mechanical edit. Tests turn it
-      // off for good, below.
-      '@typescript-eslint/no-non-null-assertion': 'off',
       // DEFERRED (off for now; follow-up): 46 findings in 27 files
       // (measured 2026-10-07, tests included). Most are
       // `?.` / `??` guards on API response fields whose TypeScript types say

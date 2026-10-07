@@ -129,7 +129,8 @@ function forwardedCookieHeader(rawCookieHeader: string | null): string | null {
 // a structural separator.
 function resolveTargetPath(path: string[]): string {
   const encoded = path.map(encodeURIComponent).join('/');
-  return ROOT_MOUNTED_PREFIXES.has(path[0]!) ? `/${encoded}` : `/public/${encoded}`;
+  const [first] = path;
+  return first !== undefined && ROOT_MOUNTED_PREFIXES.has(first) ? `/${encoded}` : `/public/${encoded}`;
 }
 
 /** Every browser-initiated mutation this app makes (creating a group,

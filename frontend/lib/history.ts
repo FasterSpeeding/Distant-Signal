@@ -89,7 +89,14 @@ export interface HistorySpan {
 export interface HistoryDay {
   /** `YYYY-MM-DD`, London. */
   day: string;
-  spans: HistorySpan[];
+  /** Never empty: every entry yields at least one span (a status, or the
+   * synthetic "no active status"). */
+  spans: [HistorySpan, ...HistorySpan[]];
+}
+
+interface HistoryPoint {
+  at: string;
+  status: LineStatus;
 }
 
 function worstOf(a: LineStatus, b: LineStatus): LineStatus {
@@ -108,7 +115,7 @@ function worstOf(a: LineStatus, b: LineStatus): LineStatus {
 function collapseDay(entries: LineStatusHistoryEntry[]): HistorySpan[] {
   const ordered = [...entries].sort((a, b) => Date.parse(a.computedAt) - Date.parse(b.computedAt));
 
-  const byIdentity = new Map<string, { at: string; status: LineStatus }[]>();
+  const byIdentity = new Map<string, [HistoryPoint, ...HistoryPoint[]]>();
   for (const entry of ordered) {
     const statuses = entry.lineStatuses.length > 0 ? entry.lineStatuses : [NO_ACTIVE_STATUS];
     for (const status of statuses) {
@@ -122,7 +129,9 @@ function collapseDay(entries: LineStatusHistoryEntry[]): HistorySpan[] {
   const spans: HistorySpan[] = [];
   for (const [reason, points] of byIdentity) {
     const flips: SeverityFlip[] = [];
+    let lastAt = points[0].at;
     for (const point of points) {
+      lastAt = point.at;
       const current = flips[flips.length - 1];
       if (current?.severity === point.status.statusSeverity) {
         current.to = point.at;
@@ -138,14 +147,14 @@ function collapseDay(entries: LineStatusHistoryEntry[]): HistorySpan[] {
       });
     }
 
-    const worst = points.reduce((worst, point) => worstOf(worst, point.status), points[0]!.status);
+    const worst = points.reduce((worst, point) => worstOf(worst, point.status), points[0].status);
 
     spans.push({
       reason,
       severity: worst.statusSeverity,
       status: worst,
-      from: points[0]!.at,
-      to: points[points.length - 1]!.at,
+      from: points[0].at,
+      to: lastAt,
       samples: points.length,
       flips,
     });
@@ -173,10 +182,10 @@ export function groupHistoryByDay(entries: LineStatusHistoryEntry[]): HistoryDay
 
   return Array.from(byDay.entries())
     .sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0))
-    .map(([day, dayEntries]) => ({
-      day,
-      spans: collapseDay(dayEntries).sort((a, b) => Date.parse(b.to) - Date.parse(a.to)),
-    }));
+    .flatMap(([day, dayEntries]) => {
+      const [first, ...rest] = collapseDay(dayEntries).sort((a, b) => Date.parse(b.to) - Date.parse(a.to));
+      return first ? [{ day, spans: [first, ...rest] }] : [];
+    });
 }
 
 export type RangePreset = '7d' | '30d';

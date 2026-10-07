@@ -96,12 +96,13 @@ export function buildNetworkStatusOverview(reports: LineStatusReport[]): Network
     .filter((report) => severityGroup(worstStatus(report).statusSeverity) !== 'good')
     .sort(compareWorstFirst);
 
+  const [firstReal, ...laterReal] = real;
   const lastUpdated =
-    real.length === 0
+    firstReal === undefined
       ? null
-      : real.reduce(
+      : laterReal.reduce(
           (latest, r) => (new Date(r.computedAt) > new Date(latest) ? r.computedAt : latest),
-          real[0]!.computedAt,
+          firstReal.computedAt,
         );
 
   return { counts, totalLines: real.length, worstFirst, byMode, byCountry, lastUpdated };

@@ -1,3 +1,5 @@
+import { ownValue } from './ownValue';
+
 /** Every mode whose lines this app displays.
  *
  * Mirrors `SUPPORTED_MODES` in `crates/api/src/routes/line_status.rs` —
@@ -74,10 +76,10 @@ export function countryForMode(modeName: string, table: Record<string, Country> 
   // function is neither `null` nor `undefined`, and this would return a
   // function where every caller expects a `Country` string (e.g.
   // `lib/networkStatusOverview.ts`'s `byCountry[country]`, which would then
-  // key a whole bucket off that function). Guarding with `hasOwnProperty`
-  // keeps the lookup to the table's own declared entries -- today, and for
-  // as long as `MODE_TO_COUNTRY` stays empty, always `Gb`.
-  return Object.prototype.hasOwnProperty.call(table, modeName) ? table[modeName]! : 'Gb';
+  // key a whole bucket off that function). `ownValue` keeps the lookup to
+  // the table's own declared entries -- today, and for as long as
+  // `MODE_TO_COUNTRY` stays empty, always `Gb`.
+  return ownValue(table, modeName) ?? 'Gb';
 }
 
 /** `countryForMode`, keyed off a `LineStatusReport`/`LineStatusHistoryEntry`

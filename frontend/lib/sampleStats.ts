@@ -90,9 +90,9 @@ export function sampleUnavailableReason(status: SampleStatsCarrier): string | nu
  * present. */
 export function formatSampleSummary(status: SampleStatsCarrier | undefined): string {
   if (!status) return 'No sample data'; // defensive; should not occur in practice
-  const reason = sampleUnavailableReason(status);
-  if (reason) return reason;
-  const stats = (status.fullCoverageStats ?? status.sampleStats)!;
+  const stats = status.fullCoverageStats ?? status.sampleStats;
+  // No numbers exactly when sampleUnavailableReason has a hedge to show.
+  if (!stats) return sampleUnavailableReason(status) ?? 'No sample data';
   const cancelled = cancelledPercent(stats);
   const delay = `Avg delay ${stats.avgDelayMinutes.toFixed(1)} min`;
   return cancelled === null ? delay : `${delay} · ${cancelled}% cancelled`;

@@ -1,3 +1,5 @@
+import { ownValue } from './ownValue';
+
 /** Labels for `Disruption.impactType`'s three known values -- see
  * `common::Disruption` (`crates/common/src/lib.rs`) and
  * docs/superpowers/specs/2026-09-01-disruption-impact-type-design.md
@@ -28,7 +30,7 @@ export function impactTypeLabel(impactType: string | null | undefined): string |
   // function) instead of `undefined` -- `?? null` never fires because a
   // function is neither `null` nor `undefined`, and `DisruptionDetail`/
   // `IssueList` would render that function where they expect a string or
-  // `null`. Guarding with `hasOwnProperty` keeps the lookup to
-  // IMPACT_TYPE_LABELS' own declared keys.
-  return Object.prototype.hasOwnProperty.call(IMPACT_TYPE_LABELS, impactType) ? IMPACT_TYPE_LABELS[impactType]! : null;
+  // `null`. `ownValue` keeps the lookup to IMPACT_TYPE_LABELS' own
+  // declared keys.
+  return ownValue(IMPACT_TYPE_LABELS, impactType) ?? null;
 }

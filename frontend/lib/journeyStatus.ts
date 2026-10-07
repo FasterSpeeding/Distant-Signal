@@ -120,9 +120,10 @@ export function legStatusRank(leg: JourneyLegDetail): number {
  * (should not occur in practice, but avoids a runtime crash on `reduce`
  * over an empty array if it ever does). */
 export function worstLegStatus(legs: JourneyLegDetail[]): LegStatusGroup | null {
-  if (legs.length === 0) return null;
-  return legs.reduce(
+  const [firstLeg, ...laterLegs] = legs;
+  if (firstLeg === undefined) return null;
+  return laterLegs.reduce(
     (worst, leg) => (legStatusRank(leg) > LEG_STATUS_RANK[worst] ? legStatusGroup(leg) : worst),
-    legStatusGroup(legs[0]!),
+    legStatusGroup(firstLeg),
   );
 }

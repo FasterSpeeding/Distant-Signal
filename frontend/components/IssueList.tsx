@@ -454,7 +454,7 @@ export function IssueList({
                   )}
                   {(linesByStatus.get(status) ?? []).length > 1 && (
                     <Badge variant="outline" size="sm" color="gray">
-                      {linesByStatus.get(status)!.length} lines
+                      {(linesByStatus.get(status) ?? []).length} lines
                     </Badge>
                   )}
                   {/*
@@ -489,11 +489,7 @@ export function IssueList({
               <Stack gap="xs">
                 {(linesByStatus.get(status) ?? []).length > 1 && (
                   <Text size="sm" c="dimmed">
-                    Affects:{' '}
-                    {linesByStatus
-                      .get(status)!
-                      .map((line) => line.name)
-                      .join(', ')}
+                    Affects: {(linesByStatus.get(status) ?? []).map((line) => line.name).join(', ')}
                   </Text>
                 )}
                 <Text size="sm" c="dimmed">
