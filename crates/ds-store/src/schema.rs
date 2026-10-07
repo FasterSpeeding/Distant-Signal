@@ -86,6 +86,8 @@ pub enum DbRole {
     Enricher,
     Notifier,
     Writer,
+    /// schedule-reference with `INGEST_SINK=db` (plan 2a.3).
+    ScheduleReference,
 }
 
 impl DbRole {
@@ -97,6 +99,7 @@ impl DbRole {
             Self::Enricher => "enricher",
             Self::Notifier => "notifier",
             Self::Writer => "writer",
+            Self::ScheduleReference => "schedule_reference",
         }
     }
 
@@ -319,6 +322,7 @@ mod tests {
             DbRole::Enricher,
             DbRole::Notifier,
             DbRole::Writer,
+            DbRole::ScheduleReference,
         ] {
             assert!(privileges_for(role.key()).is_some(), "{role:?}");
             assert!(!role.required_privileges().is_empty(), "{role:?}");
