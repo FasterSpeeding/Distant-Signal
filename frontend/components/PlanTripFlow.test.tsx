@@ -912,3 +912,175 @@ describe('PlanTripFlow', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('PlanTripFlow advanced options', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    mockStationNames.clear();
+    window.history.replaceState(null, '', '/');
+  });
+
+  const viaPlan: TripPlanResponse = {
+    results: 'fastest',
+    via: ['STA', 'CRE'],
+    segments: [
+      {
+        originCrs: 'EUS',
+        destinationCrs: 'PRE',
+        cappedByMaxChanges: false,
+        itineraries: [
+          {
+            legs: [
+              {
+                kind: 'train',
+                trainUid: 'C11052',
+                serviceDate: '2026-10-08',
+                originCrs: 'EUS',
+                destinationCrs: 'CRE',
+                scheduledDeparture: '08:00:00',
+                scheduledArrival: '09:30:00',
+                arrivalDayOffset: 0,
+              },
+              {
+                kind: 'train',
+                trainUid: 'C22000',
+                serviceDate: '2026-10-08',
+                originCrs: 'CRE',
+                destinationCrs: 'PRE',
+                scheduledDeparture: '09:40:00',
+                scheduledArrival: '10:20:00',
+                arrivalDayOffset: 0,
+              },
+            ],
+            changeCount: 1,
+            totalDurationMinutes: 140,
+          },
+        ],
+      },
+    ],
+    journeys: [
+      {
+        changeCount: 1,
+        departure: { time: '08:00', dayOffset: 0 },
+        arrival: { time: '10:20', dayOffset: 0 },
+        totalDurationMinutes: 140,
+        viaSatisfiedBy: [
+          { crs: 'STA', segment: 0, leg: 0, how: 'pass' },
+          { crs: 'CRE', segment: 0, leg: 0, how: 'call' },
+        ],
+      },
+    ],
+  };
+
+  async function search(fetchMock: ReturnType<typeof vi.fn>, props: Partial<Parameters<typeof PlanTripFlow>[0]> = {}) {
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} {...props} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'PRE' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+  }
+
+  it('says how each via was passed: through without stopping, or calling there', async () => {
+    mockStationNames.set('STA', 'Stafford');
+    mockStationNames.set('CRE', 'Crewe');
+    await search(vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(viaPlan) } as Response));
+    expect(await screen.findByText('Passes through Stafford without stopping')).toBeInTheDocument();
+    expect(screen.getByText('Calls at Crewe')).toBeInTheDocument();
+  });
+
+  it('sends the restored advanced options to GET /Trips/plan', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(viaPlan) } as Response);
+    await search(fetchMock, { initialQuery: { viaCrs: ['STA', 'CRE'], avoidStopCrs: ['WVH'], maxChanges: 5 } });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = new URL(String(fetchMock.mock.calls[0]![0]), 'http://localhost');
+    expect(url.searchParams.get('via')).toBe('STA,CRE');
+    expect(url.searchParams.get('avoidStop')).toBe('WVH');
+    expect(url.searchParams.get('maxChanges')).toBe('5');
+  });
+
+  it('writes the search into the address bar on /plan', async () => {
+    window.history.replaceState(null, '', '/plan?origin=EUS');
+    await search(vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(viaPlan) } as Response), {
+      initialQuery: { viaCrs: ['STA'] },
+      syncUrl: true,
+    });
+    await waitFor(() => expect(window.location.search).toContain('via=STA'));
+    expect(window.location.pathname).toBe('/plan');
+    expect(window.location.search).toContain('origin=EUS');
+    expect(window.location.search).toContain('destination=PRE');
+  });
+
+  it('leaves the address bar alone without syncUrl', async () => {
+    window.history.replaceState(null, '', '/journeys/new');
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(viaPlan) } as Response);
+    await search(fetchMock);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(window.location.search).toBe('');
+  });
+
+  it('turns the search-size 400 into advice', async () => {
+    await search(
+      vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: () =>
+          Promise.resolve(
+            'results=options with 4 waypoints, 3 vias and maxChanges=6 is too large a search ((waypoints + 1) * (2 * vias + 1) * (maxChanges + 2) = 280, at most 252); use fewer waypoints or vias, a lower maxChanges, or results=fastest',
+          ),
+      } as Response),
+    );
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('the search is too large');
+    expect(alert).toHaveTextContent('Switch Results to Fastest');
+    expect(alert).toHaveTextContent('Remove some stops to call at, or some “Pass through” stations');
+    expect(alert).not.toHaveTextContent('(waypoints + 1)');
+  });
+
+  it('explains a via no route passes, with what to try', async () => {
+    mockStationNames.set('STA', 'Stafford');
+    const noVia: TripPlanResponse = {
+      results: 'fastest',
+      via: ['STA'],
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'PRE',
+          cappedByMaxChanges: false,
+          itineraries: [],
+          noResultReason: {
+            constraint: 'via',
+            values: ['STA'],
+            message:
+              'No itinerary from EUS to PRE departing after 09:45 on 2026-10-08 passes through STA (calling there or not); one exists without that via.',
+          },
+        },
+      ],
+      journeys: [],
+    };
+    await search(vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noVia) } as Response));
+    expect(await screen.findByText(/passes through STA \(calling there or not\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/Try removing STA — Stafford from "Pass through"/)).toBeInTheDocument();
+  });
+
+  it('suggests allowing more changes for a maxChanges no-result', async () => {
+    const capped: TripPlanResponse = {
+      results: 'options',
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'PRE',
+          cappedByMaxChanges: true,
+          itineraries: [],
+          noResultReason: {
+            constraint: 'maxChanges',
+            values: [],
+            message: 'Every itinerary needs more than 0 changes.',
+          },
+        },
+      ],
+    };
+    await search(vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(capped) } as Response));
+    expect(await screen.findByText(/Allow more changes in Advanced options/)).toBeInTheDocument();
+  });
+});

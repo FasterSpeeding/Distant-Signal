@@ -1181,6 +1181,20 @@ export interface TripPlanJourney {
   totalDurationMinutes: number;
   exceedsRecommendedChanges?: boolean;
   liveFeasible?: boolean;
+  /** With `via` only: one entry per via, in order -- the leg that first
+   * passed it (`segments[segment].itineraries[j].legs[leg]`). */
+  viaSatisfiedBy?: TripPlanViaSatisfied[];
+}
+
+/** How a journey passed one of the request's vias
+ * (docs/api-changelog.md, 2026-10-06): `call` -- the train called there;
+ * `pass` -- it ran through without calling; `walk` -- a transfer leg into
+ * it. */
+export interface TripPlanViaSatisfied {
+  crs: string;
+  segment: number;
+  leg: number;
+  how: 'call' | 'pass' | 'walk';
 }
 
 /** A train leg's live status
@@ -1227,6 +1241,7 @@ export interface TripPlanNoResultReason {
     | 'avoidStop'
     | 'avoidChange'
     | 'avoidCombined'
+    | 'via'
     | 'departAfter'
     | 'arriveBy'
     | 'noRoute'
@@ -1248,6 +1263,10 @@ export interface TripPlanResponse {
   avoid?: string[];
   avoidStop?: string[];
   avoidChange?: string[];
+  /** The pass-through vias as applied, in order (always `[]` without). */
+  via?: string[];
+  /** The effective `maxChanges` (the API's default when none was sent). */
+  maxChanges?: number;
   /** Present when live data was requested (the default). */
   live?: {
     applied: boolean;

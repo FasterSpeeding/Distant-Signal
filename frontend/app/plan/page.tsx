@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
 import { TRACK_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { parsePlanSearchParams } from '@/lib/tripPlanUrl';
 
 /** `/plan` -- the trip planner (`PlanTripFlow`) on its own page, linked from
  * the nav as `PLAN_JOURNEY_DESTINATION` (`lib/navLinks.ts`).
@@ -32,7 +33,11 @@ import { TRACK_JOURNEY_DESTINATION } from '@/lib/navLinks';
  * `?origin=CRS` pre-fills From, the same parameter `/track` takes, for a
  * station page's "Plan a journey from here". Anything that isn't a
  * three-letter code is ignored. Not read in metadata, for the reason
- * `/track` gives: a per-visitor value must not leak into link previews. */
+ * `/track` gives: a per-visitor value must not leak into link previews.
+ *
+ * The rest of the query is the last search (`lib/tripPlanUrl.ts`): each
+ * search writes it into the address bar, so a shared or bookmarked `/plan`
+ * URL reopens the same form, Advanced options included. */
 const METADATA_TITLE = 'Plan a Journey — Distant Signal';
 const METADATA_DESCRIPTION =
   'Find train routes between any two UK stations, with changes and optional stops on the way, and compare the options. No account needed to plan; log in to track the journey you pick.';
@@ -46,10 +51,16 @@ export const metadata: Metadata = {
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 
-export default async function PlanPage({ searchParams }: { searchParams: Promise<{ origin?: string | string[] }> }) {
-  const { origin } = await searchParams;
+export default async function PlanPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const { origin } = params;
   const originParam = Array.isArray(origin) ? origin[0] : origin;
   const planOrigin = originParam && CRS_PATTERN.test(originParam) ? originParam.toUpperCase() : undefined;
+  const planQuery = parsePlanSearchParams(params);
 
   return (
     <Stack p="lg" gap="md">
@@ -66,7 +77,7 @@ export default async function PlanPage({ searchParams }: { searchParams: Promise
         You don&apos;t need an account to plan. To track the route you pick, you&apos;ll be asked to log in when you
         save it.
       </Text>
-      <JourneyCreationFlow planOnly planOrigin={planOrigin} />
+      <JourneyCreationFlow planOnly planOrigin={planOrigin} planQuery={planQuery} />
     </Stack>
   );
 }

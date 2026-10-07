@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { londonToday, nowInLondon } from '@/lib/londonWallClock';
 import {
   Autocomplete,
@@ -14,10 +14,12 @@ import {
   VisuallyHidden,
 } from '@mantine/core';
 import { DateInput, TimeInput } from '@mantine/dates';
-import { searchPlannerLocations } from '@/lib/suggestions';
+import { getStationNames, searchPlannerLocations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import type { TripPlanQuery } from '@/lib/tripPlan';
+import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
+import type { PlanFormInitial } from '@/lib/tripPlanUrl';
+import { PlanTripAdvancedOptions, advancedOptionErrors } from './PlanTripAdvancedOptions';
 
 /** `@tabler/icons-react` isn't a project dependency (checked package.json,
  * matching `components/InfoIcon.tsx`/`KebabIcon.tsx`'s own reasoning) --
@@ -95,15 +97,31 @@ export function PlanTripForm({
   onSubmit,
   searching = false,
   initialOriginCrs = '',
+  initial = {},
 }: {
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
   /** The From field's starting value; only read on mount. */
   initialOriginCrs?: string;
+  /** A restored search (`/plan`'s own query string, `lib/tripPlanUrl.ts`);
+   * only read on mount. Its `originCrs` wins over `initialOriginCrs`. */
+  initial?: PlanFormInitial;
 }) {
-  const [originCrs, setOriginCrs] = useState(initialOriginCrs);
-  const [destinationCrs, setDestinationCrs] = useState('');
-  const [waypoints, setWaypoints] = useState<string[]>([]);
+  const [originCrs, setOriginCrs] = useState(initial.originCrs ?? initialOriginCrs);
+  const [destinationCrs, setDestinationCrs] = useState(initial.destinationCrs ?? '');
+  const [waypoints, setWaypoints] = useState<string[]>(initial.waypointCrs ?? []);
+  const [advanced, setAdvanced] = useState<TripPlanAdvancedOptions>(() => ({
+    viaCrs: initial.viaCrs,
+    avoidCrs: initial.avoidCrs,
+    avoidStopCrs: initial.avoidStopCrs,
+    avoidChangeCrs: initial.avoidChangeCrs,
+    maxChanges: initial.maxChanges,
+  }));
+  const [advancedOpened, setAdvancedOpened] = useState(false);
+  // Code -> name for the advanced options' rows: filled as stations are
+  // picked, and once on mount for codes restored from the URL.
+  const [names, setNames] = useState<Map<string, string>>(new Map());
+  const advancedErrorId = useId();
   // `string | null` ("YYYY-MM-DD"), not `Date | null`: `@mantine/dates`
   // 9.5.2's `DateInput`/`DatePickerInput` both take/emit
   // `DateStringValue` (a plain `"YYYY-MM-DD"` string), not a `Date` --
@@ -114,7 +132,11 @@ export function PlanTripForm({
   // needs no `.toISOString()` conversion (which, since that reads UTC,
   // could roll to the wrong calendar day near midnight in a non-UTC
   // timezone anyway).
-  const [date, setDate] = useState<string | null>(() => nowInLondon().format('YYYY-MM-DD'));
+  // A restored date in the past is dropped: the picker can't show it
+  // (`minDate`), and a shared link from last week means "this trip", today.
+  const [date, setDate] = useState<string | null>(() =>
+    initial.date && initial.date >= londonToday() ? initial.date : nowInLondon().format('YYYY-MM-DD'),
+  );
   // Defaults to "now" (`'HH:MM'`, the same value contract `TimeFilterInput`'s
   // own `onChange` and every other `TimeInput` field in this codebase
   // already use), not `''` -- computed once via lazy `useState` initializer,
@@ -134,8 +156,8 @@ export function PlanTripForm({
   // `GET /Trips/plan` reads both fields as London wall-clock values, so a
   // browser-zone default would search hours away (or on the wrong rail
   // day) for any visitor whose device isn't on UK time.
-  const [departAfter, setDepartAfter] = useState(() => nowInLondon().format('HH:mm'));
-  const [results, setResults] = useState<'fastest' | 'options'>('fastest');
+  const [departAfter, setDepartAfter] = useState(() => initial.departAfter ?? nowInLondon().format('HH:mm'));
+  const [results, setResults] = useState<'fastest' | 'options'>(initial.results ?? 'fastest');
   const resultsLabelId = useId();
 
   // The two ends may also be a bus stop or ferry terminal (a `tiploc:` code,
@@ -148,6 +170,38 @@ export function PlanTripForm({
     destinationCrs,
     searchPlannerLocations,
   );
+
+  // Names for the advanced options restored from the URL (read once, like
+  // every other `initial` field).
+  useEffect(() => {
+    const restored = [
+      ...(initial.viaCrs ?? []),
+      ...(initial.avoidCrs ?? []),
+      ...(initial.avoidStopCrs ?? []),
+      ...(initial.avoidChangeCrs ?? []),
+    ];
+    if (restored.length === 0) return;
+    let cancelled = false;
+    void getStationNames(restored).then((found) => {
+      if (!cancelled) addNames(found);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `initial` is read on mount only
+  }, []);
+
+  function addNames(found: Map<string, string>) {
+    setNames((current) => new Map([...current, ...found]));
+  }
+
+  const errors = advancedOptionErrors(advanced, {
+    originCrs,
+    destinationCrs,
+    waypointCrs: waypoints,
+    names,
+  });
+  const firstError = Object.values(errors)[0];
 
   function addWaypoint() {
     setWaypoints((current) => [...current, '']);
@@ -163,6 +217,10 @@ export function PlanTripForm({
 
   function handleSubmit() {
     if (!originCrs.trim() || !destinationCrs.trim() || !date) return;
+    if (firstError) {
+      setAdvancedOpened(true);
+      return;
+    }
     onSubmit({
       originCrs: originCrs.trim(),
       destinationCrs: destinationCrs.trim(),
@@ -170,6 +228,11 @@ export function PlanTripForm({
       date,
       departAfter: departAfter || undefined,
       results,
+      ...(advanced.viaCrs?.length ? { viaCrs: advanced.viaCrs } : {}),
+      ...(advanced.avoidCrs?.length ? { avoidCrs: advanced.avoidCrs } : {}),
+      ...(advanced.avoidStopCrs?.length ? { avoidStopCrs: advanced.avoidStopCrs } : {}),
+      ...(advanced.avoidChangeCrs?.length ? { avoidChangeCrs: advanced.avoidChangeCrs } : {}),
+      ...(advanced.maxChanges !== undefined ? { maxChanges: advanced.maxChanges } : {}),
     });
   }
 
@@ -211,7 +274,12 @@ export function PlanTripForm({
         <Group key={index} gap="xs">
           <TextInput
             style={{ flex: 1 }}
-            label={index === 0 ? 'Via (optional, in order)' : undefined}
+            label={index === 0 ? 'Call at (optional, in order)' : undefined}
+            description={
+              index === 0
+                ? 'The train must stop at each of these. To go through a station without stopping, use “Pass through” in Advanced options.'
+                : undefined
+            }
             placeholder="Station name or CRS code"
             value={waypoint}
             onChange={(event) => updateWaypoint(index, event.currentTarget.value)}
@@ -228,7 +296,7 @@ export function PlanTripForm({
         </Group>
       ))}
       <Button variant="subtle" leftSection={<PlusIcon />} onClick={addWaypoint} style={{ alignSelf: 'flex-start' }}>
-        Add a waypoint
+        Add a stop to call at
       </Button>
       {/* London's today, not `new Date()` (the browser's): a visitor ahead
           of UK time near midnight could otherwise not pick London's today,
@@ -262,7 +330,32 @@ export function PlanTripForm({
       <VisuallyHidden role="status" aria-live="polite">
         {results === 'options' ? 'Will compare route options.' : 'Will show the fastest route only.'}
       </VisuallyHidden>
-      <Button disabled={!canSubmit || searching} onClick={handleSubmit}>
+      <PlanTripAdvancedOptions
+        options={advanced}
+        onChange={setAdvanced}
+        names={names}
+        onNames={addNames}
+        errors={errors}
+        opened={advancedOpened}
+        onOpenedChange={setAdvancedOpened}
+        results={results}
+      />
+      {/* The advanced options' first problem, repeated next to the button it
+          blocks (and named by it via `aria-describedby`): the section may be
+          collapsed, e.g. after From was changed to a station already listed
+          as a via. The field itself carries the same message. */}
+      {firstError && (
+        <Text id={advancedErrorId} size="sm" c="var(--ds-color-error-text)">
+          Check Advanced options: {firstError}
+        </Text>
+      )}
+      <Button
+        // Not disabled by an advanced-option problem: a click opens the
+        // section on it, where a disabled button would just go quiet.
+        disabled={!canSubmit || searching}
+        onClick={handleSubmit}
+        aria-describedby={firstError ? advancedErrorId : undefined}
+      >
         {searching ? 'Searching…' : 'Find routes'}
       </Button>
     </Stack>

@@ -60,7 +60,7 @@ describe('PlanTripForm', () => {
     // `MatcherOptions` doesn't accept one (that's `getByText`-only; `tsc`
     // rejects it here), and every match is already an `<input>` anyway.
     expect(screen.getAllByPlaceholderText('Station name or CRS code').length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByText('Add a waypoint'));
+    fireEvent.click(screen.getByText('Add a stop to call at'));
     const waypointInputs = screen.getAllByPlaceholderText('Station name or CRS code');
     // From + To + 1 waypoint = 3 inputs sharing this placeholder.
     expect(waypointInputs.length).toBe(3);
@@ -73,7 +73,7 @@ describe('PlanTripForm', () => {
     renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
-    fireEvent.click(screen.getByText('Add a waypoint'));
+    fireEvent.click(screen.getByText('Add a stop to call at'));
     fireEvent.change(screen.getAllByPlaceholderText('Station name or CRS code')[2]!, { target: { value: 'YRK' } });
     fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
     expect(onSubmit).toHaveBeenCalledWith(
