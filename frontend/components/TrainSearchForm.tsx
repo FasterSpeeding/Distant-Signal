@@ -12,7 +12,7 @@ import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly } from '@/lib/serviceMode';
-import type { ServiceModeFields } from '@/lib/types';
+import type { ServiceModeFields, TrainSearchPage, TrainSearchResult } from '@/lib/types';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
@@ -56,59 +56,11 @@ function dateWindow() {
   };
 }
 
-/** Wire shape of `GET /public/trains/search`
- * (`crates/api/src/render.rs::calling_point_departure_json`).
- * `stationCrs` is the required calling-point search key, echoed back on
- * every row. `originCrs`/`destinationCrs` are both nullable: they are the
- * schedule's TRUE origin/destination, independent optional filters, and
- * either can be unresolved for a real published schedule (see
- * `schedule_query::DestinationDeparture`'s own doc comment). Like every
- * CIF-derived row in this app it carries NO operator and NO live running
- * status. */
 /** The track button's noun for a search row. */
 function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {
   if (row.serviceMode === 'ferry') return 'ferry';
   if (row.serviceMode === 'bus' || row.serviceMode === 'replacementBus') return 'bus';
   return 'train';
-}
-
-interface TrainSearchRow extends ServiceModeFields {
-  uid: string;
-  scheduled: string;
-  /** The public (timetable) departure, shown in place of `scheduled` (the
-   * working-timetable time, kept as WTT for one release). `null`/absent
-   * until the next schedule publish. */
-  publicDeparture?: string | null;
-  stationCrs: string;
-  originCrs: string | null;
-  destinationCrs: string | null;
-  /** Station name resolved from `destinationCrs`, `null` when unresolved
-   * (or when `destinationCrs` itself is `null`) -- same "absent from the
-   * lookup map renders `null`" contract as every other name field this app
-   * resolves from a CRS. Optional on the wire type only for backward
-   * compatibility with a response from a backend build that predates this
-   * field (`?? destinationCrs` below degrades to the bare code exactly as
-   * this row rendered before this field existed). */
-  destinationName?: string | null;
-  destinationArrival: string | null;
-  /** How many calendar days past the search date `destinationArrival`
-   * actually falls on -- the TERMINATING calling point's own day offset,
-   * mirroring `schedule_query::DestinationDeparture::destination_arrival_day_offset`.
-   * Not consumed anywhere in this form yet: `destinationArrival` itself is
-   * only ever used today as a same-day time-of-day filter, never combined
-   * with a date to produce a real timestamp, so this field is kept accurate
-   * but deliberately unused -- see this codebase's other currently-unused
-   * but correct wire fields for the same posture. */
-  destinationArrivalDayOffset: number;
-}
-
-/** The envelope `GET /public/trains/search` returns. Not a bare array: it
- * has to carry `nextCursor`, because the backend publishes and stores the
- * whole day uncapped and hands it back a page at a time. `nextCursor` is an
- * explicit `null` on the last page, never omitted. */
-interface TrainSearchResponse {
-  results: TrainSearchRow[];
-  nextCursor: string | null;
 }
 
 /** Exactly one of five mutually-exclusive states, checked top to bottom by
@@ -136,7 +88,7 @@ interface TrainSearchResponse {
  * replacing this whole object. The cursor is deliberately kept on failure --
  * it is still valid, so the retry the footer offers is a real one. */
 type Results =
-  | { rows: TrainSearchRow[]; nextCursor: string | null; date: string; loadMoreFailed: boolean }
+  | { rows: TrainSearchResult[]; nextCursor: string | null; date: string; loadMoreFailed: boolean }
   | 'unpublished'
   | 'error'
   | null;
@@ -148,7 +100,7 @@ type Results =
  * the copies to drift apart. */
 function hasRows(
   results: Results,
-): results is { rows: TrainSearchRow[]; nextCursor: string | null; date: string; loadMoreFailed: boolean } {
+): results is { rows: TrainSearchResult[]; nextCursor: string | null; date: string; loadMoreFailed: boolean } {
   return results !== null && results !== 'error' && results !== 'unpublished';
 }
 
@@ -388,7 +340,7 @@ export function TrainSearchForm({
         setResults('error');
         return;
       }
-      const body = (await response.json()) as TrainSearchResponse;
+      const body = (await response.json()) as TrainSearchPage;
       setResults({
         rows: body.results,
         nextCursor: body.nextCursor,
@@ -488,7 +440,7 @@ export function TrainSearchForm({
         setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
-      const body = (await response.json()) as TrainSearchResponse;
+      const body = (await response.json()) as TrainSearchPage;
       setResults((current) =>
         current === pagedFrom
           ? {

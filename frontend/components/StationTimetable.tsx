@@ -8,38 +8,7 @@ import { RouteArrow } from './RouteArrow';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { TextLink } from './TextLink';
 import { isTimetableOnly } from '@/lib/serviceMode';
-import type { ServiceModeFields } from '@/lib/types';
-
-/** Wire shape of `GET /public/trains/search`
- * (`crates/api/src/render.rs::calling_point_departure_json`), reused
- * verbatim from `TrainSearchForm.tsx`'s own (unexported, so redeclared
- * here) row/envelope types -- same route, same response, no new fields.
- * `originCrs`/`destinationCrs` are both nullable: either can be
- * unresolved for a real published schedule. This component never sends
- * `date`, so `destinationArrival`/`destinationArrivalDayOffset` are kept
- * for shape-fidelity with the wire response but unused here, same as
- * `TrainSearchForm.tsx`'s own posture for the latter field. */
-interface TrainSearchRow extends ServiceModeFields {
-  uid: string;
-  scheduled: string;
-  /** The public (timetable) departure, shown in place of `scheduled` (the
-   * working-timetable time, kept as WTT for one release). `null`/absent
-   * until the next schedule publish. */
-  publicDeparture?: string | null;
-  stationCrs: string;
-  originCrs: string | null;
-  destinationCrs: string | null;
-  destinationArrival: string | null;
-  destinationArrivalDayOffset: number;
-}
-
-/** The envelope `GET /public/trains/search` returns -- not a bare array,
- * since the backend paginates a whole day's results. `nextCursor` is an
- * explicit `null` on the last page, never omitted. */
-interface TrainSearchResponse {
-  results: TrainSearchRow[];
-  nextCursor: string | null;
-}
+import type { TrainSearchPage, TrainSearchResult } from '@/lib/types';
 
 /** Four mutually-exclusive states, checked top to bottom by
  * `resultsContent` below -- `'unpublished'` and an empty `rows` array are
@@ -47,7 +16,7 @@ interface TrainSearchResponse {
  * feed's coverage must not read the same as "nothing's running right
  * now") and must not be collapsed into one copy. */
 type Results =
-  { rows: TrainSearchRow[]; nextCursor: string | null; loadMoreFailed: boolean } | 'unpublished' | 'error' | null;
+  { rows: TrainSearchResult[]; nextCursor: string | null; loadMoreFailed: boolean } | 'unpublished' | 'error' | null;
 
 /** Today's London date, computed once per render for every row's
  * live-status link -- there is no date picker on this stripped-down view
@@ -65,7 +34,7 @@ function today(): string {
  * at every call site invited the checks to drift out of sync. */
 function hasRows(
   results: Results,
-): results is { rows: TrainSearchRow[]; nextCursor: string | null; loadMoreFailed: boolean } {
+): results is { rows: TrainSearchResult[]; nextCursor: string | null; loadMoreFailed: boolean } {
   return results !== null && results !== 'error' && results !== 'unpublished';
 }
 
@@ -133,7 +102,7 @@ export function StationTimetable({ crs }: { crs: string }) {
         setResults('error');
         return;
       }
-      const body = (await response.json()) as TrainSearchResponse;
+      const body = (await response.json()) as TrainSearchPage;
       if (controller.signal.aborted) return;
       setResults({ rows: body.results, nextCursor: body.nextCursor, loadMoreFailed: false });
     } catch {
@@ -160,7 +129,7 @@ export function StationTimetable({ crs }: { crs: string }) {
         setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: true } : current));
         return;
       }
-      const body = (await response.json()) as TrainSearchResponse;
+      const body = (await response.json()) as TrainSearchPage;
       if (controller.signal.aborted) return;
       setResults((current) =>
         hasRows(current)
