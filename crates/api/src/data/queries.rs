@@ -301,74 +301,8 @@ pub use ds_store::reference::{
     crs_for_tiploc, crs_for_tiploc_with, crs_for_tiplocs_batch, crs_for_tiplocs_batch_with,
 };
 
-/// Whether `crs` is a genuine, bookable National Rail station code rather
-/// than one of Network Rail's own `X`-prefixed pseudo-codes for a
-/// non-passenger location (a junction, siding, or depot that still needs a
-/// STANOX->CRS entry for TRUST tracking purposes but was never sold a
-/// ticket to) -- see `reference-data/stanox-crs.md`'s own "Extraction and
-/// exclusion policy" section and `schedule_reference::parser::resolve`'s
-/// doc comment, which both independently document this exact convention.
-///
-/// Lives here, in `queries` -- rather than staying private to
-/// `data::journey` (where it was first added, for the single-train journey
-/// timeline) or moving out to `crates/common` -- because every one of its
-/// real call sites is a display-bound CRS resolution inside THIS crate, and
-/// `queries` is already the one module all four of them import for their
-/// own TIPLOC->CRS lookups (`crs_for_tiploc`/`crs_for_tiplocs_batch`,
-/// directly above): [`crate::data::journey::stops_from_calling_points`]
-/// (the journey timeline's per-calling-point CRS, the original call site),
-/// [`crate::data::schedule_matching::find_schedule_match`]'s
-/// `destination_crs` (flows into `trains.destination_crs`, rendered as
-/// `train.destinationName ?? train.destinationCrs` on the single-train
-/// page), `crate::routes::lines::get_line_trains`'s schedule-side
-/// origin/destination resolution (`ScheduleRouteEndpoints`), and
-/// `crate::render::schedule_departure_json`'s `destinationCrs` field. A
-/// cross-crate `common` helper would be the wrong call: no crate outside
-/// `api` resolves a CRS for DISPLAY this way today, and `schedule_query`'s
-/// own STANOX-disambiguation policy (`resolve.rs`) deliberately still
-/// ACCEPTS a sole X-prefixed candidate for a STANOX -- the opposite
-/// question this function answers -- so sharing one helper across that
-/// boundary would invite exactly the confusion this doc comment is
-/// disambiguating.
-///
-/// **Real evidence this matters, not a hypothetical.** `schedule_query::
-/// resolve`'s STANOX-disambiguation policy accepts an X-prefixed CRS as a
-/// STANOX's row whenever it is the SOLE candidate for that STANOX (only
-/// excluding a STANOX outright when 2+ non-X or 2+ X candidates tie) -- so
-/// a plain junction with no real passenger identity can still come back
-/// from [`crs_for_tiplocs_batch`]/[`crs_for_tiploc`] with a resolved,
-/// non-`None` `crs`. Confirmed against live production data for train
-/// `Y80908` on 2026-09-23 (Birmingham New Street to London Euston):
-/// `HANSLPJ` (Hanslope Junction) resolved to CRS `XHN`, `PROOFHJ` (Proof
-/// House Junction) to `XOZ`, `LEDBRNJ` (Ledburn Junction) to `XOD`,
-/// `BONENDJ` (Bourne End Junction) to `XOE`, and `WLSDWLJ` (Willesden
-/// Junction) to `XWI` -- none of them a real station, none of them present
-/// in `stations`, yet before this filter each one still carried a
-/// non-`None` `crs` that was enough to render as if it were a real, terse
-/// station identity wherever a caller displayed it unfiltered.
-///
-/// **A second, independent case the 2026-09-24 `tiploc_crs` crosswalk
-/// widened.** That change (Task 3/4 of
-/// docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md) made
-/// [`crs_for_tiploc`]/[`crs_for_tiplocs_batch`] resolve roughly a dozen
-/// TIPLOCs that previously returned `None` (no STANOX-level
-/// disambiguation possible) via the new TIPLOC-keyed `tiploc_crs` table
-/// instead -- e.g. `VICTRCR` (a common empty-coaching-stock terminus) now
-/// resolves to the X-prefixed pseudo-CRS `XVR` rather than `None`. Any
-/// call site that resolves a display-bound CRS without this filter would,
-/// as of that change, newly start showing a tracked ECS working's
-/// destination as "XVR" instead of correctly showing nothing -- the exact
-/// same bug class the `HANSLPJ`/`XHN` case above already documents, just
-/// reachable through a second, newly-widened path.
-///
-/// A stop/row that only resolves to an X-prefixed pseudo-CRS should be
-/// treated exactly like one that didn't resolve at all: blank the `crs`
-/// (or `destination_crs`) out to `None`/absent rather than passing the
-/// pseudo-code through, same degrade every call site above already applies
-/// consistently.
-pub fn is_bookable_crs(crs: &str) -> bool {
-    !crs.starts_with('X')
-}
+// Moved to ds_store::reference (ingest architecture plan 1A.10).
+pub use ds_store::reference::is_bookable_crs;
 
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
 pub use ds_store::schedule::{
@@ -376,80 +310,10 @@ pub use ds_store::schedule::{
     upsert_schedule_line_population,
 };
 
-/// One line's population for one service date, deserialized into
-/// `schedule_query::LinePopulationEntry` for
-/// `schedule_matching::find_schedule_match` -- optionally narrowed IN SQL
-/// to the entries whose `uid` is `only_uid`.
-///
-/// `find_schedule_match` runs this once per candidate line (a busy
-/// terminus sits on a dozen catalogued lines), and with a known uid it
-/// only ever keeps that one uid's entries. Filtering in Postgres
-/// (`jsonb_array_elements` + `jsonb_agg ... ORDER BY ord`, preserving the
-/// published array order that `match_pin`'s tie-break depends on) means
-/// `api` receives a few kB instead of a whole line's day -- up to 31 MB of
-/// text -- per candidate line. The untargeted path (`only_uid = None`)
-/// still needs every entry, but now deserializes the text straight into
-/// the typed entries instead of going through a `serde_json::Value` first.
-///
-/// `None` when no row exists; `Some(vec![])` when a row exists but carries
-/// no entry for `only_uid`.
-pub async fn get_schedule_line_population_entries(
-    pool: &PgPool,
-    line_id: &str,
-    service_date: chrono::NaiveDate,
-    only_uid: Option<&str>,
-) -> Result<Option<Vec<schedule_query::LinePopulationEntry>>> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT CASE WHEN $3::text IS NULL THEN population::text \
-                ELSE COALESCE( \
-                    (SELECT jsonb_agg(x.e ORDER BY x.ord) \
-                     FROM jsonb_array_elements(population) WITH ORDINALITY AS x(e, ord) \
-                     WHERE x.e ->> 'uid' = $3::text), \
-                    '[]'::jsonb)::text \
-                END \
-         FROM schedule_line_population \
-         WHERE line_id = $1 AND service_date = $2",
-    )
-    .bind(line_id)
-    .bind(service_date)
-    .bind(only_uid)
-    .fetch_optional(pool)
-    .await?;
-    row.map(|(text,)| serde_json::from_str(&text).map_err(Into::into))
-        .transpose()
-}
-
-/// The entries of one line's population for `service_date` that run past
-/// midnight: those with at least one calling point on a later calendar day
-/// (`day_offset >= 1`), in published order. `None` when no row exists.
-///
-/// For `schedule_matching::find_schedule_match`'s untargeted path, which
-/// must also consider the PREVIOUS day's schedules for a pin after midnight
-/// (a pin is dated by its own departure, a schedule by its origin). Only
-/// overnight entries can have a calling point on the pin's day, so the
-/// filter runs in SQL and the rest of the day's population never leaves
-/// Postgres.
-pub async fn get_overnight_schedule_line_population_entries(
-    pool: &PgPool,
-    line_id: &str,
-    service_date: chrono::NaiveDate,
-) -> Result<Option<Vec<schedule_query::LinePopulationEntry>>> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT COALESCE( \
-                    (SELECT jsonb_agg(x.e ORDER BY x.ord) \
-                     FROM jsonb_array_elements(population) WITH ORDINALITY AS x(e, ord) \
-                     WHERE jsonb_path_exists(x.e, '$.calling_points[*] ? (@.day_offset >= 1)')), \
-                    '[]'::jsonb)::text \
-         FROM schedule_line_population \
-         WHERE line_id = $1 AND service_date = $2",
-    )
-    .bind(line_id)
-    .bind(service_date)
-    .fetch_optional(pool)
-    .await?;
-    row.map(|(text,)| serde_json::from_str(&text).map_err(Into::into))
-        .transpose()
-}
+// Moved to ds_store::schedule (ingest architecture plan 1A.10).
+pub use ds_store::schedule::{
+    get_overnight_schedule_line_population_entries, get_schedule_line_population_entries,
+};
 
 /// One element of a line's population as `GET /public/lines/{id}/trains`
 /// needs it, projected by [`list_line_train_entries`].
@@ -859,50 +723,8 @@ pub async fn get_schedule_line_population_scoped(
     Ok(row)
 }
 
-/// Every published line whose `service_date` population contains a schedule
-/// with this `train_uid` -- the identity-first inverse of
-/// [`get_schedule_line_population`], which can only answer "what is on THIS
-/// line."
-///
-/// Exists for `schedule_matching::find_schedule_match`'s
-/// known-identity fallback: a train whose ORIGIN station appears on no
-/// `lines/*.toml` at all (a real shape -- an uncatalogued branch terminus)
-/// has no candidate line to look up by CRS, even though
-/// `schedule_query::schedules_touching` has already put its whole schedule,
-/// origin calling point included, into the population of every line that
-/// lists ANY station it calls at further down the route. Without this, such
-/// a train's schedule was unreachable from a known `train_uid`.
-///
-/// One JSONB containment query, not 100-plus per-line reads: `population @>
-/// '[{"uid": ...}]'` is true exactly when some array element of
-/// `population` is an object carrying that `uid` (jsonb containment matches
-/// objects partially), so Postgres does the "which line carries this uid"
-/// scan itself. `ORDER BY line_id` so a caller iterating the result is
-/// deterministic across calls, matching `crs_to_line_ids`' own
-/// alphabetical-by-file candidate ordering.
-///
-/// Deliberately NOT indexed: this runs only on the fallback path above (a
-/// known uid whose origin CRS is uncatalogued), the table holds one row per
-/// line per date (a few hundred rows), and a GIN index on a
-/// whole-day-of-schedules JSONB column would cost every
-/// `schedule-reference` publish far more than it saves here.
-pub async fn list_line_ids_with_uid_in_population(
-    pool: &PgPool,
-    service_date: chrono::NaiveDate,
-    train_uid: &str,
-) -> Result<Vec<String>> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT line_id FROM schedule_line_population \
-         WHERE service_date = $1 \
-           AND population @> jsonb_build_array(jsonb_build_object('uid', $2::text)) \
-         ORDER BY line_id",
-    )
-    .bind(service_date)
-    .bind(train_uid)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(|(line_id,)| line_id).collect())
-}
+// Moved to ds_store::schedule (ingest architecture plan 1A.10).
+pub use ds_store::schedule::list_line_ids_with_uid_in_population;
 
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
 pub use ds_store::schedule::{ScheduleNetworkDeparturesRow, upsert_schedule_network_departures};
