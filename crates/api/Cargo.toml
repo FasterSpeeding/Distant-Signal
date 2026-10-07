@@ -15,6 +15,9 @@ chrono-tz = "0.10"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 common = { path = "../common", features = ["postgres", "redis"] }
 dotenvy = "0.15.7"
+# The shared data access (ingest architecture phase 1A): `data::*` keeps
+# `pub use ds_store::...` shims as functions move there.
+ds-store = { path = "../ds-store" }
 # Explicit, not merely transitive-via-`pdf-extract`/`lopdf`/`zip`: used
 # directly by `ticket_extraction::reject_pdf_compression_bombs` to run our
 # OWN bounded zlib decompression pass over a candidate PDF, ahead of

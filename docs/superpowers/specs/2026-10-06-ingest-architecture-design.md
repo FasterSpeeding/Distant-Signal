@@ -386,15 +386,20 @@ depends on neither `axum` nor `redis` nor `reqwest`.
 `crates/ds-store` is a library crate with `publish = false` and the
 workspace lints.
 
-- **Depends on:** `common` (features `postgres`), `sqlx` (the api's feature
-  set minus `migrate` and `macros`), `chrono`, `serde`, `serde_json`,
-  `anyhow`, `tracing`, `metrics`, `rand`; and `trust-schema` and
-  `schedule-query` only if a moved function needs them.
+- **Depends on:** `common` (default features off, `postgres` on: the
+  default `http` feature brings reqwest and the metrics listener's hyper),
+  `sqlx` (the api's feature set minus `migrate` and `macros`, plus
+  `derive`), `chrono`, `chrono-tz`, `serde`, `serde_json`, `anyhow`,
+  `tracing`, `metrics`, `rand`, `tokio`, `trust-schema` and
+  `schedule-query`. 1A.1 declares them all up front, so the parallel
+  moves rarely edit the manifest.
 - **Never depends on:** `axum`, `tower*`, `hyper`, `redis`, `reqwest`,
   `openidconnect`/`oauth2`, or `api`.
   - A CI step (`scripts/check-crate-deps.py`, typed stdlib Python) fails
-    if `cargo metadata` shows any of them in `ds-store`'s normal
-    dependency closure.
+    if `cargo tree -p ds-store -e normal` shows any of them in
+    `ds-store`'s normal dependency closure. (`cargo metadata` unifies
+    features across the workspace, so it would report `common`'s
+    defaults, which `ds-store` turns off.)
   - Redis stays out on purpose: functions that today publish to Redis
     (`upsert_incident_snapshot`) instead **return** what to publish, and
     the caller publishes.
@@ -494,11 +499,12 @@ Consequences:
   current. That is all new machinery for a guarantee the per-role DB
   suites already give.
 - **`sqlx::migrate!`** embeds `crates/api/migrations` at compile time. It
-  moves into `ds-store::migrate` with the path `../api/migrations`. The
-  migration files stay where they are, so `migration_checksums`,
-  `migration_index_locking` and `scripts/check-migration-order.py` need no
-  path change. Moving the directory is optional cleanup (open question
-  Q10).
+  moves into `ds-store::migrate` in phase 1B.1, and the directory moves
+  with it to `crates/ds-store/migrations` (D9). The 1A moves leave the
+  directory where it is. 1B.1 updates every path that names it:
+  `migration_checksums`, `migration_index_locking`,
+  `scripts/check-migration-order.py`, `scripts/gen-db-grants.py`, the
+  Dockerfiles and CI.
 
 ### 5.5 Phasing the move so it is behaviour-neutral
 
@@ -660,10 +666,14 @@ The public routes do write shared tables: `find_or_create_train` from
 `routes/train.rs` and `routes/journeys.rs`, and the pin/subscription
 paths. That is why `trains` and `train_subscriptions` keep api writes.
 
-**Row-level restriction is not used.** The writer and the aggregator both
-write `line_status`, split by `source` and the `tfl-` prefix. Postgres RLS
-could pin the writer to TfL rows, but it adds a policy to every statement
-and is left as an option (Q8).
+**Row-level restriction on `line_status` (D10).** The writer and the
+aggregator both write `line_status`, split by `source` and the `tfl-`
+prefix. Postgres RLS pins the writer to TfL rows: `ENABLE ROW LEVEL
+SECURITY` on `line_status`, a policy for the writer role whose `USING` and
+`WITH CHECK` allow only TfL rows, and permissive `USING (true)` policies
+for every other role that reads or writes the table, so their access is
+unchanged. It ships with the writer's TfL handler (plan 3c.3); any earlier
+direct TfL writer gets the same policy.
 
 ### 6.5 Deriving the grants from evidence (phase 0b)
 
@@ -1187,7 +1197,7 @@ poll, about 2.1k updates every 5 minutes. The design:
 (no inference that poll) shows the feed time instead of its older
 `fetched_at` until the next complete snapshot. Incomplete snapshots are
 rare (a malformed element or a truncated body) and already counted. This
-is an accepted, documented approximation (Q5).
+is an accepted, documented approximation (Q5, decided D11).
 
 **Expected effect:**
 
@@ -1208,8 +1218,8 @@ is an accepted, documented approximation (Q5).
 `full_coverage_line_window_stats` (2.35M) carry the same per-poll
 timestamp bump. When they move to the writer (phase 3a), the writer
 upserts only rows whose content changed, and stores per-feed "observed at"
-times in `ingest_freshness`. This is recommended but optional, and it gets
-its own switch (Q6).
+times in `ingest_freshness`. The user decided to do it (D12); it gets its own
+switch, which defaults to today's behaviour.
 
 ### 9.5 Retries and the 2026-10-01 storm
 
@@ -1709,8 +1719,9 @@ time, typically 3–7 days per switch.
 
 ### Decisions (2026-10-06)
 
-The user decided the following on 2026-10-06. They override anything
-earlier in this document that disagrees.
+The user decided D1–D4 on 2026-10-06 and D9–D12 on 2026-10-07 (numbered
+after the 2026-10-07 table's D5–D8 when the two branches merged). They
+override anything earlier in this document that disagrees.
 
 | # | Decision | Answers | Where it lands |
 |---|---|---|---|
@@ -1718,6 +1729,10 @@ earlier in this document that disagrees.
 | D2 | **Migrations run in a Helm hook Job** (`pre-upgrade,post-install`). The owner credentials live only in that Job's pod. Every DB service waits in-process for the schema version (the schema gate, §12.2). Ranma raises the HelmRelease `timeout` to about 20 minutes | Q4 | §12.1–12.2; plan 1B.1–1B.4. The Job needs the `ds-migrate` binary (1B.1), so the Job, the gate and `api.migrateOnStartup` ship in phase 1B, not phase 0. Ranma may raise the timeout any time before |
 | D3 | **The public api moves to `RollingUpdate` with one replica**, once migrations and the background loops are out of it (phase 1B) | Q11 | §12.4; plan 1B.10 |
 | D4 | **Phase 0 proceeds now.** Phase 1A (the `ds-store` extraction) starts only after the in-flight api branches merge (bus service mode, bus-stop naming, the line page, trip-planner via, the outage follow-ups), to avoid large conflicts. Phase 0 does not move `crates/api` code | – | plan phase 0 and 1A |
+| D9 | **The migrations directory moves into `ds-store`** (`crates/ds-store/migrations`), in phase 1B.1 together with the migrator, not during the 1A moves. `migration_checksums`, `migration_index_locking`, `check-migration-order.py`, `gen-db-grants.py`, the Dockerfiles and CI follow the new path in the same task | Q10 | §5.4; plan 1B.1 |
+| D10 | **Postgres row-level security pins the ingest writer to TfL rows in `line_status`** (phase 3c, when the writer takes over TfL; any earlier direct TfL writer in phase 2 gets the same policy). Other roles keep unrestricted access through permissive policies | Q8 | §6.4; plan 3c.3 |
+| D11 | **An incomplete snapshot's missing incidents show the feed's time** until the next complete snapshot: the display-time approximation is accepted | Q5 | §9.4; plan 2c.6 |
+| D12 | **Write only changed rows**: incidents (phase 2c), station samples and full-coverage samples (phase 3a), each behind its own switch that defaults to today's behaviour | Q6 | §9.4; plan 2c.6, 3a.9 |
 
 ### Decisions (2026-10-07)
 
@@ -1750,11 +1765,11 @@ Questions not listed stay open, with the defaults below.
 | Q2 | Is schedule-ingest acceptable as a fourth direct writer (CORPUS plus feed markers), and tocs on a small stream (R4)? | yes; **tocs on a stream decided (D8)** |
 | Q3 | User-data sweeps as an api-image CronJob rather than in the writer (R3)? | CronJob |
 | Q4 | Migrations as a Helm `pre-upgrade`/`post-install` hook Job, with the HelmRelease timeout raised to 20 m in Ranma? | **Decided (D2): yes**; the Job and the schema gate ship in phase 1B |
-| Q5 | Accept the incidents display-time approximation for rows absent from an *incomplete* snapshot (§9.4)? | yes |
-| Q6 | Apply the same "write only changed rows" fix to `station_samples`, `station_full_coverage_samples` and `full_coverage_line_window_stats` in phase 3a (about 17M HOT updates per 42 h)? | yes, behind its own switch |
+| Q5 | Accept the incidents display-time approximation for rows absent from an *incomplete* snapshot (§9.4)? | **Decided (D11): yes** |
+| Q6 | Apply the same "write only changed rows" fix to `station_samples`, `station_full_coverage_samples` and `full_coverage_line_window_stats` in phase 3a (about 17M HOT updates per 42 h)? | **Decided (D12): yes**, behind its own switch |
 | Q7 | Redis: a 128 MB budget for ingest streams, gzip above 8 KiB, and 2-hour caps for snapshot domains? | **Decided (D5): 512 MB** (not 128 MB), gzip above 8 KiB, 2-hour caps |
-| Q8 | Use Postgres RLS to pin the writer to TfL rows in `line_status`? | no |
+| Q8 | Use Postgres RLS to pin the writer to TfL rows in `line_status`? | **Decided (D10): yes** |
 | Q9 | Should the disabled island-of-Ireland producers be migrated, or their routes deleted in phase 5 until they are re-enabled? | **Decided (D8): migrate, and keep them disabled** |
-| Q10 | Move `crates/api/migrations` to `crates/ds-store/migrations` (touches CI scripts and tests), or leave it? | leave |
+| Q10 | Move `crates/api/migrations` to `crates/ds-store/migrations` (touches CI scripts and tests), or leave it? | **Decided (D9): move it, in phase 1B.1** |
 | Q11 | Should the api move to `RollingUpdate` (and two replicas) once phase 1B lands? | **Decided (D3): `RollingUpdate`, one replica**, after phase 1B |
 | Q12 | Ranma: one SealedSecret holding every service's DB password, or one per service? | one per service (rotation without restarting others) |
