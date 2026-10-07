@@ -74,6 +74,22 @@ FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddf
 # rather than building FROM builder-base either way.
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# tini as PID 1, not node, as in every other image (docker/api.Dockerfile's
+# runtime stage has the full reasoning and the version pin). Next's
+# standalone server does install its own SIGINT/SIGTERM handlers
+# (next/dist/server/lib/start-server.js: it cleans up and exits 143), so
+# shutdown already worked here; tini adds the zombie reaping a PID 1 owes
+# its orphans, and keeps SIGTERM working should those handlers ever be
+# switched off (NEXT_MANUAL_SIG_HANDLE) without a replacement, since a
+# PID 1 without a handler ignores SIGTERM. tini forwards the signal and
+# exits with node's exit code.
+ARG TINI_VERSION=0.19.0-1
+# hadolint ignore=DL3008 # tini pinned to its Debian source version; see docker/api.Dockerfile
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends "tini=${TINI_VERSION}*" \
+    && rm -rf /var/lib/apt/lists/* \
+    && tini --version
+
 # NOT a `useradd`-created `frontend` user (this stage's previous
 # approach): node:22-bookworm-slim already ships a built-in `node` user at
 # a fixed uid/gid 1000 -- confirmed 2026-09-03 against nodejs/docker-node's
@@ -153,7 +169,7 @@ USER 1000:1000
 # node_modules copied in above doesn't need to carry the full `next`
 # package/CLI just to have something to exec.
 EXPOSE 3000
-ENTRYPOINT ["node", "server.js"]
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "server.js"]
 
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS runtime-dev
 
@@ -186,7 +202,17 @@ WORKDIR /app
 # seeds such a volume from whatever the image has at that path, inheriting
 # its ownership; with no directory to seed from it creates an empty
 # root-owned one instead and `next dev` cannot write its cache.
-RUN mkdir -p /app/.next && chown -R node:node /app
+#
+# tini as PID 1, as in runtime-prod above. `-g` here (not there): `npm run
+# dev` runs next through npm and a shell, so the signal goes to the whole
+# process group rather than relying on each layer to pass it on.
+ARG TINI_VERSION=0.19.0-1
+# hadolint ignore=DL3008 # tini pinned to its Debian source version; see docker/api.Dockerfile
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends "tini=${TINI_VERSION}*" \
+    && rm -rf /var/lib/apt/lists/* \
+    && tini --version \
+    && mkdir -p /app/.next && chown -R node:node /app
 # The bind mount shadows this copy at runtime, so it is not what the dev
 # server reads. It is still load-bearing: it is what populates the
 # anonymous /app/node_modules volume with container-native (node 22 /
@@ -201,4 +227,4 @@ COPY --from=builder-base --chown=node:node /app ./
 USER 1000:1000
 
 EXPOSE 3000
-ENTRYPOINT ["npm", "run", "dev"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "npm", "run", "dev"]

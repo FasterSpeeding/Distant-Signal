@@ -93,6 +93,30 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
+# tini is PID 1, not the service binary. A process running as PID 1 gets no
+# default signal handling from the kernel: SIGTERM without a handler of its
+# own is ignored, so on every rollout or drain the container sat out the
+# whole terminationGracePeriodSeconds and was SIGKILLed. tini forwards
+# SIGTERM/SIGINT to the binary (which then exits, or shuts down gracefully
+# where it installs a handler, e.g. notifier) and exits with its exit code,
+# and it reaps orphaned children (api's own `parse-ticket` re-exec,
+# `kubectl exec` helpers) instead of leaving zombies. No `-g`: only the
+# binary is signalled, as in the pgBackRest image (docs/postgres-pitr.md,
+# "Why tini"). A chart or `kubectl run --command` override of `command:`
+# replaces this ENTRYPOINT outright, tini included; that is fine for the
+# one-shot tools those overrides run.
+#
+# Debian bookworm's tini, pinned to its source version. The trailing `*` in
+# the install matches Debian's binNMU suffix (`+b3` today): the archive keeps
+# only the current rebuild, so an exact `+bN` pin would stop installing at
+# the next rebuild (the DL3008 reason in .hadolint.yaml). apt verifies the
+# .deb's SHA-256 against the base image's signed archive index, and the base
+# image is digest-pinned. Upstream tini has been 0.19.0 since 2020; a new
+# Debian source version only arrives with a new Debian release, and then
+# the install fails loudly until this is bumped. Not tracked by Renovate:
+# a deb datasource would propose exact `+bN` pins.
+ARG TINI_VERSION=0.19.0-1
+
 # sqlx's tls-native-tls feature verifies the Postgres connection's cert (when
 # TLS is in play) against the system store, so the runtime image needs a CA
 # bundle even though it otherwise only carries the one binary. `curl` is
@@ -100,8 +124,9 @@ FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2
 # HEALTHCHECK can probe `GET /public/health` from inside the container.
 # hadolint ignore=DL3008 # apt versions unpinned on purpose; see .hadolint.yaml
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl "tini=${TINI_VERSION}*" \
     && rm -rf /var/lib/apt/lists/* \
+    && tini --version \
     && groupadd --system --gid 1000 api \
     && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 1000 --gid 1000 api
 
@@ -153,4 +178,4 @@ USER 1000:1000
 # the chart's securityContext (readOnlyRootFilesystem, drop ALL,
 # RuntimeDefault seccomp) needs to change for it. Keep the binary at this
 # path and don't replace it in a running container.
-ENTRYPOINT ["/usr/local/bin/api"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/api"]
