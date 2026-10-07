@@ -3,6 +3,23 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-07: `?date=` on station schedule departures
+
+### New query parameter (`GET /public/stations/{crs}/schedule-departures`)
+
+- `date` (optional, `YYYY-MM-DD`): serve that London service date's
+  CIF-derived bucket instead of today's. Only today or yesterday is
+  accepted; any other date, or a malformed one, is a `400`. Omitting it is
+  unchanged (today).
+- Every row in a response has the requested date as its CIF service date;
+  `dayOffset` counts from it. So a row's `/Train/by-uid/{uid}/{date}` link
+  uses the requested date, and its departure falls on `date + dayOffset`.
+- Why: a service that left its origin last evening can call at a station
+  after midnight. Its rows are in yesterday's bucket with `dayOffset >= 1`,
+  and today's bucket cannot hold them. DS's `/track` picker asks for
+  yesterday between London 00:00 and 02:00 and keeps those rows still due.
+- An older server ignores the parameter and returns today's bucket.
+
 ## 2026-10-07: walks between bus stops and their stations in the planner
 
 Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`
