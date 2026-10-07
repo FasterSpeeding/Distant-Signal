@@ -294,7 +294,8 @@ interface ScheduleDepartureRow {
  *
  * Each CIF row carries the `serviceDate` of the bucket it was fetched from
  * (`CifPickerRow`). */
-type Picker = { source: 'ldbws'; rows: DepartureRow[] } | { source: 'cif'; rows: CifPickerRow[] } | 'unavailable' | null;
+type Picker =
+  { source: 'ldbws'; rows: DepartureRow[] } | { source: 'cif'; rows: CifPickerRow[] } | 'unavailable' | null;
 
 /** A CIF picker row plus its CIF service date: the London date of the
  * `schedule-departures` bucket it came from (`?date=`, or the server's own
