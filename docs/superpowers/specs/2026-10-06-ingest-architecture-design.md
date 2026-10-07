@@ -1,8 +1,10 @@
 # Ingest architecture: take ingest out of the public api
 
 Design, 2026-10-06. Status: **accepted**; the user's decisions are in
-[§16, Decisions (2026-10-06)](#decisions-2026-10-06). Phase 0 is being
-built (chart and tooling, all off by default); nothing else is built.
+[§16, Decisions (2026-10-06)](#decisions-2026-10-06) and
+[(2026-10-07)](#decisions-2026-10-07). Phase 0 is being
+built (chart and tooling, all off by default); the phase 3a stream
+runtime library (`crates/ingest-stream`, §7.7) is built with no callers.
 [The plan](../plans/2026-10-06-ingest-architecture-plan.md) is how to
 build it, phase by phase.
 
@@ -306,6 +308,10 @@ are the same structs, so the sizes are close.
 **Headroom for new ingest streams is about 675 MB.** Everything below is
 sized to stay under a 128 MB budget for all `ds:ingest:*` and `ds:dlq:*`
 keys together (§7.6).
+
+**Updated 2026-10-07 (D5):** production `maxmemory` is now 2 GB (the
+chart default is still `1536mb`), and the ingest budget is **512 MB**,
+alerting at 75%.
 
 ### 3.4 Postgres
 
@@ -716,7 +722,7 @@ existing `movement-events` and `incident-text-changed` keep their names.
 | `ds:ingest:tfl` | `tfl-line-status/1` | poller-tfl | 1/5 min | 10 KB raw, under 2 KB gzip | `MAXLEN ~ 288` | 24 h, under 1 MB |
 | `ds:ingest:reference` | `tocs/1` | poller-tocs | daily | about 3 KB | `MAXLEN ~ 30` | 30 days |
 | `ds:ingest:island-of-ireland` | `ioi-stations/1`, `ioi-lines/1`, `ioi-station-samples/1` | the three IoI pollers (disabled) | per poller | small | `MAXLEN ~ 2000` | sized when enabled |
-| `ds:dlq:<domain>` (one per stream above) | the original entry, plus `error`, `failed_at` and `deliveries` | ingest-writer | rare | as the source | `MINID` now − 7 d (24 h for `train-events`), and `MAXLEN ~ 10000` | |
+| `ds:dlq:<domain>` (one per stream above) | the original entry, plus `error`, `reason`, `failed_at`, `deliveries`, `source_stream` and `source_id` | ingest-writer | rare | as the source | `MINID` now − 7 d, and `MAXLEN ~` the source stream's cap (I3; was 10000) | one source outage window |
 | *(only if Q1 picks queuing for the backlog)* `ds:ingest:trust-backlog` | `trust-backlog/1`, `train-reasons/1` | trust-backlog-consumer | 0.8 entries/s | about 5 KB raw | `MAXLEN ~ 6000` | 2 h, about 25 MB raw |
 
 **Why these bounds.** Except for train events, these domains are **latest-
@@ -755,8 +761,10 @@ dead-letters anything over 1 MiB, so a misbehaving producer cannot hand it
 a huge allocation, which was the 2026-09-26 failure.
 
 **The protocol crate.** The envelope, schema names, encoder and decoder
-live in `common::ingest_stream`, behind a new `common` feature `stream`
-(redis plus flate2; flate2 is already in the lockfile through the api).
+~~live in `common::ingest_stream`, behind a new `common` feature `stream`~~
+live in the DB-free crate **`crates/ingest-stream`** (I1, 2026-10-07),
+with the producer, the writer's consumer runtime and the memory budget
+(§7.7). redis and flate2 were already in the lockfile.
 Unit tests cover:
 
 - round trips for every schema;
@@ -764,6 +772,10 @@ Unit tests cover:
 - the size split;
 - refusing unknown `v` and `schema` versions;
 - stable keys across retries.
+
+Golden fixtures (`crates/ingest-stream/tests/fixtures/`) pin the JSON form,
+the plain wire form byte for byte, and a gzipped v1 part. The decoder also
+caps a gunzipped body at 16 MiB (a zip bomb is poison).
 
 ### 7.3 Consumer groups, ACK, claim and dead letters
 
@@ -799,7 +811,7 @@ Unit tests cover:
   - **Never dead-lettered:**
     - **An unknown `schema` *version*.** The writer is older than the
       producer. The entry stays pending and
-      `ingest_writer_unsupported_schema_total` alerts. The fix is to roll
+      `ingest_stream_consumed_total{outcome="unsupported_schema"}` alerts. The fix is to roll
       the writer forward (§13.3).
     - **A transient failure** (connection, pool timeout, serialization,
       deadlock, lock or statement timeout). It is retried forever with
@@ -850,8 +862,8 @@ failed AOF write. All four are treated alike.
 
 | Domain | Behaviour | Why |
 |---|---|---|
-| station samples, full coverage, TfL, tocs, IoI | Keep only the **latest** unsent snapshot in memory (a newer one replaces it; `ingest_producer_dropped_total{reason="superseded"}`). Retry with backoff (1 s → 60 s). The process stays live and `/livez` stays 200, but readiness reports `stream_unavailable` | A snapshot supersedes its predecessors, so buffering more than one is pointless |
-| train events and forward signals | **Do not ACK `movement-events`** until the XADD succeeds. The consumer stops reading new entries until it does | Nothing to buffer: the source is the same Redis, so when it is down the consumer is stalled anyway. When Redis refuses writes but still serves reads (OOM, MISCONF), the entries stay pending in `movement-events` and are not lost |
+| station samples, full coverage, TfL, tocs, IoI | Keep only the **latest** unsent snapshot in memory (a newer one replaces it; `ingest_stream_produce_dropped_total{reason="superseded"}`). Retry with backoff (1 s → 60 s). The process stays live and `/livez` stays 200, but readiness reports `stream_unavailable` | A snapshot supersedes its predecessors, so buffering more than one is pointless |
+| ~~train events and forward signals~~ (D1: written directly, no stream). The runtime keeps the policy as `ProducePolicy::Event` for any future event stream | A bounded buffer, then backpressure: **do not ACK upstream** until the XADD succeeds | Nothing is dropped |
 | incident-text-changed (poller-incidents) | Best effort, as today: log, count, carry on. The enricher's hourly sweep is the backstop | unchanged from W1 |
 
 **No producer spills to disk.** The pollers are stateless Deployments, and
@@ -860,11 +872,15 @@ a disk queue would be a second, unmonitored durable store.
 ### 7.6 Memory budget, eviction and AOF
 
 - **Budget.** The `ds:ingest:*` and `ds:dlq:*` keys together stay under
-  **128 MB**, against about 675 MB of headroom. The worst case at the
-  bounds above is about 75 MB with gzip (station samples about 55 MB,
-  full coverage about 16 MB, the rest under 5 MB). The writer exports each
-  stream's `MEMORY USAGE` every 60 s, and an alert fires at 75% of the
-  budget (§14).
+  ~~**128 MB**~~ **512 MB** (D5, 2026-10-07; production `maxmemory` is now
+  2 GB). `ingest_stream::budget::check_budget` computes it from each
+  stream's declared rate and worst-case gzip entry size, counting every
+  stream **and** its dead-letter stream at their caps plus `MAXLEN ~`'s
+  100-entry node slack: about 285 MB worst case (station samples 2 × 68 MB,
+  full coverage 2 × 38 MB, IoI 2 × 36 MB, the rest under 3 MB). A unit
+  test fails if the table outgrows the budget or a stream covers less than
+  2 hours. The writer exports each stream's `MEMORY USAGE` every 30 s, and
+  an alert fires at 75% of the budget (§14).
 - **Eviction stays `noeviction`.** Any other policy would evict whole
   streams. A full Redis refuses XADDs, the producers take the §7.5 path,
   and movement-relay holds Kafka as today. The ingest streams' caps exist
@@ -884,6 +900,31 @@ a disk queue would be a second, unmonitored durable store.
   about 0.5 MB/min. That adds about 1 GB of AOF increments a day before
   rewrites. The `auto-aof-rewrite-percentage 100` default handles it, and
   the AOF alerts already exist.
+
+### 7.7 The stream runtime (`crates/ingest-stream`, built 2026-10-07)
+
+The reusable runtime for §7.1–7.6, with no callers yet. Its API, metrics
+and tests are in [`docs/ingest-stream-runtime.md`](../../ingest-stream-runtime.md).
+In short:
+
+- **`envelope`**: `Envelope` (`encode`/`decode`, serde), `SchemaId`,
+  `split_snapshot`, `EnvelopeError::TooLarge` over 512 KiB.
+- **`producer`**: `Producer::spawn(client, ProducerConfig)` → `submit(parts)
+  → Receipt`, `is_available()` (readiness), `shutdown(task, grace)`;
+  `ProducePolicy::LatestSnapshot` or `Event { max_buffered }`;
+  `last_produced_at` (the §11.3 cursor); `xadd_entry`.
+- **`consumer`**: `StreamConsumer::new(conn, ConsumerConfig)` →
+  `run(&handler, shutdown)` or `step(…)`; a `Handler` returns
+  `Ok(Handled::{Applied, Duplicate, Skipped, PartiallyRejected})` or
+  `Err(HandlerError::{Transient, Poison, UnsupportedSchema})`;
+  `reclaim`, `delete_idle_consumers`, `sample_gauges`.
+- **`budget`**: `INGEST_STREAMS`, `StreamDecl::maxlen()` /
+  `dead_letter_maxlen()`, `check_budget`.
+
+Metric names are `ingest_stream_*` (§14.1, I2). The writer's handler
+registry, `ingest_dedup`, modes (`off`/`shadow`/`apply`), MINID trims of
+the dead-letter streams and the alerts stay with the writer (plan 3a.3,
+3a.4).
 
 ## 8. Redis authentication and ACLs
 
@@ -1462,15 +1503,17 @@ Prefix `distant_signal_`, `service` label from the process.
 
 | Metric | From | Labels |
 |---|---|---|
-| `ingest_writer_messages_total` | writer | `stream, schema, outcome` (`applied`, `duplicate`, `rejected`, `dead_lettered`, `transient_error`, `unsupported_schema`) |
-| `ingest_writer_apply_seconds` (histogram) | writer | `stream, schema` |
-| `ingest_writer_stream_lag`, `ingest_writer_stream_pending`, `ingest_writer_oldest_pending_age_seconds` | writer (`XINFO GROUPS`/`XPENDING`, every 30 s) | `stream` |
-| `ingest_writer_last_applied_timestamp_seconds` | writer | `stream` |
-| `ingest_writer_dlq_length`, `ingest_writer_dlq_oldest_age_seconds` | writer | `stream` |
-| `ingest_writer_stream_bytes` | writer (`MEMORY USAGE`, every 60 s) | `stream` |
-| `ingest_producer_xadd_total` | producers | `stream, outcome` (`ok`, `oom`, `noauth`, `noperm`, `down`, `misconf`) |
-| `ingest_producer_dropped_total` | producers | `stream, reason` (`superseded`, `oversize`) |
-| `ingest_producer_pending_snapshot` (0/1) | producers | `stream` |
+| `ingest_stream_consumed_total` (was `ingest_writer_messages_total`) | writer (`crates/ingest-stream`) | `stream, schema, outcome` (`applied`, `duplicate`, `skipped` (shadow), `rejected`, `dead_lettered`, `trimmed`, `transient_error`, `unsupported_schema`) |
+| `ingest_stream_handler_seconds` (histogram; was `ingest_writer_apply_seconds`) | writer | `stream, schema` |
+| `ingest_stream_dead_lettered_total` | writer | `stream, reason` (`poison`, `undecodable`, `oversize`, `rejected_rows`) |
+| `ingest_stream_lag`, `ingest_stream_pending`, `ingest_stream_oldest_pending_age_seconds` | writer (`XINFO GROUPS`/`XPENDING`, every 30 s) | `stream` |
+| `ingest_stream_last_applied_timestamp_seconds` | writer | `stream` |
+| `ingest_stream_dlq_length`, `ingest_stream_dlq_oldest_age_seconds` | writer (`XLEN`/`XRANGE … COUNT 1`, every 30 s) | `stream` |
+| `ingest_stream_bytes` | writer (`MEMORY USAGE` of the stream plus its dead-letter stream, every 30 s) | `stream` |
+| `ingest_stream_produce_total` (was `ingest_producer_xadd_total`) | producers | `stream, outcome` (`ok`, `oom`, `noauth`, `noperm`, `down`, `misconf`, `error`) |
+| `ingest_stream_produce_dropped_total` | producers | `stream, reason` (`superseded`, `oversize`) |
+| `ingest_stream_produce_buffered` (was `ingest_producer_pending_snapshot`) | producers | `stream` (items not yet written: 0/1 for a snapshot stream) |
+| `ingest_stream_produce_bytes_total` | producers | `stream` |
 | `db_writes_total`, `db_write_seconds` | direct writers (via `ds-store`) | `operation, outcome` |
 | `db_pool_connections` | every DB service (`ds_store::pool`, sampled every 15 s from `PgPool::size`/`num_idle`) | `state` (`idle`, `in_use`) |
 | `db_pool_max_connections` | every DB service | |
@@ -1496,13 +1539,13 @@ exporter role:
 
 | Alert | Expression (sketch) | Severity |
 |---|---|---|
-| `DistantSignalIngestStreamBacklog` | `ingest_writer_oldest_pending_age_seconds > 600` or `lag + pending > 0.5 × MAXLEN` for 10 m | warning, critical at 0.8 × MAXLEN |
-| `DistantSignalIngestStreamStalled` | producer `xadd_total{outcome="ok"}` rising while `time() - last_applied_timestamp_seconds > 3 × cadence` | critical |
-| `DistantSignalIngestDeadLetters` | `increase(messages_total{outcome="dead_lettered"}[15m]) > 0` | warning |
+| `DistantSignalIngestStreamBacklog` | `ingest_stream_oldest_pending_age_seconds > 600` or `lag + pending > 0.5 × MAXLEN` for 10 m | warning, critical at 0.8 × MAXLEN |
+| `DistantSignalIngestStreamStalled` | producer `produce_total{outcome="ok"}` rising while `time() - last_applied_timestamp_seconds > 3 × cadence` | critical |
+| `DistantSignalIngestDeadLetters` | `increase(ingest_stream_dead_lettered_total[15m]) > 0` | warning |
 | `DistantSignalIngestDeadLetterExpiring` | `dlq_oldest_age_seconds > retention − 4h` | warning |
-| `DistantSignalIngestUnsupportedSchema` | `increase(messages_total{outcome="unsupported_schema"}[10m]) > 0` | critical (a writer/producer skew) |
+| `DistantSignalIngestUnsupportedSchema` | `increase(consumed_total{outcome="unsupported_schema"}[10m]) > 0` | critical (a writer/producer skew) |
 | `DistantSignalIngestProducerXaddFailing` | all XADDs failed over 10 m for a stream | critical |
-| `DistantSignalIngestStreamMemoryHigh` | `sum(ingest_writer_stream_bytes) > 0.75 × 128 MB` | warning |
+| `DistantSignalIngestStreamMemoryHigh` | `sum(ingest_stream_bytes) > 0.75 × 512 MB` (D5) | warning |
 | `DistantSignalIngestWriterDown` | `up{component="ingest-writer"} == 0` or `/livez` failing for 5 m | critical |
 | `DistantSignalDbPoolSaturated` | `in_use / max > 0.9` for 10 m | warning |
 | `DistantSignalDbPoolAcquireTimeouts` | `increase(acquire_timeouts_total[10m]) > 0` | warning |
@@ -1621,9 +1664,9 @@ time, typically 3–7 days per switch.
 
 | | |
 |---|---|
-| Entry | Phase 0c users exist; the writer is running (1B); `common::ingest_stream` is in |
+| Entry | Phase 0c users exist; the writer is running (1B); `crates/ingest-stream` is in (built 2026-10-07) |
 | Work | 3a (8–9 d): the envelope crate, the writer's stream runtime (groups, PEL-first retry, claim, dead letters, dedup, metrics, alerts), the dead-letter runbook; then station samples and full coverage (shadow, then flip). 3b (3–4 d): trust-backlog-consumer direct (R1), then trust-consumer's train events and forward signals direct (D1). 3c (3–4 d): TfL, tocs and IoI |
-| Exit (each stream) | 3 days in shadow with `messages_total{outcome="applied"}` in shadow equal to the HTTP request count, and 0 dead letters. After the flip: 7 days with no backlog, stalled or dead-letter alert; the api route at 0 requests |
+| Exit (each stream) | 3 days in shadow with `ingest_stream_consumed_total{outcome="skipped"}` (shadow) equal to the HTTP request count, and 0 dead letters. After the flip: 7 days with no backlog, stalled or dead-letter alert; the api route at 0 requests |
 | Tests | envelope unit tests; writer tests against local valkey/redis (ignored): the order, PEL-first retry, XAUTOCLAIM after a simulated crash, dedup, oversize to the dead-letter stream, unsupported schema left pending, `MAXLEN` trimming; producer tests for latest-only buffering and no-ACK-before-XADD; the backlog consumer's direct sink against a DB, with the transient/data error split and backoff |
 | Risk | Redis memory (caps plus an alert). Writer lag hides stale data (the stalled alert). A duplicate apply (`ingest_dedup`) |
 
@@ -1652,7 +1695,7 @@ time, typically 3–7 days per switch.
 |---|---|---|---|
 | Version skew across eight SQL-carrying binaries | medium | a writer fails on a missing column | expand/contract check; the schema gate; writer-first schema versions |
 | Connection budget exceeded | low | services fail to connect | render-time sum check; pool metrics; per-role limits; alerts |
-| Redis memory pressure starves `movement-events` | low | TRUST stalls (relay holds Kafka) | per-stream caps, gzip, a 128 MB budget alert, `noeviction` unchanged |
+| Redis memory pressure starves `movement-events` | low | TRUST stalls (relay holds Kafka) | per-stream caps, gzip, a 512 MB budget (D5) with its alert at 75%, `noeviction` unchanged |
 | A silent stall: data stops while every pod is healthy | medium | stale status | `IngestStreamStalled`, `last_applied_timestamp`, the existing freshness alerts |
 | The phase 1A move changes behaviour | low | subtle bugs | pure moves with shims; SQL and metric-name diffs; the full DB suites |
 | Ops complexity: more roles, users and switches | high | toil | data-driven grants, one setup Job, a switch table, phase 5 deletes the old paths |
@@ -1671,6 +1714,27 @@ earlier in this document that disagrees.
 | D3 | **The public api moves to `RollingUpdate` with one replica**, once migrations and the background loops are out of it (phase 1B) | Q11 | §12.4; plan 1B.10 |
 | D4 | **Phase 0 proceeds now.** Phase 1A (the `ds-store` extraction) starts only after the in-flight api branches merge (bus service mode, bus-stop naming, the line page, trip-planner via, the outage follow-ups), to avoid large conflicts. Phase 0 does not move `crates/api` code | – | plan phase 0 and 1A |
 
+### Decisions (2026-10-07)
+
+The user decided the following on 2026-10-07, while the phase 3a stream
+runtime was built. They override anything earlier that disagrees.
+
+| # | Decision | Answers | Where it lands |
+|---|---|---|---|
+| D5 | **The ingest streams' memory budget is 512 MB** (all `ds:ingest:*` and `ds:dlq:*` keys), alerting at 75%; production Redis `maxmemory` is now 2 GB. Entries over 8 KiB are gzipped, and every snapshot stream's `MAXLEN` covers at least a **2-hour writer outage** | Q7 (was 128 MB) | §3.3, §7.6, §14.2; `ingest_stream::budget` (`BUDGET_BYTES`, `OUTAGE_TARGET`, a unit test on the §7.1 table) |
+| D6 | **Each stream producer has its own Redis ACL user, allowed only `XADD` on its own stream** (plus `XREVRANGE` for its §11.3 cursor) | – | §8.2 as built in phase 0c (`redis-users.acl.tpl`); checked by `crates/ingest-stream/tests/redis_stream.rs` running the producer as `poller-ldbws` |
+| D7 | **trust-consumer's train events and the TRUST backlog are written directly to Postgres**: no new stream for either (confirms D1 and R1) | Q1, R1 | §2, §7.1; plan 3b |
+| D8 | **tocs go through the small `ds:ingest:reference` stream; the island-of-Ireland producers are migrated to `ds:ingest:island-of-ireland` but stay disabled** | Q2, Q9 | §7.1, R4; plan 3c |
+
+**Implementation choices (2026-10-07, phase 3a runtime; open to review,
+not user decisions):**
+
+| # | Choice | Why |
+|---|---|---|
+| I1 | The runtime is the DB-free crate `crates/ingest-stream`, not `common::ingest_stream` | `common` is built by every binary including the api; only the stream producers and the writer need redis, flate2 and the runtime. Its own test binary and CI step; no churn in `common` while `ds-store` is extracted in parallel |
+| I2 | Metric names are `ingest_stream_*` (§14.1), the same family on both sides | The user's name for the producer counter (`ingest_stream_produce_total`); one prefix for the runtime's series, whichever binary emits them |
+| I3 | A dead-letter stream's cap is its source stream's `MAXLEN`, not 10000 | 10000 station-sample entries could reach 800 MB; at the source cap the worst case is one outage window and fits D5 |
+
 Questions not listed stay open, with the defaults below.
 
 ### Open questions for the user
@@ -1678,14 +1742,14 @@ Questions not listed stay open, with the defaults below.
 | # | Question | Default if not answered, or the decision |
 |---|---|---|
 | Q1 | Should trust-consumer's train events and forward signals also write directly (like the backlog, R1), instead of `ds:ingest:train-events`? | **Decided (D1): direct writes**, no `ds:ingest:train-events` |
-| Q2 | Is schedule-ingest acceptable as a fourth direct writer (CORPUS plus feed markers), and tocs on a small stream (R4)? | yes |
+| Q2 | Is schedule-ingest acceptable as a fourth direct writer (CORPUS plus feed markers), and tocs on a small stream (R4)? | yes; **tocs on a stream decided (D8)** |
 | Q3 | User-data sweeps as an api-image CronJob rather than in the writer (R3)? | CronJob |
 | Q4 | Migrations as a Helm `pre-upgrade`/`post-install` hook Job, with the HelmRelease timeout raised to 20 m in Ranma? | **Decided (D2): yes**; the Job and the schema gate ship in phase 1B |
 | Q5 | Accept the incidents display-time approximation for rows absent from an *incomplete* snapshot (§9.4)? | yes |
 | Q6 | Apply the same "write only changed rows" fix to `station_samples`, `station_full_coverage_samples` and `full_coverage_line_window_stats` in phase 3a (about 17M HOT updates per 42 h)? | yes, behind its own switch |
-| Q7 | Redis: a 128 MB budget for ingest streams, gzip above 8 KiB, and 2-hour caps for snapshot domains? | yes |
+| Q7 | Redis: a 128 MB budget for ingest streams, gzip above 8 KiB, and 2-hour caps for snapshot domains? | **Decided (D5): 512 MB** (not 128 MB), gzip above 8 KiB, 2-hour caps |
 | Q8 | Use Postgres RLS to pin the writer to TfL rows in `line_status`? | no |
-| Q9 | Should the disabled island-of-Ireland producers be migrated, or their routes deleted in phase 5 until they are re-enabled? | migrate, untested in production |
+| Q9 | Should the disabled island-of-Ireland producers be migrated, or their routes deleted in phase 5 until they are re-enabled? | **Decided (D8): migrate, and keep them disabled** |
 | Q10 | Move `crates/api/migrations` to `crates/ds-store/migrations` (touches CI scripts and tests), or leave it? | leave |
 | Q11 | Should the api move to `RollingUpdate` (and two replicas) once phase 1B lands? | **Decided (D3): `RollingUpdate`, one replica**, after phase 1B |
 | Q12 | Ranma: one SealedSecret holding every service's DB password, or one per service? | one per service (rotation without restarting others) |

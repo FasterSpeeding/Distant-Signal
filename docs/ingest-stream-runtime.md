@@ -1,0 +1,159 @@
+# The ingest stream runtime (`crates/ingest-stream`)
+
+The Redis Streams runtime of the ingest architecture
+([spec §7](superpowers/specs/2026-10-06-ingest-architecture-design.md#7-stream-design),
+plan phase 3a). It has no database dependency, so the stream producers
+(pollers) stay light; the ingest-writer adds its own handlers on top.
+Status (2026-10-07): built and tested, no callers yet.
+
+## Why a crate and not `common::ingest_stream`
+
+The spec first put this in `common` behind a `stream` feature. It is a
+separate crate because:
+
+- `common` is a dependency of every binary, the api included; the runtime
+  (redis, flate2, a background task, the consumer loop) is needed only by
+  the five stream producers and the writer;
+- its Redis-gated tests get their own test binary and CI step;
+- it keeps phase 3 out of `common` while `ds-store` is extracted (phase 1A)
+  and the writer skeleton lands in parallel.
+
+It depends on `common` (feature `redis`) for `common::backoff` and the
+bounded `common::redis_conn::RedisConn`. Every dependency was already in
+`Cargo.lock`.
+
+## Envelope (`ingest_stream::envelope`)
+
+| Item | What |
+|---|---|
+| `Envelope { v, schema, producer, key, produced_at, batch, payload }` | The logical entry. `payload` is validated JSON (`Box<RawValue>`). `serde` gives the JSON form; `produced_at` is RFC 3339 at milliseconds |
+| `Envelope::new(schema, producer, key, produced_at, &payload)` / `from_raw(…)` / `with_batch(BatchPart)` | Build one |
+| `Envelope::encode() -> Result<EncodedEntry, EnvelopeError>` | The flat Redis fields (`v schema producer key produced_at enc [batch part parts] body`). Gzip (`enc = json+gzip`) when the payload is over **8 KiB**; `EnvelopeError::TooLarge` when the body is still over **512 KiB** |
+| `Envelope::decode(&fields) -> Result<Envelope, DecodeError>` | Any field order; unknown fields ignored. Refuses a body over 1 MiB and a gunzip over 16 MiB. `DecodeError::is_poison()` is false only for `UnsupportedVersion` (a newer producer: left pending) |
+| `split_snapshot(schema, producer, produced_at, batch, rows, max_rows_per_part, wrap)` | Splits a snapshot into parts `i/n` keyed `<schema name>:<batch>:<i>/<n>`, halving the rows per part until every part fits 512 KiB |
+| `SchemaId` | `name/version`, e.g. `station-samples/1` |
+
+Golden fixtures (`crates/ingest-stream/tests/fixtures/`) pin the JSON form,
+the plain wire form byte for byte, and a gzipped v1 part. Never edit them
+to make a test pass: a change is a new envelope or schema version.
+
+## Producer (`ingest_stream::producer`)
+
+```rust
+let (producer, task) = Producer::spawn(
+    client,                                   // redis::Client with the producer's own ACL user
+    ProducerConfig::new(streams::STATION_SAMPLES, decl.maxlen(), ProducePolicy::LatestSnapshot),
+);
+let parts = split_snapshot(&schema, &producer_id, polled_at, &batch, &rows, 100, |c| to_raw_value(&Body { rows: c }))?;
+let receipt = producer.submit(parts).await?;  // never waits under LatestSnapshot
+// readiness: producer.is_available() == false → "stream_unavailable"
+// shutdown: producer.shutdown(task, grace).await
+```
+
+- One task per stream owns the connection and XADDs items in order with
+  `XADD <stream> MAXLEN ~ <cap> * …`. Producers never `XTRIM`, so their ACL
+  user needs only `+xadd` (and `+xrevrange` for `last_produced_at`).
+- On any failure (down, NOAUTH/NOPERM, OOM, MISCONF) it retries the same
+  encoded part (same key: the writer's dedup absorbs a duplicate after an
+  ambiguous failure) on `PRODUCER_BACKOFF` (1 s doubling to 60 s,
+  jittered), and `is_available()` turns false.
+- `ProducePolicy::LatestSnapshot`: only the newest unsent item is kept; the
+  older one's receipt resolves to `NotWritten::Superseded`.
+- `ProducePolicy::Event { max_buffered }`: a bounded FIFO; `submit` waits
+  when it is full (backpressure). A caller that must not lose an event
+  acks its own upstream only after `receipt.written().await`.
+- `last_produced_at(conn, stream)`: the newest entry's `produced_at`
+  (`XREVRANGE + - COUNT 1`), the producer's last-fetched cursor (§11.3).
+- `xadd_entry(conn, stream, maxlen, &entry)`: one XADD, for one-shot use.
+
+## Consumer (`ingest_stream::consumer`, for the ingest-writer)
+
+```rust
+struct StationSamples { pool: PgPool }
+impl Handler for StationSamples {
+    fn handle(&self, e: &StreamEntry) -> impl Future<Output = Result<Handled, HandlerError>> + Send {
+        async move { /* decode e.envelope.payload_as(), dedup + upsert in one transaction */ Ok(Handled::Applied) }
+    }
+}
+let decl = budget::decl(streams::STATION_SAMPLES).unwrap();
+let mut consumer = StreamConsumer::new(conn, ConsumerConfig::new(decl.stream, pod_name, decl.dead_letter_maxlen()))
+    .with_progress(progress);
+consumer.run(&handler, shutdown_signal()).await;
+```
+
+- Group `ingest-writer`, created with `XGROUP CREATE … 0 MKSTREAM`
+  (`BUSYGROUP` ignored), again after `NOGROUP`.
+- Reads its own PEL (`0`) first: at startup, after `XAUTOCLAIM` moved
+  entries to it, and after every retry; then new entries (`>`, `COUNT 16
+  BLOCK 5000`). Entries are handled one at a time in id order.
+- Every 60 s: `XAUTOCLAIM … 300000 0-0 COUNT 100 JUSTID` (entries a dead
+  pod left pending), and `XGROUP DELCONSUMER` of other consumers with
+  nothing pending and over 1 h idle.
+- The handler's answer:
+
+  | Answer | Effect | `outcome` |
+  |---|---|---|
+  | `Ok(Handled::Applied)` / `Duplicate` / `Skipped` (shadow) | ack | `applied` / `duplicate` / `skipped` |
+  | `Ok(Handled::PartiallyRejected { reason, rejected })` | the rejected rows go to the dead-letter stream, then ack | `rejected` |
+  | `Err(HandlerError::Poison(reason))`, or an envelope that does not decode or is over 1 MiB | dead-letter with the reason, then ack | `dead_lettered` |
+  | `Err(HandlerError::Transient(_))` | not acked; back off (1 s → 60 s), re-read the PEL | `transient_error` |
+  | `Err(HandlerError::UnsupportedSchema(_))`, or envelope `v` > 1 | as transient (alerts; roll the writer forward) | `unsupported_schema` |
+  | a pending entry that `MAXLEN` trimmed away | ack | `trimmed` |
+
+- Dead letters go to `ds:dlq:<domain>` (`dead_letter_stream(stream)`) with
+  `MAXLEN ~ <the source's cap>`: the original fields plus `error`,
+  `reason`, `failed_at`, `deliveries`, `source_stream`, `source_id` (and
+  `rejected_rows = true` for rejected rows). The re-injection runbook is
+  plan 3a.4.
+- Shutdown is honoured while waiting (the blocking read, a backoff), never
+  in the middle of a handler. `step()` runs one iteration, for tests or a
+  writer that wants its own loop.
+
+## Budget (`ingest_stream::budget`)
+
+`INGEST_STREAMS` declares each stream's rate, worst-case entry size (after
+gzip) and bound; `check_budget(&INGEST_STREAMS, BUDGET_BYTES)` computes the
+`MAXLEN`s and the worst case of each stream **and** its dead-letter stream
+(`(MAXLEN + 100) × (entry + 512 B)`, the 100 being `MAXLEN ~`'s node
+slack), and fails if a stream covers less than the 2-hour outage target or
+the total is over 512 MB. A unit test runs it on the spec table:
+
+| Stream | `MAXLEN ~` | Covers | Worst case, stream + dead letters |
+|---|---|---|---|
+| `ds:ingest:station-samples` | 720 | 2 h | 2 × 67.6 MB |
+| `ds:ingest:full-coverage` | 360 | 2 h | 2 × 37.9 MB |
+| `ds:ingest:tfl` | 288 | 24 h | 2 × 1.0 MB |
+| `ds:ingest:reference` (tocs) | 30 | 30 days | 2 × 0.5 MB |
+| `ds:ingest:island-of-ireland` (disabled) | 2000 | about 6 days | 2 × 35.5 MB |
+| **Total** | | | **about 285 MB** of 512 MiB (alert at 75%, 384 MiB) |
+
+## Metrics
+
+All prefixed `distant_signal_` (`common::metrics::metric_name`); names in
+`ingest_stream::metrics`.
+
+| Metric | Type | Labels | From |
+|---|---|---|---|
+| `ingest_stream_produce_total` | counter | `stream`, `outcome` (`ok`, `down`, `oom`, `noauth`, `noperm`, `misconf`, `error`) | producer, one per XADD attempt |
+| `ingest_stream_produce_bytes_total` | counter | `stream` | producer, `body` bytes written |
+| `ingest_stream_produce_buffered` | gauge | `stream` | producer, items not yet fully written |
+| `ingest_stream_produce_dropped_total` | counter | `stream`, `reason` (`superseded`, `oversize`) | producer |
+| `ingest_stream_consumed_total` | counter | `stream`, `schema`, `outcome` (table above) | consumer |
+| `ingest_stream_handler_seconds` | histogram | `stream`, `schema` | consumer |
+| `ingest_stream_dead_lettered_total` | counter | `stream`, `reason` (`poison`, `undecodable`, `oversize`, `rejected_rows`) | consumer |
+| `ingest_stream_lag`, `ingest_stream_pending`, `ingest_stream_oldest_pending_age_seconds` | gauge | `stream` | consumer, every 30 s (`XINFO GROUPS`, `XPENDING`) |
+| `ingest_stream_dlq_length`, `ingest_stream_dlq_oldest_age_seconds` | gauge | `stream` | consumer, every 30 s (`XLEN`, `XRANGE - + COUNT 1`) |
+| `ingest_stream_bytes` | gauge | `stream` | consumer, every 30 s (`MEMORY USAGE` of the stream plus its dead-letter stream) |
+| `ingest_stream_last_applied_timestamp_seconds` | gauge | `stream` | consumer |
+
+`register_producer(stream)` / `register_consumer(stream)` (called by
+`Producer::spawn` / `StreamConsumer::new`) register the alerting series at
+0. A caller whose `encode`/`split_snapshot` returns `TooLarge` counts it
+with `metrics::record_oversize(stream)`.
+
+## Tests
+
+- Unit and golden: `cargo test -p ingest-stream`.
+- Redis-gated (CI's rust-test job; local valkey on 6379):
+  `cargo test -p ingest-stream --test redis_stream -- --ignored --test-threads=1`.
+  Each test uses a random key prefix and deletes its keys and ACL users.
