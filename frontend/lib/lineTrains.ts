@@ -479,3 +479,56 @@ export function lineTimetableLink(id: string, params: LinePageParams, windowFrom
     at: formatApiMinute(windowFrom),
   });
 }
+
+/** Until when (minutes after midnight) the line page also shows the
+ * previous service date's trains: those still running after midnight,
+ * which belong to the date they started on. 03:00 covers every overnight
+ * run's tail on a line. */
+export const OVERNIGHT_UNTIL_MINUTES = 3 * 60;
+
+/** The window and `at` on the previous service date's scale (+24 h), for
+ * a window that starts before {@link OVERNIGHT_UNTIL_MINUTES}; `null`
+ * otherwise. Bounds stay within the API's 47:59. */
+export function previousDayWindow(
+  window: TrainWindow,
+  at: number | null,
+): { from: number; to: number; at: number | null } | null {
+  if (window.from >= OVERNIGHT_UNTIL_MINUTES) return null;
+  return {
+    from: window.from + DAY_MINUTES,
+    to: Math.min(window.to + DAY_MINUTES, MAX_MINUTE),
+    at: at === null ? null : Math.min(at + DAY_MINUTES, MAX_MINUTE),
+  };
+}
+
+/** A previous-date train on today's scale: every day offset one less, so
+ * its 00:20 (offset 1) sorts among today's 00:20 (offset 0). */
+export function shiftToNextDay(train: LineTrainSummary): LineTrainSummary {
+  return {
+    ...train,
+    lineDue: train.lineDue ? { ...train.lineDue, dayOffset: train.lineDue.dayOffset - 1 } : null,
+    onLineStops: train.onLineStops.map((s) => ({ ...s, dayOffset: s.dayOffset - 1 })),
+  };
+}
+
+/** `YYYY-MM-DD` minus one calendar day. */
+export function previousDate(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Two summaries' counts added up. */
+export function addCounts(
+  a: Partial<Record<string, Partial<Record<string, number>>>>,
+  b: Partial<Record<string, Partial<Record<string, number>>>>,
+): Partial<Record<string, Partial<Record<string, number>>>> {
+  const out: Partial<Record<string, Partial<Record<string, number>>>> = {};
+  for (const counts of [a, b]) {
+    for (const [scope, byDir] of Object.entries(counts)) {
+      const target = (out[scope] ??= {});
+      for (const [dir, n] of Object.entries(byDir ?? {})) target[dir] = (target[dir] ?? 0) + (n ?? 0);
+    }
+  }
+  return out;
+}

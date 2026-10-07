@@ -253,6 +253,78 @@ describe('LineTrainsResults', () => {
     );
   });
 
+  it('also lists the previous service date’s trains still running after midnight', async () => {
+    // 23:30Z on 6 October is 00:30 BST on the 7th: the 6th's trains past
+    // midnight are fetched too (their 24:00-26:30), and merged by time.
+    const night = new Date('2026-10-06T23:30:00Z');
+    vi.mocked(api.getLineTrainsSummary).mockImplementation(async (_id, options) =>
+      options.date === '2026-10-06'
+        ? summary({
+            date: '2026-10-06',
+            counts: { line: { down: 1 } },
+            trains: [train({ uid: 'P1', lineDue: { time: '00:20', dayOffset: 1 } })],
+            running: [train({ uid: 'P0', lineDue: { time: '23:10', dayOffset: 0 } })],
+          })
+        : summary({
+            date: '2026-10-07',
+            counts: { line: { down: 1, up: 1 } },
+            trains: [train({ uid: 'T1', lineDue: { time: '00:10', dayOffset: 0 } })],
+            running: [],
+          }),
+    );
+    renderWithMantine(
+      await LineTrainsResults({ id: ID, date: '2026-10-07', now: night, params: parseLinePageParams({}) }),
+    );
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(ID, {
+      date: '2026-10-07',
+      from: '00:00',
+      to: '02:30',
+      at: '00:30',
+      direction: undefined,
+    });
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(ID, {
+      date: '2026-10-06',
+      from: '24:00',
+      to: '26:30',
+      at: '24:30',
+      direction: undefined,
+    });
+    const due = screen.getByRole('list', { name: 'Trains due on the line' });
+    expect(
+      within(due)
+        .getAllByRole('link')
+        .map((a) => a.getAttribute('href')),
+    ).toEqual(['/train/T1/2026-10-07', '/train/P1/2026-10-06']);
+    expect(rowTexts(due)[1]).toMatch(/^00:20/);
+    const running = screen.getByRole('list', { name: 'Running now' });
+    expect(within(running).getByRole('link')).toHaveAttribute('href', '/train/P0/2026-10-06');
+    expect(rowTexts(running)[0]).toMatch(/^23:10/);
+    // The tabs count both dates' trains.
+    expect(screen.getByRole('link', { name: /^All 3 trains/ })).toBeInTheDocument();
+  });
+
+  it('does not ask for the previous date after 03:00, and survives its failure before', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render();
+    expect(api.getLineTrainsSummary).toHaveBeenCalledTimes(1);
+
+    vi.mocked(api.getLineTrainsSummary).mockReset();
+    vi.mocked(api.getLineTrainsSummary).mockImplementation(async (_id, options) => {
+      if (options.date === '2026-10-06') throw new Error('boom');
+      return summary({ trains: [train({ uid: 'T1', lineDue: { time: '01:10', dayOffset: 0 } })] });
+    });
+    renderWithMantine(
+      await LineTrainsResults({
+        id: ID,
+        date: '2026-10-07',
+        now: new Date('2026-10-07T00:00:00Z'),
+        params: parseLinePageParams({}),
+      }),
+    );
+    const due = screen.getByRole('list', { name: 'Trains due on the line' });
+    expect(within(due).getByRole('link')).toHaveAttribute('href', '/train/T1/2026-10-07');
+  });
+
   it('gives each row a text alternative for its stop strip and hides the visual strip from screen readers', async () => {
     vi.mocked(api.getLineTrainsSummary).mockResolvedValue(
       summary({
