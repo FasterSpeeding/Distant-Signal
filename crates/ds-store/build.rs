@@ -88,7 +88,8 @@ type Privilege = (String, &'static str, Option<String>);
 /// block-style entries whose `groups` is a flow list; under `tables` and
 /// `views`, one flow mapping per line. Anything else in those sections
 /// fails the build with the line, so a new shape is noticed rather than
-/// skipped. `scripts/gen-db-grants.py` (PyYAML) stays the full validator.
+/// skipped. `scripts/gen-db-grants.py` (with `PyYAML`) stays the full
+/// validator.
 fn role_privileges(text: &str) -> Result<BTreeMap<String, BTreeSet<Privilege>>, String> {
     let mut roles: BTreeMap<String, BTreeSet<Privilege>> = BTreeMap::new();
     let mut read_shared: BTreeSet<String> = BTreeSet::new();
@@ -127,7 +128,7 @@ fn role_privileges(text: &str) -> Result<BTreeMap<String, BTreeSet<Privilege>>, 
                 let key = line
                     .strip_suffix(':')
                     .ok_or_else(|| at("expected `<role>:`".to_owned()))?;
-                role = key.to_owned();
+                key.clone_into(&mut role);
                 roles.entry(role.clone()).or_default();
             }
             "roles" => {

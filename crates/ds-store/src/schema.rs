@@ -218,7 +218,11 @@ pub async fn wait_for_schema_with(
                 gate.required_migration
             );
         }
-        tokio::time::sleep(gate.poll_interval.min(gate.deadline - elapsed)).await;
+        tokio::time::sleep(
+            gate.poll_interval
+                .min(gate.deadline.saturating_sub(elapsed)),
+        )
+        .await;
     }
 }
 

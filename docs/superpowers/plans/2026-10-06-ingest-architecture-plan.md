@@ -249,12 +249,41 @@ every switch off.** The default render is unchanged.
 
 - **Done:** 1B.5; the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6's
   skeleton and its image; 1B.8's `maintenance` bin.
+- **Done in code:** 1B.2 (`wait_for_schema`) and 1B.3 (the api reading
+  `API_MIGRATE_ON_STARTUP`; the other DB services gated).
 - **Waiting on code:** 1B.1 (`ds-migrate`, which the migrate Job runs),
-  1B.2 (`wait_for_schema`), 1B.3 (the api reading
-  `API_MIGRATE_ON_STARTUP`), 1B.6's real loops (after `ds-store`), and
-  1B.7.
+  1B.6's real loops (after `ds-store`), and 1B.7.
 
 Details and differences from the table below:
+
+- **1B.2.** `ds_store::schema::wait_for_schema(pool, DbRole, progress)`;
+  `wait_for_schema_with` takes a `SchemaGate` (required version,
+  privileges, poll interval, deadline) so the DB tests run in under a
+  second. The privileges are per role key: the role's own grants in
+  `db-grants.yaml` (tables and views; `has_column_privilege` for a column
+  grant) plus SELECT on every `read_shared` table for a member of that
+  group. `build.rs` parses the file's YAML subset itself (no YAML crate);
+  a shape it does not know fails the build. A missing table or column
+  counts as a missing privilege, and a check that errors (no
+  `_sqlx_migrations` yet, a dropped connection) is retried, both until the
+  deadline. `progress` is beaten on every poll, so liveness stays up while
+  the gate waits. The gauge is `distant_signal_db_schema_ready`, no
+  labels. The DB tests shadow `_sqlx_migrations` with a TEMP table, so they
+  never write the real one (the app role cannot).
+- **1B.3.** `API_MIGRATE_ON_STARTUP` is read in `api/src/main.rs` (unset
+  or empty = true; anything but true/false fails startup), not in
+  `Config`, so the ~25 test `Config` literals are untouched. With false,
+  `run_startup` runs the gate on the api's pool, and skips the
+  legacy-backfill check, which belongs to the migrator. The aggregator,
+  enricher, notifier and ingest-writer gate before readiness and their
+  loops, each with its own `db-grants.yaml` role; each crate has a DB test
+  that its role passes, which CI's per-service step runs as that role.
+- **Pool histogram buckets.** `distant_signal_db_pool_acquire_seconds`
+  gets 1 ms-5 s buckets from `common::metrics::SHARED_BUCKETS`, which
+  `common::metrics::install` and the api's recorder
+  (`api::route_metrics::install_recorder`, replacing axum-prometheus's
+  `with_default_metrics` with the same request-duration buckets plus
+  these) both apply. Before, it rendered as a summary.
 
 - **1B.4 (chart).** The `pg_isready` wait is an init container from the
   Postgres image (the api image has no libpq tools), not
@@ -291,8 +320,8 @@ Details and differences from the table below:
   - `loops.rs` marks where each sweep registers once 1A.6/1A.10 have
     moved its body. Still to do after `ds-store`:
     - those four registrations;
-    - the CRS-to-line index;
-    - `wait_for_schema` before readiness (1B.2).
+    - the CRS-to-line index.
+    `wait_for_schema` runs before readiness (1B.2, done).
   - `docker/ingest-writer.Dockerfile` has the generated cargo-chef builder
     (`scripts/gen-rust-dockerfiles.py`); `containers.yml` has its matrix
     leg and the digest step's `SERVICE_TO_PATH` entry `.ingestWriter`.
