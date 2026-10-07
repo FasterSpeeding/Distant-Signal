@@ -11,8 +11,11 @@
 //! Both sinks speak one error vocabulary, [`SinkError`], so that logic sees
 //! the same outcomes from either.
 
+pub(crate) mod db;
+
 use std::time::Duration;
 
+pub(crate) use db::DbSink;
 use reqwest::Client;
 
 use crate::config::Config;

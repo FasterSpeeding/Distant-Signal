@@ -387,9 +387,10 @@ jobs:
 
       # ds-store: the api's data access as it moves out (ingest architecture
       # plan phase 1A); its DB tests run everywhere the api's do. ds-migrate
-      # (plan 1B.1): `run` against the migrated database.
-      - name: cargo test -p api -p ds-store -p ds-migrate -p aggregator -p notifier -- --ignored (DB-backed tests)
-        run: cargo test -p api -p ds-store -p ds-migrate -p aggregator -p notifier -- --ignored --test-threads=1
+      # (plan 1B.1): `run` against the migrated database. schedule-reference
+      # (plan 2a.2): its db sink's protocol and parity tests.
+      - name: cargo test -p api -p ds-store -p ds-migrate -p aggregator -p notifier -p schedule-reference -- --ignored (DB-backed tests)
+        run: cargo test -p api -p ds-store -p ds-migrate -p aggregator -p notifier -p schedule-reference -- --ignored --test-threads=1
 
       # common::pg's pool-settings tests (statement/idle timeouts actually
       # applied, a timed-out statement cancelled without leaking, acquire
@@ -443,6 +444,7 @@ jobs:
           --skip corpus::db_tests --skip crosswalk::db_tests --skip freshness::db_tests --skip line_timetable::db_tests
           && cargo test -p common --features postgres pg::tests -- --ignored --test-threads=1
           && cargo test -p ingest-writer -- --ignored --test-threads=1
+          && cargo test -p schedule-reference -- --ignored --test-threads=1
           && cargo test -p enricher -- --ignored --skip live_eval --skip replay_ --test-threads=1'
 
       - name: DB-backed tests as the non-superuser app role (new cluster)

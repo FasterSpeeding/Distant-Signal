@@ -22,7 +22,7 @@ use config::Config;
 use reqwest::Client;
 #[cfg(test)]
 use sink::first_chunk_url;
-use sink::{ChunkPart, DatedProduct, HttpSink, LinePopulation, PublishSink, SinkError};
+use sink::{ChunkPart, DatedProduct, DbSink, HttpSink, LinePopulation, PublishSink, SinkError};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -110,19 +110,69 @@ async fn run() -> anyhow::Result<()> {
     common::logging::init("schedule-reference");
 
     let config = Config::parse();
+    config.validate()?;
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
     let progress = health_http::spawn_liveness(&config.health);
-    let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-    let internal_oauth = config.internal_oauth.token_cache();
-    let sink = HttpSink::new(
-        &client,
-        &config,
-        &internal_oauth,
-        FINAL_CHUNK_REQUEST_TIMEOUT,
-    );
-    run_with(&sink, &config, &progress).await
+    tracing::info!(sink = ?config.ingest_sink, "schedule-reference starting");
+    match config.ingest_sink {
+        config::IngestSink::Http => {
+            let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+            let internal_oauth = config.internal_oauth.token_cache();
+            let sink = HttpSink::new(
+                &client,
+                &config,
+                &internal_oauth,
+                FINAL_CHUNK_REQUEST_TIMEOUT,
+            );
+            run_with(&sink, &config, &progress).await
+        }
+        config::IngestSink::Db => {
+            let pool = connect_db(&config, &progress).await?;
+            sink::db::register_metrics();
+            run_with(&DbSink::new(pool, &config.lines), &config, &progress).await
+        }
+    }
+}
+
+/// `pg_stat_activity.application_name` of the `db` sink's pool.
+const DB_APPLICATION_NAME: &str = "distant-signal-schedule-reference";
+
+/// The `db` sink's pool (ingest architecture plan 2a.3): waits for Postgres
+/// (INF-5, like the other DB services), connects as `DATABASE_URL`'s role
+/// with [`config::DB_POOL_SIZE`] connections, and passes the schema gate
+/// (spec §12.2) before the first poll -- so a binary newer than the
+/// database waits for its migration instead of publishing into an old
+/// schema. The CORPUS fallback flag is read as the api reads it, so the
+/// population's train summaries are derived the same way.
+async fn connect_db(
+    config: &Config,
+    progress: &health_http::Progress,
+) -> anyhow::Result<sqlx::PgPool> {
+    let url = config.database_url()?;
+    ds_store::corpus::init_fallback_from_env()?;
+    common::startup::retry_until_ready(
+        "Postgres",
+        common::startup::CONNECT_BACKOFF,
+        Some(progress),
+        || async {
+            use sqlx::Connection as _;
+            sqlx::PgConnection::connect(url).await?.close().await
+        },
+    )
+    .await;
+    let pool = ds_store::pool::PoolSettings::from_env(DB_APPLICATION_NAME, config::DB_POOL_SIZE)?
+        .connect(url)
+        .await?;
+    ds_store::pool::register_metrics();
+    ds_store::schema::wait_for_schema(
+        &pool,
+        ds_store::schema::DbRole::ScheduleReference,
+        Some(progress),
+    )
+    .await?;
+    Ok(pool)
 }
 
 /// The service loop over whichever [`PublishSink`] `run` built: seed the
@@ -4119,6 +4169,8 @@ LTWVRMPTN 2211 22113     TF";
     /// to publish, keeping these tests about the six whole-network products.
     pub(super) fn test_config_for_server(base: &str) -> Config {
         Config {
+            ingest_sink: config::IngestSink::Http,
+            database_url: None,
             storage_dir: std::path::PathBuf::from("/tmp/schedule-reference-test-does-not-exist"),
             poll_interval_secs: 1800,
             api_ingest_url: format!("{base}/private/stanox-crs"),
@@ -5734,5 +5786,571 @@ mod schedule_index_from_file_tests {
     #[test]
     fn a_missing_file_is_an_error_not_an_empty_index() {
         assert!(build_schedule_index_from_file(std::path::Path::new("/nonexistent/mca")).is_err());
+    }
+}
+
+/// The `db` sink against a real database (ingest architecture plan 2a.2):
+/// the publish protocol through [`DbSink`], and a small CIF day through
+/// each sink giving identical tables. DB-gated (`--ignored`), and run as
+/// the `distant_signal_schedule_reference` role in CI's per-service step,
+/// so they need only that role's grants.
+///
+/// The day is today's (the publish window is computed from the clock), and
+/// four of the products replace their whole table, so every table touched
+/// is snapshotted first and restored afterwards (`TableSnapshot`): the
+/// tests leave a database with real data as they found it.
+#[cfg(test)]
+mod db_sink_tests {
+    use super::poll_once_retry_tests::{mount_all_publishes_ok, write_fixture_delivery};
+    use super::poll_once_tests::{http_sink, mock_token_cache, test_config_for_server};
+    use super::*;
+
+    const DELIVERY: &str = "20260101T000000Z";
+    const LINE_ID: &str = "zz-p2a-sink-parity";
+    /// `ds_store::schedule`'s advisory lock key for a
+    /// `schedule_calling_points_full` final chunk.
+    const CALLING_POINTS_FULL_LOCK_KEY: i64 = 0x7363_7070_7562_666e;
+
+    async fn pool() -> sqlx::PgPool {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        sqlx::PgPool::connect(&url).await.expect("connect")
+    }
+
+    /// A table and the rows of it these tests may change.
+    struct Scope {
+        table: &'static str,
+        filter: String,
+    }
+
+    /// Every table a publish of today's window writes, narrowed to what it
+    /// can touch (the marker table is checked separately: the role may not
+    /// delete from it).
+    fn scopes() -> Vec<Scope> {
+        let today = london_local_date_now();
+        let window = format!(
+            "service_date BETWEEN '{}' AND '{}'",
+            today - chrono::Duration::days(1),
+            today + chrono::Duration::days(DESTINATION_DEPARTURES_FORWARD_DAYS + 1)
+        );
+        let whole = |table| Scope {
+            table,
+            filter: "TRUE".to_string(),
+        };
+        let dated = |table| Scope {
+            table,
+            filter: window.clone(),
+        };
+        let line = |table| Scope {
+            table,
+            filter: format!("line_id = '{LINE_ID}'"),
+        };
+        vec![
+            whole("stanox_crs"),
+            whole("tiploc_crs"),
+            whole("tiploc_locations"),
+            whole("fixed_links"),
+            dated("schedule_network_departures"),
+            dated("schedule_destination_departures"),
+            dated("schedule_calling_points_full"),
+            dated("schedule_services"),
+            line("schedule_line_population"),
+            line("line_train_summaries"),
+        ]
+    }
+
+    /// The scoped rows of every table, as `jsonb`, to put back later.
+    struct TableSnapshot(Vec<(Scope, serde_json::Value)>);
+
+    impl TableSnapshot {
+        async fn take(pool: &sqlx::PgPool) -> Self {
+            let mut tables = Vec::new();
+            for scope in scopes() {
+                let rows: serde_json::Value = sqlx::query_scalar(&format!(
+                    "SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb) FROM {} t WHERE {}",
+                    scope.table, scope.filter
+                ))
+                .fetch_one(pool)
+                .await
+                .expect("snapshot");
+                tables.push((scope, rows));
+            }
+            Self(tables)
+        }
+
+        /// Puts every scoped row back exactly as it was.
+        async fn restore(&self, pool: &sqlx::PgPool) {
+            let mut tx = pool.begin().await.unwrap();
+            for (scope, rows) in &self.0 {
+                sqlx::query(&format!(
+                    "DELETE FROM {} WHERE {}",
+                    scope.table, scope.filter
+                ))
+                .execute(&mut *tx)
+                .await
+                .expect("clear");
+                sqlx::query(&format!(
+                    "INSERT INTO {0} SELECT * FROM jsonb_populate_recordset(NULL::{0}, $1)",
+                    scope.table
+                ))
+                .bind(rows)
+                .execute(&mut *tx)
+                .await
+                .expect("restore");
+            }
+            tx.commit().await.unwrap();
+        }
+
+        /// The scoped rows without the columns that differ between two
+        /// identical publishes (`updated_at`, and `fixed_links.id`), each
+        /// table's rows sorted.
+        async fn comparable(pool: &sqlx::PgPool) -> Vec<(&'static str, Vec<String>)> {
+            let snapshot = Self::take(pool).await;
+            snapshot
+                .0
+                .into_iter()
+                .map(|(scope, rows)| {
+                    let mut rows: Vec<String> = rows
+                        .as_array()
+                        .expect("an array")
+                        .iter()
+                        .map(|row| {
+                            let mut row = row.clone();
+                            let object = row.as_object_mut().expect("a row");
+                            object.remove("updated_at");
+                            if scope.table == "fixed_links" {
+                                object.remove("id");
+                            }
+                            row.to_string()
+                        })
+                        .collect();
+                    rows.sort_unstable();
+                    (scope.table, rows)
+                })
+                .collect()
+        }
+    }
+
+    /// The fixture delivery plus an ALF file, and a config whose one line
+    /// calls at Euston, so every product (fixed links and a line population
+    /// with its train summaries included) is published.
+    fn delivery_and_config(root: &std::path::Path, base: &str) -> Config {
+        write_fixture_delivery(root, DELIVERY);
+        std::fs::write(
+            root.join(DELIVERY).join("RJTTF942ALF.txt"),
+            "M=WALK,O=EUS,D=WAT,T=25,S=0001,E=2359,P=4,R=0000001\n",
+        )
+        .unwrap();
+        let mut config = test_config_for_server(base);
+        config.storage_dir = root.to_path_buf();
+        config.lines = common::config::LineCatalogue(vec![common::LineDefinition {
+            id: LINE_ID.to_string(),
+            name: LINE_ID.to_string(),
+            mode: "rail".to_string(),
+            category: "national-rail".to_string(),
+            operators: vec![],
+            stations: vec![common::Station {
+                crs: "EUS".to_string(),
+                tiploc: None,
+                role: "major".to_string(),
+                segment: None,
+            }],
+            sample_stations: vec![],
+            match_keywords: vec![],
+            excluded_keywords: vec![],
+            severity_overrides: std::collections::HashMap::new(),
+            destination_crs_filter: vec![],
+            headcode_prefixes: vec![],
+            full_coverage_enabled: false,
+            pass_through: Vec::new(),
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
+        }]);
+        config
+    }
+
+    /// What the api's `/private` routes do with each request `HttpSink`
+    /// sent, in the order it sent them, through the same `ds_store` calls
+    /// (`crates/api/src/routes/ingest.rs`): the HTTP path, end to end, minus
+    /// axum.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per route, mirroring the api's handlers"
+    )]
+    async fn replay_like_the_api(
+        pool: &sqlx::PgPool,
+        lines: &[common::LineDefinition],
+        requests: Vec<wiremock::Request>,
+    ) {
+        use ds_store::schedule as store;
+        for request in requests {
+            if request.method.as_str() != "POST" || request.url.path() == "/token/" {
+                continue;
+            }
+            let query: std::collections::HashMap<String, String> =
+                request.url.query_pairs().into_owned().collect();
+            let param = |name: &str| query.get(name).map(String::as_str);
+            let body = &request.body;
+            match request.url.path() {
+                "/private/stanox-crs" => {
+                    let records: Vec<common::StanoxCrsRecord> =
+                        serde_json::from_slice(body).unwrap();
+                    ds_store::reference::upsert_stanox_crs(pool, &records)
+                        .await
+                        .unwrap();
+                    let keep: Vec<String> = records.iter().map(|r| r.stanox.clone()).collect();
+                    ds_store::reference::prune_stanox_crs_not_in(pool, &keep)
+                        .await
+                        .unwrap();
+                }
+                "/private/tiploc-crs" => {
+                    let records: Vec<common::TiplocCrsRecord> =
+                        serde_json::from_slice(body).unwrap();
+                    ds_store::reference::upsert_tiploc_crs(pool, &records)
+                        .await
+                        .unwrap();
+                    let keep: Vec<String> = records.iter().map(|r| r.tiploc.clone()).collect();
+                    ds_store::reference::prune_tiploc_crs_not_in(pool, &keep)
+                        .await
+                        .unwrap();
+                }
+                "/private/tiploc-locations" => {
+                    let records: Vec<common::TiplocLocationRecord> =
+                        serde_json::from_slice(body).unwrap();
+                    ds_store::reference::replace_tiploc_locations(pool, &records)
+                        .await
+                        .unwrap();
+                }
+                "/private/fixed-links" => {
+                    let records: Vec<common::FixedLinkRecord> =
+                        serde_json::from_slice(body).unwrap();
+                    ds_store::reference::upsert_fixed_links(pool, &records)
+                        .await
+                        .unwrap();
+                }
+                "/private/schedule-line-population" => {
+                    #[derive(serde::Deserialize)]
+                    struct Body {
+                        line_id: String,
+                        service_date: chrono::NaiveDate,
+                        population: Box<serde_json::value::RawValue>,
+                    }
+                    let body: Body = serde_json::from_slice(body).unwrap();
+                    let line = lines.iter().find(|l| l.id == body.line_id);
+                    store::summaries::upsert_population_with_summaries(
+                        pool,
+                        line,
+                        &body.line_id,
+                        body.service_date,
+                        body.population.into(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                "/private/schedule-network-departures" => {
+                    let rows: Vec<store::ScheduleNetworkDeparturesRow> =
+                        serde_json::from_slice(body).unwrap();
+                    store::upsert_schedule_network_departures(pool, &rows)
+                        .await
+                        .unwrap();
+                }
+                path @ ("/private/schedule-destination-departures"
+                | "/private/schedule-calling-points-full") => {
+                    let last_chunk = param("last_chunk") == Some("true");
+                    let total_rows = param("total_rows").map(|n| n.parse().unwrap());
+                    let part = store::SchedulePublishPart::new(
+                        param("publish_id"),
+                        param("first_chunk") != Some("false"),
+                        last_chunk,
+                        total_rows,
+                    )
+                    .unwrap();
+                    let destination = path.ends_with("destination-departures");
+                    let rows: Vec<serde_json::Value> = serde_json::from_slice(body).unwrap();
+                    if rows.is_empty() {
+                        let date = store::SchedulePublishPart::empty_publish_date(
+                            last_chunk,
+                            total_rows,
+                            param("service_date").map(|d| d.parse().unwrap()),
+                        )
+                        .unwrap();
+                        if destination {
+                            store::finish_schedule_destination_departures_publish_without_rows(
+                                pool, part, date,
+                            )
+                            .await
+                            .unwrap();
+                        } else {
+                            store::finish_schedule_calling_points_full_publish_without_rows(
+                                pool, part, date,
+                            )
+                            .await
+                            .unwrap();
+                        }
+                    } else if destination {
+                        let rows: Vec<store::ScheduleDestinationDeparturesRow> =
+                            serde_json::from_slice(body).unwrap();
+                        store::upsert_schedule_destination_departures_publish_part(
+                            pool, &rows, part,
+                        )
+                        .await
+                        .unwrap();
+                    } else {
+                        let rows: Vec<store::ScheduleCallingPointsFullRow> =
+                            serde_json::from_slice(body).unwrap();
+                        store::upsert_schedule_calling_points_full_publish_part(pool, &rows, part)
+                            .await
+                            .unwrap();
+                    }
+                }
+                "/private/schedule-services" => {
+                    let rows: Vec<store::services::ScheduleServiceRow> =
+                        serde_json::from_slice(body).unwrap();
+                    let date = param("service_date").unwrap().parse().unwrap();
+                    store::services::replace_for_date(pool, date, &rows)
+                        .await
+                        .unwrap();
+                }
+                "/private/schedule-reference-publishes" => {
+                    let body: common::ingest::ScheduleReferencePublishRequest =
+                        serde_json::from_slice(body).unwrap();
+                    store::insert_schedule_reference_publish(pool, &body.delivery)
+                        .await
+                        .unwrap();
+                }
+                other => panic!("unexpected request to {other}"),
+            }
+        }
+    }
+
+    /// The best-effort marker cleanup: the role may not delete from the
+    /// marker table (spec §6.4: SI), so this only succeeds as a broader
+    /// role.
+    async fn forget_marker(pool: &sqlx::PgPool) {
+        let _ = sqlx::query("DELETE FROM schedule_reference_publishes WHERE delivery = $1")
+            .bind(DELIVERY)
+            .execute(pool)
+            .await;
+    }
+
+    /// **Plan 2a.2's parity test.** One small CIF day -- both crosswalks,
+    /// `tiploc_locations`, fixed links, a line population with its train
+    /// summaries, network departures, and eight dates each of destination
+    /// departures, full calling points and service modes -- published
+    /// through `DbSink`, and again through `HttpSink` with each request
+    /// applied as the api applies it: the tables must come out identical.
+    /// Also: the `db` sink writes the completion marker and the seed reads
+    /// it back.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn a_small_cif_day_through_each_sink_gives_identical_tables() {
+        let pool = pool().await;
+        let original = TableSnapshot::take(&pool).await;
+        let root = tempfile::tempdir().unwrap();
+        let server = wiremock::MockServer::start().await;
+        let tokens = mock_token_cache(&server).await;
+        mount_all_publishes_ok(&server).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/private/fixed-links"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let config = delivery_and_config(root.path(), &server.uri());
+
+        // Through the db sink.
+        let db = DbSink::new(pool.clone(), &config.lines);
+        let mut state = PublishState::default();
+        poll_once(&db, &config, &mut state).await.unwrap();
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+        assert!(state.partial.is_none(), "every product published");
+        assert_eq!(
+            seed_last_processed_delivery(&db, &config).await.as_deref(),
+            Some(DELIVERY),
+            "the db sink wrote the marker the seed reads"
+        );
+        let through_db = TableSnapshot::comparable(&pool).await;
+        original.restore(&pool).await;
+
+        // Through the http sink, applied as the api applies it.
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        let mut state = PublishState::default();
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+            .await
+            .unwrap();
+        assert!(state.partial.is_none(), "every product published");
+        let requests = server.received_requests().await.unwrap();
+        replay_like_the_api(&pool, &config.lines, requests).await;
+        let through_http = TableSnapshot::comparable(&pool).await;
+        original.restore(&pool).await;
+        forget_marker(&pool).await;
+
+        for (table, rows) in &through_db {
+            assert!(!rows.is_empty(), "the fixture day publishes {table}");
+        }
+        assert_eq!(through_db, through_http);
+    }
+
+    fn calling_point_rows(date: chrono::NaiveDate, uid: &str) -> Vec<serde_json::Value> {
+        ["origin", "terminate"]
+            .iter()
+            .enumerate()
+            .map(|(seq, kind)| {
+                serde_json::json!({
+                    "service_date": date,
+                    "uid": uid,
+                    "seq": seq,
+                    "tiploc": if seq == 0 { "ZZP2AA" } else { "ZZP2AB" },
+                    "kind": kind,
+                    "booked_departure": if seq == 0 { Some("08:00:00") } else { None },
+                    "booked_arrival": if seq == 0 { None } else { Some("09:00:00") },
+                    "day_offset": 0,
+                })
+            })
+            .collect()
+    }
+
+    async fn calling_point_uids(pool: &sqlx::PgPool, date: chrono::NaiveDate) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT DISTINCT uid FROM schedule_calling_points_full WHERE service_date = $1 \
+             ORDER BY uid",
+        )
+        .bind(date)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    fn retry() -> config::PublishRetry {
+        config::PublishRetry {
+            attempts: 3,
+            backoff: common::backoff::Backoff::new(
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+            ),
+        }
+    }
+
+    async fn clear_calling_points(pool: &sqlx::PgPool, date: chrono::NaiveDate) {
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE service_date = $1")
+            .bind(date)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn publish_calling_points(
+        db: &DbSink<'_>,
+        date: chrono::NaiveDate,
+        uid: &str,
+    ) -> anyhow::Result<()> {
+        post_date_scoped_row_stream(
+            db,
+            DatedProduct::CallingPointsFull,
+            calling_point_rows(date, uid).into_iter(),
+            EmptyPublish::Clear(date),
+        )
+        .await
+    }
+
+    /// The chunk protocol's outcomes through the db sink, as the wiremock
+    /// tests pin them through the http sink: a publish replaces the date, an
+    /// empty publish clears it (PL-14), and a final chunk refused because
+    /// another is still deleting (the api's 409) is `DeferToNextCycle` after
+    /// exactly one attempt, leaving the date as it was.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn the_chunk_protocol_through_the_db_sink() {
+        let pool = pool().await;
+        let date = chrono::NaiveDate::from_ymd_opt(2031, 7, 7).unwrap();
+        let db = DbSink::new(pool.clone(), &[]);
+        clear_calling_points(&pool, date).await;
+
+        publish_calling_points(&db, date, "ZP2A001").await.unwrap();
+        publish_calling_points(&db, date, "ZP2A002").await.unwrap();
+        assert_eq!(calling_point_uids(&pool, date).await, ["ZP2A002"]);
+
+        // Busy: hold the product's final-chunk lock from another session.
+        let mut holder = pool.acquire().await.unwrap();
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(CALLING_POINTS_FULL_LOCK_KEY)
+            .execute(&mut *holder)
+            .await
+            .unwrap();
+        let mut attempts = 0;
+        let result = publish_with_retry(&retry(), "test", async || {
+            attempts += 1;
+            publish_calling_points(&db, date, "ZP2A003").await
+        })
+        .await;
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(CALLING_POINTS_FULL_LOCK_KEY)
+            .execute(&mut *holder)
+            .await
+            .unwrap();
+        drop(holder);
+        let err = result.expect_err("refused while another final chunk deletes");
+        assert!(
+            err.downcast_ref::<DeferToNextCycle>().is_some(),
+            "expected DeferToNextCycle, got {err:?}"
+        );
+        assert_eq!(attempts, 1, "no in-cycle retry");
+        assert_eq!(
+            calling_point_uids(&pool, date).await,
+            ["ZP2A002"],
+            "the refused chunk rolled back"
+        );
+
+        // PL-14: an empty date clears it.
+        post_date_scoped_row_stream(
+            &db,
+            DatedProduct::CallingPointsFull,
+            std::iter::empty(),
+            EmptyPublish::Clear(date),
+        )
+        .await
+        .unwrap();
+        assert!(calling_point_uids(&pool, date).await.is_empty());
+        clear_calling_points(&pool, date).await;
+    }
+
+    /// What the api answers 400/422 to is `Rejected` through the db sink
+    /// too, before anything is written: permanent for the delivery.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn refused_publishes_are_rejected_through_the_db_sink() {
+        let pool = pool().await;
+        let db = DbSink::new(pool, &[]);
+        let date = chrono::NaiveDate::from_ymd_opt(2031, 7, 8).unwrap();
+        let services_row = serde_json::json!({
+            "service_date": date + chrono::Duration::days(1),
+            "uid": "ZP2A001",
+            "mode": "bus",
+            "stp": "P",
+        });
+        let part = ChunkPart {
+            publish_id: "",
+            first_chunk: true,
+            final_total_rows: Some(2),
+            empty_service_date: None,
+        };
+        let refused = [
+            db.tiploc_locations(&[]).await.unwrap_err(),
+            db.services(date, &[services_row]).await.unwrap_err(),
+            db.network_departures(&[serde_json::json!({ "crs": "EUS" })])
+                .await
+                .unwrap_err(),
+            db.publish_part(
+                DatedProduct::CallingPointsFull,
+                &calling_point_rows(date, "ZP2A001"),
+                part,
+            )
+            .await
+            .unwrap_err(),
+        ];
+        for err in refused {
+            assert!(matches!(err, SinkError::Rejected(_)), "{err:?}");
+            let mut outcome = CycleOutcome::default();
+            outcome.failed("test", &anyhow::Error::new(err));
+            assert!(outcome.may_advance_marker() && !outcome.fully_published());
+        }
     }
 }
