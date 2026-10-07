@@ -4056,6 +4056,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: format!("h4-reopen-reinstate-{user_id}"),
+            gbtt_timestamp: None,
         };
         let results = crate::data::trust_event_backlog::ingest_shared_movements_batch(
             &pool,

@@ -3436,6 +3436,61 @@ mod db_tests {
         assert_eq!(movements, 1, "the retry landed the shared movement");
     }
 
+    /// End to end (2026-10-07): a backlog event carrying `gbtt_timestamp`,
+    /// posted exactly as trust-backlog-consumer sends it, stores it on both
+    /// `trust_event_backlog` and the shared `train_movement_events` row.
+    /// Before the fix this route was the primary writer of
+    /// `train_movement_events` and never carried the field, so every
+    /// production row had a NULL `gbtt_timestamp` and no stop ever got a
+    /// public delay. An event without the field (an older consumer) still
+    /// lands, with NULL.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                trust_event_backlog_post_stores_the_gbtt_timestamp -- --ignored --test-threads=1`"]
+    async fn trust_event_backlog_post_stores_the_gbtt_timestamp_end_to_end() {
+        let pool = connect().await;
+        let uids = ["TEST-PL7-GBTT"];
+        cleanup_backlog_fixture(&pool, &uids).await;
+        let router: axum::Router = Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let mut with_gbtt = backlog_event(uids[0], "0003", "test-pl7-gbtt");
+        with_gbtt["gbtt_timestamp"] = json!("2099-03-03T07:59:00Z");
+        let mut without = backlog_event(uids[0], "0003", "test-pl7-gbtt-none");
+        without["event_type"] = json!("ARRIVAL");
+        let body = json!([with_gbtt, without]);
+
+        let (status, _) = post_json_to(router, "/trust-event-backlog", &body).await;
+        let backlog: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+            "SELECT dedup_key, gbtt_timestamp FROM trust_event_backlog \
+             WHERE dedup_key LIKE 'test-pl7-gbtt%' ORDER BY dedup_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let movements: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+            "SELECT m.dedup_key, m.gbtt_timestamp FROM train_movement_events m \
+             JOIN trains t ON t.id = m.trains_id \
+             WHERE t.train_uid = $1 ORDER BY m.dedup_key",
+        )
+        .bind(uids[0])
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        cleanup_backlog_fixture(&pool, &uids).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let expected = vec![
+            (
+                "test-pl7-gbtt".to_string(),
+                Some("2099-03-03T07:59:00Z".parse().unwrap()),
+            ),
+            ("test-pl7-gbtt-none".to_string(), None),
+        ];
+        assert_eq!(backlog, expected, "trust_event_backlog");
+        assert_eq!(movements, expected, "train_movement_events");
+    }
+
     /// `POST /schedule-services` replaces a date atomically through the
     /// router, and a row for another date is a 400 that writes nothing.
     #[tokio::test]
