@@ -104,7 +104,7 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(badgeTextTransform(screen.getByText('4m late'))).toBe('none');
+    expect(badgeTextTransform(screen.getByText('4 min late'))).toBe('none');
   });
 
   it('shows an early badge for a negative delayMinutes', () => {
@@ -119,7 +119,7 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(badgeTextTransform(screen.getByText('1m early'))).toBe('none');
+    expect(badgeTextTransform(screen.getByText('1 min early'))).toBe('none');
   });
 
   it('shows an on-time badge for a zero delayMinutes', () => {

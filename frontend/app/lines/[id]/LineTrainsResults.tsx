@@ -35,7 +35,8 @@ import {
   type LinePageParams,
   type TrainWindow,
 } from '@/lib/lineTrains';
-import { LineTrainRow } from './LineTrainRow';
+import { ServiceRow, ServiceRowList } from '@/components/ServiceRow';
+import { searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import classes from './LineTrains.module.css';
 
 const NO_PARAMS: LinePageParams = { dir: null, at: null, from: null, to: null, view: null };
@@ -192,13 +193,13 @@ function TrainList({
   label: string;
 }) {
   return (
-    <ul className={classes.list} aria-label={label}>
+    <ServiceRowList aria-label={label}>
       {trains.map((train) => {
         const minute = lineTimeMinute(train.lineDue);
         const beyondPhone = window !== undefined && minute !== null && minute >= window.phoneTo;
         const date = dateFor(train);
         return (
-          <LineTrainRow
+          <ServiceRow
             key={`${date}-${train.uid}`}
             train={train}
             date={date}
@@ -207,7 +208,7 @@ function TrainList({
           />
         );
       })}
-    </ul>
+    </ServiceRowList>
   );
 }
 
@@ -395,25 +396,6 @@ function StationPicker({
   );
 }
 
-/** A station-pair search row as a summary row, with the live status the
- * line summary has for the same train, when it has one. */
-function pairRow(row: TrainSearchResult, live: Map<string, LineTrainSummary>): LineTrainSummary {
-  const known = live.get(row.uid);
-  return {
-    uid: row.uid,
-    operator: row.operator ?? null,
-    serviceMode: row.serviceMode ?? known?.serviceMode ?? 'train',
-    liveTracking: row.liveTracking ?? known?.liveTracking ?? null,
-    scope: known?.scope ?? null,
-    direction: known?.direction ?? null,
-    lineDue: null,
-    origin: row.originCrs ? { crs: row.originCrs, name: null } : null,
-    destination: row.destinationCrs ? { crs: row.destinationCrs, name: row.destinationName ?? null } : null,
-    onLineStops: [],
-    live: known?.live ?? null,
-  };
-}
-
 type PairRows = { rows: TrainSearchResult[] } | { error: 'unpublished' | 'unavailable' };
 
 /** Trains calling at `from` and later at `to` in the window, from the
@@ -483,18 +465,18 @@ function StationPairResults({
           No trains from {fromName} to {toName} in this window.
         </Empty>
       ) : (
-        <ul className={classes.list} aria-label={`Trains from ${fromName} to ${toName}`}>
+        <ServiceRowList aria-label={`Trains from ${fromName} to ${toName}`}>
           {result.rows.map((row) => (
-            <LineTrainRow
+            <ServiceRow
               key={row.uid}
-              train={pairRow(row, live)}
+              train={searchRowSummary(row, live.get(row.uid))}
               date={date}
               stations={summary.stations}
-              timeOverride={(row.publicDeparture ?? row.scheduled ?? '--:--').slice(0, 5)}
+              timeOverride={searchRowTime(row)}
               showStrip={false}
             />
           ))}
-        </ul>
+        </ServiceRowList>
       )}
     </Stack>
   );

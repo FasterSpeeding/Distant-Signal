@@ -3,6 +3,7 @@ import { codeRouteLabel } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
+import { CANCELLED_LABEL, delayLabel } from '@/lib/serviceStatus';
 import type { StationGroup } from '@/lib/stationGroups';
 import type {
   TripPlanItinerary,
@@ -37,12 +38,13 @@ function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string
 }
 
 /** A short live annotation for a train leg (`GET /Trips/plan`'s live
- * overlay): empty when nothing is known or the train is on time. */
+ * overlay), in the shared status words (`lib/serviceStatus.ts`): empty
+ * when nothing is known or the train is on time. */
 function liveNote(live: TripPlanLegLive | null | undefined): string {
   if (!live) return '';
-  if (live.cancelled) return ' · cancelled';
-  if (live.delayMinutes !== null && live.delayMinutes >= 1) return ` · ${live.delayMinutes} min late`;
-  if (live.status === 'Delayed') return ' · delayed';
+  if (live.cancelled) return ` · ${CANCELLED_LABEL}`;
+  if (live.delayMinutes !== null && live.delayMinutes !== 0) return ` · ${delayLabel(live.delayMinutes).text}`;
+  if (live.status === 'Delayed') return ' · Delayed';
   return '';
 }
 

@@ -489,8 +489,8 @@ describe('generateMetadata', () => {
       publicTrainState({ lastReportedLocation: 'Woking', delayMinutes: 5 }),
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.description).toBe('Last reported: Woking — 5m late');
-    expect(metadata.openGraph?.description).toBe('Last reported: Woking — 5m late');
+    expect(metadata.description).toBe('Last reported: Woking — 5 min late');
+    expect(metadata.openGraph?.description).toBe('Last reported: Woking — 5 min late');
   });
 
   it('describes a cancelled train', async () => {

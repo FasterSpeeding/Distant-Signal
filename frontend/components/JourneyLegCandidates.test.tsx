@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
-import { byVisibleText } from '@/test/routeText';
 
 // `LoginPromptModal`'s own `LoginButtonLink` calls `useLoginHref()`, which
 // calls `usePathname()`/`useSearchParams()` -- same stub `PinToggle.test.tsx`/
@@ -61,6 +60,12 @@ const CANDIDATES_FIXTURE = {
 // `searchTocs`'s own server-side matching (that's `TrackTrainForm.test.tsx`'s
 // job, per its own `matchesOperator`/suggestion tests).
 const TEST_TOCS = [{ code: 'GW', name: 'Great Western Railway' }];
+
+/** A row's link name starts with its time and the train's destination
+ * ("10:32 to PAD"), the visually hidden "to" included. */
+function rowName(time: string, destination: string): RegExp {
+  return new RegExp(`^${time} to ${destination}\\b`);
+}
 
 /** Routes a mocked `fetch` by URL/method, the same shape
  * `TrackThisTrainButton.test.tsx`'s own `mockFetchByUrl` helper uses: the
@@ -158,18 +163,26 @@ describe('JourneyLegCandidates', () => {
     );
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText(byVisibleText('Train C11052 · BRI → London Paddington'))).toBeInTheDocument();
+    const link = await screen.findByRole('link', { name: rowName('10:32', 'London Paddington') });
+    expect(link.closest('li')).toHaveTextContent('Train C11052 · From BRI');
   });
 
   it("leads each row with the traveller's own leg times, not the train's route", async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('dep. BTH 11:02 → arr. SWI 11:38'))).toBeInTheDocument();
-    // The train's own identity and route survive as dimmed secondary
+    // The leg's departure from the boarding station, and its arrival at the
+    // traveller's own destination -- not the train's terminus (12:05).
+    const first = (await screen.findByRole('link', { name: rowName('10:32', 'PAD') })).closest('li') as HTMLElement;
+    expect(first).toHaveTextContent('arriving at 11:08');
+    expect(first).not.toHaveTextContent('12:05');
+    const second = screen.getByRole('link', { name: rowName('11:02', 'PAD') }).closest('li') as HTMLElement;
+    expect(second).toHaveTextContent('arriving at 11:38');
+    // The train's own identity and origin survive as dimmed secondary
     // text -- useful context, no longer the whole row.
-    expect(screen.getAllByText(byVisibleText('Train C11052 · BRI → PAD'))).toHaveLength(1);
+    expect(screen.getAllByText('Train C11052 · From BRI')).toHaveLength(1);
+    // No live state from this backend yet.
+    expect(first).toHaveTextContent('Scheduled');
   });
 
   // Review §2.5/M15 -- the list's own intro line, added independently of
@@ -207,25 +220,22 @@ describe('JourneyLegCandidates', () => {
     // The pre-fix state: two buttons, both named exactly "Track this
     // train", indistinguishable in a screen reader's control list.
     expect(await screen.findAllByRole('button', { name: /^Track this train/ })).toHaveLength(2);
-    expect(
-      screen.getByRole('button', { name: 'Track this train — dep. BTH 10:32 to arr. SWI 11:08' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Track this train — dep. BTH 11:02 to arr. SWI 11:38' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Track this train — 10:32 to PAD, arriving 11:08' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Track this train — 11:02 to PAD, arriving 11:38' })).toBeInTheDocument();
     // Label-in-Name (WCAG 2.5.3): the accessible name still CONTAINS the
     // visible label.
     expect(screen.getAllByText('Track this train')).toHaveLength(2);
   });
 
-  it('offers a per-row "View live status" link, as the /trains result row does', async () => {
+  it("links each row to the train's page, with the pick button beside the link rather than in it", async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    const link = await screen.findByRole('link', {
-      name: 'View live status for the dep. BTH 10:32 to arr. SWI 11:08',
-    });
+    const link = await screen.findByRole('link', { name: rowName('10:32', 'PAD') });
     expect(link).toHaveAttribute('href', '/train/C11052/2026-09-22');
+    const button = screen.getByRole('button', { name: /^Track this train — 10:32/ });
+    expect(button.closest('a')).toBeNull();
+    expect(link.closest('li')).toContainElement(button);
   });
 
   it('omits the arrival rather than guessing when the schedule has none for the leg destination', async () => {
@@ -249,10 +259,11 @@ describe('JourneyLegCandidates', () => {
     );
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText('dep. BTH 10:32')).toBeInTheDocument();
+    const row = (await screen.findByRole('link', { name: rowName('10:32', 'PAD') })).closest('li') as HTMLElement;
     // Never the train's terminus arrival standing in for the leg's own.
-    expect(screen.queryByText(/12:05/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/arr\./)).not.toBeInTheDocument();
+    expect(row).not.toHaveTextContent('12:05');
+    expect(row).not.toHaveTextContent('arriving');
+    expect(screen.getByRole('button', { name: 'Track this train — 10:32 to PAD' })).toBeInTheDocument();
   });
 
   it('says so when the leg arrives the next day', async () => {
@@ -278,7 +289,12 @@ describe('JourneyLegCandidates', () => {
     );
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText(byVisibleText('dep. BTH 23:40 → arr. SWI 02:15 (next day)'))).toBeInTheDocument();
+    const row = (await screen.findByRole('link', { name: rowName('23:40', 'PAD') })).closest('li') as HTMLElement;
+    expect(row).toHaveTextContent('arriving at 02:15+1 (next day)');
+    expect(within(row).getByText('+1')).toHaveAttribute('aria-hidden', 'true');
+    expect(
+      screen.getByRole('button', { name: 'Track this train — 23:40 to PAD, arriving 02:15 (next day)' }),
+    ).toBeInTheDocument();
   });
 
   it('shows the public (passenger timetable) times when the backend sends them', async () => {
@@ -304,7 +320,8 @@ describe('JourneyLegCandidates', () => {
     );
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(await screen.findByText(byVisibleText('dep. BTH 10:31 → arr. SWI 11:09'))).toBeInTheDocument();
+    const row = (await screen.findByRole('link', { name: rowName('10:31', 'PAD') })).closest('li') as HTMLElement;
+    expect(row).toHaveTextContent('arriving at 11:09');
   });
 
   it('POSTs the picked train and calls onPicked on success', async () => {
@@ -442,9 +459,9 @@ describe('JourneyLegCandidates', () => {
 
       // Row 1 (`operator: null`) keeps its pre-existing exact subtitle --
       // no operator suffix appended.
-      expect(await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'))).toBeInTheDocument();
+      expect(await screen.findByText('Train C11052 · From BRI')).toBeInTheDocument();
       // Row 2 (`operator: 'GW'`) gets the suffix.
-      expect(screen.getByText(byVisibleText('Train C11099 · BRI → PAD · GW'))).toBeInTheDocument();
+      expect(screen.getByText('Train C11099 · From BRI · GW')).toBeInTheDocument();
     });
 
     it('debounces typing into the Operator field, then re-fetches with the uppercased value', async () => {
@@ -455,7 +472,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
+        await screen.findByText('Train C11052 · From BRI');
         fetchMock.mockClear();
 
         fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
@@ -524,7 +541,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
+        await screen.findByText('Train C11052 · From BRI');
         expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
 
         fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
@@ -536,8 +553,8 @@ describe('JourneyLegCandidates', () => {
 
         // Row 1 (the unfiltered page 1) is gone, replaced by row 2 (the
         // filtered response) -- not appended alongside it.
-        await screen.findByText(byVisibleText('Train C11099 · BRI → PAD · GW'));
-        expect(screen.queryByText(byVisibleText('Train C11052 · BRI → PAD'))).not.toBeInTheDocument();
+        await screen.findByText('Train C11099 · From BRI · GW');
+        expect(screen.queryByText('Train C11052 · From BRI')).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
 
         const candidateCalls = fetchMock.mock.calls
@@ -568,7 +585,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
+        await screen.findByText('Train C11052 · From BRI');
 
         const input = screen.getByRole('combobox', { name: 'Operator (optional)' });
         fireEvent.focus(input);
@@ -623,7 +640,7 @@ describe('JourneyLegCandidates', () => {
         renderWithMantine(
           <JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />,
         );
-        await screen.findByText(byVisibleText('Train C11052 · BRI → PAD'));
+        await screen.findByText('Train C11052 · From BRI');
 
         fireEvent.change(screen.getByRole('combobox', { name: 'Operator (optional)' }), {
           target: { value: 'gw' },
@@ -683,7 +700,7 @@ describe('JourneyLegCandidates', () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
       renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-      await screen.findByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'));
+      await screen.findByRole('link', { name: rowName('10:32', 'PAD') });
       expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     });
 
@@ -699,12 +716,12 @@ describe('JourneyLegCandidates', () => {
       vi.stubGlobal('fetch', fetchMock);
       renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-      await screen.findByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'));
+      await screen.findByRole('link', { name: rowName('10:32', 'PAD') });
       fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-      expect(await screen.findByText(byVisibleText('dep. BTH 11:02 → arr. SWI 11:38'))).toBeInTheDocument();
+      expect(await screen.findByRole('link', { name: rowName('11:02', 'PAD') })).toBeInTheDocument();
       expect(
-        screen.getByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08')),
+        screen.getByRole('link', { name: rowName('10:32', 'PAD') }),
         'page 1 must still be on screen -- Load more appends, it does not replace',
       ).toBeInTheDocument();
 
@@ -740,7 +757,7 @@ describe('JourneyLegCandidates', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
       expect(await screen.findByText("Couldn't load more results. Try again.")).toBeInTheDocument();
-      expect(screen.getByText(byVisibleText('dep. BTH 10:32 → arr. SWI 11:08'))).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: rowName('10:32', 'PAD') })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     });
 
@@ -759,12 +776,59 @@ describe('JourneyLegCandidates', () => {
       fireEvent.click(button);
 
       resolvePageTwo(new Response(JSON.stringify({ results: PAGE_TWO, nextCursor: null }), { status: 200 }));
-      await screen.findByText(byVisibleText('dep. BTH 11:02 → arr. SWI 11:38'));
+      await screen.findByRole('link', { name: rowName('11:02', 'PAD') });
 
       const candidateCalls = fetchMock.mock.calls
         .map((call) => String(call[0]))
         .filter((url) => url.includes('after=CURSOR1'));
       expect(candidateCalls).toHaveLength(1);
     });
+  });
+});
+
+describe('JourneyLegCandidates: service mode and live fields', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stub(row: Record<string, unknown>) {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchByUrl({
+        candidates: () =>
+          new Response(JSON.stringify({ results: [{ ...CANDIDATES_FIXTURE.results[0], ...row }], nextCursor: null }), {
+            status: 200,
+          }),
+      }),
+    );
+  }
+
+  it('says what a bus is, and offers to track the bus rather than a train', async () => {
+    stub({ serviceMode: 'replacementBus', liveTracking: false });
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={vi.fn()} />);
+
+    const row = (await screen.findByRole('link', { name: rowName('10:32', 'PAD') })).closest('li') as HTMLElement;
+    expect(row).toHaveTextContent('Rail replacement bus');
+    expect(row).toHaveTextContent('Timetable only');
+    expect(row).toHaveTextContent('Bus C11052 · From BRI');
+    expect(within(row).getByRole('button', { name: /^Track this bus — 10:32 to PAD/ })).toHaveTextContent(
+      'Track this bus',
+    );
+  });
+
+  it('shows live status when the backend sends it', async () => {
+    stub({
+      live: {
+        status: 'en_route',
+        delayMinutes: 8,
+        delayProvisional: false,
+        cancelled: false,
+        lastReportedLocation: null,
+      },
+    });
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={vi.fn()} />);
+
+    const row = (await screen.findByRole('link', { name: rowName('10:32', 'PAD') })).closest('li') as HTMLElement;
+    expect(row).toHaveTextContent('8 min late');
   });
 });

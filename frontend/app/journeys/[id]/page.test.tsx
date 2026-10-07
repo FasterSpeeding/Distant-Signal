@@ -216,7 +216,7 @@ describe('JourneyDetailPage', () => {
     it("surfaces every leg's own status in one summary line, not just the worst one", async () => {
       vi.mocked(api.getJourney).mockResolvedValue(twoLegJourney());
       await renderPage();
-      expect(screen.getByText('Leg 1 22m late · Leg 2 needs a train picked')).toBeInTheDocument();
+      expect(screen.getByText('Leg 1 22 min late · Leg 2 needs a train picked')).toBeInTheDocument();
       // And the header badge (worst-status rollup) is still present too --
       // this is additive, not a replacement. (I15/2.3: the badge itself
       // now also counts and links to the unmatched leg.)

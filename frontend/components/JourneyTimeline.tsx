@@ -11,6 +11,7 @@ import {
   Text,
 } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
+import { DelayBadge } from './DelayBadge';
 import { PlatformBadge } from './PlatformBadge';
 import Link from 'next/link';
 import {
@@ -293,25 +294,7 @@ function skipCaption(skipSource: JourneyStop['skipSource']): string | null {
 
 function delayBadge(delayMinutes: number | null) {
   if (delayMinutes === null) return null;
-  if (delayMinutes === 0) {
-    return (
-      <Badge color="green" variant="light" tt="none">
-        On time
-      </Badge>
-    );
-  }
-  if (delayMinutes > 0) {
-    return (
-      <Badge color="orange" variant="light" tt="none">
-        {delayMinutes}m late
-      </Badge>
-    );
-  }
-  return (
-    <Badge color="teal" variant="light" tt="none">
-      {Math.abs(delayMinutes)}m early
-    </Badge>
-  );
+  return <DelayBadge delayMinutes={delayMinutes} />;
 }
 
 function JourneyStopRow({

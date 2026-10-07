@@ -144,7 +144,7 @@ describe('TrainJourney', () => {
       />,
     );
     expect(screen.getByText(/Clapham Junction/)).toBeInTheDocument();
-    expect(screen.getByText('4m late')).toBeInTheDocument();
+    expect(screen.getByText('4 min late')).toBeInTheDocument();
     expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
     expect(screen.getByText(/ETA/)).toBeInTheDocument();
     expect(screen.queryByText('May have arrived')).not.toBeInTheDocument();
@@ -520,7 +520,7 @@ describe('TrainJourney', () => {
     // `lastReportedLocation`) below the diagram, and a bare substring match
     // would ambiguously match both.
     expect(screen.getByText(/Last reported: Clapham Junction/)).toBeInTheDocument();
-    expect(screen.getByText('4m late')).toBeInTheDocument();
+    expect(screen.getByText('4 min late')).toBeInTheDocument();
     expect(screen.getByText('Next calling point: Woking')).toBeInTheDocument();
     expect(screen.getByText(/ETA/)).toBeInTheDocument();
     // ...alongside the timeline, not instead of it.

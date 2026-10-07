@@ -72,6 +72,16 @@ describe('ItineraryOption', () => {
     expect(screen.queryByText('Live data says this route may no longer work')).not.toBeInTheDocument();
     unmount();
 
+    const early = renderWithMantine(
+      <ItineraryOption
+        itinerary={{ ...trainItinerary, legs: [{ ...leg, live: { ...live, delayMinutes: -3 } } as typeof leg] }}
+        selected={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(byVisibleText(/08:00 EUS → MKC 08:50 · 3 min early/))).toBeInTheDocument();
+    early.unmount();
+
     renderWithMantine(
       <ItineraryOption
         itinerary={{
@@ -83,7 +93,7 @@ describe('ItineraryOption', () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText(/08:50 · cancelled/)).toBeInTheDocument();
+    expect(screen.getByText(/08:50 · Cancelled/)).toBeInTheDocument();
     expect(screen.getByText('Live data says this route may no longer work')).toBeInTheDocument();
   });
 

@@ -56,7 +56,7 @@ export function tocNameLookup(tocs: Suggestion[]): Map<string, string> {
  * `Name (CODE)` shape as `stationLabel`, for the same reason: the code is
  * what a reader might cross-reference elsewhere, so it's kept even once a
  * name is known. */
-export function operatorLabel(code: string, lookup: Map<string, string>): string {
+export function operatorLabel(code: string, lookup: ReadonlyMap<string, string>): string {
   const name = lookup.get(code);
   return name ? `${name} (${code})` : code;
 }

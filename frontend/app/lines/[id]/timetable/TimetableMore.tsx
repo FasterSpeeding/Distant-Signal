@@ -6,8 +6,7 @@ import { LoadMoreControl } from '@/components/LoadMoreControl';
 import { TextLink } from '@/components/TextLink';
 import { fromStationView, lineTimetableQuery, timetableRowTimes } from '@/lib/lineTrains';
 import type { LineCatalogueStation, LineDirection, LineTimetablePage, LineTimetableTrain } from '@/lib/types';
-import { LineTrainRow } from '../LineTrainRow';
-import classes from '../LineTrains.module.css';
+import { ServiceRow, ServiceRowList } from '@/components/ServiceRow';
 
 /** The query of the page's first fetch, repeated for every next page. */
 export interface TimetableQuery {
@@ -80,11 +79,11 @@ export function TimetableMore({
   return (
     <>
       {rows.length > 0 && (
-        <ul className={classes.list} aria-label="More trains">
+        <ServiceRowList aria-label="More trains">
           {rows.map((train) => {
             const { time, arrival } = timetableRowTimes(train);
             return (
-              <LineTrainRow
+              <ServiceRow
                 key={train.uid}
                 train={fromStationView(train, query.from)}
                 date={query.date}
@@ -94,7 +93,7 @@ export function TimetableMore({
               />
             );
           })}
-        </ul>
+        </ServiceRowList>
       )}
       <VisuallyHidden role="status" aria-live="polite">
         {announcement}

@@ -143,7 +143,7 @@ describe('GroupDetailPage', () => {
     // same `TrackedTrainStatusBadge` `/` and `/track/mine` use, so the
     // word here must match theirs -- and the raw token must never appear.
     expect(screen.getByText('En route')).toBeInTheDocument();
-    expect(screen.getByText('5m late')).toBeInTheDocument();
+    expect(screen.getByText('5 min late')).toBeInTheDocument();
     expect(screen.queryByText('en_route')).not.toBeInTheDocument();
   });
 
@@ -841,7 +841,7 @@ describe('GroupDetailPage', () => {
       // Same shared `TrackedTrainStatusBadge` `/` and `/track/mine` use --
       // the raw `status` enum token must never leak into the page.
       expect(screen.getByText('En route')).toBeInTheDocument();
-      expect(screen.getByText('5m late')).toBeInTheDocument();
+      expect(screen.getByText('5 min late')).toBeInTheDocument();
       expect(screen.queryByText('en_route')).not.toBeInTheDocument();
     });
 

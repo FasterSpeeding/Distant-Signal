@@ -301,7 +301,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ delayMinutes: 12 })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('12m late')).toBeInTheDocument();
+    expect(screen.getByText('12 min late')).toBeInTheDocument();
   });
 
   // Task 3.6.8: `trackedTrainDisplayName` already falls back to
@@ -350,7 +350,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     const { container } = renderWithMantine(await MyTrackedTrainsPage());
 
-    expectShrinkGuarded(screen.getByText('12m late'));
+    expectShrinkGuarded(screen.getByText('12 min late'));
     expectShrinkGuarded(screen.getByRole('button', { name: `More actions for ${customName}` }));
     expectNoUnguardedNowrapBadges(container);
   });
@@ -517,7 +517,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       expect(screen.getByText('En route')).toBeInTheDocument();
-      expect(screen.getByText('9m late')).toBeInTheDocument();
+      expect(screen.getByText('9 min late')).toBeInTheDocument();
     });
 
     // Task 1.5 (WCAG 2.5.3): `SharedTrainListRow` pairs its heading with
@@ -530,7 +530,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       const { container } = renderWithMantine(await MyTrackedTrainsPage());
 
-      expectShrinkGuarded(screen.getByText('9m late'));
+      expectShrinkGuarded(screen.getByText('9 min late'));
       expectNoUnguardedNowrapBadges(container);
     });
 

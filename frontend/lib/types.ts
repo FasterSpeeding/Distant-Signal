@@ -2264,29 +2264,41 @@ export interface LineTimetablePage {
   nextCursor: string | null;
 }
 
-/** One row of `GET /public/trains/search` (`render::calling_point_departure_json`). */
-export interface TrainSearchResult {
+/** One row of `GET /public/trains/search` (`render::calling_point_departure_json`).
+ * The one wire type for this route (the station board, `/trains` and the
+ * line page's station-pair search all read it). */
+export interface TrainSearchResult extends ServiceModeFields {
   uid: string;
+  /** The working-timetable departure at `stationCrs`, `HH:MM`. */
   scheduled: string | null;
+  /** The public (timetable) departure, shown in place of `scheduled`
+   * (kept as WTT for one release). `null`/absent until the next schedule
+   * publish. */
   publicDeparture?: string | null;
+  /** The searched calling point, echoed back on every row. */
   stationCrs: string;
+  /** The schedule's TRUE origin and destination; either can be
+   * unresolved for a real published schedule. */
   originCrs: string | null;
   destinationCrs: string | null;
+  /** Names resolved from the codes; `null` when unresolved, absent from a
+   * backend that predates the field. */
+  originName?: string | null;
   destinationName?: string | null;
   destinationArrival: string | null;
+  /** Calendar days past the service date `destinationArrival` falls on. */
   destinationArrivalDayOffset: number;
   publicDestinationArrival?: string | null;
-  operator?: string | null;
-  serviceMode?: ServiceMode | null;
-  liveTracking?: boolean | null;
   /** Days after the searched date (the service date) the departure from
    * `stationCrs` falls on. Moves the calendar day only, never the service
-   * date (2026-10-07). */
+   * date, so a row's link keeps the searched date. Absent from an older
+   * backend: read as 0. */
   dayOffset?: number;
-  /** `originCrs`'s station name, `null` when unknown (2026-10-07). */
-  originName?: string | null;
+  /** The operating ATOC code, `null` when unknown. */
+  operator?: string | null;
   /** The line summary's compact live status, `null` when the train has
-   * none (2026-10-07). */
+   * none; absent from an older backend. Either way the row reads
+   * "Scheduled". */
   live?: LineTrainSummaryLive | null;
 }
 
