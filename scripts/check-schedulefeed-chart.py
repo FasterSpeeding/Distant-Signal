@@ -551,7 +551,8 @@ def postgres_clients(docs: Sequence[Doc]) -> set[str]:
                 for peer in cast("list[dict[str, object]]", rule.get("from") or []):
                     selector = cast("dict[str, object]", peer.get("podSelector") or {})
                     for expr in cast(
-                        "list[dict[str, object]]", selector.get("matchExpressions") or []
+                        "list[dict[str, object]]",
+                        selector.get("matchExpressions") or [],
                     ):
                         if expr.get("key") == "app.kubernetes.io/component":
                             found |= set(cast("list[str]", expr.get("values") or []))
@@ -598,7 +599,7 @@ def check_reference_sink(c: Checker) -> None:
     names = [str(e["name"]) for e in entries]
     reference = env(container(docs, "reference"))
     c.check(
-        ok=DB_ENV <= set(reference),
+        ok=set(reference) >= DB_ENV,
         message=f"sink db: reference lacks {sorted(DB_ENV - set(reference))}",
     )
     c.check(

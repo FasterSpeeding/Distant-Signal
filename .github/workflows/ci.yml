@@ -461,6 +461,8 @@ jobs:
       # tests; spec §6.5 runs them per narrowed role later. Each DB service's
       # tests/schema_gate.rs (plan 1B.2) checks its own role's grants, so
       # every service with one runs as its own role, the writer included.
+      # schedule-reference's role is narrow (plan 2a.6): its db sink's
+      # parity and protocol tests prove exactly its db-grants.yaml grants.
       - name: DB-backed tests as each service's own role (Stage 0b)
         run: |
           # shellcheck disable=SC2016 # expanded by the inner sh, from the env test-postgres-roles.py sets
@@ -471,6 +473,7 @@ jobs:
             DATABASE_URL="$DATABASE_URL_AGGREGATOR" cargo test -p aggregator -- --ignored --test-threads=1 $skip &&
             DATABASE_URL="$DATABASE_URL_NOTIFIER" cargo test -p notifier -- --ignored --test-threads=1 $skip &&
             DATABASE_URL="$DATABASE_URL_WRITER" cargo test -p ingest-writer -- --ignored --test-threads=1 &&
+            DATABASE_URL="$DATABASE_URL_SCHEDULE_REFERENCE" cargo test -p schedule-reference -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_ENRICHER" cargo test -p enricher -- --ignored --skip live_eval --skip replay_ --test-threads=1'
 
   # Custom: no reusable Piped workflow covers Node/npm at all (its

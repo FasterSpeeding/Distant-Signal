@@ -1058,10 +1058,12 @@ Every helper takes root unless it says otherwise.
 
 distant-signal.perServiceKeys: the services this chart can move to their
 own role, space-separated. Each must be a created (not `planned`) role in
-db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9).
+db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9);
+`schedule_reference` is schedule-reference's db sink's (plan 2a, a narrow
+role).
 */}}
 {{- define "distant-signal.perServiceKeys" -}}
-api aggregator enricher notifier writer
+api aggregator enricher notifier writer schedule_reference
 {{- end }}
 
 {{- define "distant-signal.perServiceEnabled" -}}
