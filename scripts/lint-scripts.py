@@ -6,8 +6,10 @@
 Covers the shell and Python scripts, the workflow run: blocks, the
 Dockerfiles (hadolint) and, via scripts/lint-containers.py, the Dockerfile
 RUN bodies, the inline shell in the docker-compose files and the image
-digest pins. Each step is reported as `== <command>`; every step runs even
-after one fails, and the exit status is 1 if any failed.
+digest pins, and that the Rust Dockerfiles' generated builder stages match
+scripts/gen-rust-dockerfiles.py. Each step is reported as `== <command>`;
+every step runs even after one fails, and the exit status is 1 if any
+failed.
 
 --fix applies shfmt and ruff format/autofixes first, then checks. A failing
 fix command stops the run with that command's exit status.
@@ -124,6 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ([tool("actionlint")], {"SHELLCHECK_OPTS": ACTIONLINT_SHELLCHECK_OPTS}),
         ([tool("hadolint"), "--config", ".hadolint.yaml", *dockerfiles], None),
         ([sys.executable, "scripts/lint-containers.py"], None),
+        ([sys.executable, "scripts/gen-rust-dockerfiles.py", "--check"], None),
     ]
     results = [run_step(step, extra_env) for step, extra_env in steps]
     return 0 if all(results) else 1

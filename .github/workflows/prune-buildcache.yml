@@ -1,0 +1,44 @@
+name: Prune build cache
+
+# containers.yml writes each image's BuildKit layer cache to
+# ghcr.io/fasterspeeding/distant-signal/buildcache:<service> on every push
+# to main. Each write moves the tag to a new manifest and leaves the old
+# one untagged, still stored, so untagged versions pile up at ~19 per
+# push. This deletes them weekly. The tagged versions (the live cache) are
+# never touched, and neither is any image package: `package-name` is the
+# buildcache package only.
+#
+# The buildcache images are single OCI image manifests
+# (`image-manifest=true` in containers.yml), not multi-arch indexes, so an
+# untagged version is never a child of a tagged one that is still in use.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC, off the hour
+  workflow_dispatch:
+
+concurrency:
+  group: prune-buildcache
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  prune:
+    name: delete untagged buildcache versions
+    runs-on: ubuntu-24.04
+    permissions:
+      # Deleting a package version needs write. GITHUB_TOKEN can only
+      # delete versions of a container package that grants this
+      # repository the Admin role (package settings, "Manage Actions
+      # access"); check that once after the package's first push.
+      packages: write
+    steps:
+      - name: Delete untagged versions of distant-signal/buildcache
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: distant-signal/buildcache
+          package-type: container
+          delete-only-untagged-versions: "true"
+          # 0: keep no untagged version (the action's documented form).
+          min-versions-to-keep: 0
