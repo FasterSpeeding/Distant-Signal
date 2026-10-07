@@ -13,10 +13,15 @@
 //! - `population`: the per-line schedule population.
 //! - `publish`: the network, destination and calling-point products and
 //!   the chunked diff-publish protocol.
+//! - [`services`]: the per-date `schedule_services` publish (plan 2a.2).
+//! - [`summaries`]: `line_train_summaries`' derivation and the population
+//!   upsert that writes them in its transaction (plan 2a.2).
 
 mod markers;
 mod population;
 mod publish;
+pub mod services;
+pub mod summaries;
 
 pub use markers::{
     ScheduleFeedFile, ScheduleFeedIngestRequest, ScheduleFeedSource, insert_schedule_feed_ingest,

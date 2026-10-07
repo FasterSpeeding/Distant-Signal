@@ -17,9 +17,6 @@ use sqlx::PgPool;
 // Moved to `ds_store::freshness` (ingest architecture plan 1A.3).
 pub use ds_store::freshness::normalize_code;
 
-// Moved to `ds_store::freshness` (ingest architecture plan 1A.3).
-pub(crate) use ds_store::freshness::last_per_key;
-
 // Moved to ds_store::incidents (ingest architecture plan 1A.8)
 pub use ds_store::incidents::{
     INCIDENTS_WITHOUT_PLACE_METRIC, IncidentSnapshotOutcome, load_station_gazetteer,
