@@ -225,13 +225,22 @@ impl LockSession {
         self.state.lock().await.held.contains(&key)
     }
 
-    /// Closes the connection, releasing every lock (graceful shutdown).
+    /// Releases every lock and closes the connection (graceful shutdown).
+    /// The explicit `pg_advisory_unlock_all` makes the release synchronous:
+    /// a closed socket alone frees the locks only once the server backend
+    /// has noticed and exited, a moment later.
     pub async fn close(&self) {
         let mut state = self.state.lock().await;
-        if let Some(conn) = state.conn.take()
-            && let Err(err) = conn.close().await
-        {
-            tracing::debug!(error = ?err, "closing the advisory-lock connection failed");
+        if let Some(mut conn) = state.conn.take() {
+            if let Err(err) = sqlx::query("SELECT pg_advisory_unlock_all()")
+                .execute(&mut conn)
+                .await
+            {
+                tracing::debug!(error = ?err, "releasing the loop locks failed; closing anyway");
+            }
+            if let Err(err) = conn.close().await {
+                tracing::debug!(error = ?err, "closing the advisory-lock connection failed");
+            }
         }
         state.held.clear();
     }
