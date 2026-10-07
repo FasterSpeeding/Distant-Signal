@@ -12,7 +12,7 @@ Read the spec first. Section numbers (§) below refer to it.
 - Internal reads are direct and read-only (R2).
 - Migrations and loops have one owner each (R3).
 
-Decisions D1–D4 (spec §16, 2026-10-06) apply. Phase 0 is in progress
+Decisions D1–D8 (spec §16, 2026-10-06 and 2026-10-07) apply. Phase 0 is in progress
 (chart and tooling, off by default). Phase 1A waits for the in-flight api
 branches to merge (D4).
 
@@ -167,11 +167,63 @@ Verification for each task, besides the standard list:
 - `scripts/diff-api-surface.py` (new in 1A.1): an api `/metrics` series-name
   list and a normalised dump of every SQL string literal in `api` plus
   `ds-store`, compared with the base commit. A move changes neither;
+- `scripts/check-crate-deps.py` (new in 1A.1): `ds-store`'s normal
+  dependency closure still holds no forbidden crate;
 - the moved DB tests pass in their new home.
+
+**How a mover runs the checks.** From the worktree root, with the
+uncommitted or committed move in place:
+
+```
+export UV_PROJECT_ENVIRONMENT=<scratchpad>/venv
+uv run scripts/diff-api-surface.py diff "$(git merge-base HEAD main)"
+uv run scripts/check-crate-deps.py
+```
+
+- `diff BASE` compares BASE (read through `git show`, no checkout) with
+  the work tree, untracked `ds-store` files included; `diff BASE HEAD`
+  compares two commits. Exit 0 means no change, 1 a change (the unified
+  diff is printed), 2 a git error.
+- The metric list is read statically: macro and `metric_name(...)`
+  arguments, with constants resolved. A scrape of a running api would
+  show only series already observed or registered, and needs Postgres,
+  Redis and auth config.
+- SQL literals in test code (`tests/`, `#[cfg(test)]` items and
+  `#[cfg(test)] mod x;` files) form their own `test-sql` section. If a move
+  must duplicate a test fixture's SQL, rerun with `--ignore-test-sql` and
+  say why in the commit message. Production `sql` and `metrics` must never
+  differ.
+- In a two-commit split (1A.9: copy, then delete), only the second commit
+  must be clean; the copy commit shows each copied literal twice.
+- `uv run scripts/diff-api-surface.py dump [REV]` prints one tree's surface.
+
+**What 1A.1 set up so the moves need not touch shared files.**
+
+- Every `ds-store` module in the table below already exists as an empty,
+  documented file declared in `lib.rs`. A move fills its own file (or
+  turns `trains.rs` into `trains/mod.rs`) and does not edit `lib.rs`.
+- `crates/ds-store/Cargo.toml` already declares the spec §5.1 dependency
+  set: `common` (no default features, `postgres`), `sqlx` without `macros`
+  or `migrate` (with `derive`), `chrono`, `chrono-tz`, `serde`,
+  `serde_json`, `anyhow`, `tracing`, `metrics`, `rand`, `tokio`,
+  `trust-schema` and `schedule-query`.
+- `common`'s reqwest-based modules and `metrics::install` are behind a new
+  default `http` feature, so `ds-store` can depend on `common` without
+  hyper or reqwest. A moved function that needs one of those modules does
+  not belong in `ds-store`.
+- CI already runs `cargo test -p ds-store -- --ignored` wherever it runs
+  the api's DB tests: as the superuser, as the app role (both cluster
+  modes) and per service (as the api role).
+- The api already depends on `ds-store`.
+
+**Keeping parallel moves mergeable.** Put each `pub use ds_store::…` shim
+where the moved item was, not in a block at the top of the file. Then two
+moves out of the same file (`queries.rs`, `routes/ingest.rs`) change
+separate places, with unchanged lines between them, and merge cleanly.
 
 | # | Task | Files | Tests |
 |---|---|---|---|
-| 1A.1 | Create the `crates/ds-store` crate (workspace member, lints, `publish = false`, sqlx without `migrate`/`macros`). Add `check-crate-deps.py`: `ds-store`'s normal dependency closure must not contain `axum`, `tower`, `hyper`, `redis`, `reqwest`, `oauth2`, `openidconnect` or `api`. Add `diff-api-surface.py` | `Cargo.toml`, `crates/ds-store/{Cargo.toml,src/lib.rs}`, `scripts/check-crate-deps.py`, `scripts/diff-api-surface.py`, CI | the scripts' unit tests under `scripts/tests/` |
+| 1A.1 | **Done (2026-10-07).** Create the `crates/ds-store` crate (workspace member, lints, `publish = false`, sqlx without `migrate`/`macros`), with every 1A module declared empty. Put `common`'s HTTP client and metrics listener behind a default `http` feature. Add `check-crate-deps.py`: `ds-store`'s normal dependency closure must not contain `axum`, `tower`, `hyper`, `redis`, `reqwest`, `oauth2`, `openidconnect` or `api`. Add `diff-api-surface.py` | `Cargo.toml`, `crates/common/{Cargo.toml,src/lib.rs,src/metrics.rs}`, `crates/ds-store/`, `scripts/check-crate-deps.py`, `scripts/diff-api-surface.py`, CI | the scripts' unit tests under `scripts/tests/` |
 | 1A.2 | `validate`: `validate_short_text`, `validate_code_list`, `is_crs_code` from `routes/mod.rs`; `routes` re-exports them | `ds-store/src/validate.rs`, `api/src/routes/mod.rs` | moved unit tests |
 | 1A.3 | `freshness`: `record_ingest` (now `pub`), every `last_*_fetch`, `data_freshness`, `last_per_key`, `normalize_code` | `ds-store/src/freshness.rs`, `api/src/data/queries.rs` | moved |
 | 1A.4 | `trains`: `trains.rs`'s shared functions, `stop_delay.rs`, `stop_live_status.rs`, `eta_blend::london_to_utc`, and the `JourneyStop`/`StopStatus`/`StopTimetable` types (re-exported from `journey.rs`) | `ds-store/src/trains/{mod,types,stop_delay,stop_live_status}.rs`; `api/src/data/{trains,stop_delay,stop_live_status,eta_blend,journey}.rs` | moved DB tests, also as the api role |
@@ -194,7 +246,7 @@ Rollback: revert the commit (no runtime switch).
 
 | # | Task | Files | Tests |
 |---|---|---|---|
-| 1B.1 | Move `api::migrate` and `legacy_backfill::ensure_ready_for_contract_migration` to `ds_store::migrate`; add the `crates/ds-migrate` binary (`run`, `wait`); build it into the api image | `ds-store/src/migrate.rs`, `crates/ds-migrate/`, `docker/api.Dockerfile`, `api/src/main.rs` (uses `ds_store::migrate`) | moved migrate tests (the INVALID-index heal, the role split test `the_app_role_has_dml_only_and_the_owner_owns_the_schema`); `migration_checksums` and `migration_index_locking` unchanged |
+| 1B.1 | Move `api::migrate` and `legacy_backfill::ensure_ready_for_contract_migration` to `ds_store::migrate`, and `crates/api/migrations` to `crates/ds-store/migrations` (D5; a rename, every file byte-identical); add the `crates/ds-migrate` binary (`run`, `wait`); build it into the api image | `ds-store/src/migrate.rs`, `crates/ds-store/migrations/`, `crates/ds-migrate/`, `docker/api.Dockerfile`, `api/src/main.rs` (uses `ds_store::migrate`), and every path naming the directory (`migration_checksums`, `migration_index_locking`, `check-migration-order.py`, `gen-db-grants.py`, `test-postgres-roles.py`, CI, Dockerfiles, docs) | moved migrate tests (the INVALID-index heal, the role split test `the_app_role_has_dml_only_and_the_owner_owns_the_schema`); `migration_checksums` and `migration_index_locking` unchanged |
 | 1B.2 | `schema::wait_for_schema` (5 s poll, 15 m deadline, `db_schema_ready` gauge, a `has_table_privilege` check per required table from `db-grants.yaml`, baked in at build time by `build.rs`) | `ds-store/src/schema.rs`, `ds-store/build.rs` | DB: waits until a later migration is applied, then returns; times out and errors |
 | 1B.3 | `api.migrateOnStartup` (`API_MIGRATE_ON_STARTUP`, default true). When false, `run_startup` runs `wait_for_schema` instead of `migrate::run`. The aggregator, enricher and notifier call `wait_for_schema` before their loops | `api/src/main.rs`, `aggregator/src/main.rs`, `enricher/src/main.rs`, `notifier/src/main.rs`, `values.yaml` | adapted `run_startup` tests: gate, then loops, then bind; a failed gate starts nothing |
 | 1B.4 | Chart `migrate-job.yaml`: hook `pre-upgrade,post-install`, weight -5, `before-hook-creation`, `backoffLimit: 1`, `activeDeadlineSeconds: 900`, a `pg_isready` wait, owner credentials only here; `migrate.job.enabled` (default false). With the Job on and `migrateOnStartup` false, the api gets no `MIGRATION_DATABASE_URL` | `templates/migrate-job.yaml`, `templates/api-deployment.yaml`, `values.yaml`, README | `helm template`: the owner secret appears only in the Job; the default render is unchanged |
@@ -401,6 +453,7 @@ Rollback: `sink=http` per producer.
 |---|---|---|---|
 | 3c.1 | Handlers `tfl-line-status/1` (with the `source_updated_at` guard), `tocs/1` (dedup), `ioi-*/1` | `crates/ingest-writer/src/handlers/*.rs` | DB per handler |
 | 3c.2 | poller-tfl, poller-tocs and the three IoI pollers: `INGEST_SINK`; chart Redis users, netpol | crates, templates | sink tests; `helm template` |
+| 3c.3 | RLS on `line_status` (D6, spec §6.4): `ENABLE ROW LEVEL SECURITY`; the writer role's policy allows only TfL rows (`USING` and `WITH CHECK`); permissive `USING (true)` policies keep every other role's access unchanged | `crates/ds-store/migrations/<assigned>_line_status_rls.sql`, `db-grants.yaml` | DB, as the writer role: a non-TfL insert or update fails and a TfL one succeeds; as the aggregator and api roles: unchanged; `migration_checksums`, `check-migration-order.py` |
 
 Exit: TfL and tocs on `stream` for 7 days. IoI stays `http` until those
 pollers are enabled (Q9).
