@@ -9,10 +9,16 @@
 //! item is re-exported here, so callers name `ds_store::schedule::…`.
 //!
 //! - `markers`: the feed-ingest and reference-publish markers.
+//! - `population`: the per-line schedule population.
 
 mod markers;
+mod population;
 
 pub use markers::{
     ScheduleFeedSource, insert_schedule_feed_ingest, insert_schedule_reference_publish,
     last_completed_schedule_reference_publish, last_schedule_feed_fetch,
+};
+pub use population::{
+    ConditionalPopulation, get_schedule_line_population, get_schedule_line_population_conditional,
+    upsert_schedule_line_population,
 };
