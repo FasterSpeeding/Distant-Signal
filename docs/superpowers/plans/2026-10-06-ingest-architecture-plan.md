@@ -434,11 +434,50 @@ Entry:
 
 ### 3a. The stream runtime, then station samples and full coverage
 
+**Status (2026-10-07): the runtime library is built, with no callers**
+(`crates/ingest-stream`, spec §7.7, [`docs/ingest-stream-runtime.md`](../../ingest-stream-runtime.md)).
+3a.1 and 3a.2 are done; 3a.3's Redis half (groups, PEL first, XAUTOCLAIM,
+DELCONSUMER, dead letters, retries, graceful shutdown, metrics) is done in
+`ingest_stream::consumer`, and the writer keeps its DB half. Decisions D5–D8
+and implementation choices I1–I3 (spec §16) apply. Differences from the
+table below:
+
+- The runtime is the crate `crates/ingest-stream` (I1), not
+  `common::ingest_stream`; producers depend on it with no sqlx.
+- Metric names are `ingest_stream_*` (I2; spec §14.1), not
+  `ingest_writer_*`/`ingest_producer_*`. 3a.4's alerts use them.
+- Dead-letter streams are capped at their source's `MAXLEN` (I3) and the
+  budget is 512 MB (D5), both checked by `ingest_stream::budget`.
+- Tests: unit and golden (`cargo test -p ingest-stream`), and Redis-gated
+  (`--test redis_stream -- --ignored`, a new step in CI's rust-test job).
+
+How the rest of 3a uses it:
+
+- **The writer (3a.3)**: one `StreamConsumer` per stream not `off`, with
+  `ConsumerConfig::new(stream, pod_name, budget::decl(stream).dead_letter_maxlen())`,
+  `.with_progress(..)` for `/livez`, and `run(&handler, shutdown)`. Its
+  `Handler` is the schema registry: decode `entry.envelope.payload_as()`,
+  run the `ingest_dedup` insert and the `ds-store` upsert in one
+  transaction, and map errors: SQLSTATE class 08/40/53/57, pool timeouts
+  → `Transient`; class 22/23 for the whole entry, an unknown schema
+  *name* → `Poison`; per-row rejects → `Handled::PartiallyRejected`; an
+  unknown schema *version* → `UnsupportedSchema`; a dedup hit →
+  `Duplicate`; shadow mode → `Skipped`. Still the writer's: `ingest_dedup`
+  and its pruning, `MINID` trims of the dead-letter streams, the modes,
+  the observed-at guards.
+- **Producers (3a.7, 3a.8, 3c)**: `Producer::spawn(client, ProducerConfig::new(stream,
+  budget::decl(stream).maxlen(), ProducePolicy::LatestSnapshot))` with the
+  client built by `redis_url_with_credentials` for its own ACL user (D6);
+  `split_snapshot(…, 100, |rows| to_raw_value(&body(rows)))` then
+  `submit(parts)`; readiness `stream_unavailable` from `is_available()`;
+  `metrics::record_oversize` on `TooLarge`; `last_produced_at` for the
+  `CursorSource::Stream` cursor; `shutdown(task, grace)` on exit.
+
 | # | Task | Files | Tests |
 |---|---|---|---|
-| 3a.1 | `common::ingest_stream` (feature `stream`): the envelope (spec §7.2), schema registry names, gzip above 8 KiB, a 512 KiB split helper, `produce(conn, stream, maxlen, envelope)` using `XADD … MAXLEN ~ N *`, and `last_produced_at(conn, stream)` (`XREVRANGE COUNT 1`) | `crates/common/src/ingest_stream.rs`, `Cargo.toml` (flate2 is already in the lock) | unit: round trip per schema; threshold; split; unknown `v` or `schema` refused; key stable across retries |
-| 3a.2 | Producer helper: a latest-only pending snapshot, backoff, `ingest_producer_*` metrics, readiness `stream_unavailable` | `crates/common/src/ingest_stream/producer.rs` | unit: a newer snapshot replaces the pending one; the dropped counter; backoff schedule |
-| 3a.3 | Writer stream runtime: groups at `0 MKSTREAM`; a per-stream task with PEL-first retry; `XAUTOCLAIM` every 60 s for entries idle over 5 min; `DELCONSUMER` hygiene; the dead-letter rules (spec §7.3); `ingest_dedup` (expand migration: the table plus a `applied_at` index in its own no-transaction file); hourly pruning; the `observed_at` guard helpers; modes `off`/`shadow`/`apply`; all metrics of spec §14.1 | `crates/ingest-writer/src/{stream.rs,dlq.rs,dedup.rs,handlers.rs}`, migrations (assigned range) | Redis plus DB gated: in-order apply; a crash mid-batch is reclaimed and applied once; a data error goes to the dead-letter stream with the rest committed; an unknown schema version stays pending and alerts; oversize goes to the dead-letter stream; `MAXLEN` trimming observed; shadow writes nothing |
+| 3a.1 | **Done 2026-10-07** (as `crates/ingest-stream`, I1). The envelope (spec §7.2), schema ids, gzip above 8 KiB, the 512 KiB `split_snapshot`, `xadd_entry` (`XADD … MAXLEN ~ N *`), and `last_produced_at` (`XREVRANGE COUNT 1`) | `crates/ingest-stream/src/{envelope,producer}.rs`, `tests/golden.rs` + `tests/fixtures/` | unit: round trip; threshold; split; unknown `v` refused (pending) and bad fields refused (poison); oversize and gzip-bomb caps; keys stable across retries; golden JSON and wire fixtures |
+| 3a.2 | **Done 2026-10-07.** `Producer`: latest-only pending snapshot or a bounded event buffer with backpressure, `common::backoff` (1 s → 60 s), `ingest_stream_produce_*` metrics, `is_available()` for readiness `stream_unavailable` | `crates/ingest-stream/src/producer.rs` | Redis-gated: latest-only vs event while Redis is down (dead port, then a forwarder), superseded counter, shutdown; under the `poller-ldbws` ACL user |
+| 3a.3 | Writer stream runtime. **Redis half done 2026-10-07** in `ingest_stream::consumer`: groups at `0 MKSTREAM`; PEL-first retry; `XAUTOCLAIM` every 60 s for entries idle over 5 min; `DELCONSUMER` hygiene; the dead-letter rules (spec §7.3); graceful shutdown; the stream metrics of spec §14.1. **Writer half, to do:** `ingest_dedup` (expand migration: the table plus a `applied_at` index in its own no-transaction file); hourly pruning; `MINID` trims of the dead-letter streams; the `observed_at` guard helpers; modes `off`/`shadow`/`apply`; the handler registry | `crates/ingest-stream/src/consumer.rs` (done); `crates/ingest-writer/src/{stream.rs,dedup.rs,handlers.rs}`, migrations (assigned range) | Done (Redis-gated, `crates/ingest-stream/tests/redis_stream.rs`): in-order apply; a crash's PEL reclaimed and applied first; poison, undecodable and oversize to the dead-letter stream; transient retried in order, never acked; an unknown schema or envelope version stays pending; `MAXLEN` trimming and a trimmed pending entry; under the `ingest-writer` ACL user. To do (DB-gated): applied once with dedup; a data error with the rest committed; shadow writes nothing |
 | 3a.4 | Alerts of spec §14.2 (stream backlog, stalled, dead letters, dead-letter expiring, unsupported schema, XADD failing, memory high) and the dead-letter runbook | `templates/prometheusrule.yaml`, `docs/ingest-streams-deadletter.md`, `values.yaml` (`metrics.prometheusRule.ingest*`) | `scripts/alert-rules-tests` cases for each |
 | 3a.5 | Expand migrations for the ordering guard columns where missing (`full_coverage_line_stats.source_updated_at`, `line_status.source_updated_at`) | migrations | `migration_checksums`, order check |
 | 3a.6 | Handlers `station-samples/1`, `full-coverage-stats/1`, `full-coverage-window-stats/1` (with `full_coverage_window::validate`), `station-full-coverage-samples/1`, each with the `observed_at` guard | `crates/ingest-writer/src/handlers/*.rs`, `ds-store/src/samples.rs` | DB: an older snapshot after a newer one changes nothing; same rows as the HTTP route for a fixture |
@@ -456,8 +495,8 @@ Rollout per producer:
 
 Then the same for `full-coverage`.
 
-Verification: writer `messages_total{outcome="applied"}` (shadow) equals
-the api route's request count; `ingest_writer_stream_bytes` within budget;
+Verification: writer `ingest_stream_consumed_total{outcome="skipped"}` (shadow) equals
+the api route's request count; `ingest_stream_bytes` within budget;
 `DistantSignalLdbwsStationStale` and
 `DistantSignalFullCoverageWindowStatsStalled` silent.
 
