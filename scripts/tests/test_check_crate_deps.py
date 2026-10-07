@@ -45,7 +45,11 @@ def run(fixture: str, crate: str = "ds-store") -> tuple[int, str]:
     out = io.StringIO()
     with redirect_stdout(out):
         status = deps.main(
-            [arg for name, path in trees.items() for arg in ("--tree-file", f"{name}={path}")]
+            [
+                arg
+                for name, path in trees.items()
+                for arg in ("--tree-file", f"{name}={path}")
+            ]
         )
     return status, out.getvalue()
 
