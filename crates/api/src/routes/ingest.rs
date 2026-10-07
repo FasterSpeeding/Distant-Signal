@@ -19,8 +19,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use common::ingest::LastFetchedResponse;
 use common::{
-    IncidentMessage, LineStatusReport, StationFullCoverageSample, StationReference, StationSample,
-    TocReference,
+    LineStatusReport, StationFullCoverageSample, StationReference, StationSample, TocReference,
 };
 use serde::{Deserialize, Serialize};
 
@@ -228,31 +227,15 @@ async fn post_incidents(
     }))
 }
 
+// Moved to ds_store::incidents::parse_snapshot (ingest architecture plan 1A.8)
 /// Reads either `POST /private/incidents` body shape (see `post_incidents`)
-/// as a snapshot. Deserialized from a `Value` by hand rather than through a
-/// `#[serde(untagged)]` enum, so a malformed body still gets the field-level
-/// error message (as a `422`, like axum's own `Json` data errors) instead of
-/// untagged's "did not match any variant".
+/// as a snapshot with [`ds_store::incidents::parse_snapshot`]; a malformed
+/// body is a `422`, like axum's own `Json` data errors.
 fn incident_snapshot_from_body(
     body: serde_json::Value,
 ) -> Result<common::IncidentSnapshot, (StatusCode, String)> {
-    let parsed = if body.is_array() {
-        serde_json::from_value::<Vec<IncidentMessage>>(body).map(|incidents| {
-            common::IncidentSnapshot {
-                incidents,
-                complete: false,
-                skipped: 0,
-            }
-        })
-    } else {
-        serde_json::from_value::<common::IncidentSnapshot>(body)
-    };
-    parsed.map_err(|err| {
-        (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("Failed to deserialize the JSON body into the target type: {err}"),
-        )
-    })
+    ds_store::incidents::parse_snapshot(body)
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))
 }
 
 async fn post_stations(
@@ -3998,53 +3981,11 @@ mod schedule_feed_provenance_tests {
 
 #[cfg(test)]
 mod incident_body_tests {
+    //! The body-shape tests moved with the parser to
+    //! `ds_store::incidents::parse_snapshot_tests` (plan task 1A.8); the
+    //! status mapping stays here.
     use super::*;
     use serde_json::json;
-
-    fn incident(id: &str) -> serde_json::Value {
-        json!({
-            "incident_id": id,
-            "summary": "s",
-            "description": "d",
-            "operators": [],
-            "affected_stations": [],
-            "priority": 1,
-            "validity": [],
-            "is_planned": false,
-            "is_cleared": false,
-        })
-    }
-
-    #[test]
-    fn an_older_pollers_bare_array_is_an_incomplete_snapshot() {
-        let snapshot = incident_snapshot_from_body(json!([incident("A"), incident("B")]))
-            .expect("the old shape is still accepted");
-        assert_eq!(snapshot.incidents.len(), 2);
-        assert!(
-            !snapshot.complete,
-            "a bare array never vouches for completeness"
-        );
-    }
-
-    #[test]
-    fn a_snapshot_object_carries_its_completeness() {
-        let snapshot = incident_snapshot_from_body(json!({
-            "incidents": [incident("A")],
-            "complete": true,
-            "skipped": 0,
-        }))
-        .expect("parses");
-        assert_eq!(snapshot.incidents.len(), 1);
-        assert!(snapshot.complete);
-    }
-
-    #[test]
-    fn a_snapshot_without_complete_is_not_complete() {
-        let snapshot =
-            incident_snapshot_from_body(json!({"incidents": [incident("A")]})).expect("parses");
-        assert!(!snapshot.complete);
-        assert_eq!(snapshot.skipped, 0);
-    }
 
     #[test]
     fn a_malformed_body_is_a_422_naming_the_problem() {

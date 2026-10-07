@@ -479,6 +479,94 @@ where
     })
 }
 
+/// Reads either body shape `poller-incidents` has sent as a snapshot:
+///
+/// - since 2026-10-06, a [`common::IncidentSnapshot`] object, whose
+///   `complete` lets the "Ended (no longer listed)" inference run (see
+///   [`removal`]);
+/// - before that, a bare `[IncidentMessage, ...]` array. Still accepted, as
+///   an INCOMPLETE snapshot, so an older poller keeps ingesting during a
+///   rollout but can never make an absent incident read as ended.
+///
+/// Deserialized from a `Value` by hand rather than through a
+/// `#[serde(untagged)]` enum, so a malformed body still gets the field-level
+/// error message instead of untagged's "did not match any variant". The
+/// `Err` is that message, worded like axum's own `Json` data errors; the
+/// api returns it as a `422`.
+pub fn parse_snapshot(body: serde_json::Value) -> Result<common::IncidentSnapshot, String> {
+    let parsed = if body.is_array() {
+        serde_json::from_value::<Vec<IncidentMessage>>(body).map(|incidents| {
+            common::IncidentSnapshot {
+                incidents,
+                complete: false,
+                skipped: 0,
+            }
+        })
+    } else {
+        serde_json::from_value::<common::IncidentSnapshot>(body)
+    };
+    parsed.map_err(|err| format!("Failed to deserialize the JSON body into the target type: {err}"))
+}
+
+#[cfg(test)]
+mod parse_snapshot_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn incident(id: &str) -> serde_json::Value {
+        json!({
+            "incident_id": id,
+            "summary": "s",
+            "description": "d",
+            "operators": [],
+            "affected_stations": [],
+            "priority": 1,
+            "validity": [],
+            "is_planned": false,
+            "is_cleared": false,
+        })
+    }
+
+    #[test]
+    fn an_older_pollers_bare_array_is_an_incomplete_snapshot() {
+        let snapshot = parse_snapshot(json!([incident("A"), incident("B")]))
+            .expect("the old shape is still accepted");
+        assert_eq!(snapshot.incidents.len(), 2);
+        assert!(
+            !snapshot.complete,
+            "a bare array never vouches for completeness"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_object_carries_its_completeness() {
+        let snapshot = parse_snapshot(json!({
+            "incidents": [incident("A")],
+            "complete": true,
+            "skipped": 0,
+        }))
+        .expect("parses");
+        assert_eq!(snapshot.incidents.len(), 1);
+        assert!(snapshot.complete);
+    }
+
+    #[test]
+    fn a_snapshot_without_complete_is_not_complete() {
+        let snapshot = parse_snapshot(json!({"incidents": [incident("A")]})).expect("parses");
+        assert!(!snapshot.complete);
+        assert_eq!(snapshot.skipped, 0);
+    }
+
+    #[test]
+    fn a_malformed_body_is_an_error_naming_the_problem() {
+        let message = parse_snapshot(json!({"incidents": [{"incident_id": "A"}]}))
+            .expect_err("missing fields");
+        assert!(message.contains("summary"), "{message}");
+        assert!(parse_snapshot(json!("nope")).is_err(), "not an object");
+    }
+}
+
 /// The publish-order contract of [`upsert_incident_snapshot`] (plan task
 /// 1A.8), against a real database: the callback runs once, after every
 /// chunk has committed (another connection already sees the rows) and
