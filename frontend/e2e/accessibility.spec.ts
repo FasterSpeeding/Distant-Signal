@@ -197,6 +197,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   ['/lines', '/lines'],
   [`/lines/${REAL_LINE_ID}`, `/lines/${REAL_LINE_ID}`],
   [`/lines/${REAL_LINE_ID}/history`, `/lines/${REAL_LINE_ID}/history`],
+  [`/lines/${REAL_LINE_ID}/timetable`, `/lines/${REAL_LINE_ID}/timetable`],
   ['/lines/new', '/lines/new'],
   ['/stations', '/stations'],
   [`/stations/${REAL_STATION_CRS}`, `/stations/${REAL_STATION_CRS}`],
