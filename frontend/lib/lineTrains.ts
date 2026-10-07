@@ -13,6 +13,7 @@ import { isTimetableOnly } from './serviceMode';
 import type {
   LineCatalogueStation,
   LineDirection,
+  LineTimetableTrain,
   LineTime,
   LineTrainSummary,
   LineTrainSummaryLive,
@@ -544,4 +545,16 @@ export function rankHubs(hubs: LineCatalogueStation[]): LineCatalogueStation[] {
     .map((hub, index) => ({ hub, index }))
     .sort((a, b) => rank(a.hub.role) - rank(b.hub.role) || a.index - b.index)
     .map(({ hub }) => hub);
+}
+
+/** A timetable row's listed time (`HH:MM`) and its arrival at `to`. Here,
+ * not in the client component, so the server-rendered first page can call
+ * it too. */
+export function timetableRowTimes(train: LineTimetableTrain): { time: string; arrival: string | undefined } {
+  const time = lineTimeMinute(train.time);
+  const arrival = lineTimeMinute(train.arrival);
+  return {
+    time: time === null ? '--:--' : formatClock(time),
+    arrival: arrival === null ? undefined : formatClock(arrival),
+  };
 }

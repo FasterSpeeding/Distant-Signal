@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 import { Group, Paper, Stack, Text, Title, VisuallyHidden } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
-import { ApiNotFoundError, getLineStatus, getLineTimetable } from '@/lib/api';
+import { ApiNotFoundError, getAllLines, getLineStatus, getLineTimetable } from '@/lib/api';
 import { createLogger } from '@/lib/logger';
 import { formatDate, londonDayKey, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import {
@@ -16,12 +16,13 @@ import {
   stationName,
   timetableHref,
   timetableParamsForHref,
+  timetableRowTimes,
   type TimetablePageParams,
 } from '@/lib/lineTrains';
 import type { LineCatalogueStation, LineTimetablePage } from '@/lib/types';
 import { LineTrainRow } from '../LineTrainRow';
 import classes from '../LineTrains.module.css';
-import { rowTimes, TimetableMore, type TimetableQuery } from './TimetableMore';
+import { TimetableMore, type TimetableQuery } from './TimetableMore';
 
 const log = createLogger('app/lines/timetable');
 
@@ -37,12 +38,19 @@ const TIMETABLE_PAGE_SIZE = 50;
 const DAYS_BACK = 3;
 const DAYS_AHEAD = 1;
 
-/** The line's name for the heading; the id when no source knows it (the
- * timetable itself still decides whether there is anything to show). */
+/** The line's name for the heading: its status report's, else the line
+ * list's (which always has the catalogue lines and the caller's own), else
+ * the id (the timetable itself still decides whether there is anything to
+ * show). */
 async function resolveLineName(id: string): Promise<string> {
   try {
     const [report] = await getLineStatus([id], false);
-    return report?.name ?? id;
+    if (report?.name) return report.name;
+  } catch {
+    // No status row yet is routine; the line list knows the name.
+  }
+  try {
+    return (await getAllLines()).find((line) => line.id === id)?.name ?? id;
   } catch (err) {
     log.warn('Could not resolve a line name; falling back to the id.', { line_id: id, error: err });
     return id;
@@ -320,7 +328,7 @@ export default async function LineTimetablePage({
           <>
             <ul className={classes.list} aria-label="Trains">
               {page.trains.map((train) => {
-                const { time, arrival } = rowTimes(train);
+                const { time, arrival } = timetableRowTimes(train);
                 return (
                   <LineTrainRow
                     key={train.uid}

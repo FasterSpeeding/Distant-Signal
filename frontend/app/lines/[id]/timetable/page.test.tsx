@@ -10,7 +10,7 @@ import LineTimetablePage from './page';
 
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>();
-  return { ...actual, getLineStatus: vi.fn(), getLineTimetable: vi.fn() };
+  return { ...actual, getAllLines: vi.fn(), getLineStatus: vi.fn(), getLineTimetable: vi.fn() };
 });
 
 const ID = 'swr-south-west-main';
@@ -228,6 +228,16 @@ describe('LineTimetablePage', () => {
     vi.mocked(api.getLineTimetable).mockRejectedValue(new Error('ECONNREFUSED'));
     await render();
     expect(screen.getByText(/This timetable isn’t available right now/)).toBeInTheDocument();
+  });
+
+  it('names the line from the line list when it has no status yet', async () => {
+    vi.mocked(api.getLineTimetable).mockResolvedValue(page());
+    vi.mocked(api.getLineStatus).mockRejectedValue(new ApiNotFoundError('no status'));
+    vi.mocked(api.getAllLines).mockResolvedValue([
+      { id: ID, name: 'South West Main Line (list)' } as Awaited<ReturnType<typeof api.getAllLines>>[number],
+    ]);
+    await render();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Timetable: South West Main Line (list)');
   });
 
   it('rejects a malformed line id', async () => {

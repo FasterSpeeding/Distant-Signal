@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { VisuallyHidden } from '@mantine/core';
 import { LoadMoreControl } from '@/components/LoadMoreControl';
 import { TextLink } from '@/components/TextLink';
-import { formatClock, lineTimeMinute, lineTimetableQuery } from '@/lib/lineTrains';
+import { lineTimetableQuery, timetableRowTimes } from '@/lib/lineTrains';
 import type { LineCatalogueStation, LineDirection, LineTimetablePage, LineTimetableTrain } from '@/lib/types';
 import { LineTrainRow } from '../LineTrainRow';
 import classes from '../LineTrains.module.css';
@@ -18,16 +18,6 @@ export interface TimetableQuery {
   at: string | null;
   scope: string;
   limit: number;
-}
-
-/** A row's listed time (`HH:MM`) and its arrival at `to`. */
-export function rowTimes(train: LineTimetableTrain): { time: string; arrival: string | undefined } {
-  const time = lineTimeMinute(train.time);
-  const arrival = lineTimeMinute(train.arrival);
-  return {
-    time: time === null ? '--:--' : formatClock(time),
-    arrival: arrival === null ? undefined : formatClock(arrival),
-  };
 }
 
 /** The rows after the server-rendered first page: "Load more" fetches the
@@ -91,7 +81,7 @@ export function TimetableMore({
       {rows.length > 0 && (
         <ul className={classes.list} aria-label="More trains">
           {rows.map((train) => {
-            const { time, arrival } = rowTimes(train);
+            const { time, arrival } = timetableRowTimes(train);
             return (
               <LineTrainRow
                 key={train.uid}
