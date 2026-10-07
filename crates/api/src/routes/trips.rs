@@ -208,6 +208,8 @@ struct TripPlanParams {
     destination: String,
     /// Comma-separated ordered CRS codes, e.g. `?waypoints=YRK,NCL`. Absent
     /// or empty means no waypoints -- a direct origin->destination plan.
+    /// An entry may be an OR choice (2026-10-07: `KGX|EUS`, `group:LON`),
+    /// a stop at ANY of its stations; see [`parse_waypoints`].
     #[serde(default)]
     waypoints: Option<String>,
     date: NaiveDate,

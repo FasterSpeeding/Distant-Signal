@@ -29,7 +29,9 @@ these", so avoiding any of several stations is the same as avoiding them
 all, and nothing else is needed for OR avoids. `|` in an avoid list is a
 400 rather than silently meaning the same thing as a comma.
 
-`waypoints` does not take groups or `|`; either is a 400 (see "Not done").
+`waypoints` takes OR choices too, as a follow-up the same day: see
+"Waypoint groups" below. (The first version of this branch made them a
+400.)
 
 ### Why both shapes
 
@@ -138,18 +140,165 @@ CSV row per member. A member that the deployment's station data does not
 know makes the group's requests a 400 naming that member: loud rather than
 silently narrower.
 
+## Waypoint groups (follow-up, 2026-10-07)
+
+DS-MCP's `viaStop` with `LON` ("call at any London terminal") was the case
+left on its local engine. A `waypoints` entry now takes the same OR-choice
+syntax as `via`: `waypoints=group:LON`, `waypoints=KGX|EUS|STP`,
+`waypoints=YRK,group:LON|CBG`. Each comma-separated entry is still ONE
+waypoint, in order.
+
+The DS-MCP session decided four points (2026-10-07), recorded here as the
+contract:
+
+1. **An end as a member counts.** As for an OR via, a group holding the
+   origin or the destination may be satisfied there (details below).
+2. **It is needed.** DS-MCP switches `viaStop` with `LON` to
+   `waypoints=group:LON` once this ships.
+3. **Member selection is plain earliest arrival.** No preference order
+   among members: the member a real train reaches first wins.
+4. **No group-specific dwell or minimum-stop rule.** Only the ordinary
+   same-train continuation exemption that any single-station waypoint
+   already gets: no change is charged when the train that reached the
+   member continues on the same working.
+
+### Semantics
+
+- **Satisfied by stopping at ANY member.** A call there (the traveller
+  alights, or stays aboard a train that calls there), or a walk into it,
+  exactly as for a single-station waypoint. A train running through a
+  member without calling does not satisfy it.
+- **Which member.** The engine needs no new state: a waypoint was already
+  a TIPLOC set, so a group is the union of its members' TIPLOCs, and
+  arriving at any of them advances the stage. The journey's own optimum
+  decides the member: the earliest arrival at the destination (or, for
+  arrive-by, the latest departure), and along that journey the FIRST
+  member reached. When one train calls at two members (WAE then WAT, say),
+  the stage advances at the first, and the traveller rides on from there
+  in the next segment. A later member cannot "re-take" it, because the
+  ride at the greater stage dominates the ride at the lesser one
+  (`a_group_waypoint_is_satisfied_at_the_first_member_reached`).
+- **Segments.** The journey is split at whichever member it used. Segment
+  ends are named by the waypoint's label (`group:LON`, `KGX|EUS`), the
+  same for every journey, since the member differs per journey; the legs
+  and `journeys[j].waypointSatisfiedBy` say which member.
+- **Dwell, changes and minimum stop.** All as for a single-station
+  waypoint, at the member used. Staying aboard the train that reached it
+  is no change (`continuesPreviousTrain`). A fresh boarding there costs
+  that member's own minimum change time, or the waypoint fallback of 5
+  minutes at a `NoInterchange` sentinel. The change cap counts the whole
+  journey.
+- **Arrive-by.** The backward scan mirrors the same state rule, and the
+  journey is built by the forward search from the latest departure, so
+  "first reached" means the same in both directions. The random oracle
+  test (`a_group_waypoint_is_the_best_of_its_members`: the group's
+  earliest arrival and latest departure equal the best single member's)
+  found one gap, which is now fixed in `reverse.rs`. When the onward train
+  reaches ANOTHER member later, the scan kept only "aboard at the earlier
+  stage" (the dominating state), and at that stage a `NoInterchange`
+  member forbids boarding. The forward search boards there at the next
+  stage, with the fallback. A boarding the scan would drop for that reason
+  is now retried at the next stage
+  (`arrive_by_boards_at_a_no_interchange_member_after_stopping_there`).
+  With single-station waypoints this could only arise on a train calling
+  twice at the waypoint.
+- **Ends.** Per point 1, an OR choice that is the FIRST waypoint and
+  includes the origin is satisfied at the origin. One that is the LAST
+  waypoint and includes the destination is satisfied at the destination.
+  Either one is left out of the search and gets no segment: an empty
+  segment carries no information and would be an itinerary with no legs.
+  `waypointSatisfiedBy` reports it with `how: "origin"` (segment 0) or
+  `"destination"` (the last segment). If one choice holds both ends, it is
+  satisfied at the origin, which is reached first. A member equal to an
+  end in any OTHER position is an ordinary stop: the journey must come
+  back to it, which keeps the waypoints' order meaningful. A single
+  station equal to an end is still the old 400.
+- **Avoid lists.** A member in `avoid`, `avoidStop` or `avoidChange` is
+  dropped from the choice, since a stop there is not allowed. That
+  matches "avoided members are never used" for vias, and the
+  single-station waypoint rule, where any of the three is a 400. A choice
+  left with no member is a 400. A single-station waypoint in an avoid list
+  is still the old 400, and so is an avoid-list group that contains a
+  single-station waypoint.
+- **Adjacent waypoints** that share a station, at least one of them a
+  choice (`group:LON,KGX`, `group:LON,group:LON`), are a 400: one stop
+  would satisfy both. The check runs after avoided members are dropped. The
+  same station twice as single waypoints keeps its old message ("is the
+  waypoint before it"). `group:LON,CBG,group:LON` is fine.
+- **Vias** are independent of waypoints, as before. A via (or an OR via)
+  and a waypoint group may share stations: `via=KGX&waypoints=group:LON`
+  passes King's Cross somewhere and stops at some terminal.
+- **The explainer.** When no journey stops at every waypoint, the
+  per-segment chained planner names the failing segment. Its segments
+  start and end at every member of a choice. So a chained segment may
+  leave from a different member than the previous one reached, which is
+  looser than the joint search. That is acceptable for finding which
+  segment cannot be planned. Messages name the label
+  (`KGX -> group:LON`).
+
+### Limits and the guard
+
+| limit | value | why |
+|---|---|---|
+| waypoints | 20 (unchanged, `TRIP_PLAN_MAX_WAYPOINTS`) | a choice counts as one |
+| stations in one waypoint | 24 | as for a via: room for `group:LON` and a few more |
+| stations across all waypoints | 54 | as for vias, and separately from them; singles count 1 each, so 2 `LON` groups and 18 singles, or 3 `LON` groups |
+| options search-size guard | unchanged formula | a choice is one waypoint in `(waypoints + 1) * (2 * vias + 1) * (maxChanges + 2)` |
+
+`bench_group_waypoints_against_single` (release, the same synthetic
+27.9k-train network, 8 rounds, medians over three OD pairs on a shared,
+busy machine) puts 18-member groups in place of single hubs:
+
+| waypoints (groups) / vias | members | CSA | CSA arrive-by | RAPTOR | arrive-by rounds |
+|---|---|---|---|---|---|
+| 3 (3) / 0 | 1 | 93 ms | 135 ms | 5.6 s | 2.9 s |
+| 3 (3) / 0 | 18 | 91 ms | 110 ms | 4.3 s | 0.9 s |
+| 20 (2) / 0 | 1 | 937 ms | 547 ms | 4.4 s | 4.4 s |
+| 20 (2) / 0 | 18 | 738 ms | 398 ms | 4.7 s | 2.1 s |
+| 3 (3) / 3 | 1 | 91 ms | 253 ms | 5.1 s | 3.0 s |
+| 3 (3) / 3 | 18 | 88 ms | 194 ms | 4.7 s | 2.6 s |
+
+The last two rows have three 18-member group vias with the 18-member
+waypoints, at the guard's limit. A group waypoint costs no more than a
+single one: within noise, and often less, because a stage fills in sooner
+when any of 18 stations advances it. The per-connection cost is one
+`HashSet` lookup either way. So the guard counts a group as one waypoint.
+The 20-waypoint rows find no arrive-by journey by 23:00 on this network;
+they measure the search's cost, not a result.
+
+### Response
+
+- `segments[s].originCrs`/`destinationCrs`: a choice's label at its ends.
+- `journeys[j].waypointSatisfiedBy[k]` (only when some waypoint is a
+  choice, so single-waypoint responses are byte-identical):
+  `{crs, matchedCrs, segment, how}`. `crs` is the waypoint as requested.
+  `matchedCrs` is the station stopped at. `segment` is the segment that
+  ends there. `how` is `call`, `walk`, `origin` or `destination`.
+- `stationGroups` also lists groups named in `waypoints`.
+
+## Discovery: `GET /Trips/station-groups`
+
+This is for pickers (the `/plan` page; any client). It takes no
+parameters and reads no database, since the groups are compiled in.
+`Cache-Control: public, max-age=3600`.
+
+```json
+{"groups": [{"group": "LON", "code": "group:LON", "name": "London Terminals",
+  "members": [{"crs": "BFR", "name": "London Blackfriars"}, "..."]}]}
+```
+
+`name` comes from `GROUP_NAMES` in `station_groups.rs`, falling back to
+the code. Members' names are the CSV's third column.
+
+## Frontend (`/plan`)
+
+The Advanced options' "Pass through" picker, and the "Call at" stops
+picker, offer each group from `GET /Trips/station-groups` above the
+station suggestions. The label is "Any London terminal (18 stations)",
+and the request sends `group:LON`. An itinerary names the member it used:
+"via King's Cross (any London terminal)", from `matchedCrs`.
+
 ## Not done (follow-ups)
 
-- **Waypoint groups** ("call at any London terminal", DS-MCP's `viaStop`
-  with `LON`). The joint search would take it, since a waypoint is already
-  a TIPLOC set. But segments are named by their waypoint CRS, the chained
-  explainer resolves CRS codes per segment, and the waypoint conflict
-  checks compare codes. The segment shape for "a group as a segment end"
-  needs its own decision. For now `waypoints=group:LON` (or `KGX|EUS`) is
-  a 400 that says waypoints take single stations, and DS-MCP keeps a `LON`
-  in `viaStop` on its local engine.
-- **Frontend.** The `/plan` page's "Pass through" picker selects stations.
-  Exposing groups there needs a group option in the picker, so it is not
-  trivial; it is left for later.
-- **A discovery endpoint** for the groups. For now the CSV and this doc
-  list them, and `stationGroups` echoes the members in use.
+- More groups: only `LON` exists. Each new group needs a name in
+  `GROUP_NAMES` for the picker.
