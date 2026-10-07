@@ -1605,18 +1605,55 @@ export interface PartialTicket {
  * `components/DelayRepayEstimate.tsx`, which renders only the top-level
  * one. */
 export interface DelayRepayEstimate {
-  scheme: 'DR15' | 'DR30';
-  /** 15, 30, 60 or 120. */
+  /** `HX` is Heathrow Express's own scheme (25% / 50% of the ticket for
+   * more than 30 / 60 minutes). */
+  scheme: 'DR15' | 'DR30' | 'HX';
+  /** 15, 30, 60 or 120 (`HX`: 30 or 60, meaning "more than"). */
   bandMinutes: number;
-  percentage: number;
-  /** Which fare `percentage` is of: the single fare below 120 minutes, the
-   * return fare in the 120-minute band. Optional: absent from an older
-   * backend (read as `single`). */
-  fareBasis?: 'single' | 'return';
+  /** `null` exactly when `borderline`: the band could go either way, so no
+   * figure is shown. */
+  percentage: number | null;
+  /** Which fare `percentage` is of: `single` below 120 minutes and for a
+   * single ticket at 120+, `return` at 120+ for a return or a ticket of
+   * unknown kind (see `ticketKind`), `ticket` for Heathrow Express.
+   * Optional: absent from an older backend (read as `single`). */
+  fareBasis?: 'single' | 'return' | 'ticket';
+  /** What the ticket's type clearly says it is. */
+  ticketKind?: TicketKind;
+  /** Caledonian Sleeper: the percentage of the room supplement; else `null`. */
+  roomSupplementPercentage?: number | null;
+  /** `true` while provisional and the projection is less than 3 minutes
+   * above `thresholdMinutes`. */
+  borderline?: boolean;
+  thresholdMinutes?: number | null;
   /** `true` while the train has not reached the ticket's destination: the
    * band is a projection and `disclaimer` says so. */
   provisional?: boolean;
   disclaimer: string;
+}
+
+/** What a ticket's free-text type clearly says it is. */
+export type TicketKind = 'single' | 'return' | 'unknown';
+
+/** Whether the train got to the ticket's destination: `arrived` (final),
+ * `departedOnly` (final, measured on its departure there: the station
+ * reports departures only), `notReached` (cancelled, terminated short or
+ * ran through it). `null` while not known yet. */
+export type DelayRepayOutcome = 'arrived' | 'departedOnly' | 'notReached';
+
+/** The Delay Repay fields shared by `GET .../delay-repay` and
+ * `GET /Train/tickets/mine` (2026-10-07). All optional: absent from an older
+ * backend. */
+export interface DelayRepayExtraFields {
+  /** `measuredAtCrs`'s station name, when known. */
+  measuredAtName?: string | null;
+  outcome?: DelayRepayOutcome | null;
+  /** The operator runs its own compensation scheme: no percentage. */
+  ownScheme?: boolean;
+  /** The scheme's operator name, when it is one the rules know. */
+  schemeOperator?: string | null;
+  /** When the rules were last checked, `YYYY-MM-DD`. */
+  rulesCheckedOn?: string;
 }
 
 /** `GET .../tickets/{ticketId}/delay-repay`'s response. `claimUrl` and the
@@ -1628,7 +1665,7 @@ export interface DelayRepayEstimate {
  * signal which of the three applied; see
  * `components/DelayRepayEstimate.tsx` for how this is rendered honestly
  * without inventing a reason the API doesn't give. */
-export interface DelayRepayEstimateResponse {
+export interface DelayRepayEstimateResponse extends DelayRepayExtraFields {
   /** Against the PUBLIC arrival at `measuredAtCrs` (the ticket's
    * destination): final once the train has arrived there, projected before
    * (`provisional`). */
@@ -1663,7 +1700,7 @@ export interface DelayRepayEstimateResponse {
  * construction (no train means no delay data to estimate against) --
  * `claimUrl`/`disclaimer` stay unconditionally populated regardless, same
  * invariant as an attached ticket whose train hasn't reported a delay yet. */
-export interface TicketListItem {
+export interface TicketListItem extends DelayRepayExtraFields {
   id: number;
   trackedTrainId: number | null;
   operator: string | null;

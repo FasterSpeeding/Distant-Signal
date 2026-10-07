@@ -23,7 +23,7 @@ import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
 import { journeyListItemStatusGroup } from '@/lib/journeyStatus';
-import type { TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
+import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
 // route has no dynamic segment, so without this Next.js treats it as
@@ -391,14 +391,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
                 {/* Imported and used exactly as-is, no new props, no
                     wrapper -- literal reuse of the already-reviewed
                     rendering, same as both predecessor pages. */}
-                <DelayRepayEstimate
-                  response={{
-                    delayMinutes: ticket.delayMinutes,
-                    estimate: ticket.estimate,
-                    claimUrl: ticket.claimUrl,
-                    disclaimer: ticket.disclaimer,
-                  }}
-                />
+                <DelayRepayEstimate response={delayRepayResponse(ticket)} />
                 <Group gap="xs">
                   <RenameTicketButton
                     ticketId={ticket.id}
@@ -530,14 +523,7 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
     <Card withBorder>
       <Stack gap="sm">
         <TicketSummary ticket={ticket} />
-        <DelayRepayEstimate
-          response={{
-            delayMinutes: ticket.delayMinutes,
-            estimate: ticket.estimate,
-            claimUrl: ticket.claimUrl,
-            disclaimer: ticket.disclaimer,
-          }}
-        />
+        <DelayRepayEstimate response={delayRepayResponse(ticket)} />
         <Group gap="lg" wrap="wrap" align="flex-end">
           <AttachTicketAction ticketId={ticket.id} trains={trains} />
           <TextLink href={`/track?${trackParams.toString()}`} underline="always">
@@ -554,4 +540,23 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
       </Stack>
     </Card>
   );
+}
+
+/** A ticket list item's Delay Repay fields, which `GET /Train/tickets/mine`
+ * shapes exactly like `GET .../delay-repay`'s response. */
+function delayRepayResponse(ticket: TicketListItem): DelayRepayEstimateResponse {
+  return {
+    delayMinutes: ticket.delayMinutes,
+    provisional: ticket.provisional,
+    delayBasis: ticket.delayBasis,
+    measuredAtCrs: ticket.measuredAtCrs,
+    measuredAtName: ticket.measuredAtName,
+    outcome: ticket.outcome,
+    ownScheme: ticket.ownScheme,
+    schemeOperator: ticket.schemeOperator,
+    rulesCheckedOn: ticket.rulesCheckedOn,
+    estimate: ticket.estimate,
+    claimUrl: ticket.claimUrl,
+    disclaimer: ticket.disclaimer,
+  };
 }

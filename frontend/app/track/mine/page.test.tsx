@@ -153,7 +153,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
     expect(screen.getByText(/LNER/)).toBeInTheDocument();
     expect(screen.getByText(byVisibleText(/KGX → EDB/))).toBeInTheDocument();
-    expect(screen.getByText(/50% of your fare/)).toBeInTheDocument();
+    expect(screen.getByText(/50% of the single fare/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /See how to claim from the operator/ })).toHaveAttribute(
       'href',
       'https://delayrepay.lner.co.uk/delayrepayV2/',
