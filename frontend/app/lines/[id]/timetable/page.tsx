@@ -21,7 +21,7 @@ import {
   type TimetablePageParams,
 } from '@/lib/lineTrains';
 import type { LineCatalogueStation, LineTimetablePage } from '@/lib/types';
-import { LineTrainRow } from '../LineTrainRow';
+import { ServiceRow, ServiceRowList } from '@/components/ServiceRow';
 import classes from '../LineTrains.module.css';
 import { TimetableMore, type TimetableQuery } from './TimetableMore';
 
@@ -327,11 +327,11 @@ export default async function LineTimetablePage({
           </Empty>
         ) : (
           <>
-            <ul className={classes.list} aria-label="Trains">
+            <ServiceRowList aria-label="Trains">
               {page.trains.map((train) => {
                 const { time, arrival } = timetableRowTimes(train);
                 return (
-                  <LineTrainRow
+                  <ServiceRow
                     key={train.uid}
                     train={fromStationView(train, page.from)}
                     date={date}
@@ -341,7 +341,7 @@ export default async function LineTimetablePage({
                   />
                 );
               })}
-            </ul>
+            </ServiceRowList>
             <TimetableMore
               id={id}
               query={query}

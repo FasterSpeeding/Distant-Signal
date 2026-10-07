@@ -9,16 +9,7 @@
  * same scale as the API's `lineDue` (`dayOffset * 1440` + the time), so a
  * 00:20 train of the night is 1460, after 23:50 (1430).
  */
-import { isTimetableOnly } from './serviceMode';
-import type {
-  LineCatalogueStation,
-  LineDirection,
-  LineTimetableTrain,
-  LineTime,
-  LineTrainSummary,
-  LineTrainSummaryLive,
-  ServiceMode,
-} from './types';
+import type { LineCatalogueStation, LineDirection, LineTimetableTrain, LineTime, LineTrainSummary } from './types';
 
 export const DAY_MINUTES = 24 * 60;
 /** The latest minute the API accepts for a window bound (47:59). */
@@ -360,24 +351,6 @@ export function groupPatterns(trains: LineTrainSummary[]): PatternGroup[] {
       },
     ];
   });
-}
-
-export type LiveTone = 'cancelled' | 'late' | 'onTime' | 'timetable' | 'none';
-
-/** The row's status text and tone: cancelled, n min late, on time, or
- * nothing live yet. Buses and ferries are never reported live. */
-export function liveStatusLabel(
-  live: LineTrainSummaryLive | null,
-  serviceMode: ServiceMode | null | undefined,
-): { text: string; tone: LiveTone } {
-  if (live?.cancelled || live?.status === 'cancelled') return { text: 'Cancelled', tone: 'cancelled' };
-  if (isTimetableOnly({ serviceMode })) return { text: 'Timetable only', tone: 'timetable' };
-  if (live?.delayMinutes != null) {
-    const prefix = live.delayProvisional ? 'Exp. ' : '';
-    if (live.delayMinutes > 0) return { text: `${prefix}${live.delayMinutes} min late`, tone: 'late' };
-    return { text: 'On time', tone: 'onTime' };
-  }
-  return { text: 'Scheduled', tone: 'none' };
 }
 
 /** The query of `GET /public/lines/{id}/timetable`, shared by the server

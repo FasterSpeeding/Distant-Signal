@@ -35,7 +35,7 @@ import {
   type LinePageParams,
   type TrainWindow,
 } from '@/lib/lineTrains';
-import { LineTrainRow } from './LineTrainRow';
+import { ServiceRow, ServiceRowList } from '@/components/ServiceRow';
 import classes from './LineTrains.module.css';
 
 const NO_PARAMS: LinePageParams = { dir: null, at: null, from: null, to: null, view: null };
@@ -192,13 +192,13 @@ function TrainList({
   label: string;
 }) {
   return (
-    <ul className={classes.list} aria-label={label}>
+    <ServiceRowList aria-label={label}>
       {trains.map((train) => {
         const minute = lineTimeMinute(train.lineDue);
         const beyondPhone = window !== undefined && minute !== null && minute >= window.phoneTo;
         const date = dateFor(train);
         return (
-          <LineTrainRow
+          <ServiceRow
             key={`${date}-${train.uid}`}
             train={train}
             date={date}
@@ -207,7 +207,7 @@ function TrainList({
           />
         );
       })}
-    </ul>
+    </ServiceRowList>
   );
 }
 
@@ -483,9 +483,9 @@ function StationPairResults({
           No trains from {fromName} to {toName} in this window.
         </Empty>
       ) : (
-        <ul className={classes.list} aria-label={`Trains from ${fromName} to ${toName}`}>
+        <ServiceRowList aria-label={`Trains from ${fromName} to ${toName}`}>
           {result.rows.map((row) => (
-            <LineTrainRow
+            <ServiceRow
               key={row.uid}
               train={pairRow(row, live)}
               date={date}
@@ -494,7 +494,7 @@ function StationPairResults({
               showStrip={false}
             />
           ))}
-        </ul>
+        </ServiceRowList>
       )}
     </Stack>
   );

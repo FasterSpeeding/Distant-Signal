@@ -9,7 +9,6 @@ import {
   groupShared,
   hubStations,
   lineHref,
-  liveStatusLabel,
   londonMinuteOfDay,
   paramsForHref,
   parseLinePageParams,
@@ -235,25 +234,5 @@ describe('pattern grouping', () => {
       ['London Waterloo → Weymouth', 'stopping', '1 train', 1],
       ['London Waterloo → Southampton Central', null, '1 train', 1],
     ]);
-  });
-});
-
-describe('row status', () => {
-  it('says cancelled, late, on time, scheduled, or timetable-only for a bus', () => {
-    const live = {
-      status: 'en_route',
-      delayMinutes: 0,
-      delayProvisional: false,
-      cancelled: false,
-      lastReportedLocation: null,
-    };
-    expect(liveStatusLabel({ ...live, cancelled: true }, 'train')).toEqual({ text: 'Cancelled', tone: 'cancelled' });
-    expect(liveStatusLabel({ ...live, delayMinutes: 7 }, 'train')).toEqual({ text: '7 min late', tone: 'late' });
-    expect(liveStatusLabel({ ...live, delayMinutes: 7, delayProvisional: true }, 'train').text).toBe('Exp. 7 min late');
-    expect(liveStatusLabel(live, 'train')).toEqual({ text: 'On time', tone: 'onTime' });
-    expect(liveStatusLabel(null, 'train')).toEqual({ text: 'Scheduled', tone: 'none' });
-    expect(liveStatusLabel(null, 'replacementBus').text).toBe('Timetable only');
-    expect(liveStatusLabel(null, 'ferry').text).toBe('Timetable only');
-    expect(liveStatusLabel(null, undefined)).toEqual({ text: 'Scheduled', tone: 'none' });
   });
 });

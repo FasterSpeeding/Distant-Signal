@@ -1,0 +1,221 @@
+/* One service per row (`ServiceRow`), first built for the line page's
+   "Trains on this line" (docs/superpowers/specs/2026-10-06-line-page-trains-design.md).
+   Mantine tokens only; no new colours. */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  overflow: hidden;
+}
+
+.list > li + li {
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+/* Without actions the whole row is the link (a 44px minimum tap target). */
+.row {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+  grid-template-areas:
+    'time dest status'
+    '. strip strip';
+  column-gap: var(--mantine-spacing-sm);
+  row-gap: 2px;
+  align-items: baseline;
+  min-height: 44px;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  color: inherit;
+  text-decoration: none;
+}
+
+.row[data-details] {
+  grid-template-areas:
+    'time dest status'
+    '. details details'
+    '. strip strip';
+}
+
+/* With actions the destination is the link (44px tall) and the actions
+   take a fourth column. */
+.row[data-actions] {
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    'time dest status actions'
+    '. strip strip strip';
+  align-items: center;
+  padding-block: 0;
+}
+
+.row[data-actions][data-details] {
+  grid-template-areas:
+    'time dest status actions'
+    '. details details details'
+    '. strip strip strip';
+  padding-bottom: var(--mantine-spacing-xs);
+}
+
+a.row:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+a.row:focus-visible,
+.destLink:focus-visible {
+  outline: 2px solid var(--mantine-color-anchor);
+  outline-offset: -2px;
+}
+
+.time {
+  grid-area: time;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* "+1": the time falls on the day after the service date. */
+.nextDay {
+  margin-left: 1px;
+  font-size: 0.7em;
+  font-weight: 600;
+  vertical-align: super;
+  line-height: 0;
+}
+
+.dest {
+  grid-area: dest;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.destLink {
+  display: inline-block;
+  min-height: 44px;
+  line-height: 44px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.destLink:hover {
+  text-decoration-thickness: 2px;
+}
+
+.arrival {
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.status {
+  grid-area: status;
+  white-space: nowrap;
+  font-size: var(--mantine-font-size-sm);
+}
+
+.details {
+  grid-area: details;
+  min-width: 0;
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strip {
+  grid-area: strip;
+  min-width: 0;
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  grid-area: actions;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--mantine-spacing-xs);
+}
+
+.cancelled {
+  color: var(--mantine-color-red-text);
+  font-weight: 600;
+}
+
+.late {
+  color: var(--mantine-color-orange-text);
+  font-weight: 600;
+}
+
+/* The light-badge teal, pinned in app/globals.css to >= 4.5:1 on white
+   (and a pale shade in the dark scheme). */
+.early {
+  color: var(--mantine-color-teal-light-color);
+}
+
+.onTime {
+  color: var(--mantine-color-green-text);
+}
+
+.muted {
+  color: var(--mantine-color-dimmed);
+}
+
+.struck {
+  text-decoration: line-through;
+}
+
+/* Phone: one line per row (time, destination, status); the strip is
+   collapsed (its text alternative stays for screen readers), rows past
+   the phone window are left to the "Later" link, and actions wrap onto a
+   line of their own. */
+@media (max-width: 48em) {
+  .row {
+    grid-template-areas: 'time dest status';
+  }
+
+  .row[data-details] {
+    grid-template-areas:
+      'time dest status'
+      '. details details';
+  }
+
+  .row[data-actions] {
+    grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+    grid-template-areas:
+      'time dest status'
+      '. actions actions';
+    padding-bottom: var(--mantine-spacing-xs);
+  }
+
+  .row[data-actions][data-details] {
+    grid-template-areas:
+      'time dest status'
+      '. details details'
+      '. actions actions';
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
+
+  .strip {
+    display: none;
+  }
+
+  .beyondPhone {
+    display: none;
+  }
+}
