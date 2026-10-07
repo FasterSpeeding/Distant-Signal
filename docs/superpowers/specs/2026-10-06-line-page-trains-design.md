@@ -1,6 +1,7 @@
 # Design: the line page's "Trains on this line"
 
-Status: phases 1 and 2 implemented 2026-10-06; phase 3 planned below.
+Status: phases 1 and 2 implemented 2026-10-06; phase 3 implemented
+2026-10-07 (§5, as built).
 Builds on `2026-10-06-line-membership-design.md` (`scope`, `direction`,
 `lineDue`).
 
@@ -73,73 +74,88 @@ Contract in `docs/api-changelog.md` (2026-10-06). Implementation
   "every N min · xx:MM" when evenly spaced (±1 min).
 - Hubs: catalogue stations with role `terminus` or `junction`.
 
-## 5. Phase 3 plan (not implemented)
+## 5. Phase 3: the full-day timetable (implemented 2026-10-07)
 
-Goal: `/lines/[id]/timetable?date=&dir=&from=&to=&at=&scope=` -- the full
-day, cursor-paged, without expanding the population JSONB per request
-(today's floor is ~0.3-0.6 s of SQL for the SWML even for a 1-minute
-window).
+`/lines/[id]/timetable?date=&dir=&from=&to=&at=&scope=` -- the full day,
+cursor-paged, on a table derived at publish time instead of the
+population JSONB per request.
 
-**Table** (migration in its own timestamp range, transactional, starting
-`SET LOCAL lock_timeout = '5s';`; the index in the same file is fine
-because the table is new):
+**Table** `line_train_summaries` (migration `20261007200000`, one
+transactional file; the index is in it because the table is new):
+`(line_id, service_date, uid)` key; `scope`, `direction`, `due_minute`
+(`lineDue`, minutes after the date's midnight), `end_minute` (last
+on-line public arrival), `operator_atoc`, `train_status`, `origin_crs`,
+`destination_crs`, `on_line_stops` (`[{crs, minute, arrival}]`),
+`has_scope`, `derivation`; index `(line_id, service_date, scope,
+due_minute, uid)`. Deviations from the plan:
 
-```sql
-CREATE TABLE line_train_summaries (
-    line_id      TEXT     NOT NULL,
-    service_date DATE     NOT NULL,
-    uid          TEXT     NOT NULL,
-    scope        TEXT,            -- line | shared | touch | NULL (pre-membership)
-    direction    TEXT,            -- up | down | loop
-    due_minute   INTEGER,         -- lineDue as minutes after the service date's midnight
-    end_minute   INTEGER,         -- last on-line public arrival
-    operator     TEXT,
-    service_mode TEXT NOT NULL DEFAULT 'train',
-    origin_crs   TEXT,
-    destination_crs TEXT,
-    on_line_stops JSONB NOT NULL DEFAULT '[]', -- [{crs, minute}]
-    PRIMARY KEY (line_id, service_date, uid)
-);
-CREATE INDEX line_train_summaries_window_idx
-    ON line_train_summaries (line_id, service_date, scope, due_minute, uid);
-```
+- `train_status`, not `service_mode`: the mode is resolved at read time
+  from `schedule_services` (it knows the Train Category) with the status
+  as fallback, as on every schedule surface. Storing the mode would have
+  frozen a pre-`schedule_services` answer into the row.
+- `has_scope` (the population carries membership) and `derivation`
+  (`DERIVATION_VERSION` + a hash of the line's catalogue stations and
+  aliases) are new. A reader uses only rows whose `derivation` matches
+  its own catalogue, so a catalogue change or a derivation change falls
+  back to the JSONB rather than serving stale on-line stops.
+- No CHECK constraints on population values: the rows share the
+  population's transaction, and a new value must not fail its publish.
 
-**Writer.** Populate it in `api` inside `post_schedule_line_population`'s
-upsert transaction (delete the `(line_id, service_date)` rows, insert the
-derived rows), reusing `line_trains_summary::on_line_stops`/`endpoint_crs`
-with the crosswalk read once per publish. This needs no new
-`schedule-reference` endpoint; the approved schedule-reference change
-would only be needed if `api` should not do the derivation (alternative:
-`schedule-reference` sends the slim rows alongside the population, version
--skew-safe as an optional field). Prune with the population
-(`schedule_line_population` retention). Backfill: the next CIF publish
-rewrites every row; a one-off `api` admin task can derive existing dates.
+**Writer** (`data::line_train_summaries::upsert_population_with_summaries`,
+called by `POST /private/schedule-line-population`): the population's
+upsert (unchanged statement, now `RETURNING`) and, in the same
+transaction, a delete-and-insert of the date's rows -- only when the
+population changed or the stored `derivation` differs. The population
+text is decoded on a blocking thread into slim entries (only the fields
+the summary reads), the crosswalk is read once, and every row comes from
+`derive_row`, the same function the JSONB fallback uses. A population
+the table cannot hold (a uid listed twice, or a shape the slim decode
+rejects) leaves no rows: readers fall back. Pruned by the aggregator with
+`schedule_line_population`'s retention. Backfill: the next publish, or
+`backfill_line_train_summaries` (in the api image; idempotent).
 
-**Reader.** `view=summary` switches to the table when rows exist for the
-date (falls back to the JSONB path otherwise), and a new
-`GET /public/lines/{id}/timetable?date&scope&direction&from&to&limit&after`
-pages with a keyset cursor `(due_minute, uid)`, the same shape as
-`/public/trains/search`. Live state stays per page.
+**Readers.** `view=summary` reads the table when it has current rows for
+the line and date, else the JSONB, both through `SummaryRow` (a DB test
+compares the two bodies for ten summary and eleven timetable queries).
+`GET /public/lines/{id}/timetable` pages in SQL with a keyset cursor
+`(time, uid)` -- `time` is the departure from `from` when given, else
+`lineDue` -- and falls back to the same page worked out in memory from
+the JSONB (`timetable_page_in_memory`, also the SQL's test reference).
+Live state and modes are read for the page only.
 
-**Page.** `/lines/[id]/timetable` server component with the same row
-component, URL-param filters (`date`, `dir`, `from`, `to`, `at`,
-`scope=line|shared`), `LoadMoreControl`-style "Later" cursor links, and a
-link from the line page ("Full day's timetable →").
+**Running now** (changed with phase 3): a train is a running candidate
+when it is due on the line at or before `at` and its last on-line arrival
+is at most the 3 h delay grace before `at` -- its whole span, so a long
+run no longer drops out after 6 h. The JSONB path ships calling points
+for those candidates using the last calling point as an upper bound of
+the run's end.
 
-**Tests.** Migration checks (`migration_index_locking`,
-`migration_checksums`, `check-migration-order.py`); DB tests that the
-upsert writes the derived rows and replaces them, that the reader matches
-the JSONB path train for train on a fixture, and the cursor paging;
-vitest for the page's filters and paging.
+**Page.** `/lines/[id]/timetable` (server component): a GET filter form
+(date: three days back to tomorrow; from; to; from time; this line's
+trains or other trains along it), direction chips with the whole day's
+counts, the line page's row component (time at `from` or on the line,
+arrival at `to`, service-mode badge), and "Load more"
+(`LoadMoreControl`, appending in place through the `/api` proxy) with a
+`<noscript>` next-page link. The line page links to it ("Full day's
+timetable →") with its direction, stations and window start.
+
+**Line page follow-ups (2026-10-07).** Between 00:00 and 03:00 the line
+page also fetches the previous service date (its window and `at` plus
+24 h) and merges those trains, linked to their own date. On a phone the
+hub links show the termini first, then majors, then junctions, three at
+most, the rest behind "More stations".
 
 ## 6. Risks
 
-- Calling-point SQL cost remains (phase 3 removes it).
-- Early-morning London hours: the page asks for today's service date
-  only, so yesterday's trains running past midnight are not shown before
-  03:00.
-- "Running now" looks back 6 h (very long cross-country runs drop out).
+- The table follows the crosswalk only at publish: a `tiploc_crs` change
+  reaches the rows with the next population publish (or the backfill).
+- Rows are written per changed publish: about 300k rows per service date
+  network-wide (see the phase 3 measurements in the commit history).
+- The JSONB fallback (before the first publish after deploy, or after a
+  catalogue change) is as slow as phase 2; the timetable's fallback ships
+  every calling point of the day.
 - Hubs come from catalogue roles, not measured touch counts.
-- Station-pair rows come from `/public/trains/search` (WTT `from`/`to`
-  bounds, any operator) and have live status only when the summary also
-  lists the train.
+- Station-pair rows on the line page come from `/public/trains/search`
+  (WTT `from`/`to` bounds, any operator) and have live status only when
+  the summary also lists the train; the timetable's `from`/`to` are the
+  line's own stations and public times.
