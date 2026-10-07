@@ -93,4 +93,25 @@ describe('planPageSearch / parsePlanSearchParams', () => {
   it('reads the first of a repeated parameter', () => {
     expect(parsePlanSearchParams({ origin: ['EUS', 'MKC'] }).originCrs).toBe('EUS');
   });
+
+  it('keeps station groups in via and waypoints, normalized, and drops malformed ones', () => {
+    const initial = parsePlanSearchParams({
+      via: 'group:lon,STA,group:',
+      waypoints: 'GROUP:LON,YRK,group:x',
+      avoid: 'group:LON,BHM',
+    });
+    expect(initial.viaCrs).toEqual(['group:LON', 'STA']);
+    expect(initial.waypointCrs).toEqual(['group:LON', 'YRK']);
+    // The form's avoid lists do not offer groups.
+    expect(initial.avoidCrs).toEqual(['BHM']);
+    const search = planPageSearch({
+      originCrs: 'CBG',
+      destinationCrs: 'BTN',
+      waypointCrs: ['group:LON'],
+      viaCrs: ['group:LON'],
+      date: '2026-10-08',
+      results: 'fastest',
+    });
+    expect(parsePlanSearchParams(toRaw(search))).toMatchObject({ waypointCrs: ['group:LON'], viaCrs: ['group:LON'] });
+  });
 });

@@ -1,4 +1,4 @@
-import { isTiplocCode, normalizeLocationCode } from './stationLabel';
+import { isTiplocCode, normalizeLocationCode, parseGroupCode } from './stationLabel';
 import { MAX_AVOIDED, MAX_CHANGES_LIMIT, MAX_VIAS, setListParams, type TripPlanQuery } from './tripPlan';
 
 /** The `/plan` page's own query string: the last search, so the address bar
@@ -37,18 +37,23 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 /** A station's CRS, or (`allowStops`) a bus stop's or ferry terminal's
- * `tiploc:` code, normalized; `null` for anything else. */
-function locationCode(raw: string | undefined, allowStops: boolean): string | null {
+ * `tiploc:` code, or (`allowGroups`) a station group's `group:` code,
+ * normalized; `null` for anything else. */
+function locationCode(raw: string | undefined, allowStops: boolean, allowGroups = false): string | null {
   const code = raw?.trim() ?? '';
   if (CRS.test(code)) return code.toUpperCase();
   if (allowStops && TIPLOC_CODE.test(code) && isTiplocCode(code)) return normalizeLocationCode(code);
+  if (allowGroups) return parseGroupCode(code);
   return null;
 }
 
-function codeList(raw: string | undefined, { allowStops, max }: { allowStops: boolean; max: number }): string[] {
+function codeList(
+  raw: string | undefined,
+  { allowStops, allowGroups = false, max }: { allowStops: boolean; allowGroups?: boolean; max: number },
+): string[] {
   const codes: string[] = [];
   for (const part of (raw ?? '').split(',')) {
-    const code = locationCode(part, allowStops);
+    const code = locationCode(part, allowStops, allowGroups);
     if (code && !codes.includes(code)) codes.push(code);
   }
   return codes.slice(0, max);
@@ -56,11 +61,11 @@ function codeList(raw: string | undefined, { allowStops, max }: { allowStops: bo
 
 /** Vias keep their order and may repeat, just not twice in a row; a
  * station's CRS or a bus stop's or ferry terminal's `tiploc:` code, as the
- * avoid lists. */
+ * avoid lists, or a station group (`group:LON`). */
 function viaList(raw: string | undefined): string[] {
   const vias: string[] = [];
   for (const part of (raw ?? '').split(',')) {
-    const code = locationCode(part, true);
+    const code = locationCode(part, true, true);
     if (code && vias[vias.length - 1] !== code) vias.push(code);
   }
   return vias.slice(0, MAX_VIAS);
@@ -79,7 +84,7 @@ export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   if (departAfter && TIME.test(departAfter)) initial.departAfter = departAfter;
   const results = first(raw.results);
   if (results === 'fastest' || results === 'options') initial.results = results;
-  const waypoints = codeList(first(raw.waypoints), { allowStops: true, max: 20 });
+  const waypoints = codeList(first(raw.waypoints), { allowStops: true, allowGroups: true, max: 20 });
   if (waypoints.length > 0) initial.waypointCrs = waypoints;
   const via = viaList(first(raw.via));
   if (via.length > 0) initial.viaCrs = via;

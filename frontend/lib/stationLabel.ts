@@ -89,7 +89,8 @@ export function routeLabel(
 export function codeStationLabel(crs: string, name: string | null | undefined): string {
   // A bus stop's or ferry terminal's `tiploc:` code means nothing to a
   // reader, and its name already says what it is ("Keswick (bus)").
-  if (isTiplocCode(crs)) return name ?? crs;
+  // Nor does a station group's `group:` code; its name is its label.
+  if (isTiplocCode(crs) || isGroupCode(crs)) return name ?? crs;
   return name ? `${crs} — ${name}` : crs;
 }
 
@@ -102,11 +103,33 @@ export function isTiplocCode(code: string | null | undefined): boolean {
   return !!code && code.trim().toLowerCase().startsWith(TIPLOC_CODE_PREFIX);
 }
 
+/** A named station group in the planner's lists (`GET /Trips/plan`'s
+ * `group:LON`, 2026-10-07): ANY of its member stations. See
+ * `lib/stationGroups.ts`. Never a station page or board. */
+export const GROUP_CODE_PREFIX = 'group:';
+
+const GROUP_CODE = /^group:[A-Za-z0-9]{2,12}$/i;
+
+/** `group:LON` (any case), as the planner's lists hold a group. */
+export function isGroupCode(code: string | null | undefined): boolean {
+  return !!code && code.trim().toLowerCase().startsWith(GROUP_CODE_PREFIX);
+}
+
+/** A well-formed group code (`group:` and 2-12 letters or digits),
+ * normalized to `group:UPPER`; `null` for anything else. */
+export function parseGroupCode(raw: string): string | null {
+  const code = raw.trim();
+  if (!GROUP_CODE.test(code)) return null;
+  return GROUP_CODE_PREFIX + code.slice(GROUP_CODE_PREFIX.length).toUpperCase();
+}
+
 /** A station or stop code as `GET /Trips/plan` takes it: a CRS upper-cased,
- * a `tiploc:` code as `tiploc:` plus the upper-cased TIPLOC. */
+ * a `tiploc:` code as `tiploc:` plus the upper-cased TIPLOC, a group as
+ * `group:` plus its upper-cased name. */
 export function normalizeLocationCode(code: string): string {
   const trimmed = code.trim();
   if (isTiplocCode(trimmed)) return TIPLOC_CODE_PREFIX + trimmed.slice(TIPLOC_CODE_PREFIX.length).trim().toUpperCase();
+  if (isGroupCode(trimmed)) return GROUP_CODE_PREFIX + trimmed.slice(GROUP_CODE_PREFIX.length).trim().toUpperCase();
   return trimmed.toUpperCase();
 }
 

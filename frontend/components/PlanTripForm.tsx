@@ -1,22 +1,15 @@
 'use client';
 
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { londonToday, nowInLondon } from '@/lib/londonWallClock';
-import {
-  Autocomplete,
-  Button,
-  Group,
-  SegmentedControl,
-  Stack,
-  Text,
-  TextInput,
-  ActionIcon,
-  VisuallyHidden,
-} from '@mantine/core';
+import { Autocomplete, Button, Group, SegmentedControl, Stack, Text, ActionIcon, VisuallyHidden } from '@mantine/core';
 import { DateInput, TimeInput } from '@mantine/dates';
 import { getStationNames, searchPlannerLocations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { groupLabels, useStationGroups, withGroupSuggestions } from '@/lib/stationGroups';
+import { isGroupCode, normalizeLocationCode } from '@/lib/stationLabel';
+import type { Suggestion } from '@/lib/types';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 import { PlanTripAdvancedOptions, advancedOptionErrors } from './PlanTripAdvancedOptions';
@@ -65,6 +58,53 @@ function XIcon() {
     </svg>
   );
 }
+
+/** One "Call at" stop: a station, bus stop or ferry terminal, or a station
+ * group (2026-10-07: "Any of the London Terminals (18 stations)", sent as
+ * `group:LON`, a stop at ANY member), picked from suggestions or typed as a
+ * code. */
+function WaypointField({
+  value,
+  onChange,
+  search,
+  first,
+  groupLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  search: (q: string, signal: AbortSignal) => Promise<Suggestion[]>;
+  first: boolean;
+  /** The label of the group `value` names, if it is one (the field shows
+   * the code). */
+  groupLabel: string | undefined;
+}) {
+  const { suggestions, loading } = useSuggestions(value, search);
+  const help = first
+    ? 'The train must stop at each of these. A group such as “Any of the London Terminals” means a stop at any one of its stations. To go through a station without stopping, use “Pass through” in Advanced options.'
+    : null;
+  const shown = isGroupCode(value) && groupLabel !== undefined ? groupLabel : null;
+  const parts = [help, shown].filter((part): part is string => part !== null);
+  return (
+    <Autocomplete
+      style={{ flex: 1 }}
+      label={first ? 'Call at (optional, in order)' : undefined}
+      description={parts.length > 0 ? parts.join(' ') : undefined}
+      placeholder="Station name or CRS code"
+      value={value}
+      onChange={onChange}
+      {...suggestionAutocompleteProps(suggestions, {
+        query: value,
+        loading,
+        noMatchMessage: 'No matching stations',
+      })}
+    />
+  );
+}
+
+/** "Call at" also offers the station groups (`GET /Trips/station-groups`).
+ * One function for the module's life: `useSuggestions` refetches whenever
+ * its search changes. */
+const searchWaypoints = withGroupSuggestions(searchPlannerLocations);
 
 /** The input side of "Plan a route for me" (design spec §5.3) -- collects
  * origin, destination, ordered optional waypoints, a date, an optional
@@ -179,7 +219,7 @@ export function PlanTripForm({
       ...(initial.avoidCrs ?? []),
       ...(initial.avoidStopCrs ?? []),
       ...(initial.avoidChangeCrs ?? []),
-    ];
+    ].filter((code) => !isGroupCode(code)); // a group is labelled from `groups`
     if (restored.length === 0) return;
     let cancelled = false;
     void getStationNames(restored).then((found) => {
@@ -195,11 +235,16 @@ export function PlanTripForm({
     setNames((current) => new Map([...current, ...found]));
   }
 
+  // With the groups' labels, for the advanced options' rows and summary
+  // (loaded once a group is listed, e.g. restored from the URL).
+  const groups = useStationGroups([...waypoints, ...(advanced.viaCrs ?? [])].some(isGroupCode));
+  const labels = useMemo(() => new Map([...groupLabels(groups), ...names]), [groups, names]);
+
   const errors = advancedOptionErrors(advanced, {
     originCrs,
     destinationCrs,
     waypointCrs: waypoints,
-    names,
+    names: labels,
   });
   const firstError = Object.values(errors)[0];
 
@@ -272,17 +317,12 @@ export function PlanTripForm({
       />
       {waypoints.map((waypoint, index) => (
         <Group key={index} gap="xs">
-          <TextInput
-            style={{ flex: 1 }}
-            label={index === 0 ? 'Call at (optional, in order)' : undefined}
-            description={
-              index === 0
-                ? 'The train must stop at each of these. To go through a station without stopping, use “Pass through” in Advanced options.'
-                : undefined
-            }
-            placeholder="Station name or CRS code"
+          <WaypointField
             value={waypoint}
-            onChange={(event) => updateWaypoint(index, event.currentTarget.value)}
+            onChange={(value) => updateWaypoint(index, value)}
+            search={searchWaypoints}
+            first={index === 0}
+            groupLabel={labels.get(normalizeLocationCode(waypoint))}
           />
           <ActionIcon
             color="red"
@@ -333,7 +373,7 @@ export function PlanTripForm({
       <PlanTripAdvancedOptions
         options={advanced}
         onChange={setAdvanced}
-        names={names}
+        names={labels}
         onNames={addNames}
         errors={errors}
         opened={advancedOpened}

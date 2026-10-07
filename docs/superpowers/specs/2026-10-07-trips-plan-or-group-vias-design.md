@@ -292,11 +292,22 @@ the code. Members' names are the CSV's third column.
 
 ## Frontend (`/plan`)
 
-The Advanced options' "Pass through" picker, and the "Call at" stops
-picker, offer each group from `GET /Trips/station-groups` above the
-station suggestions. The label is "Any London terminal (18 stations)",
-and the request sends `group:LON`. An itinerary names the member it used:
-"via King's Cross (any London terminal)", from `matchedCrs`.
+The Advanced options' "Pass through" picker and the "Call at" fields
+list the matching groups from `GET /Trips/station-groups` above the
+station suggestions, labelled "Any of the London Terminals (18
+stations)". The "Call at" fields were plain text inputs and are now
+station pickers. A typed `group:LON` also works. The request and the
+page's own URL send `group:LON`, and a restored URL keeps it. The groups
+load on the first search in one of those pickers, or when a code on
+screen is a group's (to label it). A page that never touches groups
+never fetches them.
+
+Results name the member a journey used, from `matchedCrs`. A via reads
+"Calls at London Kings Cross (one of the London Terminals)" (or "Passes
+through ... without stopping"). A stop reads "Stops at London Kings Cross
+(one of the London Terminals)", or "Starts at"/"Ends at" for an end.
+Segment headings show the group's label for a group end. The avoid lists'
+pickers do not offer groups, although the API accepts them there.
 
 ## Not done (follow-ups)
 

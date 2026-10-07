@@ -2,6 +2,7 @@ import { act, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripFlow } from './PlanTripFlow';
+import { resetStationGroupsCache } from '@/lib/stationGroups';
 import type { TripPlanResponse } from '@/lib/types';
 import { byVisibleText } from '@/test/routeText';
 
@@ -963,6 +964,70 @@ describe('PlanTripFlow advanced options', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'PRE' } });
     fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
   }
+
+  it('names the London terminal a group "Call at" stop used (2026-10-07)', async () => {
+    resetStationGroupsCache();
+    mockStationNames.set('KGX', 'London Kings Cross');
+    mockStationNames.set('EUS', 'London Euston');
+    mockStationNames.set('PRE', 'Preston');
+    const train = (originCrs: string, destinationCrs: string) => ({
+      kind: 'train' as const,
+      trainUid: 'G1',
+      serviceDate: '2026-10-08',
+      originCrs,
+      destinationCrs,
+      scheduledDeparture: '08:00:00',
+      scheduledArrival: '09:00:00',
+      arrivalDayOffset: 0,
+    });
+    const groupPlan: TripPlanResponse = {
+      results: 'fastest',
+      via: [],
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'group:LON',
+          cappedByMaxChanges: false,
+          itineraries: [{ legs: [train('EUS', 'KGX')], changeCount: 0, totalDurationMinutes: 60 }],
+        },
+        {
+          originCrs: 'group:LON',
+          destinationCrs: 'PRE',
+          cappedByMaxChanges: false,
+          itineraries: [{ legs: [train('KGX', 'PRE')], changeCount: 0, totalDurationMinutes: 60 }],
+        },
+      ],
+      journeys: [
+        {
+          changeCount: 1,
+          departure: { time: '08:00', dayOffset: 0 },
+          arrival: { time: '09:00', dayOffset: 0 },
+          totalDurationMinutes: 120,
+          waypointSatisfiedBy: [{ crs: 'group:LON', matchedCrs: 'KGX', segment: 0, how: 'call' }],
+        },
+      ],
+    };
+    const groups = {
+      groups: [
+        {
+          group: 'LON',
+          code: 'group:LON',
+          name: 'London Terminals',
+          members: [{ crs: 'KGX', name: 'London Kings Cross' }],
+        },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(groupPlan) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(groups) });
+    await search(fetchMock);
+    expect(await screen.findByText('Stops at London Kings Cross (one of the London Terminals)')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/Trips/station-groups', {});
+    // The segment headings name the group.
+    expect(screen.getAllByText(byVisibleText(/Any of the London Terminals \(1 station\)/)).length).toBeGreaterThan(0);
+    resetStationGroupsCache();
+  });
 
   it('says how each via was passed: through without stopping, or calling there', async () => {
     mockStationNames.set('STA', 'Stafford');
