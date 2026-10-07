@@ -127,9 +127,9 @@ a leg's CRS override).
 
 `fetch_interchange_data` adds every bus stop and ferry terminal whose TIPLOC
 has no station CRS as its own end point (`crs_to_tiplocs["tiploc:SANWBUS"] =
-["SANWBUS"]`). Changes there use the stop's MSN change time, often the 98/99
-"no interchange" sentinel, which forbids changing there but not starting or
-ending a journey.
+["SANWBUS"]`). Changes there use the stop's own change time (in practice
+the default 5: see "Walking links to the parent station" below), and since
+2026-10-07 a stop with a parent station is linked to it by a walk.
 
 **Change buffer** (`schedule_query::ModalChangeBuffer`): a change costs the
 station's minimum change time plus `TRIP_PLAN_ROAD_WATER_CHANGE_MINUTES`
@@ -144,6 +144,74 @@ too. A UID with no `schedule_services` row (that date not yet published, or
 the table unreadable) falls back to the original heuristic: it is a bus or
 ferry when it calls at a bus stop or ferry terminal
 (`trip_planning::modal_change_buffer`, merged 2026-10-06).
+
+### Walking links to the parent station (decided 2026-10-07)
+
+Until now a bus stop was an end point only: you could start or finish a
+journey there, but not change between it and its parent station. (In
+practice no bus stop has a `tiploc_crs`/`stanox_crs` change time, because
+its STANOX is `00000`. So it got the default 5 minutes, not a 98/99
+sentinel. What actually stopped a change was the missing link to the
+station.)
+
+**Decision:** every bus stop and ferry terminal that is its own `tiploc:`
+end point, and whose `parent_crs` has a `stations` row the planner knows,
+gets a `WALK` link each way to that station.
+
+- **Where the links come from.** `trip_planning::add_parent_walk_links`
+  builds them in memory in `fetch_interchange_data`, from `tiploc_locations`
+  joined to `stations` (`tiploc_locations::parent_links`). `fixed_links` and
+  its ALF ingest are untouched, and there is no migration. The links follow
+  each publish through the existing graph cache. A stop whose TIPLOC
+  already belongs to a station (it is one of the station's sibling TIPLOCs)
+  is skipped.
+- **Walking time** (`common::tiploc_parents::walk_minutes`). If the curated
+  CSV gives `walk_minutes` for this stop and this parent, that wins.
+  Otherwise it comes from the MSN grid distance: `ceil(m / 80) + 2`,
+  clamped to 3-15 minutes, at 80 m a minute plus 2 minutes to get out of
+  the stand or terminal. MSN grid squares are 100 m, so this also absorbs
+  the rounding. With no distance it is a cautious 15.
+  `reference-data/tiploc-parent-stations.csv` gains a `walk_minutes`
+  column (empty means "use the distance"), seeded as estimates, not
+  surveyed times: `HTRBUS3`->HXX 8, `CRDFAIR`->RIA 20, `IVRNABS`->IVA 15,
+  `PNZQUAY`->PNZ 10. Both `schedule-reference` and `api` read the file
+  through `common::tiploc_parents`.
+- **Change time at the stop.** A linked stop keeps its own change time. A
+  98/99 sentinel there, if one ever appears, is dropped so that a walk-in
+  boarding works. Unlinked stops are left as they are.
+- **Bus/ferry buffer.** The buffer is not baked into the walk. Boarding a
+  bus after the walk owes it as before. Alighting from a bus or ferry and
+  then walking on now owes it too, before the walk starts. That applies to
+  every fixed link, ALF ones included. The arrive-by scan already charged
+  it, but CSA, RAPTOR and the staged search did not, so the forward and
+  backward searches disagreed. They now agree. A journey that starts at the
+  stop owes nothing. Example: a bus arrives at 10:00, walk 8, change 2 at
+  HXX, so the train must leave at 10:15 or later.
+- **Response.** The walk is a normal transfer leg, `kind: "transfer"`,
+  `mode: "WALK"`, with the stop's `tiploc:` code as its
+  `originCrs`/`destinationCrs`. `minutes` is the walk alone.
+
+Rejected options:
+- Writing `tiploc:` rows into `fixed_links`: that table is ALF's, and it is
+  replaced on every ALF ingest.
+- A new table: it would need a migration and a publisher change, for data
+  the API can derive.
+- Baking the buffer into the stop-to-station walk: there would be no
+  planner change, but the arrive-by scan, which already charges the buffer
+  when you get off a bus, would charge it twice.
+
+Coverage on the 2026-10-05 delivery: 67 stops have a parent in `stations`
+(62 bus stops, 5 ferry terminals; 38 nearest, 25 same TIPLOC, 4 curated).
+Prod's `tiploc_crs`/`stanox_crs` have none of them as a station TIPLOC, and
+all 60 parents are known to the planner. That makes 67 stops linked, 134
+directed links. 46 of the stops have bus or ship calls. Their walk times
+are 3 min (16), 4 (10), 5 (13), 6 (2), 7, 8, 10, 15 and 20 (one each).
+Example, from a local DB seeded read-only from prod's 2026-10-08 timetable
+slice: Watford Junction -> Hayes & Harlington (`results=options`). The
+09:56 RailAir coach reaches Heathrow Terminal 2's bus stop (`HTRBUS2`) at
+10:47. A 5-minute `WALK` leads to HXX, and the 11:06 Elizabeth line train
+arrives at 11:12. That is 76 minutes with 1 change, against 87 minutes
+with 2 changes via Euston and Paddington.
 
 ## Coverage (2026-10-05 delivery)
 
