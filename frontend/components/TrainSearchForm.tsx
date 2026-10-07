@@ -132,8 +132,9 @@ function resolvedDate(rawDate: string): string {
  * Filter set, and why it stops here: Station is required (it is the
  * server-side search key). Origin, Stops at, Date and an "Earliest
  * departure"/"Latest departure" time range are all optional. There is no
- * Operator filter -- CIF rows carry no operator field at all, an explicit
- * non-goal, not an omission to fill in later. Date defaults to today and is
+ * Operator filter (a non-goal for now): rows do carry the schedule's
+ * `operator` (ATOC code, `null` when unknown), which the result rows show,
+ * but the search itself is not keyed on it. Date defaults to today and is
  * bounded to a roughly week-either-side window
  * (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
  * `SEARCH_WINDOW_BACKWARD_DAYS`) -- see
