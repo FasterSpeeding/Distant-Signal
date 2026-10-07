@@ -1084,9 +1084,10 @@ mod db_tests {
     async fn schedule_departures_date_param_serves_yesterdays_bucket_and_rejects_older() {
         // The /track picker asks for yesterday's bucket between London
         // midnight and 02:00, for the previous evening's services that call
-        // here after midnight (`dayOffset >= 1`).
+        // here after midnight (`dayOffset >= 1`). Its `live` and origin come
+        // from the requested date too, not today.
         let pool = connect().await;
-        delete_schedule_departures_fixture(&pool, "ZRC").await;
+        clear_live_fixtures(&pool).await;
 
         let today = crate::routes::london_today();
         let yesterday = today.pred_opt().unwrap();
@@ -1095,11 +1096,42 @@ mod db_tests {
         )
         .bind(yesterday)
         .bind(serde_json::json!([
-            {"uid": "F49687", "scheduled": "00:50:00", "day_offset": 1, "destination_crs": "SNF"},
+            {"uid": "SDLVYD", "scheduled": "00:50:00", "day_offset": 1, "destination_crs": "SNF"},
         ]))
         .execute(&pool)
         .await
         .expect("seed yesterday's fixture row");
+        sqlx::query("INSERT INTO stations (crs, name) VALUES ('ZSP', 'Zed Start')")
+            .execute(&pool)
+            .await
+            .expect("seed origin station");
+        // Yesterday's schedule origin and live state only: a lookup keyed on
+        // today would find neither.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, 'SNF', '23:40:00'::time, 'SDLVYD', 'ZRC', 'ZSP')",
+        )
+        .bind(yesterday)
+        .execute(&pool)
+        .await
+        .expect("seed yesterday's schedule row");
+        let (trains_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO trains (train_uid, service_date, train_id) VALUES ('SDLVYD', $1, 'SDLVYD') \
+             RETURNING id",
+        )
+        .bind(yesterday)
+        .fetch_one(&pool)
+        .await
+        .expect("seed yesterday's trains row");
+        sqlx::query(
+            "INSERT INTO train_current_state (trains_id, status, last_reported_location, \
+                 delay_minutes, updated_at) VALUES ($1, 'en_route', 'Barking', 2, NOW())",
+        )
+        .bind(trains_id)
+        .execute(&pool)
+        .await
+        .expect("seed yesterday's train_current_state row");
 
         let get = |uri: String| {
             let router: axum::Router = Router::new()
@@ -1122,8 +1154,12 @@ mod db_tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json[0]["uid"], "F49687");
+        assert_eq!(json[0]["uid"], "SDLVYD");
         assert_eq!(json[0]["dayOffset"], 1);
+        assert_eq!(json[0]["originCrs"], "ZSP", "{json}");
+        assert_eq!(json[0]["originName"], "Zed Start");
+        assert_eq!(json[0]["live"]["status"], "en_route", "{json}");
+        assert_eq!(json[0]["live"]["delayMinutes"], 2);
 
         // No `date`: still today's bucket only, which has no row here.
         let response = get("/stations/ZRC/schedule-departures".to_string()).await;
@@ -1135,7 +1171,7 @@ mod db_tests {
         let response = get("/stations/ZRC/schedule-departures?date=not-a-date".to_string()).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        delete_schedule_departures_fixture(&pool, "ZRC").await;
+        clear_live_fixtures(&pool).await;
     }
 
     /// Removes the `SDLV*` live-state fixtures, their schedule rows, the
