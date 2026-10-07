@@ -521,6 +521,7 @@ async fn poison_and_undecodable_entries_are_dead_lettered_then_acked() {
     );
     let stats = consumer.sample_gauges().await.unwrap();
     assert_eq!(stats.dead_letter_length, 3);
+    assert!(stats.dead_letter_oldest_age.unwrap() < Duration::from_secs(60));
 }
 
 #[tokio::test]

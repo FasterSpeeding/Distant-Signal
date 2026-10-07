@@ -22,7 +22,7 @@
 //!     task backs off (1 s doubling to 60 s, jittered) and re-reads its PEL.
 //!     An outage never empties a stream into its dead-letter stream;
 //! - exports the [`crate::metrics`] consumer series, sampling lag, pending,
-//!   oldest pending age, dead-letter length and memory every
+//!   oldest pending age, dead-letter length and oldest age, and memory every
 //!   `gauge_interval`;
 //! - stops between entries on shutdown: a running handler is never
 //!   cancelled.
@@ -190,6 +190,8 @@ pub struct StreamStats {
     pub pending: u64,
     pub oldest_pending_age: Option<Duration>,
     pub dead_letter_length: u64,
+    /// Age of the oldest dead-letter entry, from its id.
+    pub dead_letter_oldest_age: Option<Duration>,
     pub bytes: Option<u64>,
 }
 
@@ -688,11 +690,11 @@ impl StreamConsumer {
             .arg(&self.config.group)
             .query_async(&mut self.conn)
             .await?;
+        let now = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
         if let Value::Array(parts) = &summary
             && let Some(min_id) = parts.get(1).and_then(as_string)
             && let Some(ms) = id_millis(&min_id)
         {
-            let now = u64::try_from(Utc::now().timestamp_millis()).unwrap_or(0);
             stats.oldest_pending_age = Some(Duration::from_millis(now.saturating_sub(ms)));
         }
 
@@ -700,6 +702,21 @@ impl StreamConsumer {
             .arg(&self.config.dead_letter_stream)
             .query_async(&mut self.conn)
             .await?;
+        if stats.dead_letter_length > 0 {
+            let oldest: Value = redis::cmd("XRANGE")
+                .arg(&self.config.dead_letter_stream)
+                .arg("-")
+                .arg("+")
+                .arg("COUNT")
+                .arg(1)
+                .query_async(&mut self.conn)
+                .await?;
+            stats.dead_letter_oldest_age = list(&oldest)
+                .first()
+                .and_then(|entry| list(entry).first().and_then(as_string))
+                .and_then(|id| id_millis(&id))
+                .map(|ms| Duration::from_millis(now.saturating_sub(ms)));
+        }
 
         let mut bytes = None;
         for key in [&stream, &self.config.dead_letter_stream] {
@@ -727,6 +744,13 @@ impl StreamConsumer {
             metrics::DLQ_LENGTH,
             &stream,
             stats.dead_letter_length as f64,
+        );
+        metrics::gauge(
+            metrics::DLQ_OLDEST_AGE_SECONDS,
+            &stream,
+            stats
+                .dead_letter_oldest_age
+                .map_or(0.0, |a| a.as_secs_f64()),
         );
         metrics::gauge(
             metrics::STREAM_BYTES,

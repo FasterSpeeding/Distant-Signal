@@ -44,6 +44,10 @@ pub const PENDING: &str = "ingest_stream_pending";
 pub const OLDEST_PENDING_AGE_SECONDS: &str = "ingest_stream_oldest_pending_age_seconds";
 /// Gauge `{stream}`: `XLEN` of the stream's dead-letter stream.
 pub const DLQ_LENGTH: &str = "ingest_stream_dlq_length";
+/// Gauge `{stream}`: age of the oldest dead-letter entry (from its id), or
+/// 0. `DistantSignalIngestDeadLetterExpiring` compares it with the
+/// retention.
+pub const DLQ_OLDEST_AGE_SECONDS: &str = "ingest_stream_dlq_oldest_age_seconds";
 /// Gauge `{stream}`: `MEMORY USAGE` of the stream plus its dead-letter
 /// stream.
 pub const STREAM_BYTES: &str = "ingest_stream_bytes";
@@ -90,6 +94,13 @@ pub(crate) fn buffered(stream: &str, items: usize) {
 pub(crate) fn dropped(stream: &str, reason: &'static str, count: usize) {
     metrics::counter!(metric_name(PRODUCE_DROPPED_TOTAL), "stream" => stream.to_owned(), "reason" => reason)
         .increment(u64::try_from(count).unwrap_or(u64::MAX));
+}
+
+/// Counts an item the caller could not submit because
+/// [`crate::Envelope::encode`] or [`crate::split_snapshot`] returned
+/// [`crate::EnvelopeError::TooLarge`] (`reason="oversize"`).
+pub fn record_oversize(stream: &str) {
+    dropped(stream, "oversize", 1);
 }
 
 /// Registers every producer series for `stream` at 0, so an alert's
@@ -143,7 +154,13 @@ pub(crate) fn gauge(name: &str, stream: &str, value: f64) {
 /// dead-letter alert uses `DEAD_LETTERED_TOTAL`, which is registered here
 /// for the decode reasons.
 pub fn register_consumer(stream: &str) {
-    for name in [LAG, PENDING, OLDEST_PENDING_AGE_SECONDS, DLQ_LENGTH] {
+    for name in [
+        LAG,
+        PENDING,
+        OLDEST_PENDING_AGE_SECONDS,
+        DLQ_LENGTH,
+        DLQ_OLDEST_AGE_SECONDS,
+    ] {
         gauge(name, stream, 0.0);
     }
     for reason in ["poison", "undecodable", "oversize", "rejected_rows"] {
