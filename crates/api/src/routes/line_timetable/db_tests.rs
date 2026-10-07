@@ -135,6 +135,8 @@ fn population() -> Value {
             Some(("08:40", 0)),
             &[cp("TTLWOK", Some("08:40"), Some("08:41"), 0)],
         ),
+        // Six hours from the line's start to its end: still running at
+        // 14:00, which a fixed six-hour look-back missed.
         down("TT-LONG", "line", ["06:05", "09:00", "12:00", "15:30"]),
         entry(
             "TT-NIGHT",
@@ -423,6 +425,7 @@ const SUMMARY_QUERIES: &[&str] = &[
     "from=08:00&to=09:00",
     "from=08:00&to=10:00&direction=up",
     "from=08:00&to=09:00&at=08:15",
+    // The long run, nine hours after it reached the line.
     "from=13:30&to=15:30&at=14:00",
     "from=23:00&to=01:00&at=24:30",
     "scope=all&from=08:00&to=09:00&limit=2",
@@ -487,6 +490,14 @@ async fn the_table_and_the_population_give_the_same_bodies(pool: PgPool) {
 
     // The bodies above are not trivially empty, and say what the line
     // page needs.
+    let summary = &from_population[3];
+    let running: Vec<&str> = summary["running"]
+        .as_array()
+        .expect("running")
+        .iter()
+        .map(|t| t["uid"].as_str().expect("uid"))
+        .collect();
+    assert_eq!(running, ["TT-LONG"], "the long run is running at 14:00");
     let night = &from_population[4];
     assert_eq!(night["running"][0]["uid"], "TT-NIGHT");
     assert_eq!(night["trains"][0]["uid"], "TT-NIGHT");

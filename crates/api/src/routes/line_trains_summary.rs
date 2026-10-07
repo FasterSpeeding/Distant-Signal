@@ -182,20 +182,12 @@ pub(crate) fn is_running(
     due_minute <= at && at <= end_minute + delay
 }
 
-/// How far before `at` a train may have reached the line and still be
-/// running on it.
-pub(crate) const RUNNING_LOOKBACK_MINUTES: i32 = 6 * 60;
-
 /// Could a train be running at `at`, before its live state is known? Due
-/// on the line in the six hours before `at`, and its last on-line arrival
-/// at most the delay grace before it.
+/// at or before `at`, and its last on-line arrival at most the delay
+/// grace before it -- its whole real span, however long the run.
 pub(crate) fn is_running_candidate(row: &SummaryRow, at: i32) -> bool {
     match (row.due_minute, row.end_minute()) {
-        (Some(due), Some(end)) => {
-            due <= at
-                && due >= at - RUNNING_LOOKBACK_MINUTES
-                && at <= end + RUNNING_DELAY_GRACE_MINUTES
-        }
+        (Some(due), Some(end)) => due <= at && at <= end + RUNNING_DELAY_GRACE_MINUTES,
         _ => false,
     }
 }
@@ -647,7 +639,7 @@ pub(crate) fn bad_request(message: String) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::line_train_summaries::{endpoint_crs, on_line_stops};
+    use crate::data::line_train_summaries::{OnLineStop, endpoint_crs, on_line_stops};
 
     fn cp(
         tiploc: &str,
@@ -753,6 +745,44 @@ mod tests {
         assert_eq!(parse_limit(Some("20")), Ok(20));
         assert!(parse_limit(Some("0")).is_err());
         assert!(parse_limit(Some("2001")).is_err());
+    }
+
+    #[test]
+    fn running_candidates_use_the_real_span_not_a_fixed_look_back() {
+        let row = |due: i32, end: i32| SummaryRow {
+            uid: "C1".into(),
+            due_minute: Some(due),
+            stops: vec![
+                OnLineStop {
+                    crs: "EDB".into(),
+                    minute: due,
+                    arrival_minute: due,
+                },
+                OnLineStop {
+                    crs: "PLY".into(),
+                    minute: end,
+                    arrival_minute: end,
+                },
+            ],
+            ..SummaryRow::default()
+        };
+        // Edinburgh 06:00 to Plymouth 15:30: running at 14:00, nine hours
+        // after it reached the line.
+        assert!(is_running_candidate(&row(360, 930), 840));
+        // Late running is left to the live delay, up to the grace.
+        assert!(is_running_candidate(
+            &row(360, 930),
+            930 + RUNNING_DELAY_GRACE_MINUTES
+        ));
+        assert!(!is_running_candidate(
+            &row(360, 930),
+            931 + RUNNING_DELAY_GRACE_MINUTES
+        ));
+        assert!(!is_running_candidate(&row(360, 930), 359));
+        // No on-line calls: never running.
+        let mut silent = row(360, 930);
+        silent.stops.clear();
+        assert!(!is_running_candidate(&silent, 400));
     }
 
     #[test]

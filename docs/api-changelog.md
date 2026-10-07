@@ -3,7 +3,7 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
-## 2026-10-07: a line's full-day timetable
+## 2026-10-07: a line's full-day timetable; `running` follows each train's whole run
 
 Design: `docs/superpowers/specs/2026-10-06-line-page-trains-design.md` §5.
 
@@ -62,6 +62,16 @@ as `/trains`. Parameters (all optional):
   cursor, for direction tabs.
 - `live` is looked up for the page's trains only.
 - A malformed parameter is a `400`.
+
+### Changed: `view=summary`'s `running`
+
+`running` used to consider only trains that reached the line in the six
+hours before `at`, so a long run (Edinburgh to Plymouth) dropped out of
+it. It now uses each train's whole on-line run: due on the line at or
+before `at`, last on-line call no more than three hours (the late-running
+grace, as before) before it. Without a window (`from`/`to`), every listed
+train now carries its `onLineStops`, `origin` and `destination` (they
+were only filled for trains near `at`).
 
 Both views now read a table derived from the population at publish time
 when it has the line and date (`line_train_summaries`), and the
