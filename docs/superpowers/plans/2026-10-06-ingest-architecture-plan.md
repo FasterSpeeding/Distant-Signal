@@ -247,13 +247,13 @@ Rollback: revert the commit (no runtime switch).
 **Status (2026-10-07): the parts that do not need `ds-store` are built,
 every switch off.** The default render is unchanged.
 
-- **Done:** 1B.1 (`ds-migrate run`; `wait` waits for 1B.2's gate to be
-  wired in); 1B.5; the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6
+- **Done:** 1B.1 (`ds-migrate run` and `wait`); 1B.5; the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6
   (skeleton, image and the real loops); 1B.7; 1B.8's `maintenance` bin.
 - **Done in code:** 1B.2 (`wait_for_schema`, which the writer calls before
   readiness and before registering its loops) and 1B.3 (the api reading
   `API_MIGRATE_ON_STARTUP`; the other DB services gated).
-- **Waiting on code:** `ds-migrate wait` calling `wait_for_schema`.
+- **Waiting on code:** nothing; what is left is turning the switches on
+  (the migrate Job with `api.migrateOnStartup: false`, the writer's loops).
 
 Details and differences from the table below:
 
@@ -268,8 +268,13 @@ Details and differences from the table below:
   `crates/ds-migrate` (in the api image as `/usr/local/bin/ds-migrate`):
   `run` does the api's startup sequence (the contract check, then
   `migrate::run`) with `MIGRATION_DATABASE_URL`, else `DATABASE_URL`;
-  `wait` fails until 1B.2's `wait_for_schema` exists (a `TODO(1B.2)` in
-  its `main.rs`). `check-crate-deps.py` holds ds-migrate to ds-store's
+  `wait` runs the schema gate from outside a service
+  (`schema::wait_for_schema_with` on one lazy connection, so a database
+  not up yet is retried until the deadline): the migration only, or with
+  `--role <api|aggregator|enricher|notifier|writer>` (`DS_MIGRATE_ROLE`)
+  also that role's `db-grants.yaml` grants, checked as the `DATABASE_URL`
+  user. The chart does not run it (the Job runs `run`; each service gates
+  itself); it is for scripts, init containers and operators. `check-crate-deps.py` holds ds-migrate to ds-store's
   rules. The moved DB tests are `ds_store::migrate::tests` (the CI filter
   `migrate::tests` still selects them).
 - **1B.2.** `ds_store::schema::wait_for_schema(pool, DbRole, progress)`;
