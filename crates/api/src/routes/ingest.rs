@@ -532,81 +532,14 @@ async fn get_active_tracked_trains(
     Ok(Json(rows))
 }
 
-/// `schedule-ingest`'s per-delivery record of one successfully-verified CIF
-/// SCHEDULE feed delivery. Unlike the other ingest routes this isn't a
-/// per-poll-cycle batch of reference data -- it's one row per delivery,
-/// recorded once a stable `.zip` delivery has been extracted (see
-/// `crates/schedule-ingest`).
-///
-/// `delivered_at` is the delivery zip's own mtime -- the real identity of
-/// "which delivery is this" now that there is no sequence number (see
-/// `docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`).
-/// `ingested_at` is when this process actually happened to be processed,
-/// kept only as separate observability data.
-///
-/// `source_*` describe the delivered zip itself (its name, size and
-/// SHA-256 as `schedule-ingest` read it); absent from an older
-/// `schedule-ingest`, so all optional.
-#[derive(Debug, Deserialize)]
-struct ScheduleFeedIngestRequest {
-    delivered_at: chrono::DateTime<chrono::Utc>,
-    ingested_at: chrono::DateTime<chrono::Utc>,
-    files: Vec<ScheduleFeedFile>,
-    #[serde(default)]
-    source_file: Option<String>,
-    #[serde(default)]
-    source_bytes: Option<u64>,
-    #[serde(default)]
-    source_sha256: Option<String>,
-}
-
-/// One file observed as part of a schedule-feed delivery. `bytes` is the
-/// size `schedule-ingest` itself observed on disk once stable, not a
-/// manifest-declared size -- the real manifest format has no such field.
-/// `sha256` is the extracted file's hash, when `schedule-ingest` extracted
-/// it itself (a delivery re-posted from its completion marker carries
-/// none).
-#[derive(Debug, Deserialize, Serialize)]
-struct ScheduleFeedFile {
-    name: String,
-    bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    sha256: Option<String>,
-}
+// Moved to ds_store::schedule (ingest architecture plan 1A.7).
+use ds_store::schedule::ScheduleFeedIngestRequest;
 
 // Moved to `ds_store::corpus` (ingest architecture plan 1A.6).
 use ds_store::corpus::is_sha256_hex;
 
-/// A 422 for any malformed provenance field in a schedule-feed record.
-fn schedule_feed_ingest_problem(req: &ScheduleFeedIngestRequest) -> Option<String> {
-    if let Some(sha) = &req.source_sha256
-        && !is_sha256_hex(sha)
-    {
-        return Some("source_sha256 must be 64 lowercase hex digits".to_string());
-    }
-    if req
-        .source_bytes
-        .is_some_and(|bytes| i64::try_from(bytes).is_err())
-    {
-        return Some("source_bytes is out of range".to_string());
-    }
-    if req
-        .source_file
-        .as_deref()
-        .is_some_and(|f| f.trim().is_empty())
-    {
-        return Some("source_file must not be blank".to_string());
-    }
-    req.files
-        .iter()
-        .find(|f| f.sha256.as_deref().is_some_and(|s| !is_sha256_hex(s)))
-        .map(|f| {
-            format!(
-                "files[].sha256 of {:?} must be 64 lowercase hex digits",
-                f.name
-            )
-        })
-}
+// Moved to ds_store::schedule (ingest architecture plan 1A.7).
+use ds_store::schedule::schedule_feed_ingest_problem;
 
 async fn get_schedule_feed_last_fetched(
     State(app): State<App>,
@@ -1046,56 +979,36 @@ struct ScheduleChunkParams {
     service_date: Option<chrono::NaiveDate>,
 }
 
-/// Longest `publish_id` accepted -- `schedule-reference`'s own ids are well
-/// under this; the bound only stops a malformed caller staging arbitrarily
-/// large keys.
-const MAX_PUBLISH_ID_LEN: usize = 128;
+// Moved to ds_store::schedule (ingest architecture plan 1A.7). Only this
+// file's tests still name it.
+#[cfg(test)]
+use ds_store::schedule::MAX_PUBLISH_ID_LEN;
 
+/// The chunk-parameter validation moved to `SchedulePublishPart::new` and
+/// `SchedulePublishPart::empty_publish_date` in `ds_store::schedule`
+/// (ingest architecture plan 1A.7); these map its refusals to a 400.
 impl ScheduleChunkParams {
     /// This chunk's place in its publish, or a 400 for a request the diff
     /// protocol cannot apply.
     fn part(&self) -> Result<queries::SchedulePublishPart<'_>, (StatusCode, String)> {
-        let Some(publish_id) = self.publish_id.as_deref() else {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "publish_id is required (the legacy delete-then-insert chunk protocol was \
-                 removed)"
-                    .to_string(),
-            ));
-        };
-        if publish_id.is_empty() || publish_id.len() > MAX_PUBLISH_ID_LEN {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("publish_id must be 1-{MAX_PUBLISH_ID_LEN} characters"),
-            ));
-        }
-        let final_total_rows = match (self.last_chunk, self.total_rows) {
-            (true, Some(total)) => Some(total),
-            (true, None) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "last_chunk=true requires total_rows".to_string(),
-                ));
-            }
-            (false, _) => None,
-        };
-        Ok(queries::SchedulePublishPart {
-            publish_id,
-            first_chunk: self.first_chunk,
-            final_total_rows,
-        })
+        queries::SchedulePublishPart::new(
+            self.publish_id.as_deref(),
+            self.first_chunk,
+            self.last_chunk,
+            self.total_rows,
+        )
+        .map_err(|problem| (StatusCode::BAD_REQUEST, problem))
     }
 
     /// For a chunk with no rows: the date an empty final publish clears, or
     /// a 400 when a `total_rows=0` final chunk does not say which date.
     fn empty_publish_date(&self) -> Result<Option<chrono::NaiveDate>, (StatusCode, String)> {
-        if self.last_chunk && self.total_rows == Some(0) && self.service_date.is_none() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "a final chunk with total_rows=0 requires service_date".to_string(),
-            ));
-        }
-        Ok(self.service_date)
+        queries::SchedulePublishPart::empty_publish_date(
+            self.last_chunk,
+            self.total_rows,
+            self.service_date,
+        )
+        .map_err(|problem| (StatusCode::BAD_REQUEST, problem))
     }
 }
 
@@ -3811,75 +3724,6 @@ mod schedule_chunk_params_tests {
             };
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
-    }
-}
-
-#[cfg(test)]
-mod schedule_feed_provenance_tests {
-    use super::*;
-
-    fn request(body: serde_json::Value) -> ScheduleFeedIngestRequest {
-        serde_json::from_value(body).expect("valid ScheduleFeedIngestRequest JSON")
-    }
-
-    #[test]
-    fn an_older_schedule_ingest_record_without_provenance_is_accepted() {
-        let req = request(serde_json::json!({
-            "delivered_at": "2026-09-30T19:59:59Z",
-            "ingested_at": "2026-09-30T20:00:35Z",
-            "files": [{"name": "RJTTF975MCA.txt", "bytes": 724_116_170_u64}]
-        }));
-        assert_eq!(schedule_feed_ingest_problem(&req), None);
-        assert_eq!(req.source_sha256, None);
-        assert_eq!(req.files[0].sha256, None);
-        // No `sha256` key is written back into `files` for such a record.
-        assert_eq!(
-            serde_json::to_value(&req.files).unwrap(),
-            serde_json::json!([{"name": "RJTTF975MCA.txt", "bytes": 724_116_170_u64}])
-        );
-    }
-
-    #[test]
-    fn a_record_with_well_formed_provenance_is_accepted() {
-        let req = request(serde_json::json!({
-            "delivered_at": "2026-09-30T19:59:59Z",
-            "ingested_at": "2026-09-30T20:00:35Z",
-            "files": [{"name": "RJTTF975MCA.txt", "bytes": 3, "sha256": "ab".repeat(32)}],
-            "source_file": "timetable_full.zip",
-            "source_bytes": 77_222_226,
-            "source_sha256": "0123456789abcdef".repeat(4)
-        }));
-        assert_eq!(schedule_feed_ingest_problem(&req), None);
-    }
-
-    #[test]
-    fn malformed_provenance_is_refused() {
-        for (field, value) in [
-            (
-                "source_sha256",
-                serde_json::json!("ABCDEF".repeat(10) + "abcd"),
-            ),
-            ("source_sha256", serde_json::json!("abc")),
-            ("source_bytes", serde_json::json!(u64::MAX)),
-            ("source_file", serde_json::json!(" ")),
-        ] {
-            let mut body = serde_json::json!({
-                "delivered_at": "2026-09-30T19:59:59Z",
-                "ingested_at": "2026-09-30T20:00:35Z",
-                "files": []
-            });
-            body[field] = value;
-            assert!(
-                schedule_feed_ingest_problem(&request(body)).is_some(),
-                "{field} must be validated"
-            );
-        }
-        let bad_file = request(serde_json::json!({
-            "delivered_at": "2026-09-30T19:59:59Z",
-            "ingested_at": "2026-09-30T20:00:35Z",
-            "files": [{"name": "RJTTF975MCA.txt", "bytes": 3, "sha256": "xyz"}]
-        }));
-        assert!(schedule_feed_ingest_problem(&bad_file).is_some());
     }
 }
 
