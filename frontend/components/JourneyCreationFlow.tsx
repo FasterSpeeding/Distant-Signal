@@ -10,6 +10,7 @@ import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegCh
 import { routeLabel } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, JourneyDetail } from '@/lib/types';
+import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 
 /** The `/journeys/new` page's own interactive body -- see that page's doc
  * comment for the design this component is the engine of. Two states:
@@ -57,9 +58,12 @@ import type { CreateJourneyResponse, JourneyDetail } from '@/lib/types';
 export function JourneyCreationFlow({
   planOnly = false,
   planOrigin,
+  planQuery,
 }: {
   planOnly?: boolean;
   planOrigin?: string;
+  /** `/plan` only: the search its URL restores (`lib/tripPlanUrl.ts`). */
+  planQuery?: PlanFormInitial;
 } = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
@@ -96,7 +100,9 @@ export function JourneyCreationFlow({
   }
 
   if (journeyId === null && planOnly) {
-    return <PlanTripFlow onCreated={handleLegOneCreated} initialOriginCrs={planOrigin} />;
+    return (
+      <PlanTripFlow onCreated={handleLegOneCreated} initialOriginCrs={planOrigin} initialQuery={planQuery} syncUrl />
+    );
   }
 
   if (journeyId === null) {

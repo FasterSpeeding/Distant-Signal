@@ -51,7 +51,7 @@ const plan: TripPlanResponse = {
   ],
 };
 
-async function renderPage(searchParams: { origin?: string | string[] } = {}) {
+async function renderPage(searchParams: Record<string, string | string[]> = {}) {
   renderWithMantine(await PlanPage({ searchParams: Promise.resolve(searchParams) }));
 }
 
@@ -85,6 +85,22 @@ describe('PlanPage (/plan)', () => {
   it('ignores an ?origin= that is not a station code', async () => {
     await renderPage({ origin: '<script>' });
     expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('');
+  });
+
+  it('restores a shared search, advanced options included, from the query string', async () => {
+    await renderPage({
+      origin: 'EUS',
+      destination: 'pre',
+      results: 'options',
+      via: 'STA,CRE',
+      avoidChange: 'WVH',
+      maxChanges: '1',
+    });
+    expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('PRE');
+    expect(screen.getByRole('radio', { name: 'Compare options' })).toBeChecked();
+    const advanced = screen.getByRole('button', { name: 'Advanced options (3 set)' });
+    expect(advanced).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText("Pass through STA, CRE · Don't change at WVH · Max 1 change")).toBeInTheDocument();
   });
 
   it('takes the first of a repeated ?origin=', async () => {

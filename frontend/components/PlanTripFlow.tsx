@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Alert, Button, Stack, Text } from '@mantine/core';
+import { Alert, Button, List, ListItem, Stack, Text } from '@mantine/core';
 import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -9,12 +9,15 @@ import { LoginPromptModal } from './LoginPromptModal';
 import {
   collectTripPlanStationCodes,
   fetchTripPlan,
+  isTooLargeSearchError,
+  noResultHint,
   trainLegsForTracking,
   TripPlanError,
   type TripPlanQuery,
 } from '@/lib/tripPlan';
+import { planPageSearch, type PlanFormInitial } from '@/lib/tripPlanUrl';
 import { getStationNames } from '@/lib/suggestions';
-import { codeRouteLabel, isTiplocCode } from '@/lib/stationLabel';
+import { codeRouteLabel, codeStationLabel, isTiplocCode } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
@@ -47,13 +50,25 @@ interface SegmentSelection {
 export function PlanTripFlow({
   onCreated,
   initialOriginCrs,
+  initialQuery,
+  syncUrl = false,
 }: {
   onCreated: (result: CreateJourneyResponse) => void;
   /** Pre-fills the From field (`/plan?from=CRS`). */
   initialOriginCrs?: string;
+  /** A search restored from `/plan`'s query string (`lib/tripPlanUrl.ts`). */
+  initialQuery?: PlanFormInitial;
+  /** `/plan` only: write each search into the address bar
+   * (`history.replaceState`, no navigation), so it can be shared and
+   * reopens the same form. Off on `/journeys/new`, whose query means
+   * something else. */
+  syncUrl?: boolean;
 }) {
   const [plan, setPlan] = useState<TripPlanResponse | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
+  // The options-mode search-size 400: shown as advice, not the raw message
+  // (which is the formula the API checks).
+  const [tooLarge, setTooLarge] = useState(false);
   // CRS -> full name, resolved client-side once `plan` loads -- unlike
   // every OTHER station-bearing response in this app, `GET /Trips/plan`
   // never sends a `*Name` sibling field of its own (see
@@ -107,6 +122,10 @@ export function PlanTripFlow({
     const requestId = (searchRequestId.current += 1);
     setSearching(true);
     setPlanError(null);
+    setTooLarge(false);
+    if (syncUrl) {
+      window.history.replaceState(null, '', `${window.location.pathname}?${planPageSearch(query)}`);
+    }
     setPlan(null);
     // Clears out the PREVIOUS search's resolved names immediately (not
     // just once the new lookup resolves) -- otherwise a code the new plan
@@ -128,6 +147,10 @@ export function PlanTripFlow({
       });
     } catch (error) {
       if (searchRequestId.current !== requestId) return;
+      if (error instanceof TripPlanError && isTooLargeSearchError(error)) {
+        setTooLarge(true);
+        return;
+      }
       setPlanError(error instanceof TripPlanError ? error.message : 'Could not plan this trip. Please try again.');
     } finally {
       if (searchRequestId.current === requestId) setSearching(false);
@@ -306,12 +329,33 @@ export function PlanTripFlow({
     }
   }
 
+  const hintFor = (reason: Parameters<typeof noResultHint>[0]) =>
+    noResultHint(reason, (code) => codeStationLabel(code, stationNames.get(code)));
+
   return (
     <Stack gap="md">
-      <PlanTripForm onSubmit={handleSearch} searching={searching} initialOriginCrs={initialOriginCrs} />
+      <PlanTripForm
+        onSubmit={handleSearch}
+        searching={searching}
+        initialOriginCrs={initialOriginCrs}
+        initial={initialQuery}
+      />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
           {planError}
+        </Alert>
+      )}
+      {tooLarge && (
+        <Alert color="red" title="Couldn't plan this trip: the search is too large">
+          <Text size="sm">
+            Comparing options over this many stops, vias and changes is more than the planner can do at once. Try one of
+            these:
+          </Text>
+          <List size="sm" mt={4}>
+            <ListItem>Switch Results to Fastest, which has no such limit.</ListItem>
+            <ListItem>Remove some stops to call at, or some “Pass through” stations.</ListItem>
+            <ListItem>Lower “Most changes” in Advanced options.</ListItem>
+          </List>
         </Alert>
       )}
       {plan &&
@@ -334,6 +378,11 @@ export function PlanTripFlow({
                 <Alert color="yellow">
                   No route found for <RouteText>{segmentLabel}</RouteText>.
                   {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
+                  {segment.noResultReason && hintFor(segment.noResultReason) && (
+                    <Text size="sm" mt={4}>
+                      {hintFor(segment.noResultReason)}
+                    </Text>
+                  )}
                 </Alert>
               )}
               {segment.cappedByMaxChanges && (
@@ -348,6 +397,9 @@ export function PlanTripFlow({
                   selected={selections[segmentIndex]?.itinerary === itinerary}
                   onSelect={() => selectItinerary(segmentIndex, itinerary)}
                   stationNames={stationNames}
+                  viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
+                    (via) => via.segment === segmentIndex,
+                  )}
                 />
               ))}
             </Stack>

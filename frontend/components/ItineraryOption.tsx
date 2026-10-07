@@ -2,7 +2,8 @@ import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
 import { codeRouteLabel } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import { ServiceModeBadge } from './ServiceModeBadge';
-import type { TripPlanItinerary, TripPlanLeg, TripPlanLegLive } from '@/lib/types';
+import { viaSatisfiedLabel } from '@/lib/tripPlan';
+import type { TripPlanItinerary, TripPlanLeg, TripPlanLegLive, TripPlanViaSatisfied } from '@/lib/types';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
  * full name -- `GET /Trips/plan` (unlike every other station-bearing
@@ -48,6 +49,7 @@ export function ItineraryOption({
   selected,
   onSelect,
   stationNames = new Map(),
+  viaPasses = [],
 }: {
   itinerary: TripPlanItinerary;
   selected: boolean;
@@ -55,6 +57,10 @@ export function ItineraryOption({
   /** CRS -> full name, resolved by `PlanTripFlow` -- see `legSummary`'s own
    * doc comment. */
   stationNames?: Map<string, string>;
+  /** This itinerary's share of its journey's `viaSatisfiedBy`: the
+   * "Pass through" stations its own legs passed, each shown under the leg
+   * that passed it. */
+  viaPasses?: TripPlanViaSatisfied[];
 }) {
   const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
 
@@ -70,12 +76,21 @@ export function ItineraryOption({
               {itinerary.legs.map((leg, index) => (
                 // A bus or ferry leg keeps `kind: 'train'`; its own badge
                 // says what it really is (and that it isn't tracked live).
-                <Group key={index} gap="xs" wrap="wrap">
-                  <Text size="sm">
-                    <RouteText>{legSummary(leg, stationNames)}</RouteText>
-                  </Text>
-                  {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
-                </Group>
+                <Stack key={index} gap={0}>
+                  <Group gap="xs" wrap="wrap">
+                    <Text size="sm">
+                      <RouteText>{legSummary(leg, stationNames)}</RouteText>
+                    </Text>
+                    {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
+                  </Group>
+                  {viaPasses
+                    .filter((via) => via.leg === index)
+                    .map((via, viaIndex) => (
+                      <Text key={viaIndex} size="xs" c="dimmed" pl="sm">
+                        {viaSatisfiedLabel(via, stationNames.get(via.crs))}
+                      </Text>
+                    ))}
+                </Stack>
               ))}
             </Stack>
           }
