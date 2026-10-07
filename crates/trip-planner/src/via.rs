@@ -63,13 +63,17 @@ pub enum ViaHow {
 }
 
 /// Which leg of a [`crate::StagedJourney`] satisfied a via.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViaLeg {
     /// Index into `StagedJourney::parts`.
     pub part: usize,
     /// Index into that part's `legs`.
     pub leg: usize,
     pub how: ViaHow,
+    /// The via TIPLOC (normalized) the leg called at, ran through or walked
+    /// into: which of the via's alternatives satisfied it (2026-10-07, OR
+    /// groups). Empty only in the unreachable fallback.
+    pub tiploc: String,
 }
 
 /// The ordered vias of one request. See the module doc.
@@ -141,13 +145,16 @@ impl Vias {
     /// departure call, then everything it runs through, then its arrival
     /// call, matched in order.
     pub(crate) fn advance(&self, v: usize, connection: &Connection) -> usize {
-        self.walk(v, connection, |_, _| {})
+        self.walk(v, connection, |_, _, _| {})
     }
 
-    /// The vias `connection` satisfies when ridden from progress `v`, and how.
-    pub(crate) fn hits(&self, v: usize, connection: &Connection) -> Vec<(usize, ViaHow)> {
+    /// The vias `connection` satisfies when ridden from progress `v`, how,
+    /// and at which TIPLOC.
+    pub(crate) fn hits(&self, v: usize, connection: &Connection) -> Vec<(usize, ViaHow, String)> {
         let mut hits = Vec::new();
-        self.walk(v, connection, |via, how| hits.push((via, how)));
+        self.walk(v, connection, |via, how, tiploc| {
+            hits.push((via, how, tiploc.to_string()));
+        });
         hits
     }
 
@@ -155,7 +162,7 @@ impl Vias {
         &self,
         mut v: usize,
         connection: &Connection,
-        mut hit: impl FnMut(usize, ViaHow),
+        mut hit: impl FnMut(usize, ViaHow, &str),
     ) -> usize {
         let n = self.targets.len();
         if v >= n {
@@ -163,7 +170,7 @@ impl Vias {
         }
         let mut at = |v: &mut usize, tiploc: &str, how: ViaHow| {
             while *v < n && self.targets[*v].contains(tiploc) {
-                hit(*v, how);
+                hit(*v, how, tiploc);
                 *v += 1;
             }
         };
@@ -272,7 +279,10 @@ mod tests {
         assert_eq!(v.advance(2, &conn("U", "B", "C")), 3);
         assert_eq!(
             v.hits(0, &conn("U", "A", "B")),
-            vec![(0, ViaHow::Pass), (1, ViaHow::Call)]
+            vec![
+                (0, ViaHow::Pass, "X".to_string()),
+                (1, ViaHow::Call, "B".to_string())
+            ]
         );
         // Another train over the same calls passes nothing.
         assert_eq!(v.advance(0, &conn("W", "A", "B")), 0);
@@ -287,7 +297,11 @@ mod tests {
         // A -> C replaces A -> B -> C (B cancelled): X, B, Y all run through.
         assert_eq!(
             v.hits(0, &conn("U", "A", "C")),
-            vec![(0, ViaHow::Pass), (1, ViaHow::Pass), (2, ViaHow::Pass)]
+            vec![
+                (0, ViaHow::Pass, "X".to_string()),
+                (1, ViaHow::Pass, "B".to_string()),
+                (2, ViaHow::Pass, "Y".to_string())
+            ]
         );
         // Cannot be placed: only its own ends count.
         assert_eq!(v.advance(0, &conn("U", "Q", "C")), 0);
@@ -330,5 +344,44 @@ mod tests {
         assert_eq!(v.advance_at(0, "P"), 2);
         assert_eq!(v.advance_at(1, "Q"), 2);
         assert_eq!(v.advance_at(0, "Q"), 0);
+    }
+
+    /// An OR group (2026-10-07): one via whose targets are several
+    /// stations' TIPLOCs is passed by ANY of them, reports which, and is
+    /// still one step of progress.
+    #[test]
+    fn a_group_via_is_passed_by_any_member() {
+        let group = |members: &[&str]| -> Vec<String> {
+            members.iter().map(|m| (*m).to_string()).collect()
+        };
+        let v = Vias::new(
+            &[group(&["Q", "Y", "D"]), group(&["P", "Z"])],
+            HashMap::from([(
+                "U".to_string(),
+                vec![
+                    span("A", "B", &["X"]),
+                    span("B", "C", &["Y", "Z"]),
+                    span("C", "D", &[]),
+                ],
+            )]),
+        );
+        assert_eq!(v.len(), 2);
+        // Y (a pass) satisfies the first group, then Z the second.
+        assert_eq!(
+            v.hits(0, &conn("U", "B", "C")),
+            vec![
+                (0, ViaHow::Pass, "Y".to_string()),
+                (1, ViaHow::Pass, "Z".to_string())
+            ]
+        );
+        // D (a call) satisfies the first group; the second is still due.
+        assert_eq!(
+            v.hits(0, &conn("U", "C", "D")),
+            vec![(0, ViaHow::Call, "D".to_string())]
+        );
+        // Q, by arriving or changing there.
+        assert_eq!(v.advance_at(0, "Q"), 1);
+        // No member: no progress.
+        assert_eq!(v.advance(0, &conn("U", "A", "B")), 0);
     }
 }

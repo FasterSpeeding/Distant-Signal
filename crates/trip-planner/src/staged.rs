@@ -684,12 +684,13 @@ impl<'a> Forward<'a> {
         let stages = self.last_stage() + 1;
         let mut parts: Vec<Vec<JourneyLeg>> = vec![Vec::new(); stages];
         let mut continues = vec![false; stages];
-        // Per via: (part, position from the END of that part's legs, how).
+        // Per via: (part, position from the END of that part's legs, how,
+        // the TIPLOC that satisfied it).
         let via_count = grid.width - 1;
-        let mut via_hits: Vec<Option<(usize, usize, ViaHow)>> = vec![None; via_count];
-        // Vias passed by arriving at the stop being walked back from; the
-        // leg that arrived there satisfied them.
-        let mut pending: Vec<usize> = Vec::new();
+        let mut via_hits: Vec<Option<(usize, usize, ViaHow, String)>> = vec![None; via_count];
+        // Vias passed by arriving at the stop being walked back from (and
+        // that stop); the leg that arrived there satisfied them.
+        let mut pending: Vec<(usize, String)> = Vec::new();
         let (mut round, mut state, mut stop) = (start_round, grid.last(), destination.to_string());
         let arrival_min = rounds[start_round]
             .0
@@ -704,7 +705,9 @@ impl<'a> Forward<'a> {
                 .unwrap_or_else(|| panic!("internal error: {stop} (state {state}) has no source"));
             match &label.reached {
                 Reached::Advance { from } => {
-                    pending.extend(grid.progress(*from)..grid.progress(state));
+                    pending.extend(
+                        (grid.progress(*from)..grid.progress(state)).map(|via| (via, stop.clone())),
+                    );
                     state = *from;
                 }
                 Reached::Link {
@@ -713,8 +716,8 @@ impl<'a> Forward<'a> {
                     minutes,
                 } => {
                     let part = grid.stage(state);
-                    for via in pending.drain(..) {
-                        via_hits[via] = Some((part, parts[part].len(), ViaHow::Walk));
+                    for (via, tiploc) in pending.drain(..) {
+                        via_hits[via] = Some((part, parts[part].len(), ViaHow::Walk, tiploc));
                     }
                     parts[part].push(JourneyLeg::Transfer(TransferLeg {
                         mode: mode.clone(),
@@ -735,9 +738,11 @@ impl<'a> Forward<'a> {
                     let (mut part, mut last, mut index) =
                         (grid.stage(state), connection.clone(), *boarding);
                     let progress_of = |index: usize| grid.progress(arena[index].state);
-                    // This leg's via hits: (via, how).
-                    let mut hits: Vec<(usize, ViaHow)> =
-                        pending.drain(..).map(|via| (via, ViaHow::Call)).collect();
+                    // This leg's via hits: (via, how, TIPLOC).
+                    let mut hits: Vec<(usize, ViaHow, String)> = pending
+                        .drain(..)
+                        .map(|(via, tiploc)| (via, ViaHow::Call, tiploc))
+                        .collect();
                     if let Some(vias) = self.vias {
                         hits.extend(vias.hits(progress_of(index), &last));
                     }
@@ -754,8 +759,8 @@ impl<'a> Forward<'a> {
                             .first
                             .as_ref()
                             .expect("internal error: a ridden boarding has a first connection");
-                        for (via, how) in hits.drain(..) {
-                            via_hits[via] = Some((part, parts[part].len(), how));
+                        for (via, how, tiploc) in hits.drain(..) {
+                            via_hits[via] = Some((part, parts[part].len(), how, tiploc));
                         }
                         parts[part].push(JourneyLeg::Train(TrainLeg {
                             uid: first.uid.clone(),
@@ -791,13 +796,20 @@ impl<'a> Forward<'a> {
             }
         }
 
+        // Vias passed at the origin itself (an OR group with the origin as
+        // one of its members, 2026-10-07): the first leg, which starts there.
+        for (via, tiploc) in pending.drain(..) {
+            let from_end = parts[0].len().saturating_sub(1);
+            via_hits[via] = Some((0, from_end, ViaHow::Call, tiploc));
+        }
         let via_legs: Vec<ViaLeg> = via_hits
-            .iter()
-            .map(|hit| match *hit {
-                Some((part, from_end, how)) => ViaLeg {
+            .into_iter()
+            .map(|hit| match hit {
+                Some((part, from_end, how, tiploc)) => ViaLeg {
                     part,
-                    leg: parts[part].len() - 1 - from_end,
+                    leg: parts[part].len().saturating_sub(1 + from_end),
                     how,
+                    tiploc,
                 },
                 // Unreachable: the walk back from the last state passes every
                 // progress step. Attributed to the first leg rather than
@@ -806,6 +818,7 @@ impl<'a> Forward<'a> {
                     part: 0,
                     leg: 0,
                     how: ViaHow::Call,
+                    tiploc: String::new(),
                 },
             })
             .collect();
@@ -1598,6 +1611,16 @@ mod tests {
         targets: &[&str],
         passes: &[(&str, &str, &[&str])],
     ) -> Vias {
+        let groups: Vec<&[&str]> = targets.iter().map(std::slice::from_ref).collect();
+        group_vias_for(connections, &groups, passes)
+    }
+
+    /// [`vias_for`] with each via an OR group of TIPLOCs (2026-10-07).
+    fn group_vias_for(
+        connections: &[Connection],
+        groups: &[&[&str]],
+        passes: &[(&str, &str, &[&str])],
+    ) -> Vias {
         let mut spans: HashMap<String, Vec<PassSpan>> = HashMap::new();
         for (uid, _, _) in passes {
             if spans.contains_key(*uid) {
@@ -1619,7 +1642,11 @@ mod tests {
                 .collect();
             spans.insert((*uid).to_string(), legs);
         }
-        Vias::new(&targets.iter().map(|t| s(t)).collect::<Vec<_>>(), spans)
+        let targets: Vec<Vec<String>> = groups
+            .iter()
+            .map(|group| group.iter().map(|t| (*t).to_string()).collect())
+            .collect();
+        Vias::new(&targets, spans)
     }
 
     fn uids_of(journey: &StagedJourney) -> Vec<String> {
@@ -1657,7 +1684,8 @@ mod tests {
             vec![ViaLeg {
                 part: 0,
                 leg: 0,
-                how: ViaHow::Pass
+                how: ViaHow::Pass,
+                tiploc: "X".to_string(),
             }]
         );
         let raptor = raptor_staged(&options, 0, 1, None, None);
@@ -1762,7 +1790,8 @@ mod tests {
             vec![ViaLeg {
                 part: 0,
                 leg: 0,
-                how: ViaHow::Call
+                how: ViaHow::Call,
+                tiploc: "X".to_string(),
             }]
         );
         // No change at X: stay aboard T1, which calls there.
@@ -1911,6 +1940,284 @@ mod tests {
         let journey = staged_arrive_by(&with_via, None, None).unwrap();
         assert_eq!(uids_of(&journey), vec!["T1"]);
         assert_eq!(journey.via_legs[0].how, ViaHow::Pass);
+    }
+
+    // ---- OR-group vias (2026-10-07): one via, several acceptable stations ----
+
+    /// T3 is the fastest train but touches no member of {X, Y}. T1 runs
+    /// through X (a pass); T2, later, calls at Y. Departing early the group
+    /// is satisfied by T1 passing X; departing after T1 has gone, by T2
+    /// calling at Y. Either way it is ONE via, reported with its member.
+    #[test]
+    fn a_group_via_is_satisfied_by_whichever_member_the_journey_reaches() {
+        use crate::reverse::{ArriveByOptions, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T3", "A", "C", 470, 540),
+            conn("T1", "A", "C", 480, 560),
+            conn("T2", "A", "Y", 600, 630),
+            conn("T2", "Y", "C", 632, 680),
+        ]);
+        let ic = interchange(&[]);
+        let vias = group_vias_for(&connections, &[&["X", "Y"]], &[("T1", "A", &["X"])]);
+        assert_eq!(vias.len(), 1);
+        let (from, to) = (s("A"), s("C"));
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            date: date(),
+        };
+        let plain = StagedOptions {
+            vias: None,
+            ..options
+        };
+        assert_eq!(
+            uids_of(&scan_staged(&plain, 0, None, None).unwrap()),
+            vec!["T3"]
+        );
+
+        // Early: pass-through on member X.
+        let early = scan_staged(&options, 0, None, None).expect("T1 passes X");
+        assert_eq!(uids_of(&early), vec!["T1"]);
+        assert_eq!(
+            early.via_legs,
+            vec![ViaLeg {
+                part: 0,
+                leg: 0,
+                how: ViaHow::Pass,
+                tiploc: "X".to_string(),
+            }]
+        );
+        assert_eq!(raptor_staged(&options, 0, 2, None, None)[0], early);
+
+        // Later: a call at member Y.
+        let late = scan_staged(&options, 490, None, None).expect("T2 calls at Y");
+        assert_eq!(uids_of(&late), vec!["T2"]);
+        assert_eq!(late.parts[0].legs.len(), 1, "staying aboard through Y");
+        assert_eq!(
+            late.via_legs,
+            vec![ViaLeg {
+                part: 0,
+                leg: 0,
+                how: ViaHow::Call,
+                tiploc: "Y".to_string(),
+            }]
+        );
+
+        // Arrive-by 700: the latest train satisfying the group is T2.
+        let arrive = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            arrive_by_min: 700,
+            date: date(),
+        };
+        let journey = staged_arrive_by(&arrive, None, None).unwrap();
+        assert_eq!(uids_of(&journey), vec!["T2"]);
+        assert_eq!(journey.via_legs[0].tiploc, "Y");
+    }
+
+    /// A group none of whose members any train calls at or runs through
+    /// finds no journey, in every search.
+    #[test]
+    fn a_group_via_with_every_member_unreachable_finds_nothing() {
+        use crate::reverse::{ArriveByOptions, latest_departures_by_trips, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "B", 480, 520),
+            conn("T1", "B", "C", 522, 560),
+        ]);
+        let ic = interchange(&[]);
+        let vias = group_vias_for(&connections, &[&["P", "Q", "R"]], &[("T1", "A", &["X"])]);
+        let (from, to) = (s("A"), s("C"));
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            date: date(),
+        };
+        assert!(scan_staged(&options, 0, None, None).is_none());
+        assert!(raptor_staged(&options, 0, 4, None, None).is_empty());
+        let arrive = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            arrive_by_min: 1000,
+            date: date(),
+        };
+        assert!(staged_arrive_by(&arrive, None, None).is_none());
+        assert_eq!(
+            latest_departures_by_trips(&arrive, None, None, 3),
+            vec![None; 3]
+        );
+    }
+
+    /// A group with the origin (or the destination) among its members is
+    /// satisfied there: every journey passes it. The via is attributed to
+    /// the first (last) leg, with that member.
+    #[test]
+    fn a_group_via_containing_the_origin_or_destination_is_satisfied_there() {
+        use crate::reverse::{ArriveByOptions, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "B", 480, 520),
+            conn("T2", "B", "C", 530, 560),
+        ]);
+        let ic = interchange(&[]);
+        let (from, to) = (s("A"), s("C"));
+        for (group, member, leg) in [(["Z", "A"], "A", 0), (["C", "Z"], "C", 1)] {
+            let vias = group_vias_for(&connections, &[&group], &[]);
+            let options = StagedOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &[],
+                to_tiplocs: &to,
+                vias: Some(&vias),
+                date: date(),
+            };
+            let journey = scan_staged(&options, 0, None, None).expect("satisfied at an end");
+            assert_eq!(uids_of(&journey), vec!["T1", "T2"], "{member}");
+            assert_eq!(
+                journey.via_legs,
+                vec![ViaLeg {
+                    part: 0,
+                    leg,
+                    how: ViaHow::Call,
+                    tiploc: member.to_string(),
+                }],
+                "{member}"
+            );
+            assert_eq!(raptor_staged(&options, 0, 3, None, None).len(), 1);
+            let arrive = ArriveByOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &[],
+                to_tiplocs: &to,
+                vias: Some(&vias),
+                arrive_by_min: 600,
+                date: date(),
+            };
+            let journey = staged_arrive_by(&arrive, None, None).expect("satisfied at an end");
+            assert_eq!(journey.via_legs[0].tiploc, member);
+        }
+    }
+
+    /// OR semantics, checked against the single-station vias: on random
+    /// networks a group via {P, Q, B} arrives exactly as early as the best
+    /// of the three single vias, departs (arrive-by) exactly as late as the
+    /// best of them, and reports a member that the reported leg touches.
+    #[test]
+    fn a_group_via_is_the_best_of_its_members() {
+        use crate::reverse::{ArriveByOptions, latest_departure};
+        let mut seed = 0x0bad_5eed_u64;
+        let mut next = |n: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % n
+        };
+        let members = ["P", "Q", "B"];
+        let mut found = 0;
+        for case in 0..80 {
+            let (connections, passes) = random_with_passes(&mut next, 25);
+            let ic = interchange(&[("C", 3), ("D", 99), ("E", 0), ("B", 7)]);
+            let rows: Vec<(&str, &str, Vec<&str>)> = passes
+                .iter()
+                .map(|(uid, from, passed)| {
+                    (
+                        uid.as_str(),
+                        from.as_str(),
+                        passed.iter().map(String::as_str).collect(),
+                    )
+                })
+                .collect();
+            let rows: Vec<(&str, &str, &[&str])> = rows
+                .iter()
+                .map(|(uid, from, passed)| (*uid, *from, passed.as_slice()))
+                .collect();
+            let (from, to) = (s("A"), s("F"));
+            let search = |vias: &Vias| {
+                let options = StagedOptions {
+                    connections: &connections,
+                    interchange: &ic,
+                    from_tiplocs: &from,
+                    waypoints: &[],
+                    to_tiplocs: &to,
+                    vias: Some(vias),
+                    date: date(),
+                };
+                let arrive = ArriveByOptions {
+                    connections: &connections,
+                    interchange: &ic,
+                    from_tiplocs: &from,
+                    waypoints: &[],
+                    to_tiplocs: &to,
+                    vias: Some(vias),
+                    arrive_by_min: 1200,
+                    date: date(),
+                };
+                (
+                    scan_staged(&options, 300, None, None),
+                    raptor_staged(&options, 300, 8, None, None)
+                        .iter()
+                        .map(|j| j.arrival_min)
+                        .min(),
+                    latest_departure(&arrive, None, None),
+                )
+            };
+            let singles: Vec<_> = members
+                .iter()
+                .map(|m| search(&vias_for(&connections, &[m], &rows)))
+                .collect();
+            let group = group_vias_for(&connections, &[&members], &rows);
+            let (csa, raptor, latest) = search(&group);
+            let best_arrival = singles
+                .iter()
+                .filter_map(|(j, _, _)| j.as_ref().map(|j| j.arrival_min))
+                .min();
+            let best_departure = singles.iter().filter_map(|(_, _, d)| *d).max();
+            assert_eq!(csa.as_ref().map(|j| j.arrival_min), best_arrival, "case {case}");
+            assert_eq!(raptor, best_arrival, "case {case}");
+            assert_eq!(latest, best_departure, "case {case}");
+            if let Some(journey) = csa {
+                found += 1;
+                let hit = &journey.via_legs[0];
+                assert!(members.contains(&hit.tiploc.as_str()), "case {case}");
+                let JourneyLeg::Train(leg) = &journey.parts[hit.part].legs[hit.leg] else {
+                    panic!("case {case}: no walks in this network");
+                };
+                let touches = connections
+                    .iter()
+                    .filter(|c| {
+                        c.uid == leg.uid
+                            && c.departure_min >= leg.departure_min
+                            && c.arrival_min <= leg.arrival_min
+                    })
+                    .any(|c| {
+                        c.from_tiploc == hit.tiploc
+                            || c.to_tiploc == hit.tiploc
+                            || rows.iter().any(|(uid, from, passed)| {
+                                *uid == c.uid
+                                    && *from == c.from_tiploc
+                                    && passed.contains(&hit.tiploc.as_str())
+                            })
+                    });
+                assert!(touches, "case {case}: {} not on {}", hit.tiploc, leg.uid);
+            }
+        }
+        assert!(found > 10, "the networks exercise the group ({found})");
     }
 
     /// `(uid, from, passed)` rows of [`random_with_passes`].
