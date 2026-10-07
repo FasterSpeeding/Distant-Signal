@@ -13,7 +13,7 @@ hand and left alone. CI's scripts-lint job runs `--check` (through
 scripts/lint-scripts.py), so an edit inside the markers, or a Dockerfile
 with no SERVICES entry, fails CI.
 
-Why generated: 18 copies of the same four stages, which must differ ONLY in
+Why generated: 19 copies of the same four stages, which must differ ONLY in
 the `--bin` flags (see below), drift apart when edited by hand.
 
 The stages (cargo-chef, https://github.com/LukeMathWalker/cargo-chef):
@@ -65,9 +65,11 @@ SERVICES: Mapping[str, Sequence[str]] = {
         "corpus_compare",
         "replay_uidless_movements",
         "backfill_line_train_summaries",
+        "maintenance",
     ),
     "enricher": ("enricher",),
     "full-coverage-consumer": ("full-coverage-consumer",),
+    "ingest-writer": ("ingest-writer",),
     "movement-relay": ("movement-relay",),
     "notifier": ("notifier",),
     "poller-incidents": ("poller-incidents",),

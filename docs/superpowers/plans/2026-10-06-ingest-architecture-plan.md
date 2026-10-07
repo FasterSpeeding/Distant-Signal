@@ -193,43 +193,94 @@ Rollback: revert the commit (no runtime switch).
 ### 1B. Migrator, schema gate, writer skeleton, loops, maintenance CronJob
 
 **Status (2026-10-07): the parts that do not need `ds-store` are built,
-every switch off.** 1B.5 and the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10
-are done; the default render is unchanged. Waiting on code: 1B.1
-(`ds-migrate`, which the migrate Job runs), 1B.3 (the api reading
-`API_MIGRATE_ON_STARTUP`), 1B.6 (the `ingest-writer` image, its
-`containers.yml` matrix leg and `SERVICE_TO_PATH` entry `.ingestWriter`),
-1B.8's `maintenance` bin, and 1B.2/1B.7. Differences from the table below:
+every switch off.** The default render is unchanged.
 
-- 1B.4: the `pg_isready` wait is an init container from the Postgres image
-  (the api image has no libpq tools), not "initContainer-free". The Job's
-  Postgres admission and egress are hook NetworkPolicies (weight -10): a
-  `pre-upgrade` hook runs before the release's own policies change. The
-  role setup Job gets an egress policy (Ranma's constraint). Without the
-  role split the Job migrates as `postgresql.auth.username`, or with the
-  external database's URL. `api.migrateOnStartup: false` without the Job
-  fails the render. The chart renders `API_MIGRATE_ON_STARTUP` only when
-  false, so the default render is unchanged.
-- 1B.5: the check covers migrations added since the base plus every one
-  newer than `CONTRACT_CHECK_CUTOFF` (20261007210000, the newest existing);
-  the 28 destructive statements in 9 older, applied migrations are
-  grandfathered (their checksums are locked). It also counts `DROP
+- **Done:** 1B.5; the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6's
+  skeleton and its image; 1B.8's `maintenance` bin.
+- **Waiting on code:** 1B.1 (`ds-migrate`, which the migrate Job runs),
+  1B.2 (`wait_for_schema`), 1B.3 (the api reading
+  `API_MIGRATE_ON_STARTUP`), 1B.6's real loops (after `ds-store`), and
+  1B.7.
+
+Details and differences from the table below:
+
+- **1B.4 (chart).** The `pg_isready` wait is an init container from the
+  Postgres image (the api image has no libpq tools), not
+  "initContainer-free". The Job's Postgres admission and egress are hook
+  NetworkPolicies (weight -10): a `pre-upgrade` hook runs before the
+  release's own policies change. The role setup Job gets an egress policy
+  (Ranma's constraint). Without the role split the Job migrates as
+  `postgresql.auth.username`, or with the external database's URL.
+  `api.migrateOnStartup: false` without the Job fails the render. The
+  chart renders `API_MIGRATE_ON_STARTUP` only when false, so the default
+  render is unchanged.
+- **1B.5.** The check covers migrations added since the base plus every
+  one newer than `CONTRACT_CHECK_CUTOFF` (20261007210000); the 28
+  destructive statements in 9 older, applied migrations are grandfathered
+  (their checksums are locked). It also counts `DROP
   PROCEDURE/TYPE/SEQUENCE/SCHEMA/MATERIALIZED VIEW`, scans `DO` blocks, and
   exempts changes to objects created in the same file.
-- 1B.8: the CronJob runs `/usr/local/bin/maintenance` (configurable); the
-  1B.8 code task must install the bin there. Its pool (2) counts in the
-  connection budgets.
-- 1B.9: the writer role is `observed` in `db-grants.yaml`, so the setup
-  Job creates it whenever `perService.enabled` (unused until
+- **1B.6, code done; the real loops wait for `ds-store`.**
+  - `crates/ingest-writer` has no dependency on `api`. It has config,
+    `health-http`, metrics, the writer pool (`common::pg`, 6) and the line
+    catalogue.
+  - The generic loop runner (`loop_runner.rs`) runs each named loop on its
+    interval while its `LockSession` holds `pg_try_advisory_lock(key)`.
+    The `LockSession` is one dedicated connection beyond the pool: role
+    limit = pool + 1, and the chart counts both in its budgets. A lock is
+    held across ticks until the process exits; a runner whose lock is held
+    elsewhere skips the tick (debug log,
+    `loop_ticks_total{outcome="skipped"}`).
+  - `INGEST_WRITER_LOOPS` (default false) registers only a no-op `canary`
+    loop (`INGEST_WRITER_CANARY_INTERVAL_SECS`, default 60).
+  - The lock keys are `common::advisory_locks` (`SCHEDULE_MATCH_SWEEP`,
+    `RECONCILIATION_SWEEP`, `BACKLOG_MATCH_SWEEP`, `CORPUS_CROSSWALK`,
+    `WRITER_CANARY`).
+  - `loops.rs` marks where each sweep registers once 1A.6/1A.10 have
+    moved its body. Still to do after `ds-store`:
+    - those four registrations;
+    - the CRS-to-line index;
+    - `wait_for_schema` before readiness (1B.2).
+  - `docker/ingest-writer.Dockerfile` has the generated cargo-chef builder
+    (`scripts/gen-rust-dockerfiles.py`); `containers.yml` has its matrix
+    leg and the digest step's `SERVICE_TO_PATH` entry `.ingestWriter`.
+  - The chart's env contract (1B.9): `DATABASE_URL`,
+    `DATABASE_MAX_CONNECTIONS` (default 6, the crate's), the other
+    `DATABASE_*` pool settings, `INGEST_WRITER_LOOPS`, `METRICS_ENABLED`,
+    `METRICS_PORT` (9091), `HEALTH_BIND_URL` (8090),
+    `PROGRESS_STALL_SECS`, `RUST_LOG` (plus `ingestWriter.extraEnv`).
+    `LINES_DIR` is the image's `/app/lines` default.
+    `RECONCILIATION_SWEEP_INTERVAL_SECS`,
+    `SCHEDULE_ENRICHMENT_GRACE_MINUTES` and
+    `BACKLOG_MATCH_SWEEP_INTERVAL_SECS` are rendered from the api's values
+    for the loops to come; the skeleton does not read them yet.
+  - DB tests (`crates/ingest-writer/tests/loop_locks.rs`): two runners,
+    one body run per tick; skip while held elsewhere; interval; reconnect
+    after a killed lock session. They pass as superuser and as the
+    role-split app role.
+- **1B.7, planned.** The api's four loops and its CORPUS startup task
+  take the same `common::advisory_locks` keys the same way. The runner
+  moves from `ingest-writer` into `ds-store` (it needs only sqlx, tokio
+  and metrics), and the api wraps each loop body with it on its own
+  `LockSession`. Then `API_BACKGROUND_LOOPS` gates the spawning, and
+  `session_cleanup_sweep_loop` stays outside the locks (the CronJob
+  replaces it). Test: an api runner and a writer runner on one key never
+  both run a body in a tick, as `two_runners_on_one_lock_run_the_body_once_per_tick`
+  checks.
+- **1B.8, done.** `crates/api/src/bin/maintenance.rs` runs one pass of
+  `prune_expired_sessions`, `prune_dead_links` and `prune_personal_data`.
+  It reuses the existing functions and the api's retention variables
+  (which the CronJob renders from the api's values), and exits non-zero
+  if any step failed. The api image builds it as
+  `/usr/local/bin/maintenance`, the CronJob's default command. Its pool
+  (2) counts in the connection budgets. It has a DB test.
+- **1B.9 (chart).** The writer role is `observed` in `db-grants.yaml`, so
+  the setup Job creates it whenever `perService.enabled` (unused until
   `perService.writer.connect`, which needs `ingestWriter.enabled`). The
-  PodMonitor entry is in the shared PodMonitor. The env contract for 1B.6:
-  `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `INGEST_WRITER_LOOPS`,
-  `RECONCILIATION_SWEEP_INTERVAL_SECS`, `SCHEDULE_ENRICHMENT_GRACE_MINUTES`,
-  `BACKLOG_MATCH_SWEEP_INTERVAL_SECS`, `METRICS_ENABLED`, `METRICS_PORT`,
-  `HEALTH_BIND_URL`, `PROGRESS_STALL_SECS`, `RUST_LOG` (plus
-  `ingestWriter.extraEnv`).
-- 1B.10: the surge pod's pool counts in the INF-7 budget and the app
-  role's computed limit, so `RollingUpdate` needs a smaller api pool (or
-  the api on its own role).
+  PodMonitor entry is in the shared PodMonitor.
+- **1B.10 (chart).** The surge pod's pool counts in the INF-7 budget and
+  the app role's computed limit, so `RollingUpdate` needs a smaller api
+  pool (or the api on its own role).
 
 | # | Task | Files | Tests |
 |---|---|---|---|
