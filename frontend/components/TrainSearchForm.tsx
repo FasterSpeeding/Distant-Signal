@@ -6,12 +6,11 @@ import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { LoadMoreControl } from './LoadMoreControl';
-import { RouteArrow } from './RouteArrow';
+import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
-import { ServiceModeBadge } from './ServiceModeBadge';
-import { isTimetableOnly } from '@/lib/serviceMode';
+import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import type { ServiceModeFields, TrainSearchPage, TrainSearchResult } from '@/lib/types';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
@@ -510,8 +509,8 @@ export function TrainSearchForm({
     return (
       <>
         <Text size="sm" c="dimmed">
-          These are from the scheduled timetable, not live running information, and may be up to 30 minutes out of date.
-          Open a train to see its live status.
+          Times are when each train leaves the station you searched, from the scheduled timetable, and may be up to 30
+          minutes out of date. Open a train to see its live status.
         </Text>
         {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
          * otherwise). It used to be (`<ScrollArea mah={420}
@@ -542,76 +541,31 @@ export function TrainSearchForm({
          * scroller buys nothing here -- there are no sticky controls above
          * the list to keep on screen -- while costing real usability on
          * touch, where it steals the page's own scroll gesture. */}
-        <Stack gap="xs" data-train-results>
+        {/* One `ServiceRow` per train, its "Track this train" button in the
+         * row's actions slot: the destination is the link to the train's
+         * page, so the button is never nested in a link. On a phone the
+         * actions wrap onto a line of their own under the destination. */}
+        <ServiceRowList aria-label="Trains" data-train-results>
           {results.rows.map((row) => (
-            /* `wrap` is left at Mantine's wrapping default rather than
-             * `nowrap` (which is what `StationTimetable.tsx`'s otherwise
-             * identical row still uses -- fine there, because its actions
-             * are a bare link). These rows carry a link AND a
-             * `TrackThisTrainButton`, and at ~360px the three cannot share
-             * a line: the row's max-content is ~430px ("09:00 · PAD → RDG →
-             * BRI" ~160px, "View live status" ~110px, the button ~130px,
-             * plus the gaps) against ~310px of content box inside the
-             * `lg` padding on `app/trains/page.tsx`'s own `Stack`. (Not the
-             * main `Container`'s -- that is explicitly `px={0}`, see
-             * `app/layout.tsx`'s own comment on why.)
-             *
-             * `nowrap` did NOT overflow the page -- worth spelling out,
-             * because that is the obvious guess and it is wrong. Mantine's
-             * button label (`.m_811560b9` in `@mantine/core/styles/
-             * Button.css`) is `white-space: nowrap; overflow: hidden`, and
-             * `overflow: hidden` drops an element's min-content
-             * contribution to zero (the same mechanism `app/globals.css`'s
-             * `[data-status-badge]` override documents), so the row's
-             * intrinsic floor was only ~130px and it always "fit". It fit
-             * by SQUASHING: the summary broke onto a second line while the
-             * button clipped mid-word -- clipped flat, since that label
-             * sets no `text-overflow`, so the action lost its own name
-             * with nothing to signal it had been cut. That was
-             * equally true inside the removed `ScrollArea` (its content box
-             * is `display: table; min-width: 100%`, which does not exceed
-             * the available width either), so this is a pre-existing
-             * mobile defect being fixed alongside the clipping, not
-             * fallout from removing the scroller.
-             *
-             * `marginInlineStart: 'auto'` on the actions rather than the
-             * `Group`'s `justify="space-between"`, for the same reason
-             * `IncidentSearchForm.tsx`'s row header does it: `space-between`
-             * leaves a *wrapped* single-item line at `flex-start`, which
-             * would left-align the actions under a long summary on desktop;
-             * with the auto margin they read flush right whether they share
-             * the summary's line or wrap below it. The inner actions
-             * `Group` keeps `nowrap` -- the link and the button are a pair
-             * that fits a 360px line together and reads wrong split up.
-             *
-             * `rowGap` overrides `Group`'s own `md` gap on the wrap axis
-             * only (an inline longhand beats the class's `gap` shorthand),
-             * exactly as `IncidentSearchForm.tsx`'s row header does.
-             * Without it wrapped actions sat 16px below their own summary
-             * but only 10px above the NEXT train's (the enclosing `Stack`'s
-             * `xs`), so "View live status"/"Track this train" read as
-             * belonging to the row beneath them. */
-            <Group key={`${row.uid}-${row.scheduled}`} style={{ rowGap: 4 }}>
-              <Text size="sm">
-                {row.publicDeparture ?? row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs}{' '}
-                <RouteArrow /> {row.destinationName ?? row.destinationCrs ?? '?'}
-              </Text>
-              <ServiceModeBadge mode={row.serviceMode} />
-              <Group gap="sm" wrap="nowrap" style={{ marginInlineStart: 'auto' }}>
-                <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
-                  {isTimetableOnly(row) ? 'View timetable' : 'View live status'}
-                </TextLink>
+            <ServiceRow
+              key={`${row.uid}-${row.scheduled ?? ''}`}
+              train={searchRowSummary(row)}
+              date={displayDate}
+              timeOverride={searchRowTime(row)}
+              dayOffset={row.dayOffset}
+              details={searchRowDetails(row)}
+              actions={
                 <TrackThisTrainButton
                   uid={row.uid}
                   date={displayDate}
-                  attachTicketId={attachTicketId}
+                  {...(attachTicketId === undefined ? {} : { attachTicketId })}
                   size="xs"
                   noun={trackNoun(row)}
                 />
-              </Group>
-            </Group>
+              }
+            />
           ))}
-        </Stack>
+        </ServiceRowList>
         <LoadMoreControl
           hasMore={results.nextCursor !== null}
           loading={loadingMore}

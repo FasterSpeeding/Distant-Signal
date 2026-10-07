@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainSearchForm } from './TrainSearchForm';
-import { byVisibleText } from '@/test/routeText';
 
 /** A small, fixed, real-station-shaped dataset backing every autocomplete
  * field in this file (Station/Departing from/Stops at all share the same
@@ -69,6 +68,12 @@ vi.mock('@mantine/dates', async (importOriginal) => ({
     </div>
   ),
 }));
+
+/** A result row's link name starts with its time and destination
+ * ("08:22 to WAT"), the visually hidden "to" included. */
+function rowName(time: string, destination: string): RegExp {
+  return new RegExp(`^${time} to ${destination}\\b`);
+}
 
 /** Builds a `GET /public/trains/search` response body. The route returns an
  * ENVELOPE, not a bare array: `results` plus a `nextCursor` that is an
@@ -500,14 +505,17 @@ describe('TrainSearchForm', () => {
     });
   });
 
-  it('renders one row per result, with time, origin and destination', async () => {
+  it('renders one row per result, with time, destination, origin and status', async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
 
-    expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('10:05 · CRE → MAN → WAT'))).toBeInTheDocument();
+    const first = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(first.closest('li')).toHaveTextContent('From EUS');
+    // No live state from this backend yet: every row reads "Scheduled".
+    expect(first.closest('li')).toHaveTextContent('Scheduled');
+    expect(screen.getByRole('link', { name: rowName('10:05', 'WAT') }).closest('li')).toHaveTextContent('From CRE');
   });
 
   // Regression: `destinationCrs` used to be the ONLY thing this row could
@@ -541,10 +549,10 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → London Waterloo'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('08:22', 'London Waterloo') })).toBeInTheDocument();
     // The second row has no destinationName in this response -- falls back
     // to the bare code exactly as before this field existed.
-    expect(screen.getByText(byVisibleText('10:05 · CRE → MAN → WAT'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: rowName('10:05', 'WAT') })).toBeInTheDocument();
   });
 
   // Regression guard for the results list being hard-clipped at a fixed
@@ -578,10 +586,11 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
-    await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'));
+    await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
 
     const list = document.querySelector('[data-train-results]');
     expect(list).not.toBeNull();
+    expect(list?.tagName).toBe('UL');
     const form = (list as HTMLElement).closest('form');
     expect(form).not.toBeNull();
 
@@ -629,53 +638,41 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
-    await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'));
+    await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
-    await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'));
+    await screen.findByRole('link', { name: rowName('11:40', 'WAT') });
 
     // Page 2's rows must land in the SAME in-flow list as page 1's, so the
     // page's own scrollbar reaches them -- under the removed `ScrollArea`
     // each "Load more" appended straight into the clipped region.
     const list = document.querySelector('[data-train-results]') as HTMLElement;
-    for (const label of ['08:22 · EUS → MAN → WAT', '10:05 · CRE → MAN → WAT', '11:40 · EUS → MAN → WAT']) {
-      expect(list.contains(screen.getByText(byVisibleText(label)))).toBe(true);
+    for (const [time, destination] of [
+      ['08:22', 'WAT'],
+      ['10:05', 'WAT'],
+      ['11:40', 'WAT'],
+    ] as const) {
+      expect(list.contains(screen.getByRole('link', { name: rowName(time, destination) }))).toBe(true);
     }
   });
 
-  // The row header can no longer be `wrap="nowrap"`: without the removed
-  // `ScrollArea` viewport to absorb it into its own horizontal scroll, a
-  // summary plus "View live status" plus a "Track this train" button is
-  // wider than a ~360px screen, and a `nowrap` flex item's `min-width:
-  // auto` floor would push the whole page sideways. jsdom lays nothing out,
-  // so this is a tripwire against silent reintroduction -- the reasoning
-  // lives in `TrainSearchForm.tsx`'s own comment on this `Group`.
-  it('lets a result row wrap rather than forcing its actions onto the summary line', async () => {
+  // A row has two controls: the destination link to the train's page and
+  // the "Track this train" button in the row's actions slot. The button
+  // must never sit inside the link (nested interactive content), and both
+  // belong to the same row.
+  it("puts the track button beside the row's link, never inside it", async () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     await clickSearch();
-    const summary = await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'));
-    const row = summary.parentElement as HTMLElement;
-
-    // Mantine's `Group` resolves its `wrap` prop into the inline
-    // `--group-wrap` custom property (`Group.mjs`'s `varsResolver`), which
-    // its stylesheet feeds to `flex-wrap` -- so that variable, not
-    // `style.flexWrap`, is where `wrap="nowrap"` would show up.
-    expect(row.style.getPropertyValue('--group-wrap')).toBe('wrap');
-    // ...and the actions still read flush right on whichever line they land
-    // on, which `justify="space-between"` would NOT do once wrapped.
-    const actions = screen.getAllByRole('link', { name: 'View live status' })[0]!.parentElement as HTMLElement;
-    expect(actions.style.marginInlineStart).toBe('auto');
-    // ...and a wrapped actions line stays visually tied to ITS summary
-    // rather than to the next train's. `Group`'s default `md` gap applies
-    // on the wrap axis too, which would put the actions 16px below their
-    // own summary but only 10px (the enclosing `Stack`'s `xs`) above the
-    // row beneath -- see `TrainSearchForm.tsx`'s own comment on this
-    // `Group`, and `IncidentSearchForm.tsx`'s identical `rowGap` note.
-    expect(row.style.rowGap).toBe('4px');
+    const link = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    const row = link.closest('li') as HTMLElement;
+    const button = within(row).getByRole('button', { name: 'Track this train' });
+    expect(button.closest('a')).toBeNull();
+    expect(link).not.toContainElement(button);
+    expect(within(row).getAllByRole('link')).toHaveLength(1);
   });
 
-  it('renders a "?" placeholder when origin or destination is unknown', async () => {
+  it('leaves the origin out when it is unknown, rather than a "?"', async () => {
     vi.stubGlobal(
       'fetch',
       mockFetchByUrl({
@@ -692,7 +689,9 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText(byVisibleText('09:00 · ? → MAN → WAT'))).toBeInTheDocument();
+    const link = await screen.findByRole('link', { name: rowName('09:00', 'WAT') });
+    expect(link.closest('li')).not.toHaveTextContent('From');
+    expect(link.closest('li')).not.toHaveTextContent('?');
   });
 
   it("links each row to the public train page for London's today", async () => {
@@ -704,8 +703,8 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    const links = await screen.findAllByRole('link', { name: 'View live status' });
-    expect(links[0]).toHaveAttribute('href', '/train/C10001/2026-07-16');
+    const link = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(link).toHaveAttribute('href', '/train/C10001/2026-07-16');
   });
 
   it('renders a Track this train action on every row', async () => {
@@ -782,7 +781,11 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText(/scheduled timetable, not live running information/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /Times are when each train leaves the station you searched, from the scheduled timetable/,
+      ),
+    ).toBeInTheDocument();
   });
 
   it('offers the manual /track fallback, carrying any ticketId through', () => {
@@ -812,7 +815,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     // The button doesn't just vanish -- the list says it is complete.
     expect(
@@ -864,7 +867,7 @@ describe('TrainSearchForm', () => {
     expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     // A failed next page must not wipe out the page already on screen, nor
     // escalate to the whole-search error state.
-    expect(screen.getByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
     expect(screen.queryByText("Couldn't search for trains right now. Try again.")).not.toBeInTheDocument();
   });
 
@@ -929,12 +932,12 @@ describe('TrainSearchForm', () => {
     await clickSearch();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('11:40', 'WAT') })).toBeInTheDocument();
     expect(
-      screen.getByText(byVisibleText('08:22 · EUS → MAN → WAT')),
+      screen.getByRole('link', { name: rowName('08:22', 'WAT') }),
       'page 1 must still be on screen -- Load more appends, it does not replace',
     ).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('10:05 · CRE → MAN → WAT'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: rowName('10:05', 'WAT') })).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
     // Index 0 is this form's own mount-time auto-search (`initialStation=
@@ -961,10 +964,10 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
-    expect(await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('11:40', 'WAT') })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText(byVisibleText('13:15 · CRE → MAN → WAT'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('13:15', 'WAT') })).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
     // Index 0 is the mount-time auto-search; index 1 the explicit Search
@@ -974,7 +977,7 @@ describe('TrainSearchForm', () => {
     expect(urls[3], 'the second Load more must use the cursor from the SECOND response').toBe(
       '/api/trains/search?station=MAN&after=CURSOR2',
     );
-    expect(screen.getAllByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: rowName('11:40', 'WAT') })).toHaveLength(1);
   });
 
   it('keeps the original filters on a Load more request', async () => {
@@ -1014,12 +1017,12 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
-    expect(await screen.findByText(byVisibleText('11:40 · EUS → MAN → WAT'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('11:40', 'WAT') })).toBeInTheDocument();
 
     await clickSearch();
 
-    await waitFor(() => expect(screen.queryByText(byVisibleText('11:40 · EUS → MAN → WAT'))).not.toBeInTheDocument());
-    expect(screen.getByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('link', { name: rowName('11:40', 'WAT') })).not.toBeInTheDocument());
+    expect(screen.getByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
   });
 
   it('discards a Load more page that lands after a fresh search has already replaced the results', async () => {
@@ -1053,7 +1056,7 @@ describe('TrainSearchForm', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' })); // page 2 of search 1
     await clickSearch(); // search 2
-    await screen.findByText(byVisibleText('13:15 · CRE → MAN → WAT'));
+    await screen.findByRole('link', { name: rowName('13:15', 'WAT') });
 
     resolvePageTwo(new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 }));
 
@@ -1062,7 +1065,7 @@ describe('TrainSearchForm', () => {
         screen.getByText("You've reached the end — no more scheduled trains match those filters."),
       ).toBeInTheDocument(),
     );
-    expect(screen.queryByText(byVisibleText('11:40 · EUS → MAN → WAT'))).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: rowName('11:40', 'WAT') })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
@@ -1201,7 +1204,7 @@ describe('TrainSearchForm', () => {
 
       await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(1));
       expect(searchCallUrls(fetchMock)[0]).toBe('/api/trains/search?station=MAN&origin=EUS&from=09%3A00');
-      expect(await screen.findByText(byVisibleText('08:22 · EUS → MAN → WAT'))).toBeInTheDocument();
+      expect(await screen.findByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
       // The mount effect itself must not touch the URL -- only an explicit
       // Search press does (see the `router.replace` test above).
       expect(replaceMock).not.toHaveBeenCalled();
@@ -1218,7 +1221,7 @@ describe('TrainSearchForm', () => {
 });
 
 describe('TrainSearchForm: buses and ferries', () => {
-  it('a bus row has its badge, a "View timetable" link and a "Track this bus" button', async () => {
+  it('a bus row has its badge, reads "Timetable only" and has a "Track this bus" button', async () => {
     const body = JSON.stringify({
       results: [
         {
@@ -1241,9 +1244,49 @@ describe('TrainSearchForm: buses and ferries', () => {
     await clickSearch();
 
     expect(await screen.findByText('Bus service')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View timetable' }).getAttribute('href')).toMatch(/^\/train\/C30818\//);
-    expect(screen.getByRole('link', { name: 'View live status' }).getAttribute('href')).toMatch(/^\/train\/C10002\//);
-    expect(screen.getByRole('button', { name: 'Track this bus' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+    const bus = screen.getByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(bus.getAttribute('href')).toMatch(/^\/train\/C30818\//);
+    const busRow = bus.closest('li') as HTMLElement;
+    expect(busRow).toHaveTextContent('Timetable only');
+    expect(busRow).toHaveTextContent('Starts here');
+    expect(within(busRow).getByRole('button', { name: 'Track this bus' })).toBeInTheDocument();
+    const train = screen.getByRole('link', { name: rowName('10:05', 'WAT') });
+    expect(train.getAttribute('href')).toMatch(/^\/train\/C10002\//);
+    const trainRow = train.closest('li') as HTMLElement;
+    expect(trainRow).toHaveTextContent('Scheduled');
+    expect(within(trainRow).getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+  });
+});
+
+describe('TrainSearchForm: live fields', () => {
+  it('shows live status and a next-day marker when the backend sends them', async () => {
+    const body = JSON.stringify({
+      results: [
+        {
+          uid: 'C1',
+          scheduled: '00:20',
+          stationCrs: 'MAN',
+          originCrs: 'EUS',
+          originName: 'London Euston',
+          destinationCrs: 'WAT',
+          destinationName: 'London Waterloo',
+          destinationArrival: null,
+          destinationArrivalDayOffset: 0,
+          dayOffset: 1,
+          live: { status: 'en_route', delayMinutes: -2, delayProvisional: false, cancelled: false },
+        },
+      ],
+      nextCursor: null,
+    });
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(body, { status: 200 }) }));
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+    await clickSearch();
+
+    // The "+1" is visible but hidden from the link's name, which says it in words.
+    const link = await screen.findByRole('link', { name: /^00:20 \(next day\) to London Waterloo/ });
+    const row = link.closest('li') as HTMLElement;
+    expect(within(row).getByText('+1')).toBeInTheDocument();
+    expect(row).toHaveTextContent('2 min early');
+    expect(row).toHaveTextContent('From London Euston');
   });
 });
