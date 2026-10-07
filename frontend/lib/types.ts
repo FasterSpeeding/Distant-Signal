@@ -78,8 +78,9 @@ export interface IncidentSummary {
   /** Catalogue line ids, as decided by the same matcher that drives the live
    * status pages (`common::matcher`). This is what the Line filter matches
    * on. Empty means "matched no catalogue line" -- which, for a row ingested
-   * before the column existed, may just mean "not backfilled yet". */
-  affectedLines: string[];
+   * before the column existed, may just mean "not backfilled yet". Absent
+   * from an api that predates the field (a rolling deploy). */
+  affectedLines?: string[];
   priority: number;
   isPlanned: boolean;
   isCleared: boolean;

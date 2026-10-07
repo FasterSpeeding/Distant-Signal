@@ -146,7 +146,10 @@ function serverStdout(): { write(line: string): unknown } | undefined {
 /** Whether log lines go out as JSON (the default) or as plain console
  * calls (`LOG_FORMAT=pretty`, the browser, the jsdom test suite). */
 export function jsonLoggingActive(): boolean {
-  if (typeof process !== 'undefined' && process.env?.LOG_FORMAT?.trim().toLowerCase() === 'pretty') return false;
+  if (typeof process !== 'undefined') {
+    const proc: Partial<Pick<NodeJS.Process, 'env'>> = process;
+    if (proc.env?.LOG_FORMAT?.trim().toLowerCase() === 'pretty') return false;
+  }
   return serverStdout() !== undefined;
 }
 

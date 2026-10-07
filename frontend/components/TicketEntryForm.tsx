@@ -14,6 +14,11 @@ import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSo
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 type Tab = 'manual' | 'pkpass' | 'pdf';
+const TABS: readonly Tab[] = ['manual', 'pkpass', 'pdf'];
+
+function isTab(value: string | null): value is Tab {
+  return TABS.some((tab) => tab === value);
+}
 
 /** Tells a file dropped on the Task 3.6.6 combined dropzone apart from its
  * name, since `.pkpass` isn't a real MIME type (the browser reports it as
@@ -415,7 +420,7 @@ export function TicketEntryForm({
       <Tabs
         value={tab}
         onChange={(value) => {
-          setTab((value as Tab) ?? 'manual');
+          setTab(isTab(value) ? value : 'manual');
           // A stale error from a previous failed upload on another tab
           // shouldn't linger on screen once the user has switched away --
           // no new upload attempt has happened yet on whichever tab they

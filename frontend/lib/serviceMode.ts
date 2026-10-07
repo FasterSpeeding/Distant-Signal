@@ -25,7 +25,10 @@ export function serviceModeLabel(mode: ServiceMode | null | undefined): string |
   if (!mode || mode === 'train') {
     return null;
   }
-  return SERVICE_MODE_LABELS[mode] ?? null;
+  // `mode` is a wire value: a newer api can send one this bundle has no
+  // label for yet.
+  const labels: Partial<Record<string, string>> = SERVICE_MODE_LABELS;
+  return labels[mode] ?? null;
 }
 
 /** A bus or ferry: no live position, delay or arrival will ever arrive.

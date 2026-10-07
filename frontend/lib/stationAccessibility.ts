@@ -940,6 +940,12 @@ function findSoleCodeLikeKey(node: AccessibilityNode): string | undefined {
     : undefined;
 }
 
+/** `JSON.stringify` as it behaves rather than as lib.d.ts types it: the
+ * result is `undefined` for `undefined`, functions and symbols. */
+function stringifyOrUndefined(value: unknown): string | undefined {
+  return JSON.stringify(value, null, 2);
+}
+
 /** §4.9's last resort. `JSON.stringify` itself can throw (a cycle, a
  * `BigInt`) and can return `undefined` (for `undefined` and functions) --
  * neither is reachable from a `JSON.parse`d API response, but "never
@@ -947,7 +953,7 @@ function findSoleCodeLikeKey(node: AccessibilityNode): string | undefined {
  * than assumed away. */
 function raw(value: unknown): AccessibilityNode {
   try {
-    return { kind: 'raw', json: JSON.stringify(value, null, 2) ?? String(value) };
+    return { kind: 'raw', json: stringifyOrUndefined(value) ?? String(value) };
   } catch {
     return { kind: 'raw', json: String(value) };
   }

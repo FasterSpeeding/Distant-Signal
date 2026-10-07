@@ -128,7 +128,7 @@ function rewriteRawUrlLinks(root: Element): void {
   const anchors = root.querySelectorAll('a[href]');
   anchors.forEach((anchor) => {
     const href = anchor.getAttribute('href')?.trim() ?? '';
-    const text = anchor.textContent?.trim() ?? '';
+    const text = anchor.textContent.trim();
     if (href === '' || text !== href) return;
     let hostname: string;
     try {
@@ -246,7 +246,7 @@ function linkifyPhoneNumbers(root: Element): void {
     current = walker.nextNode();
   }
   for (const textNode of textNodes) {
-    const text = textNode.textContent ?? '';
+    const text = textNode.textContent;
     UK_PHONE_PATTERN.lastIndex = 0;
     if (!UK_PHONE_PATTERN.test(text)) continue;
     UK_PHONE_PATTERN.lastIndex = 0;

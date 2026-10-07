@@ -331,7 +331,7 @@ describe('EditJourneyTemplateForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const body = JSON.parse((fetchMock.mock.calls[0]![1]?.body as string) ?? '{}');
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]?.body as string);
     expect(body.legs).toEqual([
       {
         originCrs: 'EDB',

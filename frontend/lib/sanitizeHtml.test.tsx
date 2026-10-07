@@ -41,7 +41,7 @@ describe('sanitizeDescription', () => {
     // Visible text: everything except the visually hidden span.
     const visible = anchor.cloneNode(true) as HTMLElement;
     visible.querySelector('[data-visually-hidden]')!.remove();
-    expect(visible.textContent?.trim()).toBe('More info');
+    expect(visible.textContent.trim()).toBe('More info');
   });
 
   it('draws the same icon as the ExternalLinkIcon component', () => {

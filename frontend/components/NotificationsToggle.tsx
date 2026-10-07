@@ -89,7 +89,8 @@ export function NotificationsToggle() {
     // check. Optional-chained/guarded throughout since a partial or
     // stubbed `serviceWorker` implementation may not expose it.
     let cancelled = false;
-    const registrationPromise = navigator.serviceWorker.getRegistration?.();
+    const serviceWorker: Partial<Pick<ServiceWorkerContainer, 'getRegistration'>> = navigator.serviceWorker;
+    const registrationPromise = serviceWorker.getRegistration?.();
     registrationPromise
       ?.then((registration) => registration?.pushManager.getSubscription())
       .then((subscription) => {

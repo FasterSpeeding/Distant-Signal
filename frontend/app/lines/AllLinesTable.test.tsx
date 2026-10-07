@@ -488,8 +488,8 @@ describe('AllLinesTable responsive columns', () => {
     const { container } = renderMobileTable();
     const hidden = Array.from(container.querySelectorAll('.mantine-visible-from-sm'));
     const text = hidden.map((el) => el.textContent);
-    expect(text.some((t) => t?.includes('Avg Delay'))).toBe(true);
-    expect(text.some((t) => t?.includes('Cancelled'))).toBe(true);
+    expect(text.some((t) => t.includes('Avg Delay'))).toBe(true);
+    expect(text.some((t) => t.includes('Cancelled'))).toBe(true);
   });
 
   it('keeps the Pin column at every width, unlike the numeric columns', () => {
@@ -500,7 +500,7 @@ describe('AllLinesTable responsive columns', () => {
     // must never carry the class. Asserted on the class rather than on
     // visibility because jsdom has no layout and vitest.setup.ts stubs
     // matchMedia to `matches: false`.
-    expect(hidden.map((el) => el.textContent).some((t) => t?.includes('Pin'))).toBe(false);
+    expect(hidden.map((el) => el.textContent).some((t) => t.includes('Pin'))).toBe(false);
   });
 
   it('renders a usable pin control in every row at mobile width', () => {

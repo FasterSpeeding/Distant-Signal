@@ -80,9 +80,7 @@ describe('NetworkStatusPage', () => {
       // whatever `severityLabel` returns, so filter on the tile's known
       // exact label set instead).
       .filter((el) =>
-        ['Good Service', 'Informational', 'Planned', 'Minor Disruption', 'Severe Disruption'].includes(
-          el.textContent ?? '',
-        ),
+        ['Good Service', 'Informational', 'Planned', 'Minor Disruption', 'Severe Disruption'].includes(el.textContent),
       );
     expect(labels[0]).toHaveTextContent('Severe Disruption');
     expect(labels[labels.length - 1]).toHaveTextContent('Good Service');

@@ -134,6 +134,7 @@ export function StationTimetable({ crs }: { crs: string }) {
         return;
       }
       const body = (await response.json()) as TrainSearchResponse;
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abort() can land during the await above; TypeScript keeps the pre-await narrowing to false
       if (controller.signal.aborted) return;
       setResults({ rows: body.results, nextCursor: body.nextCursor, loadMoreFailed: false });
     } catch {
@@ -161,6 +162,7 @@ export function StationTimetable({ crs }: { crs: string }) {
         return;
       }
       const body = (await response.json()) as TrainSearchResponse;
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abort() can land during the await above; TypeScript keeps the pre-await narrowing to false
       if (controller.signal.aborted) return;
       setResults((current) =>
         hasRows(current)

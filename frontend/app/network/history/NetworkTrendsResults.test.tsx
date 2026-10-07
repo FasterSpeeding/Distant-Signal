@@ -50,7 +50,7 @@ describe('NetworkTrendsResults', () => {
     const paragraphs = container.querySelectorAll('p');
     for (const p of paragraphs) {
       expect(p.textContent).not.toContain('--');
-      expect(p.textContent?.toLowerCase()).not.toContain('catalogue');
+      expect(p.textContent.toLowerCase()).not.toContain('catalogue');
     }
   });
 

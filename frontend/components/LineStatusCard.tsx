@@ -48,7 +48,7 @@ export function LineStatusCard({ report }: { report: LineStatusReport }) {
         </Text>
         {/* LEG-16: the worst status's severity and reason may have been
             shaped by the incident enricher's LLM. */}
-        {'disruption' in worst && isEnricherInfluenced(worst.disruption?.source) && (
+        {'disruption' in worst && isEnricherInfluenced(worst.disruption.source) && (
           <Group gap={4}>
             <AiGeneratedBadge note={ENRICHED_INCIDENT_SHORT_NOTE} />
           </Group>

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { IncidentSearchForm } from './IncidentSearchForm';
-import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
+import type { IncidentSearchResponse, LineSummary, Suggestion } from '@/lib/types';
 
 // Same rationale as `TrainSearchForm.test.tsx`'s identical mock: `DatePickerInput`'s
 // real popover calendar has no real `<input>` `fireEvent.change` can drive.
@@ -212,7 +212,7 @@ describe('IncidentSearchForm', () => {
   // and take the whole results list with it.
   it('renders a result row that carries no affectedLines field at all', async () => {
     const { affectedLines: _dropped, ...withoutLines } = summary({ incidentId: '1' });
-    fetchMock.mockReturnValue(okResponse({ results: [withoutLines as IncidentSummary], nextCursor: null }));
+    fetchMock.mockReturnValue(okResponse({ results: [withoutLines], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
     await clickSearch();
 

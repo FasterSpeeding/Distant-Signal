@@ -80,7 +80,7 @@ async function hydrateAndCollect(serverHtml: string, element: React.ReactNode) {
   } finally {
     errorSpy.mockRestore();
     warnSpy.mockRestore();
-    text = container.textContent ?? '';
+    text = container.textContent;
     act(() => root?.unmount());
     container.remove();
     (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;

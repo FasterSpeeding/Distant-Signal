@@ -143,7 +143,8 @@ export function TimeFilterInput({
    * nothing at all, and could not talk an owner out of a `true` it was
    * still holding from the field's previous life. */
   function syncIncomplete(input: HTMLInputElement) {
-    const next = input.validity?.badInput ?? false;
+    const field: Partial<Pick<HTMLInputElement, 'validity'>> = input;
+    const next = field.validity?.badInput ?? false;
     if (next === incomplete) return;
     setIncomplete(next);
     onIncompleteChange(next);
@@ -173,7 +174,8 @@ export function TimeFilterInput({
 
   function openPicker() {
     try {
-      ref.current?.showPicker?.();
+      const input: Partial<Pick<HTMLInputElement, 'showPicker'>> | null = ref.current;
+      input?.showPicker?.();
     } catch {
       // `showPicker` throws (NotAllowedError/InvalidStateError) rather than
       // no-opping when it declines. Typing into the field still works, so

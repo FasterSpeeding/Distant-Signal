@@ -252,7 +252,8 @@ interface ScheduleDepartureRow {
    * working-timetable time, kept as WTT for one release). `null`/absent
    * until the next schedule publish. */
   publicDeparture?: string | null;
-  dayOffset: number;
+  /** Absent from an older api pod mid-rollout; see `pickCifDeparture`. */
+  dayOffset?: number;
   destinationCrs: string | null;
   /** Same server-side batched-lookup enrichment as `DepartureRow`'s own
    * `destinationName` -- see its doc comment. `null` both when
@@ -672,7 +673,7 @@ export function TrackTrainForm({
    * `groups` is empty, preserving today's exact behavior), or a chosen
    * group's id from `TrackDestinationModal`'s `onConfirm`. */
   async function submitTrack(groupId: string | null) {
-    if (!canSubmit || scheduledDeparture === null) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     needsLoginState.reset();
     setFieldError(null);

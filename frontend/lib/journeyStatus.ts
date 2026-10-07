@@ -50,7 +50,7 @@ function legIsSkipped(leg: JourneyLegDetail): boolean {
  * track" (2026-09-22 UX review, I13). A CANCELLED train still wins --
  * "this train isn't running" subsumes "this train isn't stopping". */
 export function legStatusGroup(leg: JourneyLegDetail): LegStatusGroup {
-  if (leg.trackedTrainState === null || leg.trackedTrainState === undefined) {
+  if (!leg.trackedTrainState) {
     return 'unmatched';
   }
   const state = leg.trackedTrainState;
