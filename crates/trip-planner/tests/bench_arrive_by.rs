@@ -468,3 +468,149 @@ fn bench_max_changes_and_vias() {
         }
     }
 }
+
+/// OR-group vias (2026-10-07): `count` vias, each a group of `members`
+/// stations (via `i`'s are hubs and ordinary stations spread over the
+/// network), built as `build_vias` in the api does: every train that calls
+/// at any member gets spans, and every 7th line also runs through one
+/// member of each group between its calls.
+fn bench_group_vias(connections: &[Connection], count: usize, members: u64) -> trip_planner::Vias {
+    use std::collections::HashSet;
+    use trip_planner::{PassSpan, Vias};
+    let targets: Vec<Vec<String>> = (0..count as u64)
+        .map(|via| {
+            (0..members)
+                .map(|m| {
+                    if m == 0 {
+                        tiploc(1 + via)
+                    } else {
+                        tiploc(HUBS + via * 97 + m * 13)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let all: HashSet<&str> = targets.iter().flatten().map(String::as_str).collect();
+    let touching: HashSet<&str> = connections
+        .iter()
+        .filter(|c| all.contains(c.from_tiploc.as_str()) || all.contains(c.to_tiploc.as_str()))
+        .map(|c| c.uid.as_str())
+        .collect();
+    let mut spans: HashMap<String, Vec<PassSpan>> = HashMap::new();
+    for c in connections {
+        let line = c.uid[1..]
+            .split('D')
+            .next()
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(1);
+        let passes = line.is_multiple_of(7);
+        if !passes && !touching.contains(c.uid.as_str()) {
+            continue;
+        }
+        let passed = if passes {
+            targets
+                .iter()
+                .map(|group| group[(line % members) as usize].clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        spans.entry(c.uid.clone()).or_default().push(PassSpan {
+            from_tiploc: c.from_tiploc.clone(),
+            to_tiploc: c.to_tiploc.clone(),
+            departure_min: c.departure_min,
+            passed,
+        });
+    }
+    println!(
+        "{count} vias x {members} members: {} trains carry spans",
+        spans.len()
+    );
+    Vias::new(&targets, spans)
+}
+
+/// The cost of an 18-member OR group per via against a single-station via,
+/// at the options guard's limits with 3 vias (`(waypoints + 1) * 7 *
+/// rounds <= 252`: 5 waypoints at 6 rounds, 3 at 8). A group is ONE via
+/// to the search (one progress step), so it should cost about what a
+/// single via does; the extra is the per-connection span lookup of the
+/// many more trains that touch a member.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_group_vias_against_single() {
+    use trip_planner::{
+        StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
+    };
+    let (connections, interchange) = network();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    println!(
+        "{:>14} | {:>22} | {:>22} | {:>22} | {:>22}",
+        "", "csa", "csa arriveBy", "raptor (guard max)", "arriveBy rounds"
+    );
+    for (waypoint_count, rounds) in [(0usize, 8u32), (5, 6), (3, 8)] {
+        for members in [1u64, 18] {
+            let vias = bench_group_vias(&connections, 3, members);
+            let mut rng = Rng(31 + waypoint_count as u64);
+            let mut rows = Vec::new();
+            for _ in 0..3 {
+                let from = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+                let to = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+                let mut waypoints: Vec<Vec<String>> = Vec::new();
+                while waypoints.len() < waypoint_count {
+                    let hub = vec![tiploc(4 + rng.next(HUBS - 4))];
+                    if waypoints.last() != Some(&hub) {
+                        waypoints.push(hub);
+                    }
+                }
+                let staged = StagedOptions {
+                    connections: &connections,
+                    interchange: &interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias: Some(&vias),
+                    date,
+                };
+                let arrive = ArriveByOptions {
+                    connections: &connections,
+                    interchange: &interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias: Some(&vias),
+                    arrive_by_min: 1380,
+                    date,
+                };
+                let once = |f: &dyn Fn() -> usize| {
+                    let started = Instant::now();
+                    let found = f();
+                    (started.elapsed(), found)
+                };
+                rows.push([
+                    once(&|| usize::from(scan_staged(&staged, 360, None, None).is_some())),
+                    once(&|| usize::from(staged_arrive_by(&arrive, None, None).is_some())),
+                    once(&|| raptor_staged(&staged, 360, rounds, None, None).len()),
+                    once(&|| {
+                        latest_departures_by_trips(&arrive, None, None, rounds)
+                            .iter()
+                            .flatten()
+                            .count()
+                    }),
+                ]);
+            }
+            let column = |i: usize| {
+                let mut values: Vec<Duration> = rows.iter().map(|row| row[i].0).collect();
+                values.sort();
+                let found: usize = rows.iter().map(|row| usize::from(row[i].1 > 0)).sum();
+                format!("{:>7.1?} max {:>7.1?} {found}/3", values[1], values[2])
+            };
+            println!(
+                "{waypoint_count} wp r{rounds} x{members:>2} | {} | {} | {} | {}",
+                column(0),
+                column(1),
+                column(2),
+                column(3)
+            );
+        }
+    }
+}
