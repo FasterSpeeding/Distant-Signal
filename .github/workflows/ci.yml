@@ -638,6 +638,9 @@ jobs:
   # the same script fails when a migration the base already had is
   # modified, deleted or renamed, so it needs no lock-file upkeep;
   # crates/api/tests/migration_checksums.rs is the second line of defence.
+  # Ingest plan 1B.5: it also fails on destructive DDL (DROP, RENAME, a
+  # column type change, SET NOT NULL) without a `-- contract: ...` header,
+  # in migrations added since the base or newer than its cutoff.
   # The job name is unchanged in case a branch-protection rule requires it.
   migration-order:
     name: migration versions are newer than the base
