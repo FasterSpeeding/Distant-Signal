@@ -41,6 +41,7 @@
 //! | [`sweeps`] | 1A.10 | the schedule-match and reconciliation sweeps |
 //! | [`pool`] | 1A.11 | `common::pg::PoolSettings` wrapped with `db_pool_*` metrics, the DB health probe |
 //! | [`schema`] | 1A.12 | `REQUIRED_MIGRATION`; `wait_for_schema` in 1B.2 |
+//! | [`loops`] | 1B.6, 1B.7 | the advisory-locked loop runner and the train-domain loops the api and the ingest-writer both run |
 //!
 //! Later phases add `migrate` (1B.1: `api::migrate`, with the migrations
 //! directory moving into this crate) and `reads` (phase 4: the internal
@@ -50,6 +51,7 @@ pub mod backlog;
 pub mod corpus;
 pub mod freshness;
 pub mod incidents;
+pub mod loops;
 pub mod pool;
 pub mod reference;
 pub mod samples;
