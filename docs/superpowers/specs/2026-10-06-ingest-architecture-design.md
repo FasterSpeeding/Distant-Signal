@@ -79,10 +79,10 @@ per-producer switch is flipped, and every switch can be flipped back.
 | 0 | Prerequisites: the Postgres role split (Ranma, in progress), observed per-service roles, Ranma's NetworkPolicy narrowing, Redis per-client ACL users | 5–6 |
 | 1 | `ds-store` crate extraction (behaviour-neutral); the migrator Job, schema gate and `ingest-writer` skeleton that takes over the background loops | 12–15 |
 | 2 | Direct writes: schedule-reference, then poller-stations, then poller-incidents (with the write-amplification fix), then schedule-ingest's CORPUS | 14–16 |
-| 3 | Streams one at a time: station samples and full-coverage stats; then the TRUST backlog (direct, see §2) and train events; then TfL, tocs and island of Ireland | 14–17 |
+| 3 | Streams one at a time: station samples and full-coverage stats; then the TRUST backlog (direct, see §2) and train events; then TfL, tocs and island of Ireland | 15–18 |
 | 4 | Internal reads move to direct, read-only, view-based access | 4–5 |
 | 5 | Remove `/private` from the api; lock down grants, NetworkPolicies and OAuth groups | 3–4 |
-| | **Total** | **52–63**, plus soak time between flips |
+| | **Total** | **53–64**, plus soak time between flips |
 
 ## 2. Recommendations on the open options
 
@@ -765,7 +765,7 @@ dead-letter runbook stay readable:
 | `schema` | `station-samples/1` | Payload schema name and version. The payload types are today's `common` structs (`StationSample`, `FullCoverageLineStatsRow`, …), so `/1` is byte-for-byte today's HTTP body |
 | `producer` | `poller-ldbws/distant-signal-poller-ldbws-6d…` | Component and pod name |
 | `key` | `station-samples:2026-10-06T20:21:00Z:3/6` | Idempotency key, chosen by the producer and stable across a retry of the same entry |
-| `produced_at` | `2026-10-06T20:21:00.123Z` | When the snapshot was taken. It is also the producer's "last fetched" cursor (§11.3) |
+| `produced_at` | `2026-10-06T20:21:00.123Z` | When the snapshot was taken: set at fetch time, kept across retries and never re-stamped at XADD. It is the canonical observed time of the entry's rows (D13, §7.8) and the producer's "last fetched" cursor (§11.3) |
 | `enc` | `json+gzip` | `json`, or `json+gzip` (used when the body exceeds 8 KiB) |
 | `batch`, `part`, `parts` | `2026-10-06T20:21:00Z`, `3`, `6` | Present for a chunked snapshot. Each part is applied independently. `parts` is informational and lets the writer count incomplete batches |
 | `body` | bytes | The payload |
@@ -836,7 +836,7 @@ caps a gunzipped body at 16 MiB (a zip bomb is poison).
 - **Dead-letter re-injection.** `docs/ingest-streams-deadletter.md`, a
   runbook modelled on `docs/movement-events-deadletter.md`: `XRANGE` the
   dead-letter stream, fix, `XADD` back to the source stream with a new
-  `key`, then `XDEL`.
+  `key` and the original `produced_at` (§7.8), then `XDEL`.
 
 ### 7.4 Delivery semantics and idempotency
 
@@ -846,11 +846,16 @@ The pipeline is **at-least-once, with effects applied once.**
   snapshot twice writes the same rows. They also gain an ordering guard.
   A redelivered *older* snapshot must not overwrite a newer one (XAUTOCLAIM
   after a crash can reorder), so the upsert's `WHERE` adds
-  `EXCLUDED.<observed_at> >= <table>.<observed_at>`. The column is
+  `EXCLUDED.<observed_at> >= <table>.<observed_at> OR <table>.<observed_at>
+  > now() + interval '2 min'` (the second arm heals a row stamped in the
+  future; §7.8). The column is the row's own time where it has one:
   `polled_at` for station samples, `resolved_at` for station full-coverage
   samples and `computed_at` for windows. `full_coverage_line_stats` and
-  `line_status` need a `source_updated_at` column. That is an expand
-  migration in phase 3a.
+  `line_status` have none, so they need a `source_updated_at` column, filled
+  from the envelope's `produced_at` (a `NULL`, from before the column,
+  counts as older). That is an expand migration in phase
+  3a. Every observed time is clamped to the writer's `now() + 2 min` first
+  (D13, §7.8).
 - **`train-events` is idempotent by `dedup_key`** (today's
   `upsert_train_events_batch`).
 - **`train-forward-signals` and `tocs` are not naturally idempotent.**
@@ -877,7 +882,7 @@ failed AOF write. All four are treated alike.
 
 | Domain | Behaviour | Why |
 |---|---|---|
-| station samples, full coverage, TfL, tocs, IoI | Keep only the **latest** unsent snapshot in memory (a newer one replaces it; `ingest_stream_produce_dropped_total{reason="superseded"}`). Retry with backoff (1 s → 60 s). The process stays live and `/livez` stays 200, but readiness reports `stream_unavailable` | A snapshot supersedes its predecessors, so buffering more than one is pointless |
+| station samples, full coverage, TfL, tocs, IoI | Keep only the **latest** unsent snapshot in memory (a newer one replaces it; `ingest_stream_produce_dropped_total{reason="superseded"}`). Retry with backoff (1 s → 60 s), re-sending the same encoded parts, so `produced_at` keeps the fetch time (§7.8). The process stays live and `/livez` stays 200, but readiness reports `stream_unavailable` | A snapshot supersedes its predecessors, so buffering more than one is pointless |
 | ~~train events and forward signals~~ (D1: written directly, no stream). The runtime keeps the policy as `ProducePolicy::Event` for any future event stream | A bounded buffer, then backpressure: **do not ACK upstream** until the XADD succeeds | Nothing is dropped |
 | incident-text-changed (poller-incidents) | Best effort, as today: log, count, carry on. The enricher's hourly sweep is the backstop | unchanged from W1 |
 
@@ -940,6 +945,97 @@ Metric names are `ingest_stream_*` (§14.1, I2). The writer's handler
 registry, `ingest_dedup`, modes (`off`/`shadow`/`apply`), MINID trims of
 the dead-letter streams and the alerts stay with the writer (plan 3a.3,
 3a.4).
+
+### 7.8 Observed time for late-landing data (D13)
+
+A stream entry can be applied long after its data was fetched: up to the
+2-hour cap after a writer outage (24 h for TfL), or out of order after an
+`XAUTOCLAIM`. Rows must carry the time their data was true, not the time
+the writer applied them.
+
+Research on 2026-10-07 (production, SELECT only) found that most products
+already do:
+
+- train data routinely lands hours late
+  (`train_movement_events.received_at − actual_timestamp`: p50 35 s, p99
+  about 24.5 h over 7 days) and is shown correctly, because readers use
+  the TRUST event times;
+- station samples, full-coverage samples and windows carry their own
+  `polled_at`, `resolved_at` and `computed_at`, and their readers already
+  treat an old row as stale.
+
+The gaps are TfL status and history, `ingest_freshness`, the 3a.9
+changed-rows-only switch and clock skew. The rules:
+
+- **`produced_at` is the canonical observed time.** No new envelope field.
+  A producer sets it at fetch time, keeps it across retries and the §7.5
+  latest-snapshot buffer, and never re-stamps it at XADD. A dead-letter
+  re-injection keeps it too (§7.3).
+- **Guards use the row's own time where one exists, else `produced_at`.**
+  `polled_at`, `resolved_at` and `computed_at` as in §7.4.
+  `full_coverage_line_stats` and `line_status` get
+  `source_updated_at := produced_at` (the `/1` bodies carry no time).
+- **TfL (phase 3c).**
+  - `line_status.computed_at` and `line_status_history.computed_at` are
+    set from `produced_at`, not `NOW()`. Write time stays only where it
+    is already a separate column (`updated_at`).
+  - A writer outage replays up to 288 TfL entries in a burst, and every
+    intermediate status change becomes a history row. **Before TfL goes
+    to `apply`, the notifier skips history rows whose `computed_at` is
+    older than about 15 minutes**: it advances its cursor past them,
+    still uses them as the "previous" status for the next row, and
+    counts them (`notifier_line_history_skipped_total{reason="stale"}`,
+    §14.1). Today history rows are stamped at write time, so the skip
+    changes nothing until the writer stamps `produced_at`, except after
+    a notifier outage over 15 minutes, whose stale changes are now
+    skipped rather than pushed late. Collapsing the catch-up to the
+    newest entry would also work, but it loses history.
+- **Clock skew.** The cluster is a single node today, so producers and
+  the DB share a clock. To bound a future clock jump, the writer's guard
+  helpers:
+  - clamp every observed time to the writer's `now() + 2 min`, and count
+    each clamp (`ingest_stream_observed_at_clamped_total`, §14.1);
+  - write the guard as `EXCLUDED.t >= t.t OR t.t > now() + interval
+    '2 min'`, so a row already stamped in the future is overwritten by
+    the next snapshot instead of blocking every real one until the clock
+    catches up.
+
+  No lower bound is needed: the guard and the stream caps cover old data.
+- **Freshness is "data as of" (phase 3).** `record_ingest(source,
+  observed_at)` stores the observed time with
+  `fetched_at = GREATEST(ingest_freshness.fetched_at, EXCLUDED.fetched_at)`,
+  so it never moves backwards. The writer passes `produced_at` (3a.6,
+  3c.1). Direct writers pass their own fetch time, which is `now()` in
+  practice. While the writer catches up, `/public/freshness` shows the
+  age of the data rather than claiming it is fresh, and writer lag stays
+  visible through `DistantSignalIngestStreamStalled` and the
+  oldest-pending-age alert (§14.2).
+- **Changed rows only (3a.9, D12).** Skipping timestamp-only updates
+  freezes the row's own time, which readers use as its age: windows would
+  go `StaleRow` after 180 s. So, as 2c does for incidents (§9.4):
+  - readers of `full_coverage_line_window_stats.computed_at` and
+    `station_full_coverage_samples.resolved_at` use `GREATEST(row time,
+    feed observed_at)`, the feed's time coming from `ingest_freshness`;
+    readers ship first;
+  - the ordering guard compares against the same derivation, since a
+    skipped unchanged snapshot no longer advances the row's own time;
+  - this holds only where every snapshot carries every live key; 3a.9
+    checks that first, and a table where it does not keeps its per-row
+    bump;
+  - **`station_samples` is excluded.** LDBWS samples about 255 of 560
+    stations per cycle and some stations fail every cycle, so a feed time
+    would mark unvisited stations fresh (the old `drop_stale_samples`
+    bug). It keeps its per-row `polled_at` update, which is already cheap
+    (HOT, and the unchanged TOAST is reused).
+- **Phase 2 needs no backdating work.** Direct writers either retry
+  within their budget and then re-fetch (snapshot sources: stations,
+  incidents, reference data), or hold the TRUST stream until the commit
+  (event sources, which already carry their own event times). Neither
+  applies data later than one retry budget.
+
+Outside this programme: the three TRUST consumers take "received at" from
+their processing clock instead of the stream entry id. That is a separate
+fix, independent of the phases.
 
 ## 8. Redis authentication and ACLs
 
@@ -1219,7 +1315,10 @@ is an accepted, documented approximation (Q5, decided D11).
 timestamp bump. When they move to the writer (phase 3a), the writer
 upserts only rows whose content changed, and stores per-feed "observed at"
 times in `ingest_freshness`. The user decided to do it (D12); it gets its own
-switch, which defaults to today's behaviour.
+switch, which defaults to today's behaviour. As here, the readers then derive
+each row's age with `GREATEST(row time, feed observed_at)`, and
+`station_samples` keeps its per-row `polled_at` update, because a cycle does
+not visit every station (D13, §7.8).
 
 ### 9.5 Retries and the 2026-10-01 storm
 
@@ -1529,6 +1628,8 @@ Prefix `distant_signal_`, `service` label from the process.
 | `ingest_stream_produce_dropped_total` | producers | `stream, reason` (`superseded`, `oversize`) |
 | `ingest_stream_produce_buffered` (was `ingest_producer_pending_snapshot`) | producers | `stream` (items not yet written: 0/1 for a snapshot stream) |
 | `ingest_stream_produce_bytes_total` | producers | `stream` |
+| `ingest_stream_observed_at_clamped_total` | writer (guard helpers, §7.8) | `stream, schema` |
+| `notifier_line_history_skipped_total` | notifier (§7.8) | `reason` (`stale`) |
 | `db_writes_total`, `db_write_seconds` | direct writers (via `ds-store`) | `operation, outcome` |
 | `db_pool_connections` | every DB service (`ds_store::pool`, sampled every 15 s from `PgPool::size`/`num_idle`) | `state` (`idle`, `in_use`) |
 | `db_pool_max_connections` | every DB service | |
@@ -1560,6 +1661,7 @@ exporter role:
 | `DistantSignalIngestDeadLetterExpiring` | `dlq_oldest_age_seconds > retention − 4h` | warning |
 | `DistantSignalIngestUnsupportedSchema` | `increase(consumed_total{outcome="unsupported_schema"}[10m]) > 0` | critical (a writer/producer skew) |
 | `DistantSignalIngestProducerXaddFailing` | all XADDs failed over 10 m for a stream | critical |
+| `DistantSignalIngestClockSkew` | `increase(ingest_stream_observed_at_clamped_total[15m]) > 0` (an observed time over 2 min ahead of the writer's clock, §7.8) | warning |
 | `DistantSignalIngestStreamMemoryHigh` | `sum(ingest_stream_bytes) > 0.75 × 512 MB` (D5) | warning |
 | `DistantSignalIngestWriterDown` | `up{component="ingest-writer"} == 0` or `/livez` failing for 5 m | critical |
 | `DistantSignalDbPoolSaturated` | `in_use / max > 0.9` for 10 m | warning |
@@ -1675,15 +1777,15 @@ time, typically 3–7 days per switch.
 | Tests | §9: both-sink protocol tests; moved DB tests run as the producer role; the write-amplification test (zero updates for an identical snapshot); the display-time equivalence test |
 | Risk | Publish timing changes without HTTP in the way. The final chunk's advisory lock and timeouts are unchanged, and `DistantSignalSchedulePublishStagedMismatch` keeps watching |
 
-### Phase 3: streams (14–17 d)
+### Phase 3: streams (15–18 d)
 
 | | |
 |---|---|
 | Entry | Phase 0c users exist; the writer is running (1B); `crates/ingest-stream` is in (built 2026-10-07) |
-| Work | 3a (8–9 d): the envelope crate, the writer's stream runtime (groups, PEL-first retry, claim, dead letters, dedup, metrics, alerts), the dead-letter runbook; then station samples and full coverage (shadow, then flip). 3b (3–4 d): trust-backlog-consumer direct (R1), then trust-consumer's train events and forward signals direct (D1). 3c (3–4 d): TfL, tocs and IoI |
+| Work | 3a (9–10 d; +1 d for D13's reader derivations in 3a.9): the envelope crate, the writer's stream runtime (groups, PEL-first retry, claim, dead letters, dedup, metrics, alerts), the dead-letter runbook; then station samples and full coverage (shadow, then flip). 3b (3–4 d): trust-backlog-consumer direct (R1), then trust-consumer's train events and forward signals direct (D1). 3c (3–4 d): TfL, tocs and IoI |
 | Exit (each stream) | 3 days in shadow with `ingest_stream_consumed_total{outcome="skipped"}` (shadow) equal to the HTTP request count, and 0 dead letters. After the flip: 7 days with no backlog, stalled or dead-letter alert; the api route at 0 requests |
 | Tests | envelope unit tests; writer tests against local valkey/redis (ignored): the order, PEL-first retry, XAUTOCLAIM after a simulated crash, dedup, oversize to the dead-letter stream, unsupported schema left pending, `MAXLEN` trimming; producer tests for latest-only buffering and no-ACK-before-XADD; the backlog consumer's direct sink against a DB, with the transient/data error split and backoff |
-| Risk | Redis memory (caps plus an alert). Writer lag hides stale data (the stalled alert). A duplicate apply (`ingest_dedup`) |
+| Risk | Redis memory (caps plus an alert). Writer lag hides stale data (the stalled alert; freshness reports data-as-of, D13). Late or reordered snapshots (the observed-time guard with its clock-skew clamp; the notifier's stale-history skip before TfL `apply`, D13). A duplicate apply (`ingest_dedup`) |
 
 ### Phase 4: internal reads (4–5 d)
 
@@ -1736,8 +1838,9 @@ override anything earlier in this document that disagrees.
 
 ### Decisions (2026-10-07)
 
-The user decided the following on 2026-10-07, while the phase 3a stream
-runtime was built. They override anything earlier that disagrees.
+The user decided the following on 2026-10-07: D5–D8 while the phase 3a
+stream runtime was built, and D13 after the research on late-landing data
+(§7.8). They override anything earlier that disagrees.
 
 | # | Decision | Answers | Where it lands |
 |---|---|---|---|
@@ -1745,6 +1848,7 @@ runtime was built. They override anything earlier that disagrees.
 | D6 | **Each stream producer has its own Redis ACL user, allowed only `XADD` on its own stream** (plus `XREVRANGE` for its §11.3 cursor) | – | §8.2 as built in phase 0c (`redis-users.acl.tpl`); checked by `crates/ingest-stream/tests/redis_stream.rs` running the producer as `poller-ldbws` |
 | D7 | **trust-consumer's train events and the TRUST backlog are written directly to Postgres**: no new stream for either (confirms D1 and R1) | Q1, R1 | §2, §7.1; plan 3b |
 | D8 | **tocs go through the small `ds:ingest:reference` stream; the island-of-Ireland producers are migrated to `ds:ingest:island-of-ireland` but stay disabled** | Q2, Q9 | §7.1, R4; plan 3c |
+| D13 | **Observed time for late-landing data.** The envelope `produced_at` is the canonical observed time: set at fetch, stable across retries, never re-stamped at XADD. Guards use the row's own time where one exists, else `produced_at`; `source_updated_at := produced_at`. TfL `line_status.computed_at` and `line_status_history.computed_at` come from `produced_at`, and before TfL `apply` the notifier skips (and counts) history rows older than about 15 min. Observed times are clamped to `now() + 2 min` (counted), and the guard heals itself (`EXCLUDED.t >= t.t OR t.t > now() + interval '2 min'`). Freshness becomes "data as of" in phase 3 (`record_ingest(source, observed_at)` with `GREATEST`). 3a.9 adds 2c-style reader derivations (`GREATEST(row time, feed observed_at)`) for windows and full-coverage samples and excludes `station_samples`. Phase 2 needs no backdating work | – | §7.2–7.5, §7.8, §9.4, §14.1–14.2; plan 3a.3, 3a.5, 3a.6, 3a.9, 3c.1, 3c.4 |
 
 **Implementation choices (2026-10-07, phase 3a runtime; open to review,
 not user decisions):**
