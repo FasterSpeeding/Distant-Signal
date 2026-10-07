@@ -86,6 +86,8 @@ pub enum DbRole {
     Enricher,
     Notifier,
     Writer,
+    /// poller-stations under `INGEST_SINK=db` (plan 2b).
+    Stations,
 }
 
 impl DbRole {
@@ -97,6 +99,7 @@ impl DbRole {
             Self::Enricher => "enricher",
             Self::Notifier => "notifier",
             Self::Writer => "writer",
+            Self::Stations => "stations",
         }
     }
 
@@ -319,6 +322,7 @@ mod tests {
             DbRole::Enricher,
             DbRole::Notifier,
             DbRole::Writer,
+            DbRole::Stations,
         ] {
             assert!(privileges_for(role.key()).is_some(), "{role:?}");
             assert!(!role.required_privileges().is_empty(), "{role:?}");
@@ -344,6 +348,16 @@ mod tests {
         assert!(has(DbRole::Aggregator, "tocs", "SELECT"));
         // ...but not on a personal one.
         assert!(!has(DbRole::Aggregator, "users", "SELECT"));
+        // poller-stations' narrow role (plan 2b.3): its two tables only.
+        for privilege in ["SELECT", "INSERT", "UPDATE"] {
+            assert!(has(DbRole::Stations, "stations", privilege), "{privilege}");
+            assert!(
+                has(DbRole::Stations, "ingest_freshness", privilege),
+                "{privilege}"
+            );
+        }
+        assert!(!has(DbRole::Stations, "stations", "DELETE"));
+        assert!(!has(DbRole::Stations, "tocs", "SELECT"));
         // No role is required to hold anything on the migrations table
         // beyond what the version query itself needs.
         assert!(
