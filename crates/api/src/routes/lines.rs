@@ -47,6 +47,10 @@ pub fn router() -> Router {
             axum::routing::get(get_line_schedule),
         )
         .route("/lines/{id}/trains", axum::routing::get(get_line_trains))
+        .route(
+            "/lines/{id}/timetable",
+            axum::routing::get(get_line_timetable),
+        )
 }
 
 #[derive(Debug, Serialize)]
@@ -545,6 +549,28 @@ async fn get_line_trains_summary(
         .await
         .map_err(internal_error)?
         .ok_or_else(|| no_population(id, service_date))
+}
+
+/// `GET /public/lines/{id}/timetable` (2026-10-07): the line's full-day
+/// timetable, cursor-paged -- see [`super::line_timetable`]. Same date
+/// default, read gate and 404 as `/trains`.
+async fn get_line_timetable(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<super::line_timetable::TimetableQuery>,
+    OptionalAuthenticatedUser(user): OptionalAuthenticatedUser,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    let service_date = resolve_schedule_date(query.date, super::london_today());
+    if !readable_line_id(&app, &id, &user).await? {
+        return Err(no_population(&id, service_date));
+    }
+    let scopes = parse_scope(query.scope.as_deref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let params = super::line_timetable::parse_params(&query, scopes)
+        .map_err(super::line_trains_summary::bad_request)?;
+    super::line_timetable::build(&app, &id, service_date, params)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| no_population(&id, service_date))
 }
 
 /// A `/trains` entry's membership fields, moved out of its row.

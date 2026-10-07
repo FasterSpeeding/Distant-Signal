@@ -3,6 +3,70 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-07: a line's full-day timetable
+
+Design: `docs/superpowers/specs/2026-10-06-line-page-trains-design.md` §5.
+
+### New: `GET /public/lines/{id}/timetable`
+
+One page of the line's trains for a service date, cursor-paged. Same read
+gate, date default (London today) and `404` (no population for the date)
+as `/trains`. Parameters (all optional):
+
+| parameter | meaning |
+|-----------|---------|
+| `date` | `YYYY-MM-DD` |
+| `scope` | as `/trains`; **default `line,shared`** |
+| `dir` | `up`, `down`, `loop` (comma list); `direction` is accepted too |
+| `from` | a station CRS: only trains with a public call there, listed (and paged) by their departure from it |
+| `to` | a station CRS: only trains with a public call there -- after `from` when both are given (`to` must differ from `from`) |
+| `at` | `HH:MM` (hours `00`–`47`): trains from this time on |
+| `after` | the previous page's `nextCursor`, unchanged |
+| `limit` | 1–200, default 50 |
+
+```json
+{
+  "lineId": "swr-south-west-main",
+  "date": "2026-10-07",
+  "scopeApplied": true,
+  "scopes": ["line", "shared"],
+  "directions": ["down"],
+  "from": "WOK",
+  "to": "WEY",
+  "at": "09:00",
+  "stations": [{"crs": "WAT", "name": "London Waterloo", "role": "terminus"}],
+  "counts": {"line": {"down": 41, "up": 40}, "shared": {"down": 12}},
+  "trains": [{
+    "uid": "L80147", "operator": "SW", "serviceMode": "train", "liveTracking": true,
+    "scope": "line", "direction": "down",
+    "lineDue": {"time": "08:35", "dayOffset": 0},
+    "origin": {"crs": "WAT", "name": "London Waterloo"},
+    "destination": {"crs": "WEY", "name": "Weymouth"},
+    "onLineStops": [{"crs": "WAT", "time": "08:35", "dayOffset": 0}],
+    "live": null,
+    "time": {"time": "09:02", "dayOffset": 0},
+    "arrival": {"time": "11:10", "dayOffset": 0}
+  }],
+  "nextCursor": "542.L80151"
+}
+```
+
+- Each train is a `view=summary` train plus `time` (its departure from
+  `from`, else its `lineDue`) and `arrival` (its arrival at `to`, `null`
+  without `to`). Trains are ordered by `time`, then `uid`; a train with no
+  public call on the line is not listed.
+- `nextCursor`: pass it back as `after` with the same other parameters
+  for the next page; `null` on the last page. Opaque -- don't build one.
+- `counts`: the whole day's trains under `scope`, `from` and `to`, per
+  scope and direction (`none` without one) -- before `dir`, `at` and the
+  cursor, for direction tabs.
+- `live` is looked up for the page's trains only.
+- A malformed parameter is a `400`.
+
+Both views now read a table derived from the population at publish time
+when it has the line and date (`line_train_summaries`), and the
+population itself otherwise; the responses are the same either way.
+
 ## 2026-10-07: named bus stops and timing points; bus stops in the planner
 
 Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`.
