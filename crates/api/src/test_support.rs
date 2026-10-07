@@ -125,6 +125,7 @@ pub(crate) fn inert_app(pool: PgPool) -> crate::app::App {
         schedule_enrichment_grace_minutes: 30,
         backlog_match_sweep_interval_secs: 300,
         session_cleanup_interval_secs: 3600,
+        background_loops: true,
         past_travel_retention_days: 548,
         stale_push_subscription_days: 365,
         inactive_account_retention_days: 0,

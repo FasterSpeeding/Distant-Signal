@@ -461,6 +461,18 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value_t = 3600)]
     pub session_cleanup_interval_secs: u64,
 
+    /// Run the api's background loops (ingest architecture plan 1B.7):
+    /// the schedule-match, reconciliation and backlog-match sweeps, the
+    /// one-shot CORPUS crosswalk check at startup, and
+    /// `session_cleanup_sweep_loop`. **On by default** (today's behaviour).
+    /// The first four take the same advisory locks as the ingest-writer's
+    /// loops (`ds_store::loops`), so with both on each sweep runs in one
+    /// process at a time. Turned off (`api.backgroundLoops: false`) once
+    /// the writer's loops (`ingestWriter.loops.enabled`) and the
+    /// `apiMaintenance` `CronJob` run them instead (spec §12.3).
+    #[arg(long, env = "API_BACKGROUND_LOOPS", default_value_t = true, action = clap::ArgAction::Set)]
+    pub background_loops: bool,
+
     /// Personal-data retention (UK legal audit LEG-5, 2026-09-27): days
     /// after its travel date that a tracked train (with its attached
     /// tickets, notification state and group shares), a standalone ticket,
@@ -771,6 +783,29 @@ mod chart_env_wiring_tests {
     /// still the same underlying bug class, still worth a guard.
     /// `schedule_match_interval_secs` is deliberately excluded: its own doc
     /// comment in this file explains why it stays unwired on purpose.
+    /// Plan 1B.7: `API_BACKGROUND_LOOPS` defaults to true (today's
+    /// behaviour) and takes an explicit value, so the chart's
+    /// `API_BACKGROUND_LOOPS=false` turns the loops off.
+    #[test]
+    fn background_loops_default_on_and_the_env_name_is_stable() {
+        let command = ServiceArguments::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "background_loops")
+            .expect("background_loops is declared");
+        assert_eq!(
+            arg.get_env().and_then(|env| env.to_str()),
+            Some("API_BACKGROUND_LOOPS")
+        );
+        assert_eq!(arg.get_default_values(), ["true"]);
+        assert!(matches!(arg.get_action(), clap::ArgAction::Set));
+        let block = api_container_block();
+        assert!(
+            block.contains("- name: API_BACKGROUND_LOOPS"),
+            "the chart renders API_BACKGROUND_LOOPS (when api.backgroundLoops is false)"
+        );
+    }
+
     #[test]
     fn every_sweep_interval_tunable_this_config_declares_is_set_on_the_charts_api_container() {
         const SWEEP_ENV_VARS: &[&str] = &[

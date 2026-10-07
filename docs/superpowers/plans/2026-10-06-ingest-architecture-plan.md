@@ -248,12 +248,12 @@ Rollback: revert the commit (no runtime switch).
 every switch off.** The default render is unchanged.
 
 - **Done:** 1B.1 (`ds-migrate run`; `wait` waits for 1B.2's gate to be
-  wired in); 1B.5; the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6's
-  skeleton and its image; 1B.8's `maintenance` bin.
-- **Done in code:** 1B.2 (`wait_for_schema`) and 1B.3 (the api reading
+  wired in); 1B.5; the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6
+  (skeleton, image and the real loops); 1B.7; 1B.8's `maintenance` bin.
+- **Done in code:** 1B.2 (`wait_for_schema`, which the writer calls before
+  readiness and before registering its loops) and 1B.3 (the api reading
   `API_MIGRATE_ON_STARTUP`; the other DB services gated).
-- **Waiting on code:** `ds-migrate wait` calling `wait_for_schema`, 1B.6's
-  real loops (after `ds-store`), and 1B.7.
+- **Waiting on code:** `ds-migrate wait` calling `wait_for_schema`.
 
 Details and differences from the table below:
 
@@ -317,27 +317,46 @@ Details and differences from the table below:
   (their checksums are locked). It also counts `DROP
   PROCEDURE/TYPE/SEQUENCE/SCHEMA/MATERIALIZED VIEW`, scans `DO` blocks, and
   exempts changes to objects created in the same file.
-- **1B.6, code done; the real loops wait for `ds-store`.**
+- **1B.6, done (with the 1B.2 schema gate before its loops).**
   - `crates/ingest-writer` has no dependency on `api`. It has config,
     `health-http`, metrics, the writer pool (`common::pg`, 6) and the line
     catalogue.
-  - The generic loop runner (`loop_runner.rs`) runs each named loop on its
-    interval while its `LockSession` holds `pg_try_advisory_lock(key)`.
-    The `LockSession` is one dedicated connection beyond the pool: role
+  - The generic loop runner (`ds_store::loops::runner`, moved from the
+    writer for 1B.7) runs each named loop on its interval while its
+    `LockSession` holds `pg_try_advisory_lock(key)`. The writer's
+    `LockSession` is one dedicated connection beyond the pool: role
     limit = pool + 1, and the chart counts both in its budgets. A lock is
     held across ticks until the process exits; a runner whose lock is held
     elsewhere skips the tick (debug log,
-    `loop_ticks_total{outcome="skipped"}`).
-  - `INGEST_WRITER_LOOPS` (default false) registers only a no-op `canary`
-    loop (`INGEST_WRITER_CANARY_INTERVAL_SECS`, default 60).
+    `distant_signal_loop_ticks_total{outcome="skipped"}`).
+  - `INGEST_WRITER_LOOPS` (default false) registers the no-op `canary`
+    (`INGEST_WRITER_CANARY_INTERVAL_SECS`, 60) and the four train-domain
+    loops, `ds_store::loops::{schedule_match, reconciliation,
+    backlog_match, corpus_crosswalk}`: the api's intervals, variable names
+    and defaults (`SCHEDULE_MATCH_INTERVAL_SECS`,
+    `RECONCILIATION_SWEEP_INTERVAL_SECS`,
+    `SCHEDULE_ENRICHMENT_GRACE_MINUTES`,
+    `BACKLOG_MATCH_SWEEP_INTERVAL_SECS`), and
+    `INGEST_WRITER_CORPUS_CROSSWALK_INTERVAL_SECS` (600) for the CORPUS
+    `rebuild_if_stale` plus freshness gauge. The CRS-to-line index is built
+    from `LINES_DIR` as the api builds it.
+  - Each body logs the api loops' own messages; the runner only counts. The
+    runner's metrics are one family whichever process runs a loop:
+    `distant_signal_loop_{cycles_total, last_success_timestamp_seconds,
+    ticks_total, lock_held, seconds}` (they were
+    `distant_signal_ingest_writer_*` in the never-deployed skeleton).
   - The lock keys are `common::advisory_locks` (`SCHEDULE_MATCH_SWEEP`,
     `RECONCILIATION_SWEEP`, `BACKLOG_MATCH_SWEEP`, `CORPUS_CROSSWALK`,
     `WRITER_CANARY`).
-  - `loops.rs` marks where each sweep registers once 1A.6/1A.10 have
-    moved its body. Still to do after `ds-store`:
-    - those four registrations;
-    - the CRS-to-line index.
-    `wait_for_schema` runs before readiness (1B.2, done).
+  - `wait_for_schema` runs before readiness and before the loops are
+    registered (1B.2, done).
+  - The writer role is still a member of app, so it has every privilege
+    the loops use. Against its planned grants in `db-grants.yaml` (read
+    from the sweeps' SQL, not yet run as a narrowed role) nothing is
+    missing: `train_subscriptions` SU, `trains` SIU,
+    `train_movement_events`/`train_current_state` SIU,
+    `trust_event_backlog` SU, the three `corpus_*` crosswalk tables SIUD,
+    and the schedule and reference tables through `read_shared`.
   - `docker/ingest-writer.Dockerfile` has the generated cargo-chef builder
     (`scripts/gen-rust-dockerfiles.py`); `containers.yml` has its matrix
     leg and the digest step's `SERVICE_TO_PATH` entry `.ingestWriter`.
@@ -349,21 +368,31 @@ Details and differences from the table below:
     `LINES_DIR` is the image's `/app/lines` default.
     `RECONCILIATION_SWEEP_INTERVAL_SECS`,
     `SCHEDULE_ENRICHMENT_GRACE_MINUTES` and
-    `BACKLOG_MATCH_SWEEP_INTERVAL_SECS` are rendered from the api's values
-    for the loops to come; the skeleton does not read them yet.
-  - DB tests (`crates/ingest-writer/tests/loop_locks.rs`): two runners,
-    one body run per tick; skip while held elsewhere; interval; reconnect
-    after a killed lock session. They pass as superuser and as the
-    role-split app role.
-- **1B.7, planned.** The api's four loops and its CORPUS startup task
-  take the same `common::advisory_locks` keys the same way. The runner
-  moves from `ingest-writer` into `ds-store` (it needs only sqlx, tokio
-  and metrics), and the api wraps each loop body with it on its own
-  `LockSession`. Then `API_BACKGROUND_LOOPS` gates the spawning, and
-  `session_cleanup_sweep_loop` stays outside the locks (the CronJob
-  replaces it). Test: an api runner and a writer runner on one key never
-  both run a body in a tick, as `two_runners_on_one_lock_run_the_body_once_per_tick`
-  checks.
+    `BACKLOG_MATCH_SWEEP_INTERVAL_SECS` are rendered from the api's values,
+    so the two cannot drift.
+  - DB tests (`crates/ds-store/tests/loop_locks.rs`): two runners, one
+    body run per tick; skip while held elsewhere; interval; reconnect
+    after a killed lock session; and the 1B.7 tests below.
+- **1B.7, done.** The api's three periodic sweeps are the same
+  `ds_store::loops` specs the writer runs, on a `LoopRunner` whose
+  `LockSession::from_pool` holds one connection checked out of the api's
+  own pool (closed, never returned, when let go), so the connection
+  budgets are unchanged. Its CORPUS startup task is
+  `ds_store::loops::runner::run_once`: it takes `CORPUS_CROSSWALK` for the
+  one run and releases it, and is skipped while the writer holds it.
+  `API_BACKGROUND_LOOPS` (default true; chart `api.backgroundLoops`,
+  rendered only when false) gates all of them and
+  `session_cleanup_sweep_loop`, which takes no lock (the CronJob replaces
+  it). Differences from before, on by default: the api's sweeps now take
+  advisory locks (with more than one api replica, one replica runs each),
+  export the `distant_signal_loop_*` metrics, and the CORPUS errors read
+  "CORPUS crosswalk rebuild failed" and "CORPUS freshness gauge read
+  failed" (no "startup"); a zero interval logs and leaves that sweep off
+  instead of panicking its task. DB tests: an api-shaped and a
+  writer-shaped runner tick the real sweeps (one runs, the other skips,
+  per loop per tick; the writer takes over once the api's session
+  closes); spawned side by side at 100 ms they never run one sweep's body
+  twice at once; the api's CORPUS one-shot never keeps the lock.
 - **1B.8, done.** `crates/api/src/bin/maintenance.rs` runs one pass of
   `prune_expired_sessions`, `prune_dead_links` and `prune_personal_data`.
   It reuses the existing functions and the api's retention variables
