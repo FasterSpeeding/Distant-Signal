@@ -1308,7 +1308,7 @@ mod tests {
         ]);
         let mut ic = interchange(&[("H", 2)]);
         ic.modal_change = schedule_query::ModalChangeBuffer {
-            road_or_water_uids: std::collections::HashSet::from(["BUS1".to_string()]),
+            road_or_water_uids: HashSet::from(["BUS1".to_string()]),
             minutes: 5,
         };
         for (tiploc, crs) in [("STOP", "tiploc:STOP"), ("H", "HXX")] {
