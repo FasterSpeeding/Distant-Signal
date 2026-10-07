@@ -192,6 +192,45 @@ Rollback: revert the commit (no runtime switch).
 
 ### 1B. Migrator, schema gate, writer skeleton, loops, maintenance CronJob
 
+**Status (2026-10-07): the parts that do not need `ds-store` are built,
+every switch off.** 1B.5 and the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10
+are done; the default render is unchanged. Waiting on code: 1B.1
+(`ds-migrate`, which the migrate Job runs), 1B.3 (the api reading
+`API_MIGRATE_ON_STARTUP`), 1B.6 (the `ingest-writer` image, its
+`containers.yml` matrix leg and `SERVICE_TO_PATH` entry `.ingestWriter`),
+1B.8's `maintenance` bin, and 1B.2/1B.7. Differences from the table below:
+
+- 1B.4: the `pg_isready` wait is an init container from the Postgres image
+  (the api image has no libpq tools), not "initContainer-free". The Job's
+  Postgres admission and egress are hook NetworkPolicies (weight -10): a
+  `pre-upgrade` hook runs before the release's own policies change. The
+  role setup Job gets an egress policy (Ranma's constraint). Without the
+  role split the Job migrates as `postgresql.auth.username`, or with the
+  external database's URL. `api.migrateOnStartup: false` without the Job
+  fails the render. The chart renders `API_MIGRATE_ON_STARTUP` only when
+  false, so the default render is unchanged.
+- 1B.5: the check covers migrations added since the base plus every one
+  newer than `CONTRACT_CHECK_CUTOFF` (20261007210000, the newest existing);
+  the 28 destructive statements in 9 older, applied migrations are
+  grandfathered (their checksums are locked). It also counts `DROP
+  PROCEDURE/TYPE/SEQUENCE/SCHEMA/MATERIALIZED VIEW`, scans `DO` blocks, and
+  exempts changes to objects created in the same file.
+- 1B.8: the CronJob runs `/usr/local/bin/maintenance` (configurable); the
+  1B.8 code task must install the bin there. Its pool (2) counts in the
+  connection budgets.
+- 1B.9: the writer role is `observed` in `db-grants.yaml`, so the setup
+  Job creates it whenever `perService.enabled` (unused until
+  `perService.writer.connect`, which needs `ingestWriter.enabled`). The
+  PodMonitor entry is in the shared PodMonitor. The env contract for 1B.6:
+  `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `INGEST_WRITER_LOOPS`,
+  `RECONCILIATION_SWEEP_INTERVAL_SECS`, `SCHEDULE_ENRICHMENT_GRACE_MINUTES`,
+  `BACKLOG_MATCH_SWEEP_INTERVAL_SECS`, `METRICS_ENABLED`, `METRICS_PORT`,
+  `HEALTH_BIND_URL`, `PROGRESS_STALL_SECS`, `RUST_LOG` (plus
+  `ingestWriter.extraEnv`).
+- 1B.10: the surge pod's pool counts in the INF-7 budget and the app
+  role's computed limit, so `RollingUpdate` needs a smaller api pool (or
+  the api on its own role).
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 1B.1 | Move `api::migrate` and `legacy_backfill::ensure_ready_for_contract_migration` to `ds_store::migrate`; add the `crates/ds-migrate` binary (`run`, `wait`); build it into the api image | `ds-store/src/migrate.rs`, `crates/ds-migrate/`, `docker/api.Dockerfile`, `api/src/main.rs` (uses `ds_store::migrate`) | moved migrate tests (the INVALID-index heal, the role split test `the_app_role_has_dml_only_and_the_owner_owns_the_schema`); `migration_checksums` and `migration_index_locking` unchanged |
