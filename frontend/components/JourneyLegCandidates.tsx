@@ -1,17 +1,19 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
+import { Alert, Autocomplete, Button, Stack, Text } from '@mantine/core';
 import { LoadMoreControl } from './LoadMoreControl';
-import { RouteArrow, RouteText } from './RouteArrow';
-import { StatusRow } from './StatusRow';
+import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TextLink } from './TextLink';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import { searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import { spokenRoute } from '@/lib/stationLabel';
+import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
+import { serviceNoun } from '@/lib/serviceMode';
+import { dayOffsetMarker } from '@/lib/serviceStatus';
+import type { TrainSearchResult } from '@/lib/types';
 
 // Mirrors `lib/useSuggestions.ts`'s own (non-exported) `DEBOUNCE_MS = 250`
 // constant -- this is a SEPARATE debounce, for the committed filter value
@@ -36,20 +38,7 @@ const FILTER_DEBOUNCE_MS = 250;
  * could not be made from it. `stationCrs`/`legOriginCrs`,
  * `legDestinationCrs` and `legDestinationArrival` describe the
  * TRAVELLER's leg: where they get on, where they get off, and when. */
-interface CandidateRow {
-  uid: string;
-  /** The departure time at the leg's own ORIGIN -- already leg-scoped,
-   * because the backend search keys its main row on that station. */
-  scheduled: string;
-  destinationCrs: string | null;
-  /** Station name resolved from `destinationCrs`, `null` when unresolved
-   * (or when `destinationCrs` itself is `null`) -- same contract as
-   * `TrainSearchForm.tsx`'s identical field, which this shares a backend
-   * renderer with. Optional for backward compatibility with a response
-   * from a backend build that predates this field. */
-  destinationName?: string | null;
-  originCrs: string | null;
-  destinationArrival: string | null;
+interface CandidateRow extends TrainSearchResult {
   /** Echoed back by the backend; identical to `stationCrs`. */
   legOriginCrs: string;
   legDestinationCrs: string;
@@ -60,18 +49,11 @@ interface CandidateRow {
   /** How many days past the service date `legDestinationArrival` falls --
    * `0` for the overwhelming majority, non-zero for an overnight leg. */
   legDestinationArrivalDayOffset: number;
-  /** The PUBLIC (passenger timetable) departure at the leg's origin and
-   * arrival at its destination, `"HH:MM"`: what the leg shows, falling back
-   * to `scheduled`/`legDestinationArrival` (working timetable) when `null`.
-   * Optional: absent from an older backend. */
-  publicDeparture?: string | null;
+  /** The PUBLIC (passenger timetable) arrival at the leg's destination,
+   * `"HH:MM"`, shown in place of `legDestinationArrival` (working
+   * timetable) when present. Optional: absent from an older backend. The
+   * departure's public time is `publicDeparture`. */
   legPublicDestinationArrival?: string | null;
-  /** The train's operating ATOC code (e.g. `"SW"`), added to
-   * `render::calling_point_departure_json`'s `"operator"` key by the
-   * 2026-09-24 journey-leg-operator-filter plan. `null` for a CIF-sourced
-   * row with no known operator, same "unknown means null, not a guess"
-   * posture as `destinationCrs`/`originCrs` above. */
-  operator: string | null;
 }
 
 interface CandidatesResponse {
@@ -334,16 +316,21 @@ export function JourneyLegCandidates({
           {results.rows.length === 1 ? 'matches' : 'match'} your search — pick the one you&apos;ll be on. You can change
           it later.
         </Text>
+        <Text size="sm" c="dimmed">
+          Times are when each train leaves the station you board at and reaches the one you get off at.
+        </Text>
         {pickError && <Alert color="red">{pickError}</Alert>}
-        {results.rows.map((row) => (
-          <CandidateRowView
-            key={`${row.uid}-${row.scheduled}`}
-            row={row}
-            serviceDate={serviceDate}
-            picking={picking}
-            onPick={() => pick(row.uid)}
-          />
-        ))}
+        <ServiceRowList aria-label="Candidate trains">
+          {results.rows.map((row) => (
+            <CandidateRowView
+              key={`${row.uid}-${row.scheduled ?? ''}`}
+              row={row}
+              serviceDate={serviceDate}
+              picking={picking}
+              onPick={() => pick(row.uid)}
+            />
+          ))}
+        </ServiceRowList>
         <LoadMoreControl
           hasMore={results.nextCursor !== null}
           loading={loadingMore}
@@ -386,43 +373,30 @@ export function JourneyLegCandidates({
   );
 }
 
-/** How this leg reads on this train: when it leaves the station the
- * traveller boards at, and when it reaches the one they get off at.
- * `arr.` is omitted -- not rendered as "?" or filled in from the train's
- * terminus arrival -- when the schedule has no time for the leg's
- * destination. */
-function legTimes(row: CandidateRow): string {
-  const departure = `dep. ${row.legOriginCrs} ${row.publicDeparture ?? row.scheduled}`;
-  const arrival = row.legPublicDestinationArrival ?? row.legDestinationArrival;
-  if (!arrival) return departure;
-  // A non-zero day offset is rare but real (an overnight leg). Saying so
-  // is cheaper than letting "dep. 23:40 → arr. 02:15" read as a
-  // four-hours-backwards journey.
-  const nextDay = row.legDestinationArrivalDayOffset > 0 ? ' (next day)' : '';
-  return `${departure} → arr. ${row.legDestinationCrs} ${arrival}${nextDay}`;
+/** The leg's arrival at the traveller's destination, `HH:MM`: the public
+ * time, else the working one; `undefined` -- not "?", and never the
+ * train's terminus arrival -- when the schedule has no time there. */
+function legArrival(row: CandidateRow): string | undefined {
+  return (row.legPublicDestinationArrival ?? row.legDestinationArrival)?.slice(0, 5);
 }
 
-/** One candidate, shaped like the `/trains` search-result row the design
- * spec §2.3 asked this list to reuse: leg-scoped times as the row title,
- * the train's own identity and route as dimmed secondary text, and a
- * "View live status" link beside the action (2026-09-22 UX review, C4 +
- * I25).
+/** One candidate as a `ServiceRow`: the leg's own departure (from the
+ * station the traveller boards at) as the row's time, the train's
+ * destination, the leg's arrival at the traveller's own destination (with
+ * a "+1" for an overnight leg), live status, and the train's identity and
+ * origin as the dimmed second line (2026-09-22 UX review, C4). The
+ * destination links to the train's page; the pick button sits in the
+ * row's actions slot, beside the link rather than inside it.
  *
- * Deliberately a SHAPE match rather than an import of that row: the
- * `/trains` row is inline JSX inside `TrainSearchForm` and its action is
- * `TrackThisTrainButton`, which creates a standalone train subscription.
- * This list's action commits the pick to a journey LEG
- * (`POST /Journeys/{id}/legs/{id}/train`) -- a different write against a
- * different resource -- so extracting a shared component would mean
- * parameterising it on its own primary action, which is most of what the
- * component is. What it DOES take from that row is everything the review
- * found missing: the arrival time, the per-row live-status link, and the
- * shrink-guarded title/trailing layout (`StatusRow`, WCAG 2.5.3).
+ * The button commits the pick to a journey LEG (`POST
+ * /Journeys/{id}/legs/{id}/train`), not a standalone subscription like
+ * `/trains`' `TrackThisTrainButton`, so the row's action stays this
+ * component's own.
  *
- * `aria-label` on the button, not just the sibling `Text`: three or four
- * buttons all named "Track this train" is N indistinguishable items in a
- * screen reader's control list (I26/P3, WCAG 2.4.9). The label CONTAINS
- * the visible text, so Label-in-Name (2.5.3) still holds. */
+ * `aria-label` on the button: three or four buttons all named "Track this
+ * train" is N indistinguishable items in a screen reader's control list
+ * (I26/P3, WCAG 2.4.9). The label CONTAINS the visible text, so
+ * Label-in-Name (2.5.3) still holds. */
 function CandidateRowView({
   row,
   serviceDate,
@@ -434,49 +408,40 @@ function CandidateRowView({
   picking: string | null;
   onPick: () => void;
 }) {
-  const times = legTimes(row);
+  const train = searchRowSummary(row);
+  const time = searchRowTime(row);
+  const arrival = legArrival(row);
+  const nextDay = dayOffsetMarker(row.legDestinationArrivalDayOffset);
+  const destination = train.destination?.name ?? train.destination?.crs;
+  const spoken = [
+    destination ? `${time} to ${destination}` : time,
+    arrival && `arriving ${arrival}${nextDay ? ` (${nextDay.spoken})` : ''}`,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  const noun = serviceNoun(train.serviceMode).toLowerCase();
+  const details = [`${serviceNoun(train.serviceMode)} ${row.uid}`, searchRowDetails(row), row.operator]
+    .filter(Boolean)
+    .join(' · ');
   return (
-    <StatusRow
-      align="flex-start"
-      title={
-        <Text size="sm" fw={500}>
-          <RouteText>{times}</RouteText>
-        </Text>
-      }
-      subtitle={
-        // The train's own identity and full route, dimmed and second --
-        // useful context ("it's the Edinburgh train"), but no longer the
-        // only thing on the row, which was C4.
-        <Text size="xs" c="dimmed">
-          Train {row.uid}
-          {row.originCrs && row.destinationCrs && (
-            <>
-              {' · '}
-              {row.originCrs} <RouteArrow /> {row.destinationName ?? row.destinationCrs}
-            </>
-          )}
-          {row.operator !== null ? ` · ${row.operator}` : ''}
-        </Text>
-      }
-      trailing={
-        <Group gap="sm" wrap="nowrap">
-          <TextLink
-            href={`/train/${encodeURIComponent(row.uid)}/${serviceDate}`}
-            size="sm"
-            ariaLabel={`View live status for the ${spokenRoute(times)}`}
-          >
-            View live status
-          </TextLink>
-          <Button
-            size="xs"
-            loading={picking === row.uid}
-            disabled={picking !== null}
-            onClick={onPick}
-            aria-label={`Track this train — ${spokenRoute(times)}`}
-          >
-            Track this train
-          </Button>
-        </Group>
+    <ServiceRow
+      train={train}
+      date={serviceDate}
+      timeOverride={time}
+      dayOffset={row.dayOffset}
+      arrival={arrival}
+      arrivalDayOffset={row.legDestinationArrivalDayOffset}
+      details={details}
+      actions={
+        <Button
+          size="xs"
+          loading={picking === row.uid}
+          disabled={picking !== null}
+          onClick={onPick}
+          aria-label={`Track this ${noun} — ${spoken}`}
+        >
+          Track this {noun}
+        </Button>
       }
     />
   );
