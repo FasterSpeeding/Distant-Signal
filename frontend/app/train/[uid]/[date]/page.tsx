@@ -14,6 +14,7 @@ import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import { isTimetableOnly, serviceModeLabel, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
 import { ServiceModeIcon } from '@/components/ServiceModeIcon';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
+import { delayLabel } from '@/lib/serviceStatus';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -138,7 +139,7 @@ export function trainStatusSummary(state: TrainJourneyState): string {
     parts.push(`Last reported: ${state.lastReportedLocation}`);
   }
   if (state.delayMinutes !== null) {
-    parts.push(state.delayMinutes > 0 ? `${state.delayMinutes}m late` : 'On time');
+    parts.push(delayLabel(state.delayMinutes).text);
   }
   return parts.length > 0 ? parts.join(' — ') : `Train ${state.trainUid} is currently en route.`;
 }

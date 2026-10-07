@@ -14,6 +14,7 @@ import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegCh
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
 import { routeLabel } from '@/lib/stationLabel';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
+import { delayLabel } from '@/lib/serviceStatus';
 
 /** 2026-09-22 UX review finding M18: the fallback `<h1>` for a journey
  * with no `customName` used to be the flat, generic "Tracked journey" --
@@ -71,7 +72,7 @@ function legSummaryPhrase(leg: JourneyLegDetail): string {
   const state = leg.trackedTrainState;
   if (state.status === 'cancelled') return 'cancelled';
   if (state.status === 'awaiting_activation' || state.status === null) return 'awaiting first report';
-  if (state.delayMinutes !== null && state.delayMinutes > 0) return `${state.delayMinutes}m late`;
+  if (state.delayMinutes !== null && state.delayMinutes !== 0) return delayLabel(state.delayMinutes).text;
   return 'on time';
 }
 

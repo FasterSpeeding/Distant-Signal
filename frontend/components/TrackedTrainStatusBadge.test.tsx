@@ -39,7 +39,15 @@ describe('TrackedTrainStatusBadge', () => {
       <TrackedTrainStatusBadge train={{ resolutionStatus: 'resolved', status: 'en_route', delayMinutes: 5 }} />,
     );
     expect(badgeTextTransform(screen.getByText('En route'))).toBe('none');
-    expect(badgeTextTransform(screen.getByText('5m late'))).toBe('none');
+    expect(badgeTextTransform(screen.getByText('5 min late'))).toBe('none');
+  });
+
+  it('says early running as minutes early, not "On time"', () => {
+    renderWithMantine(
+      <TrackedTrainStatusBadge train={{ resolutionStatus: 'resolved', status: 'en_route', delayMinutes: -2 }} />,
+    );
+    expect(screen.getByText('2 min early')).toBeInTheDocument();
+    expect(screen.queryByText('On time')).not.toBeInTheDocument();
   });
 
   it('renders "On time" rather than a delay badge when delayMinutes is zero', () => {

@@ -2,6 +2,8 @@ import { Badge, Box, Group, Text, VisuallyHidden } from '@mantine/core';
 import { StatusRow } from './StatusRow';
 import { PlatformBadge } from './PlatformBadge';
 import { stationLabel } from '@/lib/stationLabel';
+import { CANCELLED_LABEL } from '@/lib/serviceStatus';
+import { DelayBadge } from './DelayBadge';
 
 /** One live LDBWS departure-board row's display data -- deliberately a
  * plain data shape, not `DepartureRow` (`TrackTrainForm.tsx`'s own wire
@@ -37,8 +39,8 @@ export interface ScheduleRowData {
 
 /** The row's status badge, in the app's shared light-variant, sentence-case
  * delay pattern (`JourneyTimeline.tsx`'s `delayBadge`, `TrainJourney.tsx`'s
- * "Delay:" badge): "12m late" orange, "3m early" teal, "On time" green,
- * "Cancelled" red. `tt="none"` for the same reason `TrainJourney.tsx`
+ * "Delay:" badge), worded by `lib/serviceStatus.ts`: "12 min late" orange,
+ * "3 min early" teal, "On time" green, "Cancelled" red. `tt="none"` for the same reason `TrainJourney.tsx`
  * gives -- Mantine's default 11px uppercase measured borderline, and these
  * are phrases with units. Every light-variant text colour here is pinned
  * in `app/globals.css` to >= 4.5:1 on its own tint (orange #bb3e0d 4.64:1,
@@ -49,29 +51,11 @@ function statusBadge(row: ScheduleRowData) {
   if (row.isCancelled) {
     return (
       <Badge color="red" variant="light" tt="none">
-        Cancelled
+        {CANCELLED_LABEL}
       </Badge>
     );
   }
-  if (row.delayMinutes > 0) {
-    return (
-      <Badge color="orange" variant="light" tt="none">
-        {row.delayMinutes}m late
-      </Badge>
-    );
-  }
-  if (row.delayMinutes < 0) {
-    return (
-      <Badge color="teal" variant="light" tt="none">
-        {Math.abs(row.delayMinutes)}m early
-      </Badge>
-    );
-  }
-  return (
-    <Badge color="green" variant="light" tt="none">
-      On time
-    </Badge>
-  );
+  return <DelayBadge delayMinutes={row.delayMinutes} />;
 }
 
 /** A single reusable schedule/departure row -- one Darwin/LDBWS live

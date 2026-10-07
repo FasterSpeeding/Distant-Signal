@@ -836,7 +836,7 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
   it('renders a delay badge for a resolved, delayed train', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ delayMinutes: 12 })]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByText('12m late')).toBeInTheDocument();
+    expect(screen.getByText('12 min late')).toBeInTheDocument();
   });
 
   // Task 1.5 (WCAG 2.5.3): the tracked-train row pairs a route title with
@@ -854,7 +854,7 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
       }),
     ]);
     const { container } = renderWithMantine(await DashboardPage());
-    expect(screen.getByText('12m late')).toBeInTheDocument();
+    expect(screen.getByText('12 min late')).toBeInTheDocument();
     expectNoUnguardedNowrapBadges(container);
   });
 
@@ -1429,7 +1429,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     const { container } = renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText('9m late')).toBeInTheDocument();
+    expect(screen.getByText('9 min late')).toBeInTheDocument();
     expectNoUnguardedNowrapBadges(container);
   });
 
@@ -1509,7 +1509,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getByText('En route')).toBeInTheDocument();
-    expect(screen.getByText('9m late')).toBeInTheDocument();
+    expect(screen.getByText('9 min late')).toBeInTheDocument();
   });
 
   it('falls back to "a member" when the sharer has no name or username, never a raw user id', async () => {

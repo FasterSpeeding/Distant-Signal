@@ -43,26 +43,26 @@ describe('ScheduleRow', () => {
     expect(screen.getByText('On time')).toBeInTheDocument();
   });
 
-  // Same light-variant, sentence-case "Nm late"/"Nm early" badge pattern as
+  // Same light-variant, sentence-case "N min late"/"N min early" badge pattern as
   // `JourneyTimeline`/`TrainJourney` (not the old filled "+12 MIN").
-  it('shows a light orange "Nm late" badge naming the minutes late, not colour alone', () => {
+  it('shows a light orange "N min late" badge naming the minutes late, not colour alone', () => {
     renderWithMantine(<ScheduleRow row={row({ delayMinutes: 12 })} />);
-    const badge = screen.getByText('12m late').closest('.mantine-Badge-root');
+    const badge = screen.getByText('12 min late').closest('.mantine-Badge-root');
     expect(badge).toHaveAttribute('data-variant', 'light');
     expect(badge).toHaveStyle({ '--badge-color': 'var(--mantine-color-orange-light-color)' });
     expect(screen.queryByText(/\+12 min/)).not.toBeInTheDocument();
   });
 
-  it('shows a light teal "Nm early" badge for a service running early', () => {
+  it('shows a light teal "N min early" badge for a service running early', () => {
     renderWithMantine(<ScheduleRow row={row({ delayMinutes: -3 })} />);
-    const badge = screen.getByText('3m early').closest('.mantine-Badge-root');
+    const badge = screen.getByText('3 min early').closest('.mantine-Badge-root');
     expect(badge).toHaveAttribute('data-variant', 'light');
     expect(badge).toHaveStyle({ '--badge-color': 'var(--mantine-color-teal-light-color)' });
   });
 
   it('keeps status badges in sentence case (tt="none"), not Mantine\'s default uppercase', () => {
     renderWithMantine(<ScheduleRow row={row({ delayMinutes: 5 })} />);
-    expect(screen.getByText('5m late').closest('.mantine-Badge-root')).toHaveStyle({ textTransform: 'none' });
+    expect(screen.getByText('5 min late').closest('.mantine-Badge-root')).toHaveStyle({ textTransform: 'none' });
   });
 
   it('shows a light red "Cancelled" badge, not colour alone', () => {

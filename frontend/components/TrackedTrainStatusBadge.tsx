@@ -1,6 +1,7 @@
 import { Badge, Group } from '@mantine/core';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly } from '@/lib/serviceMode';
+import { DelayBadge } from './DelayBadge';
 import type { ServiceModeFields } from '@/lib/types';
 
 // Short, human badge words -- the single copy every page that renders a
@@ -67,11 +68,7 @@ export function TrackedTrainStatusBadge({
           {STATUS_LABELS[train.status] ?? train.status}
         </Badge>
       )}
-      {train.delayMinutes !== null && (
-        <Badge color={train.delayMinutes > 0 ? 'orange' : 'green'} variant="light" tt="none">
-          {train.delayMinutes > 0 ? `${train.delayMinutes}m late` : 'On time'}
-        </Badge>
-      )}
+      {train.delayMinutes !== null && <DelayBadge delayMinutes={train.delayMinutes} />}
     </Group>
   );
 }

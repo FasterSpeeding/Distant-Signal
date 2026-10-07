@@ -1,4 +1,5 @@
 import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
+import { DelayBadge } from './DelayBadge';
 import { EtaBadge } from './EtaBadge';
 import { JourneyProgress } from './JourneyProgress';
 import { JourneyTimeline, isGenuineCallingPoint, type JourneyEndpointNames } from './JourneyTimeline';
@@ -386,9 +387,7 @@ function JourneyDetails({ state }: { state: TrainJourneyState }) {
               fixes (the other being a size bump) and removes uppercase's
               own separate legibility cost (thinner apparent stroke
               contrast from losing ascenders/descenders) on top of it. */}
-          <Badge color={state.delayMinutes > 0 ? 'orange' : 'green'} variant="light" tt="none">
-            {state.delayMinutes > 0 ? `${state.delayMinutes}m late` : 'On time'}
-          </Badge>
+          <DelayBadge delayMinutes={state.delayMinutes} />
         </Group>
       )}
       {state.nextCallingPoint && <Text size="sm">Next calling point: {state.nextCallingPoint}</Text>}
