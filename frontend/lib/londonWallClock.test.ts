@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
+  addCalendarDays,
   londonCalendarDay,
   londonDayEndIso,
   londonDayStartIso,
@@ -145,3 +146,18 @@ describe('London day bounds', () => {
     expect(londonCalendarDay('garbage-value-x')).toBe('garbage-va');
   });
 });
+
+describe.each(['America/Los_Angeles', 'Pacific/Auckland', 'Europe/London', 'UTC'])(
+  'addCalendarDays with the host zone %s',
+  (tz) => {
+    it('moves by whole calendar days across clock changes and month/year ends', () => {
+      process.env.TZ = tz;
+      expect(addCalendarDays('2026-10-24', 1)).toBe('2026-10-25');
+      expect(addCalendarDays('2026-10-25', 1)).toBe('2026-10-26');
+      expect(addCalendarDays('2026-03-29', 1)).toBe('2026-03-30');
+      expect(addCalendarDays('2026-09-30', 1)).toBe('2026-10-01');
+      expect(addCalendarDays('2026-09-05', 0)).toBe('2026-09-05');
+      expect(addCalendarDays('2027-01-01', -1)).toBe('2026-12-31');
+    });
+  },
+);

@@ -1856,6 +1856,72 @@ describe('TrackTrainForm', () => {
       expect(links[1]).toHaveAttribute('href', `/train/C99999/${today}`);
     });
 
+    it("links a post-midnight CIF row (dayOffset 1) to its schedule's service date, not its departure's calendar day", async () => {
+      // A service that left its origin at 23:30 on D and calls here at
+      // 00:20 on D+1 is published in D's schedule-departures bucket with
+      // `dayOffset: 1`. `/train/{uid}/{date}` is keyed on the CIF service
+      // (origin) date, so the link must name D: D+1 is the NEXT night's
+      // run of the same uid (or a 404 if it doesn't run then).
+      vi.setSystemTime(new Date('2026-09-05T21:00:00.000Z')); // 22:00 BST, D = 2026-09-05
+      const overnight = [{ uid: 'F49687', scheduled: '00:20', dayOffset: 1, destinationCrs: 'SNF' }];
+      vi.stubGlobal(
+        'fetch',
+        mockFetchByUrl({
+          departures: () => new Response('not found', { status: 404 }),
+          scheduleDepartures: () => new Response(JSON.stringify(overnight), { status: 200 }),
+        }),
+      );
+
+      renderWithMantine(<TrackTrainForm initialOrigin="BKG" />);
+      await screen.findByRole('button', { name: /00:20/ });
+
+      expect(screen.getByRole('link', { name: 'View live status' })).toHaveAttribute(
+        'href',
+        '/train/F49687/2026-09-05',
+      );
+    });
+
+    it('keeps CIF links and picks on the fetched bucket date when London midnight passes after the fetch', async () => {
+      // Rows fetched at 23:59 belong to D's bucket (the server's London
+      // `today` at that moment). A re-render after midnight must not
+      // re-derive "today" as D+1 for them.
+      vi.setSystemTime(new Date('2026-09-05T22:59:00.000Z')); // 23:59 BST
+      const rows = [
+        // Same destination, so picking one doesn't filter the other out.
+        { uid: 'C11052', scheduled: '23:59', dayOffset: 0, destinationCrs: 'SNF' },
+        { uid: 'F49687', scheduled: '00:20', dayOffset: 1, destinationCrs: 'SNF' },
+      ];
+      vi.stubGlobal(
+        'fetch',
+        mockFetchByUrl({
+          departures: () => new Response('not found', { status: 404 }),
+          scheduleDepartures: () => new Response(JSON.stringify(rows), { status: 200 }),
+        }),
+      );
+
+      renderWithMantine(<TrackTrainForm initialOrigin="BKG" />);
+      await screen.findByRole('button', { name: /00:20/ });
+
+      vi.setSystemTime(new Date('2026-09-05T23:01:00.000Z')); // 00:01 BST on D+1
+      fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+        target: { value: '2026-09-05 23:00:00' },
+      });
+
+      const links = screen.getAllByRole('link', { name: 'View live status' });
+      expect(links.map((link) => link.getAttribute('href'))).toEqual([
+        '/train/C11052/2026-09-05',
+        '/train/F49687/2026-09-05',
+      ]);
+
+      // The pin keeps dating itself by its departure's own London calendar
+      // day (the backend matcher's documented contract), but relative to
+      // the bucket date, not the post-midnight clock.
+      fireEvent.click(screen.getByRole('button', { name: /23:59/ }));
+      expect(screen.getByLabelText<HTMLInputElement>(/Scheduled departure/).value).toBe('2026-09-05 23:59:00');
+      fireEvent.click(screen.getByRole('button', { name: /00:20/ }));
+      expect(screen.getByLabelText<HTMLInputElement>(/Scheduled departure/).value).toBe('2026-09-06 00:20:00');
+    });
+
     it('does not render a "View live status" link on LDBWS rows -- DepartureRow carries no train UID', async () => {
       const fetchMock = mockFetchByUrl({ departures: () => new Response(JSON.stringify(departures), { status: 200 }) });
       vi.stubGlobal('fetch', fetchMock);

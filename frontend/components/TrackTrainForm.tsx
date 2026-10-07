@@ -28,7 +28,7 @@ import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
-import { nowInLondon, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
+import { addCalendarDays, nowInLondon, londonToday, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
 import type { BoardCallingPoint, CreateJourneyResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -173,11 +173,21 @@ function resolveLdbwsDepartureDate(scheduled: string, now: dayjs.Dayjs): string 
  * relative to a same-day `scheduledDeparture`, and be silently filtered out
  * of the picker entirely -- never even reachable to click, regardless of
  * how `pickCifDeparture`/`pickDeparture` themselves compute the date once
- * picked. */
-function matchesScheduledDeparture(rowScheduled: string, scheduledDeparture: string | null, rowDayOffset = 0): boolean {
+ * picked.
+ *
+ * `baseDate` (`'YYYY-MM-DD'`) is the day `rowDayOffset` counts from,
+ * London's today by default. The CIF call site passes the picker's own
+ * fetched `serviceDate` (see `Picker`), which is what its `dayOffset` is
+ * relative to. */
+function matchesScheduledDeparture(
+  rowScheduled: string,
+  scheduledDeparture: string | null,
+  rowDayOffset = 0,
+  baseDate: string = londonToday(),
+): boolean {
   if (scheduledDeparture === null) return true;
   const [hh, mm] = rowScheduled.split(':');
-  const date = nowInLondon().add(rowDayOffset, 'day').format('YYYY-MM-DD');
+  const date = addCalendarDays(baseDate, rowDayOffset);
   const rowDateTime = `${date} ${hh}:${mm}:00`;
   return rowDateTime >= scheduledDeparture;
 }
@@ -243,8 +253,14 @@ interface DepartureRow {
  * (see `schedule_query::resolve`'s own `f49687_raw` doc comment for the
  * live-confirmed c2c Liverpool Street -> Shoeburyness example this exists
  * for). Almost always `0`. `pickCifDeparture` and `matchesScheduledDeparture`
- * both use this to compute the row's REAL calendar date instead of always
- * assuming "today" -- see their own doc comments. */
+ * both use this to compute the row's REAL departure calendar date instead of
+ * always assuming "today" -- see their own doc comments.
+ *
+ * It never moves the row's SERVICE date: every row in one response belongs
+ * to the same CIF service date (the bucket's, `Picker`'s `serviceDate`), and
+ * the `/train/{uid}/{date}` link is keyed on that, not on the departure's
+ * own day. Optional because an `api` pod from before the field existed
+ * (rolled independently of `frontend`) omits it; absent means `0`. */
 interface ScheduleDepartureRow {
   uid: string;
   scheduled: string;
@@ -252,7 +268,7 @@ interface ScheduleDepartureRow {
    * working-timetable time, kept as WTT for one release). `null`/absent
    * until the next schedule publish. */
   publicDeparture?: string | null;
-  dayOffset: number;
+  dayOffset?: number;
   destinationCrs: string | null;
   /** Same server-side batched-lookup enrichment as `DepartureRow`'s own
    * `destinationName` -- see its doc comment. `null` both when
@@ -263,9 +279,20 @@ interface ScheduleDepartureRow {
 
 /** `'unavailable'` replaces the old `'not-sampled'` name: it now means
  * neither the LDBWS live board NOR the CIF-derived timetable had data for
- * this station -- see Decision 3/5. */
+ * this station -- see Decision 3/5.
+ *
+ * `serviceDate` on the CIF variant is the London date the rows were fetched
+ * for -- the bucket `schedule-departures` served (`london_today()` on the
+ * server, the same London calendar day). It is the rows' CIF service date,
+ * so a row's own departure day is `serviceDate + row.dayOffset`. Captured
+ * once at fetch time rather than re-read from the clock at render, so a
+ * picker fetched at 23:59 doesn't relabel every row a day later once London
+ * midnight passes. */
 type Picker =
-  { source: 'ldbws'; rows: DepartureRow[] } | { source: 'cif'; rows: ScheduleDepartureRow[] } | 'unavailable' | null;
+  | { source: 'ldbws'; rows: DepartureRow[] }
+  | { source: 'cif'; rows: ScheduleDepartureRow[]; serviceDate: string }
+  | 'unavailable'
+  | null;
 
 /** The v1 entry point for individual train tracking -- a manual form, not
  * a per-departure "track this train" action, per
@@ -552,6 +579,9 @@ export function TrackTrainForm({
           // switching sources on an error condition. Per
           // docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
           // Decision 3.
+          // The bucket date the server is about to resolve as its own
+          // London `today` -- see `Picker`'s doc comment.
+          const serviceDate = londonToday();
           return fetch(`/api/stations/${crs}/schedule-departures`, { signal: controller.signal }).then((cifRes) => {
             if (cifRes.status === 404) {
               setPickerLoading(false);
@@ -565,7 +595,7 @@ export function TrackTrainForm({
             }
             return cifRes.json().then((rows: ScheduleDepartureRow[]) => {
               setPickerLoading(false);
-              setPicker({ source: 'cif', rows });
+              setPicker({ source: 'cif', rows, serviceDate });
             });
           });
         }
@@ -629,15 +659,24 @@ export function TrackTrainForm({
    * Destination field is left untouched too, for the same "never guess,
    * never clobber with a blank" reason.
    *
-   * Adds `row.dayOffset` days to *today's Europe/London* date
-   * (`nowInLondon()`, not `dayjs()` -- 2026-09-26 review, finding M8: this
-   * feeds `scheduledDeparture`/`serviceDate` directly, so "today" must mean
-   * the London calendar day, not the visitor's own browser zone), rather
-   * than always assuming "today" the way `pickDeparture` (LDBWS, below) still
-   * does -- a post-midnight CIF calling point (`dayOffset: 1`, e.g. `00:07`)
-   * is genuinely TOMORROW relative to when the search itself ran, and
-   * combining it with bare "today" would create a pin dated the WRONG
-   * calendar day (see `ScheduleDepartureRow.dayOffset`'s own doc comment).
+   * Adds `row.dayOffset` days to the picker's fetched `serviceDate` (a
+   * Europe/London date -- 2026-09-26 review, finding M8 -- captured at fetch
+   * time, see `Picker`), rather than always assuming "today" the way
+   * `pickDeparture` (LDBWS, below) still does -- a post-midnight CIF calling
+   * point (`dayOffset: 1`, e.g. `00:07`) is genuinely TOMORROW relative to
+   * the schedule's service date, and combining it with bare "today" would
+   * create a pin with the wrong departure instant (see
+   * `ScheduleDepartureRow.dayOffset`'s own doc comment).
+   *
+   * The pin's `serviceDate` (the first ten characters of this value, see
+   * `submitTrack`) is therefore the DEPARTURE's London calendar day, not the
+   * CIF service date the row's `/train` link uses. That is deliberate and
+   * is the backend's documented pin contract: a pin is matched by station +
+   * instant, and `ds_store::sweeps::schedule_matching::find_schedule_match`
+   * also searches the previous day's overnight schedules for exactly this
+   * case, keying the matched train on the schedule's own date. The same
+   * contract covers LDBWS and manual pins, which have no service date to
+   * send.
    * `pickDeparture` (LDBWS, above) has the analogous fix,
    * `resolveLdbwsDepartureDate` -- `DepartureRow` still carries no day-offset
    * FIELD (Darwin's live board has no CIF-schedule linkage to derive one
@@ -645,7 +684,7 @@ export function TrackTrainForm({
    * straight off the row, LDBWS instead INFERS it from a bounded-look-ahead
    * heuristic -- see that function's own doc comment for why that's
    * reliable for this specific data source. */
-  function pickCifDeparture(row: ScheduleDepartureRow) {
+  function pickCifDeparture(row: ScheduleDepartureRow, serviceDate: string) {
     if (row.destinationCrs !== null) setDestinationCrs(row.destinationCrs);
     // The CIF SCHEDULE feed has no per-service skip signal at all (Decision
     // 2) -- clears any snapshot a previously-picked LDBWS row may have left
@@ -656,13 +695,8 @@ export function TrackTrainForm({
     setPlatform(null);
     setPlannedPlatform(null);
     const [hh, mm] = row.scheduled.split(':');
-    // `?? 0`: defends against an old `api` pod (a separate Helm Deployment,
-    // rolled independently of `frontend`) omitting `dayOffset` from the JSON
-    // entirely during a rollout, which would otherwise reach dayjs as
-    // `undefined` and produce an Invalid Date.
-    const date = nowInLondon()
-      .add(row.dayOffset ?? 0, 'day')
-      .format('YYYY-MM-DD');
+    // `?? 0`: an older `api` pod omits `dayOffset` (see the field's doc).
+    const date = addCalendarDays(serviceDate, row.dayOffset ?? 0);
     setScheduledDeparture(`${date} ${hh}:${mm}:00`);
   }
 
@@ -1079,10 +1113,11 @@ export function TrackTrainForm({
     // picker.source === 'cif' -- Operator never filters this source
     // (Decision 1's CIF/Operator asymmetry): `matchesOperator` is simply
     // never called here.
+    const { serviceDate } = picker;
     const filtered = picker.rows.filter(
       (row) =>
         matchesDestination(row.destinationCrs, destinationCrs) &&
-        matchesScheduledDeparture(row.scheduled, scheduledDeparture, row.dayOffset),
+        matchesScheduledDeparture(row.scheduled, scheduledDeparture, row.dayOffset, serviceDate),
     );
     return (
       <>
@@ -1106,9 +1141,9 @@ export function TrackTrainForm({
                 wrap="nowrap"
                 role="button"
                 tabIndex={0}
-                onClick={() => pickCifDeparture(row)}
+                onClick={() => pickCifDeparture(row, serviceDate)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row);
+                  if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row, serviceDate);
                 }}
                 style={{ cursor: 'pointer' }}
               >
@@ -1147,21 +1182,19 @@ export function TrackTrainForm({
                     remains a normal, independently tab-reachable focus
                     stop -- only the *bubbling into the row* is stopped.
 
-                    The linked date is `row.dayOffset` days past today, not
-                    a single hoisted "today" shared by every row -- the
-                    public train page is keyed by `(train_uid,
-                    service_date)`, and a post-midnight row's real
-                    service_date is tomorrow, not today (same reasoning as
-                    `pickCifDeparture` itself). `nowInLondon()`, not
-                    `dayjs()` -- `service_date` is a London calendar day, so
-                    "today" here must mean London's, not the visitor's own
-                    browser zone (2026-09-26 review, finding M8: this is the
-                    exact `/train/{uid}/{date}` link that finding's own
-                    motivating example describes). */}
+                    The linked date is the picker's `serviceDate` for EVERY
+                    row, with no `row.dayOffset` added: the public train
+                    page is keyed by `(train_uid, service_date)`, the CIF
+                    date the service left its origin, and `dayOffset` only
+                    moves a row's departure past midnight, never its
+                    service date. A service leaving its origin at 23:30 on
+                    D and calling here at 00:20 (`dayOffset: 1`) is D's
+                    run; D+1 would be the next night's run of the same uid,
+                    or a 404. `serviceDate` is a London date captured at
+                    fetch time (2026-09-26 review, finding M8; see
+                    `Picker`). */}
                 <TextLink
-                  href={`/train/${encodeURIComponent(row.uid)}/${nowInLondon()
-                    .add(row.dayOffset ?? 0, 'day')
-                    .format('YYYY-MM-DD')}`}
+                  href={`/train/${encodeURIComponent(row.uid)}/${serviceDate}`}
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
