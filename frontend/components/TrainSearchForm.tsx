@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type SubmitEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
@@ -388,7 +388,7 @@ export function TrainSearchForm({
         setResults('error');
         return;
       }
-      const body: TrainSearchResponse = await response.json();
+      const body = (await response.json()) as TrainSearchResponse;
       setResults({
         rows: body.results,
         nextCursor: body.nextCursor,
@@ -402,7 +402,7 @@ export function TrainSearchForm({
     }
   }
 
-  async function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     if (!canSearch) return;
     // Keep this /trains history entry's URL in sync with the last search
@@ -488,7 +488,7 @@ export function TrainSearchForm({
         setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
-      const body: TrainSearchResponse = await response.json();
+      const body = (await response.json()) as TrainSearchResponse;
       setResults((current) =>
         current === pagedFrom
           ? {

@@ -285,7 +285,7 @@ export function TicketEntryForm({
       });
 
       if (response.ok) {
-        const created: TicketCreatedResponse = await response.json();
+        const created = (await response.json()) as TicketCreatedResponse;
         if (trackingId === undefined) {
           // No tracked train exists for this ticket yet -- extraction can
           // never recover a date/time (see `ticket_extraction.rs`'s module

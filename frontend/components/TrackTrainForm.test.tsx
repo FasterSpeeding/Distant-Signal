@@ -70,7 +70,7 @@ function journeyCallBody(fetchMock: ReturnType<typeof vi.fn>) {
   const call = fetchMock.mock.calls.find((args: unknown[]) => args[0] === '/api/Journeys');
   if (!call) throw new Error('no /api/Journeys call recorded');
   const [, init] = call as [string, RequestInit];
-  return JSON.parse(init!.body as string);
+  return JSON.parse(init.body as string);
 }
 
 const pushMock = vi.fn();
@@ -199,7 +199,7 @@ describe('TrackTrainForm', () => {
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" initialDestination="RDG" initialDepartAfter="08:00" />);
     // Judgment Call 4: no initialServiceDate/initialScheduledDeparture prop
     // exists at all -- "again" never carries the old date/time forward.
-    const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+    const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
     expect(picker.value).not.toBe('');
   });
 
@@ -231,7 +231,7 @@ describe('TrackTrainForm', () => {
     // bare `dayjs()`'s host zone -- 2026-09-26 review, finding M8), not a
     // fuzzy "close to now" check.
     renderWithMantine(<TrackTrainForm />);
-    const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+    const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
     expect(picker.value).toBe(nowInLondon().format('YYYY-MM-DD HH:mm:ss'));
   });
 
@@ -643,7 +643,7 @@ describe('TrackTrainForm', () => {
       vi.stubGlobal('fetch', fetchMock);
 
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
-      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
       expect(picker.value).toBe('2026-09-05 17:30:00');
 
       fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
@@ -661,7 +661,7 @@ describe('TrackTrainForm', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Now' }));
 
-    const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+    const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
     // 'YYYY-MM-DD HH:mm:ss', not an ISO string -- matching the exact shape
     // the real DateTimePicker produces (see this component's own
     // handleSubmit comment on why that distinction matters).
@@ -986,7 +986,7 @@ describe('TrackTrainForm', () => {
       // `handleSubmit`'s own explicit checks all pass and it calls
       // `submitWindow`.
       fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
-      const departFromInput = screen.getByLabelText('Earliest departure (optional)') as HTMLInputElement;
+      const departFromInput = screen.getByLabelText<HTMLInputElement>('Earliest departure (optional)');
       // Simulate a native `<input type="time">` mid-entry on a DIFFERENT
       // field: `validity.badInput` true -- see `TimeFilterInput`'s own doc
       // comment on why a half-entered time reports this way, and
@@ -1246,7 +1246,7 @@ describe('TrackTrainForm', () => {
 
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('BSK');
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('SW');
-      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
       expect(picker.value).toBe(`${today} 10:40:00`);
     });
 
@@ -1374,7 +1374,7 @@ describe('TrackTrainForm', () => {
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(row);
 
-        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
         expect(picker.value).toBe(`${today} 10:15:00`);
       });
 
@@ -1394,7 +1394,7 @@ describe('TrackTrainForm', () => {
         const tomorrow = nowInLondon().add(1, 'day').format('YYYY-MM-DD');
         fireEvent.click(row);
 
-        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
         expect(picker.value).toBe(`${tomorrow} 00:07:00`);
       });
 
@@ -1435,7 +1435,7 @@ describe('TrackTrainForm', () => {
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(row);
 
-        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
         expect(picker.value).toBe(`${today} 06:01:00`);
       });
 
@@ -1456,7 +1456,7 @@ describe('TrackTrainForm', () => {
         const tomorrow = nowInLondon().add(1, 'day').format('YYYY-MM-DD');
         fireEvent.click(row);
 
-        const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+        const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
         expect(picker.value).toBe(`${tomorrow} 05:59:00`);
       });
     });
@@ -1480,7 +1480,7 @@ describe('TrackTrainForm', () => {
 
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('BSK');
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('SW');
-      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
       expect(picker.value).toMatch(/^\d{4}-\d{2}-\d{2} 10:40:00$/);
     });
 
@@ -1604,7 +1604,7 @@ describe('TrackTrainForm', () => {
 
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('CRE');
       expect(screen.getByRole('combobox', { name: /Operator/ })).toHaveValue('');
-      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
       expect(picker.value).toBe(`${today} 08:22:00`);
     });
 
@@ -1623,7 +1623,7 @@ describe('TrackTrainForm', () => {
       fireEvent.click(row);
 
       expect(destinationField).toHaveValue('EXISTING');
-      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
       expect(picker.value).toMatch(/09:00:00$/);
     });
 
@@ -1663,7 +1663,7 @@ describe('TrackTrainForm', () => {
       const tomorrow = nowInLondon().add(1, 'day').format('YYYY-MM-DD');
       fireEvent.click(row);
 
-      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
       expect(picker.value).toBe(`${tomorrow} 00:07:00`);
 
       fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
@@ -1886,7 +1886,7 @@ describe('TrackTrainForm', () => {
       // pickCifDeparture would have filled Destination/Scheduled-departure
       // from this row -- it must not have run.
       expect(screen.getByRole('combobox', { name: /Destination station/ })).toHaveValue('');
-      const picker = screen.getByLabelText(/Scheduled departure/) as HTMLInputElement;
+      const picker = screen.getByLabelText<HTMLInputElement>(/Scheduled departure/);
       expect(picker.value).toBe(nowInLondon().format('YYYY-MM-DD HH:mm:ss'));
     });
 
@@ -1994,7 +1994,7 @@ describe('TrackTrainForm', () => {
         for (
           let node: HTMLElement | null = list as HTMLElement;
           node !== null;
-          node = node === form ? null : (node.parentElement as HTMLElement | null)
+          node = node === form ? null : node.parentElement
         ) {
           // Mantine's own scroll viewport, whatever set it up.
           expect(node.hasAttribute('data-scrollarea-viewport')).toBe(false);
@@ -2057,7 +2057,7 @@ describe('TrackTrainForm', () => {
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(last);
 
-        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(`${today} 10:55:00`);
+        expect(screen.getByLabelText<HTMLInputElement>(/Scheduled departure/).value).toBe(`${today} 10:55:00`);
       });
 
       it('LDBWS: that same row is still selectable by keyboard (Enter on the focused row)', async () => {
@@ -2077,7 +2077,7 @@ describe('TrackTrainForm', () => {
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.keyDown(last, { key: 'Enter' });
 
-        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(`${today} 10:55:00`);
+        expect(screen.getByLabelText<HTMLInputElement>(/Scheduled departure/).value).toBe(`${today} 10:55:00`);
       });
 
       it('CIF: the last row is in the same in-flow list, under no clipping ancestor, and still selectable', async () => {
@@ -2100,7 +2100,7 @@ describe('TrackTrainForm', () => {
 
         const today = nowInLondon().format('YYYY-MM-DD');
         fireEvent.click(last);
-        expect((screen.getByLabelText(/Scheduled departure/) as HTMLInputElement).value).toBe(`${today} 10:55:00`);
+        expect(screen.getByLabelText<HTMLInputElement>(/Scheduled departure/).value).toBe(`${today} 10:55:00`);
       });
     });
   });

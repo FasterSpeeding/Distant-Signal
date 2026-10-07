@@ -88,7 +88,7 @@ export class BrowserMcpOAuthProvider implements OAuthClientProvider {
    * Registration and a fresh authorization rather than sending the browser
    * to `/authorize` with a `client_id` the server will 400. */
   clientInformation(): OAuthClientInformationFull | undefined {
-    const info = readJson<OAuthClientInformationFull>(CLIENT_INFO_KEY);
+    const info = readJson(CLIENT_INFO_KEY) as OAuthClientInformationFull | undefined;
     if (info && this.isStale(info)) {
       this.invalidateCredentials('client');
       this.invalidateCredentials('tokens');
@@ -159,7 +159,7 @@ export class BrowserMcpOAuthProvider implements OAuthClientProvider {
   }
 
   tokens(): OAuthTokens | undefined {
-    return readJson<OAuthTokens>(TOKENS_KEY);
+    return readJson(TOKENS_KEY) as OAuthTokens | undefined;
   }
 
   saveTokens(tokens: OAuthTokens): void {
@@ -225,11 +225,11 @@ export class BrowserMcpOAuthProvider implements OAuthClientProvider {
   }
 }
 
-function readJson<T>(key: string): T | undefined {
+function readJson(key: string): unknown {
   const raw = localStorage.getItem(key);
   if (!raw) return undefined;
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(raw);
   } catch {
     return undefined;
   }

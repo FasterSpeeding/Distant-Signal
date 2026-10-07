@@ -215,7 +215,7 @@ export function PlanTripFlow({
       if (!createResponse.ok) {
         throw new Error(await createResponse.text());
       }
-      const created: CreateJourneyResponse = await createResponse.json();
+      const created = (await createResponse.json()) as CreateJourneyResponse;
 
       for (let i = 1; i < trainLegs.length; i += 1) {
         const leg = trainLegs[i]!;
@@ -314,6 +314,7 @@ export function PlanTripFlow({
           {planError}
         </Alert>
       )}
+      {/* eslint-disable-next-line @typescript-eslint/prefer-optional-chain -- `plan?.segments.map` re-indents this whole block, which the planner work in flight is editing; switch once that lands */}
       {plan &&
         plan.segments.map((segment, segmentIndex) => {
           // Computed once per segment -- reused for both the heading and

@@ -10,7 +10,7 @@ import { LEGAL_CONFIG, legalPagesMode } from '@/lib/legal';
 export function requireLegalPages(): 'preview' | 'published' {
   const mode = legalPagesMode();
   if (mode === 'off') notFound();
-  return mode as 'preview' | 'published';
+  return mode;
 }
 
 /** Max width of a long reading page: the legal pages and `/attribution`

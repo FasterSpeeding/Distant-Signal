@@ -217,7 +217,7 @@ describe('fetchTripPlan', () => {
 
   it('returns the parsed response on success', async () => {
     const body = { results: 'fastest', segments: [] };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) } as Response));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) }));
     const result = await fetchTripPlan({
       originCrs: 'EUS',
       destinationCrs: 'MKC',
@@ -235,7 +235,7 @@ describe('fetchTripPlan', () => {
         ok: false,
         status: 404,
         text: () => Promise.resolve('no schedule data published'),
-      } as Response),
+      }),
     );
     await expect(
       fetchTripPlan({
@@ -251,9 +251,7 @@ describe('fetchTripPlan', () => {
   it('still surfaces the backend message verbatim on a 400 (bad CRS/results value)', async () => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve('unknown CRS code') } as Response),
+      vi.fn().mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve('unknown CRS code') }),
     );
     await expect(
       fetchTripPlan({
@@ -281,7 +279,7 @@ describe('fetchTripPlan', () => {
         ok: false,
         status: 503,
         text: () => Promise.resolve('{"error":"service_unavailable","retryable":true}'),
-      } as Response),
+      }),
     );
     const promise = fetchTripPlan({
       originCrs: 'EUS',
@@ -301,7 +299,7 @@ describe('fetchTripPlan', () => {
         ok: false,
         status: 500,
         text: () => Promise.resolve('<html>Internal Server Error</html>'),
-      } as Response),
+      }),
     );
     const promise = fetchTripPlan({
       originCrs: 'EUS',

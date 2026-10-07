@@ -135,7 +135,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
     customLineReports = await getLineStatus(
       customLines.map((l) => l.lineId),
       false,
-    ).catch((err) => {
+    ).catch((err: unknown) => {
       if (err instanceof ApiNotFoundError) return [];
       throw err;
     });

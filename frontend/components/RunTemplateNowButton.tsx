@@ -79,7 +79,7 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
         setSubmitting(false);
         return;
       }
-      const result: MaterializeTemplateResponse = await response.json();
+      const result = (await response.json()) as MaterializeTemplateResponse;
       setSubmitting(false);
       close();
       router.push(`/journeys/${result.journeyId}`);

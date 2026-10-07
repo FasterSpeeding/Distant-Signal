@@ -16,7 +16,7 @@ export async function register(): Promise<void> {
 /** Every uncaught server error (render, route handler, server action,
  * proxy), as one structured line with the route it hit. The query string
  * is dropped: it can carry share/invite tokens. */
-export const onRequestError: Instrumentation.onRequestError = async (error, request, context) => {
+export const onRequestError: Instrumentation.onRequestError = (error, request, context) => {
   log.error('unhandled error handling a request', {
     error,
     method: request.method,

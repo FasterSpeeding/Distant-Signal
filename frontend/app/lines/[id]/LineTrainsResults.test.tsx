@@ -389,7 +389,7 @@ describe('LineTrainsResults', () => {
       `/lines/${ID}#trains`,
     );
     // The picker is a plain GET form with the line's stations.
-    const from = screen.getByLabelText('From') as HTMLSelectElement;
+    const from = screen.getByLabelText<HTMLSelectElement>('From');
     expect(from.form?.getAttribute('method')).toBe('get');
     expect(from.value).toBe('WOK');
     expect([...from.options].map((o) => o.value)).toContain('WEY');

@@ -14,7 +14,7 @@ chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 common = { path = "../common", features = ["postgres", "redis"] }
-dotenv = "0.15.0"
+dotenvy = "0.15.7"
 # Explicit, not merely transitive-via-`pdf-extract`/`lopdf`/`zip`: used
 # directly by `ticket_extraction::reject_pdf_compression_bombs` to run our
 # OWN bounded zlib decompression pass over a candidate PDF, ahead of

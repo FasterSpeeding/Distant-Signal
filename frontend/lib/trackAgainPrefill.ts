@@ -91,7 +91,7 @@ export function trackAgainPrefill(journey: JourneyDetail): TrackAgainPrefill | n
  * URL honest and short rather than papering it with empty `=`s. */
 export function trackAgainHref(journey: JourneyDetail): string | null {
   const prefill = trackAgainPrefill(journey);
-  if (!prefill || !prefill.origin) return null;
+  if (!prefill?.origin) return null;
 
   const params = new URLSearchParams();
   params.set('mode', prefill.mode);

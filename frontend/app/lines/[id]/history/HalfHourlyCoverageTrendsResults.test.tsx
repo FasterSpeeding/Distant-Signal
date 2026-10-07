@@ -16,14 +16,14 @@ vi.mock('@/lib/api');
 // of `@mantine/charts`' LineChart -- see that file's comment for the full
 // reasoning. `xAxisProps` is captured too so the `granularity="halfHour"`
 // tickFormatter can be asserted on directly.
-type MockLineChartProps = {
+interface MockLineChartProps {
   data: unknown[];
   series: { name: string; strokeDasharray?: string | number }[];
   connectNulls?: boolean;
   withLegend?: boolean;
   valueFormatter?: (value: number) => string;
   xAxisProps?: { padding?: unknown; tickFormatter?: (value: string) => string };
-};
+}
 
 const lineChartMock = vi.fn((props: MockLineChartProps) => (
   <div

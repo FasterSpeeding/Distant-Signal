@@ -63,7 +63,7 @@ const NO_INCOMPLETE_TIMES: LegIncompleteFlags = {
 /** Mon=bit 0 (value 1) .. Sun=bit 6 (value 64), mirroring the backend's
  * own `weekday_bit`/`due_templates_for` convention
  * (`chrono::Weekday::num_days_from_monday()`-based). */
-const DAYS: Array<{ key: string; label: string; bit: number }> = [
+const DAYS: { key: string; label: string; bit: number }[] = [
   { key: 'mon', label: 'Mon', bit: 1 },
   { key: 'tue', label: 'Tue', bit: 2 },
   { key: 'wed', label: 'Wed', bit: 4 },
@@ -151,8 +151,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
     // its old slot -- the whole point of keying this map by a stable `key`
     // instead of position.
     setIncompleteByLeg((current) => {
-      const next = { ...current };
-      delete next[key];
+      const { [key]: _removed, ...next } = current;
       return next;
     });
   }
@@ -259,7 +258,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
           value={matchMode}
           onChange={(value) => {
             setSaved(false);
-            setMatchMode(value as 'manual' | 'auto');
+            setMatchMode(value);
           }}
           data={[
             { label: "Remind me, don't guess", value: 'manual' },

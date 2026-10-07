@@ -111,7 +111,7 @@ export function PinToggle({
         }
         return;
       }
-      const prefs: Preferences = await prefsResponse.json();
+      const prefs = (await prefsResponse.json()) as Preferences;
       let key: keyof Preferences;
       let endpoint: string;
       if (kind === 'line') {

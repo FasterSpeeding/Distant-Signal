@@ -61,7 +61,7 @@ export function SaveAsTemplateButton({ journeyId }: { journeyId: number }) {
         setSubmitting(false);
         return;
       }
-      const result: CreateJourneyTemplateResponse = await response.json();
+      const result = (await response.json()) as CreateJourneyTemplateResponse;
       setSubmitting(false);
       close();
       router.push(`/journeys/templates/${result.templateId}`);

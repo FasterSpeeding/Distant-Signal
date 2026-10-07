@@ -183,6 +183,8 @@ export function JourneyLegCandidates({
     if (committedOperator) params.set('operator', committedOperator);
     const query = params.toString();
     fetch(`/api/Journeys/${journeyId}/legs/${legId}/candidates${query ? `?${query}` : ''}`)
+      // The catch below tells a 401 apart by rejecting with the Response itself.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- see above
       .then((res) => (res.ok ? res.json() : Promise.reject(res)))
       .then((body: CandidatesResponse) => {
         if (!cancelled) setResults({ rows: body.results, nextCursor: body.nextCursor, loadMoreFailed: false });
@@ -238,7 +240,7 @@ export function JourneyLegCandidates({
         setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
-      const body: CandidatesResponse = await response.json();
+      const body = (await response.json()) as CandidatesResponse;
       setResults((current) =>
         current === pagedFrom
           ? { rows: [...current.rows, ...body.results], nextCursor: body.nextCursor, loadMoreFailed: false }

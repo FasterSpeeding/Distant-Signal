@@ -195,7 +195,7 @@ export function AddJourneyLegButton({
       // comment) -- the default path still just confirms success and lets
       // `router.refresh()` re-pull `GET /Journeys/{id}` server-side, same
       // convention as `AddTrainToGroupButton.tsx`.
-      const result: AddJourneyLegResponse = await response.json();
+      const result = (await response.json()) as AddJourneyLegResponse;
       setSubmitting(false);
       close();
       if (onAdded) {
@@ -225,7 +225,7 @@ export function AddJourneyLegButton({
               than the reverse. */}
           <SegmentedControl
             value={mode}
-            onChange={(value) => setMode(value as LegMode)}
+            onChange={(value) => setMode(value)}
             data={[
               { label: 'Search a time window', value: 'window' },
               { label: 'I know the train', value: 'knownTrain' },

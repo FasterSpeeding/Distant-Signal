@@ -87,8 +87,7 @@ export function trainLegsForTracking(itineraries: TripPlanItinerary[]): TrainLeg
       if (
         index === 0 &&
         itinerary.continuesPreviousTrain &&
-        previous &&
-        previous.trainUid === leg.trainUid &&
+        previous?.trainUid === leg.trainUid &&
         previous.serviceDate === leg.serviceDate
       ) {
         legs[legs.length - 1] = {
@@ -151,5 +150,5 @@ export async function fetchTripPlan(query: TripPlanQuery): Promise<TripPlanRespo
     }
     throw new TripPlanError(body || 'Could not plan this trip.', response.status);
   }
-  return response.json();
+  return (await response.json()) as TripPlanResponse;
 }

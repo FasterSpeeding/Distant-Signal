@@ -100,7 +100,7 @@ async fn main() -> std::process::ExitCode {
     reason = "parse_check_times guarantees a non-empty list"
 )]
 async fn run() -> anyhow::Result<()> {
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
 
     common::logging::init("schedule-ingest");
 

@@ -374,7 +374,9 @@ function AccessibilityNodeView({ node, label, path }: { node: AccessibilityNode;
       // Counted from what will actually be shown, not from the source
       // array's length: an item that renders to nothing is dropped, and a
       // control reading "2 items" over one visible block would be a lie.
-      const visible = node.items.filter((item) => item.label.trim() !== '' || item.link || !isEmptyNode(item.body));
+      const visible = node.items.filter(
+        (item) => item.label.trim() !== '' || item.link !== undefined || !isEmptyNode(item.body),
+      );
       const items = (
         <Stack gap="sm">
           {visible.map((item, index) => (

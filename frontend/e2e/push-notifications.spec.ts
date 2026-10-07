@@ -36,7 +36,7 @@ import type { Page, Worker } from '@playwright/test';
 // notification object specifically, not for sw.js's own listener code,
 // which still runs for real.
 
-type SwScope = {
+interface SwScope {
   registration: { showNotification: (title: string, options?: unknown) => Promise<void> };
   clients: {
     matchAll: () => Promise<unknown[]>;
@@ -50,7 +50,7 @@ type SwScope = {
   };
   location: Location;
   dispatchEvent: (event: Event) => boolean;
-};
+}
 
 async function getServiceWorker(page: Page): Promise<Worker> {
   const context = page.context();

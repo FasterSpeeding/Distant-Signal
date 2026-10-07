@@ -34,7 +34,7 @@ beforeEach(() => {
     ok: true,
     status: 200,
     json: () => Promise.resolve({ results: [], nextCursor: null }),
-  } as Response);
+  });
 });
 
 afterEach(() => {

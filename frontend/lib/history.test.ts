@@ -10,7 +10,7 @@ import {
 } from './history';
 import type { LineStatusHistoryEntry } from './types';
 
-function entry(computedAt: string, statuses: Array<[number, string]>): LineStatusHistoryEntry {
+function entry(computedAt: string, statuses: [number, string][]): LineStatusHistoryEntry {
   return {
     $type: 'DistantSignal.LineStatusReport',
     id: 'northern',

@@ -46,7 +46,7 @@ export function AddTrainToGroupButton({
         setLoading(false);
         return;
       }
-      const all: TrackedTrainListItem[] = await response.json();
+      const all = (await response.json()) as TrackedTrainListItem[];
       setTrains(all.filter((t) => !excludeTrainSubscriptionIds.includes(t.id)));
       setLoading(false);
     } catch {

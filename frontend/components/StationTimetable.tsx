@@ -133,7 +133,7 @@ export function StationTimetable({ crs }: { crs: string }) {
         setResults('error');
         return;
       }
-      const body: TrainSearchResponse = await response.json();
+      const body = (await response.json()) as TrainSearchResponse;
       if (controller.signal.aborted) return;
       setResults({ rows: body.results, nextCursor: body.nextCursor, loadMoreFailed: false });
     } catch {
@@ -160,7 +160,7 @@ export function StationTimetable({ crs }: { crs: string }) {
         setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: true } : current));
         return;
       }
-      const body: TrainSearchResponse = await response.json();
+      const body = (await response.json()) as TrainSearchResponse;
       if (controller.signal.aborted) return;
       setResults((current) =>
         hasRows(current)

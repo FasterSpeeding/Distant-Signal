@@ -196,7 +196,7 @@ describe('TicketEntryForm', () => {
       expect(fetch).toHaveBeenCalledWith('/api/Train/1/tickets', expect.objectContaining({ method: 'POST' }));
     });
     const [, init] = findFetchCall('/api/Train/1/tickets');
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ operator: 'LNER', source: 'manual' });
+    expect(JSON.parse(init.body as string)).toEqual({ operator: 'LNER', source: 'manual' });
     await waitFor(() => expect(refreshMock).toHaveBeenCalled());
     expect(screen.getByRole('button', { name: 'Add a ticket for this journey' })).toBeInTheDocument();
   });
@@ -498,7 +498,7 @@ describe('TicketEntryForm', () => {
 
     await waitFor(() => {
       const [, init] = findFetchCall('/api/Train/1/tickets');
-      const body = JSON.parse((init as RequestInit).body as string);
+      const body = JSON.parse(init.body as string);
       expect(body.source).toBe('pkpass-heuristic');
       expect(body.origin_crs).toBe('KGX');
     });

@@ -844,8 +844,8 @@ describe('computeAtAGlance (review §3.5.3)', () => {
   it('never throws on a malformed shape for any of its fields', () => {
     expect(() =>
       computeAtAGlance({
-        stationAccessibility: 'not an object' as never,
-        lifts: null as never,
+        stationAccessibility: 'not an object',
+        lifts: null,
         carParks: [1, 2, 3] as never,
       }),
     ).not.toThrow();

@@ -36,7 +36,7 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
     unobserve = vi.fn();
     disconnect = vi.fn();
   }
-  window.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+  window.ResizeObserver = ResizeObserverStub;
 }
 
 // jsdom doesn't implement `scrollIntoView`, but Mantine's Combobox
@@ -76,21 +76,21 @@ if (typeof window !== 'undefined' && !window.Element.prototype.scrollTo) {
 // `--localstorage-file` is given, and it shadows jsdom's -- so the guard was
 // false, the polyfill was skipped, and every test touching storage threw.
 if (typeof window !== 'undefined') {
-  const store: Record<string, string> = {};
+  const store = new Map<string, string>();
   const storage = {
     getItem(key: string) {
-      return store[key] ?? null;
+      return store.get(key) ?? null;
     },
     setItem(key: string, value: string) {
-      store[key] = String(value);
+      // Storage coerces any value to a string at runtime; so does this.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-conversion -- `value` is only a string by type
+      store.set(key, String(value));
     },
     removeItem(key: string) {
-      delete store[key];
+      store.delete(key);
     },
     clear() {
-      for (const key of Object.keys(store)) {
-        delete store[key];
-      }
+      store.clear();
     },
   };
   for (const target of new Set<object>([window, globalThis])) {
