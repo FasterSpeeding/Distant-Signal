@@ -142,13 +142,14 @@ describe('OpenDataAttribution', () => {
   it('shows the legal page links once the legal pages are published', () => {
     vi.mocked(legal.legalPagesVisible).mockReturnValue(true);
     renderWithMantine(<OpenDataAttribution />);
-    for (const [name, href] of [
+    const links: [name: string, href: string][] = [
       ['Privacy', '/privacy'],
       ['Terms', '/terms'],
       ['Cookies', '/cookies'],
       ['Contact', '/contact'],
       ['Accessibility', '/accessibility'],
-    ]) {
+    ];
+    for (const [name, href] of links) {
       expect(screen.getByRole('link', { name })).toHaveAttribute('href', href);
     }
   });

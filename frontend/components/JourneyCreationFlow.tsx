@@ -61,9 +61,9 @@ export function JourneyCreationFlow({
   planQuery,
 }: {
   planOnly?: boolean;
-  planOrigin?: string;
+  planOrigin?: string | undefined;
   /** `/plan` only: the search its URL restores (`lib/tripPlanUrl.ts`). */
-  planQuery?: PlanFormInitial;
+  planQuery?: PlanFormInitial | undefined;
 } = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
   const [journey, setJourney] = useState<JourneyDetail | null>(null);

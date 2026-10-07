@@ -758,8 +758,8 @@ export type ServiceMode = 'train' | 'replacementBus' | 'bus' | 'ferry';
  * which means a train. `liveTracking` is `false` exactly when
  * `serviceMode` is not `train`. See `lib/serviceMode.ts`. */
 export interface ServiceModeFields {
-  serviceMode?: ServiceMode | null;
-  liveTracking?: boolean | null;
+  serviceMode?: ServiceMode | null | undefined;
+  liveTracking?: boolean | null | undefined;
 }
 
 export interface TrackedTrainState extends TrainJourneyState {
@@ -1132,7 +1132,7 @@ export type TripPlanLeg =
       // CIF booked (timetabled) platform at the boarding / alighting calling
       // point -- never live/Darwin. `null` when the CIF field is blank.
       bookedDeparturePlatform?: string | null;
-      bookedArrivalPlatform?: string | null;
+      bookedArrivalPlatform?: string | null | undefined;
       // The schedule's CIF `BX` ATOC operator code (e.g. "SW"); `null` when
       // unknown.
       operator?: string | null;
@@ -1665,14 +1665,14 @@ export type DelayRepayOutcome = 'arrived' | 'departedOnly' | 'notReached';
  * backend. */
 export interface DelayRepayExtraFields {
   /** `measuredAtCrs`'s station name, when known. */
-  measuredAtName?: string | null;
-  outcome?: DelayRepayOutcome | null;
+  measuredAtName?: string | null | undefined;
+  outcome?: DelayRepayOutcome | null | undefined;
   /** The operator runs its own compensation scheme: no percentage. */
-  ownScheme?: boolean;
+  ownScheme?: boolean | undefined;
   /** The scheme's operator name, when it is one the rules know. */
-  schemeOperator?: string | null;
+  schemeOperator?: string | null | undefined;
   /** When the rules were last checked, `YYYY-MM-DD`. */
-  rulesCheckedOn?: string;
+  rulesCheckedOn?: string | undefined;
 }
 
 /** `GET .../tickets/{ticketId}/delay-repay`'s response. `claimUrl` and the
@@ -1689,9 +1689,9 @@ export interface DelayRepayEstimateResponse extends DelayRepayExtraFields {
    * destination): final once the train has arrived there, projected before
    * (`provisional`). */
   delayMinutes: number | null;
-  provisional?: boolean;
-  delayBasis?: DelayBasis | null;
-  measuredAtCrs?: string | null;
+  provisional?: boolean | undefined;
+  delayBasis?: DelayBasis | null | undefined;
+  measuredAtCrs?: string | null | undefined;
   estimate: DelayRepayEstimate | null;
   claimUrl: string;
   disclaimer: string;

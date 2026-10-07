@@ -233,15 +233,15 @@ export function TrainSearchForm({
   initialArrivalTo = '',
   attachTicketId,
 }: {
-  initialStation?: string;
-  initialOrigin?: string;
-  initialStopsAt?: string;
-  initialDate?: string;
-  initialFrom?: string;
-  initialTo?: string;
-  initialArrivalFrom?: string;
-  initialArrivalTo?: string;
-  attachTicketId?: number;
+  initialStation?: string | undefined;
+  initialOrigin?: string | undefined;
+  initialStopsAt?: string | undefined;
+  initialDate?: string | undefined;
+  initialFrom?: string | undefined;
+  initialTo?: string | undefined;
+  initialArrivalFrom?: string | undefined;
+  initialArrivalTo?: string | undefined;
+  attachTicketId?: number | undefined;
 }) {
   const router = useRouter();
   const pathname = usePathname();

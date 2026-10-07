@@ -87,14 +87,21 @@ export function JourneyStatusBadge({ legs }: { legs: JourneyLegDetail[] }) {
     const unmatchedLegs = legs.filter((leg) => leg.trackedTrainState === null);
     const firstUnmatchedLegId = unmatchedLegs[0]?.id;
     const label = unmatchedLegs.length === 1 ? '1 leg needs a train' : `${unmatchedLegs.length} legs need a train`;
+    if (firstUnmatchedLegId === undefined) {
+      return (
+        <Badge color={COLOR.unmatched} variant="light" tt="none">
+          {label}
+        </Badge>
+      );
+    }
     return (
       <Badge
-        component={firstUnmatchedLegId !== undefined ? 'a' : undefined}
-        href={firstUnmatchedLegId !== undefined ? `#leg-${firstUnmatchedLegId}` : undefined}
+        component="a"
+        href={`#leg-${firstUnmatchedLegId}`}
         color={COLOR.unmatched}
         variant="light"
         tt="none"
-        style={firstUnmatchedLegId !== undefined ? { cursor: 'pointer' } : undefined}
+        style={{ cursor: 'pointer' }}
       >
         {label}
       </Badge>

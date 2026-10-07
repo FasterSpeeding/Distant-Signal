@@ -27,7 +27,10 @@ export function incidentIdFromSource(source: string | null | undefined): string 
  * exactly as before. */
 export type IncidentState = 'active' | 'cleared' | 'ended';
 
-export function incidentState(incident: { isCleared: boolean; sourceRemovedAt?: string | null }): IncidentState {
+export function incidentState(incident: {
+  isCleared: boolean;
+  sourceRemovedAt?: string | null | undefined;
+}): IncidentState {
   if (incident.isCleared) return 'cleared';
   if (incident.sourceRemovedAt) return 'ended';
   return 'active';

@@ -71,7 +71,6 @@ describe('OperatorStatusCard', () => {
       lineIds: ['elizabeth'],
       worstSeverity: 10,
       reason: '',
-      sampleStats: undefined,
       computedAt: '2026-07-15T09:00:00Z',
     };
     renderWithMantine(<OperatorStatusCard operator={tflOperator} pinned={false} />);

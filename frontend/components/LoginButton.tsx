@@ -16,7 +16,7 @@ import { LoginConsentNote } from './LoginConsentNote';
  * (`app/groups/join/[token]/page.tsx`, `app/groups/page.tsx`,
  * `app/account/page.tsx`) -- all Server Components, none of which can call
  * `useLoginHref` directly. */
-function LoginButtonLink({ children, title }: { children: React.ReactNode; title?: string }) {
+function LoginButtonLink({ children, title }: { children: React.ReactNode; title?: string | undefined }) {
   const href = useLoginHref();
   return (
     <Link href={href} style={{ textDecoration: 'none' }} prefetch={false}>
@@ -51,7 +51,7 @@ function LoginButtonLink({ children, title }: { children: React.ReactNode; title
  * control is unchanged by this task, out of its stated blast radius, but
  * the wording convention is reused here for the new call sites this task
  * does own). */
-export function LoginButton({ children, title }: { children: React.ReactNode; title?: string }) {
+export function LoginButton({ children, title }: { children: React.ReactNode; title?: string | undefined }) {
   return (
     <Stack gap={4}>
       <Suspense

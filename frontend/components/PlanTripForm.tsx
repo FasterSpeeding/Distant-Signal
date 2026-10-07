@@ -102,10 +102,10 @@ export function PlanTripForm({
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
   /** The From field's starting value; only read on mount. */
-  initialOriginCrs?: string;
+  initialOriginCrs?: string | undefined;
   /** A restored search (`/plan`'s own query string, `lib/tripPlanUrl.ts`);
    * only read on mount. Its `originCrs` wins over `initialOriginCrs`. */
-  initial?: PlanFormInitial;
+  initial?: PlanFormInitial | undefined;
 }) {
   const [originCrs, setOriginCrs] = useState(initial.originCrs ?? initialOriginCrs);
   const [destinationCrs, setDestinationCrs] = useState(initial.destinationCrs ?? '');

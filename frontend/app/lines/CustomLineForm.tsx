@@ -195,7 +195,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         onSearchChange={setOperatorsQuery}
         data={operatorSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
         renderPill={({ option, onRemove }) => (
-          <Pill withRemoveButton onRemove={onRemove} title={nameByCode[String(option.value)]}>
+          <Pill withRemoveButton {...(onRemove && { onRemove })} title={nameByCode[String(option.value)]}>
             {option.value}
           </Pill>
         )}
@@ -313,7 +313,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
             onSearchChange={setDestinationQuery}
             data={destinationSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
             renderPill={({ option, onRemove }) => (
-              <Pill withRemoveButton onRemove={onRemove} title={nameByCode[String(option.value)]}>
+              <Pill withRemoveButton {...(onRemove && { onRemove })} title={nameByCode[String(option.value)]}>
                 {option.value}
               </Pill>
             )}

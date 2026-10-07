@@ -9,7 +9,7 @@ import type { NearbyStation, Suggestion } from './types';
  * empty-query short-circuit. */
 export async function searchStations(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
   if (!q.trim()) return [];
-  const response = await fetch(`/api/stations?q=${encodeURIComponent(q)}`, { signal });
+  const response = await fetch(`/api/stations?q=${encodeURIComponent(q)}`, signal ? { signal } : {});
   if (!response.ok) return [];
   return response.json() as Promise<Suggestion[]>;
 }
@@ -21,14 +21,14 @@ export async function searchStations(q: string, signal?: AbortSignal): Promise<S
  * page or board, which a bus stop has none of. */
 export async function searchPlannerLocations(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
   if (!q.trim()) return [];
-  const response = await fetch(`/api/stations?q=${encodeURIComponent(q)}&stops=true`, { signal });
+  const response = await fetch(`/api/stations?q=${encodeURIComponent(q)}&stops=true`, signal ? { signal } : {});
   if (!response.ok) return [];
   return response.json() as Promise<Suggestion[]>;
 }
 
 export async function searchTocs(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
   if (!q.trim()) return [];
-  const response = await fetch(`/api/tocs?q=${encodeURIComponent(q)}`, { signal });
+  const response = await fetch(`/api/tocs?q=${encodeURIComponent(q)}`, signal ? { signal } : {});
   if (!response.ok) return [];
   return response.json() as Promise<Suggestion[]>;
 }
@@ -93,7 +93,7 @@ export async function getStationNames(codes: string[], signal?: AbortSignal): Pr
  * stations, without sending (or logging) a precise location. */
 export async function searchNearbyStations(lat: number, lon: number, signal?: AbortSignal): Promise<NearbyStation[]> {
   const params = new URLSearchParams({ lat: String(roundCoordinate(lat)), lon: String(roundCoordinate(lon)) });
-  const response = await fetch(`/api/stations/nearby?${params.toString()}`, { signal });
+  const response = await fetch(`/api/stations/nearby?${params.toString()}`, signal ? { signal } : {});
   if (!response.ok) {
     throw new Error(`nearby station lookup failed: ${response.status}`);
   }

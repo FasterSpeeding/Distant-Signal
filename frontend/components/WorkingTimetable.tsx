@@ -95,7 +95,7 @@ export function WorkingTimetable({ stops }: { stops: JourneyStop[] }) {
                     return (
                       <TableTr key={`${stop.tiploc ?? stop.crs ?? 'unknown'}-${index}`}>
                         <TableTd>
-                          <Text size="sm" c={passing ? 'dimmed' : undefined} fs={passing ? 'italic' : undefined}>
+                          <Text size="sm" {...(passing && { c: 'dimmed', fs: 'italic' })}>
                             {locationLabel(stop)}
                           </Text>
                         </TableTd>

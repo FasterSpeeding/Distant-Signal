@@ -99,7 +99,7 @@ export function StationListPicker({
   ordered?: boolean;
   /** Whether a bus stop's or ferry terminal's `tiploc:` code may be added. */
   allowStops: boolean;
-  error?: string | null;
+  error?: string | null | undefined;
   /** What one row is, for the buttons' names, e.g. "via" or "avoided station". */
   itemNoun: string;
 }) {

@@ -43,21 +43,21 @@ export interface TripPlanQuery {
   /** Ordered, e.g. `['YRK', 'NCL']` -- entered order, never reordered. */
   waypointCrs: string[];
   date: string; // "YYYY-MM-DD"
-  departAfter?: string; // "HH:MM"
+  departAfter?: string | undefined; // "HH:MM"
   /** "HH:MM"; the backend rejects it together with `departAfter`. */
-  arriveBy?: string;
+  arriveBy?: string | undefined;
   /** Never call at or pass through these stations. */
-  avoidCrs?: string[];
+  avoidCrs?: string[] | undefined;
   /** Pass these, but never call at them. */
-  avoidStopCrs?: string[];
+  avoidStopCrs?: string[] | undefined;
   /** Never board, alight or change at these (staying aboard is fine). */
-  avoidChangeCrs?: string[];
+  avoidChangeCrs?: string[] | undefined;
   /** Pass through these stations, in order, calling there or not. CRS
    * codes only: the API rejects a `tiploc:` via. At most [`MAX_VIAS`]. */
-  viaCrs?: string[];
+  viaCrs?: string[] | undefined;
   /** 0 to [`MAX_CHANGES_LIMIT`]; absent means the API's default
    * ([`DEFAULT_MAX_CHANGES`]). */
-  maxChanges?: number;
+  maxChanges?: number | undefined;
   results: 'fastest' | 'options';
 }
 

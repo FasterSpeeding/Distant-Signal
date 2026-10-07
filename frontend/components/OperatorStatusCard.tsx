@@ -107,7 +107,7 @@ export function OperatorStatusCard({
    * (review M10). Left `undefined` (the default) everywhere else, since
    * `/operators`' own list page has no earlier section to be a duplicate
    * of. */
-  dedupedLineId?: string;
+  dedupedLineId?: string | undefined;
 }) {
   const reasonAlreadyShownAbove =
     dedupedLineId !== undefined && operator.worstLineId !== undefined && dedupedLineId === operator.worstLineId;

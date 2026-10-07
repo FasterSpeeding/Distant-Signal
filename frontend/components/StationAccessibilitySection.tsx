@@ -83,7 +83,15 @@ const DISCLOSURE_STYLES = {
   panel: { paddingInlineStart: 'var(--mantine-spacing-md)' },
 } as const;
 
-function Disclosure({ label, qualifier, children }: { label: string; qualifier?: string; children: React.ReactNode }) {
+function Disclosure({
+  label,
+  qualifier,
+  children,
+}: {
+  label: string;
+  qualifier?: string | undefined;
+  children: React.ReactNode;
+}) {
   return (
     <Accordion chevronPosition="left" keepMounted={false} styles={DISCLOSURE_STYLES}>
       <AccordionItem value="disclosure">
@@ -186,7 +194,7 @@ function isInline(node: AccessibilityNode): boolean {
   return node.kind === 'text' || node.kind === 'sentence' || node.kind === 'link';
 }
 
-function LabelledNodeView({ field, path }: { field: LabelledNode; path?: string }) {
+function LabelledNodeView({ field, path }: { field: LabelledNode; path?: string | undefined }) {
   const childPath = field.label && path ? `${path} ${field.label}` : (field.label ?? path);
   if (!field.label) {
     return <AccessibilityNodeView node={field.node} path={path} />;
@@ -218,7 +226,7 @@ function LabelledNodeView({ field, path }: { field: LabelledNode; path?: string 
   );
 }
 
-function FieldsView({ fields, path }: { fields: LabelledNode[]; path?: string }) {
+function FieldsView({ fields, path }: { fields: LabelledNode[]; path?: string | undefined }) {
   return (
     <Stack gap={4}>
       {fields.map((field, index) => (
@@ -246,7 +254,15 @@ function FieldsView({ fields, path }: { fields: LabelledNode[]; path?: string })
  * put feed-shaped structure into the page outline, and headings arriving
  * *inside* sanitized note copy are demoted to `<p><strong>` by
  * `sanitizeRichText` for the same reason (design §4.7). */
-function AccessibilityNodeView({ node, label, path }: { node: AccessibilityNode; label?: string; path?: string }) {
+function AccessibilityNodeView({
+  node,
+  label,
+  path,
+}: {
+  node: AccessibilityNode;
+  label?: string | undefined;
+  path?: string | undefined;
+}) {
   switch (node.kind) {
     case 'text':
     case 'sentence': {

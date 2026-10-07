@@ -763,8 +763,8 @@ export async function getLineTrainsSummary(
     date: string;
     from?: string;
     to?: string;
-    at?: string;
-    direction?: LineDirection;
+    at?: string | undefined;
+    direction?: LineDirection | undefined;
     scope?: string;
     limit?: number;
   },

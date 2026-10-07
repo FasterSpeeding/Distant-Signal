@@ -29,7 +29,7 @@ export function TrainJourneyPanel({
   suppressTrainUidHeading,
 }: {
   state: TrainJourneyState;
-  suppressTrainUidHeading?: boolean;
+  suppressTrainUidHeading?: boolean | undefined;
 }) {
   return (
     <>

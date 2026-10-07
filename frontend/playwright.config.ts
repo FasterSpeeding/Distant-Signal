@@ -32,11 +32,13 @@ export default defineConfig({
       use: { ...devices['Desktop Firefox'] },
     },
   ],
-  webServer: process.env.E2E_BASE_URL
-    ? undefined
+  ...(process.env.E2E_BASE_URL
+    ? {}
     : {
-        command: 'npm run dev',
-        url: 'http://localhost:3000',
-        reuseExistingServer: !process.env.CI,
-      },
+        webServer: {
+          command: 'npm run dev',
+          url: 'http://localhost:3000',
+          reuseExistingServer: !process.env.CI,
+        },
+      }),
 });

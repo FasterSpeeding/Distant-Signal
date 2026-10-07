@@ -34,7 +34,7 @@ export function LineTrainRow({
   showStrip?: boolean;
   /** The arrival at a picked destination station (`HH:MM`), shown after
    * the destination. */
-  arrival?: string;
+  arrival?: string | undefined;
 }) {
   const minute = lineTimeMinute(train.lineDue);
   const time = timeOverride ?? (minute === null ? '--:--' : formatClock(minute));

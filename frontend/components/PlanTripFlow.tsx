@@ -55,9 +55,9 @@ export function PlanTripFlow({
 }: {
   onCreated: (result: CreateJourneyResponse) => void;
   /** Pre-fills the From field (`/plan?from=CRS`). */
-  initialOriginCrs?: string;
+  initialOriginCrs?: string | undefined;
   /** A search restored from `/plan`'s query string (`lib/tripPlanUrl.ts`). */
-  initialQuery?: PlanFormInitial;
+  initialQuery?: PlanFormInitial | undefined;
   /** `/plan` only: write each search into the address bar
    * (`history.replaceState`, no navigation), so it can be shared and
    * reopens the same form. Off on `/journeys/new`, whose query means

@@ -334,7 +334,7 @@ export function TrackTrainForm({
   initialArriveBefore = '',
   onCreated,
 }: {
-  initialOrigin?: string;
+  initialOrigin?: string | undefined;
   // "Track this journey again" (docs/superpowers/plans/2026-09-22-reusable-journeys-phaseA-track-again-plan.md)
   // is the first caller of these five props -- pre-fills the Destination
   // field (pin mode and window mode read/write the SAME `destinationCrs`
@@ -343,8 +343,8 @@ export function TrackTrainForm({
   // and the window-mode time bounds. All five are inert, ordinary
   // `useState` initial values, same as `initialOrigin` already is -- no
   // new prop changes this component's submit behaviour.
-  initialDestination?: string;
-  attachTicketId?: number;
+  initialDestination?: string | undefined;
+  attachTicketId?: number | undefined;
   // Review §2.1/I21: the mode toggle used to live only in `useState`, so
   // nothing in the app could send a user straight to window mode -- not
   // even `JourneyLegCard`'s own "Edit search" link. `track/page.tsx` reads
@@ -360,13 +360,13 @@ export function TrackTrainForm({
    * pin mode's `scheduledDeparture` is a single full date+time field with
    * its own "now" default, not a bare date, so there is nothing for this
    * prop to feed there. */
-  initialServiceDate?: string;
+  initialServiceDate?: string | undefined;
   /** "HH:MM" -- same value contract `TimeFilterInput`'s own `onChange`
    * already uses for `departFrom`/`departTo`/`arriveFrom`/`arriveTo`. */
-  initialDepartAfter?: string;
-  initialDepartBefore?: string;
-  initialArriveAfter?: string;
-  initialArriveBefore?: string;
+  initialDepartAfter?: string | undefined;
+  initialDepartBefore?: string | undefined;
+  initialArriveAfter?: string | undefined;
+  initialArriveBefore?: string | undefined;
   /** `JourneyCreationFlow.tsx`'s (the `/journeys/new` continuous
    * multi-leg creation page) only caller of this prop: this form is
    * reused there verbatim as the "leg 1" step, but that page wants to

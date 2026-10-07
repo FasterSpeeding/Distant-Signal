@@ -104,7 +104,7 @@ export const DeleteTrainButton = forwardRef<
   {
     trackingId: number;
     sharedGroupCount: number;
-    afterDelete?: 'redirect' | 'refresh';
+    afterDelete?: 'redirect' | 'refresh' | undefined;
     trigger?: (onClick: () => void) => ReactNode;
   }
 >(function DeleteTrainButton({ trackingId, sharedGroupCount, afterDelete = 'redirect', trigger }, ref) {

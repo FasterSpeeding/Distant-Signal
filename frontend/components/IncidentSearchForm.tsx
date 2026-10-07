@@ -152,19 +152,19 @@ export function IncidentSearchForm({
 }: {
   lines: LineSummary[];
   tocs: Suggestion[];
-  initialOperator?: string;
-  initialLine?: string;
-  initialFrom?: string;
-  initialTo?: string;
-  initialPeriod?: string;
-  initialPlanned?: string;
+  initialOperator?: string | undefined;
+  initialLine?: string | undefined;
+  initialFrom?: string | undefined;
+  initialTo?: string | undefined;
+  initialPeriod?: string | undefined;
+  initialPlanned?: string | undefined;
   /** `?state=active|ended|cleared`, the Status filter's own URL form. */
-  initialState?: string;
+  initialState?: string | undefined;
   /** Legacy `?cleared=true|false` (links shared before `state` existed):
    * read only when `initialState` is absent. */
-  initialCleared?: string;
-  initialPriorityMin?: string;
-  initialPriorityMax?: string;
+  initialCleared?: string | undefined;
+  initialPriorityMin?: string | undefined;
+  initialPriorityMax?: string | undefined;
 }) {
   const router = useRouter();
   const pathname = usePathname();
