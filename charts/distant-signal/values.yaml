@@ -1701,6 +1701,53 @@ migrate:
     tolerations: []
 
 # ---------------------------------------------------------------------------
+# apiMaintenance -- the api's user-data sweeps (session cleanup, dead
+# share/invite links, personal-data retention) as an hourly CronJob (ingest
+# spec §12.3, plan 1B.8). Off by default.
+# ---------------------------------------------------------------------------
+# NEEDS the `maintenance` binary (plan 1B.8, crates/api/src/bin/maintenance.rs)
+# in the api image at `command`: until then every run fails. Rollout
+# (release N+2): enable this together with API_BACKGROUND_LOOPS=false
+# (plan 1B.7); both sweeps are idempotent, so running both for a while is
+# harmless. It connects as the api does (its own role with
+# `postgresql.roles.perService.api.connect`), and its pool counts in the
+# connection budgets.
+apiMaintenance:
+  # -- Run the CronJob.
+  enabled: false
+  # -- Cron schedule (hourly, as the api's loop).
+  schedule: "17 * * * *"
+  # -- The schedule's time zone (CI requires every CronJob to set one).
+  timeZone: Etc/UTC
+  # -- Command, in the api image (`api.image`): one pass, then exit. It
+  # reads DATABASE_URL, DATABASE_MAX_CONNECTIONS, the api's three retention
+  # settings (PAST_TRAVEL_RETENTION_DAYS, STALE_PUSH_SUBSCRIPTION_DAYS,
+  # INACTIVE_ACCOUNT_RETENTION_DAYS, from `api.*`) and RUST_LOG.
+  command:
+    - /usr/local/bin/maintenance
+  # -- Arguments to `command`.
+  args: []
+  database:
+    # -- Its Postgres pool (DATABASE_MAX_CONNECTIONS).
+    maxConnections: 2
+  # -- A run missed by more than this is skipped.
+  startingDeadlineSeconds: 600
+  # -- Retries after a failed run.
+  backoffLimit: 1
+  # -- Deadline per run. The retention prune allows itself 600 s per
+  # statement.
+  activeDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # -- tracing-subscriber EnvFilter (RUST_LOG).
+  logLevel: info
+  resources: {}
+  # -- Merged over the chart-wide pod securityContext defaults.
+  podSecurityContext: {}
+  nodeSelector: {}
+  tolerations: []
+
+# ---------------------------------------------------------------------------
 # devAuthentik -- OPT-IN local dev-only OIDC identity provider
 # (docs/superpowers/specs/2026-08-29-dev-oidc-server-design.md)
 # ---------------------------------------------------------------------------

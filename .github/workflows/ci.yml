@@ -2536,6 +2536,67 @@ jobs:
           render "${pgbackrest[@]}" | check "pgBackRest enabled" 4
           render "${pgbackrest[@]}" --set postgresql.pgbackrest.backup.verifySchedule= \
             | check "pgBackRest enabled, no weekly verify" 3
+          render --set apiMaintenance.enabled=true | check "apiMaintenance enabled" 1
+
+      # Ingest plan 1B.8: apiMaintenance (off by default) is an hourly
+      # Forbid-concurrency CronJob running the api image's maintenance
+      # binary as the api's database role, admitted to Postgres, with its
+      # pool in the connection budgets.
+      - name: helm template (api-maintenance CronJob)
+        run: |
+          set -euo pipefail
+          base=(
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+          doc() { awk -v k="$1" -v n="$2" 'BEGIN{RS="\n---\n"} $0 ~ "\nkind: " k "\n" && $0 ~ "\n  name: " n "\n" {print}'; }
+          on=(--set apiMaintenance.enabled=true --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true)
+
+          off=$(render --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true)
+          if grep -q 'api-maintenance' <<<"${off}"; then fail "apiMaintenance off must render nothing of it"; fi
+
+          out=$(render "${on[@]}")
+          cj=$(doc CronJob distant-signal-api-maintenance <<<"${out}")
+          [[ -n "${cj}" ]] || fail "no api-maintenance CronJob rendered"
+          for want in 'schedule: "17 * * * *"' 'timeZone: "Etc/UTC"' 'concurrencyPolicy: Forbid' \
+              '- /usr/local/bin/maintenance' 'image: "ghcr.io/fasterspeeding/distant-signal/api:'; do
+            grep -q -F -- "${want}" <<<"${cj}" || fail "api-maintenance CronJob lacks: ${want}"
+          done
+          for env in PAST_TRAVEL_RETENTION_DAYS STALE_PUSH_SUBSCRIPTION_DAYS INACTIVE_ACCOUNT_RETENTION_DAYS; do
+            grep -q "name: ${env}\$" <<<"${cj}" || fail "api-maintenance CronJob lacks ${env}"
+          done
+          pg=$(doc NetworkPolicy distant-signal-postgres <<<"${out}")
+          grep -q -- '- api-maintenance$' <<<"${pg}" || fail "Postgres must admit the CronJob"
+          eg=$(doc NetworkPolicy distant-signal-api-maintenance <<<"${out}")
+          grep -q 'port: 5432' <<<"${eg}" || fail "the CronJob must be allowed out to Postgres"
+
+          # The api role: its own with perService.api.connect, else app.
+          roles=(--set postgresql.roles.enabled=true --set postgresql.roles.setupJob.enabled=true)
+          cj=$(render "${on[@]}" "${roles[@]}" --show-only templates/api-maintenance-cronjob.yaml)
+          # shellcheck disable=SC2016 # "$(PGPASSWORD)" is Kubernetes env-var syntax, matched literally
+          grep -q 'postgres://distant_signal_app:\$(PGPASSWORD)@' <<<"${cj}" || fail "roles on: the CronJob must connect as app"
+          cj=$(render "${on[@]}" "${roles[@]}" --set postgresql.roles.perService.enabled=true \
+            --set postgresql.roles.perService.api.connect=true --show-only templates/api-maintenance-cronjob.yaml)
+          # shellcheck disable=SC2016 # as above
+          grep -q 'postgres://distant_signal_api:\$(PGPASSWORD)@' <<<"${cj}" || fail "api.connect: the CronJob must connect as the api role"
+          # Its 2 connections count: the app limit 75 -> 77, the INF-7 budget 71 -> 69.
+          grep -q "'--variable=app_connection_limit=77'" <<<"$(render "${on[@]}" "${roles[@]}")" \
+            || fail "the CronJob's pool must count in the app role's limit"
+          render "${on[@]}" --set api.database.maxConnections=69 >/dev/null
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render "${on[@]}" --set api.database.maxConnections=70 >/dev/null 2>&1; then
+            fail "the CronJob's pool must count in the INF-7 budget"
+          fi
 
       # postgresql.pgbackrest (docs/postgres-pitr.md). Off (the default)
       # must render nothing of it: the Postgres pod stays exactly as before.

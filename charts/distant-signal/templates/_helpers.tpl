@@ -995,6 +995,10 @@ app.connectionLimitSlack.
 {{- $total = add $total (include "distant-signal.servicePool" (dict "root" $root "service" $service)) -}}
 {{- end -}}
 {{- end -}}
+{{- /* The api-maintenance CronJob connects as the api does. */ -}}
+{{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "api")) -}}
+{{- $total = add $total (include "distant-signal.apiMaintenancePool" $root) -}}
+{{- end -}}
 {{- $total -}}
 {{- else -}}
 {{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
@@ -1119,6 +1123,18 @@ aggregator's archive pool. Takes (dict "root" $ "service" ...).
 {{- end }}
 
 {{/*
+The api-maintenance CronJob's pool (apiMaintenance.database.maxConnections)
+when apiMaintenance.enabled, else 0. Takes root.
+*/}}
+{{- define "distant-signal.apiMaintenancePool" -}}
+{{- if .Values.apiMaintenance.enabled -}}
+{{- int .Values.apiMaintenance.database.maxConnections -}}
+{{- else -}}
+0
+{{- end -}}
+{{- end }}
+
+{{/*
 The api's DATABASE_MAX_CONNECTIONS: perService.api.maxConnections while the
 api connects as its own role, else api.database.maxConnections.
 */}}
@@ -1145,7 +1161,7 @@ from its pool. Takes (dict "root" $ "service" ...).
 {{- $limit -}}
 {{- else if eq .service "api" -}}
 {{- $pool := int $cfg.maxConnections -}}
-{{- add (mul (add (int $root.Values.api.replicaCount) 1) $pool) 2 -}}
+{{- add (mul (add (int $root.Values.api.replicaCount) 1) $pool) 2 (include "distant-signal.apiMaintenancePool" $root) -}}
 {{- else -}}
 {{- add (include "distant-signal.servicePool" .) 1 -}}
 {{- end -}}
@@ -1836,7 +1852,7 @@ this chart can render, so a typo cannot silently drop a rule. Takes
 {{- define "distant-signal.npComponent" -}}
 {{- $root := .root -}}
 {{- $all := $root.Values.networkPolicy.components | default dict -}}
-{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" "postgres-roles" "migrate" -}}
+{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" "postgres-roles" "migrate" "api-maintenance" -}}
 {{- range $name, $_ := $root.Values.pollers -}}
 {{- $known = append $known (printf "poller-%s" $name) -}}
 {{- end -}}

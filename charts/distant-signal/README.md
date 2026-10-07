@@ -733,6 +733,16 @@ counts the surge pod's pool in the Postgres connection budget (INF-7): with
 the default 50-connection pool lower `api.database.maxConnections` first, or
 move the api to its own role (16).
 
+**The api-maintenance CronJob** (`apiMaintenance.enabled`,
+`templates/api-maintenance-cronjob.yaml`) runs the api image's `maintenance`
+binary (plan 1B.8) hourly (`concurrencyPolicy: Forbid`, `timeZone: Etc/UTC`):
+one pass of the session cleanup, dead share/invite link prune and
+personal-data retention that the api's own loop runs today, with the api's
+retention values and the api's database role. Turn it on in the release
+that sets `API_BACKGROUND_LOOPS=false` (plan 1B.7); both are idempotent.
+Postgres admits it, and with egress policies on it may reach Postgres and
+DNS.
+
 ## Password encoding caveat
 
 `DATABASE_URL` is a URL. A password containing any of `@ : / ? # [ ] %` must
@@ -1607,6 +1617,29 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `migrate.job.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 | `migrate.job.nodeSelector` | `{}` | Node selector. |
 | `migrate.job.tolerations` | `[]` | Tolerations. |
+
+### apiMaintenance
+
+Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-maintenance-and-the-ingest-writer-optional).
+
+| Key | Default | Description |
+|---|---|---|
+| `apiMaintenance.enabled` | `false` | Run the api's user-data sweeps (session cleanup, dead links, personal-data retention) as an hourly CronJob. Needs the `maintenance` binary (plan 1B.8) in the api image. |
+| `apiMaintenance.schedule` | `"17 * * * *"` | Cron schedule. |
+| `apiMaintenance.timeZone` | `Etc/UTC` | The schedule's time zone. |
+| `apiMaintenance.command` | `["/usr/local/bin/maintenance"]` | Command, in the api image: one pass, then exit. |
+| `apiMaintenance.args` | `[]` | Arguments to `command`. |
+| `apiMaintenance.database.maxConnections` | `2` | Its Postgres pool; counted in the connection budgets. |
+| `apiMaintenance.startingDeadlineSeconds` | `600` | A run missed by more than this is skipped. |
+| `apiMaintenance.backoffLimit` | `1` | Retries after a failed run. |
+| `apiMaintenance.activeDeadlineSeconds` | `1800` | Deadline per run. |
+| `apiMaintenance.successfulJobsHistoryLimit` | `1` | Finished Jobs kept. |
+| `apiMaintenance.failedJobsHistoryLimit` | `3` | Failed Jobs kept. |
+| `apiMaintenance.logLevel` | `info` | `RUST_LOG`. |
+| `apiMaintenance.resources` | `{}` | Container resources. |
+| `apiMaintenance.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+| `apiMaintenance.nodeSelector` | `{}` | Node selector. |
+| `apiMaintenance.tolerations` | `[]` | Tolerations. |
 
 ### devAuthentik
 
