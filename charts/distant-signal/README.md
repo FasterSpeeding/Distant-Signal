@@ -724,6 +724,15 @@ then it ignores it and still migrates, so keep `true` until the image has
 NetworkPolicies outlive the Job; delete them by hand
 (`kubectl delete networkpolicy -l app.kubernetes.io/component=migrate`).
 
+**The api's rollout strategy** (`api.strategy.type`, default `Recreate`).
+Once the hook Job migrates and `api.migrateOnStartup` is `false`, a new api
+pod no longer changes the schema under the old one, and
+`RollingUpdate` (`maxSurge: 1`, `maxUnavailable: 0`) ends the outage per
+deploy. The render refuses `RollingUpdate` in any other configuration, and
+counts the surge pod's pool in the Postgres connection budget (INF-7): with
+the default 50-connection pool lower `api.database.maxConnections` first, or
+move the api to its own role (16).
+
 ## Password encoding caveat
 
 `DATABASE_URL` is a URL. A password containing any of `@ : / ? # [ ] %` must
@@ -1495,6 +1504,7 @@ Used only when `postgresql.enabled` is `false`.
 | `api.image.digest` | `""` | Exact content digest (`sha256:...`). When set, takes priority over `tag`/appVersion -- see "Pinning by content digest instead of tag" above. CI populates this automatically for images it builds and pushes. |
 | `api.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `api.replicaCount` | `1` | Replicas. >1 is safe for migrations — sqlx's Migrator takes a Postgres advisory lock — but each replica adds `api.database.maxConnections` (50) connections: see that row before scaling. |
+| `api.strategy.type` | `Recreate` | Rollout strategy: `Recreate` (a short outage per deploy) or `RollingUpdate` (`maxSurge: 1`, `maxUnavailable: 0`), which the render refuses unless `migrate.job.enabled` and `api.migrateOnStartup` is `false`. The surge pod's pool counts in the connection budget. |
 | `api.service.type` | `ClusterIP` | Service type. |
 | `api.service.port` | `8080` | Service and container port; also sets `BIND_URL`. |
 | `api.logLevel` | `info` | `RUST_LOG` value (tracing-subscriber EnvFilter syntax). |

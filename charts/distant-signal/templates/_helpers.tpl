@@ -1110,7 +1110,7 @@ aggregator's archive pool. Takes (dict "root" $ "service" ...).
 {{- define "distant-signal.servicePool" -}}
 {{- $root := .root -}}
 {{- if eq .service "api" -}}
-{{- mul (int $root.Values.api.replicaCount) (int (include "distant-signal.apiMaxConnections" $root)) -}}
+{{- mul (int (include "distant-signal.apiPods" $root)) (int (include "distant-signal.apiMaxConnections" $root)) -}}
 {{- else if eq .service "aggregator" -}}
 {{- add 10 (ternary 2 0 ($root.Values.archive.enabled | default false)) -}}
 {{- else -}}
@@ -1234,6 +1234,32 @@ true
 {{- else if not .Values.migrate.job.enabled -}}
 {{- fail "api.migrateOnStartup is false but migrate.job.enabled is not: nothing would run the migrations. Enable migrate.job (same release), or keep api.migrateOnStartup true." -}}
 {{- end -}}
+{{- end }}
+
+{{/*
+Ingest plan 1B.10: the api Deployment's strategy type, api.strategy.type.
+Recreate (the default) or RollingUpdate; RollingUpdate only once the api no
+longer migrates at startup (migrate.job.enabled and api.migrateOnStartup
+false), or a new pod would migrate under the old one. Takes root.
+*/}}
+{{- define "distant-signal.apiStrategy" -}}
+{{- $type := toString (dig "strategy" "type" "Recreate" .Values.api) -}}
+{{- if eq $type "RollingUpdate" -}}
+{{- if or (not .Values.migrate.job.enabled) (include "distant-signal.apiMigratesOnStartup" .) -}}
+{{- fail "api.strategy.type RollingUpdate needs migrate.job.enabled and api.migrateOnStartup false: a new api pod that migrates at startup would change the schema under the old pod still serving (see api-deployment.yaml's strategy comment)." -}}
+{{- end -}}
+{{- else if ne $type "Recreate" -}}
+{{- fail (printf "api.strategy.type must be Recreate or RollingUpdate, not %q." $type) -}}
+{{- end -}}
+{{- $type -}}
+{{- end }}
+
+{{/*
+The most api pods that can run at once: api.replicaCount, plus the
+RollingUpdate surge pod (maxSurge 1). Each has its own pool. Takes root.
+*/}}
+{{- define "distant-signal.apiPods" -}}
+{{- add (int .Values.api.replicaCount) (ternary 1 0 (eq (include "distant-signal.apiStrategy" .) "RollingUpdate")) -}}
 {{- end }}
 
 {{/*

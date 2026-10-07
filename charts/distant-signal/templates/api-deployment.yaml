@@ -60,7 +60,9 @@ limit is unknown here.
 {{- $maxConn = int (get . "max_connections") }}
 {{- end }}
 {{- end }}
-{{- $apiPool := mul (int .Values.api.replicaCount) (int (include "distant-signal.apiMaxConnections" .)) }}
+{{- /* A RollingUpdate surge pod has its own pool (distant-signal.apiPods). */}}
+{{- $apiPods := int (include "distant-signal.apiPods" .) }}
+{{- $apiPool := mul $apiPods (int (include "distant-signal.apiMaxConnections" .)) }}
 {{- include "distant-signal.postgresRoleBudgetCheck" . }}
 {{- $pools := add 10 5 5 1 (ternary 2 0 (.Values.archive.enabled | default false)) }}
 {{- $budget := .Values.postgresql.connectionBudget | default dict }}
@@ -68,7 +70,7 @@ limit is unknown here.
 {{- $reserved := add (int (dig "externalClients" 2 $budget)) (int (dig "adminSessions" 3 $budget)) $pgbackrest }}
 {{- $available := sub $maxConn 3 }}
 {{- if gt (add $apiPool $pools $reserved) $available }}
-{{- fail (printf "Postgres connection budget exceeded: api.replicaCount (%d) x api.database.maxConnections (%d) = %d, plus %d for the other pools and %d reserved (postgresql.connectionBudget, plus 2 for pgBackRest when enabled), is more than max_connections (%d) minus 3 superuser-reserved = %d. Lower api.database.maxConnections, or raise postgresql.config.max_connections (check the memory budget first; see values.yaml). INF-7." (int .Values.api.replicaCount) (int .Values.api.database.maxConnections) $apiPool $pools $reserved $maxConn $available) }}
+{{- fail (printf "Postgres connection budget exceeded: %d api pods (api.replicaCount, plus 1 surge pod with api.strategy.type RollingUpdate) x api.database.maxConnections (%d) = %d, plus %d for the other pools and %d reserved (postgresql.connectionBudget, plus 2 for pgBackRest when enabled), is more than max_connections (%d) minus 3 superuser-reserved = %d. Lower api.database.maxConnections, or raise postgresql.config.max_connections (check the memory budget first; see values.yaml). INF-7." $apiPods (int .Values.api.database.maxConnections) $apiPool $pools $reserved $maxConn $available) }}
 {{- end }}
 {{- end }}
 apiVersion: apps/v1
@@ -107,7 +109,20 @@ spec:
     # now includes the migration run itself (see api.probes.startup's budget
     # in values.yaml). That is accepted as strictly better than serving
     # requests against a schema the running binary does not match.
-    type: Recreate
+    #
+    # api.strategy.type: RollingUpdate (ingest plan 1B.10) ends that outage
+    # once the migrate hook Job owns the migrations (migrate.job.enabled and
+    # api.migrateOnStartup false, enforced by distant-signal.apiStrategy) and
+    # destructive migrations need a contract header
+    # (scripts/check-migration-order.py): the new pod no longer migrates,
+    # and an expand-only schema serves both binaries.
+    {{- $strategy := include "distant-signal.apiStrategy" . }}
+    type: {{ $strategy }}
+    {{- if eq $strategy "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
   selector:
     matchLabels:
       {{- include "distant-signal.selectorLabels" (dict "root" . "component" "api") | nindent 6 }}

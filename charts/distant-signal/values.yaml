@@ -1154,8 +1154,17 @@ api:
   # `strategy: type: Recreate` (see its own comment there for why -- the same
   # in-process migration run is why), so every replica is terminated before
   # any new one starts, whatever this is set to. Raise it for read throughput
-  # and node-failure tolerance, not for rollout availability.
+  # and node-failure tolerance, not for rollout availability (that is
+  # `strategy.type` below).
   replicaCount: 1
+  strategy:
+    # -- The Deployment's rollout: Recreate (the default; a ~40 s outage per
+    # deploy) or RollingUpdate (maxSurge 1, maxUnavailable 0; ingest plan
+    # 1B.10). RollingUpdate is refused unless `migrate.job.enabled` and
+    # `api.migrateOnStartup` is false. The surge pod's pool counts in the
+    # connection budget (api pods x `database.maxConnections`), so lower
+    # that first (or use `postgresql.roles.perService.api`).
+    type: Recreate
   service:
     type: ClusterIP
     port: 8080
