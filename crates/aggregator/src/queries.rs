@@ -4834,8 +4834,20 @@ mod tests {
             .expect("seed fixture rows");
         }
 
+        // At least this fixture's two stale rows (the shared database may
+        // hold other tests' old rows too).
         let pruned = prune_line_train_summaries(&pool, 2).await.expect("prune");
-        assert_eq!(pruned, 2);
+        assert!(pruned >= 2, "{pruned}");
+        let after_two: Vec<(String,)> = sqlx::query_as(
+            "SELECT uid FROM line_train_summaries WHERE line_id = 'test-prune-lts' ORDER BY uid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            after_two,
+            [("TLTS-NEW".to_string(),), ("TLTS-TODAY".to_string(),)]
+        );
         prune_line_train_summaries(&pool, 0)
             .await
             .expect("prune at 0");

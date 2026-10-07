@@ -1553,6 +1553,12 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture schedule_line_population rows");
+        // The POST route also derives `line_train_summaries` rows.
+        sqlx::query("DELETE FROM line_train_summaries WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture line_train_summaries rows");
     }
 
     fn sample_body(crs: &str, operator: &str, resolved_at: chrono::DateTime<chrono::Utc>) -> Value {

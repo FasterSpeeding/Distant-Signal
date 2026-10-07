@@ -80,7 +80,7 @@ Contract in `docs/api-changelog.md` (2026-10-06). Implementation
 cursor-paged, on a table derived at publish time instead of the
 population JSONB per request.
 
-**Table** `line_train_summaries` (migration `20261007200000`, one
+**Table** `line_train_summaries` (migration `20261008100000`, one
 transactional file; the index is in it because the table is new):
 `(line_id, service_date, uid)` key; `scope`, `direction`, `due_minute`
 (`lineDue`, minutes after the date's midnight), `end_minute` (last
