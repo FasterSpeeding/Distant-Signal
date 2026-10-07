@@ -2693,6 +2693,156 @@ mod db_tests {
             .ok();
     }
 
+    /// A schedule whose public (GBTT) times differ from its working (WTT)
+    /// ones, including half-minute working times: the planner searches,
+    /// times and changes on the public minutes (design doc
+    /// docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md,
+    /// §11 P6), while `scheduled*` keep the truncated working minute for one
+    /// release and `public*` carry the public one.
+    ///
+    /// ```text
+    ///              ZWA dep          ZWB arr / dep         ZWC arr   ZWD arr
+    /// TESTPUBW1    10:00½ (09:58)   10:20½ (10:21) /      10:40
+    ///                               10:21½ (10:21)        (10:44)
+    /// TESTPUBW2                     dep 10:25 (10:25)               10:35
+    /// TESTPUBW3                     dep 10:26 (10:26)               10:40
+    /// ```
+    /// (working time, public time in brackets; the default 5-minute change
+    /// at ZWB). On working minutes TESTPUBW2 would make the change
+    /// (10:20 + 5 = 10:25); on public ones it does not (10:21 + 5 = 10:26).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test code: one seeded network and five requests against it"
+    )]
+    async fn the_planner_uses_public_times_where_they_differ_from_working_times() {
+        let pool = connect().await;
+        let date = NaiveDate::from_ymd_opt(2026, 9, 24).unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, \
+              working_arrival, working_departure, public_arrival, public_departure, \
+              can_board, can_alight) \
+             VALUES \
+              ($1, 'TESTPUBW1', 0, 'TESTPWA', 'origin', NULL, '10:00:00', 0, \
+               NULL, '10:00:30', NULL, '09:58:00', true, false), \
+              ($1, 'TESTPUBW1', 1, 'TESTPWB', 'intermediate', '10:20:00', '10:21:00', 0, \
+               '10:20:30', '10:21:30', '10:21:00', '10:21:00', true, true), \
+              ($1, 'TESTPUBW1', 2, 'TESTPWC', 'terminate', '10:40:00', NULL, 0, \
+               '10:40:00', NULL, '10:44:00', NULL, false, true), \
+              ($1, 'TESTPUBW2', 0, 'TESTPWB', 'origin', NULL, '10:25:00', 0, \
+               NULL, '10:25:00', NULL, '10:25:00', true, false), \
+              ($1, 'TESTPUBW2', 1, 'TESTPWD', 'terminate', '10:35:00', NULL, 0, \
+               '10:35:00', NULL, '10:35:00', NULL, false, true), \
+              ($1, 'TESTPUBW3', 0, 'TESTPWB', 'origin', NULL, '10:26:00', 0, \
+               NULL, '10:26:00', NULL, '10:26:00', true, false), \
+              ($1, 'TESTPUBW3', 1, 'TESTPWD', 'terminate', '10:40:00', NULL, 0, \
+               '10:40:00', NULL, '10:40:00', NULL, false, true) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTPUBW-ZWA', 'ZWA', 'TESTPWA', 'TEST PUBLIC A', 1), \
+                    ('TESTPUBW-ZWB', 'ZWB', 'TESTPWB', 'TEST PUBLIC B', 1), \
+                    ('TESTPUBW-ZWC', 'ZWC', 'TESTPWC', 'TEST PUBLIC C', 1), \
+                    ('TESTPUBW-ZWD', 'ZWD', 'TESTPWD', 'TEST PUBLIC D', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        let plan = |query: String| {
+            let pool = pool.clone();
+            async move {
+                get(
+                    test_router(test_app(pool)),
+                    format!("/Trips/plan?date={date}&live=false&{query}"),
+                )
+                .await
+            }
+        };
+
+        // The leg: `scheduled*` is the working minute (half-minute
+        // truncated), `public*` the public one, and the itinerary's
+        // duration runs public departure to public arrival (09:58 -> 10:44).
+        let (status, body) = plan("origin=ZWA&destination=ZWC&departAfter=09:55".into()).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let itinerary = &body["segments"][0]["itineraries"][0];
+        let leg = &itinerary["legs"][0];
+        assert_eq!(leg["trainUid"], "TESTPUBW1", "{body:?}");
+        assert_eq!(leg["scheduledDeparture"], "10:00:00", "{leg:?}");
+        assert_eq!(leg["publicDeparture"], "09:58:00", "{leg:?}");
+        assert_eq!(leg["scheduledArrival"], "10:40:00", "{leg:?}");
+        assert_eq!(leg["publicArrival"], "10:44:00", "{leg:?}");
+        assert_eq!(leg["publicDepartureDayOffset"], 0, "{leg:?}");
+        assert_eq!(leg["publicArrivalDayOffset"], 0, "{leg:?}");
+        assert_eq!(itinerary["totalDurationMinutes"], 46, "{itinerary:?}");
+
+        // Departing after 09:59: the train left at 09:58 by the public
+        // timetable, though its working departure (10:00½) is later.
+        let (status, body) = plan("origin=ZWA&destination=ZWC&departAfter=09:59".into()).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert!(
+            body["segments"][0]["itineraries"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "the 09:58 public departure has gone: {body:?}"
+        );
+
+        // Arriving by 10:42: the public arrival (10:44, the recovery margin)
+        // is too late, though the working one (10:40) is in time. By 10:44
+        // it is in time.
+        let (status, body) = plan("origin=ZWA&destination=ZWC&arriveBy=10:42".into()).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert!(
+            body["segments"][0]["itineraries"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "the public arrival is 10:44: {body:?}"
+        );
+        let (status, body) = plan("origin=ZWA&destination=ZWC&arriveBy=10:44".into()).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(
+            body["segments"][0]["itineraries"][0]["legs"][0]["trainUid"], "TESTPUBW1",
+            "{body:?}"
+        );
+
+        // The change at ZWB is timed on public minutes: 10:21 + 5 misses
+        // TESTPUBW2's 10:25 and takes TESTPUBW3's 10:26.
+        let (status, body) = plan("origin=ZWA&destination=ZWD&departAfter=09:55".into()).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let legs: Vec<&Value> = body["segments"][0]["itineraries"][0]["legs"]
+            .as_array()
+            .expect("legs")
+            .iter()
+            .filter(|leg| leg["kind"] == "train")
+            .collect();
+        let uids: Vec<&str> = legs
+            .iter()
+            .map(|leg| leg["trainUid"].as_str().unwrap())
+            .collect();
+        assert_eq!(uids, ["TESTPUBW1", "TESTPUBW3"], "{body:?}");
+        assert_eq!(legs[0]["publicArrival"], "10:21:00", "{body:?}");
+        assert_eq!(legs[0]["scheduledArrival"], "10:20:00", "{body:?}");
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'TESTPUBW%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTPUBW-%'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     // ---------------------------------------------------------------------
     // Arrive-by, avoid lists and noResultReason (2026-09-29), live on and
     // off. Same live date and pinned "now" (09:30 BST) as above.
