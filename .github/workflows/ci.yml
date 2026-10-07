@@ -186,75 +186,13 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
 
-  # Custom: cargo build/test across the whole workspace, plus the
-  # DATABASE_URL-gated `#[ignore]`d integration tests in `api`, `aggregator`
-  # and `notifier` (confirmed by grepping every `#[ignore = "..."]` reason
-  # in the workspace to need only a live Postgres). `notifier` joined this
-  # list here: it already had several DATABASE_URL-gated `#[ignore]`d tests
-  # of its own (`queries.rs`'s poll/push-subscription round trips,
-  # `main.rs`'s `run_cycle` transition test) that CI simply never ran, plus
-  # two more this plan's own Tasks 8/9 added --
-  # `list_committed_legs_for_today` and the `skip_notification_state`/
-  # `upsert_skip_notification_state` round-trip -- and `skip_check.rs`'s new
-  # `leg_is_skipped` test from this fix wave. Every one of them calls
-  # `queries.rs`/`skip_check.rs` functions (or, for `run_cycle`, passes a
-  # literal fake VAPID key straight into the function call) directly against
-  # a live Postgres, never through `main()`'s own env-var parsing, so none
-  # need anything beyond the same `DATABASE_URL` this job already sets up
-  # for `api`/`aggregator`.
-  #
-  # `enricher` is a mixed bag, so it's handled in its own step below instead
-  # of being folded into the `-p api -p aggregator -p notifier` step: five
-  # of its six `#[ignore]`d tests (`llm.rs`'s `live_eval_*`) call
-  # `live_client_from_env()` and genuinely need a real `LLM_BASE_URL` with
-  # live model access, so those five stay excluded here -- there is no such
-  # credential in CI. But `main.rs`'s
-  # `process_incident_writes_successfully_and_advances_hash_and_version_when_primary_extraction_is_truncated`
-  # only needs `DATABASE_URL`: it mocks all three LLM calls it makes against
-  # its own `wiremock` server (see that test's doc comment), so it now runs
-  # here too -- verified locally with `DATABASE_URL=postgres://postgres:
-  # postgres@localhost:5432/postgres cargo test -p enricher process_incident
-  # -- --ignored --test-threads=1` against a live Postgres, which passes.
-  # The step below runs every other ignored enricher test too, with
-  # `--skip live_eval --skip replay_` rather than a bare `-p enricher`
-  # addition to the step above, because without the skips the LLM-gated
-  # tests get pulled in and fail with "LLM_BASE_URL must be set for live
-  # eval" (and the replay harness with "REPLAY_HISTORY_JSONL must be set").
+  # Custom: cargo build/test across the whole workspace (the tests that need
+  # no database). The DATABASE_URL/REDIS_URL-gated `#[ignore]`d tests run in
+  # `rust-db-test` below, in parallel: they are serial (--test-threads=1)
+  # and took ~10 of this job's ~19-23 minutes when both lived here.
   rust-test:
     name: cargo build & test
     runs-on: ubuntu-24.04
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      # movement-feed's RedisStreamMovementFeed tests (Task 3 of
-      # docs/superpowers/plans/2026-09-04-movement-relay-plan.md) are the
-      # first #[ignore]d tests in this repo needing a live Redis rather than
-      # a live Postgres -- mirrors the postgres: block above exactly.
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
-      REDIS_URL: redis://localhost:6379
 
     steps:
       - name: Checkout repository
@@ -318,6 +256,105 @@ jobs:
       # pending credentials).
       - name: Validate lines/*.toml external identifiers (fast tier)
         run: cargo run -p line-catalogue-validator
+
+  # Custom: the DATABASE_URL-gated `#[ignore]`d integration tests in `api`,
+  # `aggregator` and `notifier` (confirmed by grepping every
+  # `#[ignore = "..."]` reason in the workspace to need only a live
+  # Postgres), plus the Postgres/Redis-backed ones in `common`, `enricher`
+  # and `movement-feed`. Split out of `rust-test` (same commands, same
+  # services) so the two run in parallel; it has its own rust-cache entry
+  # (the default key includes the job id), since it builds only these
+  # packages' test binaries.
+  #
+  # `notifier` joined this list here: it already had several
+  # DATABASE_URL-gated `#[ignore]`d tests
+  # of its own (`queries.rs`'s poll/push-subscription round trips,
+  # `main.rs`'s `run_cycle` transition test) that CI simply never ran, plus
+  # two more this plan's own Tasks 8/9 added --
+  # `list_committed_legs_for_today` and the `skip_notification_state`/
+  # `upsert_skip_notification_state` round-trip -- and `skip_check.rs`'s new
+  # `leg_is_skipped` test from this fix wave. Every one of them calls
+  # `queries.rs`/`skip_check.rs` functions (or, for `run_cycle`, passes a
+  # literal fake VAPID key straight into the function call) directly against
+  # a live Postgres, never through `main()`'s own env-var parsing, so none
+  # need anything beyond the same `DATABASE_URL` this job already sets up
+  # for `api`/`aggregator`.
+  #
+  # `enricher` is a mixed bag, so it's handled in its own step below instead
+  # of being folded into the `-p api -p aggregator -p notifier` step: five
+  # of its six `#[ignore]`d tests (`llm.rs`'s `live_eval_*`) call
+  # `live_client_from_env()` and genuinely need a real `LLM_BASE_URL` with
+  # live model access, so those five stay excluded here -- there is no such
+  # credential in CI. But `main.rs`'s
+  # `process_incident_writes_successfully_and_advances_hash_and_version_when_primary_extraction_is_truncated`
+  # only needs `DATABASE_URL`: it mocks all three LLM calls it makes against
+  # its own `wiremock` server (see that test's doc comment), so it now runs
+  # here too -- verified locally with `DATABASE_URL=postgres://postgres:
+  # postgres@localhost:5432/postgres cargo test -p enricher process_incident
+  # -- --ignored --test-threads=1` against a live Postgres, which passes.
+  # The step below runs every other ignored enricher test too, with
+  # `--skip live_eval --skip replay_` rather than a bare `-p enricher`
+  # addition to the step above, because without the skips the LLM-gated
+  # tests get pulled in and fail with "LLM_BASE_URL must be set for live
+  # eval" (and the replay harness with "REPLAY_HISTORY_JSONL must be set").
+  rust-db-test:
+    name: cargo test -- --ignored (DB/Redis-backed)
+    runs-on: ubuntu-24.04
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # movement-feed's RedisStreamMovementFeed tests (Task 3 of
+      # docs/superpowers/plans/2026-09-04-movement-relay-plan.md) are the
+      # first #[ignore]d tests in this repo needing a live Redis rather than
+      # a live Postgres -- mirrors the postgres: block above exactly.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1.88.0
+
+      # The same packages as rust-test (see there for each one's reason).
+      # Only libssl-dev/pkg-config (openssl-sys, via native-tls) matter to
+      # the packages tested here today; the rest keeps the two jobs' build
+      # environments identical, so a package gaining an rdkafka dependency
+      # can't fail only here.
+      - name: Install rdkafka build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake libssl-dev pkg-config libsasl2-dev libcurl4-openssl-dev
+
+      # See rust-test's cache step for save-if.
+      - name: Cache cargo registry/target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --version 0.8.6 --no-default-features --features postgres,rustls --locked
@@ -432,7 +469,7 @@ jobs:
   # say was deliberately deferred until e2e specs existed; they now do.
   #
   # Needs a real, reachable `api` (Postgres + Redis behind it) to render
-  # anything beyond a skeleton/error state -- extends `rust-test`'s own
+  # anything beyond a skeleton/error state -- extends `rust-db-test`'s own
   # `services:` pattern (same images, same health-check options) rather
   # than `docker-compose.yml`: that file needs dummy values for ~20+
   # unrelated service credentials (Kafka, RDM/TfL/LDBWS pollers, five
@@ -455,9 +492,9 @@ jobs:
     runs-on: ubuntu-24.04
 
     # Same two services, same images, same health-check options as
-    # `rust-test` above -- copied rather than factored out into a reusable
-    # block, matching this file's existing per-job `services:` duplication
-    # (there is no third job that would justify extracting one).
+    # `rust-db-test` above -- copied rather than factored out into a
+    # reusable block, matching this file's existing per-job `services:`
+    # duplication.
     services:
       postgres:
         image: postgres:16
