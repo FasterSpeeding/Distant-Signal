@@ -720,7 +720,6 @@ mod ticket_entry_tests {
 }
 
 // Moved to ds_store::tracking (ingest architecture plan 1A.9)
-pub(crate) use ds_store::tracking::reopen_subscriptions_after_reinstatement;
 pub use ds_store::tracking::{
     PendingBacklogPin, PendingSchedulePin, TrainEventsBatchOutcome, apply_schedule_match,
     list_active_tracked_trains, list_pending_pins_for_backlog_match,
@@ -2248,8 +2247,7 @@ mod ticket_list_tests {
     clippy::items_after_statements,
     clippy::similar_names,
     clippy::too_many_lines,
-    clippy::unnecessary_wraps,
-    reason = "test code: fixtures sit next to their use; paired test values share names; scenario tests read top to bottom; fakes mirror the signatures they stand in for"
+    reason = "test code: fixtures sit next to their use; paired test values share names; scenario tests read top to bottom"
 )]
 mod db_tests {
     use super::*;
@@ -3000,170 +2998,6 @@ mod db_tests {
         );
 
         cleanup_user(&pool, user_id).await;
-    }
-
-    // --- H4 residual (2026-10-01): a Reinstatement reopens what a Cancellation closed ---
-
-    fn at(raw: &str) -> Option<DateTime<Utc>> {
-        Some(raw.parse().unwrap())
-    }
-
-    async fn resolution_status_of(pool: &PgPool, tracked_train_id: i64) -> String {
-        sqlx::query_scalar("SELECT resolution_status FROM train_subscriptions WHERE id = $1")
-            .bind(tracked_train_id)
-            .fetch_one(pool)
-            .await
-            .expect("read resolution_status")
-    }
-
-    async fn is_listed_active(pool: &PgPool, tracked_train_id: i64) -> bool {
-        list_active_tracked_trains(pool)
-            .await
-            .expect("list_active_tracked_trains")
-            .iter()
-            .any(|tracked| tracked.id == tracked_train_id)
-    }
-
-    /// Cancel -> trust-consumer restart (nothing in memory, so it never
-    /// forwards the Reinstatement) -> the Reinstatement arrives only through
-    /// trust-backlog-consumer's ingest -> the next Movement resolves the
-    /// subscription. `backlog_knows_uid` is whether trust-backlog-consumer
-    /// still had the train's Activation parked; without it the shared row
-    /// is found by the `train_id` already written onto it.
-    async fn reinstatement_after_restart_reopens_and_a_movement_resolves(backlog_knows_uid: bool) {
-        let pool = connect().await;
-        let user_id = if backlog_knows_uid {
-            "TEST-H4-REOPEN-UID"
-        } else {
-            "TEST-H4-REOPEN-NOUID"
-        };
-        let train_uid = if backlog_knows_uid {
-            "TH4RU1"
-        } else {
-            "TH4RN1"
-        };
-        let train_id = if backlog_knows_uid {
-            "TH4RU1ID01"
-        } else {
-            "TH4RN1ID01"
-        };
-        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
-            .bind(train_uid)
-            .execute(&pool)
-            .await
-            .expect("pre-clean trains");
-        cleanup_user(&pool, user_id).await;
-        seed_user(&pool, user_id).await;
-        let today = db_today(&pool).await;
-
-        let trains_id = crate::data::trains::find_or_create_train(&pool, train_uid, today)
-            .await
-            .expect("seed the shared trains row");
-        crate::data::trains::mark_train_resolved(&pool, trains_id, train_id)
-            .await
-            .expect("seed its train_id, as the backlog Activation ingest does");
-        let (tracked_train_id,): (i64,) = sqlx::query_as(
-            "INSERT INTO train_subscriptions \
-                (user_id, service_date, pin_origin_crs, pin_scheduled_departure, trains_id, \
-                 resolution_status) \
-             VALUES ($1, $2, 'EUS', $3, $4, 'schedule_matched') RETURNING id",
-        )
-        .bind(user_id)
-        .bind(today)
-        .bind(today.and_hms_opt(18, 15, 0).unwrap().and_utc())
-        .bind(trains_id)
-        .fetch_one(&pool)
-        .await
-        .expect("seed a schedule-matched subscription");
-
-        // The Cancellation, through trust-consumer's live path.
-        let mut cancel = fixture_event(tracked_train_id, "h4-reopen-cancel");
-        cancel.msg_type = "0002".to_string();
-        cancel.event_type = None;
-        cancel.planned_timestamp = None;
-        cancel.actual_timestamp = at("2026-09-05T18:05:00Z");
-        cancel.status = "cancelled".to_string();
-        upsert_train_event(&pool, &cancel).await.expect("cancel");
-        assert_eq!(
-            resolution_status_of(&pool, tracked_train_id).await,
-            "unresolved"
-        );
-        assert!(!is_listed_active(&pool, tracked_train_id).await);
-
-        // trust-consumer restarts here. It never sees this subscription
-        // again (not listed), so only trust-backlog-consumer forwards the
-        // Reinstatement.
-        let reinstatement = common::TrustBacklogEventMessage {
-            crs: None,
-            train_uid: backlog_knows_uid.then(|| train_uid.to_string()),
-            train_id: train_id.to_string(),
-            service_date: today,
-            msg_type: "0005".to_string(),
-            event_type: None,
-            planned_timestamp: None,
-            actual_timestamp: at("2026-09-05T18:10:00Z"),
-            variation_status: None,
-            delay_minutes: None,
-            dedup_key: format!("h4-reopen-reinstate-{user_id}"),
-            gbtt_timestamp: None,
-        };
-        let results = crate::data::trust_event_backlog::ingest_shared_movements_batch(
-            &pool,
-            std::slice::from_ref(&reinstatement),
-        )
-        .await;
-        assert!(results.iter().all(Result::is_ok), "{results:?}");
-        assert_eq!(
-            resolution_status_of(&pool, tracked_train_id).await,
-            "schedule_matched",
-            "the reinstatement restores the status the cancellation replaced"
-        );
-        let status: String =
-            sqlx::query_scalar("SELECT status FROM train_current_state WHERE trains_id = $1")
-                .bind(trains_id)
-                .fetch_one(&pool)
-                .await
-                .expect("read train_current_state");
-        assert_eq!(status, "en_route");
-        assert!(
-            is_listed_active(&pool, tracked_train_id).await,
-            "listed again, so a restarted trust-consumer can claim it"
-        );
-
-        // The next Movement, as the restarted trust-consumer's pin claim
-        // sends it.
-        let mut movement = fixture_event(tracked_train_id, "h4-reopen-movement");
-        movement.resolved_train_uid = Some(train_uid.to_string());
-        movement.resolved_train_id = Some(train_id.to_string());
-        movement.actual_timestamp = at("2026-09-05T18:20:00Z");
-        upsert_train_event(&pool, &movement)
-            .await
-            .expect("movement");
-        assert_eq!(
-            resolution_status_of(&pool, tracked_train_id).await,
-            "resolved"
-        );
-
-        cleanup_user(&pool, user_id).await;
-        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
-            .bind(train_uid)
-            .execute(&pool)
-            .await
-            .expect("clean trains");
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_backlog_reinstatement -- --ignored --test-threads=1`"]
-    async fn a_backlog_reinstatement_reopens_a_cancelled_subscription_after_a_restart() {
-        reinstatement_after_restart_reopens_and_a_movement_resolves(true).await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                a_backlog_reinstatement -- --ignored --test-threads=1`"]
-    async fn a_backlog_reinstatement_without_a_parked_activation_still_reopens() {
-        reinstatement_after_restart_reopens_and_a_movement_resolves(false).await;
     }
 
     #[tokio::test]

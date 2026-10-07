@@ -12,7 +12,8 @@
 //! ago, the backlog's retention). Idempotent: every shared write is keyed by
 //! the event's dedup key and guarded by event time, so re-running it
 //! changes nothing. Logic:
-//! `api::data::trust_event_backlog::replay_uidless_backlog`.
+//! `ds_store::backlog::replay_uidless_backlog` (moved from
+//! `api::data::trust_event_backlog` by ingest architecture plan 1A.10).
 
 #![expect(
     clippy::print_stdout,
@@ -49,8 +50,7 @@ async fn run() -> anyhow::Result<()> {
         .max_connections(2)
         .connect(&database_url)
         .await?;
-    let report =
-        api::data::trust_event_backlog::replay_uidless_backlog(&pool, since, CHUNK).await?;
+    let report = ds_store::backlog::replay_uidless_backlog(&pool, since, CHUNK).await?;
     println!(
         "replayed {} uid-less backlog rows received since {since} ({} failed; re-run to retry them)",
         report.rows, report.failed
