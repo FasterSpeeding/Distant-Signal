@@ -2188,7 +2188,11 @@ mod tests {
                 .filter_map(|(j, _, _)| j.as_ref().map(|j| j.arrival_min))
                 .min();
             let best_departure = singles.iter().filter_map(|(_, _, d)| *d).max();
-            assert_eq!(csa.as_ref().map(|j| j.arrival_min), best_arrival, "case {case}");
+            assert_eq!(
+                csa.as_ref().map(|j| j.arrival_min),
+                best_arrival,
+                "case {case}"
+            );
             assert_eq!(raptor, best_arrival, "case {case}");
             assert_eq!(latest, best_departure, "case {case}");
             if let Some(journey) = csa {
