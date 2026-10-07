@@ -60,6 +60,10 @@ spec:
                   # The ingest-writer (ingest-writer-deployment.yaml).
                   - ingest-writer
                   {{- end }}
+                  {{- if include "distant-signal.pollerIncidentsDbSink" . }}
+                  # poller-incidents' DB sink (pollers.incidents.ingest.sink db).
+                  - poller-incidents
+                  {{- end }}
         {{- with .Values.networkPolicy.postgresClients }}
         # networkPolicy.postgresClients: workloads outside this chart, e.g.
         # a postgres-exporter or a pg_dump backup CronJob.
@@ -125,6 +129,10 @@ spec:
                   - trust-backlog-consumer
                   - full-coverage-consumer
                   - movement-relay
+                  {{- if include "distant-signal.pollerIncidentsDbSink" . }}
+                  # poller-incidents' DB sink XADDs incident-text-changed.
+                  - poller-incidents
+                  {{- end }}
         {{- with .Values.networkPolicy.redisClients }}
         # networkPolicy.redisClients: workloads outside this chart, e.g. a
         # redis-exporter.
@@ -402,7 +410,12 @@ rule is IP-based, so this only opens their ports, not their hosts. */}}
 {{- $workers = append $workers (dict "component" "movement-relay" "metricsPort" .Values.movementRelay.metricsPort "healthPorts" (list .Values.movementRelay.healthPort) "egress" (dict "redis" true) "brokers" (include "distant-signal.movementRelayKafkaBrokers" .)) }}
 {{- end }}
 {{- range $enabledPollerNames }}
-{{- $workers = append $workers (dict "component" (printf "poller-%s" .) "metricsPort" $root.Values.metrics.port "healthPorts" (list $root.Values.workerHealth.port) "egress" $callsApi "urls" (list (get $root.Values.pollers .).baseUrl $root.Values.internalOauth.tokenUrl)) }}
+{{- $egress := $callsApi }}
+{{- if and (eq . "incidents") (include "distant-signal.pollerIncidentsDbSink" $root) }}
+{{- /* The DB sink (ingest plan 2c.2): Postgres and Redis instead of api. */}}
+{{- $egress = dict "postgres" true "redis" true }}
+{{- end }}
+{{- $workers = append $workers (dict "component" (printf "poller-%s" .) "metricsPort" $root.Values.metrics.port "healthPorts" (list $root.Values.workerHealth.port) "egress" $egress "urls" (list (get $root.Values.pollers .).baseUrl $root.Values.internalOauth.tokenUrl)) }}
 {{- end }}
 {{- if .Values.pollerIrishRailGtfs.enabled }}
 {{- $workers = append $workers (dict "component" "poller-irish-rail-gtfs" "metricsPort" .Values.pollerIrishRailGtfs.metricsPort "healthPorts" (list .Values.workerHealth.port) "egress" $callsApi "urls" (list .Values.pollerIrishRailGtfs.gtfsUrl .Values.internalOauth.tokenUrl)) }}

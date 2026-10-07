@@ -11,7 +11,7 @@
 --     -f postgres-grants.sql
 --
 -- Passwords come from the environment (psql's \getenv), one per created
--- role: DS_PG_API_PASSWORD, DS_PG_AGGREGATOR_PASSWORD, DS_PG_ENRICHER_PASSWORD, DS_PG_NOTIFIER_PASSWORD, DS_PG_WRITER_PASSWORD.
+-- role: DS_PG_API_PASSWORD, DS_PG_AGGREGATOR_PASSWORD, DS_PG_ENRICHER_PASSWORD, DS_PG_NOTIFIER_PASSWORD, DS_PG_WRITER_PASSWORD, DS_PG_INCIDENTS_PASSWORD.
 --
 -- In ONE transaction:
 --   1. the group roles (NOLOGIN) and every role whose status is not
@@ -78,6 +78,14 @@
 \else
 \set writer_connection_limit 7
 \endif
+\if :{?incidents}
+\else
+\set incidents distant_signal_incidents
+\endif
+\if :{?incidents_connection_limit}
+\else
+\set incidents_connection_limit 3
+\endif
 \getenv api_password DS_PG_API_PASSWORD
 \if :{?api_password}
 \else
@@ -103,6 +111,11 @@
 \else
 \set writer_password ''
 \endif
+\getenv incidents_password DS_PG_INCIDENTS_PASSWORD
+\if :{?incidents_password}
+\else
+\set incidents_password ''
+\endif
 
 BEGIN;
 
@@ -125,7 +138,10 @@ SELECT
     set_config('ds_grants.notifier_connection_limit', :'notifier_connection_limit', true),
     set_config('ds_grants.writer', :'writer', true),
     set_config('ds_grants.writer_password', :'writer_password', true),
-    set_config('ds_grants.writer_connection_limit', :'writer_connection_limit', true)
+    set_config('ds_grants.writer_connection_limit', :'writer_connection_limit', true),
+    set_config('ds_grants.incidents', :'incidents', true),
+    set_config('ds_grants.incidents_password', :'incidents_password', true),
+    set_config('ds_grants.incidents_connection_limit', :'incidents_connection_limit', true)
 \gset ignored_
 
 -- 1. Roles.
@@ -175,7 +191,8 @@ BEGIN
         ('aggregator', 'observed'),
         ('enricher', 'observed'),
         ('notifier', 'observed'),
-        ('writer', 'observed')) AS v(kind, status)
+        ('writer', 'observed'),
+        ('incidents', 'narrow')) AS v(kind, status)
     LOOP
         IF r.name = app OR r.name = current_user OR r.name = ANY (seen) THEN
             RAISE EXCEPTION 'the % role name % must be a new, separate role',
@@ -220,7 +237,8 @@ BEGIN
         ('aggregator', 'observed'),
         ('enricher', 'observed'),
         ('notifier', 'observed'),
-        ('writer', 'observed')) AS v(kind, status)
+        ('writer', 'observed'),
+        ('incidents', 'narrow')) AS v(kind, status)
     LOOP
         member_oid := (SELECT oid FROM pg_roles WHERE rolname = r.name);
         IF r.status = 'observed' AND NOT EXISTS (
@@ -248,7 +266,8 @@ BEGIN
         ('notifier', 'read_shared'),
         ('notifier', 'schema_gate'),
         ('writer', 'read_shared'),
-        ('writer', 'schema_gate')) AS v(kind, grp)
+        ('writer', 'schema_gate'),
+        ('incidents', 'schema_gate')) AS v(kind, grp)
     LOOP
         IF NOT EXISTS (
             SELECT 1 FROM pg_auth_members
@@ -278,7 +297,8 @@ BEGIN
         ('aggregator'),
         ('enricher'),
         ('notifier'),
-        ('writer')) AS v(kind)
+        ('writer'),
+        ('incidents')) AS v(kind)
     LOOP
         EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', grantee);
         EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', grantee);
@@ -346,7 +366,19 @@ BEGIN
     FOR r IN
         SELECT v.tbl, current_setting('ds_grants.' || v.kind) AS grantee,
                v.priv, v.cols
-        FROM (SELECT NULL::text, NULL::text, NULL::text, NULL::text WHERE false) AS v(tbl, kind, priv, cols)
+        FROM (VALUES
+        ('incidents', 'incidents', 'SELECT', ''),
+        ('incidents', 'incidents', 'INSERT', ''),
+        ('incidents', 'incidents', 'UPDATE', ''),
+        ('incident_history', 'incidents', 'SELECT', ''),
+        ('incident_history', 'incidents', 'INSERT', ''),
+        ('incident_feed_state', 'incidents', 'SELECT', ''),
+        ('incident_feed_state', 'incidents', 'INSERT', ''),
+        ('incident_feed_state', 'incidents', 'UPDATE', ''),
+        ('ingest_freshness', 'incidents', 'SELECT', ''),
+        ('ingest_freshness', 'incidents', 'INSERT', ''),
+        ('ingest_freshness', 'incidents', 'UPDATE', ''),
+        ('stations', 'incidents', 'SELECT', '')) AS v(tbl, kind, priv, cols)
         WHERE to_regclass(format('public.%I', v.tbl)) IS NOT NULL
     LOOP
         IF r.cols = '' THEN
@@ -360,7 +392,8 @@ BEGIN
     END LOOP;
     FOR r IN
         SELECT v.seq, current_setting('ds_grants.' || v.kind) AS grantee
-        FROM (SELECT NULL::text, NULL::text WHERE false) AS v(seq, kind)
+        FROM (VALUES
+        ('incident_history_id_seq', 'incidents')) AS v(seq, kind)
         WHERE to_regclass(format('public.%I', v.seq)) IS NOT NULL
     LOOP
         EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE public.%I TO %I',

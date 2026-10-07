@@ -1352,6 +1352,11 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.perService.writer.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.roles.perService.writer.existingSecretPasswordKey` | `postgres-writer-password` | Key within `existingSecret` (and in the chart's Secret). |
 | `postgresql.roles.perService.writer.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `ingestWriter.database.maxConnections` + 1 (the loop-lock session). |
+| `postgresql.roles.perService.incidents.connect` | `false` | Connect poller-incidents' DB sink (`pollers.incidents.ingest.sink: db` required) as `distant_signal_incidents`, a `narrow` role (exactly its `db-grants.yaml` grants, never an app member). The role is created with the others whenever `perService.enabled`, unused until then. |
+| `postgresql.roles.perService.incidents.password` | `""` | Password. |
+| `postgresql.roles.perService.incidents.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.perService.incidents.existingSecretPasswordKey` | `postgres-incidents-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.perService.incidents.connectionLimit` | `""` | CONNECTION LIMIT. Empty: its pool (2) + 1. |
 | `postgresql.probes.startup.periodSeconds` | `10` | Startup probe period. Liveness starts only after `pg_isready` succeeds, so WAL redo after a reboot is never killed. |
 | `postgresql.probes.startup.failureThreshold` | `90` | Startup probe failures allowed (90 x 10s = 15 minutes of crash recovery). |
 | `postgresql.persistence.enabled` | `true` | Attach a PVC. When false an emptyDir is used and data is lost on reschedule. |
@@ -1859,6 +1864,7 @@ used for and why persistence defaults on.
 | `redis.acl.clients.trustConsumer` | `false` | trust-consumer, as user `trust-consumer`. |
 | `redis.acl.clients.fullCoverageConsumer` | `false` | full-coverage-consumer, as user `full-coverage-consumer`. |
 | `redis.acl.clients.trustBacklogConsumer` | `false` | trust-backlog-consumer, as user `trust-backlog-consumer`. |
+| `redis.acl.clients.pollerIncidents` | `false` | poller-incidents' DB sink (`pollers.incidents.ingest.sink: db`), as user `poller-incidents`. |
 | `redis.image.repository` | `redis` | Redis image repository (upstream image; this repo builds no Redis image). |
 | `redis.image.tag` | `7.4.11@sha256:…` | Redis 7.4, digest-pinned in the tag. |
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
@@ -2285,6 +2291,8 @@ separate top-level values (`pollerIrishRailGtfs`, `pollerIrishRailLive`,
 | `pollers.<name>.affinity` | `{}` | Pod affinity rules. |
 | `pollers.<name>.podAnnotations` | `{}` | Pod annotations. |
 | `pollers.<name>.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+| `pollers.incidents.ingest.sink` | `http` | incidents only (ingest plan 2c.2): `http` POSTs snapshots to the api; `db` writes Postgres directly (DATABASE_URL: the incidents role with `perService.incidents.connect`, else app) and XADDs `incident-text-changed` from the poller (the `poller-incidents` user with `redis.acl.clients.pollerIncidents`), with Postgres and Redis egress and admission. Rollback: `http`. |
+| `pollers.incidents.ingest.rowHeartbeat` | `true` | incidents only (plan 2c.6): `INCIDENTS_ROW_HEARTBEAT` for both writers (the api's `POST /private/incidents` and the `db` sink). `false` writes only changed rows (about 600k fewer `incidents` updates a day); readers show the feed's snapshot time. Rendered only when `false`. Rollback: `true`. |
 | `pollers.tfl.apiKeyEnvVar` | `TFL_APP_KEY` | tfl only: env var the key is passed in (the RDM pollers default to `RDM_API_KEY`). Do not change. |
 | `pollers.tfl.dlrPilotEnabled` | `false` | tfl only: DLR arrivals-diffing pilot (`DLR_PILOT_ENABLED`). |
 | `pollers.tfl.dlrPilotStopPointId` | `940GZZDLPOP` | tfl only: the DLR pilot's stop point (`DLR_PILOT_STOP_POINT_ID`). |

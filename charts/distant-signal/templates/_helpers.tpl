@@ -1002,6 +1002,9 @@ app.connectionLimitSlack.
 {{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "writer")) -}}
 {{- $total = add $total (include "distant-signal.ingestWriterPool" $root) -}}
 {{- end -}}
+{{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "incidents")) -}}
+{{- $total = add $total (include "distant-signal.pollerIncidentsPool" $root) -}}
+{{- end -}}
 {{- $total -}}
 {{- else -}}
 {{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
@@ -1055,10 +1058,11 @@ Every helper takes root unless it says otherwise.
 
 distant-signal.perServiceKeys: the services this chart can move to their
 own role, space-separated. Each must be a created (not `planned`) role in
-db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9).
+db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9);
+`incidents` is poller-incidents' DB sink's (plan 2c.3).
 */}}
 {{- define "distant-signal.perServiceKeys" -}}
-api aggregator enricher notifier writer
+api aggregator enricher notifier writer incidents
 {{- end }}
 
 {{- define "distant-signal.perServiceEnabled" -}}
@@ -1085,6 +1089,9 @@ True (non-empty) when the service connects as its own role. Takes (dict
 {{- end -}}
 {{- if and (eq .service "writer") (not .root.Values.ingestWriter.enabled) -}}
 {{- fail "postgresql.roles.perService.writer.connect needs ingestWriter.enabled: nothing else connects as the writer role." -}}
+{{- end -}}
+{{- if and (eq .service "incidents") (not (include "distant-signal.pollerIncidentsDbSink" .root)) -}}
+{{- fail "postgresql.roles.perService.incidents.connect needs pollers.incidents.enabled and pollers.incidents.ingest.sink: db: nothing else connects as the incidents role." -}}
 {{- end -}}
 true
 {{- end -}}
@@ -1128,8 +1135,49 @@ aggregator's archive pool, the ingest-writer's ingestWriter.database.maxConnecti
 {{- else if eq .service "writer" -}}
 {{- /* Its pool plus the loop-lock session (crates/ingest-writer). */ -}}
 {{- add1 (int $root.Values.ingestWriter.database.maxConnections) -}}
+{{- else if eq .service "incidents" -}}
+{{- /* crates/poller-incidents DEFAULT_MAX_CONNECTIONS. */ -}}
+2
 {{- else -}}
 5
+{{- end -}}
+{{- end }}
+
+{{/*
+poller-incidents' DB sink (ingest plan 2c.2): true (non-empty) when
+pollers.incidents is enabled with ingest.sink db. Validates the value.
+Takes root.
+*/}}
+{{- define "distant-signal.pollerIncidentsDbSink" -}}
+{{- $poller := .Values.pollers.incidents | default dict -}}
+{{- $sink := toString (dig "ingest" "sink" "http" $poller) -}}
+{{- if not (has $sink (list "http" "db")) -}}
+{{- fail (printf "pollers.incidents.ingest.sink must be http or db, not %q." $sink) -}}
+{{- end -}}
+{{- if and $poller.enabled (eq $sink "db") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+INCIDENTS_ROW_HEARTBEAT's value for both incident writers
+(pollers.incidents.ingest.rowHeartbeat, plan 2c.6): "false", or empty for
+the default (true). Takes root.
+*/}}
+{{- define "distant-signal.incidentsRowHeartbeatOff" -}}
+{{- if eq (toString (dig "ingest" "rowHeartbeat" true (.Values.pollers.incidents | default dict))) "false" -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+The DB sink's pool when it is on, else 0. Takes root.
+*/}}
+{{- define "distant-signal.pollerIncidentsPool" -}}
+{{- if include "distant-signal.pollerIncidentsDbSink" . -}}
+{{- include "distant-signal.servicePool" (dict "root" . "service" "incidents") -}}
+{{- else -}}
+0
 {{- end -}}
 {{- end }}
 
