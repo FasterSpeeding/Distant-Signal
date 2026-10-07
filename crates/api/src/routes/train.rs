@@ -476,7 +476,7 @@ async fn get_delay_repay_estimate(
     if mode.is_timetable_only() {
         return Ok(Json(build_delay_repay_response(
             &ticket,
-            DelayRepayReadings {
+            &DelayRepayReadings {
                 measured_at_crs,
                 measured_at_name,
                 ..DelayRepayReadings::default()
@@ -496,11 +496,12 @@ async fn get_delay_repay_estimate(
     .filter(|target| target.stop_crs.is_some());
     let (delay, outcome) = match target {
         Some(target) => {
-            let delay = crate::data::stop_delay::stop_delays(&app.database, &[target.clone()])
-                .await
-                .map_err(internal_error("read the delay at the ticket's destination"))?
-                .pop()
-                .flatten();
+            let delay =
+                crate::data::stop_delay::stop_delays(&app.database, std::slice::from_ref(&target))
+                    .await
+                    .map_err(internal_error("read the delay at the ticket's destination"))?
+                    .pop()
+                    .flatten();
             let outcome_target = crate::data::delay_repay_outcome::OutcomeTarget {
                 trains_id: target.trains_id,
                 train_uid: target.train_uid,
@@ -519,27 +520,11 @@ async fn get_delay_repay_estimate(
         }
         None => (None, None),
     };
-    // The train's own operator (CIF ATOC code), for a ticket whose operator
-    // text names no known scheme. Best effort: a failed read leaves the
-    // ticket's text alone to decide.
-    let atoc_code = match state.train_uid.as_deref() {
-        Some(uid) => crate::data::train_operator::operator_for_train(
-            &app.database,
-            uid,
-            state.service_date,
-        )
-        .await
-        .unwrap_or_else(|err| {
-            tracing::warn!(error = ?err, "failed to read the train's operator for Delay Repay");
-            None
-        })
-        .map(|operator| operator.code),
-        None => None,
-    };
+    let atoc_code = train_atoc_code(&app, &state).await;
 
     Ok(Json(build_delay_repay_response(
         &ticket,
-        DelayRepayReadings {
+        &DelayRepayReadings {
             delay,
             outcome,
             atoc_code,
@@ -548,6 +533,20 @@ async fn get_delay_repay_estimate(
         },
         mode,
     )))
+}
+
+/// The tracked train's own operator (CIF ATOC code), for a ticket whose
+/// operator text names no known scheme. Best effort: a failed read leaves
+/// the ticket's text alone to decide.
+async fn train_atoc_code(app: &App, state: &train_tracking::TrackedTrainState) -> Option<String> {
+    let uid = state.train_uid.as_deref()?;
+    crate::data::train_operator::operator_for_train(&app.database, uid, state.service_date)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = ?err, "failed to read the train's operator for Delay Repay");
+            None
+        })
+        .map(|operator| operator.code)
 }
 
 /// Where Delay Repay is measured, and that station's name when known: the
@@ -599,7 +598,7 @@ struct DelayRepayReadings {
 /// dropped, and the response says why in `unmeasurable_reason`.
 fn build_delay_repay_response(
     ticket: &train_tracking::TrackedTrainTicket,
-    readings: DelayRepayReadings,
+    readings: &DelayRepayReadings,
     mode: crate::data::schedule_services::ServiceMode,
 ) -> DelayRepayEstimateResponse {
     let live = mode.live_tracking();
@@ -2165,7 +2164,7 @@ mod tests {
     ) -> DelayRepayEstimateResponse {
         build_delay_repay_response(
             ticket,
-            DelayRepayReadings {
+            &DelayRepayReadings {
                 delay,
                 measured_at_crs: crs,
                 ..DelayRepayReadings::default()
@@ -2472,7 +2471,7 @@ mod tests {
 
         let not_reached = build_delay_repay_response(
             &ticket(Some("LNER")),
-            DelayRepayReadings {
+            &DelayRepayReadings {
                 delay: Some(projected(70)),
                 outcome: Some(Outcome::NotReached),
                 measured_at_crs: Some("EDB".into()),
@@ -2493,7 +2492,7 @@ mod tests {
 
         let departed = build_delay_repay_response(
             &ticket(Some("LNER")),
-            DelayRepayReadings {
+            &DelayRepayReadings {
                 delay: Some(arrived(31)),
                 outcome: Some(Outcome::DepartedOnly),
                 measured_at_crs: Some("EDB".into()),
@@ -2512,7 +2511,7 @@ mod tests {
         ret.ticket_type = Some("Off-Peak Return".into());
         let response = build_delay_repay_response(
             &ret,
-            DelayRepayReadings {
+            &DelayRepayReadings {
                 delay: Some(arrived(125)),
                 atoc_code: Some("XC".into()),
                 measured_at_crs: Some("EDB".into()),

@@ -463,6 +463,10 @@ pub enum CancelPosition {
 
 /// The facts [`classify_outcome`] reads, all at the ticket's destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent observations, not a state machine"
+)]
 pub struct OutcomeFacts {
     /// TRUST reported an ARRIVAL there.
     pub arrived: bool,
@@ -624,20 +628,25 @@ mod tests {
     use super::*;
     use crate::data::stop_delay::{DelayBasis, StopDelay};
 
+    /// (band, percentage, fare basis), or no estimate.
+    type Band = Option<(i32, Option<u8>, &'static str)>;
+    /// (borderline, threshold), or no estimate.
+    type Zone = Option<(bool, Option<i32>)>;
+
     fn scheme(operator: &str) -> OperatorScheme {
         scheme_for(Some(operator), None).unwrap()
     }
 
     /// (band, percentage, fare basis) for a final estimate of a ticket of
     /// unknown kind.
-    fn band(operator: &str, minutes: i32) -> Option<(i32, Option<u8>, &'static str)> {
+    fn band(operator: &str, minutes: i32) -> Band {
         estimate_delay_repay(scheme(operator), minutes, false, TicketKind::Unknown)
             .map(|e| (e.band_minutes, e.percentage, e.fare_basis))
     }
 
     #[test]
     fn dr15_band_edges() {
-        let expected: &[(i32, Option<(i32, Option<u8>, &str)>)] = &[
+        let expected: &[(i32, Band)] = &[
             (14, None),
             (15, Some((15, Some(25), "single"))),
             (29, Some((15, Some(25), "single"))),
@@ -852,7 +861,7 @@ mod tests {
     /// and once final, the band and percentage show as before.
     #[test]
     fn borderline_boundaries() {
-        let cases: &[(&str, &[(i32, Option<(bool, Option<i32>)>)])] = &[
+        let cases: &[(&str, &[(i32, Zone)])] = &[
             (
                 "Southeastern",
                 &[
@@ -1007,12 +1016,12 @@ mod tests {
         }
     }
 
-    fn delay(minutes: i32, provisional: bool) -> Option<StopDelay> {
-        Some(StopDelay {
+    fn delay(minutes: i32, provisional: bool) -> StopDelay {
+        StopDelay {
             minutes,
             basis: DelayBasis::Public,
             provisional,
-        })
+        }
     }
 
     #[test]
@@ -1023,7 +1032,7 @@ mod tests {
             ..AssessInputs::default()
         };
         let f = assess(AssessInputs {
-            delay: delay(45, false),
+            delay: Some(delay(45, false)),
             ..base
         });
         assert_eq!(f.estimate, None);
@@ -1044,7 +1053,7 @@ mod tests {
 
         let f = assess(AssessInputs {
             atoc_code: Some("GR"),
-            delay: delay(45, false),
+            delay: Some(delay(45, false)),
             outcome: Some(Outcome::Arrived),
             ..base
         });
@@ -1058,7 +1067,7 @@ mod tests {
     fn assess_an_own_scheme_operator_shows_the_delay_but_no_estimate() {
         let f = assess(AssessInputs {
             operator: Some("Merseyrail"),
-            delay: delay(45, false),
+            delay: Some(delay(45, false)),
             measured_at_crs: Some("LVC"),
             ..AssessInputs::default()
         });
@@ -1072,7 +1081,7 @@ mod tests {
     fn assess_not_reached_drops_the_delay_and_estimate_but_names_the_destination() {
         let f = assess(AssessInputs {
             operator: Some("LNER"),
-            delay: delay(70, true),
+            delay: Some(delay(70, true)),
             outcome: Some(Outcome::NotReached),
             measured_at_crs: Some("EDB"),
             measured_at_name: Some("Edinburgh"),

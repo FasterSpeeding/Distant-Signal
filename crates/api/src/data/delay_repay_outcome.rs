@@ -33,6 +33,10 @@ pub struct OutcomeTarget {
 }
 
 #[derive(sqlx::FromRow)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one row of independent yes/no facts, as the query selects them"
+)]
 struct FactsRow {
     ord: i64,
     arrived: bool,
@@ -200,6 +204,17 @@ mod tests {
         assert_eq!(cancel_position(None, None, None), Unknown);
     }
 
+    // name, (event type, CRS index) movements, status, cancellation
+    // (type, stanox index), Darwin-skipped B, expected.
+    type Case<'a> = (
+        &'a str,
+        &'a [(&'a str, usize)],
+        &'a str,
+        Option<(&'a str, Option<usize>)>,
+        bool,
+        Option<Outcome>,
+    );
+
     async fn connect() -> PgPool {
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
         sqlx::postgres::PgPoolOptions::new()
@@ -241,16 +256,6 @@ mod tests {
             .await
             .expect("seed stanox_crs");
 
-        // name, (event type, CRS index) movements, status, cancellation
-        // (type, stanox index), Darwin-skipped B, expected.
-        type Case<'a> = (
-            &'a str,
-            &'a [(&'a str, usize)],
-            &'a str,
-            Option<(&'a str, Option<usize>)>,
-            bool,
-            Option<Outcome>,
-        );
         let cases: &[Case<'_>] = &[
             (
                 "ARR",
