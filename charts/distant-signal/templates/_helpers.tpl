@@ -1002,6 +1002,9 @@ app.connectionLimitSlack.
 {{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "writer")) -}}
 {{- $total = add $total (include "distant-signal.ingestWriterPool" $root) -}}
 {{- end -}}
+{{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "schedule_reference")) -}}
+{{- $total = add $total (include "distant-signal.scheduleReferencePool" $root) -}}
+{{- end -}}
 {{- $total -}}
 {{- else -}}
 {{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
@@ -1086,6 +1089,9 @@ True (non-empty) when the service connects as its own role. Takes (dict
 {{- if and (eq .service "writer") (not .root.Values.ingestWriter.enabled) -}}
 {{- fail "postgresql.roles.perService.writer.connect needs ingestWriter.enabled: nothing else connects as the writer role." -}}
 {{- end -}}
+{{- if and (eq .service "schedule_reference") (not (include "distant-signal.scheduleReferenceDbSink" .root)) -}}
+{{- fail "postgresql.roles.perService.schedule_reference.connect needs scheduleFeed.enabled and scheduleFeed.reference.ingest.sink: db: nothing else connects as the schedule_reference role." -}}
+{{- end -}}
 true
 {{- end -}}
 {{- end }}
@@ -1128,8 +1134,48 @@ aggregator's archive pool, the ingest-writer's ingestWriter.database.maxConnecti
 {{- else if eq .service "writer" -}}
 {{- /* Its pool plus the loop-lock session (crates/ingest-writer). */ -}}
 {{- add1 (int $root.Values.ingestWriter.database.maxConnections) -}}
+{{- else if eq .service "schedule_reference" -}}
+{{- int $root.Values.scheduleFeed.reference.ingest.database.maxConnections -}}
 {{- else -}}
 5
+{{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when schedule-reference writes Postgres directly
+(scheduleFeed.reference.ingest.sink: db, ingest architecture plan 2a): its
+container gets DATABASE_URL and the schedulefeed pod may reach Postgres.
+Fails on a sink other than http or db. Takes root.
+*/}}
+{{- define "distant-signal.scheduleReferenceDbSink" -}}
+{{- $sink := toString .Values.scheduleFeed.reference.ingest.sink -}}
+{{- if not (has $sink (list "http" "db")) -}}
+{{- fail (printf "scheduleFeed.reference.ingest.sink must be http or db, not %q." $sink) -}}
+{{- end -}}
+{{- if and .Values.scheduleFeed.enabled (eq $sink "db") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when a schedulefeed container connects to Postgres (its
+NetworkPolicy egress, and the postgres policy's ingress). Today only
+schedule-reference's db sink; schedule-ingest's joins it in phase 2d.
+Takes root.
+*/}}
+{{- define "distant-signal.scheduleFeedPostgres" -}}
+{{- include "distant-signal.scheduleReferenceDbSink" . -}}
+{{- end }}
+
+{{/*
+schedule-reference's connections when its db sink is on, else 0. Takes
+root.
+*/}}
+{{- define "distant-signal.scheduleReferencePool" -}}
+{{- if include "distant-signal.scheduleReferenceDbSink" . -}}
+{{- int .Values.scheduleFeed.reference.ingest.database.maxConnections -}}
+{{- else -}}
+0
 {{- end -}}
 {{- end }}
 

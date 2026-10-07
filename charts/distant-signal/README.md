@@ -776,6 +776,21 @@ with egress to Postgres (Redis joins in phase 3); Postgres admits it; the
 PodMonitor scrapes it; `DistantSignalIngestWriterDown` fires when it is down
 (see `docs/alerts.md`).
 
+### schedule-reference's db sink (ingest plan 2a)
+
+`scheduleFeed.reference.ingest.sink: db` makes schedule-reference write its
+products to Postgres directly through `ds_store` instead of the api's
+`/private` routes (off by default: `http`). Only the `reference` container
+gets `DATABASE_URL`; it connects as `distant_signal_schedule_reference` with
+`postgresql.roles.perService.schedule_reference.connect`, else as the app
+role, with a pool of `scheduleFeed.reference.ingest.database.maxConnections`
+(3), counted in the connection budgets, and waits for the schema gate before
+its first poll. The schedulefeed NetworkPolicy gains Postgres egress and the
+postgres policy admits `schedulefeed`. It counts
+`distant_signal_db_writes_total{operation, outcome}` and
+`distant_signal_store_schedule_publish_staged_mismatch_total`, which the
+staged-mismatch alert reads alongside the api's name. Rollback: `http`.
+
 ## Password encoding caveat
 
 `DATABASE_URL` is a URL. A password containing any of `@ : / ? # [ ] %` must
@@ -1352,6 +1367,11 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.perService.writer.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.roles.perService.writer.existingSecretPasswordKey` | `postgres-writer-password` | Key within `existingSecret` (and in the chart's Secret). |
 | `postgresql.roles.perService.writer.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `ingestWriter.database.maxConnections` + 1 (the loop-lock session). |
+| `postgresql.roles.perService.schedule_reference.connect` | `false` | Connect schedule-reference's db sink (`scheduleFeed.reference.ingest.sink: db` required) as `distant_signal_schedule_reference`, a narrow role (not a member of app; exactly its `files/db-grants.yaml` grants). Created with the others whenever `perService.enabled`, unused until then. |
+| `postgresql.roles.perService.schedule_reference.password` | `""` | Password. |
+| `postgresql.roles.perService.schedule_reference.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.perService.schedule_reference.existingSecretPasswordKey` | `postgres-schedule-reference-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.perService.schedule_reference.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `scheduleFeed.reference.ingest.database.maxConnections` + 1. |
 | `postgresql.probes.startup.periodSeconds` | `10` | Startup probe period. Liveness starts only after `pg_isready` succeeds, so WAL redo after a reboot is never killed. |
 | `postgresql.probes.startup.failureThreshold` | `90` | Startup probe failures allowed (90 x 10s = 15 minutes of crash recovery). |
 | `postgresql.persistence.enabled` | `true` | Attach a PVC. When false an emptyDir is used and data is lost on reschedule. |
@@ -2469,6 +2489,8 @@ can run at once, deduplicated by content; with neither the render fails.
 | `scheduleFeed.reference.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `scheduleFeed.reference.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `scheduleFeed.reference.pollIntervalSecs` | `1800` | How often the storage folder is checked for a new complete delivery. |
+| `scheduleFeed.reference.ingest.sink` | `http` | Where the products go (`INGEST_SINK`, ingest plan 2a): `http`, the api's `/private` routes; `db`, Postgres directly (the container gets `DATABASE_URL`, the pod Postgres egress, and the schema gate runs before the first poll). Rollback is `http`. |
+| `scheduleFeed.reference.ingest.database.maxConnections` | `3` | The `db` sink's pool (`DATABASE_MAX_CONNECTIONS`). |
 | `scheduleFeed.reference.healthPort` | `8091` | Health port. Must differ from `workerHealth.port`, which the ingest container in the same pod uses. |
 | `scheduleFeed.reference.progressStallSecs` | `7200` | `/livez` stall window: one cycle publishes every derived product of a full timetable. |
 | `scheduleFeed.reference.metricsPort` | `9092` | Prometheus `/metrics` port. Must differ from `metrics.port`, which the ingest container uses. |

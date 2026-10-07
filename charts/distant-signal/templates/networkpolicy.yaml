@@ -60,6 +60,11 @@ spec:
                   # The ingest-writer (ingest-writer-deployment.yaml).
                   - ingest-writer
                   {{- end }}
+                  {{- if include "distant-signal.scheduleFeedPostgres" . }}
+                  # schedule-reference's db sink
+                  # (scheduleFeed.reference.ingest.sink: db, plan 2a).
+                  - schedulefeed
+                  {{- end }}
         {{- with .Values.networkPolicy.postgresClients }}
         # networkPolicy.postgresClients: workloads outside this chart, e.g.
         # a postgres-exporter or a pg_dump backup CronJob.
@@ -519,7 +524,11 @@ the key's OAuth endpoint. */}}
 {{- end }}
 {{- with .Values.scheduleFeed.bucket.baseUrl }}{{ $sfUrls = append $sfUrls . }}{{ end }}
 {{- end }}
-{{- with include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" (dict "api" true) "internet" true "urls" $sfUrls) }}
+{{- /* Postgres with schedule-reference's db sink (plan 2a). The pod's
+containers share one network namespace, so the egress is the pod's. */}}
+{{- $sfDeps := dict "api" true }}
+{{- if include "distant-signal.scheduleFeedPostgres" . }}{{ $_ := set $sfDeps "postgres" true }}{{ end }}
+{{- with include "distant-signal.egressSection" (dict "root" . "component" "schedulefeed" "deps" $sfDeps "internet" true "urls" $sfUrls) }}
   {{- . | nindent 2 }}
 {{- end }}
 {{- end }}
