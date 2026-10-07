@@ -381,7 +381,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
     const links = screen.getAllByRole('link');
     const originOrder = links
-      .map((link) => link.textContent ?? '')
+      .map((link) => link.textContent)
       .filter((text) => text.startsWith('WAT') || text.startsWith('PAD'));
     expect(originOrder).toEqual([expect.stringMatching(/^WAT/), expect.stringMatching(/^PAD/)]);
   });

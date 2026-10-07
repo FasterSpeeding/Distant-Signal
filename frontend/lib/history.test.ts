@@ -175,7 +175,7 @@ describe('groupHistoryByDay', () => {
       entry('2026-08-20T10:00:00Z', [[10, 'Good Service']]),
     ]);
     expect(days.map((d) => d.day)).toEqual(['2026-08-20', '2026-08-19']);
-    expect(days[1]!.spans[0]!.reason).toBe('Minor delays');
+    expect(days[1]!.spans[0].reason).toBe('Minor delays');
   });
 });
 

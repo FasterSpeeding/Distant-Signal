@@ -23,7 +23,7 @@ export function IncidentStateBadge({
   sourceRemovedAt,
 }: {
   isCleared: boolean;
-  sourceRemovedAt?: string | null;
+  sourceRemovedAt?: string | null | undefined;
 }) {
   const state = incidentState({ isCleared, sourceRemovedAt });
   if (state === 'cleared') {

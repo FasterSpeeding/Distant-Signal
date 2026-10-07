@@ -67,7 +67,7 @@ export function TextLink({
 }: {
   href: string;
   children: React.ReactNode;
-  underline?: 'hover' | 'always';
+  underline?: 'hover' | 'always' | undefined;
   inline?: boolean;
   // Left `undefined` by default -- Mantine's own `Text` default (`md`,
   // 16px) is what every existing call site was already implicitly getting,
@@ -82,7 +82,7 @@ export function TextLink({
   // `--mantine-font-size-sm` on `.mantine-Menu-item`) -- so `sm` is not a
   // new convention invented here, it is the one the rest of the chrome
   // already landed on.
-  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined;
   // Task 3.4.8 (AllLinesTable's Name column): a wrapped two-line link at
   // Mantine `Text`'s default line-height read as two separate stacked
   // items rather than one wrapped name at narrow widths. Optional --
@@ -114,7 +114,7 @@ export function TextLink({
   // stand-in for it (station-accessibility rich text's raw-URL-as-link-text
   // fix, review §3.5.9: the link reads "nationalrail.co.uk" on screen but
   // still discloses the exact URL on hover/focus).
-  title?: string;
+  title?: string | undefined;
   // An explicit accessible name, for one of N identically-worded links in
   // a list -- "History" on every card in `/operators`' grid, where the
   // distinguishing text (the operator's name) is a sibling element and so
@@ -135,7 +135,7 @@ export function TextLink({
   // `aria-current="page"` for a nav link pointing at the page being shown
   // (`PrimaryNavLink`). `globals.css` keys the active underline off it, so
   // the state is announced and drawn by the same attribute.
-  ariaCurrent?: 'page';
+  ariaCurrent?: 'page' | undefined;
   tone?: 'anchor' | 'inherit';
   external?: boolean;
 }) {
@@ -144,9 +144,9 @@ export function TextLink({
     <Text
       c={inheritTone ? 'inherit' : ANCHOR_COLOR}
       inherit={inheritTone}
-      component={inline ? 'span' : undefined}
-      size={size}
-      lh={lh}
+      {...(inline && { span: true })}
+      {...(size !== undefined && { size })}
+      {...(lh !== undefined && { lh })}
     >
       {children}
       {external && <ExternalLinkIcon />}
@@ -162,8 +162,8 @@ export function TextLink({
     'data-text-link-tone': inheritTone ? 'inherit' : undefined,
     target: target ?? (external ? '_blank' : undefined),
     rel: rel ?? (external ? 'noopener noreferrer' : undefined),
-    onClick,
-    onKeyDown,
+    ...(onClick && { onClick }),
+    ...(onKeyDown && { onKeyDown }),
     title,
     'aria-label': ariaLabel,
     'aria-current': ariaCurrent,
@@ -172,7 +172,7 @@ export function TextLink({
     return <a {...anchorProps}>{text}</a>;
   }
   return (
-    <Link {...anchorProps} prefetch={prefetch}>
+    <Link {...anchorProps} {...(prefetch !== undefined && { prefetch })}>
       {text}
     </Link>
   );

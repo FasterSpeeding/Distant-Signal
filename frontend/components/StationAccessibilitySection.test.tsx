@@ -165,7 +165,7 @@ describe('StationAccessibilitySection', () => {
       />,
     );
     const control = screen.getByRole('button', { name: /car parks$/ });
-    expect(control.getAttribute('aria-label')).toContain(control.textContent?.trim() ?? '');
+    expect(control.getAttribute('aria-label')).toContain(control.textContent.trim());
   });
 
   // The backend forwards any non-null allowlisted value verbatim, including

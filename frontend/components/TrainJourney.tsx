@@ -46,19 +46,19 @@ export function TrainJourney({
   legDestinationCrs,
 }: {
   state: TrainJourneyState;
-  suppressTrainUidHeading?: boolean;
+  suppressTrainUidHeading?: boolean | undefined;
   /** CRS codes of stops on the journey-view leg this train is bound to
    * that a live Darwin sample reports as skipped today (§5.2) --
    * `undefined` for every caller outside the journey view, which has no
    * leg-scoped skip concept (Judgment Call 7). Threaded straight through
    * to `JourneyTimeline`. */
-  skippedCrs?: string[];
+  skippedCrs?: string[] | undefined;
   /** The journey-view leg's own destination CRS (2026-09-22 UX review
    * finding I16/2.7) -- `undefined` for every caller outside the journey
    * view, same posture as `skippedCrs`. Threaded straight through to
    * `JourneyTimeline`'s `legDestinationCrs`, see that prop's own doc
    * comment. */
-  legDestinationCrs?: string | null;
+  legDestinationCrs?: string | null | undefined;
 }) {
   // See `JourneyTimeline.tsx`'s own doc comment on `JourneyEndpointNames`
   // (Task 3.6.2) -- the tracked pin's own origin/destination, always known

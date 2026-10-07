@@ -64,6 +64,7 @@ export function TimetableMore({
         return;
       }
       const page = (await response.json()) as LineTimetablePage;
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abort() can land during the await above; TypeScript keeps the pre-await narrowing to false
       if (controller.signal.aborted) return;
       setRows((current) => [...current, ...page.trains]);
       setCursor(page.nextCursor);

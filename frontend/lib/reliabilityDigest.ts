@@ -150,8 +150,8 @@ export function computeDelayRepayRollup(tickets: TicketListItem[]): DelayRepayRo
   const eligible = attached.filter((t) => t.estimate !== null);
 
   const bandCounts: Record<string, number> = {};
-  for (const t of eligible) {
-    const estimate = t.estimate!;
+  for (const { estimate } of eligible) {
+    if (estimate === null) continue;
     const key = `${estimate.scheme}-${estimate.bandMinutes}`;
     bandCounts[key] = (bandCounts[key] ?? 0) + 1;
   }

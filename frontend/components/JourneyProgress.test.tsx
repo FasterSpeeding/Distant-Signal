@@ -454,7 +454,7 @@ describe('JourneyProgress', () => {
       if (label !== null) return label.trim();
       const clone = el.cloneNode(true) as HTMLElement;
       clone.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
-      return (clone.textContent ?? '').trim();
+      return clone.textContent.trim();
     }
 
     /** Everything the Tab key would stop on inside `container`, in DOM

@@ -137,7 +137,7 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
       onKeyDown={
         clickable
           ? (event) => {
-              if (event.key === 'Enter' || event.key === ' ') onSelect?.();
+              if (event.key === 'Enter' || event.key === ' ') onSelect();
             }
           : undefined
       }

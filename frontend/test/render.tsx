@@ -34,7 +34,7 @@ type RenderWithMantineOptions = RenderOptions & {
 export function renderWithMantine(ui: ReactNode, options: RenderWithMantineOptions = {}) {
   const { defaultColorScheme, ...renderOptions } = options;
   return render(
-    <MantineProvider theme={theme} defaultColorScheme={defaultColorScheme} env="test">
+    <MantineProvider theme={theme} {...(defaultColorScheme !== undefined && { defaultColorScheme })} env="test">
       {ui}
     </MantineProvider>,
     renderOptions,

@@ -60,7 +60,7 @@ export function ItineraryOption({
   /** This itinerary's share of its journey's `viaSatisfiedBy`: the
    * "Pass through" stations its own legs passed, each shown under the leg
    * that passed it. */
-  viaPasses?: TripPlanViaSatisfied[];
+  viaPasses?: TripPlanViaSatisfied[] | undefined;
 }) {
   const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
 

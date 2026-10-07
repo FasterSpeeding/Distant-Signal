@@ -180,7 +180,7 @@ export function AllLinesTable({
    * state, never update the URL, so tapping a dashboard tile then
    * clearing the filter left `?statusGroup=severe` in the address bar
    * disagreeing with an unfiltered table). */
-  initialStatusGroup?: SeverityGroup;
+  initialStatusGroup?: SeverityGroup | undefined;
 }) {
   const router = useRouter();
   const pathname = usePathname();

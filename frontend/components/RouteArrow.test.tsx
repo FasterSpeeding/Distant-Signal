@@ -10,7 +10,7 @@ import { RouteArrow, RouteText } from './RouteArrow';
 function spokenText(el: Element): string {
   const clone = el.cloneNode(true) as Element;
   clone.querySelectorAll('[aria-hidden="true"]').forEach((node) => node.remove());
-  return (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return clone.textContent.replace(/\s+/g, ' ').trim();
 }
 
 describe('RouteArrow', () => {

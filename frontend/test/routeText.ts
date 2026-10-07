@@ -16,7 +16,7 @@ export function visibleText(element: Element): string {
     const before = icon.previousSibling;
     if (before?.nodeType === 3 && before.textContent === ' ') before.remove();
   });
-  return (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return clone.textContent.replace(/\s+/g, ' ').trim();
 }
 
 /** A `*ByText` matcher on `visibleText`, for route text: the arrow and the

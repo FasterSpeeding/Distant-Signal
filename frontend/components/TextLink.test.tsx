@@ -64,10 +64,11 @@ describe('TextLink', () => {
         <TextLink href="https://www.nationalrail.co.uk">National Rail</TextLink>
       </>,
     );
-    for (const [name, href] of [
+    const links: [name: string, href: string][] = [
       ['hello@example.com', 'mailto:hello@example.com'],
       ['National Rail', 'https://www.nationalrail.co.uk'],
-    ]) {
+    ];
+    for (const [name, href] of links) {
       const link = screen.getByRole('link', { name });
       expect(link).toHaveAttribute('href', href);
       // The next/link mock above stamps data-prefetch; a plain <a> doesn't.

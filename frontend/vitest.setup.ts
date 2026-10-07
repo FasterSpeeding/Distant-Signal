@@ -2,6 +2,18 @@ import '@testing-library/jest-dom/vitest';
 import { afterAll, vi } from 'vitest';
 import { installTimerLeakGuard } from './test/timerLeakGuard';
 
+// The jsdom APIs polyfilled below, typed as possibly missing: lib.dom.d.ts
+// declares them always present, but jsdom implements none of them.
+function jsdomWindow(): Partial<Pick<typeof window, 'matchMedia' | 'ResizeObserver'>> {
+  return window;
+}
+function jsdomHTMLElementPrototype(): Partial<Pick<HTMLElement, 'scrollIntoView'>> {
+  return window.HTMLElement.prototype;
+}
+function jsdomElementPrototype(): Partial<Pick<Element, 'scrollTo'>> {
+  return window.Element.prototype;
+}
+
 // Note on theme parity: this file runs once before test *modules* load, so
 // it can't inject props into a component tree — there's no JSX here to
 // wrap. Each test file wraps its subject in its own local `MantineProvider`
@@ -11,7 +23,7 @@ import { installTimerLeakGuard } from './test/timerLeakGuard';
 
 // jsdom doesn't implement matchMedia, but Mantine's MantineProvider calls it
 // during color-scheme setup. Polyfill it so components can render in tests.
-if (typeof window !== 'undefined' && !window.matchMedia) {
+if (typeof window !== 'undefined' && !jsdomWindow().matchMedia) {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
@@ -30,7 +42,7 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
 // jsdom doesn't implement ResizeObserver, but Mantine's SegmentedControl uses
 // it (via FloatingIndicator) to size/position the selected-segment highlight.
 // Polyfill it so components can render in tests.
-if (typeof window !== 'undefined' && !window.ResizeObserver) {
+if (typeof window !== 'undefined' && !jsdomWindow().ResizeObserver) {
   class ResizeObserverStub {
     observe = vi.fn();
     unobserve = vi.fn();
@@ -48,7 +60,7 @@ if (typeof window !== 'undefined' && !window.ResizeObserver) {
 // `items[index]?.scrollIntoView is not a function` once that timer fires.
 // Same "polyfill the missing jsdom API" pattern as ResizeObserver/
 // matchMedia above.
-if (typeof window !== 'undefined' && !window.HTMLElement.prototype.scrollIntoView) {
+if (typeof window !== 'undefined' && !jsdomHTMLElementPrototype().scrollIntoView) {
   window.HTMLElement.prototype.scrollIntoView = vi.fn();
 }
 
@@ -58,7 +70,7 @@ if (typeof window !== 'undefined' && !window.HTMLElement.prototype.scrollIntoVie
 // instead of `scrollIntoView`, which would also scroll the page. Same
 // "polyfill the missing jsdom API" pattern as the block above; tests that
 // assert on the call replace this stub with their own `vi.fn()`.
-if (typeof window !== 'undefined' && !window.Element.prototype.scrollTo) {
+if (typeof window !== 'undefined' && !jsdomElementPrototype().scrollTo) {
   window.Element.prototype.scrollTo = vi.fn();
 }
 

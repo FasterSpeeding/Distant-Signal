@@ -79,7 +79,7 @@ export function TrackThisTrainButton({
 }: {
   uid: string;
   date: string;
-  attachTicketId?: number;
+  attachTicketId?: number | undefined;
   size?: 'xs' | 'sm' | 'md';
   /** What the service is, for the button text ("Track this bus"). A bus or
    * ferry is tracked timetable-only: it is added to your list with its

@@ -49,7 +49,7 @@ export function PlatformBadge({
   platform: string | null;
   plannedPlatform: string | null;
   platformChanged: boolean;
-  platformStatus?: PlatformStatus | null;
+  platformStatus?: PlatformStatus | null | undefined;
 }) {
   if (platform === null) return null;
 

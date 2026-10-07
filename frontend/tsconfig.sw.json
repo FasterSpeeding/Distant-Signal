@@ -16,8 +16,6 @@
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
-    // On here, unlike the app (see tsconfig.base.json).
-    "exactOptionalPropertyTypes": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },

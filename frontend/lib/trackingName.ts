@@ -31,7 +31,7 @@ export function trackedTrainDisplayName(train: {
   pinDestinationCrs: string | null;
   pinDestinationName: string | null;
   serviceDate: string;
-  pinScheduledDeparture?: string | null;
+  pinScheduledDeparture?: string | null | undefined;
 }): string {
   if (train.customName) return train.customName;
 

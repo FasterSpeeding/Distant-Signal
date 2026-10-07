@@ -55,11 +55,11 @@ export function LoginLink({
   size,
 }: {
   children: React.ReactNode;
-  underline?: 'hover' | 'always';
+  underline?: 'hover' | 'always' | undefined;
   // Passed straight through to `TextLink`'s own `size` -- see that prop's
   // doc comment for why `AuthStatus`'s nav-bar use of this component now
   // sets it explicitly (review §2.16).
-  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | undefined;
 }) {
   const href = useLoginHref();
   return (

@@ -69,7 +69,7 @@ export function JourneyTimeline({
   legDestinationCrs,
 }: {
   stops: JourneyStop[];
-  endpointNames?: JourneyEndpointNames;
+  endpointNames?: JourneyEndpointNames | undefined;
   /** CRS codes of stops on THIS leg that a live Darwin sample reports as
    * no longer being called at today (§5.2) -- optional, `undefined` for
    * every caller outside the journey view (single-train tracking has no
@@ -77,7 +77,7 @@ export function JourneyTimeline({
    * practice (a leg's own origin and/or destination), but this accepts a
    * plain list rather than two named booleans so `JourneyStopRow` doesn't
    * need to know which end it's rendering. */
-  skippedCrs?: string[];
+  skippedCrs?: string[] | undefined;
   /** The CRS the TRAVELLER themselves gets off at on this leg
    * (`JourneyLegDetail.destinationCrs`) -- distinct from the underlying
    * train's own overall terminus, which may run on past it (2026-09-22 UX
@@ -90,7 +90,7 @@ export function JourneyTimeline({
    * `stop.kind`, gets a small "You get off here" marker, and every row
    * PAST it is dimmed -- the rest of the train's route is real information
    * but not what this leg's traveller needs to read first. */
-  legDestinationCrs?: string | null;
+  legDestinationCrs?: string | null | undefined;
 }) {
   const total = stops.length;
   // Genuinely degenerate case (Task 3.6.2 point 4): every stop -- including
@@ -328,8 +328,8 @@ function JourneyStopRow({
   stop: JourneyStop;
   index: number;
   total: number;
-  endpointNames?: JourneyEndpointNames;
-  skippedCrs?: string[];
+  endpointNames?: JourneyEndpointNames | undefined;
+  skippedCrs?: string[] | undefined;
   showDelayColumn: boolean;
   showPlatformColumn: boolean;
   isLegDestination: boolean;
@@ -387,7 +387,7 @@ function JourneyStopRow({
     <TableTr>
       <TableTd>
         <Group gap={6} wrap="nowrap">
-          <Text fw={bold ? 700 : 400} c={isPastLegDestination ? 'dimmed' : reached ? undefined : 'dimmed'}>
+          <Text fw={bold ? 700 : 400} {...((isPastLegDestination || !reached) && { c: 'dimmed' })}>
             {/* A bus stop or ferry terminal has no station page of its own:
                 it links to the station it belongs to, when it has one. */}
             {isRoadOrWaterStop(stop) && stop.parentCrs ? (
@@ -431,7 +431,7 @@ function JourneyStopRow({
       </TableTd>
       <TableTd>
         {actual ? (
-          <Text size="sm" c={isPastLegDestination ? 'dimmed' : undefined}>
+          <Text size="sm" {...(isPastLegDestination && { c: 'dimmed' })}>
             {formatTime(actual)}
           </Text>
         ) : (

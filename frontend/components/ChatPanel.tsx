@@ -392,7 +392,7 @@ function ChatErrorAlert({
   signingIn,
 }: {
   error: ChatError;
-  onSignIn?: () => void;
+  onSignIn?: (() => void) | undefined;
   signingIn: boolean;
 }) {
   const signInButton = (label: string) =>
@@ -514,7 +514,7 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
           (`lib/severity.ts`'s `GROUP_COLOR`), the same reason
           `app/connect-claude/page.tsx`'s own informational `Alert` moved
           off blue. */}
-      <Card withBorder padding="sm" radius="md" maw="80%" bg={isUser ? 'grape.0' : undefined}>
+      <Card withBorder padding="sm" radius="md" maw="80%" {...(isUser && { bg: 'grape.0' })}>
         {!isUser && (
           <Group gap={4} mb={4}>
             <AiGeneratedBadge label="AI-generated" note={CHAT_AI_NOTE} />

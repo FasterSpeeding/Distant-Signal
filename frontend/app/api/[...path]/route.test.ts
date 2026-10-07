@@ -655,7 +655,7 @@ describe('/api/[...path] proxy', () => {
   // HEAD with a body. HEAD now goes upstream as HEAD, like GET minus the body.
   describe('HEAD', () => {
     function headRequest(headers?: Record<string, string>): NextRequest {
-      return makeRequest('/api/auth/session', { method: 'HEAD', headers });
+      return makeRequest('/api/auth/session', headers ? { method: 'HEAD', headers } : { method: 'HEAD' });
     }
     const params = { params: Promise.resolve({ path: ['auth', 'session'] }) };
 

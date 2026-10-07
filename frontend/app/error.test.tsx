@@ -13,7 +13,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 function errorWithDigest(message: string, digest?: string): Error & { digest?: string } {
-  return Object.assign(new Error(message), { digest });
+  return digest === undefined ? new Error(message) : Object.assign(new Error(message), { digest });
 }
 
 const reset = vi.fn();

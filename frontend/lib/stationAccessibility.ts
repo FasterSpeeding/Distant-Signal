@@ -1,5 +1,6 @@
 import { sanitizeRichText } from './sanitizeHtml';
 import type { StationAccessibilityData } from './types';
+import { ownValue } from './ownValue';
 
 /** Fixed display order and grouping for the twelve allowlisted keys -- see
  * docs/superpowers/specs/2026-09-12-station-accessibility-design.md
@@ -67,8 +68,9 @@ const ACRONYM_WORDS: Record<string, string> = {
 };
 
 export function humanizeKey(key: string): string {
-  if (Object.prototype.hasOwnProperty.call(KEY_LABEL_OVERRIDES, key)) {
-    return KEY_LABEL_OVERRIDES[key]!;
+  const override = ownValue(KEY_LABEL_OVERRIDES, key);
+  if (override !== undefined) {
+    return override;
   }
   const words = key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -76,8 +78,8 @@ export function humanizeKey(key: string): string {
     .toLowerCase()
     .split(' ')
     .filter(Boolean);
-  if (words.length === 0) return key;
   const [firstWord, ...restWords] = words;
+  if (firstWord === undefined) return key;
   // Signal Box Audit, flib Low finding: "prototype-key lookups can render a
   // function as a label". `firstWord`/`word` are camelCase tokens split out
   // of an arbitrary feed field name -- if one is literally `constructor`
@@ -87,11 +89,10 @@ export function humanizeKey(key: string): string {
   // is neither `null` nor `undefined` -- this function is the generic
   // fallback label generator for every unrecognised field this module
   // renders (`pushField`'s `humanizeKey(key)`), so that function value would
-  // reach the page as a label. `hasOwnProperty` keeps both lookups to
+  // reach the page as a label. `ownValue` keeps both lookups to
   // ACRONYM_WORDS' own three declared entries.
-  const acronym = (word: string): string | undefined =>
-    Object.prototype.hasOwnProperty.call(ACRONYM_WORDS, word) ? ACRONYM_WORDS[word] : undefined;
-  const first = acronym(firstWord!) ?? firstWord!.charAt(0).toUpperCase() + firstWord!.slice(1);
+  const acronym = (word: string): string | undefined => ownValue(ACRONYM_WORDS, word);
+  const first = acronym(firstWord) ?? firstWord.charAt(0).toUpperCase() + firstWord.slice(1);
   const rest = restWords.map((word) => acronym(word) ?? word);
   return [first, ...rest].join(' ');
 }
@@ -501,9 +502,11 @@ function pushLabelled(parts: LabelledNode[], label: string, value: unknown, dept
 // Pattern B -- opening times
 // ---------------------------------------------------------------------------
 
-const WEEK_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+type Weekday = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday';
 
-const WEEK_SHORT: Record<string, string> = {
+const WEEK_ORDER: readonly Weekday[] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+const WEEK_SHORT: Record<Weekday, string> = {
   Monday: 'Mon',
   Tuesday: 'Tue',
   Wednesday: 'Wed',
@@ -525,23 +528,21 @@ export function formatDays(value: unknown): string {
   if (!Array.isArray(value)) return '';
   const tokens = value.filter((day): day is string => typeof day === 'string');
   const weekdays = WEEK_ORDER.filter((day) => tokens.includes(day));
-  const others = [...new Set(tokens.filter((day) => !WEEK_ORDER.includes(day)))];
+  const others = [...new Set(tokens.filter((day) => !WEEK_ORDER.some((weekday) => weekday === day)))];
 
-  const parts: string[] = [];
-  let start = 0;
-  while (start < weekdays.length) {
-    let end = start;
-    while (
-      end + 1 < weekdays.length &&
-      WEEK_ORDER.indexOf(weekdays[end + 1]!) === WEEK_ORDER.indexOf(weekdays[end]!) + 1
-    ) {
-      end += 1;
+  // Runs of consecutive weekdays, each kept as its first and last day.
+  const runs: { first: Weekday; last: Weekday }[] = [];
+  for (const day of weekdays) {
+    const run = runs[runs.length - 1];
+    if (run && WEEK_ORDER.indexOf(day) === WEEK_ORDER.indexOf(run.last) + 1) {
+      run.last = day;
+    } else {
+      runs.push({ first: day, last: day });
     }
-    parts.push(
-      end > start ? `${WEEK_SHORT[weekdays[start]!]}–${WEEK_SHORT[weekdays[end]!]}` : WEEK_SHORT[weekdays[start]!]!,
-    );
-    start = end + 1;
   }
+  const parts = runs.map(({ first, last }) =>
+    first === last ? WEEK_SHORT[first] : `${WEEK_SHORT[first]}–${WEEK_SHORT[last]}`,
+  );
   return [...parts, ...others].join(', ');
 }
 
@@ -774,8 +775,9 @@ function renderCollectionItem(item: Record<string, unknown>, depth: number): Col
   // bare PDF URL under the name. Keyed on the field name because there is
   // nothing structural to key on -- a lone string sibling is exactly what
   // the bullet branch is for -- and the design names both explicitly.
-  if (siblings.length === 1) {
-    const [key, own] = siblings[0]!;
+  const [soleSibling] = siblings;
+  if (siblings.length === 1 && soleSibling) {
+    const [key, own] = soleSibling;
     if (key === 'crsCode' && typeof own === 'string' && own.trim() !== '') {
       const crs = own.trim();
       return {
@@ -932,7 +934,16 @@ function findSoleCodeLikeKey(node: AccessibilityNode): string | undefined {
   if (node.kind !== 'fields') return undefined;
   const codeLabels = [...CODE_LIKE_FIELDS].map((k) => humanizeKey(k));
   const matches = node.fields.filter((f) => f.label !== undefined && codeLabels.includes(f.label));
-  return matches.length === 1 ? [...CODE_LIKE_FIELDS].find((k) => humanizeKey(k) === matches[0]!.label) : undefined;
+  const [soleMatch] = matches;
+  return matches.length === 1 && soleMatch
+    ? [...CODE_LIKE_FIELDS].find((k) => humanizeKey(k) === soleMatch.label)
+    : undefined;
+}
+
+/** `JSON.stringify` as it behaves rather than as lib.d.ts types it: the
+ * result is `undefined` for `undefined`, functions and symbols. */
+function stringifyOrUndefined(value: unknown): string | undefined {
+  return JSON.stringify(value, null, 2);
 }
 
 /** §4.9's last resort. `JSON.stringify` itself can throw (a cycle, a
@@ -942,7 +953,7 @@ function findSoleCodeLikeKey(node: AccessibilityNode): string | undefined {
  * than assumed away. */
 function raw(value: unknown): AccessibilityNode {
   try {
-    return { kind: 'raw', json: JSON.stringify(value, null, 2) ?? String(value) };
+    return { kind: 'raw', json: stringifyOrUndefined(value) ?? String(value) };
   } catch {
     return { kind: 'raw', json: String(value) };
   }

@@ -22,7 +22,7 @@ export function LoginConsentNote({ mt }: { mt?: MantineSpacing }) {
   const published = useContext(LoginConsentContext);
   if (!published) return null;
   return (
-    <Text size="xs" c="dimmed" mt={mt} data-login-consent>
+    <Text size="xs" c="dimmed" {...(mt !== undefined && { mt })} data-login-consent>
       By logging in you agree to our{' '}
       <TextLink href="/terms" size="xs" underline="always" inline>
         terms of use

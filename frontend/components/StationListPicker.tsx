@@ -99,7 +99,7 @@ export function StationListPicker({
   ordered?: boolean;
   /** Whether a bus stop's or ferry terminal's `tiploc:` code may be added. */
   allowStops: boolean;
-  error?: string | null;
+  error?: string | null | undefined;
   /** What one row is, for the buttons' names, e.g. "via" or "avoided station". */
   itemNoun: string;
 }) {
@@ -141,22 +141,26 @@ export function StationListPicker({
   }
 
   function remove(index: number) {
-    const code = values[index]!;
+    const code = values[index];
+    if (code === undefined) return;
     onChange(values.filter((_, i) => i !== index));
     setAnnouncement(`Removed ${label_(code)} from ${label}.`);
   }
 
   function move(index: number, direction: -1 | 1) {
     const target = index + direction;
-    if (target < 0 || target >= values.length) return;
+    const moving = values[index];
+    const displaced = values[target];
+    if (moving === undefined || displaced === undefined) return;
     const next = [...values];
-    [next[index], next[target]] = [next[target]!, next[index]!];
+    next[index] = displaced;
+    next[target] = moving;
     onChange(next);
     // Keep focus on the same button of the moved row, or its other button
     // once it reaches an end.
     const atEnd = direction === -1 ? target === 0 : target === values.length - 1;
     setFocusKey(`${target}:${atEnd ? (direction === -1 ? 'down' : 'up') : direction === -1 ? 'up' : 'down'}`);
-    setAnnouncement(`Moved ${label_(values[index]!)} to position ${target + 1} of ${values.length}.`);
+    setAnnouncement(`Moved ${label_(moving)} to position ${target + 1} of ${values.length}.`);
   }
 
   const shownError = error ?? typedError;

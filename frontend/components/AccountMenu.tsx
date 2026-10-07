@@ -111,7 +111,7 @@ export function AccountMenu({
           onClick={logoutOtherSessions}
           disabled={loggingOutOtherSessions}
           closeMenuOnClick={false}
-          color={logoutOtherSessionsError ? 'red' : undefined}
+          {...(logoutOtherSessionsError && { color: 'red' })}
         >
           {logoutOtherSessionsError ? 'Could not log out other sessions -- try again' : 'Log out other sessions'}
         </Menu.Item>

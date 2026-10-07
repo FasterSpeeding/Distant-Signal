@@ -51,8 +51,10 @@ function referenceAreaBounds(
 ): { x1: string; x2: string } {
   if (span.startKey !== span.endKey) return { x1: span.startKey, x2: span.endKey };
   const idx = points.findIndex((point) => point.bucketKey === span.startKey);
-  const prev = idx > 0 ? points[idx - 1]!.bucketKey : span.startKey;
-  const next = idx >= 0 && idx < points.length - 1 ? points[idx + 1]!.bucketKey : span.startKey;
+  // Past either end (or with no match), the neighbour is missing and the
+  // span keeps its own key on that side.
+  const prev = (idx > 0 ? points[idx - 1] : undefined)?.bucketKey ?? span.startKey;
+  const next = (idx >= 0 ? points[idx + 1] : undefined)?.bucketKey ?? span.startKey;
   return { x1: prev, x2: next };
 }
 

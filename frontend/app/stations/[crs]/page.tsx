@@ -154,14 +154,17 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
   let description: string;
   if (coverage === 'none') {
     description = `${heading}: not currently covered by our line-status tracking.`;
-  } else if (reports.length === 0) {
-    description = `${heading}: no disruptions currently affecting this station.`;
   } else {
-    const worst = reports.reduce((acc, report) => {
-      const candidate = worstStatus(report);
-      return severityRank(candidate.statusSeverity) > severityRank(acc.statusSeverity) ? candidate : acc;
-    }, worstStatus(reports[0]!));
-    description = `${heading}: ${severityLabel(worst.statusSeverity)} reported.`;
+    const [firstReport, ...otherReports] = reports;
+    if (firstReport === undefined) {
+      description = `${heading}: no disruptions currently affecting this station.`;
+    } else {
+      const worst = otherReports.reduce((acc, report) => {
+        const candidate = worstStatus(report);
+        return severityRank(candidate.statusSeverity) > severityRank(acc.statusSeverity) ? candidate : acc;
+      }, worstStatus(firstReport));
+      description = `${heading}: ${severityLabel(worst.statusSeverity)} reported.`;
+    }
   }
 
   return {

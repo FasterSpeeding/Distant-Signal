@@ -72,7 +72,7 @@ export function generateNonce(): string {
 export interface CspOptions {
   nonce: string;
   /** The railMcp public URL (any path); only its origin is used. */
-  railMcpPublicUrl?: string;
+  railMcpPublicUrl?: string | undefined;
   /** `next dev` needs `'unsafe-eval'` (React's dev-only error-stack
    * reconstruction); production never does. */
   dev?: boolean;

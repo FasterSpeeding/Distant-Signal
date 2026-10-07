@@ -1,4 +1,5 @@
 import type { Suggestion } from './types';
+import { ownValue } from './ownValue';
 
 /** Human labels for the `category` a `LineSummary`/`CustomLineDetail`
  * carries. Three different sources feed this one string: a catalogue
@@ -33,9 +34,9 @@ export function categoryLabel(category: string): string {
   // .constructor` (a function) rather than `undefined` -- `?? category`
   // never fires because a function is neither `null` nor `undefined`, and
   // `app/lines/[id]/page.tsx` would render that function where it expects a
-  // string, printing "[object Function]"-shaped output. Guarding with
-  // `hasOwnProperty` keeps the lookup to CATEGORY_LABELS' own declared keys.
-  return Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, category) ? CATEGORY_LABELS[category]! : category;
+  // string, printing "[object Function]"-shaped output. `ownValue` keeps
+  // the lookup to CATEGORY_LABELS' own declared keys.
+  return ownValue(CATEGORY_LABELS, category) ?? category;
 }
 
 /** Builds a code -> name lookup from the full TOC reference list

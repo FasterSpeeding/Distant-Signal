@@ -117,15 +117,15 @@ export function neutraliseToolOutputMarkers(text: string): string {
   }
   const brackets = new Map<number, number>();
   for (const match of folded.matchAll(FOLDED_MARKER)) {
-    const { index: at, length } = origin[match.index]!;
-    brackets.set(at, length);
+    const source = origin[match.index];
+    if (source) brackets.set(source.index, source.length);
   }
   if (brackets.size === 0) return text;
   let out = '';
   let last = 0;
-  for (const at of [...brackets.keys()].sort((a, b) => a - b)) {
+  for (const [at, length] of [...brackets].sort(([a], [b]) => a - b)) {
     out += `${text.slice(last, at)}&lt;`;
-    last = at + brackets.get(at)!;
+    last = at + length;
   }
   return out + text.slice(last);
 }
@@ -185,13 +185,29 @@ const MAX_ITERATIONS = 8;
 
 interface McpToolDefinition {
   name: string;
-  description?: string;
-  annotations?: { readOnlyHint?: boolean; [key: string]: unknown };
+  description?: string | undefined;
+  annotations?: { readOnlyHint?: boolean | undefined; [key: string]: unknown } | undefined;
   inputSchema: {
     type: 'object';
-    properties?: Record<string, unknown> | null;
-    required?: string[] | null;
+    properties?: Record<string, unknown> | null | undefined;
+    required?: string[] | null | undefined;
     [key: string]: unknown;
+  };
+}
+
+/** The MCP tool's JSON Schema as the Anthropic SDK types it: an absent
+ * `properties`/`required` stays absent rather than an explicit `undefined`
+ * (the request body is JSON either way). */
+function toInputSchema({
+  properties,
+  required,
+  ...rest
+}: McpToolDefinition['inputSchema']): Anthropic.Beta.Messages.BetaTool.InputSchema {
+  return {
+    ...rest,
+    type: 'object',
+    ...(properties !== undefined && { properties }),
+    ...(required !== undefined && { required }),
   };
 }
 
@@ -204,7 +220,7 @@ export function buildRunnableTools(
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description ?? '',
-    input_schema: tool.inputSchema,
+    input_schema: toInputSchema(tool.inputSchema),
     parse: (content: unknown) => content as Record<string, unknown>,
     run: async (args: Record<string, unknown>) => {
       // DQ12 (FE-6): anything not known to be read-only needs the
@@ -261,6 +277,7 @@ export async function* runChatTurn(opts: RunChatTurnOptions): AsyncGenerator<Cha
     authProvider: opts.mcpAuthProvider,
   });
   const mcpClient = new McpClient({ name: 'distant-signal-chat', version: '0.1.0' });
+  // @ts-expect-error -- MCP SDK typing: StreamableHTTPClientTransport's `sessionId` getter returns `string | undefined` but `Transport` declares `sessionId?: string`, which exactOptionalPropertyTypes rejects; the class implements Transport at runtime.
   await mcpClient.connect(transport);
 
   try {
@@ -292,8 +309,8 @@ export async function* runChatTurn(opts: RunChatTurnOptions): AsyncGenerator<Cha
           yield { type: 'text-delta', text: streamEvent.delta.text };
         }
       }
-      while (pendingToolResults.length > 0) {
-        yield pendingToolResults.shift()!;
+      for (let event = pendingToolResults.shift(); event !== undefined; event = pendingToolResults.shift()) {
+        yield event;
       }
     }
 

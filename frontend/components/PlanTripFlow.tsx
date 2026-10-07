@@ -55,9 +55,9 @@ export function PlanTripFlow({
 }: {
   onCreated: (result: CreateJourneyResponse) => void;
   /** Pre-fills the From field (`/plan?from=CRS`). */
-  initialOriginCrs?: string;
+  initialOriginCrs?: string | undefined;
   /** A search restored from `/plan`'s query string (`lib/tripPlanUrl.ts`). */
-  initialQuery?: PlanFormInitial;
+  initialQuery?: PlanFormInitial | undefined;
   /** `/plan` only: write each search into the address bar
    * (`history.replaceState`, no navigation), so it can be shared and
    * reopens the same form. Off on `/journeys/new`, whose query means
@@ -184,14 +184,14 @@ export function PlanTripFlow({
       selections.flatMap((selection) => (selection.itinerary ? [selection.itinerary] : [])),
     );
 
-    if (trainLegs.length === 0) {
+    const [firstLeg, ...laterLegs] = trainLegs;
+    if (firstLeg === undefined) {
       setCreationError('This route needs no train — there is nothing to track.');
       setCreating(false);
       return;
     }
 
     try {
-      const firstLeg = trainLegs[0]!;
       // `firstLeg.originCrs`/`firstLeg.destinationCrs` (from `GET
       // /Trips/plan`) are this leg's real boarding/alighting points, which
       // can legitimately differ from the matched train's own full route --
@@ -240,8 +240,8 @@ export function PlanTripFlow({
       }
       const created = (await createResponse.json()) as CreateJourneyResponse;
 
-      for (let i = 1; i < trainLegs.length; i += 1) {
-        const leg = trainLegs[i]!;
+      for (const [laterIndex, leg] of laterLegs.entries()) {
+        const i = laterIndex + 1;
         // Same real-origin/destination handling as the initial `POST
         // /Journeys` call above -- `leg.originCrs`/`leg.destinationCrs` are
         // this subsequent leg's own real boarding/alighting points, sent as

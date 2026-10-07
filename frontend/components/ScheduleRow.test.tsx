@@ -135,7 +135,8 @@ describe('ScheduleRow', () => {
   });
 
   it('omits the operator segment when none is given', () => {
-    renderWithMantine(<ScheduleRow row={row({ operator: undefined, scheduled: '09:00', destinationCrs: 'WAT' })} />);
+    const { operator: _operator, ...withoutOperator } = row({ scheduled: '09:00', destinationCrs: 'WAT' });
+    renderWithMantine(<ScheduleRow row={withoutOperator} />);
     expect(screen.getByText('09:00 · WAT')).toBeInTheDocument();
   });
 });

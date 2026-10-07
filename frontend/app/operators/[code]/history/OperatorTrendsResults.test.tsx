@@ -52,7 +52,7 @@ describe('OperatorTrendsResults', () => {
     const paragraphs = container.querySelectorAll('p');
     for (const p of paragraphs) {
       expect(p.textContent).not.toContain('--');
-      expect(p.textContent?.toLowerCase()).not.toContain('rollup');
+      expect(p.textContent.toLowerCase()).not.toContain('rollup');
     }
   });
 

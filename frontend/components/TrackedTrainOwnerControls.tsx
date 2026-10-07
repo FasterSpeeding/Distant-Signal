@@ -58,7 +58,7 @@ export function TrackedTrainOwnerControls({
     pinScheduledDeparture?: string | null;
     sharedGroupCount: number;
   };
-  afterDelete?: 'redirect' | 'refresh';
+  afterDelete?: 'redirect' | 'refresh' | undefined;
 }) {
   return (
     <>
