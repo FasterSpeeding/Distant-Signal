@@ -170,27 +170,15 @@ struct RenameResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DelayRepayEstimateResponse {
-    /// The delay against the PUBLIC arrival at `measured_at_crs` (the
-    /// ticket's destination), design doc §9 decision 3: measured once the
-    /// train has arrived there, projected before then (`provisional`).
-    delay_minutes: Option<i32>,
-    /// `true` while the train has not arrived at `measured_at_crs` yet, so
-    /// `delay_minutes` (and `estimate`) are a projection that will change.
-    provisional: bool,
-    /// What `delay_minutes` was measured against; see
-    /// `common::public_delay::DelayBasis`. `None` exactly when
-    /// `delay_minutes` is.
-    delay_basis: Option<crate::data::stop_delay::DelayBasis>,
-    /// Where the delay was measured: the ticket's destination, else the
-    /// tracked train's pin destination, else the train's terminus.
-    measured_at_crs: Option<String>,
-    estimate: Option<delay_repay_rules::DelayRepayEstimate>,
-    // Always populated, independent of whether `estimate` is `Some` --
-    // this route must never leave a caller with a bare percentage and no
-    // caveat, or with nowhere real to go. See this plan's Global
-    // Constraints.
-    claim_url: String,
-    disclaimer: &'static str,
+    /// The delay, where it was measured, the outcome at the destination,
+    /// the scheme and the estimate, the claim link and the disclaimer:
+    /// `delay_repay_rules::DelayRepayFields`, shared with
+    /// `GET /Train/tickets/mine` so the two never disagree. `claimUrl` and
+    /// `disclaimer` are always populated, independent of `estimate` -- this
+    /// route never leaves a caller with a bare percentage and no caveat, or
+    /// with nowhere real to go.
+    #[serde(flatten)]
+    delay_repay: delay_repay_rules::DelayRepayFields,
     /// `serviceMode`/`liveTracking` of the tracked service (2026-10-06).
     #[serde(flatten)]
     service: crate::data::schedule_services::ServiceModeFields,
@@ -482,12 +470,17 @@ async fn get_delay_repay_estimate(
         }
         None => crate::data::schedule_services::ServiceMode::Train,
     };
-    let measured_at_crs = delay_repay_destination(&ticket, &state);
+    let destination = delay_repay_destination(&ticket, &state);
+    let measured_at_crs = destination.as_ref().map(|(crs, _)| crs.clone());
+    let measured_at_name = destination.and_then(|(_, name)| name);
     if mode.is_timetable_only() {
         return Ok(Json(build_delay_repay_response(
             &ticket,
-            None,
-            measured_at_crs,
+            &DelayRepayReadings {
+                measured_at_crs,
+                measured_at_name,
+                ..DelayRepayReadings::default()
+            },
             mode,
         )));
     }
@@ -501,40 +494,99 @@ async fn get_delay_repay_estimate(
     // No stop to measure at means no measurement, never the delay at
     // wherever the train happens to be.
     .filter(|target| target.stop_crs.is_some());
-    let delay = match target {
-        Some(target) => crate::data::stop_delay::stop_delays(&app.database, &[target])
-            .await
-            .map_err(internal_error("read the delay at the ticket's destination"))?
-            .pop()
-            .flatten(),
-        None => None,
+    let (delay, outcome) = match target {
+        Some(target) => {
+            let delay =
+                crate::data::stop_delay::stop_delays(&app.database, std::slice::from_ref(&target))
+                    .await
+                    .map_err(internal_error("read the delay at the ticket's destination"))?
+                    .pop()
+                    .flatten();
+            let outcome_target = crate::data::delay_repay_outcome::OutcomeTarget {
+                trains_id: target.trains_id,
+                train_uid: target.train_uid,
+                service_date: target.service_date,
+                destination_crs: target.stop_crs.unwrap_or_default(),
+            };
+            let outcome =
+                crate::data::delay_repay_outcome::outcomes(&app.database, &[outcome_target])
+                    .await
+                    .map_err(internal_error(
+                        "read whether the train reached the ticket's destination",
+                    ))?
+                    .pop()
+                    .flatten();
+            (delay, outcome)
+        }
+        None => (None, None),
     };
+    let atoc_code = train_atoc_code(&app, &state).await;
 
     Ok(Json(build_delay_repay_response(
         &ticket,
-        delay,
-        measured_at_crs,
+        &DelayRepayReadings {
+            delay,
+            outcome,
+            atoc_code,
+            measured_at_crs,
+            measured_at_name,
+        },
         mode,
     )))
 }
 
-/// Where Delay Repay is measured: the ticket's own destination (what the
-/// operator pays on), else the tracked train's pin destination, else the
-/// train's terminus.
+/// The tracked train's own operator (CIF ATOC code), for a ticket whose
+/// operator text names no known scheme. Best effort: a failed read leaves
+/// the ticket's text alone to decide.
+async fn train_atoc_code(app: &App, state: &train_tracking::TrackedTrainState) -> Option<String> {
+    let uid = state.train_uid.as_deref()?;
+    crate::data::train_operator::operator_for_train(&app.database, uid, state.service_date)
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = ?err, "failed to read the train's operator for Delay Repay");
+            None
+        })
+        .map(|operator| operator.code)
+}
+
+/// Where Delay Repay is measured, and that station's name when known: the
+/// ticket's own destination (what the operator pays on), else the tracked
+/// train's pin destination, else the train's terminus.
 fn delay_repay_destination(
     ticket: &train_tracking::TrackedTrainTicket,
     state: &train_tracking::TrackedTrainState,
-) -> Option<String> {
+) -> Option<(String, Option<String>)> {
     [
-        ticket.destination_crs.as_deref(),
-        state.pin_destination_crs.as_deref(),
-        state.schedule_destination_crs.as_deref(),
+        (
+            ticket.destination_crs.as_deref(),
+            ticket.destination_name.as_deref(),
+        ),
+        (
+            state.pin_destination_crs.as_deref(),
+            state.pin_destination_name.as_deref(),
+        ),
+        (
+            state.schedule_destination_crs.as_deref(),
+            state.schedule_destination_name.as_deref(),
+        ),
     ]
     .into_iter()
-    .flatten()
-    .map(str::trim)
-    .find(|crs| !crs.is_empty())
-    .map(str::to_uppercase)
+    .filter_map(|(crs, name)| Some((crs?.trim(), name)))
+    .find(|(crs, _)| !crs.is_empty())
+    .map(|(crs, name)| (crs.to_uppercase(), name.map(str::to_string)))
+}
+
+/// What `get_delay_repay_estimate` read about the train, for
+/// [`build_delay_repay_response`].
+#[derive(Debug, Default)]
+struct DelayRepayReadings {
+    /// The delay against the public arrival at `measured_at_crs`.
+    delay: Option<crate::data::stop_delay::StopDelay>,
+    outcome: Option<delay_repay_rules::Outcome>,
+    /// The train's ATOC code, from its schedule.
+    atoc_code: Option<String>,
+    measured_at_crs: Option<String>,
+    measured_at_name: Option<String>,
 }
 
 /// Pure response assembly for `get_delay_repay_estimate`, extracted out of
@@ -542,31 +594,24 @@ fn delay_repay_destination(
 /// deliberately given no I/O capability of any kind, consistent with this
 /// whole feature's "the estimator's own call sites stay provably
 /// read-only/pure" posture (see `delay_repay_rules`'s module doc).
-/// `delay` is the delay against the public arrival at `measured_at_crs`.
-/// A bus or ferry (`mode`) never has a delay: the caller passes `None`, and
-/// the response says why in `unmeasurable_reason`.
+/// A bus or ferry (`mode`) never has a delay or an outcome: they are
+/// dropped, and the response says why in `unmeasurable_reason`.
 fn build_delay_repay_response(
     ticket: &train_tracking::TrackedTrainTicket,
-    delay: Option<crate::data::stop_delay::StopDelay>,
-    measured_at_crs: Option<String>,
+    readings: &DelayRepayReadings,
     mode: crate::data::schedule_services::ServiceMode,
 ) -> DelayRepayEstimateResponse {
-    let delay = delay.filter(|_| mode.live_tracking());
-    let estimate = delay_repay_rules::estimate_for(ticket.operator.as_deref(), delay);
-    let claim_url = ticket.operator.as_deref().map_or(
-        delay_repay_rules::GENERIC_CLAIM_URL,
-        delay_repay_rules::claim_url_for,
-    );
-    let (delay_minutes, delay_basis, provisional) = crate::data::stop_delay::split(delay);
-
+    let live = mode.live_tracking();
     DelayRepayEstimateResponse {
-        delay_minutes,
-        provisional,
-        delay_basis,
-        measured_at_crs: delay.and(measured_at_crs),
-        estimate,
-        claim_url: claim_url.to_string(),
-        disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
+        delay_repay: delay_repay_rules::assess(delay_repay_rules::AssessInputs {
+            operator: ticket.operator.as_deref(),
+            ticket_type: ticket.ticket_type.as_deref(),
+            atoc_code: readings.atoc_code.as_deref(),
+            delay: readings.delay.filter(|_| live),
+            outcome: readings.outcome.filter(|_| live),
+            measured_at_crs: readings.measured_at_crs.as_deref(),
+            measured_at_name: readings.measured_at_name.as_deref(),
+        }),
         service: crate::data::schedule_services::ServiceModeFields(mode),
         unmeasurable_reason: mode
             .is_timetable_only()
@@ -2110,6 +2155,24 @@ mod tests {
         "2026-08-29T12:00:00Z".parse().unwrap()
     }
 
+    /// [`build_delay_repay_response`] for a delay measured at `crs`.
+    fn respond(
+        ticket: &train_tracking::TrackedTrainTicket,
+        delay: Option<crate::data::stop_delay::StopDelay>,
+        crs: Option<String>,
+        mode: crate::data::schedule_services::ServiceMode,
+    ) -> DelayRepayEstimateResponse {
+        build_delay_repay_response(
+            ticket,
+            &DelayRepayReadings {
+                delay,
+                measured_at_crs: crs,
+                ..DelayRepayReadings::default()
+            },
+            mode,
+        )
+    }
+
     fn ticket(operator: Option<&str>) -> train_tracking::TrackedTrainTicket {
         train_tracking::TrackedTrainTicket {
             id: 1,
@@ -2223,7 +2286,7 @@ mod tests {
 
     #[test]
     fn dr30_operator_with_a_qualifying_delay_gets_a_specific_estimate_and_claim_url() {
-        let response = build_delay_repay_response(
+        let response = respond(
             &ticket(Some("LNER")),
             Some(arrived(45)),
             Some("EDB".into()),
@@ -2231,18 +2294,19 @@ mod tests {
         );
 
         let estimate = response
+            .delay_repay
             .estimate
             .expect("LNER + 45 minutes should clear the DR30 30-minute band");
         assert_eq!(estimate.scheme, "DR30");
-        assert_eq!(estimate.percentage, 50);
+        assert_eq!(estimate.percentage, Some(50));
         assert!(!estimate.provisional);
         assert_eq!(
-            response.claim_url,
+            response.delay_repay.claim_url,
             "https://delayrepay.lner.co.uk/delayrepayV2/"
         );
-        assert_eq!(response.delay_minutes, Some(45));
-        assert!(!response.provisional);
-        assert_eq!(response.measured_at_crs.as_deref(), Some("EDB"));
+        assert_eq!(response.delay_repay.delay_minutes, Some(45));
+        assert!(!response.delay_repay.provisional);
+        assert_eq!(response.delay_repay.measured_at_crs.as_deref(), Some("EDB"));
     }
 
     fn arrived(minutes: i32) -> crate::data::stop_delay::StopDelay {
@@ -2262,14 +2326,14 @@ mod tests {
             basis: crate::data::stop_delay::DelayBasis::PublicSchedule,
             provisional: true,
         });
-        let response = build_delay_repay_response(
+        let response = respond(
             &ticket(Some("Southeastern")),
             projected,
             Some("ASH".into()),
             crate::data::schedule_services::ServiceMode::Train,
         );
-        assert!(response.provisional);
-        let estimate = response.estimate.unwrap();
+        assert!(response.delay_repay.provisional);
+        let estimate = response.delay_repay.estimate.unwrap();
         assert!(estimate.provisional);
         assert_eq!(estimate.band_minutes, 15);
         assert_eq!(
@@ -2277,22 +2341,22 @@ mod tests {
             delay_repay_rules::PROVISIONAL_DISCLAIMER
         );
         assert_eq!(
-            response.delay_basis,
+            response.delay_repay.delay_basis,
             Some(crate::data::stop_delay::DelayBasis::PublicSchedule)
         );
 
-        let response = build_delay_repay_response(
+        let response = respond(
             &ticket(Some("Southeastern")),
             Some(arrived(14)),
             Some("ASH".into()),
             crate::data::schedule_services::ServiceMode::Train,
         );
-        assert!(!response.provisional);
+        assert!(!response.delay_repay.provisional);
         assert_eq!(
-            response.estimate, None,
+            response.delay_repay.estimate, None,
             "14 minutes is under DR15's first band"
         );
-        assert_eq!(response.delay_minutes, Some(14));
+        assert_eq!(response.delay_repay.delay_minutes, Some(14));
     }
 
     #[test]
@@ -2302,33 +2366,42 @@ mod tests {
         state.schedule_destination_crs = Some("ABD".to_string());
         ticket.destination_crs = Some(" ncl ".to_string());
         assert_eq!(
-            delay_repay_destination(&ticket, &state).as_deref(),
+            delay_repay_destination(&ticket, &state)
+                .map(|(crs, _)| crs)
+                .as_deref(),
             Some("NCL")
         );
         ticket.destination_crs = None;
         assert_eq!(
-            delay_repay_destination(&ticket, &state).as_deref(),
+            delay_repay_destination(&ticket, &state)
+                .map(|(crs, _)| crs)
+                .as_deref(),
             Some("EDB")
         );
         state.pin_destination_crs = None;
         assert_eq!(
-            delay_repay_destination(&ticket, &state).as_deref(),
+            delay_repay_destination(&ticket, &state)
+                .map(|(crs, _)| crs)
+                .as_deref(),
             Some("ABD")
         );
     }
 
     #[test]
     fn no_operator_on_the_ticket_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
-        let response = build_delay_repay_response(
+        let response = respond(
             &ticket(None),
             Some(arrived(45)),
             Some("EDB".into()),
             crate::data::schedule_services::ServiceMode::Train,
         );
 
-        assert_eq!(response.estimate, None);
-        assert_eq!(response.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
-        assert!(!response.disclaimer.is_empty());
+        assert_eq!(response.delay_repay.estimate, None);
+        assert_eq!(
+            response.delay_repay.claim_url,
+            delay_repay_rules::GENERIC_CLAIM_URL
+        );
+        assert!(!response.delay_repay.disclaimer.is_empty());
     }
 
     /// A bus or ferry leg is never measured: no delay, no estimate, a
@@ -2340,32 +2413,146 @@ mod tests {
             crate::data::schedule_services::ServiceMode::Bus,
             crate::data::schedule_services::ServiceMode::Ferry,
         ] {
-            let response = build_delay_repay_response(
+            let response = respond(
                 &ticket(Some("LNER")),
                 Some(arrived(45)),
                 Some("EDB".into()),
                 mode,
             );
-            assert_eq!(response.delay_minutes, None);
-            assert_eq!(response.estimate, None);
-            assert_eq!(response.measured_at_crs, None);
+            assert_eq!(response.delay_repay.delay_minutes, None);
+            assert_eq!(response.delay_repay.estimate, None);
+            assert_eq!(response.delay_repay.measured_at_crs, None);
             assert_eq!(
                 response.unmeasurable_reason,
                 Some(TIMETABLE_ONLY_DELAY_REPAY_REASON)
             );
-            assert!(!response.claim_url.is_empty());
+            assert!(!response.delay_repay.claim_url.is_empty());
             let json = serde_json::to_value(&response).unwrap();
             assert_eq!(json["liveTracking"], false);
             assert!(json["unmeasurableReason"].is_string());
         }
-        let train = build_delay_repay_response(
+        let train = respond(
             &ticket(Some("LNER")),
             Some(arrived(45)),
             Some("EDB".into()),
             crate::data::schedule_services::ServiceMode::Train,
         );
         assert_eq!(train.unmeasurable_reason, None);
-        assert!(train.estimate.is_some());
+        assert!(train.delay_repay.estimate.is_some());
+    }
+
+    /// The 2026-10-07 decisions on the wire: a borderline projection has
+    /// no percentage, a train that did not reach the destination has no
+    /// delay or estimate but names the destination, a departure-only
+    /// report is final, and the ticket's type and the train's operator
+    /// code feed the estimate.
+    #[test]
+    fn the_2026_10_07_decisions_on_the_wire() {
+        use delay_repay_rules::Outcome;
+        let train = crate::data::schedule_services::ServiceMode::Train;
+        let projected = |minutes| crate::data::stop_delay::StopDelay {
+            minutes,
+            basis: crate::data::stop_delay::DelayBasis::PublicSchedule,
+            provisional: true,
+        };
+
+        let borderline = respond(
+            &ticket(Some("Southeastern")),
+            Some(projected(16)),
+            Some("EDB".into()),
+            train,
+        );
+        let json = serde_json::to_value(&borderline).unwrap();
+        assert_eq!(json["estimate"]["borderline"], true);
+        assert_eq!(json["estimate"]["thresholdMinutes"], 15);
+        assert!(json["estimate"]["percentage"].is_null());
+        assert_eq!(json["rulesCheckedOn"], delay_repay_rules::RULES_CHECKED_ON);
+        assert!(json["outcome"].is_null());
+
+        let not_reached = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            &DelayRepayReadings {
+                delay: Some(projected(70)),
+                outcome: Some(Outcome::NotReached),
+                measured_at_crs: Some("EDB".into()),
+                measured_at_name: Some("Edinburgh Waverley".into()),
+                ..DelayRepayReadings::default()
+            },
+            train,
+        );
+        let json = serde_json::to_value(&not_reached).unwrap();
+        assert_eq!(json["outcome"], "notReached");
+        assert!(json["delayMinutes"].is_null() && json["estimate"].is_null());
+        assert_eq!(json["measuredAtCrs"], "EDB");
+        assert_eq!(json["measuredAtName"], "Edinburgh Waverley");
+        assert_eq!(
+            json["claimUrl"],
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
+
+        let departed = build_delay_repay_response(
+            &ticket(Some("LNER")),
+            &DelayRepayReadings {
+                delay: Some(arrived(31)),
+                outcome: Some(Outcome::DepartedOnly),
+                measured_at_crs: Some("EDB".into()),
+                ..DelayRepayReadings::default()
+            },
+            train,
+        );
+        let json = serde_json::to_value(&departed).unwrap();
+        assert_eq!(json["outcome"], "departedOnly");
+        assert_eq!(json["provisional"], false);
+        assert_eq!(json["estimate"]["percentage"], 50);
+
+        // A return ticket on a 2-hour delay, with the operator only known
+        // from the train's own code.
+        let mut ret = ticket(Some("Trainline"));
+        ret.ticket_type = Some("Off-Peak Return".into());
+        let response = build_delay_repay_response(
+            &ret,
+            &DelayRepayReadings {
+                delay: Some(arrived(125)),
+                atoc_code: Some("XC".into()),
+                measured_at_crs: Some("EDB".into()),
+                ..DelayRepayReadings::default()
+            },
+            train,
+        );
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["estimate"]["scheme"], "DR30");
+        assert_eq!(json["estimate"]["fareBasis"], "return");
+        assert_eq!(json["estimate"]["ticketKind"], "return");
+        assert_eq!(json["schemeOperator"], "CrossCountry");
+
+        // An own-scheme operator: the delay, no estimate, its own link.
+        let own = respond(
+            &ticket(Some("Elizabeth line")),
+            Some(arrived(45)),
+            Some("PAD".into()),
+            train,
+        );
+        let json = serde_json::to_value(&own).unwrap();
+        assert_eq!(json["ownScheme"], true);
+        assert!(json["estimate"].is_null());
+        assert_eq!(json["delayMinutes"], 45);
+    }
+
+    #[test]
+    fn the_destination_carries_its_name_from_the_same_source() {
+        let mut ticket = ticket(Some("LNER"));
+        let mut state = state(None);
+        assert_eq!(
+            delay_repay_destination(&ticket, &state),
+            Some(("EDB".into(), Some("Edinburgh Waverley".into())))
+        );
+        ticket.destination_crs = None;
+        state.pin_destination_crs = Some("NCL".into());
+        state.pin_destination_name = Some("Newcastle".into());
+        assert_eq!(
+            delay_repay_destination(&ticket, &state),
+            Some(("NCL".into(), Some("Newcastle".into())))
+        );
     }
 
     // --- ScheduleMatchFailureCache (negative cache for
@@ -2453,20 +2640,20 @@ mod tests {
     fn an_unresolved_delay_yields_no_estimate_but_claim_url_and_disclaimer_are_still_populated() {
         // Safety property #3: a caller must never see a bare/absent
         // caveat, even when the train hasn't resolved/reported a delay yet.
-        let response = build_delay_repay_response(
+        let response = respond(
             &ticket(Some("LNER")),
             None,
             Some("EDB".into()),
             crate::data::schedule_services::ServiceMode::Train,
         );
 
-        assert_eq!(response.estimate, None);
-        assert_eq!(response.delay_minutes, None);
+        assert_eq!(response.delay_repay.estimate, None);
+        assert_eq!(response.delay_repay.delay_minutes, None);
         assert_eq!(
-            response.claim_url,
+            response.delay_repay.claim_url,
             "https://delayrepay.lner.co.uk/delayrepayV2/"
         );
-        assert!(!response.disclaimer.is_empty());
+        assert!(!response.delay_repay.disclaimer.is_empty());
     }
 }
 

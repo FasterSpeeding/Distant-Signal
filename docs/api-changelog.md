@@ -24,6 +24,64 @@ Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`
   already charged it. `minutes` is the walk alone. The buffer shows only
   in the times.
 
+## 2026-10-07: Delay Repay borderline zone, outcome, ticket-aware bands and schemes
+
+Design: `docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md`,
+"Decisions (2026-10-07)". Applies to `GET /Train/{trackingId}/tickets/{ticketId}/delay-repay`
+and to every item of `GET /Train/tickets/mine` (the two now serve the same
+fields from one function).
+
+### New fields on the response (and each ticket list item)
+
+- `outcome`: `arrived`, `departedOnly` or `notReached`; `null` while not
+  known yet (en route, or a destination that reports nothing).
+  - `departedOnly`: TRUST reported only a departure at the destination;
+    the delay is final, measured on that departure.
+  - `notReached`: cancelled before the destination (TRUST `0002` at origin,
+    on call, out of plan, or en route from an earlier call), a TRUST pass
+    through it, or Darwin's cancelled call once TRUST has reported the
+    train beyond it. `delayMinutes`, `delayBasis` and `estimate` are then
+    `null` and `provisional` is `false`; `measuredAtCrs` still names the
+    destination. Show no percentage: eligibility depends on the
+    replacement journey.
+- `measuredAtName`: `measuredAtCrs`'s station name, when known.
+- `ownScheme`: `true` for an operator running its own compensation scheme
+  (Elizabeth line, London Overground, Merseyrail, Grand Central). `estimate`
+  is then `null`; show the claim link only.
+- `schemeOperator`: the operator the scheme was matched to (`"LNER"`,
+  `"Caledonian Sleeper"`, ...), or `null` for the DR15 default.
+- `rulesCheckedOn`: `YYYY-MM-DD` the scheme table was last checked
+  (`2026-10-07`).
+
+### Changed and new fields on `estimate`
+
+- **`percentage` is now nullable**: `null` exactly when `borderline`.
+- `borderline` (bool) and `thresholdMinutes`: while provisional, a
+  projection less than 3 minutes above a band threshold (15–17, 30–32,
+  60–62, 120–122; Heathrow Express 31–33, 61–63) is borderline. Show
+  "could go either way" with the threshold, not a percentage. Final
+  estimates are never borderline.
+- `scheme` may also be `HX` (Heathrow Express's own scheme: 25% of the
+  ticket for more than 30 minutes, 50% for more than 60; `bandMinutes` 30
+  or 60 meaning "more than").
+- `ticketKind`: `single`, `return` or `unknown`, from the ticket's
+  free-text type (whole words `return`/`rtn`, `single`/`sgl`/`sngl`).
+- `fareBasis` may also be `ticket` (Heathrow Express). At 120+ minutes it
+  is `single` for a single ticket (already refunded in full from 60
+  minutes) and `return` otherwise.
+- `roomSupplementPercentage`: Caledonian Sleeper only, 50 at 30–59
+  minutes and 100 at 60+; else `null`.
+
+### Changed behaviour
+
+- Scheme table: DR30 now also covers Caledonian Sleeper, Hull Trains and
+  Lumo (with LNER, CrossCountry, ScotRail); Heathrow Express has its own
+  scheme; the four own-scheme operators above get no estimate. Each has its
+  own `claimUrl`.
+- When the ticket's `operator` text names no known operator, the train's
+  CIF ATOC code decides the scheme (before falling back to DR15). A ticket
+  without an operator now gets an estimate when the train's code is known.
+
 ## 2026-10-07: named bus stops and timing points; bus stops in the planner
 
 Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`.

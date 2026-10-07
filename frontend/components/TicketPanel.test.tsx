@@ -83,7 +83,7 @@ describe('TicketPanel', () => {
     renderWithMantine(await TicketPanel({ trackingId: 1 }));
     expect(screen.getByText(/LNER/)).toBeInTheDocument();
     expect(screen.getByText(byVisibleText(/KGX → EDB/))).toBeInTheDocument();
-    expect(screen.getByText(/50% of your fare/)).toBeInTheDocument();
+    expect(screen.getByText(/50% of the single fare/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add another ticket' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });

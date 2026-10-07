@@ -339,6 +339,44 @@ population entry a `scope`; `scope == "line"` is the line's own trains
    then `scope`. The same §8.4 comparison criteria apply to the windows
    computed under it.
 
+## Decisions (2026-10-07, overnight sleeper gaps)
+
+Context: a 2026-10-07 production check (service dates 2026-10-04 and
+2026-10-05; 42,832 and 71,485 line-train entries) classified every
+relevant entry by its due time on the line. Two gaps remain after the
+2026-10-02 item 3 fix (a train belongs to the rail day its due time is in).
+
+1. **Entries due after `rail_day_start(D + 1)` are counted in no day.
+   Accepted.** Rail day D's windows end at `rail_day_start(D + 1)`, and rail
+   day D + 1 counts only D + 1's population (plus D + 2's trains before
+   02:00). A train of service date D first due on a line after 02:00 on
+   D + 1 therefore falls in neither. Measured: 9 entries a day on both
+   dates, all sleepers:
+   - the up and down Night Riviera (GW), due 03:22–04:37 on
+     `gwr-main-line`, `gwr-south-wales`, `gwr-golden-valley`,
+     `gwr-transwilts`, `gwr-cotswold`, `gwr-thames-valley`,
+     `gwr-riviera-line` and `gwr-cornish-main-line` (8 entries);
+   - the up Highlander Caledonian Sleeper (CS), due 02:54–03:00 on `wcml`
+     (1 entry).
+2. **The recent window has a ~70-minute blind spot after rollover.
+   Accepted.** For about `recent_minutes + grace_minutes` (60 + 10) after
+   02:00, rail day D + 1's recent window reaches back before its own start;
+   the trains due in that earlier part are rail day D's, so the window
+   under-counts until it lies wholly inside D + 1.
+3. **Why both are acceptable.** Both are bounded (a fixed handful of
+   overnight services; a fixed 70 minutes a day) and change no verdict:
+   overnight recent windows are 90%+ empty (`total = 0`) and below the
+   sparse-window minimum, so they are ineligible for escalation anyway. No
+   change to the windows is made.
+4. **Visible if it grows.** The consumer exports
+   `full_coverage_consumer_line_entries_after_next_rail_day{line,day}`
+   (`day` = `today`/`tomorrow`), set on every fresh population download,
+   with the same bounded labels as the membership gauges (one series per
+   configured line and day). A rise above about 9 network-wide means more
+   services fall in gap 1 and the decision should be revisited.
+   `windows::tests::a_sleeper_due_after_the_next_rail_day_starts_is_counted_in_no_day`
+   pins the behaviour.
+
 ## 1. Problem
 
 Full coverage today produces one number per line per rail day:

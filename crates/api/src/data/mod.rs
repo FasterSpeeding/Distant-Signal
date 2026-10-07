@@ -5,6 +5,7 @@ pub mod corpus_comparison;
 pub mod corpus_crosswalk;
 pub mod custom_lines;
 pub mod db_health;
+pub mod delay_repay_outcome;
 pub mod delay_repay_rules;
 pub mod eta_blend;
 pub mod full_coverage_comparison;
