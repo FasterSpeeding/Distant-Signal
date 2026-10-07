@@ -1508,7 +1508,7 @@ pub struct TrainMovementEventMessage {
     /// TRUST's public-timetable (GBTT) time for this movement
     /// (`gbtt_timestamp`), where `planned_timestamp` is the working-timetable
     /// one. `None` for a pass or another non-public event (TRUST sends it
-    /// empty), and on a message from an older trust-consumer. Stored as
+    /// empty), and on a message from an older consumer. Stored as
     /// `train_movement_events.gbtt_timestamp`, the baseline the public delay
     /// (`common::public_delay`, `delayBasis: "public"`) is measured against.
     #[serde(default, skip_serializing_if = "Option::is_none")]

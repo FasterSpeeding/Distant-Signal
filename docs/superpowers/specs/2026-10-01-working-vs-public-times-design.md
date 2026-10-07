@@ -591,8 +591,17 @@ it.
     before the previous working time.
 
 **Not done, deliberately:**
-- `trust_event_backlog` still does not carry `gbtt_timestamp`, so a
-  backlog-matched movement uses the `publicSchedule` fallback.
+- ~~`trust_event_backlog` still does not carry `gbtt_timestamp`, so a
+  backlog-matched movement uses the `publicSchedule` fallback.~~
+  **Fixed 2026-10-07.** This was not limited to backlog-matched
+  movements: `POST /private/trust-event-backlog` is the primary writer of
+  `train_movement_events` (trust-consumer writes only for subscribed
+  trains, and in production had none), so all 6.8M stored rows had a NULL
+  `gbtt_timestamp` and `delayBasis: "public"` never occurred. The backlog
+  now carries it (migration 20261007210000) through the live ingest and
+  both replays. Rows stored before the fix keep NULL, apart from what
+  `scripts/backfill-gbtt-from-movement-stream.py` can recover from the
+  stream's retention window.
 - `scheduled*` stay WTT for this release (§9 decision 1).
 
 ## Appendix: method
