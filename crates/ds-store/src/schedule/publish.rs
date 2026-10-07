@@ -304,6 +304,69 @@ pub struct SchedulePublishPart<'a> {
     pub final_total_rows: Option<u64>,
 }
 
+/// Longest `publish_id` accepted -- `schedule-reference`'s own ids are well
+/// under this; the bound only stops a malformed caller staging arbitrarily
+/// large keys.
+pub const MAX_PUBLISH_ID_LEN: usize = 128;
+
+impl<'a> SchedulePublishPart<'a> {
+    /// A chunk's place in its publish, from the chunk's protocol parameters
+    /// (the api's `ScheduleChunkParams` query string), or why the diff
+    /// protocol cannot apply the chunk (the api answers 400 with it).
+    ///
+    /// `publish_id` is required (F-LEGACY, 2026-09-27: a request without
+    /// one used to select the removed delete-then-insert chunk path) and
+    /// 1-[`MAX_PUBLISH_ID_LEN`] characters long. `last_chunk` makes this the
+    /// final chunk and then requires `total_rows`; `total_rows` is ignored
+    /// otherwise.
+    pub fn new(
+        publish_id: Option<&'a str>,
+        first_chunk: bool,
+        last_chunk: bool,
+        total_rows: Option<u64>,
+    ) -> Result<Self, String> {
+        let Some(publish_id) = publish_id else {
+            return Err(
+                "publish_id is required (the legacy delete-then-insert chunk protocol was \
+                 removed)"
+                    .to_string(),
+            );
+        };
+        if publish_id.is_empty() || publish_id.len() > MAX_PUBLISH_ID_LEN {
+            return Err(format!(
+                "publish_id must be 1-{MAX_PUBLISH_ID_LEN} characters"
+            ));
+        }
+        let final_total_rows = match (last_chunk, total_rows) {
+            (true, Some(total)) => Some(total),
+            (true, None) => {
+                return Err("last_chunk=true requires total_rows".to_string());
+            }
+            (false, _) => None,
+        };
+        Ok(Self {
+            publish_id,
+            first_chunk,
+            final_total_rows,
+        })
+    }
+
+    /// For a chunk with no rows: the date an empty final publish clears
+    /// (PL-14), or why the chunk is refused (the api answers 400): a
+    /// `total_rows=0` final chunk must say which date it covers, since there
+    /// are no staged keys to learn it from.
+    pub fn empty_publish_date(
+        last_chunk: bool,
+        total_rows: Option<u64>,
+        service_date: Option<chrono::NaiveDate>,
+    ) -> Result<Option<chrono::NaiveDate>, String> {
+        if last_chunk && total_rows == Some(0) && service_date.is_none() {
+            return Err("a final chunk with total_rows=0 requires service_date".to_string());
+        }
+        Ok(service_date)
+    }
+}
+
 /// A publish id for an in-process "one call is the whole set" publish --
 /// never shared with another call, so it can never collide with a real
 /// publisher's id or with a concurrent in-process call.
@@ -2462,5 +2525,65 @@ mod schedule_destination_departures_row_serde_tests {
         null["rsid"] = serde_json::Value::Null;
         let row: ScheduleDestinationDeparturesRow = serde_json::from_value(null).unwrap();
         assert_eq!(row.rsid, None);
+    }
+}
+
+/// `SchedulePublishPart::new` and `empty_publish_date`: the chunk-parameter
+/// validation the api's `ScheduleChunkParams` delegates to.
+#[cfg(test)]
+mod schedule_publish_part_tests {
+    use super::{MAX_PUBLISH_ID_LEN, SchedulePublishPart};
+
+    /// F-LEGACY: a chunk without `publish_id` is refused.
+    #[test]
+    fn no_publish_id_is_refused() {
+        for first_chunk in [false, true] {
+            assert!(SchedulePublishPart::new(None, first_chunk, false, None).is_err());
+        }
+    }
+
+    #[test]
+    fn the_publish_id_length_is_bounded() {
+        let long = "x".repeat(MAX_PUBLISH_ID_LEN + 1);
+        assert!(SchedulePublishPart::new(Some(""), true, false, None).is_err());
+        assert!(SchedulePublishPart::new(Some(&long), true, false, None).is_err());
+        let max = "x".repeat(MAX_PUBLISH_ID_LEN);
+        assert!(SchedulePublishPart::new(Some(&max), true, false, None).is_ok());
+    }
+
+    #[test]
+    fn only_the_last_chunk_finalizes_and_it_needs_its_total() {
+        let Ok(middle) = SchedulePublishPart::new(Some("p1"), false, false, Some(7)) else {
+            panic!("a middle chunk is valid");
+        };
+        assert_eq!(
+            (
+                middle.publish_id,
+                middle.first_chunk,
+                middle.final_total_rows
+            ),
+            ("p1", false, None)
+        );
+        let Ok(last) = SchedulePublishPart::new(Some("p1"), false, true, Some(7)) else {
+            panic!("a final chunk with its total is valid");
+        };
+        assert_eq!(last.final_total_rows, Some(7));
+        assert!(SchedulePublishPart::new(Some("p1"), false, true, None).is_err());
+    }
+
+    /// PL-14: an empty final chunk with `total_rows=0` must name its date.
+    #[test]
+    fn an_empty_final_publish_needs_its_service_date() {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 12, 25);
+        assert!(SchedulePublishPart::empty_publish_date(true, Some(0), None).is_err());
+        assert_eq!(
+            SchedulePublishPart::empty_publish_date(true, Some(0), date),
+            Ok(date)
+        );
+        assert_eq!(
+            SchedulePublishPart::empty_publish_date(false, None, None),
+            Ok(None),
+            "a non-final empty chunk is a no-op and needs no date"
+        );
     }
 }

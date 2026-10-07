@@ -26,7 +26,7 @@ pub use population::{
     upsert_schedule_line_population,
 };
 pub use publish::{
-    SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC, ScheduleCallingPointsFullRow,
+    MAX_PUBLISH_ID_LEN, SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC, ScheduleCallingPointsFullRow,
     ScheduleDestinationDeparturesRow, ScheduleNetworkDeparturesRow, SchedulePublishBusy,
     SchedulePublishPart, finish_schedule_calling_points_full_publish_without_rows,
     finish_schedule_destination_departures_publish_without_rows, is_statement_timeout,

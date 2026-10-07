@@ -1093,56 +1093,36 @@ struct ScheduleChunkParams {
     service_date: Option<chrono::NaiveDate>,
 }
 
-/// Longest `publish_id` accepted -- `schedule-reference`'s own ids are well
-/// under this; the bound only stops a malformed caller staging arbitrarily
-/// large keys.
-const MAX_PUBLISH_ID_LEN: usize = 128;
+// Moved to ds_store::schedule (ingest architecture plan 1A.7). Only this
+// file's tests still name it.
+#[cfg(test)]
+use ds_store::schedule::MAX_PUBLISH_ID_LEN;
 
+/// The chunk-parameter validation moved to `SchedulePublishPart::new` and
+/// `SchedulePublishPart::empty_publish_date` in `ds_store::schedule`
+/// (ingest architecture plan 1A.7); these map its refusals to a 400.
 impl ScheduleChunkParams {
     /// This chunk's place in its publish, or a 400 for a request the diff
     /// protocol cannot apply.
     fn part(&self) -> Result<queries::SchedulePublishPart<'_>, (StatusCode, String)> {
-        let Some(publish_id) = self.publish_id.as_deref() else {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "publish_id is required (the legacy delete-then-insert chunk protocol was \
-                 removed)"
-                    .to_string(),
-            ));
-        };
-        if publish_id.is_empty() || publish_id.len() > MAX_PUBLISH_ID_LEN {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("publish_id must be 1-{MAX_PUBLISH_ID_LEN} characters"),
-            ));
-        }
-        let final_total_rows = match (self.last_chunk, self.total_rows) {
-            (true, Some(total)) => Some(total),
-            (true, None) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "last_chunk=true requires total_rows".to_string(),
-                ));
-            }
-            (false, _) => None,
-        };
-        Ok(queries::SchedulePublishPart {
-            publish_id,
-            first_chunk: self.first_chunk,
-            final_total_rows,
-        })
+        queries::SchedulePublishPart::new(
+            self.publish_id.as_deref(),
+            self.first_chunk,
+            self.last_chunk,
+            self.total_rows,
+        )
+        .map_err(|problem| (StatusCode::BAD_REQUEST, problem))
     }
 
     /// For a chunk with no rows: the date an empty final publish clears, or
     /// a 400 when a `total_rows=0` final chunk does not say which date.
     fn empty_publish_date(&self) -> Result<Option<chrono::NaiveDate>, (StatusCode, String)> {
-        if self.last_chunk && self.total_rows == Some(0) && self.service_date.is_none() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "a final chunk with total_rows=0 requires service_date".to_string(),
-            ));
-        }
-        Ok(self.service_date)
+        queries::SchedulePublishPart::empty_publish_date(
+            self.last_chunk,
+            self.total_rows,
+            self.service_date,
+        )
+        .map_err(|problem| (StatusCode::BAD_REQUEST, problem))
     }
 }
 
