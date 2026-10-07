@@ -318,6 +318,9 @@ mod tests {
         ];
 
         let mut targets = Vec::new();
+        // One publish for every train: a publish replaces the whole service
+        // date's schedule rows.
+        let mut schedule = Vec::new();
         for (name, movements, status, cancel, skipped, _) in cases {
             let uid = format!("{tag}{name}");
             let trains_id = crate::data::trains::find_or_create_train(&pool, &uid, date)
@@ -343,16 +346,11 @@ mod tests {
                 day_offset: 0,
                 ..Default::default()
             };
-            queries::upsert_schedule_calling_points_full(
-                &pool,
-                &[
-                    row(0, "origin"),
-                    row(1, "intermediate"),
-                    row(2, "terminate"),
-                ],
-            )
-            .await
-            .expect("seed schedule");
+            schedule.extend([
+                row(0, "origin"),
+                row(1, "intermediate"),
+                row(2, "terminate"),
+            ]);
             for (n, (event_type, at)) in movements.iter().enumerate() {
                 sqlx::query(
                     "INSERT INTO train_movement_events \
@@ -404,6 +402,10 @@ mod tests {
                 destination_crs: "zzb".to_string(),
             });
         }
+
+        queries::upsert_schedule_calling_points_full(&pool, &schedule)
+            .await
+            .expect("seed schedule");
 
         let got = outcomes(&pool, &targets).await.expect("outcomes");
         for ((name, .., expected), got) in cases.iter().zip(&got) {
