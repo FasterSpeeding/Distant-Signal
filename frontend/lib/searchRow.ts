@@ -16,7 +16,6 @@ import type { LineTrainSummary, TrainSearchResult } from './types';
  * line summary, whose live state, scope and direction fill in what the
  * search row lacks. */
 export function searchRowSummary(row: TrainSearchResult, known?: LineTrainSummary): LineTrainSummary {
-  const live = row.live ? { ...row.live, lastReportedLocation: null } : (known?.live ?? null);
   return {
     uid: row.uid,
     operator: row.operator ?? null,
@@ -28,7 +27,7 @@ export function searchRowSummary(row: TrainSearchResult, known?: LineTrainSummar
     origin: row.originCrs ? { crs: row.originCrs, name: row.originName ?? null } : null,
     destination: row.destinationCrs ? { crs: row.destinationCrs, name: row.destinationName ?? null } : null,
     onLineStops: [],
-    live,
+    live: row.live ?? known?.live ?? null,
   };
 }
 

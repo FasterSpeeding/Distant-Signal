@@ -2240,16 +2240,6 @@ export interface LineTimetablePage {
   nextCursor: string | null;
 }
 
-/** The compact live state of a `/public/trains/search` or
- * `/schedule-departures` row: the line summary's `live` without its last
- * reported location. */
-export interface TrainSearchLive {
-  status: string | null;
-  delayMinutes: number | null;
-  delayProvisional: boolean;
-  cancelled: boolean;
-}
-
 /** One row of `GET /public/trains/search` (`render::calling_point_departure_json`).
  * The one wire type for this route (the station board, `/trains` and the
  * line page's station-pair search all read it). */
@@ -2275,15 +2265,17 @@ export interface TrainSearchResult extends ServiceModeFields {
   /** Calendar days past the service date `destinationArrival` falls on. */
   destinationArrivalDayOffset: number;
   publicDestinationArrival?: string | null;
-  /** Calendar days past the service date the departure at `stationCrs`
-   * falls on (a train that started the evening before). Absent from an
-   * older backend: read as 0. */
+  /** Days after the searched date (the service date) the departure from
+   * `stationCrs` falls on. Moves the calendar day only, never the service
+   * date, so a row's link keeps the searched date. Absent from an older
+   * backend: read as 0. */
   dayOffset?: number;
   /** The operating ATOC code, `null` when unknown. */
   operator?: string | null;
-  /** Live running state, when the train has any; absent from an older
-   * backend, which shows the row as "Scheduled". */
-  live?: TrainSearchLive | null;
+  /** The line summary's compact live status, `null` when the train has
+   * none; absent from an older backend. Either way the row reads
+   * "Scheduled". */
+  live?: LineTrainSummaryLive | null;
 }
 
 export interface TrainSearchPage {

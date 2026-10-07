@@ -545,7 +545,13 @@ describe('StationTimetable: names, operator and live fields', () => {
         originCrs: 'PAD',
         destinationCrs: 'BRI',
         dayOffset: 1,
-        live: { status: 'en_route', delayMinutes: 6, delayProvisional: true, cancelled: false },
+        live: {
+          status: 'en_route',
+          delayMinutes: 6,
+          delayProvisional: true,
+          cancelled: false,
+          lastReportedLocation: null,
+        },
       },
       {
         uid: 'C2',
@@ -553,7 +559,13 @@ describe('StationTimetable: names, operator and live fields', () => {
         stationCrs: 'RDG',
         originCrs: 'PAD',
         destinationCrs: 'BRI',
-        live: { status: 'cancelled', delayMinutes: null, delayProvisional: false, cancelled: true },
+        live: {
+          status: 'cancelled',
+          delayMinutes: null,
+          delayProvisional: false,
+          cancelled: true,
+          lastReportedLocation: null,
+        },
       },
     ]);
     renderWithMantine(<StationTimetable crs="RDG" />);

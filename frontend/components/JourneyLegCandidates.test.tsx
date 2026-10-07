@@ -817,7 +817,15 @@ describe('JourneyLegCandidates: service mode and live fields', () => {
   });
 
   it('shows live status when the backend sends it', async () => {
-    stub({ live: { status: 'en_route', delayMinutes: 8, delayProvisional: false, cancelled: false } });
+    stub({
+      live: {
+        status: 'en_route',
+        delayMinutes: 8,
+        delayProvisional: false,
+        cancelled: false,
+        lastReportedLocation: null,
+      },
+    });
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={vi.fn()} />);
 
     const row = (await screen.findByRole('link', { name: rowName('10:32', 'PAD') })).closest('li') as HTMLElement;

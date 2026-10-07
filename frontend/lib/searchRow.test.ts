@@ -19,7 +19,13 @@ function row(overrides: Partial<TrainSearchResult> = {}): TrainSearchResult {
   };
 }
 
-const live = { status: 'en_route', delayMinutes: 4, delayProvisional: false, cancelled: false };
+const live = {
+  status: 'en_route',
+  delayMinutes: 4,
+  delayProvisional: false,
+  cancelled: false,
+  lastReportedLocation: null,
+};
 
 describe('searchRowSummary', () => {
   it('maps the route, operator and mode, with no live state from an older backend', () => {
@@ -40,12 +46,15 @@ describe('searchRowSummary', () => {
 
   it("uses the row's own live state and origin name when the backend sends them", () => {
     const summary = searchRowSummary(row({ live, originName: 'London Paddington' }));
-    expect(summary.live).toEqual({ ...live, lastReportedLocation: null });
+    expect(summary.live).toEqual(live);
     expect(summary.origin).toEqual({ crs: 'PAD', name: 'London Paddington' });
   });
 
   it("falls back to a line summary's live state, scope and direction for the same train", () => {
     const known = train({ uid: 'C1', live: { ...live, lastReportedLocation: 'Didcot' } });
+    // A row the backend sent with `live: null` (no live state) still
+    // borrows the line summary's.
+    expect(searchRowSummary(row({ live: null }), known).live?.lastReportedLocation).toBe('Didcot');
     const summary = searchRowSummary(row(), known);
     expect(summary.live?.delayMinutes).toBe(4);
     expect(summary.scope).toBe('line');
