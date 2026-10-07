@@ -192,6 +192,54 @@ Rollback: revert the commit (no runtime switch).
 
 ### 1B. Migrator, schema gate, writer skeleton, loops, maintenance CronJob
 
+**Status (2026-10-07): the parts that do not need `ds-store` are built,
+ahead of 1A; every switch is off.**
+
+- **1B.6, code done; the real loops wait for `ds-store`.**
+  - `crates/ingest-writer` has no dependency on `api`. It has config,
+    `health-http`, metrics, the writer pool (`common::pg`, 6) and the line
+    catalogue.
+  - The generic loop runner (`loop_runner.rs`) runs each named loop on its
+    interval while its `LockSession` holds `pg_try_advisory_lock(key)`.
+    The `LockSession` is one dedicated connection beyond the pool: role
+    limit = pool + 1. A lock is held across ticks until the process
+    exits; a runner whose lock is held elsewhere skips the tick (debug log,
+    `loop_ticks_total{outcome="skipped"}`).
+  - `INGEST_WRITER_LOOPS` (default false) registers only a no-op `canary`
+    loop.
+  - The lock keys are `common::advisory_locks` (`SCHEDULE_MATCH_SWEEP`,
+    `RECONCILIATION_SWEEP`, `BACKLOG_MATCH_SWEEP`, `CORPUS_CROSSWALK`,
+    `WRITER_CANARY`).
+  - `loops.rs` marks where each sweep registers once 1A.6/1A.10 have
+    moved its body. Still to do after `ds-store`:
+    - those four registrations;
+    - the CRS-to-line index;
+    - `wait_for_schema` before readiness (1B.2).
+  - `docker/ingest-writer.Dockerfile` exists. Its `containers.yml` matrix
+    leg is added with the chart (1B.9), because the digest step maps each
+    leg to a `values.yaml` key.
+  - DB tests (`crates/ingest-writer/tests/loop_locks.rs`): two runners,
+    one body run per tick; skip while held elsewhere; interval; reconnect
+    after a killed lock session. They pass as superuser and as the
+    role-split app role.
+- **1B.7, planned.** The api's four loops and its CORPUS startup task
+  take the same `common::advisory_locks` keys the same way. The runner
+  moves from `ingest-writer` into `ds-store` (it needs only sqlx, tokio
+  and metrics), and the api wraps each loop body with it on its own
+  `LockSession`. Then `API_BACKGROUND_LOOPS` gates the spawning, and
+  `session_cleanup_sweep_loop` stays outside the locks (the CronJob
+  replaces it). Test: an api runner and a writer runner on one key never
+  both run a body in a tick, as `two_runners_on_one_lock_run_the_body_once_per_tick`
+  checks.
+- **1B.8, code done.** `crates/api/src/bin/maintenance.rs` runs one pass
+  of `prune_expired_sessions`, `prune_dead_links` and
+  `prune_personal_data`. It reuses the existing functions and the api's
+  retention variables, and exits non-zero if any step failed. The api
+  image builds it as `/usr/local/bin/maintenance`. It has a DB test. The
+  CronJob is the chart work.
+- **1B.4, 1B.9 and the 1B.8 CronJob, chart work in progress separately.**
+  1B.1–1B.3, 1B.5 and 1B.10 are not started.
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 1B.1 | Move `api::migrate` and `legacy_backfill::ensure_ready_for_contract_migration` to `ds_store::migrate`; add the `crates/ds-migrate` binary (`run`, `wait`); build it into the api image | `ds-store/src/migrate.rs`, `crates/ds-migrate/`, `docker/api.Dockerfile`, `api/src/main.rs` (uses `ds_store::migrate`) | moved migrate tests (the INVALID-index heal, the role split test `the_app_role_has_dml_only_and_the_owner_owns_the_schema`); `migration_checksums` and `migration_index_locking` unchanged |
