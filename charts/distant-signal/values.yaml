@@ -4589,8 +4589,9 @@ metrics:
     # one does not.
     # DistantSignalScheduleReferencePublishStale: the last fully published
     # delivery is older than `staleAfterHours` (deliveries land nightly).
-    # DistantSignalSchedulePublishStagedMismatch: api skipped a publish's
-    # delete (staged key count mismatch) within `mismatchWindow`.
+    # DistantSignalSchedulePublishStagedMismatch: api (or schedule-reference's
+    # db sink) skipped a publish's delete (staged key count mismatch) within
+    # `mismatchWindow`.
     # DistantSignalScheduleReferencePublishRejected: api answered 400/413/422
     # to a product within `rejectedWindow` (permanent for that delivery).
     # DistantSignalScheduleFeedIngestRejected: api answered 400/413/422 to
