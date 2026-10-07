@@ -591,15 +591,8 @@ struct ScheduleFeedFile {
     sha256: Option<String>,
 }
 
-/// Whether `value` is a SHA-256 as `schedule-ingest` writes it: 64
-/// lowercase hex digits. The columns' CHECK constraints say the same; this
-/// turns a bad value into a 422 rather than a 500.
-fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
+// Moved to `ds_store::corpus` (ingest architecture plan 1A.6).
+use ds_store::corpus::is_sha256_hex;
 
 /// A 422 for any malformed provenance field in a schedule-feed record.
 fn schedule_feed_ingest_problem(req: &ScheduleFeedIngestRequest) -> Option<String> {
@@ -767,21 +760,8 @@ async fn post_tiploc_locations(
     Ok(Json(UpsertResponse { upserted }))
 }
 
-/// One Network Rail CORPUS delivery from `schedule-ingest`'s CORPUS mode.
-/// Mirrors `schedule-ingest::corpus::CorpusLoadRequest` field for field.
-/// `delivered_at` is the delivered file's own mtime.
-/// `source_bytes`/`sha256` describe the delivered file as `schedule-ingest`
-/// read it; absent from an older `schedule-ingest`.
-#[derive(Debug, Deserialize)]
-struct CorpusLoadRequest {
-    delivered_at: chrono::DateTime<chrono::Utc>,
-    source_file: String,
-    locations: Vec<crate::data::corpus::CorpusLocation>,
-    #[serde(default)]
-    source_bytes: Option<u64>,
-    #[serde(default)]
-    sha256: Option<String>,
-}
+// Moved to `ds_store::corpus` (ingest architecture plan 1A.6).
+use ds_store::corpus::CorpusLoadRequest;
 
 /// Replaces `corpus_locations` with one whole delivery -- see
 /// `data::corpus::replace_corpus_locations`. An empty delivery or a row
@@ -836,18 +816,8 @@ async fn post_corpus_locations(
     Ok(Json(UpsertResponse { upserted }))
 }
 
-fn corpus_load_problem(req: &CorpusLoadRequest) -> Option<String> {
-    if req.locations.is_empty() {
-        return Some("a CORPUS delivery must carry at least one location".to_string());
-    }
-    if req.source_file.trim().is_empty() {
-        return Some("source_file must not be blank".to_string());
-    }
-    req.locations
-        .iter()
-        .position(|l| l.nlc.trim().is_empty())
-        .map(|i| format!("location {i} has a blank nlc"))
-}
+// Moved to `ds_store::corpus` (ingest architecture plan 1A.6).
+use ds_store::corpus::corpus_load_problem;
 
 /// `crates/schedule-reference`'s per-cycle fixed-links batch -- see
 /// `queries::upsert_fixed_links`.
@@ -3858,72 +3828,6 @@ mod schedule_chunk_params_tests {
             };
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
-    }
-}
-
-#[cfg(test)]
-mod corpus_load_validation_tests {
-    use super::*;
-
-    fn request(body: serde_json::Value) -> CorpusLoadRequest {
-        serde_json::from_value(body).expect("valid CorpusLoadRequest JSON")
-    }
-
-    fn location(nlc: &str) -> serde_json::Value {
-        serde_json::json!({
-            "nlc": nlc, "stanox": "87219", "tiploc": "CLPHMJN", "crs": "CLJ",
-            "uic": "55950", "nlc_desc": "CLAPHAM JUNCTION LONDON", "nlc_desc16": null
-        })
-    }
-
-    #[test]
-    fn a_well_formed_delivery_has_no_problem() {
-        let req = request(serde_json::json!({
-            "delivered_at": "2026-09-28T03:00:00Z",
-            "source_file": "CORPUSExtract.json.gz",
-            "locations": [location("559500")]
-        }));
-        assert_eq!(corpus_load_problem(&req), None);
-    }
-
-    #[test]
-    fn an_empty_delivery_a_blank_nlc_or_a_blank_source_is_refused() {
-        let empty = request(serde_json::json!({
-            "delivered_at": "2026-09-28T03:00:00Z",
-            "source_file": "CORPUSExtract.json.gz",
-            "locations": []
-        }));
-        assert!(corpus_load_problem(&empty).is_some());
-
-        let blank_nlc = request(serde_json::json!({
-            "delivered_at": "2026-09-28T03:00:00Z",
-            "source_file": "CORPUSExtract.json.gz",
-            "locations": [location("559500"), location(" ")]
-        }));
-        assert_eq!(
-            corpus_load_problem(&blank_nlc).as_deref(),
-            Some("location 1 has a blank nlc")
-        );
-
-        let blank_source = request(serde_json::json!({
-            "delivered_at": "2026-09-28T03:00:00Z",
-            "source_file": "",
-            "locations": [location("559500")]
-        }));
-        assert!(corpus_load_problem(&blank_source).is_some());
-    }
-
-    #[test]
-    fn corpus_provenance_is_optional() {
-        let req = request(serde_json::json!({
-            "delivered_at": "2026-09-28T03:00:00Z",
-            "source_file": "CORPUSExtract.json.gz",
-            "locations": [location("559500")],
-            "source_bytes": 295_957,
-            "sha256": "0f".repeat(32)
-        }));
-        assert_eq!(req.source_bytes, Some(295_957));
-        assert!(req.sha256.as_deref().is_some_and(is_sha256_hex));
     }
 }
 
