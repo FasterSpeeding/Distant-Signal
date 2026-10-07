@@ -85,8 +85,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake libssl-dev pkg-config libsasl2-dev libcurl4-openssl-dev
 
+      # Shared with the msrv job (same toolchain, same dependency builds:
+      # clippy-driver only wraps the workspace crates). See rust-test's
+      # cache step for why only main saves.
       - name: Cache cargo registry/target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: check-all-features
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo clippy (all features)
         run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
@@ -115,8 +121,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake libssl-dev pkg-config libsasl2-dev libcurl4-openssl-dev
 
+      # Shared with the clippy job; see there.
       - name: Cache cargo registry/target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: check-all-features
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo +1.88.0 check
         run: cargo +1.88.0 check --workspace --locked --all-features --all-targets
@@ -276,8 +286,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake libssl-dev pkg-config libsasl2-dev libcurl4-openssl-dev
 
+      # save-if: only main writes caches (every job's rust-cache step does
+      # the same). A PR's save could only ever be restored by later runs
+      # of that same PR, and the repo's 10 GB Actions cache was over its
+      # cap and evicting main's entries for them. PRs still restore main's.
       - name: Cache cargo registry/target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo build --workspace
         run: cargo build --workspace
@@ -422,8 +438,11 @@ jobs:
   # unrelated service credentials (Kafka, RDM/TfL/LDBWS pollers, five
   # services' worth of internal-OAuth pairs) just to resolve config, and its
   # `api`/`frontend` images would rebuild from scratch in-container with no
-  # cache reuse, unlike this job's `Swatinem/rust-cache` (shared with
-  # `rust-test`) and `actions/setup-node`'s npm cache.
+  # cache reuse, unlike this job's `Swatinem/rust-cache` and
+  # `actions/setup-node`'s npm cache. (That rust-cache entry is this job's
+  # own: rust-cache's default key includes the job id, so it is not shared
+  # with `rust-test`'s, and it only holds `cargo build -p api`'s debug
+  # artifacts.)
   #
   # The `INTERNAL_OAUTH_*`/`SSO_*` values below are dummy-but-syntactically-
   # valid, matching local dev's own `.devdata/api.env` pattern: `api` only
@@ -511,8 +530,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # 1.88.0
 
+      # See rust-test's cache step for save-if.
       - name: Cache cargo registry/target
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo build -p api
         run: cargo build -p api
