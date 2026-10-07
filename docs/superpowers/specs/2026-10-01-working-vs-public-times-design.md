@@ -595,6 +595,81 @@ it.
   backlog-matched movement uses the `publicSchedule` fallback.
 - `scheduled*` stay WTT for this release (§9 decision 1).
 
+## Decisions (2026-10-07)
+
+Delay Repay phase 2 follow-ups (§8 Q3, §9 decision 3, §11 P1). Implemented
+in `api::data::delay_repay_rules` (pure), `api::data::delay_repay_outcome`
+(one batched read) and `frontend/components/DelayRepayEstimate.tsx`; wire
+changes in `docs/api-changelog.md`.
+
+**Evidence.** Production, service dates 2026-09-29 to 2026-10-05: the band
+projected 30 minutes before arrival matched the final band only ~61% of the
+time when the projection was 15–17 minutes, and ~60% at 30–32, against ~90%
+outside a 3-minute zone above each threshold. Only 2.3% of arrivals were 15+
+minutes late, 0.5% 30+, 0.07% 60+ and 0.005% 120+.
+
+1. **Borderline zone.** While provisional, a projected public delay less
+   than 3 minutes above a band threshold of the operator's scheme (15–17,
+   30–32, 60–62, 120–122; Heathrow Express 31–33, 61–63) shows
+   "Borderline: could go either way" with the threshold named, and no
+   percentage (`estimate.borderline`, `percentage: null`). Outside the zone
+   the provisional band and percentage show as before. Final estimates are
+   unaffected.
+2. **Ticket-aware bands and the scheme table.**
+   - The 120+ band reads the ticket's free-text `ticket_type`: a clear
+     return is "100% of your return fare"; a clear single says singles are
+     already refunded in full from 60 minutes; anything else shows both
+     readings. 60–119 reads "100% of the single fare (50% of a return)"
+     (and 15–29, 30–59 likewise: 25% (12.5%), 50% (25%)).
+   - Schemes, as implemented (ATOC codes checked against
+     `reference-data/toc-codes.csv`):
+
+     | Operator | ATOC | Scheme | Notes |
+     |---|---|---|---|
+     | LNER | GR | DR30 | |
+     | CrossCountry | XC | DR30 | |
+     | ScotRail | SR | DR30 | |
+     | Caledonian Sleeper | CS | DR30 | room supplement 50% at 30–59, 100% at 60+ (guest charter) |
+     | Hull Trains | HT | DR30 | |
+     | Lumo | LD | DR30 | |
+     | Heathrow Express | HX | own: 25% >30 min, 50% >60 min of the ticket | tickets from 1 Sep 2024 |
+     | Elizabeth line | XR | own scheme, no estimate | TfL claim page |
+     | London Overground | LO | own scheme, no estimate | TfL claim page |
+     | Merseyrail | ME | own scheme, no estimate | |
+     | Grand Central | GC | own scheme, no estimate | ORR "Traditional"; third-party sites say DR15 |
+     | everyone else | | DR15 | National Rail claim page |
+
+   - Matching: the ticket's operator text (an ATOC code as the whole text,
+     or a known spelling within it), else the train's CIF ATOC code, else
+     DR15 when the ticket names any operator.
+   - Sources: ORR, "Rail delay compensation claims, rail periods 11 to 13"
+     (25 June 2026), table "Delay compensation scheme by train operator",
+     <https://dataportal.orr.gov.uk/media/ittbwvrh/delay-compensation-claims-factsheet-2025-26-rail-periods-11-13.pdf>;
+     Heathrow Express Conditions of Carriage (July 2026); Caledonian Sleeper
+     Guest Experience Charter; each operator's claim page (cited in
+     `delay_repay_rules`). The ORR lists Heathrow Express as DR30; its own
+     scheme (above) is what is modelled. **The LNER and ScotRail official
+     pages were not re-verified on 2026-10-07 (HTTP 403 to an automated
+     check);** their entries rest on the ORR table and the 2026-08-29 check.
+   - `RULES_CHECKED_ON` is `2026-10-07`, served as `rulesCheckedOn`.
+3. **Didn't reach the destination.** From data already held:
+   - TRUST arrival at the destination: final (`outcome: arrived`);
+   - departure only: final, and the page says it is "based on its
+     departure from <X>" (`departedOnly`);
+   - else not reached (`notReached`) when the train is cancelled
+     (`status = 'cancelled'`) other than en route from the destination or
+     later (`train_reasons` 0002, placed on the CIF schedule), when TRUST
+     reported a PASS there, or when Darwin listed the call as cancelled and
+     TRUST has reported the train at a later call (Darwin's list is a
+     pin-time snapshot, so it alone is not enough).
+   The page then says "This train didn't reach <destination>: you're likely
+   eligible depending on your replacement journey; claim with <operator>",
+   with no percentage.
+4. **Not done, deliberately.** A destination that is not a TRUST reporting
+   point never gets an outcome, so its estimate stays provisional (as
+   before). A reinstated train is no longer `cancelled`, so it is not
+   `notReached`.
+
 ## Appendix: method
 
 - **The extract.** The production extract
