@@ -9,196 +9,12 @@
 //! off-by-default lookup fallback reads, and the route logs a comparison
 //! against the timetable crosswalk ([`crate::data::corpus_comparison`]).
 
-use anyhow::Result;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
-
-/// Serialises concurrent loads (`pg_advisory_xact_lock` key). Arbitrary but
-/// fixed; only this module takes it.
-const CORPUS_LOAD_LOCK_KEY: i64 = 0x0C0B_9053;
-
-/// One CORPUS location, already normalised by `schedule-ingest` (trimmed,
-/// blank as `None`, digit codes zero-padded). Mirrors
-/// `schedule-ingest::corpus::CorpusLocation` field for field.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CorpusLocation {
-    pub nlc: String,
-    pub stanox: Option<String>,
-    pub tiploc: Option<String>,
-    pub crs: Option<String>,
-    pub uic: Option<String>,
-    pub nlc_desc: Option<String>,
-    pub nlc_desc16: Option<String>,
-}
-
-/// Replaces every row of `corpus_locations` with `locations` and records the
-/// delivery in `corpus_deliveries`, all in one transaction. Returns the
-/// number of rows inserted.
-///
-/// `DELETE` rather than `TRUNCATE`: `TRUNCATE` takes an `ACCESS EXCLUSIVE`
-/// lock that would block every reader until commit, while a `DELETE` leaves
-/// readers on the old snapshot until the new one commits. The ~56k dead
-/// tuples a month are autovacuum's job.
-///
-/// The derived crosswalk (`corpus_tiploc_crs`/`corpus_stanox_crs`) is
-/// rebuilt from `locations` in the same transaction, restricted to the
-/// current `stations`, so it always matches the stored set.
-///
-/// Callers must reject an empty `locations` first (the route does): an
-/// empty load would wipe the table.
-pub async fn replace_corpus_locations(
-    pool: &PgPool,
-    delivered_at: DateTime<Utc>,
-    source_file: &str,
-    locations: &[CorpusLocation],
-) -> Result<u64> {
-    replace_corpus_locations_with_provenance(
-        pool,
-        delivered_at,
-        source_file,
-        &DeliveredFileProvenance::default(),
-        locations,
-    )
-    .await
-}
-
-/// The delivered CORPUS file's size and SHA-256 as `schedule-ingest` read
-/// it, recorded in `corpus_deliveries` (migration
-/// `20261001150000_schedule_feed_delivery_sha256.sql`). `None` from an
-/// older `schedule-ingest`.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DeliveredFileProvenance<'a> {
-    pub bytes: Option<i64>,
-    pub sha256: Option<&'a str>,
-}
-
-/// [`replace_corpus_locations`], also recording the delivered file's
-/// provenance in its `corpus_deliveries` row.
-pub async fn replace_corpus_locations_with_provenance(
-    pool: &PgPool,
-    delivered_at: DateTime<Utc>,
-    source_file: &str,
-    provenance: &DeliveredFileProvenance<'_>,
-    locations: &[CorpusLocation],
-) -> Result<u64> {
-    anyhow::ensure!(
-        !locations.is_empty(),
-        "refusing to replace corpus_locations with an empty delivery"
-    );
-    let row_count = i32::try_from(locations.len())?;
-    let nlc: Vec<&str> = locations.iter().map(|l| l.nlc.as_str()).collect();
-    let column = |f: fn(&CorpusLocation) -> &Option<String>| -> Vec<Option<&str>> {
-        locations.iter().map(|l| f(l).as_deref()).collect()
-    };
-    let stanox = column(|l| &l.stanox);
-    let tiploc = column(|l| &l.tiploc);
-    let crs = column(|l| &l.crs);
-    let uic = column(|l| &l.uic);
-    let nlc_desc = column(|l| &l.nlc_desc);
-    let nlc_desc16 = column(|l| &l.nlc_desc16);
-
-    let (_, crosswalk) = crate::data::corpus_crosswalk::derive(
-        &crate::data::corpus_crosswalk::corpus_rows(locations),
-    );
-
-    let mut tx = pool.begin().await?;
-    take_load_lock(&mut tx).await?;
-    sqlx::query("DELETE FROM corpus_locations")
-        .execute(&mut *tx)
-        .await?;
-    let inserted = sqlx::query(
-        r"
-        INSERT INTO corpus_locations
-            (nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16, delivered_at, source_file)
-        SELECT nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16, $8, $9
-        FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-            AS i(nlc, stanox, tiploc, crs, uic, nlc_desc, nlc_desc16)
-        ",
-    )
-    .bind(&nlc)
-    .bind(&stanox)
-    .bind(&tiploc)
-    .bind(&crs)
-    .bind(&uic)
-    .bind(&nlc_desc)
-    .bind(&nlc_desc16)
-    .bind(delivered_at)
-    .bind(source_file)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    sqlx::query(
-        "INSERT INTO corpus_deliveries \
-             (delivered_at, source_file, row_count, loaded_at, source_bytes, sha256) \
-         VALUES ($1, $2, $3, now(), $4, $5) \
-         ON CONFLICT (delivered_at) DO UPDATE SET \
-             source_file = EXCLUDED.source_file, \
-             row_count = EXCLUDED.row_count, \
-             loaded_at = EXCLUDED.loaded_at, \
-             source_bytes = EXCLUDED.source_bytes, \
-             sha256 = EXCLUDED.sha256",
-    )
-    .bind(delivered_at)
-    .bind(source_file)
-    .bind(row_count)
-    .bind(provenance.bytes)
-    .bind(provenance.sha256)
-    .execute(&mut *tx)
-    .await?;
-    crate::data::corpus_crosswalk::write(&mut tx, delivered_at, crosswalk).await?;
-    tx.commit().await?;
-    Ok(inserted)
-}
-
-/// Takes the CORPUS load lock for the rest of `tx`: loads and crosswalk
-/// rebuilds serialise on it.
-pub(crate) async fn take_load_lock(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(CORPUS_LOAD_LOCK_KEY)
-        .execute(&mut **tx)
-        .await?;
-    Ok(())
-}
-
-/// The newest loaded delivery's `delivered_at`, or `None` before the first
-/// load -- the CORPUS freshness read.
-pub async fn last_corpus_delivery(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
-    let (latest,): (Option<DateTime<Utc>>,) =
-        sqlx::query_as("SELECT MAX(delivered_at) FROM corpus_deliveries")
-            .fetch_one(pool)
-            .await?;
-    Ok(latest)
-}
-
-/// `distant_signal_api_corpus_last_delivered_at_seconds`: the newest loaded
-/// CORPUS delivery's `delivered_at` as a Unix timestamp, the series behind
-/// the chart's `DistantSignalCorpusStale` alert.
-///
-/// Set from `corpus_deliveries` (the durable marker), not from the request
-/// that just loaded: at startup ([`refresh_last_delivery_metric`] from
-/// `main`'s background loops) and after every load. `schedule-ingest`'s own
-/// `schedule_feed_corpus_last_load_delivered_at_seconds` only exists in the
-/// process that performed a load, so a restart between monthly deliveries
-/// would make any alert on it silently absent; this one survives restarts.
-/// Not set at all before the first load, so the alert cannot fire on a
-/// freshly enabled install that is still waiting for its first delivery.
-pub const LAST_DELIVERY_METRIC: &str = "api_corpus_last_delivered_at_seconds";
-
-/// Reads the newest delivery and, if there is one, sets
-/// [`LAST_DELIVERY_METRIC`]. Returns what it read.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "metric gauges take f64, and these counts and timestamps stay far below 2^52"
-)]
-pub async fn refresh_last_delivery_metric(pool: &PgPool) -> Result<Option<DateTime<Utc>>> {
-    let latest = last_corpus_delivery(pool).await?;
-    if let Some(delivered_at) = latest {
-        metrics::gauge!(common::metrics::metric_name(LAST_DELIVERY_METRIC))
-            .set(delivered_at.timestamp() as f64);
-    }
-    Ok(latest)
-}
+// Moved to `ds_store::corpus` (ingest architecture plan 1A.6).
+pub use ds_store::corpus::{
+    CorpusLocation, DeliveredFileProvenance, LAST_DELIVERY_METRIC, last_corpus_delivery,
+    refresh_last_delivery_metric, replace_corpus_locations,
+    replace_corpus_locations_with_provenance,
+};
 
 /// Database-gated: each test gets its own throwaway database
 /// (`#[sqlx::test]`, migrated from `./migrations`), because a load replaces
@@ -211,7 +27,8 @@ pub async fn refresh_last_delivery_metric(pool: &PgPool) -> Result<Option<DateTi
     reason = "test code: fixtures sit next to their use"
 )]
 mod db_tests {
-    use chrono::TimeZone;
+    use chrono::{DateTime, TimeZone, Utc};
+    use sqlx::PgPool;
 
     use super::*;
 
