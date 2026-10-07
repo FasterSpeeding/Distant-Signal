@@ -478,3 +478,145 @@ where
         inference,
     })
 }
+
+/// The publish-order contract of [`upsert_incident_snapshot`] (plan task
+/// 1A.8), against a real database: the callback runs once, after every
+/// chunk has committed (another connection already sees the rows) and
+/// before the removal inference (no feed-state baseline yet), and is not
+/// called when no text changed. Resets `incident_feed_state`, like the
+/// api's `incident_removal` DB tests, so needs `--test-threads=1`.
+#[cfg(test)]
+mod db_tests {
+    use std::sync::Mutex;
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+
+    const PREFIX: &str = "TEST-PUBLISH-ORDER-";
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    async fn reset(pool: &PgPool) {
+        for sql in [
+            "DELETE FROM incident_history WHERE incident_id LIKE 'TEST-PUBLISH-ORDER-%'",
+            "DELETE FROM incidents WHERE incident_id LIKE 'TEST-PUBLISH-ORDER-%'",
+            "DELETE FROM incident_feed_state",
+        ] {
+            sqlx::query(sql).execute(pool).await.expect(sql);
+        }
+    }
+
+    fn incident(suffix: &str, summary: &str) -> IncidentMessage {
+        IncidentMessage {
+            incident_id: format!("{PREFIX}{suffix}"),
+            summary: summary.to_string(),
+            description: format!("{suffix} description"),
+            operators: vec!["ZZ".to_string()],
+            affected_stations: vec![],
+            priority: 2,
+            validity: vec![],
+            is_planned: false,
+            is_cleared: false,
+        }
+    }
+
+    /// What the callback saw when it ran.
+    #[derive(Debug, PartialEq, Eq)]
+    struct AtPublish {
+        ids: Vec<String>,
+        /// This test's rows visible to ANOTHER connection: committed ones.
+        committed_rows: i64,
+        /// `incident_feed_state` rows: 0 until the inference has run.
+        feed_state_rows: i64,
+    }
+
+    async fn feed_state_rows(pool: &PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM incident_feed_state")
+            .fetch_one(pool)
+            .await
+            .expect("count feed state")
+    }
+
+    /// One complete snapshot; returns what the callback saw, if it ran.
+    async fn snapshot(
+        pool: &PgPool,
+        batch: &[IncidentMessage],
+    ) -> (Option<AtPublish>, IncidentSnapshotOutcome) {
+        let seen: Mutex<Vec<AtPublish>> = Mutex::new(Vec::new());
+        let matcher = common::matcher::LineMatcher::new(&[]);
+        let outcome = upsert_incident_snapshot(pool, &matcher, batch, true, |ids| async {
+            let committed_rows: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM incidents WHERE incident_id LIKE 'TEST-PUBLISH-ORDER-%'",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("count committed rows");
+            let feed_state_rows = feed_state_rows(pool).await;
+            seen.lock().expect("not poisoned").push(AtPublish {
+                ids,
+                committed_rows,
+                feed_state_rows,
+            });
+        })
+        .await
+        .expect("upsert snapshot");
+        let mut seen = seen.into_inner().expect("not poisoned");
+        assert!(
+            seen.len() <= 1,
+            "published at most once per snapshot: {seen:?}"
+        );
+        (seen.pop(), outcome)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p ds-store \
+                incidents::db_tests -- --ignored --test-threads=1`"]
+    async fn text_changes_are_published_after_commit_and_before_inference() {
+        let pool = test_pool().await;
+        reset(&pool).await;
+
+        // More than one chunk, so "after commit" means after the LAST chunk.
+        let batch: Vec<IncidentMessage> = (0..=UPSERT_CHUNK_SIZE)
+            .map(|n| incident(&format!("{n:03}"), "Signal failure"))
+            .collect();
+        let (published, outcome) = snapshot(&pool, &batch).await;
+        let expected_ids: Vec<String> = batch.iter().map(|i| i.incident_id.clone()).collect();
+        assert_eq!(
+            published,
+            Some(AtPublish {
+                ids: expected_ids,
+                committed_rows: i64::try_from(batch.len()).expect("small"),
+                feed_state_rows: 0,
+            }),
+            "every chunk committed, inference not yet run"
+        );
+        assert_eq!(outcome.inference, removal::Inference::NoBaseline);
+        assert_eq!(
+            feed_state_rows(&pool).await,
+            1,
+            "the inference ran after the publish"
+        );
+
+        // Unchanged text: no publish at all.
+        let (published, _) = snapshot(&pool, &batch).await;
+        assert_eq!(published, None);
+
+        // One summary edited: only that id.
+        let mut edited = batch.clone();
+        edited[1].summary = "Signal failure (updated)".to_string();
+        let (published, _) = snapshot(&pool, &edited).await;
+        assert_eq!(
+            published.map(|at| at.ids),
+            Some(vec![edited[1].incident_id.clone()])
+        );
+        reset(&pool).await;
+    }
+}
