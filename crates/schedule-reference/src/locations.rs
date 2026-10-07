@@ -170,34 +170,21 @@ impl ModeTally {
     }
 }
 
-/// `reference-data/tiploc-parent-stations.csv`, compiled in.
-const CURATED_PARENTS_CSV: &str =
-    include_str!("../../../reference-data/tiploc-parent-stations.csv");
-
-/// TIPLOC -> parent CRS from the curated CSV. Comment (`#`) and blank lines
-/// and the header are skipped; a malformed row is skipped too (the CSV's own
-/// test below proves the checked-in file has none).
+/// TIPLOC -> parent CRS from a curated CSV
+/// ([`common::tiploc_parents::parse_curated_parents`]: comments, the header
+/// and malformed rows skipped). The CSV's `walk_minutes` is the planner's
+/// (`api`), not this crate's.
 pub(crate) fn curated_parents(csv: &str) -> BTreeMap<String, String> {
-    csv.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .filter_map(|line| {
-            let mut fields = line.splitn(3, ',');
-            let tiploc = fields.next()?.trim().to_ascii_uppercase();
-            let crs = fields.next()?.trim().to_ascii_uppercase();
-            let valid = !tiploc.is_empty()
-                && tiploc.len() <= 7
-                && tiploc.chars().all(|c| c.is_ascii_alphanumeric())
-                && crs.len() == 3
-                && crs.chars().all(|c| c.is_ascii_uppercase());
-            valid.then_some((tiploc, crs))
-        })
+    common::tiploc_parents::parse_curated_parents(csv)
+        .into_iter()
+        .map(|(tiploc, parent)| (tiploc, parent.parent_crs))
         .collect()
 }
 
-/// The checked-in curated parents.
+/// The checked-in curated parents
+/// (`reference-data/tiploc-parent-stations.csv`, compiled into `common`).
 pub(crate) fn checked_in_curated_parents() -> BTreeMap<String, String> {
-    curated_parents(CURATED_PARENTS_CSV)
+    curated_parents(common::tiploc_parents::CURATED_PARENTS_CSV)
 }
 
 /// An X-prefixed CRS is Network Rail's pseudo-code for a non-passenger
@@ -732,7 +719,7 @@ LTMARYLBN 2003 20036     TF
     #[test]
     fn the_checked_in_curated_csv_parses_completely() {
         let parents = checked_in_curated_parents();
-        let rows = CURATED_PARENTS_CSV
+        let rows = common::tiploc_parents::CURATED_PARENTS_CSV
             .lines()
             .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
             .count();
@@ -744,7 +731,7 @@ LTMARYLBN 2003 20036     TF
     #[test]
     fn curated_rows_are_validated() {
         let parents = curated_parents(
-            "# comment\ntiploc,parent_crs,note\nGOOD,ABC,fine, with a comma\nBAD-ONE,ABC,x\nOK2,abcd,x\nlow,xyz,lower case is upper-cased\n",
+            "# comment\ntiploc,parent_crs,walk_minutes,note\nGOOD,ABC,,fine, with a comma\nBAD-ONE,ABC,,x\nOK2,abcd,,x\nlow,xyz,4,lower case is upper-cased\n",
         );
         assert_eq!(
             parents.into_iter().collect::<Vec<_>>(),
