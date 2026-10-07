@@ -1,26 +1,26 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { StationTimetable } from './StationTimetable';
-import { byVisibleText } from '@/test/routeText';
+import type { TrainSearchResult } from '@/lib/types';
 
 /** Builds a `GET /public/trains/search` response body -- same envelope
  * shape `TrainSearchForm.test.tsx::searchBody` builds against the same
  * route. */
-function searchBody(
-  rows: {
-    uid: string;
-    scheduled: string;
-    stationCrs: string;
-    originCrs: string | null;
-    destinationCrs: string | null;
-  }[],
-  nextCursor: string | null = null,
-) {
+function searchBody(rows: SearchRow[], nextCursor: string | null = null) {
   return JSON.stringify({
     results: rows.map((row) => ({ destinationArrival: null, destinationArrivalDayOffset: 0, ...row })),
     nextCursor,
   });
+}
+
+type SearchRow = Partial<TrainSearchResult> &
+  Pick<TrainSearchResult, 'uid' | 'scheduled' | 'stationCrs' | 'originCrs' | 'destinationCrs'>;
+
+/** A row's link name starts with its time and destination ("08:22 to
+ * BRI"), the visually hidden "to" included. */
+function rowName(time: string, destination: string): RegExp {
+  return new RegExp(`^${time} to ${destination}\\b`);
 }
 
 const PAGE_ONE = [
@@ -72,9 +72,11 @@ describe('StationTimetable', () => {
     fireEvent.click(expand());
 
     await waitFor(() => expect(screen.getByText('Loading scheduled departures…')).toBeInTheDocument());
+    const status = screen.getByText('Loading scheduled departures…').closest('[role="status"]');
+    expect(status).toHaveAttribute('aria-busy', 'true');
   });
 
-  it('renders one row per result, with time/origin/destination and a link to the live status page for today', async () => {
+  it('renders one row per result, each a link to the train page for today naming its origin and status', async () => {
     // FE-4: 23:30 UTC on 15 July is 00:30 on 16 July in London (BST).
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
@@ -86,14 +88,19 @@ describe('StationTimetable', () => {
 
     fireEvent.click(expand());
 
-    expect(await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('10:05 · WAT → RDG → EXD'))).toBeInTheDocument();
-    const links = screen.getAllByRole('link', { name: 'View live status' });
+    expect(await screen.findByRole('link', { name: rowName('08:22', 'BRI') })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: rowName('10:05', 'EXD') })).toBeInTheDocument();
+    const first = screen.getByRole('link', { name: rowName('08:22', 'BRI') });
     // London's service date, not the host's (UTC) one.
-    expect(links[0]).toHaveAttribute('href', '/train/C10001/2026-07-16');
+    expect(first).toHaveAttribute('href', '/train/C10001/2026-07-16');
+    // No live state from this backend yet: every row reads "Scheduled".
+    expect(first).toHaveTextContent('Scheduled');
+    expect(first).toHaveTextContent('From PAD');
+    expect(screen.getByRole('link', { name: rowName('10:05', 'EXD') })).toHaveTextContent('From WAT');
+    expect(screen.queryByRole('link', { name: 'View live status' })).not.toBeInTheDocument();
   });
 
-  it('renders a "?" placeholder when origin or destination is unresolved', async () => {
+  it('leaves out the origin when it is unresolved, rather than a "?"', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() =>
@@ -111,7 +118,9 @@ describe('StationTimetable', () => {
 
     fireEvent.click(expand());
 
-    expect(await screen.findByText(byVisibleText('09:00 · ? → RDG → BRI'))).toBeInTheDocument();
+    const link = await screen.findByRole('link', { name: rowName('09:00', 'BRI') });
+    expect(link).not.toHaveTextContent('From');
+    expect(link).not.toHaveTextContent('?');
   });
 
   it('shows the "no matches today" copy for a 200 with an empty results array', async () => {
@@ -139,7 +148,7 @@ describe('StationTimetable', () => {
     expect(screen.queryByText('No scheduled departures found for the rest of today.')).not.toBeInTheDocument();
   });
 
-  it('shows an error alert on a non-2xx, non-404 response', async () => {
+  it('shows an error status on a non-2xx, non-404 response', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() => Promise.resolve(new Response('boom', { status: 500 }))),
@@ -148,10 +157,11 @@ describe('StationTimetable', () => {
 
     fireEvent.click(expand());
 
-    expect(await screen.findByText("Couldn't load the scheduled departures right now.")).toBeInTheDocument();
+    const error = await screen.findByText("Couldn't load the scheduled departures right now.");
+    expect(error.closest('[role="status"]')).toBeInTheDocument();
   });
 
-  it('shows an error alert when fetch itself throws', async () => {
+  it('shows an error status when fetch itself throws', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() => Promise.reject(new Error('network down'))),
@@ -170,7 +180,7 @@ describe('StationTimetable', () => {
     );
     renderWithMantine(<StationTimetable crs="RDG" />);
     fireEvent.click(expand());
-    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
+    await screen.findByRole('link', { name: rowName('08:22', 'BRI') });
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     // The button doesn't just vanish -- the list says it is complete.
     expect(screen.getByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
@@ -211,7 +221,7 @@ describe('StationTimetable', () => {
     expect(screen.queryByText(/You've reached the end/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
     // The rows already on screen survive a failed next page.
-    expect(screen.getByText(byVisibleText('08:22 · PAD → RDG → BRI'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: rowName('08:22', 'BRI') })).toBeInTheDocument();
   });
 
   it('retrying a failed page really does page on, clearing the error and ending the list', async () => {
@@ -234,7 +244,7 @@ describe('StationTimetable', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('11:40', 'BRI') })).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
     expect(screen.getByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
   });
@@ -258,7 +268,7 @@ describe('StationTimetable', () => {
     fireEvent.click(expand()); // collapse, aborting the in-flight page
     fireEvent.click(expand()); // re-expand: a fresh first page
 
-    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
+    await screen.findByRole('link', { name: rowName('08:22', 'BRI') });
     expect(await screen.findByRole('button', { name: 'Load more' })).toBeEnabled();
   });
 
@@ -278,7 +288,7 @@ describe('StationTimetable', () => {
     fireEvent.click(expand()); // collapse
     fireEvent.click(expand()); // re-expand
 
-    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
+    await screen.findByRole('link', { name: rowName('08:22', 'BRI') });
     await waitFor(() => expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument());
   });
 
@@ -310,9 +320,10 @@ describe('StationTimetable', () => {
     fireEvent.click(expand());
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('08:22 · PAD → RDG → BRI'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('10:05 · WAT → RDG → EXD'))).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: rowName('11:40', 'BRI') })).toBeInTheDocument();
+    expect(screen.getByText('1 more departure loaded.')).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByRole('link', { name: rowName('08:22', 'BRI') })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: rowName('10:05', 'EXD') })).toBeInTheDocument();
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       '/api/trains/search?station=RDG&after=CURSOR1',
@@ -330,13 +341,13 @@ describe('StationTimetable', () => {
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     fireEvent.click(expand());
-    await screen.findByText(byVisibleText('08:22 · PAD → RDG → BRI'));
+    await screen.findByRole('link', { name: rowName('08:22', 'BRI') });
 
     fireEvent.click(expand()); // collapse
     fireEvent.click(expand()); // re-expand
 
-    await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'));
-    expect(screen.queryByText(byVisibleText('08:22 · PAD → RDG → BRI'))).not.toBeInTheDocument();
+    await screen.findByRole('link', { name: rowName('11:40', 'BRI') });
+    expect(screen.queryByRole('link', { name: rowName('08:22', 'BRI') })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -369,15 +380,15 @@ describe('StationTimetable', () => {
 
     // Resolve the newer request first, then the stale one out of order.
     resolveSecond(new Response(searchBody(PAGE_TWO), { status: 200 }));
-    await screen.findByText(byVisibleText('11:40 · PAD → RDG → BRI'));
+    await screen.findByRole('link', { name: rowName('11:40', 'BRI') });
 
     resolveFirst(new Response(searchBody(PAGE_ONE), { status: 200 }));
     // Give the stale response's promise chain a turn to (not) run its
     // state updates before asserting nothing changed.
-    await waitFor(() => expect(screen.getByText(byVisibleText('11:40 · PAD → RDG → BRI'))).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('link', { name: rowName('11:40', 'BRI') })).toBeInTheDocument());
 
-    expect(screen.queryByText(byVisibleText('08:22 · PAD → RDG → BRI'))).not.toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('10:05 · WAT → RDG → EXD'))).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: rowName('08:22', 'BRI') })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: rowName('10:05', 'EXD') })).not.toBeInTheDocument();
     expect(screen.queryByText('Loading scheduled departures…')).not.toBeInTheDocument();
   });
 
@@ -391,7 +402,7 @@ describe('StationTimetable', () => {
     fireEvent.click(expand());
 
     expect(
-      await screen.findByText(/These are from the scheduled timetable, not live running information/),
+      await screen.findByText(/These times are from the scheduled timetable and may be up to 30 minutes out of date/),
     ).toBeInTheDocument();
   });
 
@@ -408,7 +419,7 @@ describe('StationTimetable', () => {
     expect(link.querySelector('[aria-hidden="true"]')).toHaveTextContent('→');
   });
 
-  it('notes that trains terminating at this station will not appear, and that no headcode/operator is shown', async () => {
+  it('notes that trains terminating at this station will not appear, without claiming the operator is unknown', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() => Promise.resolve(new Response(searchBody(PAGE_ONE), { status: 200 }))),
@@ -427,6 +438,7 @@ describe('StationTimetable', () => {
     expect(
       await screen.findByText(/only departures from this station -- trains that terminate here won't be listed/i),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/operator is available/i)).not.toBeInTheDocument();
   });
 });
 
@@ -435,7 +447,7 @@ describe('StationTimetable: buses and ferries', () => {
     vi.useRealTimers();
   });
 
-  it('shows a bus with its badge and a "View timetable" link; a train keeps "View live status"', async () => {
+  it('shows a bus with its badge as "Timetable only"; a train reads "Scheduled"', async () => {
     const rows = [
       { uid: 'C30818', scheduled: '08:22', stationCrs: 'RDG', originCrs: 'RDG', destinationCrs: 'WOK' },
       { uid: 'C10002', scheduled: '10:05', stationCrs: 'RDG', originCrs: 'WAT', destinationCrs: 'EXD' },
@@ -467,9 +479,90 @@ describe('StationTimetable: buses and ferries', () => {
     fireEvent.click(expand());
 
     await waitFor(() => expect(screen.getByText('Rail replacement bus')).toBeInTheDocument());
-    const timetable = screen.getByRole('link', { name: 'View timetable' });
-    expect(timetable.getAttribute('href')).toMatch(/^\/train\/C30818\//);
-    const live = screen.getByRole('link', { name: 'View live status' });
-    expect(live.getAttribute('href')).toMatch(/^\/train\/C10002\//);
+    const bus = screen.getByRole('link', { name: rowName('08:22', 'WOK') });
+    expect(bus.getAttribute('href')).toMatch(/^\/train\/C30818\//);
+    expect(bus).toHaveTextContent('Timetable only');
+    expect(bus).toHaveTextContent('Starts here');
+    const train = screen.getByRole('link', { name: rowName('10:05', 'EXD') });
+    expect(train.getAttribute('href')).toMatch(/^\/train\/C10002\//);
+    expect(train).toHaveTextContent('Scheduled');
+    expect(train).not.toHaveTextContent('Rail replacement bus');
+  });
+});
+
+describe('StationTimetable: names, operator and live fields', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function stub(rows: SearchRow[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(searchBody(rows), { status: 200 }))),
+    );
+  }
+
+  it('shows station names rather than codes, and the operator by name', async () => {
+    stub([
+      {
+        uid: 'C1',
+        scheduled: '08:22',
+        stationCrs: 'RDG',
+        originCrs: 'PAD',
+        originName: 'London Paddington',
+        destinationCrs: 'BRI',
+        destinationName: 'Bristol Temple Meads',
+        operator: 'GW',
+      },
+    ]);
+    renderWithMantine(<StationTimetable crs="RDG" operatorNames={{ GW: 'Great Western Railway' }} />);
+    fireEvent.click(expand());
+
+    const link = await screen.findByRole('link', { name: rowName('08:22', 'Bristol Temple Meads') });
+    expect(link).toHaveTextContent('From London Paddington · Great Western Railway (GW)');
+    expect(link).not.toHaveTextContent('BRI');
+  });
+
+  it('falls back to the origin code until the backend sends its name', async () => {
+    stub([
+      { uid: 'C1', scheduled: '08:22', stationCrs: 'RDG', originCrs: 'PAD', destinationCrs: 'BRI', operator: 'GW' },
+    ]);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+    fireEvent.click(expand());
+
+    const link = await screen.findByRole('link', { name: rowName('08:22', 'BRI') });
+    expect(link).toHaveTextContent('From PAD');
+    // No TOC names passed: the operator is left out rather than shown as a bare code.
+    expect(link).not.toHaveTextContent('GW');
+  });
+
+  it('shows live status and a next-day marker when the backend sends them', async () => {
+    stub([
+      {
+        uid: 'C1',
+        scheduled: '00:20',
+        stationCrs: 'RDG',
+        originCrs: 'PAD',
+        destinationCrs: 'BRI',
+        dayOffset: 1,
+        live: { status: 'en_route', delayMinutes: 6, delayProvisional: true, cancelled: false },
+      },
+      {
+        uid: 'C2',
+        scheduled: '08:22',
+        stationCrs: 'RDG',
+        originCrs: 'PAD',
+        destinationCrs: 'BRI',
+        live: { status: 'cancelled', delayMinutes: null, delayProvisional: false, cancelled: true },
+      },
+    ]);
+    renderWithMantine(<StationTimetable crs="RDG" />);
+    fireEvent.click(expand());
+
+    // The "+1" is visible but hidden from the name, which says it in words.
+    const late = await screen.findByRole('link', { name: /^00:20 \(next day\) to BRI/ });
+    expect(within(late).getByText('+1')).toBeInTheDocument();
+    expect(late).toHaveTextContent('Exp. 6 min late');
+    expect(screen.getByRole('link', { name: rowName('08:22', 'BRI') })).toHaveTextContent('Cancelled');
   });
 });

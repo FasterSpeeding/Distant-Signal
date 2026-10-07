@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
-import { VisuallyHidden } from '@mantine/core';
+import { Paper, Text, VisuallyHidden } from '@mantine/core';
 import { ServiceModeBadge } from '@/components/ServiceModeBadge';
 import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import type { LineCatalogueStation, LineTrainSummary } from '@/lib/types';
@@ -20,6 +20,19 @@ const TONE_CLASS: Record<LiveTone, string | undefined> = {
 /** The list a {@link ServiceRow} goes in: bordered, one rule between rows. */
 export function ServiceRowList(props: Omit<ComponentPropsWithoutRef<'ul'>, 'className'>) {
   return <ul className={classes.list} {...props} />;
+}
+
+/** A service list's loading, empty or error state, in the line pages'
+ * pattern: a bordered box of dimmed text, `role="status"` so assistive
+ * tech announces it (`busy` while loading). */
+export function ServiceListNotice({ children, busy = false }: { children: ReactNode; busy?: boolean }) {
+  return (
+    <Paper withBorder p="md" role="status" aria-busy={busy || undefined}>
+      <Text size="sm" c="dimmed">
+        {children}
+      </Text>
+    </Paper>
+  );
 }
 
 /** The "+1" after a time on a later day than the service date, with the

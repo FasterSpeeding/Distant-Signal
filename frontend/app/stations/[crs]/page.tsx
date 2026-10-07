@@ -348,7 +348,7 @@ export default async function StationDisruptionPage({ params }: { params: Promis
 
       <Divider />
       <div id="departures">
-        <StationTimetable crs={crs} />
+        <StationTimetable crs={crs} operatorNames={Object.fromEntries(tocNameByCode)} />
       </div>
 
       {/* Accessibility & facilities -- a fourth independent block, keyed by

@@ -1,13 +1,21 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Accordion, AccordionControl, AccordionItem, AccordionPanel, Alert, Group, Stack, Text } from '@mantine/core';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Accordion,
+  AccordionControl,
+  AccordionItem,
+  AccordionPanel,
+  Group,
+  Stack,
+  Text,
+  VisuallyHidden,
+} from '@mantine/core';
 import { nowInLondon } from '@/lib/londonWallClock';
+import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import { LoadMoreControl } from './LoadMoreControl';
-import { RouteArrow } from './RouteArrow';
-import { ServiceModeBadge } from './ServiceModeBadge';
+import { ServiceListNotice, ServiceRow, ServiceRowList } from './ServiceRow';
 import { TextLink } from './TextLink';
-import { isTimetableOnly } from '@/lib/serviceMode';
 import type { TrainSearchPage, TrainSearchResult } from '@/lib/types';
 
 /** Four mutually-exclusive states, checked top to bottom by
@@ -38,10 +46,28 @@ function hasRows(
   return results !== null && results !== 'error' && results !== 'unpublished';
 }
 
-export function StationTimetable({ crs }: { crs: string }) {
+/** The station page's "Scheduled departures": the rest of today's
+ * departures from `crs` (`GET /public/trains/search`), one `ServiceRow` each,
+ * paged with "Load more". `operatorNames` (ATOC code to name, from the
+ * page's TOC list) names each row's operator. */
+export function StationTimetable({
+  crs,
+  operatorNames,
+}: {
+  crs: string;
+  operatorNames?: Readonly<Record<string, string>>;
+}) {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<Results>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // "N more departures loaded", for the polite live region under the list:
+  // appended rows are otherwise silent to a screen reader (as
+  // `TimetableMore` does on the line timetable).
+  const [announcement, setAnnouncement] = useState('');
+  const operatorLookup = useMemo(
+    () => (operatorNames ? new Map(Object.entries(operatorNames)) : undefined),
+    [operatorNames],
+  );
 
   // Guards against the race where a user expands, then collapses and
   // re-expands (or fires "Load more") before the earlier fetch resolves:
@@ -89,6 +115,7 @@ export function StationTimetable({ crs }: { crs: string }) {
     const controller = startRequest();
     setLoading(true);
     setResults(null);
+    setAnnouncement('');
     try {
       const response = await fetch(`/api/trains/search?station=${crs.toUpperCase()}`, {
         signal: controller.signal,
@@ -140,6 +167,7 @@ export function StationTimetable({ crs }: { crs: string }) {
             }
           : current,
       );
+      setAnnouncement(`${body.results.length} more departure${body.results.length === 1 ? '' : 's'} loaded.`);
     } catch {
       if (!controller.signal.aborted) {
         setResults((current) => (hasRows(current) ? { ...current, loadMoreFailed: true } : current));
@@ -160,53 +188,38 @@ export function StationTimetable({ crs }: { crs: string }) {
 
   function resultsContent() {
     if (loading) {
-      return (
-        <Text size="sm" c="dimmed">
-          Loading scheduled departures…
-        </Text>
-      );
+      return <ServiceListNotice busy>Loading scheduled departures…</ServiceListNotice>;
     }
     if (results === 'error') {
-      return (
-        <Alert color="red" title="Couldn't load">
-          Couldn&apos;t load the scheduled departures right now.
-        </Alert>
-      );
+      return <ServiceListNotice>Couldn&apos;t load the scheduled departures right now.</ServiceListNotice>;
     }
     if (results === 'unpublished') {
-      return (
-        <Text size="sm" c="dimmed">
-          Today&apos;s scheduled timetable data isn&apos;t available yet.
-        </Text>
-      );
+      return <ServiceListNotice>Today&apos;s scheduled timetable data isn&apos;t available yet.</ServiceListNotice>;
     }
     if (results === null) {
       return null;
     }
     if (results.rows.length === 0) {
-      return (
-        <Text size="sm" c="dimmed">
-          No scheduled departures found for the rest of today.
-        </Text>
-      );
+      return <ServiceListNotice>No scheduled departures found for the rest of today.</ServiceListNotice>;
     }
     const displayDate = today();
     return (
       <Stack gap="xs">
-        {results.rows.map((row) => (
-          <Group key={`${row.uid}-${row.scheduled}`} justify="space-between" wrap="nowrap">
-            <Group gap="xs" wrap="wrap">
-              <Text size="sm">
-                {row.publicDeparture ?? row.scheduled} · {row.originCrs ?? '?'} <RouteArrow /> {row.stationCrs}{' '}
-                <RouteArrow /> {row.destinationCrs ?? '?'}
-              </Text>
-              <ServiceModeBadge mode={row.serviceMode} />
-            </Group>
-            <TextLink href={`/train/${encodeURIComponent(row.uid)}/${displayDate}`}>
-              {isTimetableOnly(row) ? 'View timetable' : 'View live status'}
-            </TextLink>
-          </Group>
-        ))}
+        <ServiceRowList aria-label="Scheduled departures">
+          {results.rows.map((row) => (
+            <ServiceRow
+              key={`${row.uid}-${row.scheduled ?? ''}`}
+              train={searchRowSummary(row)}
+              date={displayDate}
+              timeOverride={searchRowTime(row)}
+              dayOffset={row.dayOffset}
+              details={searchRowDetails(row, operatorLookup)}
+            />
+          ))}
+        </ServiceRowList>
+        <VisuallyHidden role="status" aria-live="polite">
+          {announcement}
+        </VisuallyHidden>
         <LoadMoreControl
           hasMore={results.nextCursor !== null}
           loading={loadingMore}
@@ -234,12 +247,11 @@ export function StationTimetable({ crs }: { crs: string }) {
             <AccordionPanel>
               <Stack gap="xs">
                 <Text size="sm" c="dimmed">
-                  These are from the scheduled timetable, not live running information, and may be up to 30 minutes out
-                  of date. Open a train to see its live status.
+                  These times are from the scheduled timetable and may be up to 30 minutes out of date. Open a train to
+                  see its live status.
                 </Text>
                 <Text size="sm" c="dimmed">
-                  This list shows only departures from this station -- trains that terminate here won&apos;t be listed,
-                  and neither headcode nor operator is available for scheduled-timetable rows.
+                  This list shows only departures from this station -- trains that terminate here won&apos;t be listed.
                 </Text>
                 {resultsContent()}
               </Stack>
