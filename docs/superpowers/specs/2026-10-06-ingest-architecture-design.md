@@ -204,9 +204,10 @@ With migrations and loops gone, the api can move from `Recreate` to
 - **tocs** (40 rows, daily, about 3 KB) go on a small
   `ds:ingest:reference` stream in phase 3. They are too small to justify a
   DB role.
-- The **island-of-Ireland** pollers are disabled. They get a stream and a
-  switch like the others, but are migrated last and need not be
-  prod-tested until enabled (Q9).
+- The **island-of-Ireland** pollers are disabled. They move to the
+  `ds:ingest:island-of-ireland` stream in phase 3c like the others and stay
+  disabled by default (D8). They keep no HTTP path, so phase 5 deletes
+  nothing for them; they need not be prod-tested until enabled (Q9).
 
 ### R5. The incidents write amplification: write only what changed (phase 2c)
 
@@ -1839,16 +1840,19 @@ override anything earlier in this document that disagrees.
 ### Decisions (2026-10-07)
 
 The user decided the following on 2026-10-07: D5–D8 while the phase 3a
-stream runtime was built, and D13 after the research on late-landing data
-(§7.8). They override anything earlier that disagrees.
+stream runtime was built, D13 after the research on late-landing data
+(§7.8), and D14–D15, which confirm the defaults of Q3 and Q12. They
+override anything earlier that disagrees.
 
 | # | Decision | Answers | Where it lands |
 |---|---|---|---|
 | D5 | **The ingest streams' memory budget is 512 MB** (all `ds:ingest:*` and `ds:dlq:*` keys), alerting at 75%; production Redis `maxmemory` is now 2 GB. Entries over 8 KiB are gzipped, and every snapshot stream's `MAXLEN` covers at least a **2-hour writer outage** | Q7 (was 128 MB) | §3.3, §7.6, §14.2; `ingest_stream::budget` (`BUDGET_BYTES`, `OUTAGE_TARGET`, a unit test on the §7.1 table) |
 | D6 | **Each stream producer has its own Redis ACL user, allowed only `XADD` on its own stream** (plus `XREVRANGE` for its §11.3 cursor) | – | §8.2 as built in phase 0c (`redis-users.acl.tpl`); checked by `crates/ingest-stream/tests/redis_stream.rs` running the producer as `poller-ldbws` |
 | D7 | **trust-consumer's train events and the TRUST backlog are written directly to Postgres**: no new stream for either (confirms D1 and R1) | Q1, R1 | §2, §7.1; plan 3b |
-| D8 | **tocs go through the small `ds:ingest:reference` stream; the island-of-Ireland producers are migrated to `ds:ingest:island-of-ireland` but stay disabled** | Q2, Q9 | §7.1, R4; plan 3c |
+| D8 | **tocs go through the small `ds:ingest:reference` stream; the island-of-Ireland producers are migrated to `ds:ingest:island-of-ireland` but stay disabled** (by default, with no HTTP path left for phase 5 to delete) | Q2, Q9 | §7.1, R4; plan 3c.2 |
 | D13 | **Observed time for late-landing data.** The envelope `produced_at` is the canonical observed time: set at fetch, stable across retries, never re-stamped at XADD. Guards use the row's own time where one exists, else `produced_at`; `source_updated_at := produced_at`. TfL `line_status.computed_at` and `line_status_history.computed_at` come from `produced_at`, and before TfL `apply` the notifier skips (and counts) history rows older than about 15 min. Observed times are clamped to `now() + 2 min` (counted), and the guard heals itself (`EXCLUDED.t >= t.t OR t.t > now() + interval '2 min'`). Freshness becomes "data as of" in phase 3 (`record_ingest(source, observed_at)` with `GREATEST`). 3a.9 adds 2c-style reader derivations (`GREATEST(row time, feed observed_at)`) for windows and full-coverage samples and excludes `station_samples`. Phase 2 needs no backdating work | – | §7.2–7.5, §7.8, §9.4, §14.1–14.2; plan 3a.3, 3a.5, 3a.6, 3a.9, 3c.1, 3c.4 |
+| D14 | **The user-data sweeps run as an hourly `api-maintenance` CronJob** from the api image, with the api's role and `concurrencyPolicy: Forbid`, not in the ingest-writer (R3) | Q3 | §2 R3, §12.3; plan 1B.8 |
+| D15 | **Each service gets its own SealedSecret for its Postgres password**, so one password can be rotated without restarting the others | Q12 | §8.3, §15.2; plan 0b.4 |
 
 **Implementation choices (2026-10-07, phase 3a runtime; open to review,
 not user decisions):**
@@ -1867,7 +1871,7 @@ Questions not listed stay open, with the defaults below.
 |---|---|---|
 | Q1 | Should trust-consumer's train events and forward signals also write directly (like the backlog, R1), instead of `ds:ingest:train-events`? | **Decided (D1): direct writes**, no `ds:ingest:train-events` |
 | Q2 | Is schedule-ingest acceptable as a fourth direct writer (CORPUS plus feed markers), and tocs on a small stream (R4)? | yes; **tocs on a stream decided (D8)** |
-| Q3 | User-data sweeps as an api-image CronJob rather than in the writer (R3)? | CronJob |
+| Q3 | User-data sweeps as an api-image CronJob rather than in the writer (R3)? | **Decided (D14): a CronJob** |
 | Q4 | Migrations as a Helm `pre-upgrade`/`post-install` hook Job, with the HelmRelease timeout raised to 20 m in Ranma? | **Decided (D2): yes**; the Job and the schema gate ship in phase 1B |
 | Q5 | Accept the incidents display-time approximation for rows absent from an *incomplete* snapshot (§9.4)? | **Decided (D11): yes** |
 | Q6 | Apply the same "write only changed rows" fix to `station_samples`, `station_full_coverage_samples` and `full_coverage_line_window_stats` in phase 3a (about 17M HOT updates per 42 h)? | **Decided (D12): yes**, behind its own switch |
@@ -1876,4 +1880,4 @@ Questions not listed stay open, with the defaults below.
 | Q9 | Should the disabled island-of-Ireland producers be migrated, or their routes deleted in phase 5 until they are re-enabled? | **Decided (D8): migrate, and keep them disabled** |
 | Q10 | Move `crates/api/migrations` to `crates/ds-store/migrations` (touches CI scripts and tests), or leave it? | **Decided (D9): move it, in phase 1B.1** |
 | Q11 | Should the api move to `RollingUpdate` (and two replicas) once phase 1B lands? | **Decided (D3): `RollingUpdate`, one replica**, after phase 1B |
-| Q12 | Ranma: one SealedSecret holding every service's DB password, or one per service? | one per service (rotation without restarting others) |
+| Q12 | Ranma: one SealedSecret holding every service's DB password, or one per service? | **Decided (D15): one per service** (rotation without restarting others) |

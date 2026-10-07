@@ -12,7 +12,7 @@ Read the spec first. Section numbers (§) below refer to it.
 - Internal reads are direct and read-only (R2).
 - Migrations and loops have one owner each (R3).
 
-Decisions D1–D12 (spec §16, 2026-10-06 and 2026-10-07) apply. Phase 0 is in progress
+Decisions D1–D15 (spec §16, 2026-10-06 and 2026-10-07) apply. Phase 0 is in progress
 (chart and tooling, off by default). Phase 1A waits for the in-flight api
 branches to merge (D4).
 
@@ -99,7 +99,7 @@ Rollback: the runbook's.
 | 0b.1 | `db-grants.yaml`: classify all 69 tables, the sequences, the function and (later) the views, as spec §6.4 | `charts/distant-signal/files/db-grants.yaml` | – |
 | 0b.2 | `gen-db-grants.py`: `render` writes `postgres-grants.sql` (group roles; per-service `LOGIN` roles that are, for now, **members of `distant_signal_app`** with no grants of their own; `CONNECTION LIMIT`s; the `schema_gate` and `read_shared` groups). `check --database-url` fails on any `public` object missing from the YAML, on stale YAML, or on a stale SQL file | `scripts/gen-db-grants.py`, `charts/distant-signal/files/postgres-grants.sql`, `pyproject.toml` (PyYAML in the scripts group), `uv.lock` | `scripts/tests/test_gen_db_grants.py`: classification gaps, stale output, limits summing over budget |
 | 0b.3 | CI: after the `rust-db-test` migration step, run `gen-db-grants.py check` against the fresh DB | `.github/workflows/*.yml` | CI green; a deliberately unclassified table in a scratch branch fails |
-| 0b.4 | Chart: the setup Job also runs `postgres-grants.sql`. Per-service passwords: one `existingSecret` per role (Q12), each defaulting to generated values as today. Each Deployment gets its own `DATABASE_URL` user when `postgresql.roles.perService` is on (default off) | `templates/postgres-roles.yaml`, `_helpers.tpl` (`distant-signal.databaseEnv` takes a role), `values.yaml`, chart README | `helm template` with `perService` on and off: the default render is unchanged; each Deployment names its own role |
+| 0b.4 | Chart: the setup Job also runs `postgres-grants.sql`. Per-service passwords: one `existingSecret` per role, each its own SealedSecret in Ranma (Q12, decided D15), each defaulting to generated values as today. Each Deployment gets its own `DATABASE_URL` user when `postgresql.roles.perService` is on (default off) | `templates/postgres-roles.yaml`, `_helpers.tpl` (`distant-signal.databaseEnv` takes a role), `values.yaml`, chart README | `helm template` with `perService` on and off: the default render is unchanged; each Deployment names its own role |
 | 0b.5 | The render-time connection budget sums every role's limit (spec §6.6) | `templates/api-deployment.yaml` (the INF-7 check moves to `_helpers.tpl`) | render fails at 98; passes at 92 |
 | 0b.6 | `observe-role-usage.py` (read-only): reads `pg_stat_statements` joined to `pg_roles` and extracts table and verb per role from the normalised text. It writes a Markdown report with a diff against `db-grants.yaml` | `scripts/observe-role-usage.py` | unit tests on fixture query texts (CTEs, `UPDATE … FROM`, `INSERT … SELECT`, `ON CONFLICT`) |
 | 0b.7 | `test-postgres-roles.py --mode per-service`: migrate as owner, apply both SQL files, then each crate's DB suite as its service's role (still members of `app`, so it passes; the mode is ready for narrowing later) | `scripts/test-postgres-roles.py` | CI job |
@@ -581,14 +581,15 @@ Rollback: `sink=http` per producer.
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 3c.1 | Handlers `tfl-line-status/1` (with the `source_updated_at` guard), `tocs/1` (dedup), `ioi-*/1`. TfL (D13): `line_status.computed_at`, `source_updated_at` and `line_status_history.computed_at` come from `produced_at`, not `NOW()`; a line the guard refuses as older is skipped, not mistaken for the other-source refusal that `upsert_tfl_line_status` aborts on today, and writes no history row. Each handler calls `record_ingest(…, produced_at)` | `crates/ingest-writer/src/handlers/*.rs`, `ds-store/src/samples.rs` | DB per handler; TfL: a snapshot applied an hour late stamps both tables with its `produced_at`; an older snapshot after a newer one changes neither table; freshness reports the `produced_at` |
-| 3c.2 | poller-tfl, poller-tocs and the three IoI pollers: `INGEST_SINK`; chart Redis users, netpol | crates, templates | sink tests; `helm template` |
+| 3c.2 | poller-tfl, poller-tocs and the three IoI pollers: `INGEST_SINK`; chart Redis users, netpol. The IoI pollers move to the `stream` sink like the others (D8) and stay disabled by default (their `enabled` values stay false); they keep no `http` path for phase 5 to delete | crates, templates | sink tests; `helm template` |
 | 3c.3 | RLS on `line_status` (D10, spec §6.4): `ENABLE ROW LEVEL SECURITY`; the writer role's policy allows only TfL rows (`USING` and `WITH CHECK`); permissive `USING (true)` policies keep every other role's access unchanged | `crates/ds-store/migrations/<assigned>_line_status_rls.sql`, `db-grants.yaml` | DB, as the writer role: a non-TfL insert or update fails and a TfL one succeeds; as the aggregator and api roles: unchanged; `migration_checksums`, `check-migration-order.py` |
 | 3c.4 | **Before TfL goes to `apply`** (D13, spec §7.8): the notifier skips line-status history rows whose `computed_at` is older than `LINE_HISTORY_MAX_AGE_SECS` (default 900; `0` disables; chart `notifier.lineHistoryMaxAgeSeconds`). It advances its cursor past them, keeps them as the "previous" status for the next row, and counts them in `notifier_line_history_skipped_total{reason="stale"}` | `crates/notifier/src/{queries.rs,main.rs,config.rs}`, the chart's notifier env and values | DB: a burst of history rows, all but the last older than 15 min, pushes only the last change and counts the rest; a fresh row after a stale one is compared with the stale one's statuses; `0` pushes all; the chart env wiring test |
 
 Order: 3c.4 is deployed before the writer's `tfl` stream goes to `apply`.
 
-Exit: TfL and tocs on `stream` for 7 days. IoI stays `http` until those
-pollers are enabled (Q9).
+Exit: TfL and tocs on `stream` for 7 days. The IoI pollers are on
+`stream` but disabled (D8, Q9), so they have no soak; they are prod-tested
+when they are enabled.
 
 ## Phase 4: internal reads
 
