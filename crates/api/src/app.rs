@@ -620,10 +620,11 @@ impl AppState {
         // timeout (30s) and a 5s acquire_timeout, all overridable by env --
         // see `common::pg`. Statements that legitimately run longer (the
         // schedule publish chunks) raise the timeout with `SET LOCAL`.
-        let pool_settings = common::pg::PoolSettings::from_env(API_APPLICATION_NAME, 50)?;
+        // `ds_store::pool` builds the same pool and samples it into
+        // `distant_signal_db_pool_*` (plan task 1A.11).
+        let pool_settings = ds_store::pool::PoolSettings::from_env(API_APPLICATION_NAME, 50)?;
         let db = pool_settings
-            .pool_options()
-            .connect_with(pool_settings.connect_options(connect_options))
+            .connect_with(connect_options)
             .await
             .context("Could not connect to database")?;
 
@@ -920,10 +921,9 @@ mod dead_client_detection_tests {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
         let options: PgConnectOptions = database_url.parse().expect("parse DATABASE_URL");
-        let settings = common::pg::PoolSettings::new(API_APPLICATION_NAME, 1);
+        let settings = ds_store::pool::PoolSettings::new(API_APPLICATION_NAME, 1);
         let pool = settings
-            .pool_options()
-            .connect_with(settings.connect_options(with_dead_client_detection(options)))
+            .connect_with(with_dead_client_detection(options))
             .await
             .expect("connect with the settings");
         for (name, expected) in [
