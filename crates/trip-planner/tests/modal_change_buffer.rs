@@ -126,8 +126,8 @@ fn raptor_and_the_staged_search_agree() {
             interchange: &ic,
             from_tiplocs: &from,
             waypoints: &[],
-            to_tiplocs: &to,
             vias: None,
+            to_tiplocs: &to,
             date: date(),
         },
         hm(6, 0),
@@ -151,9 +151,9 @@ fn arrive_by_mirrors_the_buffer() {
                 interchange: &ic,
                 from_tiplocs: &from,
                 waypoints: &[],
+                vias: None,
                 to_tiplocs: &to,
                 arrive_by_min: deadline,
-                vias: None,
                 date: date(),
             },
             None,
@@ -294,4 +294,59 @@ fn the_buffer_applies_alongside_vias() {
             );
         }
     }
+}
+
+/// Arriving at the destination before every via is passed is a change, not
+/// the arrival: a bus into it owes the buffer going backward as going
+/// forward. A bus reaches F at 08:00 (too late, with the buffer, for the
+/// 08:06 loop through the via V back to F); only the 08:12 loop makes it.
+#[test]
+fn the_destination_before_the_last_via_is_a_change_going_backward_too() {
+    use trip_planner::Vias;
+
+    let mut connections = vec![
+        conn("BUS1", "A", "F", hm(7, 0), hm(8, 0)),
+        conn("LOOP06", "F", "V", hm(8, 6), hm(8, 20)),
+        conn("LOOP06", "V", "F", hm(8, 21), hm(8, 40)),
+        conn("LOOP12", "F", "V", hm(8, 12), hm(8, 26)),
+        conn("LOOP12", "V", "F", hm(8, 27), hm(8, 50)),
+    ];
+    connections.sort_by_key(|c| c.departure_min);
+    let ic = interchange(5);
+    let vias = Vias::new(&[tiplocs(&["V"])], std::collections::HashMap::new());
+    let (from, to) = (tiplocs(&["A"]), tiplocs(&["F"]));
+    let forward = scan_staged(
+        &StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            vias: Some(&vias),
+            to_tiplocs: &to,
+            date: date(),
+        },
+        hm(6, 0),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(forward.arrival_min, hm(8, 50));
+    let arrive_by = |deadline| {
+        scan_connections_arrive_by(
+            ArriveByOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &[],
+                vias: Some(&vias),
+                to_tiplocs: &to,
+                arrive_by_min: deadline,
+                date: date(),
+            },
+            None,
+            None,
+        )
+    };
+    assert!(arrive_by(hm(8, 45)).is_none());
+    assert_eq!(arrive_by(hm(8, 50)).unwrap().departure_min, hm(7, 0));
 }

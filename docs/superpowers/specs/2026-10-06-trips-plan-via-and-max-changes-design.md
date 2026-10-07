@@ -278,10 +278,12 @@ calling there, or by the traveller changing or walking there.
   `with_vias_and_the_bus_buffer_csa_raptor_the_oracle_and_the_backward_scan_agree`
   and `modal_change_buffer::the_buffer_applies_alongside_vias`): the buffer
   (`TRIP_PLAN_ROAD_WATER_CHANGE_MINUTES`) is charged on each bus or ferry
-  side of a change whatever the via progress; a label advanced only over a
-  via owes what the arrival it came from owes, and the backward scan
-  charges the alighting side unless the stop is the destination with every
-  via passed (or the stage's waypoint). Over 160 random networks with a
+  side of a change whatever the via progress (a ride's progress advances
+  over its arrival stop, so the label there is the train's own), and the
+  backward scan charges the alighting side unless the stop is the
+  destination with every via passed (reached before the last via it is a
+  change, `the_destination_before_the_last_via_is_a_change_going_backward_too`)
+  or the stage's waypoint. Over 160 random networks with a
   third of the trains buses, staged CSA and RAPTOR equal an oracle that
   tracks the buffer owed per label, and the backward scan equals brute
   force over the forward searches.

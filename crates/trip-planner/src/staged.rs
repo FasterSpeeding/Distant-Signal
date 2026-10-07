@@ -406,50 +406,17 @@ impl<'a> Forward<'a> {
         }
     }
 
-    /// The bus and ferry buffer owed for alighting at `stop` into `label`:
-    /// the arriving train's, when it was a bus or ferry. None after a walk,
-    /// nor at a waypoint the label's stage was advanced through (the
-    /// traveller stopped there; `reverse.rs` mirrors this). Via progress
-    /// is independent of the buffer: a label advanced only over a via owes
-    /// what the label it was advanced from owes.
-    fn alighting_extra(&self, labels: &Labels, stop: &str, label: &Label) -> u32 {
-        let mut label = label;
-        loop {
-            match &label.reached {
-                Reached::Train { connection, .. } => {
-                    return self.interchange.modal_change.extra_for(&connection.uid);
-                }
-                Reached::Link { .. } => return 0,
-                Reached::Advance { from } => {
-                    if self.grid.stage(*from) != self.grid.stage(label.state) {
-                        return 0;
-                    }
-                    match labels.label(stop, *from) {
-                        Some(previous) => label = previous,
-                        None => return 0,
-                    }
-                }
-            }
-        }
-    }
-
     /// `csa::Scan::ready_source_at` for every state at once: the states at
     /// which a fresh boarding at `tiploc` is ready by `departure`, the time,
     /// and the stop whose arrival made it ready (0: `tiploc` itself, `n`:
     /// `siblings[n - 1]`, which this fills). The origin only at the initial
     /// state. States covered by one in `aboard` are skipped: the ride already
-    /// aboard there serves them. Includes the bus and ferry buffer on
-    /// both sides of the change (`boarding_uid`: the train boarded).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the scratch buffers are the caller's, reused across the sweep"
-    )]
+    /// aboard there serves them. Includes the bus and ferry buffer on both
+    /// sides of the change (`connection`'s side, and the arriving train's).
     fn ready_states(
         &self,
         labels: &Labels,
-        tiploc: &str,
-        boarding_uid: &str,
-        departure: u32,
+        connection: &Connection,
         aboard: &[usize],
         siblings: &mut Vec<&'a str>,
         out: &mut Vec<(usize, u32, usize)>,
@@ -457,8 +424,9 @@ impl<'a> Forward<'a> {
         out.clear();
         siblings.clear();
         let grid = self.grid;
-        let boarding_extra = self.interchange.modal_change.extra_for(boarding_uid);
-        let tiploc = normalize_tiploc(tiploc);
+        let departure = connection.departure_min;
+        let boarding_extra = self.interchange.modal_change.extra_for(&connection.uid);
+        let tiploc = normalize_tiploc(&connection.from_tiploc);
         let at_origin = self.origin.contains(tiploc);
         if at_origin
             && self.departure_min <= departure
@@ -505,10 +473,14 @@ impl<'a> Forward<'a> {
                 let Some(change) = change else {
                     continue;
                 };
-                let ready = label.time
-                    + change
-                    + boarding_extra
-                    + self.alighting_extra(labels, stop, label);
+                let alighting_extra = match &label.reached {
+                    Reached::Train {
+                        connection: arrived,
+                        ..
+                    } => self.interchange.modal_change.extra_for(&arrived.uid),
+                    _ => 0,
+                };
+                let ready = label.time + change + boarding_extra + alighting_extra;
                 if ready > departure {
                     continue;
                 }
@@ -574,9 +546,7 @@ impl<'a> Forward<'a> {
                 let labels = previous.unwrap_or(&*current);
                 self.ready_states(
                     labels,
-                    &connection.from_tiploc,
-                    &connection.uid,
-                    connection.departure_min,
+                    connection,
                     &aboard_states,
                     &mut siblings,
                     &mut ready,

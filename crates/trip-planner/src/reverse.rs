@@ -250,18 +250,18 @@ impl<'a> Reverse<'a> {
     }
 
     /// The mirror of the forward searches' bus and ferry buffer on the
-    /// alighting side, for alighting at `to` from `uid` into `state`: owed
-    /// unless this is the arrival. As going forward, none at the
-    /// destination (with every via passed), nor at the waypoint the stage
-    /// calls at (the forward searches advance through it without a change
-    /// label). Via progress does not otherwise affect it.
-    fn alighting_extra(&self, state: usize, to: &str, uid: &str) -> u32 {
-        let at_stage = self.grid.stage(state);
-        let arriving = if at_stage == self.targets.len() {
+    /// alighting side: owed when leaving `uid` at `to` in `stage` with via
+    /// progress `progress`, unless this is the arrival. As going forward,
+    /// none at the destination once every via is passed (reached before
+    /// the last via, it is a change like any other), nor at the waypoint
+    /// the stage calls at (the forward searches advance through it without
+    /// a change label).
+    fn alighting_extra(&self, stage: usize, progress: usize, to: &str, uid: &str) -> u32 {
+        let arriving = if stage == self.targets.len() {
             self.destinations.contains(to)
-                && advance_at(self.vias, self.grid.progress(state), to) == self.via_count()
+                && advance_at(self.vias, progress, to) == self.via_count()
         } else {
-            self.targets[at_stage].contains(to)
+            self.targets[stage].contains(to)
         };
         if arriving {
             0
@@ -323,7 +323,10 @@ impl<'a> Reverse<'a> {
                     && let Some(found) = labels.latest_arrival.get(to)
                 {
                     for &(state, latest) in found {
-                        if connection.arrival_min + self.alighting_extra(state, to, uid) <= latest {
+                        if connection.arrival_min
+                            + self.alighting_extra(grid.stage(state), grid.progress(state), to, uid)
+                            <= latest
+                        {
                             from_after(grid.stage(state), grid.progress(state));
                         }
                     }
