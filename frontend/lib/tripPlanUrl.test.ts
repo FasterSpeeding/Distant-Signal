@@ -75,8 +75,13 @@ describe('planPageSearch / parsePlanSearchParams', () => {
     ).toEqual({});
   });
 
-  it('keeps vias stations-only, in order, at most 3, never twice in a row', () => {
-    expect(parsePlanSearchParams({ via: 'sta,STA,tiploc:KESWBUS,cre,sta,bhm' }).viaCrs).toEqual(['STA', 'CRE', 'STA']);
+  it('keeps vias in order, at most 3, never twice in a row, allowing bus stops', () => {
+    expect(parsePlanSearchParams({ via: 'sta,STA,cre,sta,bhm' }).viaCrs).toEqual(['STA', 'CRE', 'STA']);
+    expect(parsePlanSearchParams({ via: 'sta,tiploc:keswbus,TIPLOC:KESWBUS,cre' }).viaCrs).toEqual([
+      'STA',
+      'tiploc:KESWBUS',
+      'CRE',
+    ]);
   });
 
   it('dedupes and caps the avoid lists at 8, allowing bus stops', () => {

@@ -4,8 +4,9 @@ import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
 
 // Plain async functions, not `vi.fn()` (see `PlanTripFlow.test.tsx`'s C2
-// note). The via picker searches stations only; the avoid pickers the
-// planner search, which also returns bus stops.
+// note). Every picker, the via one included, uses the planner search,
+// which also returns bus stops; `searchStations` is a trap that would show
+// the station alone if a picker regressed to it.
 vi.mock('@/lib/suggestions', () => ({
   searchStations: async () => [{ code: 'STA', name: 'Stafford' }],
   searchPlannerLocations: async () => [
@@ -51,7 +52,7 @@ describe('PlanTripForm advanced options', () => {
     }
     expect(screen.getByLabelText(/Most changes/)).toHaveValue('');
     expect(screen.getByText(/whether or not the train stops there/)).toBeInTheDocument();
-    expect(screen.getByText(/Stations only, not bus stops/)).toBeInTheDocument();
+    expect(screen.queryByText(/Stations only/)).not.toBeInTheDocument();
   });
 
   it('says how many options are set while collapsed, and which', async () => {
@@ -104,23 +105,25 @@ describe('PlanTripForm advanced options', () => {
     expect(screen.getByText(/Up to 3: remove one to add another/)).toBeInTheDocument();
   });
 
-  it('refuses a typed bus stop as a via, but accepts one to avoid', async () => {
+  it('accepts a typed bus stop as a via, as in the avoid lists', async () => {
     renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
     await openAdvanced();
-    addTyped('Pass through (in order)', 'tiploc:STAFBUS');
+    addTyped('Pass through (in order)', 'tiploc:stafbus');
     const via = screen.getByRole('combobox', { name: 'Pass through (in order)' });
-    expect(via).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.queryByRole('list', { name: 'Pass through (in order)' })).not.toBeInTheDocument();
+    expect(via).not.toHaveAttribute('aria-invalid', 'true');
+    expect(
+      within(screen.getByRole('list', { name: 'Pass through (in order)' })).getByText('tiploc:STAFBUS'),
+    ).toBeInTheDocument();
     addTyped("Don't stop at", 'tiploc:stafbus');
     expect(within(screen.getByRole('list', { name: "Don't stop at" })).getByText('tiploc:STAFBUS')).toBeInTheDocument();
   });
 
-  it('offers no bus stops in the via suggestions', async () => {
+  it('offers bus stops in the via suggestions', async () => {
     renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
     await openAdvanced();
     fireEvent.change(screen.getByRole('combobox', { name: 'Pass through (in order)' }), { target: { value: 'staf' } });
     expect(await screen.findByText('STA — Stafford')).toBeInTheDocument();
-    expect(screen.queryByText('Stafford Bus Station (bus)')).not.toBeInTheDocument();
+    expect(await screen.findByText(/Stafford Bus Station \(bus\)/)).toBeInTheDocument();
   });
 
   it('sends every advanced option with the search', async () => {

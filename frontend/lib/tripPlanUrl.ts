@@ -54,12 +54,13 @@ function codeList(raw: string | undefined, { allowStops, max }: { allowStops: bo
   return codes.slice(0, max);
 }
 
-/** Vias keep their order and may repeat, just not twice in a row; CRS
- * only, since the API rejects a `tiploc:` via. */
+/** Vias keep their order and may repeat, just not twice in a row; a
+ * station's CRS or a bus stop's or ferry terminal's `tiploc:` code, as the
+ * avoid lists. */
 function viaList(raw: string | undefined): string[] {
   const vias: string[] = [];
   for (const part of (raw ?? '').split(',')) {
-    const code = locationCode(part, false);
+    const code = locationCode(part, true);
     if (code && vias[vias.length - 1] !== code) vias.push(code);
   }
   return vias.slice(0, MAX_VIAS);

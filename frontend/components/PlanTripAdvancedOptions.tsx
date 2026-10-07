@@ -2,7 +2,7 @@
 
 import { Accordion, AccordionControl, AccordionItem, AccordionPanel, NativeSelect, Stack, Text } from '@mantine/core';
 import { StationListPicker } from './StationListPicker';
-import { searchPlannerLocations, searchStations } from '@/lib/suggestions';
+import { searchPlannerLocations } from '@/lib/suggestions';
 import { codeStationLabel, normalizeLocationCode } from '@/lib/stationLabel';
 import {
   DEFAULT_MAX_CHANGES,
@@ -123,10 +123,9 @@ const MAX_CHANGES_OPTIONS = [
  * restored or shared search never hides a constraint. The parent controls
  * whether it is open, so it can open it on an error inside.
  *
- * Vias are stations only: the API resolves `via` as CRS codes and answers a
- * bus stop's `tiploc:` code with a 400, so the via picker searches stations
- * alone. The avoid lists take bus stops and ferry terminals too, like From
- * and To. */
+ * Every list, vias included, takes bus stops and ferry terminals (`tiploc:`
+ * codes) as well as stations, like From and To: the API normalizes `via`
+ * with the same location codes as the avoid lists. */
 export function PlanTripAdvancedOptions({
   options,
   onChange,
@@ -179,15 +178,15 @@ export function PlanTripAdvancedOptions({
           <Stack gap="lg">
             <StationListPicker
               label="Pass through (in order)"
-              description="Every route goes through these stations, in this order, whether or not the train stops there. Unlike “Call at”, you don't need to stop. Stations only, not bus stops."
+              description="Every route goes through these stations, in this order, whether or not the train stops there. Unlike “Call at”, you don't need to stop."
               values={options.viaCrs ?? []}
               onChange={(viaCrs) => onChange({ ...options, viaCrs })}
               names={names}
               onNames={onNames}
-              search={searchStations}
+              search={searchPlannerLocations}
               max={MAX_VIAS}
               ordered
-              allowStops={false}
+              allowStops
               error={errors.viaCrs}
               itemNoun="pass-through station"
             />
