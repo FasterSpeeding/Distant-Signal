@@ -3,6 +3,89 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-07: `/Trips/plan` OR-choice vias and station groups (`group:LON`)
+
+Design: `docs/superpowers/specs/2026-10-07-trips-plan-or-group-vias-design.md`.
+This closes the last gap keeping DS-MCP's `plan_journey` on its local engine
+for a `LON` group code in `via` or `avoid`/`avoidStop` (`dsTripPlanEligible`).
+It does not close `viaStop`: waypoints still take single stations.
+
+### Changed parameter: `via` entries may be OR choices
+
+`via=ALT[|ALT...][,ALT[|ALT...]...]`. Commas still separate the vias, which
+are ordered and at most 3, and must ALL be passed. `|` separates the
+alternatives of one via; ANY one of them satisfies it. An alternative is a
+CRS, a `tiploc:` code or a named group `group:NAME` (any case). `|` may be
+sent raw or as `%7C`.
+
+- `via=group:LON`: through any of the eighteen London Terminals (BFR CST
+  CHX CTK EUS FST KGX LST LBG MYB MOG OLD PAD STP VXH VIC WAT WAE).
+- `via=KGX|EUS|STP`: through any of the three.
+- `via=group:LON|CBG,PBO`: through a London terminal or Cambridge, then
+  Peterborough.
+- What counts as passing a member is what counts for a single via: a
+  call, a timing-point pass, a change or a walk.
+- **Limits:** at most 24 stations in one via, and 54 across all vias, with
+  groups expanded. A choice counts as ONE via against the cap of 3 and in
+  the `results=options` search-size guard.
+- **Ends:** a member equal to the origin or the destination satisfies the
+  via there. Every journey passes it, so for example `origin=KGX` with
+  `via=group:LON` always holds. A single-station via equal to an end is
+  still a 400.
+- **With `avoid`:** avoided members are never used. The via is a 400 only
+  when EVERY station of it is in `avoid`.
+- Single-station vias behave exactly as before.
+
+### Changed parameter: avoid lists take groups
+
+`avoid`, `avoidStop` and `avoidChange` accept `group:NAME` entries, which
+avoid (or don't stop at, or don't change at) every member. A group counts as
+one entry against the cap of 8 per list. An avoid list already means "none
+of these", so it needs no `|`: `|` there is a 400. An avoided member that is
+the origin, the destination or a waypoint is a 400 naming the group.
+
+### New and changed fields
+
+- `stationGroups` (top level, always present): each group the request
+  named, mapped to its members, e.g. `{"LON": ["BFR", "CST", ...]}`.
+  It is `{}` when no group was named.
+- `via`: each via's label as applied, e.g. `["group:LON", "KGX|EUS", "PBO"]`.
+- `avoid`/`avoidStop`/`avoidChange`: as applied, so with groups expanded
+  into their member CRS codes.
+- `journeys[j].viaSatisfiedBy[k].matchedCrs`: the station that satisfied
+  via `k`, which for a choice is the member the journey passed. `crs` stays
+  the via as requested (its label).
+
+```json
+"via": ["group:LON"],
+"stationGroups": {"LON": ["BFR", "CST", "CHX", "...", "WAE"]},
+"journeys": [{"viaSatisfiedBy": [
+  {"crs": "group:LON", "matchedCrs": "KGX", "segment": 0, "leg": 1, "how": "call"}
+]}]
+```
+
+- `noResultReason` (`constraint: "via"`) carries the label in `values`
+  (`["group:LON"]`). Its message reads "... passes through any of
+  group:LON ..." or "any of KGX, EUS".
+
+### New 400s
+
+- `via: 'group:XYZ' is not a known station group (known: group:LON)`
+- `via: 'KGX|' has an empty alternative`
+- `via: 'Z00|...' stands for 25 stations, at most 24 allowed in one via`
+- `via: the vias stand for 60 stations together, at most 54 allowed`
+- `via: 'KGX|EUS' is given twice in a row; name it once`: the same station
+  set twice in a row, however it is written.
+- `via: every station of 'KGX|EUS' is also in avoid; a trip cannot both
+  pass through one and avoid them all`
+- `via: 'ZZZ' is not a recognised station CRS code`: this now also names
+  an unknown alternative.
+- `avoid: 'KGX|EUS' uses '|', which only via takes; ...`
+- `avoid: 'group:LON' includes 'PAD', which is the destination; a trip
+  cannot avoid it`
+- `waypoints: 'GROUP:LON' is a choice of stations; waypoints take single
+  stations ...`: the same for `KGX|EUS`.
+
 ## 2026-10-07: walks between bus stops and their stations in the planner
 
 Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`

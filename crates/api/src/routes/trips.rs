@@ -936,6 +936,21 @@ fn parse_waypoints(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String
             ),
         ));
     }
+    // OR choices (2026-10-07) are via-only for now: a clear 400 rather than
+    // "not a recognised station CRS code" for `group:LON` or `KGX|EUS`.
+    if let Some(choice) = waypoints.iter().find(|w| {
+        w.contains('|')
+            || w.get(..station_groups::GROUP_PREFIX.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(station_groups::GROUP_PREFIX))
+    }) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "waypoints: '{choice}' is a choice of stations; waypoints take single stations \
+                 (station groups and '|' are supported in via and, groups only, the avoid lists)"
+            ),
+        ));
+    }
     Ok(waypoints)
 }
 
@@ -1644,6 +1659,15 @@ mod tests {
         // Still at most three vias, a group counting as one.
         let (_, message) = err("group:LON,KGX,EUS,PAD");
         assert!(message.contains("at most 3"), "{message}");
+        // Waypoints take single stations only (for now).
+        for raw in ["YRK,group:lon", "KGX|EUS"] {
+            let (status, message) = parse_waypoints(Some(raw)).unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(
+                message.contains("waypoints take single stations"),
+                "{message}"
+            );
+        }
     }
 
     /// An OR choice may include the origin or the destination (satisfied
