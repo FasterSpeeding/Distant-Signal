@@ -1647,7 +1647,7 @@ mod db_tests {
 
     /// Deletes a fixture user and everything that cascades from it
     /// (`sessions`, owned `custom_lines`, `pinned_lines` -- see
-    /// `crates/api/migrations/20260828100000_add_ownership.sql`'s
+    /// `crates/ds-store/migrations/20260828100000_add_ownership.sql`'s
     /// `ON DELETE CASCADE`s). Explicit rather than relied-on-implicitly,
     /// matching `data::custom_lines::db_tests`'s existing multi-step
     /// cleanup convention.

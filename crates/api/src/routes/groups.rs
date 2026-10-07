@@ -1353,7 +1353,7 @@ mod db_tests {
     /// its fixture users. Order matters: `groups.created_by` and
     /// `group_invite_links.created_by` reference `users(id)` with no
     /// `ON DELETE CASCADE` (see
-    /// `crates/api/migrations/20260911090000_shared_groups.sql`), so
+    /// `crates/ds-store/migrations/20260911090000_shared_groups.sql`), so
     /// deleting the users first would fail on a foreign-key violation
     /// while the group still existed.
     async fn cleanup(pool: &PgPool, group_id: &str, user_ids: &[&str]) {

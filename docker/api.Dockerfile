@@ -18,7 +18,7 @@
 # resolves to the same rustc 1.88 requirement by way of the icu_* chain
 # above (api additionally hits it via `home`).
 #
-# This image carries SEVEN binaries: `api` (the ENTRYPOINT), `corpus_compare`
+# This image carries EIGHT binaries: `api` (the ENTRYPOINT), `corpus_compare`
 # (a read-only CORPUS report, see crates/api/src/bin/corpus_compare.rs),
 # `backfill_trains`, the one-off, idempotent shared-train-identity backfill
 # that MUST be run before this image is first started against a database
@@ -27,22 +27,25 @@
 # docs/incident-affected-lines-backfill.md -- optional, but the incident
 # archive's Line filter returns nothing for pre-existing rows until it has
 # run), `replay_uidless_movements` (one-off, idempotent, see below),
-# `backfill_line_train_summaries` (optional, idempotent, see below) and
-# `maintenance` (the api-maintenance CronJob's hourly pass, see below).
+# `backfill_line_train_summaries` (optional, idempotent, see below),
+# `maintenance` (the api-maintenance CronJob's hourly pass, see below) and
+# `ds-migrate` (the migrate hook Job's command, see below).
 # `api`'s own startup enforces that
 # ordering (it refuses to apply `20260906140000_drop_legacy_columns.sql`
 # while unbackfilled rows remain), so shipping both here is what makes the
 # enforced sequence actually satisfiable from inside the cluster. See
 # crates/api/src/data/legacy_backfill.rs's module doc.
 #
-# Migrations note: `crates/api/src/main.rs` runs `sqlx::migrate!().run(...)`
-# with no path argument, which defaults to the `migrations/` directory next
-# to this crate's `Cargo.toml` (`crates/api/migrations/`). `sqlx::migrate!`
-# is a compile-time macro that embeds each migration file's contents (and
+# Migrations note: `api` (at startup) and `ds-migrate` both run
+# `ds_store::migrate::run`, whose `sqlx::migrate!()` has no path argument,
+# which defaults to the `migrations/` directory next to ds-store's
+# `Cargo.toml` (`crates/ds-store/migrations/`). `sqlx::migrate!` is a
+# compile-time macro that embeds each migration file's contents (and
 # checksums) into the binary via `include_str!`-style codegen — the
 # `Migrator` it produces carries the SQL in memory, it does not re-read the
 # `migrations/` directory at runtime. So the runtime image below does NOT
-# copy `crates/api/migrations/` in; only the compiled binary is needed.
+# copy `crates/ds-store/migrations/` in; only the compiled binaries are
+# needed.
 #
 # Build from the repo root so the workspace's `Cargo.toml`/`Cargo.lock` and
 # `crates/common` path dependency are all in the build context:
@@ -88,9 +91,9 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     if [ "${CARGO_PROFILE}" = "release" ]; then \
-      cargo chef cook --release --locked --recipe-path recipe.json --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance; \
+      cargo chef cook --release --locked --recipe-path recipe.json --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate; \
     else \
-      cargo chef cook --locked --recipe-path recipe.json --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance; \
+      cargo chef cook --locked --recipe-path recipe.json --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate; \
     fi
 
 COPY . .
@@ -102,9 +105,9 @@ COPY . .
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     if [ "${CARGO_PROFILE}" = "release" ]; then \
-      cargo build --release --locked --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance > /tmp/cargo-build.log 2>&1; \
+      cargo build --release --locked --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate > /tmp/cargo-build.log 2>&1; \
     else \
-      cargo build --locked --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance > /tmp/cargo-build.log 2>&1; \
+      cargo build --locked --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate > /tmp/cargo-build.log 2>&1; \
     fi; \
     status=$?; \
     cat /tmp/cargo-build.log; \
@@ -120,6 +123,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     && cp "/app/target/${CARGO_PROFILE}/replay_uidless_movements" /usr/local/bin/replay_uidless_movements \
     && cp "/app/target/${CARGO_PROFILE}/backfill_line_train_summaries" /usr/local/bin/backfill_line_train_summaries \
     && cp "/app/target/${CARGO_PROFILE}/maintenance" /usr/local/bin/maintenance \
+    && cp "/app/target/${CARGO_PROFILE}/ds-migrate" /usr/local/bin/ds-migrate \
     && rm -rf /app/target /tmp/cargo-build.log
 # END generated by scripts/gen-rust-dockerfiles.py
 
@@ -199,6 +203,12 @@ COPY --from=builder /usr/local/bin/backfill_line_train_summaries /usr/local/bin/
 # personal-data retention), then exit: the hourly api-maintenance CronJob's
 # command (crates/api/src/bin/maintenance.rs).
 COPY --from=builder /usr/local/bin/maintenance /usr/local/bin/maintenance
+# The schema migrator (crates/ds-migrate, plan 1B.1): `ds-migrate run` is
+# what the api does at startup (the contract-migration check, then every
+# pending migration, as MIGRATION_DATABASE_URL), the chart's migrate hook
+# Job's command (migrate.job). Built from the same source as `api`, so the
+# Job applies exactly the migrations this image's api expects.
+COPY --from=builder /usr/local/bin/ds-migrate /usr/local/bin/ds-migrate
 COPY --chown=api:api lines/ /app/lines/
 
 # Numeric USER, not the `api` name useradd created above: Kubernetes'

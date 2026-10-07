@@ -882,7 +882,7 @@ pub struct LoginState {
 }
 
 /// See `oidc_login_state_created_at`
-/// (`crates/api/migrations/20260925221000_oidc_login_state_created_at_index.sql`)
+/// (`crates/ds-store/migrations/20260925221000_oidc_login_state_created_at_index.sql`)
 /// for why the sweep DELETE below is indexed -- without it, this function
 /// (called on EVERY hit to `GET /auth/login`, not on a periodic timer the
 /// way `sessions`' equivalent `prune_expired_sessions` is) would run a

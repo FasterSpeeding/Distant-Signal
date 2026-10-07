@@ -1,6 +1,6 @@
 # Backfilling `incidents.affected_lines`
 
-`crates/api/migrations/20260917090000_incidents_affected_lines.sql` adds
+`crates/ds-store/migrations/20260917090000_incidents_affected_lines.sql` adds
 `incidents.affected_lines`, the column the incident archive's Line filter
 (`GET /public/incidents?line=...`) now matches against. New and still-live
 incidents fill it automatically; **rows already in the table do not**, and

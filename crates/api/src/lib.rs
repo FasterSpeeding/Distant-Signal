@@ -9,7 +9,7 @@
 //!
 //! - `src/bin/backfill_trains.rs` -- required before the
 //!   shared-train-identity contract migration
-//!   (`migrations/20260906140000_drop_legacy_columns.sql`) can be applied to
+//!   (`20260906140000_drop_legacy_columns.sql`) can be applied to
 //!   a database with pre-existing data.
 //! - `src/bin/backfill_incident_lines.rs` -- fills `incidents.affected_lines`
 //!   for rows ingested before that column existed, without which the
@@ -22,14 +22,17 @@
 //!
 //! Nothing else moved: every module below is byte-for-byte the module it
 //! was, `main.rs` still owns the server's own wiring (router, CORS,
-//! metrics, `sqlx::migrate!()`), and every `crate::...` path inside these
-//! modules resolves exactly as it did before.
+//! metrics, the startup migration), and every `crate::...` path inside
+//! these modules resolves exactly as it did before.
+//!
+//! `migrate` is `ds_store::migrate` re-exported: the migrator and the
+//! migrations directory moved to `ds-store` in plan task 1B.1.
 
 pub mod app;
 pub mod auth;
 pub mod data;
 pub mod edge;
-pub mod migrate;
+pub use ds_store::migrate;
 pub mod rate_limit;
 pub mod render;
 pub mod route_metrics;

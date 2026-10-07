@@ -37,6 +37,9 @@ services:
           path: ./crates/api
         - action: rebuild
           path: ./crates/common
+        # ds-store, and its migrations/ (plan 1B.1), which the api embeds.
+        - action: rebuild
+          path: ./crates/ds-store
         - action: rebuild
           path: ./lines
         - action: rebuild

@@ -1,7 +1,7 @@
 //! Network Rail CORPUS location reference data (`corpus_locations`,
 //! `corpus_deliveries`), loaded by `schedule-ingest` through
 //! `POST /private/corpus-locations`. See
-//! `crates/api/migrations/20260928100000_corpus_locations.sql` and
+//! `crates/ds-store/migrations/20260928100000_corpus_locations.sql` and
 //! docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md.
 //!
 //! Every load also rebuilds the CORPUS-derived crosswalk in the same
@@ -17,10 +17,10 @@ pub use ds_store::corpus::{
 };
 
 /// Database-gated: each test gets its own throwaway database
-/// (`#[sqlx::test]`, migrated from `./migrations`), because a load replaces
-/// the WHOLE table and must never run against a shared database that may
-/// hold a real extract (see `crate::test_support`'s module doc). Needs a
-/// `DATABASE_URL` whose role may create databases.
+/// (`#[sqlx::test]`, migrated from `crates/ds-store/migrations`), because a
+/// load replaces the WHOLE table and must never run against a shared
+/// database that may hold a real extract (see `crate::test_support`'s module
+/// doc). Needs a `DATABASE_URL` whose role may create databases.
 #[cfg(test)]
 #[expect(
     clippy::items_after_statements,
@@ -44,7 +44,7 @@ mod db_tests {
         }
     }
 
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn a_load_replaces_the_whole_set_and_records_the_delivery(pool: PgPool) {
         let first = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
@@ -101,7 +101,7 @@ mod db_tests {
 
     /// Loading the same delivery twice (a restart between the load and the
     /// file's archive move) is idempotent.
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn reloading_the_same_delivery_is_idempotent(pool: PgPool) {
         let at = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
@@ -120,7 +120,7 @@ mod db_tests {
         assert_eq!((locations, deliveries), (1, 1));
     }
 
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn an_empty_load_is_refused_and_keeps_the_current_set(pool: PgPool) {
         let at = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();
@@ -146,7 +146,7 @@ mod db_tests {
 
     /// The delivered file's size and SHA-256 land in `corpus_deliveries`;
     /// the provenance-less wrapper leaves them NULL.
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn a_load_records_the_delivered_file_provenance(pool: PgPool) {
         let at = Utc.with_ymd_and_hms(2026, 9, 1, 3, 0, 0).unwrap();

@@ -247,15 +247,31 @@ Rollback: revert the commit (no runtime switch).
 **Status (2026-10-07): the parts that do not need `ds-store` are built,
 every switch off.** The default render is unchanged.
 
-- **Done:** 1B.5; the chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6's
-  skeleton and its image; 1B.8's `maintenance` bin.
-- **Waiting on code:** 1B.1 (`ds-migrate`, which the migrate Job runs),
-  1B.2 (`wait_for_schema`), 1B.3 (the api reading
+- **Done:** 1B.1 (`ds-migrate run`; `wait` waits for 1B.2); 1B.5; the
+  chart parts of 1B.4, 1B.8, 1B.9 and 1B.10; 1B.6's skeleton and its
+  image; 1B.8's `maintenance` bin.
+- **Waiting on code:** 1B.2 (`wait_for_schema`, then `ds-migrate wait`
+  calls it), 1B.3 (the api reading
   `API_MIGRATE_ON_STARTUP`), 1B.6's real loops (after `ds-store`), and
   1B.7.
 
 Details and differences from the table below:
 
+- **1B.1, done.** `ds_store::migrate` is `api::migrate` moved whole (the
+  api keeps `pub use ds_store::migrate`), plus
+  `migrate::contract::ensure_ready_for_contract_migration` and the catalog
+  helpers the api's `legacy_backfill` still uses (it re-exports the
+  guard). `crates/ds-store/migrations` is a pure rename, so no checksum
+  changed; `migration_checksums` and `migration_index_locking` stay in the
+  api, pointed at the new directory, and `check-migration-order.py` reads
+  a BASE from before the move from `crates/api/migrations`, file by file.
+  `crates/ds-migrate` (in the api image as `/usr/local/bin/ds-migrate`):
+  `run` does the api's startup sequence (the contract check, then
+  `migrate::run`) with `MIGRATION_DATABASE_URL`, else `DATABASE_URL`;
+  `wait` fails until 1B.2's `wait_for_schema` exists (a `TODO(1B.2)` in
+  its `main.rs`). `check-crate-deps.py` holds ds-migrate to ds-store's
+  rules. The moved DB tests are `ds_store::migrate::tests` (the CI filter
+  `migrate::tests` still selects them).
 - **1B.4 (chart).** The `pg_isready` wait is an init container from the
   Postgres image (the api image has no libpq tools), not
   "initContainer-free". The Job's Postgres admission and egress are hook

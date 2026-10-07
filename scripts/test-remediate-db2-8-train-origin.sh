@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local verification harness for scripts/remediate-db2-8-train-origin.sql.
 #
-# Builds a scratch database from crates/api/migrations, seeds one trains row
+# Builds a scratch database from crates/ds-store/migrations, seeds one trains row
 # with a mid-route origin (the DB2-8 bug), one correct row and one row whose
 # first TIPLOC has no CRS, then checks that:
 #   1. the preview runs inside a read-only transaction and lists only the bad row;
@@ -23,7 +23,7 @@ cleanup() { psql -X -q "${PG_ADMIN_URL}" -c "DROP DATABASE IF EXISTS ${TEST_DB}"
 trap cleanup EXIT
 
 psql -X -q "${PG_ADMIN_URL}" -c "CREATE DATABASE ${TEST_DB}" >/dev/null
-sqlx migrate run --source "${REPO_ROOT}/crates/api/migrations" --database-url "${TEST_URL}" >/dev/null
+sqlx migrate run --source "${REPO_ROOT}/crates/ds-store/migrations" --database-url "${TEST_URL}" >/dev/null
 
 q() { psql -X -q -t -A "${TEST_URL}" -c "$1"; }
 

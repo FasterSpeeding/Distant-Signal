@@ -346,7 +346,7 @@ async fn server_main() -> anyhow::Result<()> {
         );
     }
 
-    // MUST stay immediately before the migrations (`api::migrate::run`),
+    // MUST stay immediately before the migrations (`ds_store::migrate::run`),
     // never after.
     // `migrations/20260906140000_drop_legacy_columns.sql` IRREVERSIBLY drops
     // `train_movement_events.tracked_train_id`, `train_current_state.tracked_train_id`
@@ -361,27 +361,28 @@ async fn server_main() -> anyhow::Result<()> {
     // returns immediately. See
     // `crates/api/src/data/legacy_backfill.rs`'s module doc for the full
     // required deploy sequence and for why this check cannot live inside
-    // the migration file itself.
+    // the migration file itself. `ds-migrate run` (the chart's migrate Job)
+    // runs the same two steps.
     //
     // The migrations then run on their own connection, not the request
     // pool: lock_timeout 10s and a statement_timeout under the startup
     // probe's 900s budget instead of the pool's 60s, after dropping any
     // INVALID index a failed CREATE INDEX CONCURRENTLY left behind. See
-    // `api::migrate`.
+    // `ds_store::migrate`.
     let migrate = async {
-        data::legacy_backfill::ensure_ready_for_contract_migration(&app.database).await?;
+        ds_store::migrate::ensure_ready_for_contract_migration(&app.database).await?;
         // MIGRATION_DATABASE_URL (the schema owner) when set, else
-        // DATABASE_URL. See `api::migrate::migration_url`.
-        let (migration_url, migration_url_var) = api::migrate::migration_url(
+        // DATABASE_URL. See `ds_store::migrate::migration_url`.
+        let (migration_url, migration_url_var) = ds_store::migrate::migration_url(
             &app.config.database_url,
             app.config.migration_database_url.as_deref(),
         );
         let migration_options: sqlx::postgres::PgConnectOptions = migration_url
             .parse()
             .with_context(|| format!("could not parse {migration_url_var}"))?;
-        api::migrate::run(
+        ds_store::migrate::run(
             api::app::with_dead_client_detection(migration_options),
-            api::migrate::MigrationSettings::from_env()?,
+            ds_store::migrate::MigrationSettings::from_env()?,
         )
         .await?;
         anyhow::Ok(())

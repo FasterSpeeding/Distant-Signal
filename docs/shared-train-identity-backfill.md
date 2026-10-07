@@ -2,7 +2,7 @@
 
 `docs/superpowers/specs/2026-09-06-shared-train-identity-design.md` is an
 expand/contract migration. Its final, **irreversible** step
-(`crates/api/migrations/20260906140000_drop_legacy_columns.sql`) drops
+(`crates/ds-store/migrations/20260906140000_drop_legacy_columns.sql`) drops
 `train_movement_events.tracked_train_id`,
 `train_current_state.tracked_train_id`, and seven legacy columns from
 `tracked_trains` — including `train_uid`. Those are the only columns from

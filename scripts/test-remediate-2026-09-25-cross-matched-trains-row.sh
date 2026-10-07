@@ -3,7 +3,7 @@
 # scripts/remediate-2026-09-25-cross-matched-trains-row.sql
 #
 # Builds a scratch Postgres database (via `sqlx migrate run` against this
-# repo's real crates/api/migrations, so the schema is exactly what
+# repo's real crates/ds-store/migrations, so the schema is exactly what
 # production runs), seeds it with a row shaped like the real 2026-09-25
 # corruption (plus unrelated control data that must NOT be touched), runs
 # the remediation script, and asserts:
@@ -58,8 +58,8 @@ trap cleanup EXIT
 echo "== Building scratch database ${TEST_DB} =="
 psql "${PG_ADMIN_URL}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${TEST_DB};" >/dev/null
 
-echo "== Applying real crates/api migrations (including the risky 20260925222000 unique index) =="
-DATABASE_URL="${TEST_URL}" sqlx migrate run --source "${REPO_ROOT}/crates/api/migrations" >/dev/null
+echo "== Applying real crates/ds-store migrations (including the risky 20260925222000 unique index) =="
+DATABASE_URL="${TEST_URL}" sqlx migrate run --source "${REPO_ROOT}/crates/ds-store/migrations" >/dev/null
 
 echo "== Seeding the corrupted shape + unrelated control data =="
 psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q <<'SEED'

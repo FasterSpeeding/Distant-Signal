@@ -7873,7 +7873,7 @@ mod db_review_guard_and_normalisation_tests {
 
         let mut tx = pool.begin().await.unwrap();
         sqlx::raw_sql(include_str!(
-            "../../migrations/20261006130100_incidents_active_since_backfill.sql"
+            "../../../ds-store/migrations/20261006130100_incidents_active_since_backfill.sql"
         ))
         .execute(&mut *tx)
         .await

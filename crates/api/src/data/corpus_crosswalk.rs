@@ -235,7 +235,7 @@ mod db_tests {
         })
     }
 
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn a_load_stores_the_crosswalk_and_marks_the_build(pool: PgPool) {
         assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
@@ -288,7 +288,7 @@ mod db_tests {
         assert_eq!(rebuild_if_stale(&pool).await.unwrap(), None);
     }
 
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn an_outdated_build_is_rebuilt_from_corpus_locations(pool: PgPool) {
         seed_stations(&pool, &STATIONS).await;
@@ -334,7 +334,7 @@ mod db_tests {
     /// Flag on: a TIPLOC or STANOX whose CORPUS CRS is not a station
     /// (pseudo `XBS`, non-station `LUA`) is never filled; a platform TIPLOC
     /// of a real station (`CLPHMJW`, Clapham Junction's Windsor side) is.
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn the_stations_filter_drops_non_station_fills_and_keeps_platform_fills(pool: PgPool) {
         seed_timetable(&pool).await;
@@ -377,7 +377,7 @@ mod db_tests {
     /// A station added to (or removed from) `stations` after the CORPUS load
     /// changes the fingerprint, so the next check rebuilds and the fallback
     /// picks it up.
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn a_stations_change_rebuilds_the_crosswalk(pool: PgPool) {
         seed_stations(&pool, &STATIONS).await;
@@ -423,7 +423,7 @@ mod db_tests {
     /// Flag off: every lookup returns exactly what it returned before
     /// CORPUS was loaded, and exactly what the process-wide default (off)
     /// returns.
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn with_the_flag_off_corpus_changes_nothing(pool: PgPool) {
         seed_timetable(&pool).await;
@@ -446,7 +446,7 @@ mod db_tests {
 
     /// Flag on: CORPUS fills what the timetable lacks, and the timetable
     /// wins every conflict.
-    #[sqlx::test(migrations = "./migrations")]
+    #[sqlx::test(migrations = "../ds-store/migrations")]
     #[ignore = "needs DATABASE_URL (a role that can create databases)"]
     async fn with_the_flag_on_corpus_fills_gaps_and_the_timetable_wins(pool: PgPool) {
         seed_timetable(&pool).await;

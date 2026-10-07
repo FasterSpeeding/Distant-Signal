@@ -70,7 +70,7 @@ fn full_coverage_enabled_for(
 /// True for an operator value shaped like a real ATOC code: `^[A-Za-z]{2}$`,
 /// i.e. exactly two ASCII letters. Matches the `tocs.atoc_code CHAR(2)`
 /// convention this codebase's real reference data is stored/compared in
-/// (`crates/api/migrations/20260706004003_reference_data.sql:28`; always
+/// (`crates/ds-store/migrations/20260706004003_reference_data.sql:28`; always
 /// populated uppercase in practice, e.g. `reference.rs`'s own "GR"/"SW"/"ZF"
 /// test fixtures) and what LDBWS always sends (`crates/poller-ldbws`) --
 /// but this check is deliberately case-insensitive (`is_ascii_alphabetic`,

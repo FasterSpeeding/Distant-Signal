@@ -1208,8 +1208,8 @@ pub async fn get_by_tracking_ids(
 /// with no FK of its own), nothing else needs deleting here: every other
 /// row that references a `tracked_trains` id --
 /// `train_movement_events`, `train_current_state` (both
-/// `crates/api/migrations/20260828120000_train_tracking.sql`), and
-/// `tracked_train_tickets` (`crates/api/migrations/20260829090000_journey_ticket_tracking.sql`)
+/// `crates/ds-store/migrations/20260828120000_train_tracking.sql`), and
+/// `tracked_train_tickets` (`crates/ds-store/migrations/20260829090000_journey_ticket_tracking.sql`)
 /// -- is declared `ON DELETE CASCADE`, so a single `DELETE FROM
 /// tracked_trains` here is sufficient; Postgres does the rest inside the
 /// same statement's transaction. Returns `true` if a row was deleted,
@@ -1662,11 +1662,11 @@ pub async fn get_ticket_owned(
 /// needed, per `get_ticket_owned`'s own established precedent just above:
 /// `tracked_train_tickets.user_id` is a direct, indexed column
 /// (`tracked_train_tickets_user_id`,
-/// `crates/api/migrations/20260829090000_journey_ticket_tracking.sql:56`),
+/// `crates/ds-store/migrations/20260829090000_journey_ticket_tracking.sql:56`),
 /// not transitive through the owning tracked train. Applies identically
 /// whether the ticket is attached (`tracked_train_id: Some(_)`) or
 /// standalone (`tracked_train_id: None`, per
-/// `crates/api/migrations/20260901140000_standalone_tickets.sql`) -- the
+/// `crates/ds-store/migrations/20260901140000_standalone_tickets.sql`) -- the
 /// `WHERE` clause never references that column, so there is nothing to
 /// special-case. Nothing else needs deleting as a consequence: unlike a
 /// tracked train, a ticket is a leaf in the FK graph -- nothing

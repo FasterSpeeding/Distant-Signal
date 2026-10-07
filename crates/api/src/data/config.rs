@@ -16,7 +16,7 @@ pub struct ServiceArguments {
     pub bind_url: String,
     #[arg(short, long, env)]
     pub database_url: String,
-    /// Connection URL for the startup migrations (`api::migrate`) only.
+    /// Connection URL for the startup migrations (`ds_store::migrate`) only.
     /// Unset or empty: the migrations use `database_url`, as before.
     ///
     /// Set when the database has separate roles (docs/postgres-app-role.md):
