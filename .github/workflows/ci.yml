@@ -1759,7 +1759,6 @@ jobs:
           render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
           fail() { echo "$1" >&2; exit 1; }
           doc() { awk -v k="$1" -v n="$2" 'BEGIN{RS="\n---\n"} $0 ~ "\nkind: " k "\n" && $0 ~ "\n  name: " n "\n" {print}'; }
-          env_url() { grep -A1 'name: MIGRATION_DATABASE_URL$' | grep 'value:' || true; }
 
           off=$(render "${roles[@]}")
           if grep -E -q 'migrate-job.yaml|API_MIGRATE_ON_STARTUP|component: migrate' <<<"${off}"; then
@@ -1774,7 +1773,8 @@ jobs:
               'activeDeadlineSeconds: 900' 'until pg_isready' '- /usr/local/bin/ds-migrate' '- run'; do
             grep -q -F -- "${want}" <<<"${job}" || fail "migrate Job lacks: ${want}"
           done
-          n=$(env_url <<<"${job}" | grep -c 'postgres://distant_signal_owner:' || true)
+          urls=$(grep -A1 'name: MIGRATION_DATABASE_URL$' <<<"${job}")
+          n=$(grep -c 'value: "postgres://distant_signal_owner:' <<<"${urls}" || true)
           [[ "${n}" -eq 2 ]] || fail "the Job's wait and migrate containers must use the owner role"
           api=$(doc Deployment distant-signal-api <<<"${on}")
           grep -q 'name: MIGRATION_DATABASE_URL$' <<<"${api}" \
@@ -1807,7 +1807,9 @@ jobs:
           # Without the role split the Job migrates as the bootstrap superuser,
           # with an external database as its URL.
           plain=$(render --set migrate.job.enabled=true --show-only templates/migrate-job.yaml)
-          env_url <<<"${plain}" | grep -q 'postgres://distant_signal:\$(PG_MIGRATION_PASSWORD)@' \
+          # shellcheck disable=SC2016 # "$(PG_MIGRATION_PASSWORD)" is Kubernetes env-var syntax, matched literally
+          grep -A1 'name: MIGRATION_DATABASE_URL$' <<<"${plain}" \
+            | grep -q 'value: "postgres://distant_signal:\$(PG_MIGRATION_PASSWORD)@' \
             || fail "roles off: the Job must migrate as postgresql.auth.username"
           ext=$(render --set migrate.job.enabled=true --set postgresql.enabled=false \
             --set externalDatabase.existingSecret=ext-db --show-only templates/migrate-job.yaml)
@@ -2187,10 +2189,10 @@ jobs:
           if grep -q -E 'port: 6379|ipBlock' <<<"${np}"; then
             fail "phase 1B: the ingest-writer gets neither Redis nor the internet"
           fi
-          grep -q -- '- ingest-writer$' <<<"$(doc NetworkPolicy distant-signal-postgres <<<"${on}")" \
-            || fail "Postgres must admit the ingest-writer"
-          grep -q -- '- ingest-writer$' <<<"$(doc PodMonitor distant-signal <<<"${on}")" \
-            || fail "the PodMonitor must select the ingest-writer"
+          pg=$(doc NetworkPolicy distant-signal-postgres <<<"${on}")
+          grep -q -- '- ingest-writer$' <<<"${pg}" || fail "Postgres must admit the ingest-writer"
+          pm=$(doc PodMonitor distant-signal <<<"${on}")
+          grep -q -- '- ingest-writer$' <<<"${pm}" || fail "the PodMonitor must select the ingest-writer"
           rule=$(doc PrometheusRule distant-signal <<<"${on}")
           grep -q 'alert: DistantSignalIngestWriterDown$' <<<"${rule}" || fail "IngestWriterDown must render"
           grep -q 'deployment="distant-signal-ingest-writer"' <<<"${rule}" || fail "IngestWriterDown must name the Deployment"
@@ -2202,13 +2204,14 @@ jobs:
           grep -q "'--variable=writer_connection_limit=6'" <<<"${ps}" || fail "the writer role's limit must be its pool + 1"
           grep -q 'name: DS_PG_WRITER_PASSWORD$' <<<"${ps}" || fail "the setup Job must get the writer's password"
           ps=$(render "${roles[@]}" --set ingestWriter.enabled=true)
+          dep=$(doc Deployment distant-signal-ingest-writer <<<"${ps}")
           # shellcheck disable=SC2016 # "$(PGPASSWORD)" is Kubernetes env-var syntax, matched literally
-          grep -q 'postgres://distant_signal_app:\$(PGPASSWORD)@' <<<"$(doc Deployment distant-signal-ingest-writer <<<"${ps}")" \
-            || fail "without connect the ingest-writer connects as app"
+          grep -q 'postgres://distant_signal_app:\$(PGPASSWORD)@' <<<"${dep}" || fail "without connect the ingest-writer connects as app"
           grep -q "'--variable=app_connection_limit=80'" <<<"${ps}" || fail "the writer's pool (5) must count in app's limit (75)"
           ps=$(render "${roles[@]}" --set ingestWriter.enabled=true --set postgresql.roles.perService.writer.connect=true)
+          dep=$(doc Deployment distant-signal-ingest-writer <<<"${ps}")
           # shellcheck disable=SC2016 # as above
-          grep -q 'postgres://distant_signal_writer:\$(PGPASSWORD)@' <<<"$(doc Deployment distant-signal-ingest-writer <<<"${ps}")" \
+          grep -q 'postgres://distant_signal_writer:\$(PGPASSWORD)@' <<<"${dep}" \
             || fail "writer.connect: the ingest-writer must connect as distant_signal_writer"
           # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
           if render "${roles[@]}" --set postgresql.roles.perService.writer.connect=true >/dev/null 2>&1; then
@@ -2667,8 +2670,8 @@ jobs:
           # shellcheck disable=SC2016 # as above
           grep -q 'postgres://distant_signal_api:\$(PGPASSWORD)@' <<<"${cj}" || fail "api.connect: the CronJob must connect as the api role"
           # Its 2 connections count: the app limit 75 -> 77, the INF-7 budget 71 -> 69.
-          grep -q "'--variable=app_connection_limit=77'" <<<"$(render "${on[@]}" "${roles[@]}")" \
-            || fail "the CronJob's pool must count in the app role's limit"
+          out=$(render "${on[@]}" "${roles[@]}")
+          grep -q "'--variable=app_connection_limit=77'" <<<"${out}" || fail "the CronJob's pool must count in the app role's limit"
           render "${on[@]}" --set api.database.maxConnections=69 >/dev/null
           # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
           if render "${on[@]}" --set api.database.maxConnections=70 >/dev/null 2>&1; then
