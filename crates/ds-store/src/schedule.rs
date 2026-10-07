@@ -8,7 +8,8 @@
 //! Filled by plan task 1A.7. The submodules live under `schedule/`; every
 //! item is re-exported here, so callers name `ds_store::schedule::…`.
 //!
-//! - `markers`: the feed-ingest and reference-publish markers.
+//! - `markers`: the feed-ingest and reference-publish markers, and the
+//!   feed-ingest record's validation.
 //! - `population`: the per-line schedule population.
 //! - `publish`: the network, destination and calling-point products and
 //!   the chunked diff-publish protocol.
@@ -18,8 +19,9 @@ mod population;
 mod publish;
 
 pub use markers::{
-    ScheduleFeedSource, insert_schedule_feed_ingest, insert_schedule_reference_publish,
-    last_completed_schedule_reference_publish, last_schedule_feed_fetch,
+    ScheduleFeedFile, ScheduleFeedIngestRequest, ScheduleFeedSource, insert_schedule_feed_ingest,
+    insert_schedule_reference_publish, last_completed_schedule_reference_publish,
+    last_schedule_feed_fetch, schedule_feed_ingest_problem,
 };
 pub use population::{
     ConditionalPopulation, get_schedule_line_population, get_schedule_line_population_conditional,
