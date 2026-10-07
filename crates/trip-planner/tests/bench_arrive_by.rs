@@ -614,3 +614,111 @@ fn bench_group_vias_against_single() {
         }
     }
 }
+
+/// OR-group waypoints (2026-10-07): waypoint `i` of `count` as `members`
+/// stations, a hub (`S0004 + 5i`) plus ordinary stations spread over the
+/// network, apart from [`bench_group_vias`]' members. With `members == 1`
+/// it is the hub alone. Adjacent waypoints share no station.
+fn bench_group_waypoints(count: usize, members: u64) -> Vec<Vec<String>> {
+    (0..count as u64)
+        .map(|waypoint| {
+            (0..members)
+                .map(|m| {
+                    if m == 0 {
+                        tiploc(4 + (5 * waypoint) % (HUBS - 4))
+                    } else {
+                        tiploc(HUBS + (900 + waypoint * 89 + m * 11) % (STATIONS - HUBS))
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The cost of 18-member OR-group waypoints against single-station ones,
+/// at the limits `/Trips/plan` allows: 54 stations across the waypoints
+/// (three 18-station groups; or two and 18 single stations, 20
+/// waypoints), 8 RAPTOR rounds (`maxChanges=6`), and with three
+/// 18-member group vias at the options guard's limit (3 waypoints, 3
+/// vias, 8 rounds).
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_group_waypoints_against_single() {
+    use trip_planner::{
+        StagedOptions, latest_departures_by_trips, raptor_staged, scan_staged, staged_arrive_by,
+    };
+    let (connections, interchange) = network();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    println!(
+        "{:>24} | {:>22} | {:>22} | {:>22} | {:>22}",
+        "", "csa", "csa arriveBy", "raptor 8 rounds", "arriveBy 8 rounds"
+    );
+    // (waypoints, how many of them are groups, vias)
+    for (waypoint_count, grouped, via_count) in [(3usize, 3usize, 0usize), (20, 2, 0), (3, 3, 3)] {
+        for members in [1u64, 18] {
+            let mut waypoints = bench_group_waypoints(waypoint_count, 1);
+            for (index, group) in bench_group_waypoints(grouped, members)
+                .into_iter()
+                .enumerate()
+            {
+                waypoints[index * waypoint_count / grouped] = group;
+            }
+            let vias = bench_group_vias(&connections, via_count, members);
+            let vias = (via_count > 0).then_some(&vias);
+            let mut rng = Rng(41 + waypoint_count as u64);
+            let mut rows = Vec::new();
+            for _ in 0..3 {
+                let from = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+                let to = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+                let staged = StagedOptions {
+                    connections: &connections,
+                    interchange: &interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    date,
+                };
+                let arrive = ArriveByOptions {
+                    connections: &connections,
+                    interchange: &interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    arrive_by_min: 1380,
+                    date,
+                };
+                let once = |f: &dyn Fn() -> usize| {
+                    let started = Instant::now();
+                    let found = f();
+                    (started.elapsed(), found)
+                };
+                rows.push([
+                    once(&|| usize::from(scan_staged(&staged, 360, None, None).is_some())),
+                    once(&|| usize::from(staged_arrive_by(&arrive, None, None).is_some())),
+                    once(&|| raptor_staged(&staged, 360, 8, None, None).len()),
+                    once(&|| {
+                        latest_departures_by_trips(&arrive, None, None, 8)
+                            .iter()
+                            .flatten()
+                            .count()
+                    }),
+                ]);
+            }
+            let column = |i: usize| {
+                let mut values: Vec<Duration> = rows.iter().map(|row| row[i].0).collect();
+                values.sort();
+                let found: usize = rows.iter().map(|row| usize::from(row[i].1 > 0)).sum();
+                format!("{:>7.1?} max {:>7.1?} {found}/3", values[1], values[2])
+            };
+            println!(
+                "{waypoint_count:>2} wp ({grouped} grp) {via_count} via x{members:>2} | {} | {} | {} | {}",
+                column(0),
+                column(1),
+                column(2),
+                column(3)
+            );
+        }
+    }
+}

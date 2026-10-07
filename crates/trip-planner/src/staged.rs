@@ -48,6 +48,12 @@
 //! times, same-CRS siblings, fixed links, the live overlay and
 //! [`crate::restrictions`].
 //!
+//! A waypoint may be an OR group (2026-10-07): its TIPLOC set is then the
+//! union of several stations', and arriving at any of them advances the
+//! stage. Nothing else changes: the change time charged is the member's
+//! own, the part ends at the member used, and arrive-by mirrors it the
+//! same way. Which member a journey used is its part's last arrival.
+//!
 //! With no waypoints and no vias this is the plain search; `csa.rs`/
 //! `raptor.rs` remain the implementation for that case, and a differential
 //! test checks the two agree.
@@ -70,7 +76,12 @@ pub struct StagedOptions<'a> {
     pub connections: &'a [Connection],
     pub interchange: &'a InterchangeData,
     pub from_tiplocs: &'a [String],
-    /// The waypoints in order, each as every TIPLOC it covers.
+    /// The waypoints in order, each as every TIPLOC it covers. That may be
+    /// several stations' TIPLOCs (an OR group, 2026-10-07): a call at, or a
+    /// walk into, ANY of them satisfies the waypoint, and the part ends
+    /// wherever it did. Two adjacent waypoints must not share a TIPLOC,
+    /// nor a waypoint the destination's (one arrival would satisfy both,
+    /// leaving an empty part); `/Trips/plan` rejects or drops those first.
     pub waypoints: &'a [Vec<String>],
     pub to_tiplocs: &'a [String],
     /// Pass-through vias, in order (`None`: none).
@@ -2768,5 +2779,416 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    // ---- OR-group waypoints (2026-10-07): stop at ANY of several stations ----
+
+    /// The TIPLOC part `index` of `journey` ends at: the waypoint member it
+    /// stopped at.
+    fn stopped_at(journey: &StagedJourney, index: usize) -> String {
+        match journey.parts[index].legs.last() {
+            Some(JourneyLeg::Train(leg)) => leg.to_tiploc.clone(),
+            Some(JourneyLeg::Transfer(leg)) => leg.to_tiploc.clone(),
+            None => panic!("part {index} is empty: {journey:?}"),
+        }
+    }
+
+    fn group(members: &[&str]) -> Vec<String> {
+        members.iter().map(|m| (*m).to_string()).collect()
+    }
+
+    /// One waypoint whose TIPLOCs are several stations' is satisfied by a
+    /// call at ANY of them. T0 is the fastest train but calls at neither
+    /// member; T1 calls at W1, T2 (later) at W2. The journey is split at
+    /// whichever member it used, and staying aboard through it is no change.
+    #[test]
+    fn a_group_waypoint_is_satisfied_by_whichever_member_the_journey_calls_at() {
+        use crate::reverse::{ArriveByOptions, latest_departures_by_trips, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T0", "A", "C", 470, 540),
+            conn("T1", "A", "W1", 480, 500),
+            conn("T1", "W1", "C", 502, 560),
+            conn("T2", "A", "W2", 600, 630),
+            conn("T2", "W2", "C", 632, 680),
+        ]);
+        let ic = interchange(&[("W1", 10), ("W2", 10)]);
+        let (from, to) = (s("A"), s("C"));
+        let waypoints = vec![group(&["W1", "W2"])];
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: None,
+            date: date(),
+        };
+
+        let early = scan_staged(&options, 0, None, None).expect("T1 calls at W1");
+        assert_eq!(part_uids(&early), vec![vec!["T1"], vec!["T1"]]);
+        assert!(early.parts[1].continues_previous_train);
+        assert_eq!((early.changes, early.arrival_min), (0, 560));
+        assert_eq!(stopped_at(&early, 0), "W1");
+        assert_eq!(raptor_staged(&options, 0, 3, None, None), vec![early]);
+
+        let late = scan_staged(&options, 490, None, None).expect("T2 calls at W2");
+        assert_eq!(part_uids(&late), vec![vec!["T2"], vec!["T2"]]);
+        assert_eq!(stopped_at(&late, 0), "W2");
+        assert_eq!(raptor_staged(&options, 490, 3, None, None), vec![late]);
+
+        // Arrive-by: the latest departure that stops at a member.
+        for (deadline, uid, member) in [(700, "T2", "W2"), (600, "T1", "W1")] {
+            let arrive = ArriveByOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                vias: None,
+                arrive_by_min: deadline,
+                date: date(),
+            };
+            let journey = staged_arrive_by(&arrive, None, None).expect("a member is reachable");
+            assert_eq!(uids_of(&journey), vec![uid, uid], "{deadline}");
+            assert_eq!(stopped_at(&journey, 0), member, "{deadline}");
+            assert_eq!(
+                latest_departures_by_trips(&arrive, None, None, 2)[0],
+                Some(journey.departure_min),
+                "{deadline}"
+            );
+        }
+    }
+
+    /// The change at a group waypoint is charged at the member actually
+    /// used: W1 needs 10 minutes and misses U1, W2 needs 2 and makes U2.
+    #[test]
+    fn a_group_waypoint_charges_the_change_time_of_the_member_used() {
+        use crate::reverse::{ArriveByOptions, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "W1", 480, 500),
+            conn("T2", "A", "W2", 480, 505),
+            conn("U1", "W1", "C", 508, 525),
+            conn("U2", "W2", "C", 509, 530),
+            conn("U3", "W1", "C", 515, 540),
+        ]);
+        let ic = interchange(&[("W1", 10), ("W2", 2)]);
+        let (from, to) = (s("A"), s("C"));
+        let arrival = |waypoint: Vec<String>| {
+            let waypoints = vec![waypoint];
+            let options = StagedOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                vias: None,
+                date: date(),
+            };
+            let journey = scan_staged(&options, 0, None, None).expect("a journey");
+            let raptor = raptor_staged(&options, 0, 4, None, None);
+            assert_eq!(
+                raptor.last().map(|j| j.arrival_min),
+                Some(journey.arrival_min)
+            );
+            (
+                journey.arrival_min,
+                stopped_at(&journey, 0),
+                part_uids(&journey),
+            )
+        };
+        assert_eq!(arrival(s("W1")).0, 540);
+        assert_eq!(arrival(s("W2")).0, 530);
+        let (minutes, member, uids) = arrival(group(&["W1", "W2"]));
+        assert_eq!((minutes, member.as_str()), (530, "W2"));
+        assert_eq!(uids, vec![vec!["T2"], vec!["U2"]]);
+
+        let waypoints = vec![group(&["W1", "W2"])];
+        let arrive = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: None,
+            arrive_by_min: 535,
+            date: date(),
+        };
+        let journey = staged_arrive_by(&arrive, None, None).expect("via W2 by 535");
+        assert_eq!(stopped_at(&journey, 0), "W2");
+        assert_eq!(journey.arrival_min, 530);
+    }
+
+    /// The member a journey stops at is the FIRST it reaches (the DS-MCP's
+    /// rule, 2026-10-07): T1 calls at W1, then at W2, where the traveller
+    /// changes to U1. The waypoint is satisfied at W1, and the traveller
+    /// stays aboard T1 from there (no change charged at W1).
+    #[test]
+    fn a_group_waypoint_is_satisfied_at_the_first_member_reached() {
+        use crate::reverse::{ArriveByOptions, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "W1", 480, 500),
+            conn("T1", "W1", "W2", 501, 510),
+            conn("U1", "W2", "C", 520, 540),
+        ]);
+        let ic = interchange(&[("W1", 30), ("W2", 5)]);
+        let (from, to) = (s("A"), s("C"));
+        let waypoints = vec![group(&["W2", "W1"])];
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: None,
+            date: date(),
+        };
+        let check = |journey: &StagedJourney| {
+            assert_eq!(stopped_at(journey, 0), "W1");
+            assert_eq!(part_uids(journey), vec![vec!["T1"], vec!["T1", "U1"]]);
+            assert!(journey.parts[1].continues_previous_train);
+            assert_eq!((journey.changes, journey.arrival_min), (1, 540));
+        };
+        check(&scan_staged(&options, 0, None, None).expect("a journey"));
+        let raptor = raptor_staged(&options, 0, 3, None, None);
+        assert_eq!(raptor.len(), 1);
+        check(&raptor[0]);
+        let arrive = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: None,
+            arrive_by_min: 600,
+            date: date(),
+        };
+        check(&staged_arrive_by(&arrive, None, None).expect("a journey"));
+    }
+
+    /// A group none of whose members any train calls at finds nothing, in
+    /// every search.
+    #[test]
+    fn a_group_waypoint_with_no_member_called_at_finds_nothing() {
+        use crate::reverse::{ArriveByOptions, latest_departures_by_trips, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "B", 480, 520),
+            conn("T1", "B", "C", 522, 560),
+        ]);
+        let ic = interchange(&[]);
+        let (from, to) = (s("A"), s("C"));
+        let waypoints = vec![group(&["P", "Q", "R"])];
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: None,
+            date: date(),
+        };
+        assert!(scan_staged(&options, 0, None, None).is_none());
+        assert!(raptor_staged(&options, 0, 4, None, None).is_empty());
+        let arrive = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: None,
+            arrive_by_min: 1000,
+            date: date(),
+        };
+        assert!(staged_arrive_by(&arrive, None, None).is_none());
+        assert_eq!(
+            latest_departures_by_trips(&arrive, None, None, 3),
+            vec![None; 3]
+        );
+    }
+
+    /// A group waypoint and a group via together: T1 runs A -> W1 -> C,
+    /// passing X before W1; T2 runs A -> W2 -> C, passing Y after W2.
+    /// Waypoint {W1, W2}, via {X, Y}: either train works, the via falling
+    /// in part 0 on T1 and in part 1 on T2.
+    #[test]
+    fn a_group_waypoint_combines_with_a_group_via() {
+        use crate::reverse::{ArriveByOptions, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "W1", 480, 500),
+            conn("T1", "W1", "C", 502, 540),
+            conn("T2", "A", "W2", 600, 620),
+            conn("T2", "W2", "C", 622, 660),
+        ]);
+        let ic = interchange(&[]);
+        let vias = group_vias_for(
+            &connections,
+            &[&["X", "Y"]],
+            &[("T1", "A", &["X"]), ("T2", "W2", &["Y"])],
+        );
+        let (from, to) = (s("A"), s("C"));
+        let waypoints = vec![group(&["W1", "W2"])];
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            date: date(),
+        };
+        let early = scan_staged(&options, 0, None, None).expect("T1");
+        assert_eq!(stopped_at(&early, 0), "W1");
+        assert_eq!(
+            early.via_legs,
+            vec![ViaLeg {
+                part: 0,
+                leg: 0,
+                how: ViaHow::Pass,
+                tiploc: "X".to_string(),
+            }]
+        );
+        let late = scan_staged(&options, 490, None, None).expect("T2");
+        assert_eq!(stopped_at(&late, 0), "W2");
+        assert_eq!(
+            late.via_legs,
+            vec![ViaLeg {
+                part: 1,
+                leg: 0,
+                how: ViaHow::Pass,
+                tiploc: "Y".to_string(),
+            }]
+        );
+        assert!(late.parts[1].continues_previous_train);
+        assert_eq!(raptor_staged(&options, 490, 3, None, None), vec![late]);
+        let arrive = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &waypoints,
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            arrive_by_min: 600,
+            date: date(),
+        };
+        let journey = staged_arrive_by(&arrive, None, None).expect("T1 by 600");
+        assert_eq!(stopped_at(&journey, 0), "W1");
+        assert_eq!(journey.via_legs[0].tiploc, "X");
+    }
+
+    /// Arrive-by through a `NoInterchange` member (fallback change time,
+    /// as for any waypoint) whose onward train calls at ANOTHER member
+    /// later: T1 A -> D, change at D (a sentinel) to T2 D -> E -> B -> F.
+    /// The backward scan kept only "aboard T2 at stage 0" (the group could
+    /// still be met at B), a state at which D forbids boarding, and lost
+    /// the boarding at D at stage 1 that the forward search makes. Found
+    /// by `a_group_waypoint_is_the_best_of_its_members`.
+    #[test]
+    fn arrive_by_boards_at_a_no_interchange_member_after_stopping_there() {
+        use crate::reverse::{ArriveByOptions, latest_departures_by_trips, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "D", 689, 729),
+            conn("T2", "D", "E", 744, 770),
+            conn("T2", "E", "B", 770, 790),
+            conn("T2", "B", "F", 790, 825),
+        ]);
+        let ic = interchange(&[("D", 99), ("B", 7)]);
+        let (from, to) = (s("A"), s("F"));
+        for waypoint in [s("D"), group(&["B", "D"])] {
+            let waypoints = vec![waypoint];
+            let arrive = ArriveByOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                vias: None,
+                arrive_by_min: 1200,
+                date: date(),
+            };
+            let journey = staged_arrive_by(&arrive, None, None).expect("T1 then T2");
+            assert_eq!(uids_of(&journey), vec!["T1", "T2"], "{waypoints:?}");
+            assert_eq!(stopped_at(&journey, 0), "D", "{waypoints:?}");
+            assert_eq!(
+                latest_departures_by_trips(&arrive, None, None, 3),
+                vec![None, Some(689), Some(689)],
+                "{waypoints:?}"
+            );
+        }
+    }
+
+    /// OR semantics against single-station waypoints: on random networks,
+    /// with and without a via, a group waypoint {B, D} arrives exactly as
+    /// early as the better of the waypoints B and D, departs (arrive-by)
+    /// exactly as late, and its journey stops at a member.
+    #[test]
+    fn a_group_waypoint_is_the_best_of_its_members() {
+        use crate::reverse::{ArriveByOptions, latest_departure};
+        let mut seed = 0x5eed_0f9a_7e00_u64;
+        let mut next = |n: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % n
+        };
+        let members = ["B", "D"];
+        let mut found = 0;
+        for case in 0..200 {
+            let (connections, passes) = random_with_passes(&mut next, 25);
+            let ic = interchange(&[("C", 3), ("D", 99), ("E", 0), ("B", 7)]);
+            let via = vias_from(&connections, &["P"], &passes);
+            let vias = (case % 2 == 1).then_some(&via);
+            let (from, to) = (s("A"), s("F"));
+            let search = |waypoint: Vec<String>| {
+                let waypoints = vec![waypoint];
+                let options = StagedOptions {
+                    connections: &connections,
+                    interchange: &ic,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    date: date(),
+                };
+                let arrive = ArriveByOptions {
+                    connections: &connections,
+                    interchange: &ic,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    arrive_by_min: 1200,
+                    date: date(),
+                };
+                (
+                    scan_staged(&options, 300, None, None),
+                    raptor_staged(&options, 300, 8, None, None)
+                        .iter()
+                        .map(|j| j.arrival_min)
+                        .min(),
+                    latest_departure(&arrive, None, None),
+                )
+            };
+            let singles: Vec<_> = members.iter().map(|m| search(s(m))).collect();
+            let (csa, raptor, latest) = search(group(&members));
+            let best_arrival = singles
+                .iter()
+                .filter_map(|(j, _, _)| j.as_ref().map(|j| j.arrival_min))
+                .min();
+            let best_departure = singles.iter().filter_map(|(_, _, d)| *d).max();
+            assert_eq!(
+                csa.as_ref().map(|j| j.arrival_min),
+                best_arrival,
+                "case {case}"
+            );
+            assert_eq!(raptor, best_arrival, "case {case}");
+            assert_eq!(latest, best_departure, "case {case}");
+            if let Some(journey) = csa {
+                found += 1;
+                assert!(
+                    members.contains(&stopped_at(&journey, 0).as_str()),
+                    "case {case}"
+                );
+            }
+        }
+        assert!(found > 10, "the networks exercise the group ({found})");
     }
 }
