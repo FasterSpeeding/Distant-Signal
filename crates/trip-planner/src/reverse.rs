@@ -17,7 +17,11 @@
 //! - fixed links (walk, tube, ...) are relaxed backwards, using the same
 //!   `fixed_links_from` choice (shortest valid link per destination at the
 //!   walk's own start time) the forward search makes;
-//! - [`crate::restrictions`] apply exactly as they do going forward.
+//! - [`crate::restrictions`] apply exactly as they do going forward;
+//! - waypoints and pass-through vias use [`crate::staged`]'s (stage, via
+//!   progress) states, mirrored: a label at a state is "may be here at this
+//!   state and still finish", and a LESSER state (fewer waypoints and vias
+//!   behind it) dominates.
 //!
 //! The backward scan yields only the departure time. The journey itself is
 //! then produced by the ordinary FORWARD search from that time (over the
@@ -48,7 +52,10 @@ use crate::csa::{Journey, ScanOptions, scan_connections_restricted};
 use crate::overlay::ConnectionOverlay;
 use crate::raptor::{RaptorJourney, RaptorOptions, raptor_search_restricted};
 use crate::restrictions::{self, Restrictions};
-use crate::staged::{StagedJourney, StagedOptions, raptor_staged, scan_staged};
+use crate::staged::{
+    Grid, StagedJourney, StagedOptions, advance, advance_at, raptor_staged, scan_staged,
+};
+use crate::via::Vias;
 
 pub struct ArriveByOptions<'a> {
     /// Sorted as `build_connections` returns it (same contract as
@@ -59,31 +66,34 @@ pub struct ArriveByOptions<'a> {
     /// Waypoints to call at in order, each as every TIPLOC it covers (see
     /// [`crate::staged`]); empty for a direct search. The Journey-returning
     /// functions ([`scan_connections_arrive_by`], [`raptor_arrive_by`])
-    /// need it empty; the `staged_*` ones take any.
+    /// need it empty (and `vias` `None`); the `staged_*` ones take any.
     pub waypoints: &'a [Vec<String>],
     pub to_tiplocs: &'a [String],
+    /// Pass-through vias, in order (`None`: none). See [`crate::via`].
+    pub vias: Option<&'a Vias>,
     /// Latest acceptable arrival, minutes from service-day midnight.
     pub arrive_by_min: u32,
     pub date: NaiveDate,
 }
 
-/// The per-stop labels of one backward pass (or one round), per stage
-/// (see [`crate::staged`]: stage `s` = the first `s` waypoints called at).
+/// The per-stop labels of one backward pass (or one round), per state
+/// (see [`crate::staged`]: stage `s` = the first `s` waypoints called at,
+/// progress `v` = the first `v` vias passed).
 #[derive(Clone)]
 struct Labels {
-    /// Latest time a traveller may have ARRIVED at a stop (by train or
-    /// walk), at that stage, and still reach the destination by the
-    /// deadline.
-    latest_arrival: Vec<HashMap<String, u32>>,
+    /// Per stop, `(state, latest)`: the latest time a traveller may have
+    /// ARRIVED there (by train or walk), at that state, and still reach the
+    /// destination by the deadline. At most one entry per state.
+    latest_arrival: HashMap<String, Vec<(usize, u32)>>,
     /// Latest departure from the origin found so far.
     origin_departure: Option<u32>,
     touched: bool,
 }
 
 impl Labels {
-    fn new(stages: usize) -> Self {
+    fn new() -> Self {
         Self {
-            latest_arrival: vec![HashMap::new(); stages],
+            latest_arrival: HashMap::new(),
             origin_departure: None,
             touched: false,
         }
@@ -100,6 +110,8 @@ impl Labels {
 struct Reverse<'a> {
     interchange: &'a InterchangeData,
     restrictions: Option<&'a Restrictions>,
+    vias: Option<&'a Vias>,
+    grid: Grid,
     date: NaiveDate,
     origin: HashSet<String>,
     /// `targets[s]`: waypoint `s`'s TIPLOCs.
@@ -131,6 +143,8 @@ impl<'a> Reverse<'a> {
         Self {
             interchange: options.interchange,
             restrictions,
+            vias: options.vias,
+            grid: Grid::new(options.waypoints.len(), options.vias),
             date: options.date,
             origin: set(options.from_tiplocs),
             targets: options.waypoints.iter().map(|w| set(w)).collect(),
@@ -139,56 +153,59 @@ impl<'a> Reverse<'a> {
         }
     }
 
-    fn stages(&self) -> usize {
-        self.targets.len() + 1
-    }
-
-    /// Round 0: standing at the destination (last stage) by the deadline,
+    /// Round 0: standing at the destination (last state) by the deadline,
     /// and every stop a walk from which reaches it in time.
     fn initial_labels(&self, options: &ArriveByOptions<'_>) -> Labels {
-        let mut labels = Labels::new(self.stages());
+        let mut labels = Labels::new();
         for tiploc in options.to_tiplocs {
-            self.set_arrival(
-                &mut labels,
-                self.stages() - 1,
-                tiploc,
-                options.arrive_by_min,
-            );
+            self.set_arrival(&mut labels, self.grid.last(), tiploc, options.arrive_by_min);
         }
         labels
     }
 
-    /// Mirror of `csa::Scan::relax`: `tiploc` may be arrived at, at
-    /// `stage`, as late as `time`. Propagates backwards over every fixed
-    /// link into it, and -- at a waypoint -- to the stage before it (being
-    /// there at stage `s + 1` is being there at stage `s`, then calling).
+    /// Mirror of `staged::Forward::relax`: `tiploc` may be arrived at, at
+    /// `state`, as late as `time`. Propagates backwards over every fixed
+    /// link into it, and -- at a waypoint or via -- to the state before it
+    /// (being there at stage `s + 1` is being there at stage `s`, then
+    /// calling; likewise for a via's progress).
     #[expect(
         clippy::cast_sign_loss,
         reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
     )]
-    fn set_arrival(&self, labels: &mut Labels, stage: usize, tiploc: &str, time: u32) {
+    fn set_arrival(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32) {
         let tiploc = normalize_tiploc(tiploc);
         if !restrictions::allows_interchange(self.restrictions, tiploc) {
             return;
         }
-        if labels.latest_arrival[stage]
-            .get(tiploc)
-            .is_some_and(|&known| known >= time)
-        {
-            return;
+        let grid = self.grid;
+        if let Some(existing) = labels.latest_arrival.get_mut(tiploc) {
+            // Dominated: a plan from here that still has to pass MORE of the
+            // waypoints and vias works at least this late, and serves this
+            // state too.
+            if existing
+                .iter()
+                .any(|&(known_state, known)| known >= time && grid.covers(state, known_state))
+            {
+                return;
+            }
+            match existing.iter_mut().find(|(known, _)| *known == state) {
+                Some(entry) => entry.1 = time,
+                None => existing.push((state, time)),
+            }
+        } else {
+            labels
+                .latest_arrival
+                .insert(tiploc.to_string(), vec![(state, time)]);
         }
-        // Dominated: a plan from here that still has to call at MORE of the
-        // waypoints works at least this late, and serves this stage too.
-        if labels.latest_arrival[..stage]
-            .iter()
-            .any(|earlier| earlier.get(tiploc).is_some_and(|&known| known >= time))
-        {
-            return;
-        }
-        labels.latest_arrival[stage].insert(tiploc.to_string(), time);
         labels.touched = true;
-        if stage > 0 && self.targets[stage - 1].contains(tiploc) {
-            self.set_arrival(labels, stage - 1, tiploc, time);
+        let (at_stage, progress) = (grid.stage(state), grid.progress(state));
+        if at_stage > 0 && self.targets[at_stage - 1].contains(tiploc) {
+            self.set_arrival(labels, grid.state(at_stage - 1, progress), tiploc, time);
+        }
+        // Arriving here with the via before `progress` still to pass passes
+        // it on arrival.
+        if progress > 0 && advance_at(self.vias, progress - 1, tiploc) >= progress {
+            self.set_arrival(labels, grid.state(at_stage, progress - 1), tiploc, time);
         }
 
         let Some(crs) = self.interchange.tiploc_to_crs.get(tiploc) else {
@@ -222,13 +239,31 @@ impl<'a> Reverse<'a> {
                     continue;
                 };
                 for from_tiploc in from_tiplocs {
-                    if stage == 0 && self.origin.contains(normalize_tiploc(from_tiploc)) {
+                    if state == 0 && self.origin.contains(normalize_tiploc(from_tiploc)) {
                         labels.offer_origin(start);
                     } else {
-                        self.set_arrival(labels, stage, from_tiploc, start);
+                        self.set_arrival(labels, state, from_tiploc, start);
                     }
                 }
             }
+        }
+    }
+
+    /// The mirror of the forward searches' bus and ferry buffer on the
+    /// alighting side: owed when leaving `uid` at `to` in `stage`, unless
+    /// this is the arrival. As going forward, none at the destination, nor
+    /// at the waypoint the stage calls at (the forward searches advance
+    /// through it without a change label).
+    fn alighting_extra(&self, stage: usize, to: &str, uid: &str) -> u32 {
+        let arriving = if stage == self.targets.len() {
+            self.destinations.contains(to)
+        } else {
+            self.targets[stage].contains(to)
+        };
+        if arriving {
+            0
+        } else {
+            self.interchange.modal_change.extra_for(uid)
         }
     }
 
@@ -236,11 +271,15 @@ impl<'a> Reverse<'a> {
     /// is the round whose labels decide where alighting works (`None` for
     /// the single-pass CSA mirror, which reads and writes `current`).
     fn sweep(&self, connections: &[&Connection], previous: Option<&Labels>, current: &mut Labels) {
-        let stages = self.stages();
-        // Per stage, the UIDs a traveller aboard at that stage can stay on
-        // and still make it (from their later connections).
-        let mut aboard_ok: Vec<HashSet<&str>> = vec![HashSet::new(); stages];
-        let mut ok_stages: Vec<usize> = Vec::with_capacity(stages);
+        let grid = self.grid;
+        let vias = self.via_count();
+        // Per UID, the states at which a traveller aboard (from its later
+        // connections) can stay on and still make it.
+        let mut aboard_ok: HashMap<&str, Vec<usize>> = HashMap::new();
+        // `after[v]`: the via progress after riding this connection from `v`.
+        let mut after: Vec<usize> = Vec::with_capacity(vias + 1);
+        let mut ok_states: Vec<usize> = Vec::new();
+        let mut recorded: Vec<usize> = Vec::new();
         for connection in connections.iter().rev() {
             // Nothing departing at or before the best origin departure found
             // can improve on it (every departure a path yields is no later
@@ -253,63 +292,80 @@ impl<'a> Reverse<'a> {
             }
             let uid = connection.uid.as_str();
             if restrictions::blocks(self.restrictions, connection) {
-                for ok in &mut aboard_ok {
-                    ok.remove(uid);
-                }
+                aboard_ok.remove(uid);
                 continue;
             }
             let to = normalize_tiploc(&connection.to_tiploc);
-            // Every stage at which riding this connection works, decided
+            after.clear();
+            after.extend((0..=vias).map(|v| advance(self.vias, v, connection)));
+            // Every state at which riding this connection works, decided
             // before any of them is recorded: alighting at `to`, staying
             // aboard, or -- `to` being this stage's waypoint -- staying
-            // aboard through it into the next stage.
-            ok_stages.clear();
+            // aboard through it into the next stage. Each is found from a
+            // state AFTER the connection that works. Labels and `aboard_ok`
+            // hold the least advanced such states, and every state at least
+            // as far along works too; so the least advanced state BEFORE the
+            // connection that works is the one whose progress this
+            // connection advances to at least that far (`after` is
+            // non-decreasing).
+            ok_states.clear();
+            let mut from_after = |stage: usize, progress_after: usize| {
+                if let Some(before) = after.iter().position(|&reached| reached >= progress_after) {
+                    ok_states.push(grid.state(stage, before));
+                }
+            };
             {
                 let labels = previous.unwrap_or(&*current);
-                // The mirror of the forward searches' bus and ferry buffer
-                // on the alighting side: owed unless this is the arrival.
-                // As going forward, none at the destination, nor at the
-                // waypoint the stage calls at (the forward searches advance
-                // through it without a change label).
-                let alighting_extra = |stage: usize| {
-                    let arriving = if stage + 1 == stages {
-                        self.destinations.contains(to)
-                    } else {
-                        self.targets[stage].contains(to)
-                    };
-                    if arriving {
-                        0
-                    } else {
-                        self.interchange.modal_change.extra_for(uid)
+                if connection.can_alight
+                    && let Some(found) = labels.latest_arrival.get(to)
+                {
+                    for &(state, latest) in found {
+                        if connection.arrival_min + self.alighting_extra(grid.stage(state), to, uid)
+                            <= latest
+                        {
+                            from_after(grid.stage(state), grid.progress(state));
+                        }
                     }
-                };
-                for stage in 0..stages {
-                    let alight = connection.can_alight
-                        && labels.latest_arrival[stage].get(to).is_some_and(|&latest| {
-                            connection.arrival_min + alighting_extra(stage) <= latest
-                        });
-                    let stay = aboard_ok[stage].contains(uid);
-                    let through = stage + 1 < stages
-                        && self.targets[stage].contains(to)
-                        && aboard_ok[stage + 1].contains(uid);
-                    if alight || stay || through {
-                        // The lowest such stage dominates the higher ones
-                        // (see `set_arrival`).
-                        ok_stages.push(stage);
-                        break;
+                }
+            }
+            if let Some(states) = aboard_ok.get(uid) {
+                for &state in states {
+                    let (stage, progress) = (grid.stage(state), grid.progress(state));
+                    from_after(stage, progress);
+                    if stage > 0 && self.targets[stage - 1].contains(to) {
+                        from_after(stage - 1, progress);
                     }
+                }
+            }
+            if ok_states.is_empty() {
+                continue;
+            }
+            // The least advanced states dominate the others (see
+            // `set_arrival`): only those are recorded.
+            ok_states.sort_unstable();
+            ok_states.dedup();
+            recorded.clear();
+            for &state in &ok_states {
+                if !recorded.iter().any(|&known| grid.covers(state, known)) {
+                    recorded.push(state);
                 }
             }
 
             let from = normalize_tiploc(&connection.from_tiploc);
-            for &stage in &ok_stages {
-                aboard_ok[stage].insert(uid);
-                // Someone already aboard may ride on, but nobody boards at a
-                // set-down-only stop.
-                if !connection.can_board {
-                    continue;
+            let rides = aboard_ok.entry(uid).or_default();
+            for &state in &recorded {
+                if !rides.iter().any(|&known| grid.covers(state, known)) {
+                    rides.retain(|&known| !grid.covers(known, state));
+                    rides.push(state);
                 }
-                if stage == 0 && self.origin.contains(from) {
+            }
+            // Someone already aboard may ride on, but nobody boards at a
+            // set-down-only stop.
+            if !connection.can_board {
+                continue;
+            }
+            for &state in &recorded {
+                if state == 0 && self.origin.contains(from) {
                     current.offer_origin(connection.departure_min);
                     continue;
                 }
@@ -317,7 +373,7 @@ impl<'a> Reverse<'a> {
                     self.interchange,
                     self.restrictions,
                     &self.targets,
-                    stage,
+                    grid.stage(state),
                     from,
                 ) else {
                     continue;
@@ -326,12 +382,16 @@ impl<'a> Reverse<'a> {
                 let Some(ready_by) = connection.departure_min.checked_sub(change) else {
                     continue;
                 };
-                self.set_arrival(current, stage, from, ready_by);
+                self.set_arrival(current, state, from, ready_by);
                 for sibling in sibling_tiplocs(self.interchange, from) {
-                    self.set_arrival(current, stage, sibling, ready_by);
+                    self.set_arrival(current, state, sibling, ready_by);
                 }
             }
         }
+    }
+
+    fn via_count(&self) -> usize {
+        self.vias.map_or(0, Vias::len)
     }
 }
 
@@ -520,6 +580,7 @@ pub fn staged_arrive_by(
         from_tiplocs: options.from_tiplocs,
         waypoints: options.waypoints,
         to_tiplocs: options.to_tiplocs,
+        vias: options.vias,
         date: options.date,
     };
     let forward = |departure_min: u32| {
@@ -548,6 +609,7 @@ pub fn staged_raptor_arrive_by_from_latest(
         from_tiplocs: options.from_tiplocs,
         waypoints: options.waypoints,
         to_tiplocs: options.to_tiplocs,
+        vias: options.vias,
         date: options.date,
     };
     let mut out: Vec<StagedJourney> = Vec::new();
@@ -669,6 +731,7 @@ mod tests {
             from_tiplocs: from,
             waypoints: &[],
             to_tiplocs: to,
+            vias: None,
             arrive_by_min: deadline,
             date: date(),
         }

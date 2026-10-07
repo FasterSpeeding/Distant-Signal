@@ -24,6 +24,22 @@
 //! (`src/timetable/plan/constraints.ts`), whose `searchLeg` and
 //! `mergeAdjacentLegs` handle the same through-train case after the fact.
 //!
+//! Pass-through vias ([`crate::via`], 2026-10-06) add a second, independent
+//! coordinate: the VIA PROGRESS `v`, "the first `v` vias have been passed".
+//! A state is the pair (stage, progress); riding a connection advances the
+//! progress over everything the connection calls at or runs through
+//! ([`Vias::advance`]), and arriving somewhere advances it over the
+//! location. That needs no new part boundary: a ride whose progress
+//! advances mid-train stays one leg. The destination is reached at the last
+//! stage with every via passed. Waypoints keep their order, vias theirs;
+//! the two lists interleave freely.
+//!
+//! A state (s, v) DOMINATES (s', v') when `s >= s'` and `v >= v'`: whatever
+//! a journey can still do from the lesser state, it can do from the greater
+//! one. Labels and rides at a dominated state are pruned (see `relax` and
+//! `sweep`). Without vias the states are just the stages, and this is the
+//! 2026-09-29 search unchanged.
+//!
 //! The Connection Scan ([`scan_staged`]) and RAPTOR ([`raptor_staged`])
 //! share one sweep: RAPTOR reads the previous round's labels for a fresh
 //! boarding, CSA its own. Rounds count trains across the WHOLE journey, a
@@ -32,9 +48,9 @@
 //! times, same-CRS siblings, fixed links, the live overlay and
 //! [`crate::restrictions`].
 //!
-//! With no waypoints this is the plain search; `csa.rs`/`raptor.rs` remain
-//! the implementation for that case, and a differential test checks the two
-//! agree.
+//! With no waypoints and no vias this is the plain search; `csa.rs`/
+//! `raptor.rs` remain the implementation for that case, and a differential
+//! test checks the two agree.
 
 use std::collections::{HashMap, HashSet};
 
@@ -47,6 +63,7 @@ use schedule_query::{
 use crate::csa::{JourneyLeg, TrainLeg, TransferLeg};
 use crate::overlay::ConnectionOverlay;
 use crate::restrictions::{self, Restrictions};
+use crate::via::{ViaHow, ViaLeg, Vias};
 
 pub struct StagedOptions<'a> {
     /// Sorted as `build_connections` returns it.
@@ -56,6 +73,8 @@ pub struct StagedOptions<'a> {
     /// The waypoints in order, each as every TIPLOC it covers.
     pub waypoints: &'a [Vec<String>],
     pub to_tiplocs: &'a [String],
+    /// Pass-through vias, in order (`None`: none).
+    pub vias: Option<&'a Vias>,
     pub date: NaiveDate,
 }
 
@@ -78,10 +97,13 @@ pub struct StagedJourney {
     /// Changes over the whole journey: trains ridden minus one, a train
     /// continuing through a waypoint counted once.
     pub changes: u32,
+    /// For each via in order, the leg that first satisfied it.
+    pub via_legs: Vec<ViaLeg>,
 }
 
+/// How a label was reached.
 #[derive(Debug, Clone)]
-enum Via {
+enum Reached {
     Train {
         connection: Connection,
         round: usize,
@@ -92,19 +114,26 @@ enum Via {
         mode: String,
         minutes: i32,
     },
-    /// Reached at the previous stage, at this same stop and time (the stop
-    /// is that stage's waypoint).
-    Advance,
+    /// Reached at the lesser state `from`, at this same stop and time (the
+    /// stop is that state's next waypoint, or its next via, or both).
+    Advance { from: usize },
 }
 
 #[derive(Debug, Clone)]
 enum Source {
-    /// A fresh boarding, made ready by an arrival at `from` (same stage;
+    /// A fresh boarding, made ready by an arrival at `from` (same state;
     /// the previous round's labels in RAPTOR).
     Ready { from: String },
     /// Still aboard from the previous stage, whose ride (`previous`, in the
-    /// same round's arena) arrived at the waypoint by `arriving`.
+    /// same round's arena) arrived at the waypoint by `arriving`. Starts a
+    /// new part.
     Continued {
+        arriving: Connection,
+        previous: usize,
+    },
+    /// Still aboard, at the same stage, from the ride `previous` whose via
+    /// progress `arriving` advanced. The same leg.
+    Carried {
         arriving: Connection,
         previous: usize,
     },
@@ -112,28 +141,42 @@ enum Source {
 
 #[derive(Debug, Clone)]
 struct Boarding {
-    /// The first connection ridden at this stage (for a continued ride, set
-    /// by the first connection after the waypoint).
+    /// The first connection ridden from this boarding (for a continued or
+    /// carried ride, set by the first connection after the change of state).
     first: Option<Connection>,
     source: Source,
+    /// The state this ride is at.
+    state: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Label {
+    state: usize,
+    time: u32,
+    reached: Reached,
 }
 
 #[derive(Clone)]
 struct Labels {
-    arrival: Vec<HashMap<String, u32>>,
-    via: Vec<HashMap<String, Via>>,
+    /// Per stop, its labels: at most one per state.
+    stops: HashMap<String, Vec<Label>>,
     best: Option<(u32, String)>,
     touched: bool,
 }
 
 impl Labels {
-    fn new(stages: usize) -> Self {
+    fn new() -> Self {
         Self {
-            arrival: vec![HashMap::new(); stages],
-            via: vec![HashMap::new(); stages],
+            stops: HashMap::new(),
             best: None,
             touched: false,
         }
+    }
+
+    fn label(&self, tiploc: &str, state: usize) -> Option<&Label> {
+        self.stops
+            .get(tiploc)
+            .and_then(|labels| labels.iter().find(|label| label.state == state))
     }
 }
 
@@ -169,9 +212,77 @@ pub(crate) fn change_minutes(
     }
 }
 
+/// The (stage, via progress) grid both directions search over: state
+/// `stage * width + progress`, `width` being the number of vias plus one.
+/// Index order is lexicographic, so a dominating state never has a smaller
+/// index than a state it dominates.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Grid {
+    stages: usize,
+    width: usize,
+}
+
+impl Grid {
+    pub(crate) fn new(waypoints: usize, vias: Option<&Vias>) -> Self {
+        Self {
+            stages: waypoints + 1,
+            width: vias.map_or(0, Vias::len) + 1,
+        }
+    }
+
+    pub(crate) fn states(self) -> usize {
+        self.stages * self.width
+    }
+
+    pub(crate) fn last(self) -> usize {
+        self.states() - 1
+    }
+
+    pub(crate) fn state(self, stage: usize, progress: usize) -> usize {
+        stage * self.width + progress
+    }
+
+    pub(crate) fn stage(self, state: usize) -> usize {
+        state / self.width
+    }
+
+    pub(crate) fn progress(self, state: usize) -> usize {
+        state % self.width
+    }
+
+    /// `a` dominates `b`, or is `b`: at least as far along both lists.
+    pub(crate) fn covers(self, a: usize, b: usize) -> bool {
+        if self.width == 1 {
+            return a >= b;
+        }
+        self.stage(a) >= self.stage(b) && self.progress(a) >= self.progress(b)
+    }
+}
+
+/// `Vias::advance`, treating "no vias" as no progress to make.
+pub(crate) fn advance(vias: Option<&Vias>, progress: usize, connection: &Connection) -> usize {
+    vias.map_or(progress, |vias| vias.advance(progress, connection))
+}
+
+/// `Vias::advance_at`, treating "no vias" as no progress to make.
+pub(crate) fn advance_at(vias: Option<&Vias>, progress: usize, tiploc: &str) -> usize {
+    vias.map_or(progress, |vias| vias.advance_at(progress, tiploc))
+}
+
+/// A connection one ride could take this sweep, at some state: already
+/// aboard (the boarding), or boarding fresh, made ready by an arrival at the
+/// connection's departure stop (`Fresh(0)`) or at its `n`th same-CRS
+/// sibling (`Fresh(n)`).
+enum Candidate {
+    Aboard(usize),
+    Fresh(usize),
+}
+
 struct Forward<'a> {
     interchange: &'a InterchangeData,
     restrictions: Option<&'a Restrictions>,
+    vias: Option<&'a Vias>,
+    grid: Grid,
     date: NaiveDate,
     origin: HashSet<String>,
     destinations: HashSet<String>,
@@ -195,6 +306,8 @@ impl<'a> Forward<'a> {
         Self {
             interchange: options.interchange,
             restrictions,
+            vias: options.vias,
+            grid: Grid::new(options.waypoints.len(), options.vias),
             date: options.date,
             origin: set(options.from_tiplocs),
             destinations: set(options.to_tiplocs),
@@ -203,16 +316,12 @@ impl<'a> Forward<'a> {
         }
     }
 
-    fn last(&self) -> usize {
+    fn last_stage(&self) -> usize {
         self.targets.len()
     }
 
-    fn stages(&self) -> usize {
-        self.targets.len() + 1
-    }
-
     fn initial_labels(&self) -> Labels {
-        let mut labels = Labels::new(self.stages());
+        let mut labels = Labels::new();
         let origin: Vec<String> = self.origin.iter().cloned().collect();
         for tiploc in origin {
             self.relax_links(&mut labels, 0, &tiploc, self.departure_min);
@@ -220,47 +329,59 @@ impl<'a> Forward<'a> {
         labels
     }
 
-    /// `csa::Scan::relax`, per stage, plus the stage advance at a waypoint.
-    fn relax(&self, labels: &mut Labels, stage: usize, tiploc: &str, time: u32, via: Via) {
+    /// `csa::Scan::relax`, per state, plus the advances at a waypoint or via.
+    fn relax(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32, reached: Reached) {
         let tiploc = normalize_tiploc(tiploc);
         if !restrictions::allows_interchange(self.restrictions, tiploc) {
             return;
         }
-        if labels.arrival[stage]
-            .get(tiploc)
-            .is_some_and(|&known| known <= time)
-        {
-            return;
+        let grid = self.grid;
+        let label = Label {
+            state,
+            time,
+            reached,
+        };
+        if let Some(existing) = labels.stops.get_mut(tiploc) {
+            // Already here as early at this state, or at one further along
+            // (see the module doc on dominance).
+            if existing
+                .iter()
+                .any(|known| known.time <= time && grid.covers(known.state, state))
+            {
+                return;
+            }
+            match existing.iter_mut().find(|known| known.state == state) {
+                Some(known) => *known = label,
+                None => existing.push(label),
+            }
+        } else {
+            labels.stops.insert(tiploc.to_string(), vec![label]);
         }
-        // Dominated: already here as early, further along the waypoints.
-        // Whatever this label could lead to (calling at waypoint `stage`,
-        // then the rest in order) is also open to the one further along.
-        if labels.arrival[stage + 1..]
-            .iter()
-            .any(|later| later.get(tiploc).is_some_and(|&known| known <= time))
-        {
-            return;
-        }
-        labels.arrival[stage].insert(tiploc.to_string(), time);
-        labels.via[stage].insert(tiploc.to_string(), via);
         labels.touched = true;
-        if stage == self.last()
+        if state == grid.last()
             && self.destinations.contains(tiploc)
             && labels.best.as_ref().is_none_or(|(best, _)| time < *best)
         {
             labels.best = Some((time, tiploc.to_string()));
         }
-        if stage < self.last() && self.targets[stage].contains(tiploc) {
-            self.relax(labels, stage + 1, tiploc, time, Via::Advance);
+        let (at_stage, progress) = (grid.stage(state), grid.progress(state));
+        if at_stage < self.last_stage() && self.targets[at_stage].contains(tiploc) {
+            let next = grid.state(at_stage + 1, progress);
+            self.relax(labels, next, tiploc, time, Reached::Advance { from: state });
         }
-        self.relax_links(labels, stage, tiploc, time);
+        let passed = advance_at(self.vias, progress, tiploc);
+        if passed != progress {
+            let next = grid.state(at_stage, passed);
+            self.relax(labels, next, tiploc, time, Reached::Advance { from: state });
+        }
+        self.relax_links(labels, state, tiploc, time);
     }
 
     #[expect(
         clippy::cast_sign_loss,
         reason = "the value is clamped to >= 0 first, and minute values fit easily"
     )]
-    fn relax_links(&self, labels: &mut Labels, stage: usize, from_tiploc: &str, at: u32) {
+    fn relax_links(&self, labels: &mut Labels, state: usize, from_tiploc: &str, at: u32) {
         let from_tiploc = normalize_tiploc(from_tiploc);
         let Some(crs) = self.interchange.tiploc_to_crs.get(from_tiploc) else {
             return;
@@ -272,10 +393,10 @@ impl<'a> Forward<'a> {
             for to_tiploc in destinations {
                 self.relax(
                     labels,
-                    stage,
+                    state,
                     to_tiploc,
                     at + link.minutes.max(0) as u32,
-                    Via::Link {
+                    Reached::Link {
                         from_tiploc: from_tiploc.to_string(),
                         mode: link.mode.clone(),
                         minutes: link.minutes,
@@ -285,53 +406,100 @@ impl<'a> Forward<'a> {
         }
     }
 
-    /// `csa::Scan::ready_source_at`, per stage: the origin only at stage 0.
-    /// Includes the bus and ferry buffer on both sides of the change.
-    fn ready(
+    /// `csa::Scan::ready_source_at` for every state at once: the states at
+    /// which a fresh boarding at `tiploc` is ready by `departure`, the time,
+    /// and the stop whose arrival made it ready (0: `tiploc` itself, `n`:
+    /// `siblings[n - 1]`, which this fills). The origin only at the initial
+    /// state. States covered by one in `aboard` are skipped: the ride already
+    /// aboard there serves them. Includes the bus and ferry buffer on both
+    /// sides of the change (`connection`'s side, and the arriving train's).
+    fn ready_states(
         &self,
         labels: &Labels,
-        stage: usize,
-        tiploc: &str,
-        boarding_uid: &str,
-    ) -> Option<(u32, String)> {
-        let tiploc = normalize_tiploc(tiploc);
-        if stage == 0 && self.origin.contains(tiploc) {
-            return Some((self.departure_min, tiploc.to_string()));
+        connection: &Connection,
+        aboard: &[usize],
+        siblings: &mut Vec<&'a str>,
+        out: &mut Vec<(usize, u32, usize)>,
+    ) {
+        out.clear();
+        siblings.clear();
+        let grid = self.grid;
+        let departure = connection.departure_min;
+        let boarding_extra = self.interchange.modal_change.extra_for(&connection.uid);
+        let tiploc = normalize_tiploc(&connection.from_tiploc);
+        let at_origin = self.origin.contains(tiploc);
+        if at_origin
+            && self.departure_min <= departure
+            && !aboard.iter().any(|&known| grid.covers(known, 0))
+        {
+            out.push((0, self.departure_min, 0));
         }
-        let change = change_minutes(
-            self.interchange,
-            self.restrictions,
-            &self.targets,
-            stage,
-            tiploc,
-        )? + self.interchange.modal_change.extra_for(boarding_uid);
-        let arrivals = &labels.arrival[stage];
-        let alighting_extra = |at: &str| match labels.via[stage].get(at) {
-            Some(Via::Train { connection, .. }) => {
-                self.interchange.modal_change.extra_for(&connection.uid)
-            }
-            _ => 0,
-        };
-        let mut best: Option<(u32, String)> = arrivals.get(tiploc).map(|&arrival| {
-            (
-                arrival + change + alighting_extra(tiploc),
-                tiploc.to_string(),
-            )
-        });
-        for sibling in sibling_tiplocs(self.interchange, tiploc) {
-            if let Some(&arrival) = arrivals.get(sibling) {
-                let candidate = arrival + change + alighting_extra(sibling);
-                if best.as_ref().is_none_or(|(time, _)| candidate < *time) {
-                    best = Some((candidate, sibling.to_string()));
+        siblings.extend(sibling_tiplocs(self.interchange, tiploc));
+        // The change time per stage, computed once.
+        let mut changes: Vec<(usize, Option<u32>)> = Vec::new();
+        for source in 0..=siblings.len() {
+            let stop = if source == 0 {
+                tiploc
+            } else {
+                siblings[source - 1]
+            };
+            let Some(found) = labels.stops.get(stop) else {
+                continue;
+            };
+            for label in found {
+                if label.state == 0 && at_origin {
+                    continue;
+                }
+                if label.time > departure
+                    || aboard.iter().any(|&known| grid.covers(known, label.state))
+                {
+                    continue;
+                }
+                let stage = grid.stage(label.state);
+                let change =
+                    if let Some(&(_, change)) = changes.iter().find(|(known, _)| *known == stage) {
+                        change
+                    } else {
+                        let change = change_minutes(
+                            self.interchange,
+                            self.restrictions,
+                            &self.targets,
+                            stage,
+                            tiploc,
+                        );
+                        changes.push((stage, change));
+                        change
+                    };
+                let Some(change) = change else {
+                    continue;
+                };
+                let alighting_extra = match &label.reached {
+                    Reached::Train {
+                        connection: arrived,
+                        ..
+                    } => self.interchange.modal_change.extra_for(&arrived.uid),
+                    _ => 0,
+                };
+                let ready = label.time + change + boarding_extra + alighting_extra;
+                if ready > departure {
+                    continue;
+                }
+                match out.iter_mut().find(|(state, ..)| *state == label.state) {
+                    Some(entry) if ready < entry.1 => *entry = (label.state, ready, source),
+                    Some(_) => {}
+                    None => out.push((label.state, ready, source)),
                 }
             }
         }
-        best
     }
 
     /// One sweep. `previous`: the labels a fresh boarding reads (RAPTOR's
     /// previous round), `None` for CSA (its own). `stop_at_best`: CSA's
     /// "nothing departing after the best arrival can beat it".
+    #[expect(
+        clippy::too_many_lines,
+        reason = "long but linear; splitting it would scatter its shared state across helpers"
+    )]
     fn sweep<'c>(
         &self,
         connections: impl Iterator<Item = &'c Connection>,
@@ -341,9 +509,15 @@ impl<'a> Forward<'a> {
         arena: &mut Vec<Boarding>,
         stop_at_best: bool,
     ) {
-        let stages = self.stages();
-        let mut aboard: Vec<HashMap<String, usize>> = vec![HashMap::new(); stages];
-        let mut continuations: Vec<(usize, usize)> = Vec::new();
+        let grid = self.grid;
+        // Per train, the states it is ridden at and their boardings.
+        let mut aboard: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        let mut candidates: Vec<(usize, Candidate)> = Vec::new();
+        let mut ready: Vec<(usize, u32, usize)> = Vec::new();
+        let mut aboard_states: Vec<usize> = Vec::new();
+        let mut siblings: Vec<&'a str> = Vec::new();
+        let mut riding: Vec<usize> = Vec::new();
+        let mut continuations: Vec<(usize, usize, bool)> = Vec::new();
         for connection in connections {
             if stop_at_best
                 && current
@@ -354,79 +528,127 @@ impl<'a> Forward<'a> {
                 break;
             }
             if restrictions::blocks(self.restrictions, connection) {
-                for riding in &mut aboard {
-                    riding.remove(&connection.uid);
-                }
+                aboard.remove(&connection.uid);
                 continue;
             }
+            candidates.clear();
+            aboard_states.clear();
+            if let Some(rides) = aboard.get(&connection.uid) {
+                candidates.extend(
+                    rides
+                        .iter()
+                        .map(|&(state, boarding)| (state, Candidate::Aboard(boarding))),
+                );
+                aboard_states.extend(rides.iter().map(|&(state, _)| state));
+            }
+            // No fresh boarding at a set-down-only stop.
+            if connection.can_board {
+                let labels = previous.unwrap_or(&*current);
+                self.ready_states(
+                    labels,
+                    connection,
+                    &aboard_states,
+                    &mut siblings,
+                    &mut ready,
+                );
+                candidates.extend(
+                    ready
+                        .drain(..)
+                        .map(|(state, _, source)| (state, Candidate::Fresh(source))),
+                );
+            }
+            if candidates.is_empty() {
+                continue;
+            }
+            // Furthest along first: once a state rides this connection, the
+            // same ride at a state it dominates is pruned (see `relax`).
+            candidates.sort_unstable_by_key(|(state, _)| std::cmp::Reverse(*state));
+            riding.clear();
             continuations.clear();
-            // Highest stage first: once a stage rides this connection, the
-            // same ride at a lower stage is dominated (see `relax`).
-            for stage in (0..stages).rev() {
-                let boarding = if let Some(&boarding) = aboard[stage].get(&connection.uid) {
-                    boarding
-                } else {
-                    // No fresh boarding at a set-down-only stop.
-                    if !connection.can_board {
-                        continue;
+            for (state, candidate) in candidates.drain(..) {
+                if riding.iter().any(|&known| grid.covers(known, state)) {
+                    continue;
+                }
+                riding.push(state);
+                let boarding = match candidate {
+                    Candidate::Aboard(boarding) => boarding,
+                    Candidate::Fresh(source) => {
+                        let from = if source == 0 {
+                            normalize_tiploc(&connection.from_tiploc)
+                        } else {
+                            siblings[source - 1]
+                        };
+                        arena.push(Boarding {
+                            first: Some(connection.clone()),
+                            source: Source::Ready {
+                                from: from.to_string(),
+                            },
+                            state,
+                        });
+                        aboard
+                            .entry(connection.uid.clone())
+                            .or_default()
+                            .push((state, arena.len() - 1));
+                        arena.len() - 1
                     }
-                    let labels = previous.unwrap_or(&*current);
-                    if stage > 0 && labels.arrival[stage].is_empty() {
-                        continue;
-                    }
-                    let Some((ready, from)) =
-                        self.ready(labels, stage, &connection.from_tiploc, &connection.uid)
-                    else {
-                        continue;
-                    };
-                    if ready > connection.departure_min {
-                        continue;
-                    }
-                    arena.push(Boarding {
-                        first: Some(connection.clone()),
-                        source: Source::Ready { from },
-                    });
-                    aboard[stage].insert(connection.uid.clone(), arena.len() - 1);
-                    arena.len() - 1
                 };
                 if arena[boarding].first.is_none() {
                     arena[boarding].first = Some(connection.clone());
                 }
+                let stage = grid.stage(state);
+                let progress = advance(self.vias, grid.progress(state), connection);
                 // No arrival at a pick-up-only stop. Riding on through it --
                 // including through a waypoint there -- is still allowed.
                 if connection.can_alight {
                     self.relax(
                         current,
-                        stage,
+                        grid.state(stage, progress),
                         &connection.to_tiploc,
                         connection.arrival_min,
-                        Via::Train {
+                        Reached::Train {
                             connection: connection.clone(),
                             round,
                             boarding,
                         },
                     );
                 }
-                if stage < self.last()
+                let next_stage = if stage < self.last_stage()
                     && self.targets[stage].contains(normalize_tiploc(&connection.to_tiploc))
                 {
-                    continuations.push((stage + 1, boarding));
+                    stage + 1
+                } else {
+                    stage
+                };
+                let onward = grid.state(next_stage, progress);
+                if onward != state {
+                    continuations.push((onward, boarding, next_stage != stage));
                 }
-                break;
             }
-            // Staying aboard through the waypoint, from the NEXT connection
-            // on (this one ends there).
-            for &(stage, previous) in &continuations {
-                if !aboard[stage].contains_key(&connection.uid) {
-                    arena.push(Boarding {
-                        first: None,
-                        source: Source::Continued {
-                            arriving: connection.clone(),
-                            previous,
-                        },
-                    });
-                    aboard[stage].insert(connection.uid.clone(), arena.len() - 1);
+            // Staying aboard through the waypoint (a new part) or past a via
+            // (the same leg), from the NEXT connection on.
+            for &(state, previous, new_part) in &continuations {
+                let rides = aboard.entry(connection.uid.clone()).or_default();
+                if rides.iter().any(|&(known, _)| grid.covers(known, state)) {
+                    continue;
                 }
+                let source = if new_part {
+                    Source::Continued {
+                        arriving: connection.clone(),
+                        previous,
+                    }
+                } else {
+                    Source::Carried {
+                        arriving: connection.clone(),
+                        previous,
+                    }
+                };
+                arena.push(Boarding {
+                    first: None,
+                    source,
+                    state,
+                });
+                rides.retain(|&(known, _)| !grid.covers(state, known));
+                rides.push((state, arena.len() - 1));
             }
         }
     }
@@ -447,47 +669,83 @@ impl<'a> Forward<'a> {
         destination: &str,
         single_pass: bool,
     ) -> StagedJourney {
-        let stages = self.stages();
+        let grid = self.grid;
+        let stages = self.last_stage() + 1;
         let mut parts: Vec<Vec<JourneyLeg>> = vec![Vec::new(); stages];
         let mut continues = vec![false; stages];
-        let (mut round, mut stage, mut stop) = (start_round, self.last(), destination.to_string());
-        let arrival_min = rounds[start_round].0.arrival[stage][&stop];
+        // Per via: (part, position from the END of that part's legs, how).
+        let via_count = grid.width - 1;
+        let mut via_hits: Vec<Option<(usize, usize, ViaHow)>> = vec![None; via_count];
+        // Vias passed by arriving at the stop being walked back from; the
+        // leg that arrived there satisfied them.
+        let mut pending: Vec<usize> = Vec::new();
+        let (mut round, mut state, mut stop) = (start_round, grid.last(), destination.to_string());
+        let arrival_min = rounds[start_round]
+            .0
+            .label(&stop, state)
+            .expect("internal error: the destination has a label")
+            .time;
 
-        while !(stage == 0 && self.origin.contains(&stop)) {
-            let via = rounds[round].0.via[stage]
-                .get(&stop)
-                .unwrap_or_else(|| panic!("internal error: {stop} (stage {stage}) has no source"));
-            match via {
-                Via::Advance => stage -= 1,
-                Via::Link {
+        while !(state == 0 && self.origin.contains(&stop)) {
+            let label = rounds[round]
+                .0
+                .label(&stop, state)
+                .unwrap_or_else(|| panic!("internal error: {stop} (state {state}) has no source"));
+            match &label.reached {
+                Reached::Advance { from } => {
+                    pending.extend(grid.progress(*from)..grid.progress(state));
+                    state = *from;
+                }
+                Reached::Link {
                     from_tiploc,
                     mode,
                     minutes,
                 } => {
-                    let arrival = rounds[round].0.arrival[stage][&stop];
-                    parts[stage].push(JourneyLeg::Transfer(TransferLeg {
+                    let part = grid.stage(state);
+                    for via in pending.drain(..) {
+                        via_hits[via] = Some((part, parts[part].len(), ViaHow::Walk));
+                    }
+                    parts[part].push(JourneyLeg::Transfer(TransferLeg {
                         mode: mode.clone(),
                         from_tiploc: from_tiploc.clone(),
                         to_tiploc: stop.clone(),
-                        departure_min: arrival - (*minutes).max(0) as u32,
-                        arrival_min: arrival,
+                        departure_min: label.time - (*minutes).max(0) as u32,
+                        arrival_min: label.time,
                         minutes: *minutes,
                     }));
                     stop = from_tiploc.clone();
                 }
-                Via::Train {
+                Reached::Train {
                     connection,
                     round: boarded_round,
                     boarding,
                 } => {
                     let arena = &rounds[*boarded_round].1;
-                    let (mut part, mut last, mut index) = (stage, connection.clone(), *boarding);
+                    let (mut part, mut last, mut index) =
+                        (grid.stage(state), connection.clone(), *boarding);
+                    let progress_of = |index: usize| grid.progress(arena[index].state);
+                    // This leg's via hits: (via, how).
+                    let mut hits: Vec<(usize, ViaHow)> =
+                        pending.drain(..).map(|via| (via, ViaHow::Call)).collect();
+                    if let Some(vias) = self.vias {
+                        hits.extend(vias.hits(progress_of(index), &last));
+                    }
                     loop {
                         let ride = &arena[index];
+                        if let Source::Carried { arriving, previous } = &ride.source {
+                            if let Some(vias) = self.vias {
+                                hits.extend(vias.hits(progress_of(*previous), arriving));
+                            }
+                            index = *previous;
+                            continue;
+                        }
                         let first = ride
                             .first
                             .as_ref()
                             .expect("internal error: a ridden boarding has a first connection");
+                        for (via, how) in hits.drain(..) {
+                            via_hits[via] = Some((part, parts[part].len(), how));
+                        }
                         parts[part].push(JourneyLeg::Train(TrainLeg {
                             uid: first.uid.clone(),
                             from_tiploc: first.from_tiploc.clone(),
@@ -500,7 +758,7 @@ impl<'a> Forward<'a> {
                         match &ride.source {
                             Source::Ready { from } => {
                                 stop = normalize_tiploc(from).to_string();
-                                stage = part;
+                                state = ride.state;
                                 if !single_pass {
                                     round = boarded_round - 1;
                                 }
@@ -510,14 +768,36 @@ impl<'a> Forward<'a> {
                                 continues[part] = true;
                                 part -= 1;
                                 last = arriving.clone();
+                                if let Some(vias) = self.vias {
+                                    hits.extend(vias.hits(progress_of(*previous), arriving));
+                                }
                                 index = *previous;
                             }
+                            Source::Carried { .. } => unreachable!("handled above"),
                         }
                     }
                 }
             }
         }
 
+        let via_legs: Vec<ViaLeg> = via_hits
+            .iter()
+            .map(|hit| match *hit {
+                Some((part, from_end, how)) => ViaLeg {
+                    part,
+                    leg: parts[part].len() - 1 - from_end,
+                    how,
+                },
+                // Unreachable: the walk back from the last state passes every
+                // progress step. Attributed to the first leg rather than
+                // panicking in a request.
+                None => ViaLeg {
+                    part: 0,
+                    leg: 0,
+                    how: ViaHow::Call,
+                },
+            })
+            .collect();
         let parts: Vec<JourneyPart> = parts
             .into_iter()
             .zip(continues)
@@ -553,13 +833,14 @@ impl<'a> Forward<'a> {
             departure_min,
             arrival_min,
             changes: rides.saturating_sub(1),
+            via_legs,
         }
     }
 }
 
-/// The earliest-arriving journey through every waypoint in order,
-/// departing no earlier than `departure_min` (Connection Scan). `None` when
-/// none reaches the destination.
+/// The earliest-arriving journey through every waypoint (and via) in
+/// order, departing no earlier than `departure_min` (Connection Scan).
+/// `None` when none reaches the destination.
 pub fn scan_staged(
     options: &StagedOptions<'_>,
     departure_min: u32,
@@ -583,8 +864,8 @@ pub fn scan_staged(
 }
 
 /// The Pareto set over (arrival, changes for the whole journey) of journeys
-/// through every waypoint, using at most `max_rounds` trains (RAPTOR).
-/// Fewest changes first, as `raptor::raptor_search`.
+/// through every waypoint (and via), using at most `max_rounds` trains
+/// (RAPTOR). Fewest changes first, as `raptor::raptor_search`.
 pub fn raptor_staged(
     options: &StagedOptions<'_>,
     departure_min: u32,
@@ -721,6 +1002,7 @@ mod tests {
             from_tiplocs: &from,
             waypoints: &waypoints,
             to_tiplocs: &to,
+            vias: None,
             date: date(),
         };
         let journey = scan_staged(&options, 0, None, None).expect("T1 through W");
@@ -760,6 +1042,7 @@ mod tests {
             from_tiplocs: &from,
             waypoints: &waypoints,
             to_tiplocs: &to,
+            vias: None,
             date: date(),
         };
         assert_eq!(scan_staged(&options, 0, None, None).unwrap().changes, 3);
@@ -785,6 +1068,7 @@ mod tests {
             from_tiplocs: &from,
             waypoints: &waypoints,
             to_tiplocs: &to,
+            vias: None,
             date: date(),
         };
         let journey = scan_staged(&options, 0, None, None).unwrap();
@@ -812,6 +1096,7 @@ mod tests {
             from_tiplocs: &from,
             waypoints: &waypoints,
             to_tiplocs: &to,
+            vias: None,
             date: date(),
         };
         assert!(scan_staged(&options, 0, None, None).is_none());
@@ -875,6 +1160,7 @@ mod tests {
                 from_tiplocs: &from,
                 waypoints: &[],
                 to_tiplocs: &to,
+                vias: None,
                 date: date(),
             };
             let restrictions = Restrictions::new(["B".to_string()], [], HashMap::new());
@@ -974,6 +1260,7 @@ mod tests {
                 from_tiplocs: &from,
                 waypoints: &waypoints,
                 to_tiplocs: &to,
+                vias: None,
                 date: date(),
             };
             let csa = scan_staged(&options, 300, None, None);
@@ -1097,6 +1384,7 @@ mod tests {
                         from_tiplocs: &from,
                         waypoints: &waypoints,
                         to_tiplocs: &to,
+                        vias: None,
                         date: date(),
                     };
                     let brute = candidates
@@ -1113,6 +1401,7 @@ mod tests {
                         from_tiplocs: &from,
                         waypoints: &waypoints,
                         to_tiplocs: &to,
+                        vias: None,
                         arrive_by_min: deadline,
                         date: date(),
                     };
@@ -1270,6 +1559,7 @@ mod tests {
                 from_tiplocs: &from,
                 waypoints: &waypoints,
                 to_tiplocs: &to,
+                vias: None,
                 date: date(),
             };
             let expected = oracle(&connections, &ic, "A", via, "F", 300);
@@ -1283,5 +1573,619 @@ mod tests {
             found += usize::from(expected.is_some());
         }
         assert!(found > 40, "only {found} reachable cases");
+    }
+
+    // ---- Pass-through vias (2026-10-06, `crate::via`) ----
+
+    use crate::via::{PassSpan, ViaHow, ViaLeg, Vias};
+
+    /// `targets` as vias; `passes` lists `(uid, from, passed TIPLOCs)`: the
+    /// connection of `uid` leaving `from` runs through them. Every listed
+    /// train gets its whole base order as spans.
+    fn vias_for(
+        connections: &[Connection],
+        targets: &[&str],
+        passes: &[(&str, &str, &[&str])],
+    ) -> Vias {
+        let mut spans: HashMap<String, Vec<PassSpan>> = HashMap::new();
+        for (uid, _, _) in passes {
+            if spans.contains_key(*uid) {
+                continue;
+            }
+            let legs = connections
+                .iter()
+                .filter(|c| c.uid == *uid)
+                .map(|c| PassSpan {
+                    from_tiploc: c.from_tiploc.clone(),
+                    to_tiploc: c.to_tiploc.clone(),
+                    departure_min: c.departure_min,
+                    passed: passes
+                        .iter()
+                        .filter(|(u, from, _)| u == uid && *from == c.from_tiploc)
+                        .flat_map(|(_, _, passed)| passed.iter().map(|p| (*p).to_string()))
+                        .collect(),
+                })
+                .collect();
+            spans.insert((*uid).to_string(), legs);
+        }
+        Vias::new(&targets.iter().map(|t| s(t)).collect::<Vec<_>>(), spans)
+    }
+
+    fn uids_of(journey: &StagedJourney) -> Vec<String> {
+        part_uids(journey).concat()
+    }
+
+    /// T1 runs A -> B -> C, passing X between A and B without calling; T2 is
+    /// a faster direct train that goes nowhere near X. Via X, the traveller
+    /// stays aboard T1 through X: one leg, satisfied by a pass.
+    #[test]
+    fn staying_aboard_through_a_passed_via_satisfies_it() {
+        let connections = sorted(vec![
+            conn("T1", "A", "B", 480, 520),
+            conn("T1", "B", "C", 522, 560),
+            conn("T2", "A", "C", 470, 540),
+        ]);
+        let ic = interchange(&[]);
+        let vias = vias_for(&connections, &["X"], &[("T1", "A", &["X"])]);
+        let (from, to) = (s("A"), s("C"));
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            date: date(),
+        };
+        let journey = scan_staged(&options, 0, None, None).expect("T1 passes X");
+        assert_eq!(part_uids(&journey), vec![vec!["T1"]]);
+        assert_eq!(journey.parts[0].legs.len(), 1, "one ride is one leg");
+        assert_eq!((journey.arrival_min, journey.changes), (560, 0));
+        assert_eq!(
+            journey.via_legs,
+            vec![ViaLeg {
+                part: 0,
+                leg: 0,
+                how: ViaHow::Pass
+            }]
+        );
+        let raptor = raptor_staged(&options, 0, 1, None, None);
+        assert_eq!(raptor.len(), 1);
+        assert_eq!(raptor[0], journey);
+        // Without the via, the faster train.
+        let plain = StagedOptions {
+            vias: None,
+            ..options
+        };
+        assert_eq!(
+            uids_of(&scan_staged(&plain, 0, None, None).unwrap()),
+            vec!["T2"]
+        );
+    }
+
+    /// The decoy `train-mcp` retries past (`legsTouchTarget`): T1 passes X
+    /// and next calls at D; T2 reaches D sooner by another branch. Arriving
+    /// at D is not passing X -- only the train actually ridden counts.
+    #[test]
+    fn a_different_branch_to_the_same_station_does_not_satisfy_a_via() {
+        let connections = sorted(vec![
+            conn("T1", "A", "D", 480, 600),
+            conn("T2", "A", "D", 490, 550),
+            conn("T3", "D", "C", 610, 650),
+            conn("T4", "D", "C", 560, 600),
+            // A train that passes X, never reachable from A.
+            conn("T5", "E", "F", 300, 320),
+        ]);
+        let ic = interchange(&[("D", 5)]);
+        let vias = vias_for(
+            &connections,
+            &["X"],
+            &[("T1", "A", &["Y", "X"]), ("T5", "E", &["X"])],
+        );
+        let (from, to) = (s("A"), s("C"));
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            date: date(),
+        };
+        let journey = scan_staged(&options, 0, None, None).expect("T1 then T3");
+        assert_eq!(uids_of(&journey), vec!["T1", "T3"]);
+        assert_eq!(journey.arrival_min, 650);
+        assert_eq!(journey.via_legs[0].leg, 0);
+        let raptor = raptor_staged(&options, 0, 4, None, None);
+        assert_eq!(raptor.len(), 1);
+        assert_eq!(uids_of(&raptor[0]), vec!["T1", "T3"]);
+        let plain = StagedOptions {
+            vias: None,
+            ..options
+        };
+        assert_eq!(
+            uids_of(&scan_staged(&plain, 0, None, None).unwrap()),
+            vec!["T2", "T4"]
+        );
+    }
+
+    /// T1 calls at X; T2 passes X without calling (slower); T3 -> T4 is the
+    /// fastest, changing at X.
+    #[test]
+    fn a_via_combines_with_avoid_stop_and_avoid_change() {
+        let connections = sorted(vec![
+            conn("T1", "A", "X", 480, 500),
+            conn("T1", "X", "C", 502, 540),
+            conn("T2", "A", "C", 490, 560),
+            conn("T3", "A", "X", 470, 490),
+            conn("T4", "X", "C", 495, 520),
+        ]);
+        let ic = interchange(&[("X", 2)]);
+        let vias = vias_for(&connections, &["X"], &[("T2", "A", &["X"])]);
+        let (from, to) = (s("A"), s("C"));
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            date: date(),
+        };
+        let run = |restrictions: Option<&Restrictions>| {
+            let csa = scan_staged(&options, 0, None, restrictions);
+            let raptor = raptor_staged(&options, 0, 4, None, restrictions)
+                .into_iter()
+                .min_by_key(|j| j.arrival_min);
+            assert_eq!(
+                csa.as_ref().map(|j| j.arrival_min),
+                raptor.as_ref().map(|j| j.arrival_min)
+            );
+            csa
+        };
+        // Changing at X passes it.
+        let journey = run(None).unwrap();
+        assert_eq!(uids_of(&journey), vec!["T3", "T4"]);
+        assert_eq!(
+            journey.via_legs,
+            vec![ViaLeg {
+                part: 0,
+                leg: 0,
+                how: ViaHow::Call
+            }]
+        );
+        // No change at X: stay aboard T1, which calls there.
+        let no_change = Restrictions::new(["X".to_string()], [], HashMap::new());
+        let journey = run(Some(&no_change)).unwrap();
+        assert_eq!(uids_of(&journey), vec!["T1"]);
+        assert_eq!(journey.via_legs[0].how, ViaHow::Call);
+        // No call at X: only running through it is left.
+        let no_call = Restrictions::new([], ["X".to_string()], HashMap::new());
+        let journey = run(Some(&no_call)).unwrap();
+        assert_eq!(uids_of(&journey), vec!["T2"]);
+        assert_eq!(journey.via_legs[0].how, ViaHow::Pass);
+        // Avoiding X altogether contradicts the via.
+        let avoid = Restrictions::new(
+            [],
+            ["X".to_string()],
+            HashMap::from([(
+                "T2".to_string(),
+                vec![crate::PassLeg {
+                    from_tiploc: "A".to_string(),
+                    to_tiploc: "C".to_string(),
+                    blocked: true,
+                }],
+            )]),
+        );
+        assert!(run(Some(&avoid)).is_none());
+    }
+
+    /// T1 runs A -> W -> C, passing P before W and Q after it. Vias keep
+    /// their own order but may fall either side of a waypoint.
+    #[test]
+    fn vias_keep_their_order_and_interleave_with_waypoints() {
+        let connections = sorted(vec![
+            conn("T1", "A", "W", 480, 500),
+            conn("T1", "W", "C", 502, 540),
+        ]);
+        let ic = interchange(&[]);
+        let passes: &[(&str, &str, &[&str])] = &[("T1", "A", &["P"]), ("T1", "W", &["Q"])];
+        let (from, to, waypoints) = (s("A"), s("C"), vec![s("W")]);
+        let plan = |targets: &[&str], waypoints: &[Vec<String>]| {
+            let vias = vias_for(&connections, targets, passes);
+            let options = StagedOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints,
+                to_tiplocs: &to,
+                vias: Some(&vias),
+                date: date(),
+            };
+            let csa = scan_staged(&options, 0, None, None);
+            let raptor = raptor_staged(&options, 0, 3, None, None);
+            assert_eq!(csa.is_some(), !raptor.is_empty());
+            csa.map(|j| {
+                (
+                    j.via_legs
+                        .iter()
+                        .map(|v| (v.part, v.leg))
+                        .collect::<Vec<_>>(),
+                    j,
+                )
+            })
+        };
+        let (hits, journey) = plan(&["P", "Q"], &waypoints).expect("in order");
+        assert_eq!(hits, vec![(0, 0), (1, 0)]);
+        assert!(journey.parts[1].continues_previous_train);
+        assert_eq!(journey.changes, 0);
+        assert!(plan(&["Q", "P"], &waypoints).is_none(), "out of order");
+        assert_eq!(plan(&["Q"], &waypoints).unwrap().0, vec![(1, 0)]);
+        assert_eq!(plan(&["P"], &waypoints).unwrap().0, vec![(0, 0)]);
+        assert_eq!(plan(&["P", "Q"], &[]).unwrap().0, vec![(0, 0), (0, 0)]);
+        // A call at W (here not a waypoint) satisfies a via there too.
+        assert_eq!(plan(&["P", "W", "Q"], &[]).unwrap().0, vec![(0, 0); 3]);
+    }
+
+    #[test]
+    fn an_unsatisfiable_via_finds_nothing_either_way() {
+        use crate::reverse::{ArriveByOptions, latest_departures_by_trips, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "B", 480, 520),
+            conn("T1", "B", "C", 522, 560),
+        ]);
+        let ic = interchange(&[]);
+        let vias = vias_for(&connections, &["Z"], &[("T1", "A", &["X"])]);
+        let (from, to) = (s("A"), s("C"));
+        let options = StagedOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            date: date(),
+        };
+        assert!(scan_staged(&options, 0, None, None).is_none());
+        assert!(raptor_staged(&options, 0, 4, None, None).is_empty());
+        let arrive = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            arrive_by_min: 1000,
+            date: date(),
+        };
+        assert!(staged_arrive_by(&arrive, None, None).is_none());
+        assert_eq!(
+            latest_departures_by_trips(&arrive, None, None, 3),
+            vec![None; 3]
+        );
+    }
+
+    /// Arrive-by: T2 leaves later and arrives in time, but only T1 passes X.
+    #[test]
+    fn arrive_by_with_a_via_takes_the_latest_train_that_passes_it() {
+        use crate::reverse::{ArriveByOptions, latest_departure, staged_arrive_by};
+        let connections = sorted(vec![
+            conn("T1", "A", "C", 480, 560),
+            conn("T2", "A", "C", 500, 550),
+            conn("T0", "A", "C", 400, 470),
+        ]);
+        let ic = interchange(&[]);
+        let vias = vias_for(
+            &connections,
+            &["X"],
+            &[("T1", "A", &["X"]), ("T0", "A", &["X"])],
+        );
+        let (from, to) = (s("A"), s("C"));
+        let with_via = ArriveByOptions {
+            connections: &connections,
+            interchange: &ic,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: Some(&vias),
+            arrive_by_min: 600,
+            date: date(),
+        };
+        let without = ArriveByOptions {
+            vias: None,
+            ..with_via
+        };
+        assert_eq!(latest_departure(&without, None, None), Some(500));
+        assert_eq!(latest_departure(&with_via, None, None), Some(480));
+        let journey = staged_arrive_by(&with_via, None, None).unwrap();
+        assert_eq!(uids_of(&journey), vec!["T1"]);
+        assert_eq!(journey.via_legs[0].how, ViaHow::Pass);
+    }
+
+    /// `(uid, from, passed)` rows of [`random_with_passes`].
+    type PassRows = Vec<(String, String, Vec<String>)>;
+
+    /// A random network whose connections sometimes run through P or Q
+    /// (never called at) or through one of the ordinary stops.
+    fn random_with_passes(
+        next: &mut impl FnMut(u64) -> u64,
+        trains: usize,
+    ) -> (Vec<Connection>, PassRows) {
+        let stops = ["A", "B", "C", "D", "E", "F"];
+        let passing = ["P", "Q", "B", "D"];
+        let mut connections = Vec::new();
+        let mut rows = Vec::new();
+        for train in 0..trains {
+            let uid = format!("T{train}");
+            let mut at = stops[next(stops.len() as u64) as usize];
+            let mut time = 300 + next(500) as u32;
+            for _ in 0..=next(5) {
+                let mut to = stops[next(stops.len() as u64) as usize];
+                if to == at {
+                    to = stops[(stops.iter().position(|s| *s == at).unwrap() + 1) % stops.len()];
+                }
+                let run = 5 + next(50) as u32;
+                if next(3) == 0 {
+                    let mut passed = vec![passing[next(passing.len() as u64) as usize].to_string()];
+                    if next(3) == 0 {
+                        passed.push(passing[next(passing.len() as u64) as usize].to_string());
+                    }
+                    rows.push((uid.clone(), at.to_string(), passed));
+                }
+                connections.push(conn(&uid, at, to, time, time + run));
+                time += run + next(4) as u32;
+                at = to;
+            }
+        }
+        (sorted(connections), rows)
+    }
+
+    fn vias_from(connections: &[Connection], targets: &[&str], passes: &PassRows) -> Vias {
+        let borrowed: Vec<(&str, &str, Vec<&str>)> = passes
+            .iter()
+            .map(|(uid, from, passed)| {
+                (
+                    uid.as_str(),
+                    from.as_str(),
+                    passed.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str, &[&str])> = borrowed
+            .iter()
+            .map(|(uid, from, passed)| (*uid, *from, passed.as_slice()))
+            .collect();
+        vias_for(connections, targets, &refs)
+    }
+
+    /// The independent oracle above, with the via progress added to the
+    /// state: ride any catchable train, advancing the progress over every
+    /// connection ridden.
+    fn oracle_with_vias(
+        connections: &[Connection],
+        ic: &InterchangeData,
+        waypoints: &[&str],
+        vias: &Vias,
+        departure: u32,
+    ) -> Option<u32> {
+        let stages = waypoints.len() + 1;
+        let mut trains: HashMap<&str, Vec<&Connection>> = HashMap::new();
+        for c in connections {
+            trains.entry(c.uid.as_str()).or_default().push(c);
+        }
+        let mut best: HashMap<(String, usize, usize), u32> = HashMap::new();
+        let next_stage = |mut stage: usize, stop: &str| {
+            while stage < waypoints.len() && waypoints[stage] == stop {
+                stage += 1;
+            }
+            stage
+        };
+        let change = |stop: &str, stage: usize| -> Option<u32> {
+            match minimum_change_time(ic, stop) {
+                ChangeTime::Finite(m) => Some(m),
+                ChangeTime::NoInterchange if stage > 0 && waypoints[stage - 1] == stop => {
+                    Some(WAYPOINT_FALLBACK_CHANGE_MINUTES)
+                }
+                ChangeTime::NoInterchange => None,
+            }
+        };
+        loop {
+            let mut improved = false;
+            for ride in trains.values() {
+                for (board, c) in ride.iter().enumerate() {
+                    for stage in 0..stages {
+                        for progress in 0..=vias.len() {
+                            let ready = if stage == 0 && progress == 0 && c.from_tiploc == "A" {
+                                Some(departure)
+                            } else {
+                                best.get(&(c.from_tiploc.clone(), stage, progress))
+                                    .and_then(|&arrival| {
+                                        change(&c.from_tiploc, stage).map(|m| arrival + m)
+                                    })
+                            };
+                            if ready.is_none_or(|ready| ready > c.departure_min) {
+                                continue;
+                            }
+                            let (mut on, mut passed) = (stage, progress);
+                            for later in &ride[board..] {
+                                passed = vias.advance(passed, later);
+                                on = next_stage(on, &later.to_tiploc);
+                                let key = (later.to_tiploc.clone(), on, passed);
+                                if best
+                                    .get(&key)
+                                    .is_none_or(|&known| later.arrival_min < known)
+                                {
+                                    best.insert(key, later.arrival_min);
+                                    improved = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !improved {
+                break;
+            }
+        }
+        best.get(&("F".to_string(), stages - 1, vias.len()))
+            .copied()
+    }
+
+    /// Random networks with passing points: the staged CSA and RAPTOR agree
+    /// with the via-aware oracle, every reported via leg really passes its
+    /// via, and the backward scan agrees with brute force over the forward
+    /// searches (CSA, and RAPTOR per number of trains).
+    #[test]
+    fn with_vias_csa_raptor_the_oracle_and_the_backward_scan_agree() {
+        use crate::reverse::{
+            ArriveByOptions, latest_departure, latest_departures_by_trips, staged_arrive_by,
+        };
+        let mut seed: u64 = 0x0071_a5e5;
+        let mut next = |n: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % n
+        };
+        let (mut found, mut differs_from_plain) = (0, 0);
+        for case in 0..120 {
+            let (connections, passes) = random_with_passes(&mut next, 25);
+            let ic = interchange(&[("C", 3), ("D", 99), ("E", 0), ("B", 7)]);
+            let (targets, waypoint_names): (&[&str], &[&str]) = match case % 4 {
+                0 => (&["P"], &[]),
+                1 => (&["P", "Q"], &[]),
+                2 => (&["Q"], &["C"]),
+                _ => (&["B", "Q", "P"], &["E"]),
+            };
+            let vias = vias_from(&connections, targets, &passes);
+            let waypoints: Vec<Vec<String>> = waypoint_names.iter().map(|w| s(w)).collect();
+            let (from, to) = (s("A"), s("F"));
+            let options = StagedOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                vias: Some(&vias),
+                date: date(),
+            };
+            let expected = oracle_with_vias(&connections, &ic, waypoint_names, &vias, 300);
+            let csa = scan_staged(&options, 300, None, None);
+            let raptor = raptor_staged(&options, 300, 20, None, None);
+            assert_eq!(csa.as_ref().map(|j| j.arrival_min), expected, "case {case}");
+            assert_eq!(
+                raptor.iter().map(|j| j.arrival_min).min(),
+                expected,
+                "case {case}"
+            );
+            let plain = StagedOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                vias: None,
+                date: date(),
+            };
+            let plain = scan_staged(&plain, 300, None, None);
+            differs_from_plain +=
+                usize::from(plain.map(|j| j.arrival_min) != csa.as_ref().map(|j| j.arrival_min));
+            found += usize::from(expected.is_some());
+
+            // Every reported via leg is a train leg that really passes or
+            // calls there, in order.
+            for journey in csa.iter().chain(&raptor) {
+                assert_eq!(journey.via_legs.len(), targets.len(), "case {case}");
+                let mut previous = (0, 0);
+                for (via, hit) in journey.via_legs.iter().enumerate() {
+                    assert!((hit.part, hit.leg) >= previous, "case {case}: order");
+                    previous = (hit.part, hit.leg);
+                    let JourneyLeg::Train(leg) = &journey.parts[hit.part].legs[hit.leg] else {
+                        panic!("case {case}: no walks in this network");
+                    };
+                    let touches = connections
+                        .iter()
+                        .filter(|c| {
+                            c.uid == leg.uid
+                                && c.departure_min >= leg.departure_min
+                                && c.arrival_min <= leg.arrival_min
+                        })
+                        .any(|c| {
+                            c.from_tiploc == targets[via]
+                                || c.to_tiploc == targets[via]
+                                || passes.iter().any(|(uid, from, passed)| {
+                                    *uid == c.uid
+                                        && *from == c.from_tiploc
+                                        && passed.iter().any(|p| p == targets[via])
+                                })
+                        });
+                    assert!(touches, "case {case}: via {via} on {leg:?}");
+                }
+            }
+
+            // Arrive-by, against brute force over the forward searches.
+            let mut candidates: Vec<u32> = connections
+                .iter()
+                .filter(|c| c.from_tiploc == "A")
+                .map(|c| c.departure_min)
+                .collect();
+            candidates.sort_unstable();
+            candidates.dedup();
+            candidates.reverse();
+            for deadline in [700u32, 1000] {
+                let brute = candidates
+                    .iter()
+                    .copied()
+                    .filter(|&d| d <= deadline)
+                    .find(|&d| {
+                        scan_staged(&options, d, None, None)
+                            .is_some_and(|j| j.arrival_min <= deadline)
+                    });
+                let arrive = ArriveByOptions {
+                    connections: &connections,
+                    interchange: &ic,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias: Some(&vias),
+                    arrive_by_min: deadline,
+                    date: date(),
+                };
+                assert_eq!(
+                    latest_departure(&arrive, None, None),
+                    brute,
+                    "case {case} deadline {deadline}"
+                );
+                assert_eq!(
+                    staged_arrive_by(&arrive, None, None).map(|j| j.departure_min),
+                    brute,
+                    "case {case} deadline {deadline}"
+                );
+                for (index, backward) in latest_departures_by_trips(&arrive, None, None, 4)
+                    .iter()
+                    .enumerate()
+                {
+                    let trains = index as u32 + 1;
+                    let brute = candidates
+                        .iter()
+                        .copied()
+                        .filter(|&d| d <= deadline)
+                        .find(|&d| {
+                            raptor_staged(&options, d, trains, None, None)
+                                .iter()
+                                .any(|j| j.arrival_min <= deadline)
+                        });
+                    assert_eq!(
+                        *backward, brute,
+                        "case {case} deadline {deadline} trains {trains}"
+                    );
+                }
+            }
+        }
+        assert!(found > 30, "only {found} reachable cases");
+        assert!(
+            differs_from_plain > 10,
+            "the vias rarely mattered: {differs_from_plain}"
+        );
     }
 }
