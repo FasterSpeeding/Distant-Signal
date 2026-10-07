@@ -1732,6 +1732,93 @@ jobs:
             fail "postgresql.roles.enabled with an external database must fail the render"
           fi
 
+      # Ingest plan 1B.4: migrate.job (off by default) renders a
+      # pre-upgrade,post-install hook Job that holds the schema owner's
+      # credentials; with api.migrateOnStartup false the api has none. Its
+      # hook NetworkPolicies, and the role setup Job's egress policy, let
+      # both Jobs reach Postgres.
+      - name: helm template (migrate hook Job)
+        run: |
+          set -euo pipefail
+          base=(
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+          )
+          roles=(
+            --set postgresql.roles.enabled=true --set postgresql.roles.setupJob.enabled=true
+            --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+          doc() { awk -v k="$1" -v n="$2" 'BEGIN{RS="\n---\n"} $0 ~ "\nkind: " k "\n" && $0 ~ "\n  name: " n "\n" {print}'; }
+          env_url() { grep -A1 'name: MIGRATION_DATABASE_URL$' | grep 'value:' || true; }
+
+          off=$(render "${roles[@]}")
+          if grep -E -q 'migrate-job.yaml|API_MIGRATE_ON_STARTUP|component: migrate' <<<"${off}"; then
+            fail "migrate.job off must render nothing of it"
+          fi
+
+          on=$(render "${roles[@]}" --set migrate.job.enabled=true)
+          job=$(doc Job distant-signal-migrate <<<"${on}")
+          [[ -n "${job}" ]] || fail "no migrate Job rendered"
+          for want in 'helm.sh/hook: pre-upgrade,post-install' 'helm.sh/hook-weight: "-5"' \
+              'helm.sh/hook-delete-policy: before-hook-creation' 'backoffLimit: 1' \
+              'activeDeadlineSeconds: 900' 'until pg_isready' '- /usr/local/bin/ds-migrate' '- run'; do
+            grep -q -F -- "${want}" <<<"${job}" || fail "migrate Job lacks: ${want}"
+          done
+          n=$(env_url <<<"${job}" | grep -c 'postgres://distant_signal_owner:' || true)
+          [[ "${n}" -eq 2 ]] || fail "the Job's wait and migrate containers must use the owner role"
+          api=$(doc Deployment distant-signal-api <<<"${on}")
+          grep -q 'name: MIGRATION_DATABASE_URL$' <<<"${api}" \
+            || fail "with migrateOnStartup still true the api keeps MIGRATION_DATABASE_URL"
+
+          moved=$(render "${roles[@]}" --set migrate.job.enabled=true --set api.migrateOnStartup=false)
+          api=$(doc Deployment distant-signal-api <<<"${moved}")
+          if grep -E -q 'MIGRATION_DATABASE_URL|PG_MIGRATION_PASSWORD|distant_signal_owner' <<<"${api}"; then
+            fail "migrateOnStartup=false: the api must hold no owner credentials"
+          fi
+          grep -A1 'name: API_MIGRATE_ON_STARTUP$' <<<"${api}" | grep -q 'value: "false"' \
+            || fail "migrateOnStartup=false must render API_MIGRATE_ON_STARTUP=false"
+          deployments=$(awk 'BEGIN{RS="\n---\n"} /\nkind: (Deployment|CronJob)\n/ {print}' <<<"${moved}")
+          if grep -q 'postgres-owner-password' <<<"${deployments}"; then
+            fail "no Deployment or CronJob may read the owner's password"
+          fi
+
+          # The hook policies exist before the Job (weight -10) and admit it.
+          np=$(doc NetworkPolicy distant-signal-postgres-from-migrate <<<"${moved}")
+          grep -q 'helm.sh/hook: pre-install,pre-upgrade' <<<"${np}" || fail "the Postgres admission must be a hook"
+          grep -q 'helm.sh/hook-weight: "-10"' <<<"${np}" || fail "the Postgres admission must precede the Job"
+          grep -q 'app.kubernetes.io/component: migrate' <<<"${np}" || fail "the Postgres admission must name the Job's pods"
+          for c in migrate postgres-roles; do
+            eg=$(doc NetworkPolicy "distant-signal-${c}" <<<"${moved}")
+            grep -q 'port: 5432' <<<"${eg}" || fail "${c} must be allowed out to Postgres"
+          done
+          pg=$(doc NetworkPolicy distant-signal-postgres <<<"${moved}")
+          grep -q -- '- postgres-roles$' <<<"${pg}" || fail "the setup Job must be admitted to Postgres"
+
+          # Without the role split the Job migrates as the bootstrap superuser,
+          # with an external database as its URL.
+          plain=$(render --set migrate.job.enabled=true --show-only templates/migrate-job.yaml)
+          env_url <<<"${plain}" | grep -q 'postgres://distant_signal:\$(PG_MIGRATION_PASSWORD)@' \
+            || fail "roles off: the Job must migrate as postgresql.auth.username"
+          ext=$(render --set migrate.job.enabled=true --set postgresql.enabled=false \
+            --set externalDatabase.existingSecret=ext-db --show-only templates/migrate-job.yaml)
+          grep -A4 'name: MIGRATION_DATABASE_URL$' <<<"${ext}" | grep -q 'name: ext-db' \
+            || fail "an external database: the Job must read externalDatabase.existingSecret"
+
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set api.migrateOnStartup=false >/dev/null 2>&1; then
+            fail "api.migrateOnStartup=false without migrate.job.enabled must fail the render"
+          fi
+
       # Reboot resilience: redis must roll with Recreate (single RWO AOF
       # volume, INF-1); postgres needs a startupProbe so WAL redo is never
       # killed by liveness (INF-4); the frontend probes must hit the

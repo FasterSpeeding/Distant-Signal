@@ -405,6 +405,19 @@ rule is IP-based, so this only opens their ports, not their hosts. */}}
 ---
 {{ include "distant-signal.workerNetworkPolicy" (merge (dict "root" $root) .) }}
 {{- end }}
+{{- /*
+The role setup Job (postgres-roles.yaml, a post-install/post-upgrade hook,
+so this policy is applied before it runs): with egress policies on, it
+may reach Postgres and DNS. Its admission into Postgres is in the postgres
+policy above. The migrate hook Job's policies are hooks themselves
+(migrate-job.yaml).
+*/}}
+{{- if include "distant-signal.postgresRolesSetupJob" . }}
+{{- with include "distant-signal.jobEgressNetworkPolicy" (dict "root" $root "component" "postgres-roles" "deps" (dict "postgres" true)) }}
+---
+{{ . }}
+{{- end }}
+{{- end }}
 {{- if .Values.scheduleFeed.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

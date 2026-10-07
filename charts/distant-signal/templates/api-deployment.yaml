@@ -233,10 +233,18 @@ with api.extraEnv, which replaces an entry of the same name.
             # PGPASSWORD must stay immediately before DATABASE_URL -- the
             # kubelet only expands $(VAR) from EARLIER entries in this list.
             {{- include "distant-signal.databaseEnvFor" (dict "root" . "service" "api") | nindent 12 }}
+            {{- if include "distant-signal.apiMigratesOnStartup" . }}
             {{- with include "distant-signal.migrationDatabaseEnv" . }}
             # postgresql.roles.enabled: the migrations connect as the schema
             # owner, the pools above as the DML-only app role.
             {{- . | nindent 12 }}
+            {{- end }}
+            {{- else }}
+            # api.migrateOnStartup false: the migrate hook Job
+            # (migrate-job.yaml) migrates and holds the owner credentials;
+            # the api waits for the schema (read from plan task 1B.3 on).
+            - name: API_MIGRATE_ON_STARTUP
+              value: "false"
             {{- end }}
             - name: DATABASE_MAX_CONNECTIONS
               value: {{ include "distant-signal.apiMaxConnections" . | quote }}

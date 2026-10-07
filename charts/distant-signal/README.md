@@ -698,6 +698,32 @@ service at a time; with the api on its own role its pool is
 `perService.api.maxConnections` (16). The render fails if the connection
 limits of every role in use exceed `max_connections` minus 3.
 
+## Migrations, maintenance and the ingest-writer (optional)
+
+Ingest architecture phase 1B (`docs/superpowers/plans/2026-10-06-ingest-architecture-plan.md`).
+Every switch is off by default and renders nothing until turned on; each
+needs a binary that later 1B tasks add.
+
+**The migrate hook Job** (`migrate.job.enabled`, `templates/migrate-job.yaml`)
+runs `ds-migrate run` (plan 1B.1) from the api image as a
+`pre-upgrade,post-install` hook (weight -5, `before-hook-creation`,
+`backoffLimit: 1`, `activeDeadlineSeconds: 900`). On an upgrade it migrates
+before any new pod starts; a failed migration fails the release and the old
+pods keep serving. It waits for Postgres with `pg_isready` (an init container
+from the Postgres image) and is the only pod with the schema owner's
+`MIGRATION_DATABASE_URL`. With `networkPolicy.enabled`, two hook
+NetworkPolicies (weight -10) admit it to Postgres and, with egress policies
+on, let it out to Postgres and DNS; the role setup Job gets an egress policy
+too. Raise the HelmRelease `timeout` to cover the deadline (20 minutes).
+
+Rollout: enable the Job and set `api.migrateOnStartup: false` in the same
+release; the api then has no `MIGRATION_DATABASE_URL` and gets
+`API_MIGRATE_ON_STARTUP=false`, which it reads from plan task 1B.3 on (until
+then it ignores it and still migrates, so keep `true` until the image has
+1B.3). Rollback: `api.migrateOnStartup: true`, then the Job off. The hook
+NetworkPolicies outlive the Job; delete them by hand
+(`kubectl delete networkpolicy -l app.kubernetes.io/component=migrate`).
+
 ## Password encoding caveat
 
 `DATABASE_URL` is a URL. A password containing any of `@ : / ? # [ ] %` must
@@ -1553,6 +1579,24 @@ Used only when `postgresql.enabled` is `false`.
 | `api.affinity` | `{}` | Pod affinity rules. |
 | `api.podAnnotations` | `{}` | Pod annotations. |
 | `api.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+| `api.migrateOnStartup` | `true` | Migrate at startup, as today. `false` needs `migrate.job.enabled`: the api then gets no `MIGRATION_DATABASE_URL` and `API_MIGRATE_ON_STARTUP=false`, which the api reads from plan task 1B.3 on. Keep `true` until the api image has 1B.3. See [Migrations, maintenance and the ingest-writer](#migrations-maintenance-and-the-ingest-writer-optional). |
+
+### migrate
+
+Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-maintenance-and-the-ingest-writer-optional).
+
+| Key | Default | Description |
+|---|---|---|
+| `migrate.job.enabled` | `false` | Run the migrations in a `pre-upgrade,post-install` hook Job (weight -5). Needs `ds-migrate` (plan 1B.1) in the api image. |
+| `migrate.job.command` | `["/usr/local/bin/ds-migrate"]` | Command, in the api image. |
+| `migrate.job.args` | `["run"]` | Arguments to `command`. |
+| `migrate.job.backoffLimit` | `1` | Retries after a failed run. |
+| `migrate.job.activeDeadlineSeconds` | `900` | Deadline for the whole Job, the Postgres wait included. The HelmRelease `timeout` must cover it. |
+| `migrate.job.logLevel` | `info` | `RUST_LOG`. |
+| `migrate.job.resources` | `{}` | The migrate container's resources. |
+| `migrate.job.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+| `migrate.job.nodeSelector` | `{}` | Node selector. |
+| `migrate.job.tolerations` | `[]` | Tolerations. |
 
 ### devAuthentik
 

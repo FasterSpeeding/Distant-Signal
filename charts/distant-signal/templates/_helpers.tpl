@@ -1224,6 +1224,88 @@ $(VAR) indirection as distant-signal.databaseEnv.
 {{- end }}
 
 {{/*
+Ingest plan 1B.3/1B.4: true (non-empty) when the api migrates at startup
+(api.migrateOnStartup, the default). false needs migrate.job.enabled, or
+nothing would migrate. Takes root.
+*/}}
+{{- define "distant-signal.apiMigratesOnStartup" -}}
+{{- if ne (toString .Values.api.migrateOnStartup) "false" -}}
+true
+{{- else if not .Values.migrate.job.enabled -}}
+{{- fail "api.migrateOnStartup is false but migrate.job.enabled is not: nothing would run the migrations. Enable migrate.job (same release), or keep api.migrateOnStartup true." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The migrate hook Job's MIGRATION_DATABASE_URL (templates/migrate-job.yaml):
+the schema owner with postgresql.roles.enabled (as the api's
+distant-signal.migrationDatabaseEnv), else the bundled superuser
+(auth.username, what the api migrates as today), or the external
+database's URL. Same $(VAR) indirection as distant-signal.databaseEnv.
+Takes root.
+*/}}
+{{- define "distant-signal.migrateJobDatabaseEnv" -}}
+{{- if include "distant-signal.postgresRolesEnabled" . -}}
+{{- include "distant-signal.migrationDatabaseEnv" . -}}
+{{- else if .Values.postgresql.enabled -}}
+- name: PG_MIGRATION_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "distant-signal.postgresSecretName" . }}
+      key: {{ include "distant-signal.postgresSecretPasswordKey" . }}
+- name: MIGRATION_DATABASE_URL
+  value: {{ printf "postgres://%s:$(PG_MIGRATION_PASSWORD)@%s:%d/%s" .Values.postgresql.auth.username (include "distant-signal.postgresFullname" .) (int .Values.postgresql.service.port) .Values.postgresql.auth.database | quote }}
+{{- else if .Values.externalDatabase.existingSecret -}}
+- name: MIGRATION_DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.externalDatabase.existingSecret }}
+      key: {{ .Values.externalDatabase.existingSecretUrlKey }}
+{{- else if .Values.externalDatabase.url -}}
+- name: MIGRATION_DATABASE_URL
+  value: {{ .Values.externalDatabase.url | quote }}
+{{- else -}}
+{{- fail "migrate.job.enabled: postgresql.enabled is false but no external database is configured (externalDatabase.existingSecret or externalDatabase.url)." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+An egress-only NetworkPolicy for a Job's pods (the postgres-roles setup
+Job, the migrate hook Job, the api-maintenance CronJob): DNS and the
+in-cluster services in `deps` (distant-signal.egressRules). Renders nothing
+unless distant-signal.egressOn for the component: without egress policies a
+Job's egress is not restricted by this chart, and its ingress stays as
+before (a Job serves nothing). `hook` (optional) makes it a Helm hook
+created before that hook Job (weight -10). Takes (dict "root" $
+"component" "migrate" "deps" (dict "postgres" true) "hook" "pre-install,pre-upgrade").
+*/}}
+{{- define "distant-signal.jobEgressNetworkPolicy" -}}
+{{- $root := .root -}}
+{{- if include "distant-signal.egressOn" (dict "root" $root "component" .component) -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-%s" (include "distant-signal.fullname" $root) .component | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "distant-signal.labels" (dict "root" $root "component" .component) | nindent 4 }}
+  {{- with .hook }}
+  annotations:
+    helm.sh/hook: {{ . }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "distant-signal.selectorLabels" (dict "root" $root "component" .component) | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    {{- include "distant-signal.egressRules" (dict "root" $root "component" .component "deps" .deps "internet" false) | nindent 4 }}
+{{- end -}}
+{{- end }}
+
+{{/*
 Per-component devAuthentik object names. Each takes root. The server
 Deployment and the NodePort Service in front of it share ONE name (matching
 how api's Deployment and Service already share distant-signal.apiFullname); the
@@ -1728,7 +1810,7 @@ this chart can render, so a typo cannot silently drop a rule. Takes
 {{- define "distant-signal.npComponent" -}}
 {{- $root := .root -}}
 {{- $all := $root.Values.networkPolicy.components | default dict -}}
-{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" -}}
+{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" "postgres-roles" "migrate" -}}
 {{- range $name, $_ := $root.Values.pollers -}}
 {{- $known = append $known (printf "poller-%s" $name) -}}
 {{- end -}}
