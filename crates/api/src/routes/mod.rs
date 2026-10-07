@@ -28,6 +28,7 @@ pub mod operators;
 pub mod preferences;
 pub mod reference;
 pub mod samples;
+pub mod schedule_rows;
 pub mod stanox_crs;
 pub mod station_stats;
 pub mod train;

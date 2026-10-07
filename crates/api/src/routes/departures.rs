@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::app::{App, Router};
 use crate::data::queries;
 use crate::render::{schedule_departure_json, station_departure_json};
+use crate::routes::schedule_rows;
 
 pub fn router() -> Router {
     Router::new()
@@ -210,18 +211,41 @@ async fn get_station_schedule_departures(
     // above, over this route's own `destination_crs` (nullable here --
     // absent codes are simply skipped, `station_names_for_crs_batch`
     // handles an empty input already).
+    //
+    // `originCrs`/`originName` (2026-10-07): the stored rows carry no
+    // origin, so each uid's true origin comes from
+    // `schedule_destination_departures` in one batched read, and its code
+    // joins the same name lookup.
+    let origins = schedule_rows::true_origins_for_rows(&app.database, today, &rows).await;
     let destination_crs: Vec<String> = rows
         .iter()
         .filter_map(|d| d.get("destination_crs").and_then(Value::as_str))
         .map(str::to_string)
+        .chain(origins.values().cloned())
         .collect();
     let destination_names = queries::station_names_for_crs_batch(&app.database, &destination_crs)
         .await
         .map_err(internal_error)?;
     let mut rendered: Vec<Value> = rows
         .iter()
-        .map(|d| schedule_departure_json(d, &destination_names))
+        .map(|d| {
+            let mut row = schedule_departure_json(d, &destination_names);
+            // Blanked like `/trains/search`'s `originCrs`: an X-prefixed
+            // pseudo-code is not a station.
+            let origin_crs = d
+                .get("uid")
+                .and_then(Value::as_str)
+                .and_then(|uid| origins.get(uid))
+                .filter(|crs| queries::is_bookable_crs(crs))
+                .map_or(Value::Null, |crs| Value::String(crs.clone()));
+            if let Some(object) = row.as_object_mut() {
+                object.insert("originCrs".to_string(), origin_crs);
+            }
+            row
+        })
         .collect();
+    schedule_rows::attach_origin_names(&mut rendered, &destination_names);
+    schedule_rows::attach_live(&app.database, today, &mut rendered).await;
     crate::data::schedule_services::annotate_uid_rows(&app.database, today, &mut rendered).await;
     Ok(Json(rendered))
 }
@@ -998,5 +1022,145 @@ mod db_tests {
         );
 
         delete_schedule_departures_fixture(&pool, "ZRB").await;
+    }
+
+    /// Removes the `SDLV*` live-state fixtures, their schedule rows, the
+    /// `ZRC` board and the origin station. `train_current_state` first: its
+    /// `trains_id` is `ON DELETE SET NULL`.
+    async fn clear_live_fixtures(pool: &PgPool) {
+        for sql in [
+            "DELETE FROM train_current_state WHERE trains_id IN \
+                (SELECT id FROM trains WHERE train_uid LIKE 'SDLV%')",
+            "DELETE FROM trains WHERE train_uid LIKE 'SDLV%'",
+            "DELETE FROM schedule_destination_departures WHERE train_uid LIKE 'SDLV%'",
+            "DELETE FROM schedule_network_departures WHERE crs = 'ZRC'",
+            "DELETE FROM stations WHERE crs = 'ZSP'",
+        ] {
+            sqlx::query(sql)
+                .execute(pool)
+                .await
+                .expect("clear live fixtures");
+        }
+    }
+
+    /// The 2026-10-07 additive fields: `live` (with state, cancelled, and
+    /// none), `originCrs`/`originName`, with `dayOffset` unchanged.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_rows_carry_live_status_and_origin_name() {
+        let pool = connect().await;
+        clear_live_fixtures(&pool).await;
+        let today = crate::routes::london_today();
+        sqlx::query("INSERT INTO stations (crs, name) VALUES ('ZSP', 'Zed Start')")
+            .execute(&pool)
+            .await
+            .expect("seed origin station");
+        let departures = serde_json::json!([
+            {"uid": "SDLVLV", "scheduled": "08:22:00", "day_offset": 0, "destination_crs": "CRE"},
+            {"uid": "SDLVCX", "scheduled": "09:00:00", "day_offset": 0, "destination_crs": "CRE"},
+            {"uid": "SDLVNX", "scheduled": "00:07:00", "day_offset": 1, "destination_crs": "SNF"},
+        ]);
+        sqlx::query(
+            "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZRC', $1, $2)",
+        )
+        .bind(today)
+        .bind(departures)
+        .execute(&pool)
+        .await
+        .expect("seed board");
+        // True origins: two calls for SDLVLV (one origin, read once); none
+        // for SDLVNX.
+        for (uid, scheduled, origin) in [
+            ("SDLVLV", "08:00:00", Some("ZSP")),
+            ("SDLVLV", "08:22:00", Some("ZSP")),
+            ("SDLVCX", "09:00:00", Some("XQQ")),
+        ] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+                 VALUES ($1, 'CRE', $2::time, $3, 'ZRC', $4)",
+            )
+            .bind(today)
+            .bind(scheduled)
+            .bind(uid)
+            .bind(origin)
+            .execute(&pool)
+            .await
+            .expect("seed schedule row");
+        }
+        for (uid, status, delay) in [
+            ("SDLVLV", "en_route", Some(3)),
+            ("SDLVCX", "cancelled", None),
+        ] {
+            let (trains_id,): (i64,) = sqlx::query_as(
+                "INSERT INTO trains (train_uid, service_date, train_id) VALUES ($1, $2, $1) \
+                 RETURNING id",
+            )
+            .bind(uid)
+            .bind(today)
+            .fetch_one(&pool)
+            .await
+            .expect("seed trains row");
+            sqlx::query(
+                "INSERT INTO train_current_state (trains_id, status, last_reported_location, \
+                     delay_minutes, updated_at) VALUES ($1, $2, 'Crewe', $3, NOW())",
+            )
+            .bind(trains_id)
+            .bind(status)
+            .bind(delay)
+            .execute(&pool)
+            .await
+            .expect("seed train_current_state row");
+        }
+
+        let router: axum::Router = Router::new()
+            .merge(router())
+            .with_state(test_app(pool.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/stations/ZRC/schedule-departures")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let rows = json.as_array().unwrap();
+        assert_eq!(rows.len(), 3, "{json}");
+
+        assert_eq!(rows[0]["uid"], "SDLVLV");
+        assert_eq!(rows[0]["originCrs"], "ZSP");
+        assert_eq!(rows[0]["originName"], "Zed Start");
+        assert_eq!(
+            rows[0]["live"],
+            serde_json::json!({
+                "status": "en_route",
+                "delayMinutes": 3,
+                "delayProvisional": false,
+                "cancelled": false,
+                "lastReportedLocation": "Crewe",
+            }),
+        );
+        // An X-prefixed pseudo-code origin is blanked, like the search's.
+        assert!(rows[1]["originCrs"].is_null(), "{}", rows[1]);
+        assert!(rows[1]["originName"].is_null());
+        assert_eq!(rows[1]["live"]["cancelled"], true);
+        // No live state, no schedule origin; dayOffset as before.
+        let third = rows[2].as_object().unwrap();
+        assert!(
+            third.contains_key("live") && third["live"].is_null(),
+            "{json}"
+        );
+        assert!(third.contains_key("originName") && third["originName"].is_null());
+        assert!(third["originCrs"].is_null());
+        assert_eq!(third["dayOffset"], 1);
+
+        clear_live_fixtures(&pool).await;
     }
 }

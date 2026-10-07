@@ -29,7 +29,7 @@ import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
 import { nowInLondon, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
-import type { BoardCallingPoint, CreateJourneyResponse } from '@/lib/types';
+import type { BoardCallingPoint, CreateJourneyResponse, LineTrainSummaryLive } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
@@ -230,7 +230,9 @@ interface DepartureRow {
  * (`isCancelled`/`delayMinutes`/`estimated`/`cancelReason`/`delayReason`),
  * because the CIF SCHEDULE feed genuinely has none of that -- see
  * docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
- * Decision 2/5. `destinationCrs` is nullable: `null` when the terminating
+ * Decision 2/5. (Since 2026-10-07 the server joins the train's own live
+ * state, when it has one, into the optional `live` object below.)
+ * `destinationCrs` is nullable: `null` when the terminating
  * TIPLOC has no `stanox_crs` row (a real, if rare, gap).
  *
  * `dayOffset` is how many calendar days past this route's own "today" (the
@@ -259,6 +261,14 @@ interface ScheduleDepartureRow {
    * `destinationCrs` itself is `null` and when it resolved to no
    * `stations` row. */
   destinationName: string | null;
+  /** The schedule's true origin CRS, `null` when it does not resolve
+   * (2026-10-07, docs/api-changelog.md). */
+  originCrs?: string | null;
+  /** `originCrs`'s station name, `null` when unknown. */
+  originName?: string | null;
+  /** The line summary's compact live status for this train today; `null`
+   * when it has none. */
+  live?: LineTrainSummaryLive | null;
 }
 
 /** `'unavailable'` replaces the old `'not-sampled'` name: it now means

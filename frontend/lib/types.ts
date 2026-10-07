@@ -2255,6 +2255,15 @@ export interface TrainSearchResult {
   operator?: string | null;
   serviceMode?: ServiceMode | null;
   liveTracking?: boolean | null;
+  /** Days after the searched date (the service date) the departure from
+   * `stationCrs` falls on. Moves the calendar day only, never the service
+   * date (2026-10-07). */
+  dayOffset?: number;
+  /** `originCrs`'s station name, `null` when unknown (2026-10-07). */
+  originName?: string | null;
+  /** The line summary's compact live status, `null` when the train has
+   * none (2026-10-07). */
+  live?: LineTrainSummaryLive | null;
 }
 
 export interface TrainSearchPage {

@@ -215,6 +215,25 @@ impl From<&trains::PublicTrainState> for LiveSummary {
     }
 }
 
+/// The [`LiveSummary`] of every train in `uids` that has live state on
+/// `service_date`, keyed by uid, in two batched reads (the train states,
+/// then their reasons, which decide `cancelled`). A uid with no `trains`
+/// row is simply absent. Shared by this view and the schedule lists
+/// (`routes::schedule_rows`), so both show the same `live` object.
+pub(crate) async fn live_summaries(
+    pool: &sqlx::PgPool,
+    uids: &[String],
+    service_date: chrono::NaiveDate,
+) -> anyhow::Result<HashMap<String, LiveSummary>> {
+    let mut live_states =
+        trains::get_public_train_states_for_line(pool, uids, service_date).await?;
+    crate::data::train_reasons::attach_to_public_states(pool, &mut live_states).await;
+    Ok(live_states
+        .iter()
+        .map(|s| (s.train_uid.clone(), LiveSummary::from(s)))
+        .collect())
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StationRef {
@@ -398,22 +417,14 @@ impl LiveDecor {
         service_date: chrono::NaiveDate,
         uids: Vec<String>,
     ) -> anyhow::Result<Self> {
-        let mut live_states =
-            trains::get_public_train_states_for_line(&app.database, &uids, service_date).await?;
-        crate::data::train_reasons::attach_to_public_states(&app.database, &mut live_states).await;
+        let live = live_summaries(&app.database, &uids, service_date).await?;
         // Service modes for the same trains, from `schedule_services` (a
         // read failure falls back to the Train Status, as the default view
         // does).
         let modes =
             crate::data::schedule_services::modes_for_or_trains(&app.database, service_date, &uids)
                 .await;
-        Ok(Self {
-            live: live_states
-                .iter()
-                .map(|s| (s.train_uid.clone(), LiveSummary::from(s)))
-                .collect(),
-            modes,
-        })
+        Ok(Self { live, modes })
     }
 
     pub(crate) fn live(&self, uid: &str) -> Option<&LiveSummary> {
