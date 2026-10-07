@@ -45,19 +45,21 @@
 # See docker-compose.dev.yml for the details.
 #
 # Build caching: every Dockerfile here starts with
-# `# syntax=docker/dockerfile:1` and uses BuildKit cache mounts — the cargo
-# registry/git/target dirs for the fifteen Rust services built here (api,
+# `# syntax=docker/dockerfile:1`. The Rust services built here (api,
 # aggregator, notifier, enricher, the five pollers, the four TRUST-pipeline
-# services, schedule-ingest and schedule-reference), npm's download cache and
-# Next's `.next/cache` for the frontend. Rebuilds therefore recompile only
-# what changed rather than the whole dependency tree. One consequence worth
-# knowing: the target-dir cache is keyed by rustc version (every Rust
-# Dockerfile builds with rust:1.88-bookworm, so they all share one
-# `cargo-target-1.88` id — this only forks into separate ids again if a
-# future Dockerfile pins a different rustc version), and the `# syntax=`
-# directive makes BuildKit pull the `docker/dockerfile:1` frontend image, so
-# the FIRST build on a machine needs network access even if every base image
-# is already local. Inspect the caches with `docker buildx du`.
+# services, schedule-ingest and schedule-reference) build with cargo-chef
+# (scripts/gen-rust-dockerfiles.py generates their builder stages): each
+# service's dependencies are one image layer, so after a source-only change a
+# rebuild recompiles only the workspace crates; a Cargo.lock change rebuilds
+# them. That layer is per service (it holds exactly that binary's dependency
+# build), so a first build of every service compiles the shared dependencies
+# once per service, and each holds its own copy (prune old ones with
+# `docker builder prune`). The cargo registry/git downloads, npm's download
+# cache and Next's `.next/cache` are BuildKit cache mounts, shared across
+# builds. The `# syntax=` directive makes BuildKit pull the
+# `docker/dockerfile:1` frontend image, so the FIRST build on a machine needs
+# network access even if every base image is already local. Inspect the
+# caches with `docker buildx du`.
 #
 # Nothing in this file or in the `*.env.example` templates is a real Rail
 # Data Marketplace endpoint or credential; see `local.env.example` for why

@@ -38,6 +38,33 @@
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+version: \"(?<currentValue>[^\"]+)\"",
       ],
     },
+    {
+      // scripts/gen-rust-dockerfiles.py generates the Rust Dockerfiles'
+      // builder stages, and CI fails when a Dockerfile drifts from it. The
+      // dockerfile manager bumps the Dockerfiles' rust FROM; this bumps the
+      // same tag and digest in the generator, on the same (per-depName)
+      // branch, so the drift check stays green on Renovate's PR.
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)scripts/gen-rust-dockerfiles\\.py$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>docker) depName=(?<depName>\\S+)\\nRUST_TAG = \"(?<currentValue>[^\"]+)\"\\nRUST_DIGEST = \"(?<currentDigest>sha256:[0-9a-f]+)\"",
+      ],
+    },
+    {
+      // cargo-chef (the same generated builder stages): its pin in the
+      // generator and in every generated `cargo install` line, together.
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/(^|/)scripts/gen-rust-dockerfiles\\.py$/",
+        "/(^|/)docker/[^/]+\\.Dockerfile$/",
+      ],
+      "matchStrings": [
+        "CARGO_CHEF_VERSION = \"(?<currentValue>[^\"]+)\"",
+        "cargo install cargo-chef --locked --version (?<currentValue>\\S+)",
+      ],
+      "datasourceTemplate": "crate",
+      "depNameTemplate": "cargo-chef",
+    },
   ],
 
   // uv.lock: the pep621 manager updates it together with a pyproject.toml
