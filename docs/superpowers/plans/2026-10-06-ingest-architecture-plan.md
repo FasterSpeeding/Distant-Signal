@@ -503,6 +503,28 @@ Rollback: `sink=http`. The api routes still exist.
 
 ### 2b. poller-stations
 
+**Status (2026-10-07): 2b.1–2b.3 built, off by default**
+(`pollers.stations.ingest.sink: http`). Differences from the table:
+
+- 2b.1: `upsert_stations` is generic over `ds_store::reference::StationRow`,
+  so the poller binds its borrowed `&RawValue` passthrough without building
+  a `serde_json::Value` per station. It writes 100 rows per statement
+  (`UPSERT_STATIONS_CHUNK`), still in one transaction: one statement over
+  the whole feed peaked at about 4x its size in bind and write buffers
+  (29 MB at 500 rows). Measured: a 36 MB feed, 1.9 MB to parse and 6.7 MB
+  to write. The startup cursor goes through the new
+  `common::poller_loop::run_poll_loop_with_cursor`, which both sinks use.
+  `DbSink` retries a transient failure within the POST's budget and gives
+  up at once on SQLSTATE class 22/23 (`classify_anyhow_data_error`).
+- 2b.2: no code change. The writer registers `corpus_crosswalk` (600 s)
+  whenever `INGEST_WRITER_LOOPS` is on; the chart refuses `sink: db`
+  without `ingestWriter.enabled` and `ingestWriter.loops.enabled`.
+- 2b.3: the role is `narrow` from creation (it was `planned`; it never was
+  a member of `app`). `postgresql.roles.perService.stations.connect`
+  connects it. The netpol helpers are generic over `pollers.<name>.ingest`,
+  so 2c can reuse them. CI runs poller-stations' DB tests as the
+  superuser, and last in the per-service step as the narrow role.
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 2b.1 | Sink trait (`HttpSink`, `DbSink` calling `ds_store::reference::upsert_stations`); the cursor from `freshness::last_stations_fetch` under `db` | `crates/poller-stations/src/{sink.rs,main.rs,config.rs}` | both sinks: the same rows for a fixture feed; a test that the 38 MB fixture path holds memory near the parsed vector size (the existing allocator meter) |

@@ -1002,6 +1002,8 @@ app.connectionLimitSlack.
 {{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "writer")) -}}
 {{- $total = add $total (include "distant-signal.ingestWriterPool" $root) -}}
 {{- end -}}
+{{- /* Phase 2: the pollers that write directly, as the app role. */ -}}
+{{- $total = add $total (include "distant-signal.pollerAppPools" $root) -}}
 {{- $total -}}
 {{- else -}}
 {{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
@@ -1055,10 +1057,12 @@ Every helper takes root unless it says otherwise.
 
 distant-signal.perServiceKeys: the services this chart can move to their
 own role, space-separated. Each must be a created (not `planned`) role in
-db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9).
+db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9);
+`stations` is poller-stations' (pollers.stations with ingest.sink db, plan
+2b.3), the first narrow one.
 */}}
 {{- define "distant-signal.perServiceKeys" -}}
-api aggregator enricher notifier writer
+api aggregator enricher notifier writer stations
 {{- end }}
 
 {{- define "distant-signal.perServiceEnabled" -}}
@@ -1086,8 +1090,53 @@ True (non-empty) when the service connects as its own role. Takes (dict
 {{- if and (eq .service "writer") (not .root.Values.ingestWriter.enabled) -}}
 {{- fail "postgresql.roles.perService.writer.connect needs ingestWriter.enabled: nothing else connects as the writer role." -}}
 {{- end -}}
+{{- if hasKey .root.Values.pollers .service -}}
+{{- if not (include "distant-signal.pollerSinkDb" (dict "root" .root "name" .service "poller" (get .root.Values.pollers .service))) -}}
+{{- fail (printf "postgresql.roles.perService.%s.connect needs pollers.%s.enabled with pollers.%s.ingest.sink: db: nothing else connects as its role." .service .service .service) -}}
+{{- end -}}
+{{- end -}}
 true
 {{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when the poller is enabled and pollers.<name>.ingest.sink
+is `db` (ingest architecture phase 2: it writes Postgres directly). Fails on
+a sink other than `http` or `db`. poller-stations' `db` sink also needs the
+ingest-writer's loops (plan 2b.2): with no POST to the api, the writer's
+10-minute CORPUS crosswalk loop is what gives a new station its fills.
+Takes (dict "root" $ "name" <pollers key> "poller" <its values>).
+*/}}
+{{- define "distant-signal.pollerSinkDb" -}}
+{{- $ingest := .poller.ingest | default dict -}}
+{{- $sink := toString ($ingest.sink | default "http") -}}
+{{- if not (has $sink (list "http" "db")) -}}
+{{- fail (printf "pollers.%s.ingest.sink must be http or db, not %q." .name $sink) -}}
+{{- end -}}
+{{- if and .poller.enabled (eq $sink "db") -}}
+{{- if and (eq .name "stations") (not (and .root.Values.ingestWriter.enabled .root.Values.ingestWriter.loops.enabled)) -}}
+{{- fail "pollers.stations.ingest.sink=db needs ingestWriter.enabled and ingestWriter.loops.enabled: without the api's POST, the ingest-writer's CORPUS crosswalk loop rebuilds the crosswalk after a stations refresh (ingest architecture plan 2b.2)." -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+The Postgres pools of the pollers that write directly (pollers.<name>.ingest.sink:
+db) and do not connect as their own per-service role, summed: they count
+against the app role. Takes root.
+*/}}
+{{- define "distant-signal.pollerAppPools" -}}
+{{- $root := . -}}
+{{- $total := 0 -}}
+{{- range $name, $poller := .Values.pollers -}}
+{{- if include "distant-signal.pollerSinkDb" (dict "root" $root "name" $name "poller" $poller) -}}
+{{- if not (and (hasKey $root.Values.postgresql.roles.perService $name) (include "distant-signal.perServiceConnects" (dict "root" $root "service" $name))) -}}
+{{- $total = add $total (int $poller.ingest.database.maxConnections) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $total -}}
 {{- end }}
 
 {{/*
@@ -1128,6 +1177,9 @@ aggregator's archive pool, the ingest-writer's ingestWriter.database.maxConnecti
 {{- else if eq .service "writer" -}}
 {{- /* Its pool plus the loop-lock session (crates/ingest-writer). */ -}}
 {{- add1 (int $root.Values.ingestWriter.database.maxConnections) -}}
+{{- else if hasKey $root.Values.pollers .service -}}
+{{- /* A poller that writes directly (phase 2): pollers.<name>.ingest.database. */ -}}
+{{- int (get $root.Values.pollers .service).ingest.database.maxConnections -}}
 {{- else -}}
 5
 {{- end -}}

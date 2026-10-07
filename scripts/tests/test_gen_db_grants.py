@@ -48,14 +48,21 @@ class RepoFilesTest(unittest.TestCase):
             status = gen.main(["check"])
         self.assertEqual(status, 0, out.getvalue())
 
-    def test_phase_0b_creates_only_observed_members_of_app(self) -> None:
-        """Phase 0b/1B: the four DB services and the writer, nothing narrowed."""
+    def test_phase_0b_creates_observed_members_of_app_and_the_narrow_ones(self) -> None:
+        """Phase 0b/1B: the four DB services and the writer; 2b: stations, narrow."""
         model = gen.load()
+        status = {r.key: r.status for r in model.created()}
         self.assertEqual(
-            sorted(r.key for r in model.created()),
-            ["aggregator", "api", "enricher", "notifier", "writer"],
+            status,
+            {
+                "aggregator": "observed",
+                "api": "observed",
+                "enricher": "observed",
+                "notifier": "observed",
+                "writer": "observed",
+                "stations": "narrow",
+            },
         )
-        self.assertTrue(all(r.status == "observed" for r in model.created()))
 
 
 class ParseTest(unittest.TestCase):
@@ -182,10 +189,27 @@ class RenderTest(unittest.TestCase):
             self.assertIn("is stale", out.getvalue())
 
     def test_observed_roles_get_no_table_grants(self) -> None:
-        """Phase 0b: no per-role GRANT rows, only memberships."""
+        """Phase 0b: observed roles get memberships, never GRANT rows.
+
+        2b's narrow stations role gets exactly its two tables.
+        """
         sql = gen.render(gen.load())
         self.assertIn("('api', 'observed')", sql)
-        self.assertNotIn("'SELECT', ''", sql)
+        for kind in ("api", "aggregator", "enricher", "notifier", "writer"):
+            self.assertNotIn(f"'{kind}', 'SELECT', ''", sql)
+        self.assertIn("('stations', 'narrow')", sql)
+        grant_rows = sorted(
+            line.strip().rstrip(",")
+            for line in sql.splitlines()
+            if "'stations', 'SELECT', ''" in line
+            or "'stations', 'INSERT', ''" in line
+            or "'stations', 'UPDATE', ''" in line
+            or "'stations', 'DELETE', ''" in line
+        )
+        self.assertEqual(
+            [row.split(",")[0] for row in grant_rows],
+            ["('ingest_freshness'"] * 3 + ["('stations'"] * 3,
+        )
         self.assertIn("\\getenv api_password DS_PG_API_PASSWORD", sql)
 
     def test_a_narrow_role_gets_its_grants_and_sequences(self) -> None:
