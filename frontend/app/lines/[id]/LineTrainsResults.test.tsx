@@ -47,6 +47,18 @@ async function render(params: Record<string, string> = {}) {
   );
 }
 
+/** As `render`, returning the container for structural queries. */
+async function renderWithContainer(params: Record<string, string> = {}) {
+  return renderWithMantine(
+    await LineTrainsResults({
+      id: ID,
+      date: DATE,
+      now: NOW,
+      params: parseLinePageParams(params),
+    }),
+  );
+}
+
 /** The rows of the main list, as their visible text. */
 function rowTexts(list: HTMLElement): string[] {
   return within(list)
@@ -235,13 +247,128 @@ describe('LineTrainsResults', () => {
 
   it('links the hub stations’ timetables instead of listing trains that only touch the line', async () => {
     vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
-    await render();
-    expect(screen.getByRole('link', { name: 'Other trains at London Waterloo →' })).toHaveAttribute(
+    const { container } = await renderWithContainer();
+    const desktop = container.querySelector('[data-hubs="desktop"]') as HTMLElement;
+    expect(within(desktop).getByRole('link', { name: 'Other trains at London Waterloo →' })).toHaveAttribute(
       'href',
       '/stations/WAT#departures',
     );
-    expect(screen.getByRole('link', { name: 'Other trains at Woking →' })).toBeInTheDocument();
+    // Every hub (termini and junctions) on a desktop, in line order.
+    expect(
+      within(desktop)
+        .getAllByRole('link')
+        .map((a) => visibleText(a)),
+    ).toEqual([
+      'Other trains at London Waterloo →',
+      'Other trains at Clapham Junction →',
+      'Other trains at Woking →',
+      'Other trains at Basingstoke →',
+      'Other trains at Weymouth →',
+    ]);
     expect(screen.queryByRole('link', { name: /Other trains at Winchester/ })).not.toBeInTheDocument();
+  });
+
+  it('shows a phone the termini first and the other hubs behind "More stations"', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    const { container } = await renderWithContainer();
+    const phone = container.querySelector('[data-hubs="phone"]') as HTMLElement;
+    const details = phone.querySelector('details') as HTMLElement;
+    const links = within(phone)
+      .getAllByRole('link')
+      .filter((a) => !details.contains(a))
+      .map((a) => visibleText(a));
+    expect(links).toEqual([
+      'Other trains at London Waterloo →',
+      'Other trains at Weymouth →',
+      'Other trains at Clapham Junction →',
+    ]);
+    expect(within(details).getByText('More stations (2)')).toBeInTheDocument();
+    expect(
+      within(details)
+        .getAllByRole('link')
+        .map((a) => visibleText(a)),
+    ).toEqual(['Other trains at Woking →', 'Other trains at Basingstoke →']);
+  });
+
+  it('links the full day’s timetable with the current direction and the window’s start', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render({ dir: 'down' });
+    expect(screen.getByRole('link', { name: "Full day's timetable →" })).toHaveAttribute(
+      'href',
+      `/lines/${ID}/timetable?dir=down&at=13%3A30`,
+    );
+  });
+
+  it('also lists the previous service date’s trains still running after midnight', async () => {
+    // 23:30Z on 6 October is 00:30 BST on the 7th: the 6th's trains past
+    // midnight are fetched too (their 24:00-26:30), and merged by time.
+    const night = new Date('2026-10-06T23:30:00Z');
+    vi.mocked(api.getLineTrainsSummary).mockImplementation(async (_id, options) =>
+      options.date === '2026-10-06'
+        ? summary({
+            date: '2026-10-06',
+            counts: { line: { down: 1 } },
+            trains: [train({ uid: 'P1', lineDue: { time: '00:20', dayOffset: 1 } })],
+            running: [train({ uid: 'P0', lineDue: { time: '23:10', dayOffset: 0 } })],
+          })
+        : summary({
+            date: '2026-10-07',
+            counts: { line: { down: 1, up: 1 } },
+            trains: [train({ uid: 'T1', lineDue: { time: '00:10', dayOffset: 0 } })],
+            running: [],
+          }),
+    );
+    renderWithMantine(
+      await LineTrainsResults({ id: ID, date: '2026-10-07', now: night, params: parseLinePageParams({}) }),
+    );
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(ID, {
+      date: '2026-10-07',
+      from: '00:00',
+      to: '02:30',
+      at: '00:30',
+      direction: undefined,
+    });
+    expect(api.getLineTrainsSummary).toHaveBeenCalledWith(ID, {
+      date: '2026-10-06',
+      from: '24:00',
+      to: '26:30',
+      at: '24:30',
+      direction: undefined,
+    });
+    const due = screen.getByRole('list', { name: 'Trains due on the line' });
+    expect(
+      within(due)
+        .getAllByRole('link')
+        .map((a) => a.getAttribute('href')),
+    ).toEqual(['/train/T1/2026-10-07', '/train/P1/2026-10-06']);
+    expect(rowTexts(due)[1]).toMatch(/^00:20/);
+    const running = screen.getByRole('list', { name: 'Running now' });
+    expect(within(running).getByRole('link')).toHaveAttribute('href', '/train/P0/2026-10-06');
+    expect(rowTexts(running)[0]).toMatch(/^23:10/);
+    // The tabs count both dates' trains.
+    expect(screen.getByRole('link', { name: /^All 3 trains/ })).toBeInTheDocument();
+  });
+
+  it('does not ask for the previous date after 03:00, and survives its failure before', async () => {
+    vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
+    await render();
+    expect(api.getLineTrainsSummary).toHaveBeenCalledTimes(1);
+
+    vi.mocked(api.getLineTrainsSummary).mockReset();
+    vi.mocked(api.getLineTrainsSummary).mockImplementation(async (_id, options) => {
+      if (options.date === '2026-10-06') throw new Error('boom');
+      return summary({ trains: [train({ uid: 'T1', lineDue: { time: '01:10', dayOffset: 0 } })] });
+    });
+    renderWithMantine(
+      await LineTrainsResults({
+        id: ID,
+        date: '2026-10-07',
+        now: new Date('2026-10-07T00:00:00Z'),
+        params: parseLinePageParams({}),
+      }),
+    );
+    const due = screen.getByRole('list', { name: 'Trains due on the line' });
+    expect(within(due).getByRole('link')).toHaveAttribute('href', '/train/T1/2026-10-07');
   });
 
   it('gives each row a text alternative for its stop strip and hides the visual strip from screen readers', async () => {

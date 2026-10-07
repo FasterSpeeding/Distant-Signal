@@ -16,41 +16,37 @@
 //! - **A window.** `from`/`to` (`HH:MM`, hours up to 47 for the next
 //!   morning) keep trains whose `lineDue` falls in `[from, to)`; `at` adds a
 //!   separate `running` list of trains between their first and last
-//!   on-line call at that moment. Only those trains' calling points leave
-//!   Postgres, and only their live state is looked up.
+//!   on-line call at that moment. Only those trains' stops are read, and
+//!   only their live state is looked up.
 //! - **Small rows.** uid, operator, service mode, scope, direction, origin,
 //!   destination (never empty when the train calls on the line), the
 //!   on-line public calls, and a compact live status.
+//!
+//! **Source (phase 3).** The rows come from `line_train_summaries` when it
+//! holds current rows for the line and date (see
+//! `data::line_train_summaries`), else from the population JSONB. Both
+//! paths produce the same [`SummaryRow`]s through
+//! `line_train_summaries::derive_row`, so the response is the same.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axum::http::StatusCode;
-use chrono::{NaiveTime, Timelike};
 use serde::Serialize;
 
 use crate::app::App;
+use crate::data::line_train_summaries::{self as lts, RUNNING_DELAY_GRACE_MINUTES, ShipRule};
 use crate::data::schedule_services::{ServiceMode, ServiceModeFields};
 use crate::data::{queries, trains};
+
+pub(crate) use crate::data::line_train_summaries::{DAY, LineStations, SummaryRow};
 
 /// Most trains one summary response lists (`limit`'s default).
 pub(crate) const DEFAULT_LIMIT: usize = 500;
 /// `limit`'s ceiling.
 pub(crate) const MAX_LIMIT: usize = 2000;
-/// How far before `at` a train may have reached the line and still be
-/// running on it: only entries due on the line within this many minutes
-/// before `at` are considered for `running`. Six hours covers every line's
-/// end-to-end run except the longest cross-country trains (Edinburgh to
-/// Plymouth),
-/// which drop out of `running` after six hours on the line.
-pub(crate) const RUNNING_LOOKBACK_MINUTES: i32 = 6 * 60;
-/// How late past its last on-line call a train may be and still count as
-/// a running candidate (its live delay decides).
-const RUNNING_DELAY_GRACE_MINUTES: i32 = 180;
-/// Minutes in a day.
-const DAY: i32 = 24 * 60;
 /// Latest minute `from`/`to`/`at` may name: 47:59, the next morning of a
 /// service date (CIF day offsets past one do not occur on a line).
-const MAX_MINUTE: i32 = 2 * DAY - 1;
+pub(crate) const MAX_MINUTE: i32 = 2 * DAY - 1;
 
 /// Parsed and validated summary parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,44 +124,30 @@ pub(crate) fn parse_directions(raw: Option<&str>) -> Result<Option<Vec<String>>,
     Ok(Some(out))
 }
 
-/// `limit` (1..=[`MAX_LIMIT`], default [`DEFAULT_LIMIT`]).
-pub(crate) fn parse_limit(raw: Option<&str>) -> Result<usize, String> {
+/// `limit` (1..=`max`, default `default`).
+pub(crate) fn parse_limit_within(
+    raw: Option<&str>,
+    default: usize,
+    max: usize,
+) -> Result<usize, String> {
     let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
-        return Ok(DEFAULT_LIMIT);
+        return Ok(default);
     };
     match raw.trim().parse::<usize>() {
-        Ok(n) if (1..=MAX_LIMIT).contains(&n) => Ok(n),
-        _ => Err(format!("invalid limit {raw:?}: use 1 to {MAX_LIMIT}")),
+        Ok(n) if (1..=max).contains(&n) => Ok(n),
+        _ => Err(format!("invalid limit {raw:?}: use 1 to {max}")),
     }
+}
+
+/// `limit` (1..=[`MAX_LIMIT`], default [`DEFAULT_LIMIT`]).
+pub(crate) fn parse_limit(raw: Option<&str>) -> Result<usize, String> {
+    parse_limit_within(raw, DEFAULT_LIMIT, MAX_LIMIT)
 }
 
 /// Minutes after the service date's midnight as `"HH:MM"` (hours may
 /// exceed 23 for the next morning).
 pub(crate) fn format_minute(minute: i32) -> String {
     format!("{:02}:{:02}", minute / 60, minute % 60)
-}
-
-/// A time with its day offset as minutes after the service date's
-/// midnight.
-fn minute_of(time: NaiveTime, day_offset: u8) -> i32 {
-    // Both terms are small: hour < 24, minute < 60, day_offset a few days.
-    i32::from(day_offset) * DAY + i32::try_from(time.hour() * 60 + time.minute()).unwrap_or(0)
-}
-
-/// The SQL calling-point range for a request: the window, widened to take
-/// in running candidates around `at`. `None` (every entry's calling
-/// points) only when neither is given.
-pub(crate) fn calling_point_range(
-    window: Option<(i32, i32)>,
-    at: Option<i32>,
-) -> Option<(i32, i32)> {
-    let running = at.map(|at| (at - RUNNING_LOOKBACK_MINUTES, at + 1));
-    match (window, running) {
-        (None, None) => None,
-        (Some(w), None) => Some(w),
-        (None, Some(r)) => Some(r),
-        (Some(w), Some(r)) => Some((w.0.min(r.0), w.1.max(r.1))),
-    }
 }
 
 /// `serviceMode` for an entry, exactly as the default `/trains` view works
@@ -184,107 +166,6 @@ pub(crate) fn service_mode(
     })
 }
 
-/// One public call at one of the line's stations.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OnLineStop {
-    pub crs: String,
-    /// Public departure, else public arrival (minutes after midnight of
-    /// the service date).
-    pub minute: i32,
-    /// Public arrival, else public departure -- when the train is AT the
-    /// station; the run ends at its last stop's arrival.
-    pub arrival_minute: i32,
-}
-
-/// The line's stations as membership sees them: catalogue CRS plus the
-/// timetable's alias CRS.
-pub(crate) struct LineStations {
-    pub(crate) stations: HashSet<String>,
-    pub(crate) aliases: HashMap<String, String>,
-}
-
-impl LineStations {
-    pub(crate) fn from_definition(line: &common::LineDefinition) -> Self {
-        Self {
-            stations: line.stations.iter().map(|s| s.crs.to_uppercase()).collect(),
-            aliases: line
-                .crs_aliases
-                .iter()
-                .map(|(from, to)| (from.to_uppercase(), to.to_uppercase()))
-                .collect(),
-        }
-    }
-
-    /// The catalogue CRS a timetable CRS counts as, if it is on the line.
-    fn station(&self, crs: &str) -> Option<String> {
-        if self.stations.contains(crs) {
-            return Some(crs.to_string());
-        }
-        self.aliases
-            .get(crs)
-            .filter(|to| self.stations.contains(to.as_str()))
-            .cloned()
-    }
-}
-
-fn tiploc_crs<'a>(tiploc_to_crs: &'a HashMap<String, String>, tiploc: &str) -> Option<&'a str> {
-    tiploc_to_crs
-        .get(&tiploc.trim().to_uppercase())
-        .map(String::as_str)
-}
-
-/// A train's public calls at the line's stations, in order, consecutive
-/// calls at one station (several TIPLOCs, e.g. platform groups) merged.
-pub(crate) fn on_line_stops(
-    calling_points: &[schedule_query::CallingPoint],
-    tiploc_to_crs: &HashMap<String, String>,
-    line: &LineStations,
-) -> Vec<OnLineStop> {
-    let mut stops: Vec<OnLineStop> = Vec::new();
-    for cp in calling_points {
-        let departure = cp
-            .public_departure
-            .map(|t| minute_of(t, cp.departure_day_offset()));
-        let arrival = cp.public_arrival.map(|t| minute_of(t, cp.day_offset));
-        let Some(minute) = departure.or(arrival) else {
-            continue;
-        };
-        let Some(crs) = tiploc_crs(tiploc_to_crs, &cp.tiploc).and_then(|crs| line.station(crs))
-        else {
-            continue;
-        };
-        if let Some(last) = stops.last_mut().filter(|s| s.crs == crs) {
-            last.minute = minute;
-            continue;
-        }
-        stops.push(OnLineStop {
-            crs,
-            minute,
-            arrival_minute: arrival.unwrap_or(minute),
-        });
-    }
-    stops
-}
-
-/// The schedule's first or last bookable station: the nearest calling
-/// point (from the given end) whose TIPLOC resolves to a real station CRS.
-/// Walks past depots, junctions and pseudo-CRS (`X..`) ends, which is what
-/// left 379 South West Main Line rows without a destination.
-pub(crate) fn endpoint_crs<'a>(
-    mut calling_points: impl Iterator<Item = &'a schedule_query::CallingPoint>,
-    tiploc_to_crs: &HashMap<String, String>,
-) -> Option<String> {
-    calling_points.find_map(|cp| {
-        let calls = cp.public_arrival.is_some()
-            || cp.public_departure.is_some()
-            || cp.booked_arrival.is_some()
-            || cp.booked_departure.is_some();
-        tiploc_crs(tiploc_to_crs, &cp.tiploc)
-            .filter(|crs| calls && queries::is_bookable_crs(crs))
-            .map(str::to_string)
-    })
-}
-
 /// Is a train with this on-line span running on the line at `at`?
 /// Between its first on-line call and its last on-line arrival (pushed back
 /// by a known delay), not cancelled, and not reported as finished.
@@ -299,6 +180,16 @@ pub(crate) fn is_running(
     }
     let delay = live.and_then(|l| l.delay_minutes).unwrap_or(0).max(0);
     due_minute <= at && at <= end_minute + delay
+}
+
+/// Could a train be running at `at`, before its live state is known? Due
+/// at or before `at`, and its last on-line arrival at most the delay
+/// grace before it -- its whole real span, however long the run.
+pub(crate) fn is_running_candidate(row: &SummaryRow, at: i32) -> bool {
+    match (row.due_minute, row.end_minute()) {
+        (Some(due), Some(end)) => due <= at && at <= end + RUNNING_DELAY_GRACE_MINUTES,
+        _ => false,
+    }
 }
 
 /// The compact live status the summary carries.
@@ -326,7 +217,7 @@ impl From<&trains::PublicTrainState> for LiveSummary {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StationRef {
+pub(crate) struct StationRef {
     crs: String,
     name: Option<String>,
 }
@@ -339,16 +230,26 @@ struct StopJson {
     day_offset: i32,
 }
 
+/// A time with its day offset, as the API writes `lineDue`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DueJson {
+pub(crate) struct DueJson {
     time: String,
     day_offset: i32,
 }
 
+impl DueJson {
+    pub(crate) fn from_minute(minute: i32) -> Self {
+        Self {
+            time: format_minute(minute.rem_euclid(DAY)),
+            day_offset: minute.div_euclid(DAY),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TrainJson {
+pub(crate) struct TrainJson {
     uid: String,
     operator: Option<String>,
     /// `serviceMode` and `liveTracking`, as on every schedule surface.
@@ -365,7 +266,7 @@ struct TrainJson {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LineStationJson {
+pub(crate) struct LineStationJson {
     crs: String,
     name: Option<String>,
     role: String,
@@ -399,87 +300,76 @@ struct SummaryJson {
     running: Option<Vec<TrainJson>>,
 }
 
-/// One population entry, worked out.
-struct Candidate {
-    row: queries::LineTrainSummaryRow,
-    uid: String,
-    due: Option<i32>,
-    stops: Vec<OnLineStop>,
-    origin: Option<String>,
-    destination: Option<String>,
+/// Does `row` match the `direction` filter? A row without a direction
+/// matches only no filter.
+pub(crate) fn direction_matches(row: &SummaryRow, directions: Option<&[String]>) -> bool {
+    directions.is_none_or(|d| {
+        row.direction
+            .as_deref()
+            .is_some_and(|own| d.iter().any(|x| x == own))
+    })
 }
 
-impl Candidate {
-    fn end_minute(&self) -> Option<i32> {
-        self.stops.last().map(|s| s.arrival_minute)
-    }
-
-    fn direction_matches(&self, directions: Option<&[String]>) -> bool {
-        directions.is_none_or(|d| {
-            self.row
-                .direction
-                .as_deref()
-                .is_some_and(|own| d.iter().any(|x| x == own))
-        })
-    }
+/// The catalogue line `id` names, if `api`'s catalogue has it.
+pub(crate) fn catalogue_line<'a>(app: &'a App, id: &str) -> Option<&'a common::LineDefinition> {
+    app.config.lines.iter().find(|l| l.id == id)
 }
 
-fn parse_due(row: &queries::LineTrainSummaryRow) -> Option<i32> {
-    let time = NaiveTime::parse_from_str(row.line_due_time.as_deref()?, "%H:%M:%S").ok()?;
-    let offset = u8::try_from(row.line_due_day_offset.unwrap_or(0)).ok()?;
-    Some(minute_of(time, offset))
+/// Where a read came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowSource {
+    /// `line_train_summaries`.
+    Table,
+    /// The population JSONB (no current table rows).
+    Population,
 }
 
-/// Builds the summary response for `/public/lines/{id}/trains?view=summary`.
-/// `None` when the line has no population for the date (the route's 404).
-#[expect(
-    clippy::too_many_lines,
-    reason = "one linear pipeline: rows, crosswalk, window, live, names, body"
-)]
-pub(crate) async fn build(
+/// One line's rows for one date, narrowed to `scopes`, with stops and
+/// ends for the rows `ship` names: from `line_train_summaries` when it
+/// holds current rows, else worked out from the population. `None` when
+/// there is no population (the route's 404).
+pub(crate) async fn load_rows(
     app: &App,
     id: &str,
     service_date: chrono::NaiveDate,
-    scopes: Vec<String>,
-    params: &SummaryParams,
-) -> anyhow::Result<Option<axum::response::Response>> {
+    scopes: Option<&[String]>,
+    ship: ShipRule,
+) -> anyhow::Result<Option<(Vec<SummaryRow>, bool, RowSource)>> {
+    let stations = LineStations::for_line(catalogue_line(app, id));
+    let fingerprint = lts::derivation_fingerprint(&stations);
+    if let Some((rows, has_scope)) =
+        lts::list_summary_rows(&app.database, id, service_date, &fingerprint, scopes, ship).await?
+    {
+        return Ok(Some((rows, has_scope, RowSource::Table)));
+    }
     let Some(queries::LineTrainSummaryRows { rows, has_scope }) =
-        queries::list_line_train_summary_rows(
-            &app.database,
-            id,
-            service_date,
-            Some(&scopes),
-            calling_point_range(params.window, params.at),
-        )
-        .await?
+        queries::list_line_train_summary_rows(&app.database, id, service_date, scopes, ship)
+            .await?
     else {
         return Ok(None);
     };
-
-    let catalogue_line = app.config.lines.iter().find(|l| l.id == id);
-    let line_stations = catalogue_line.map_or_else(
-        || LineStations {
-            stations: HashSet::new(),
-            aliases: HashMap::new(),
-        },
-        LineStations::from_definition,
-    );
-
     // Decode the calling points that came back, then resolve every TIPLOC
     // they name in one query.
-    let decoded: Vec<(
-        queries::LineTrainSummaryRow,
-        Vec<schedule_query::CallingPoint>,
-    )> = rows
+    let decoded: Vec<(lts::EntryFields, Vec<schedule_query::CallingPoint>)> = rows
         .into_iter()
-        .filter(|row| row.uid.is_some())
-        .map(|mut row| {
+        .filter_map(|row| {
             let cps = row
                 .calling_points_json
-                .take()
-                .and_then(|text| serde_json::from_str(&text).ok())
+                .as_deref()
+                .and_then(|text| serde_json::from_str(text).ok())
                 .unwrap_or_default();
-            (row, cps)
+            Some((
+                lts::EntryFields {
+                    uid: row.uid?,
+                    operator_atoc: row.operator_atoc,
+                    train_status: row.train_status,
+                    scope: row.scope,
+                    direction: row.direction,
+                    line_due_time: row.line_due_time,
+                    line_due_day_offset: row.line_due_day_offset,
+                },
+                cps,
+            ))
         })
         .collect();
     let tiplocs: Vec<String> = decoded
@@ -489,30 +379,160 @@ pub(crate) async fn build(
         .into_iter()
         .collect();
     let tiploc_to_crs = queries::crs_for_tiplocs_batch(&app.database, &tiplocs).await?;
-
-    let candidates: Vec<Candidate> = decoded
+    let rows = decoded
         .into_iter()
-        .map(|(row, cps)| {
-            let stops = on_line_stops(&cps, &tiploc_to_crs, &line_stations);
-            // A population from before `line_due` existed: the first
-            // on-line public call is the same thing.
-            let due = parse_due(&row).or_else(|| {
-                (!has_scope)
-                    .then(|| stops.first().map(|s| s.minute))
-                    .flatten()
-            });
-            Candidate {
-                uid: row.uid.clone().unwrap_or_default(),
-                origin: endpoint_crs(cps.iter(), &tiploc_to_crs),
-                destination: endpoint_crs(cps.iter().rev(), &tiploc_to_crs),
-                row,
-                due,
-                stops,
-            }
-        })
+        .map(|(fields, cps)| lts::derive_row(fields, &cps, has_scope, &tiploc_to_crs, &stations))
         .collect();
+    Ok(Some((rows, has_scope, RowSource::Population)))
+}
 
-    let in_window = |c: &Candidate| match (params.window, c.due) {
+/// Live state and service modes for the trains a response names.
+pub(crate) struct LiveDecor {
+    live: HashMap<String, LiveSummary>,
+    modes: HashMap<String, ServiceMode>,
+}
+
+impl LiveDecor {
+    pub(crate) async fn load(
+        app: &App,
+        service_date: chrono::NaiveDate,
+        uids: Vec<String>,
+    ) -> anyhow::Result<Self> {
+        let mut live_states =
+            trains::get_public_train_states_for_line(&app.database, &uids, service_date).await?;
+        crate::data::train_reasons::attach_to_public_states(&app.database, &mut live_states).await;
+        // Service modes for the same trains, from `schedule_services` (a
+        // read failure falls back to the Train Status, as the default view
+        // does).
+        let modes =
+            crate::data::schedule_services::modes_for_or_trains(&app.database, service_date, &uids)
+                .await;
+        Ok(Self {
+            live: live_states
+                .iter()
+                .map(|s| (s.train_uid.clone(), LiveSummary::from(s)))
+                .collect(),
+            modes,
+        })
+    }
+
+    pub(crate) fn live(&self, uid: &str) -> Option<&LiveSummary> {
+        self.live.get(uid)
+    }
+}
+
+/// Renders rows: live state, modes and station names.
+pub(crate) struct Renderer<'a> {
+    pub(crate) decor: &'a LiveDecor,
+    pub(crate) names: HashMap<String, String>,
+}
+
+impl Renderer<'_> {
+    /// The station names a response naming `rows` needs: the line's own
+    /// stations and every row's ends and on-line stops.
+    pub(crate) async fn load_names<'r>(
+        app: &App,
+        line: Option<&common::LineDefinition>,
+        rows: impl Iterator<Item = &'r SummaryRow>,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        let mut name_crs: HashSet<String> = line
+            .map(|l| l.stations.iter().map(|s| s.crs.to_uppercase()).collect())
+            .unwrap_or_default();
+        for c in rows {
+            name_crs.extend(c.origin_crs.iter().cloned());
+            name_crs.extend(c.destination_crs.iter().cloned());
+            name_crs.extend(c.stops.iter().map(|s| s.crs.clone()));
+        }
+        let name_crs: Vec<String> = name_crs.into_iter().collect();
+        queries::station_names_for_crs_batch(&app.database, &name_crs).await
+    }
+
+    pub(crate) fn station_ref(&self, crs: &str) -> StationRef {
+        StationRef {
+            crs: crs.to_string(),
+            name: self.names.get(crs).cloned(),
+        }
+    }
+
+    pub(crate) fn train_json(&self, c: &SummaryRow) -> TrainJson {
+        // Never without a destination when the train calls on the line:
+        // the last on-line call stands in for an unresolvable schedule end.
+        let destination = c
+            .destination_crs
+            .as_deref()
+            .or_else(|| c.stops.last().map(|s| s.crs.as_str()))
+            .map(|crs| self.station_ref(crs));
+        let origin = c
+            .origin_crs
+            .as_deref()
+            .or_else(|| c.stops.first().map(|s| s.crs.as_str()))
+            .map(|crs| self.station_ref(crs));
+        TrainJson {
+            uid: c.uid.clone(),
+            operator: c.operator_atoc.clone(),
+            service_mode: ServiceModeFields(service_mode(
+                &c.uid,
+                c.train_status.as_deref(),
+                &self.decor.modes,
+            )),
+            scope: c.scope.clone(),
+            direction: c.direction.clone(),
+            line_due: c.due_minute.map(DueJson::from_minute),
+            origin,
+            destination,
+            on_line_stops: c
+                .stops
+                .iter()
+                .map(|s| StopJson {
+                    crs: s.crs.clone(),
+                    time: format_minute(s.minute % DAY),
+                    day_offset: s.minute / DAY,
+                })
+                .collect(),
+            live: self.decor.live(&c.uid).cloned(),
+        }
+    }
+
+    /// The line's catalogue stations, in order, with names and roles.
+    pub(crate) fn line_stations(
+        &self,
+        line: Option<&common::LineDefinition>,
+    ) -> Vec<LineStationJson> {
+        line.map(|l| {
+            l.stations
+                .iter()
+                .map(|s| LineStationJson {
+                    crs: s.crs.to_uppercase(),
+                    name: self.names.get(&s.crs.to_uppercase()).cloned(),
+                    role: s.role.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+}
+
+/// Builds the summary response for `/public/lines/{id}/trains?view=summary`.
+/// `None` when the line has no population for the date (the route's 404).
+pub(crate) async fn build(
+    app: &App,
+    id: &str,
+    service_date: chrono::NaiveDate,
+    scopes: Vec<String>,
+    params: &SummaryParams,
+) -> anyhow::Result<Option<axum::response::Response>> {
+    let ship = ShipRule {
+        window: params.window,
+        at: params.at,
+    };
+    let Some((candidates, has_scope, _source)) =
+        load_rows(app, id, service_date, Some(&scopes), ship).await?
+    else {
+        return Ok(None);
+    };
+    let catalogue_line = catalogue_line(app, id);
+
+    let in_window = |c: &SummaryRow| match (params.window, c.due_minute) {
         (None, _) => true,
         (Some((from, to)), Some(due)) => from <= due && due < to,
         (Some(_), None) => false,
@@ -520,36 +540,27 @@ pub(crate) async fn build(
     let mut counts: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     for c in candidates.iter().filter(|c| in_window(c)) {
         *counts
-            .entry(c.row.scope.clone().unwrap_or_else(|| "unknown".to_string()))
+            .entry(c.scope.clone().unwrap_or_else(|| "unknown".to_string()))
             .or_default()
-            .entry(
-                c.row
-                    .direction
-                    .clone()
-                    .unwrap_or_else(|| "none".to_string()),
-            )
+            .entry(c.direction.clone().unwrap_or_else(|| "none".to_string()))
             .or_default() += 1;
     }
 
     let directions = params.directions.as_deref();
-    let sort_key = |c: &Candidate| (c.due.unwrap_or(i32::MAX), c.uid.clone());
-    let mut listed: Vec<&Candidate> = candidates
+    let sort_key = |c: &SummaryRow| (c.due_minute.unwrap_or(i32::MAX), c.uid.clone());
+    let mut listed: Vec<&SummaryRow> = candidates
         .iter()
-        .filter(|c| in_window(c) && c.direction_matches(directions))
+        .filter(|c| in_window(c) && direction_matches(c, directions))
         .collect();
     listed.sort_by_key(|c| sort_key(c));
     let truncated = listed.len() > params.limit;
     listed.truncate(params.limit);
 
-    let mut running_candidates: Vec<&Candidate> = match params.at {
+    let mut running_candidates: Vec<&SummaryRow> = match params.at {
         None => Vec::new(),
         Some(at) => candidates
             .iter()
-            .filter(|c| c.direction_matches(directions))
-            .filter(|c| match (c.due, c.end_minute()) {
-                (Some(due), Some(end)) => due <= at && at <= end + RUNNING_DELAY_GRACE_MINUTES,
-                _ => false,
-            })
+            .filter(|c| direction_matches(c, directions) && is_running_candidate(c, at))
             .collect(),
     };
     running_candidates.sort_by_key(|c| sort_key(c));
@@ -562,88 +573,27 @@ pub(crate) async fn build(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let mut live_states =
-        trains::get_public_train_states_for_line(&app.database, &live_uids, service_date).await?;
-    crate::data::train_reasons::attach_to_public_states(&app.database, &mut live_states).await;
-    // Service modes for the same trains, from `schedule_services` (a read
-    // failure falls back to the Train Status, as the default view does).
-    let service_modes = crate::data::schedule_services::modes_for_or_trains(
-        &app.database,
-        service_date,
-        &live_uids,
-    )
-    .await;
-    let live_by_uid: HashMap<String, LiveSummary> = live_states
-        .iter()
-        .map(|s| (s.train_uid.clone(), LiveSummary::from(s)))
-        .collect();
+    let decor = LiveDecor::load(app, service_date, live_uids).await?;
 
-    let running: Option<Vec<&Candidate>> = params.at.map(|at| {
+    let running: Option<Vec<&SummaryRow>> = params.at.map(|at| {
         running_candidates
             .into_iter()
-            .filter(|c| match (c.due, c.end_minute()) {
-                (Some(due), Some(end)) => is_running(due, end, at, live_by_uid.get(&c.uid)),
+            .filter(|c| match (c.due_minute, c.end_minute()) {
+                (Some(due), Some(end)) => is_running(due, end, at, decor.live(&c.uid)),
                 _ => false,
             })
             .collect()
     });
 
-    // Station names for everything the body names.
-    let mut name_crs: HashSet<String> = catalogue_line
-        .map(|l| l.stations.iter().map(|s| s.crs.to_uppercase()).collect())
-        .unwrap_or_default();
-    for c in listed.iter().chain(running.iter().flatten()) {
-        name_crs.extend(c.origin.iter().cloned());
-        name_crs.extend(c.destination.iter().cloned());
-        name_crs.extend(c.stops.iter().map(|s| s.crs.clone()));
-    }
-    let name_crs: Vec<String> = name_crs.into_iter().collect();
-    let names = queries::station_names_for_crs_batch(&app.database, &name_crs).await?;
-    let station_ref = |crs: &str| StationRef {
-        crs: crs.to_string(),
-        name: names.get(crs).cloned(),
-    };
-
-    let train_json = |c: &Candidate| -> TrainJson {
-        // Never without a destination when the train calls on the line:
-        // the last on-line call stands in for an unresolvable schedule end.
-        let destination = c
-            .destination
-            .as_deref()
-            .or_else(|| c.stops.last().map(|s| s.crs.as_str()))
-            .map(station_ref);
-        let origin = c
-            .origin
-            .as_deref()
-            .or_else(|| c.stops.first().map(|s| s.crs.as_str()))
-            .map(station_ref);
-        TrainJson {
-            uid: c.uid.clone(),
-            operator: c.row.operator_atoc.clone(),
-            service_mode: ServiceModeFields(service_mode(
-                &c.uid,
-                c.row.train_status.as_deref(),
-                &service_modes,
-            )),
-            scope: c.row.scope.clone(),
-            direction: c.row.direction.clone(),
-            line_due: c.due.map(|due| DueJson {
-                time: format_minute(due % DAY),
-                day_offset: due / DAY,
-            }),
-            origin,
-            destination,
-            on_line_stops: c
-                .stops
-                .iter()
-                .map(|s| StopJson {
-                    crs: s.crs.clone(),
-                    time: format_minute(s.minute % DAY),
-                    day_offset: s.minute / DAY,
-                })
-                .collect(),
-            live: live_by_uid.get(&c.uid).cloned(),
-        }
+    let names = Renderer::load_names(
+        app,
+        catalogue_line,
+        listed.iter().chain(running.iter().flatten()).copied(),
+    )
+    .await?;
+    let renderer = Renderer {
+        decor: &decor,
+        names,
     };
 
     let body = SummaryJson {
@@ -657,22 +607,11 @@ pub(crate) async fn build(
         }),
         at: params.at.map(format_minute),
         directions: params.directions.clone(),
-        stations: catalogue_line
-            .map(|l| {
-                l.stations
-                    .iter()
-                    .map(|s| LineStationJson {
-                        crs: s.crs.to_uppercase(),
-                        name: names.get(&s.crs.to_uppercase()).cloned(),
-                        role: s.role.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        stations: renderer.line_stations(catalogue_line),
         counts,
         truncated,
-        trains: listed.iter().map(|c| train_json(c)).collect(),
-        running: running.map(|r| r.iter().map(|c| train_json(c)).collect()),
+        trains: listed.iter().map(|c| renderer.train_json(c)).collect(),
+        running: running.map(|r| r.iter().map(|c| renderer.train_json(c)).collect()),
     };
     Ok(Some(super::lines::with_scope_applied(
         axum::Json(body),
@@ -700,6 +639,7 @@ pub(crate) fn bad_request(message: String) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::line_train_summaries::{OnLineStop, endpoint_crs, on_line_stops};
 
     fn cp(
         tiploc: &str,
@@ -808,20 +748,41 @@ mod tests {
     }
 
     #[test]
-    fn calling_point_range_takes_in_running_candidates() {
-        assert_eq!(calling_point_range(None, None), None);
-        assert_eq!(
-            calling_point_range(Some((600, 750)), None),
-            Some((600, 750))
-        );
-        assert_eq!(
-            calling_point_range(Some((600, 750)), Some(630)),
-            Some((630 - RUNNING_LOOKBACK_MINUTES, 750))
-        );
-        assert_eq!(
-            calling_point_range(None, Some(630)),
-            Some((630 - RUNNING_LOOKBACK_MINUTES, 631))
-        );
+    fn running_candidates_use_the_real_span_not_a_fixed_look_back() {
+        let row = |due: i32, end: i32| SummaryRow {
+            uid: "C1".into(),
+            due_minute: Some(due),
+            stops: vec![
+                OnLineStop {
+                    crs: "EDB".into(),
+                    minute: due,
+                    arrival_minute: due,
+                },
+                OnLineStop {
+                    crs: "PLY".into(),
+                    minute: end,
+                    arrival_minute: end,
+                },
+            ],
+            ..SummaryRow::default()
+        };
+        // Edinburgh 06:00 to Plymouth 15:30: running at 14:00, nine hours
+        // after it reached the line.
+        assert!(is_running_candidate(&row(360, 930), 840));
+        // Late running is left to the live delay, up to the grace.
+        assert!(is_running_candidate(
+            &row(360, 930),
+            930 + RUNNING_DELAY_GRACE_MINUTES
+        ));
+        assert!(!is_running_candidate(
+            &row(360, 930),
+            931 + RUNNING_DELAY_GRACE_MINUTES
+        ));
+        assert!(!is_running_candidate(&row(360, 930), 359));
+        // No on-line calls: never running.
+        let mut silent = row(360, 930);
+        silent.stops.clear();
+        assert!(!is_running_candidate(&silent, 400));
     }
 
     #[test]

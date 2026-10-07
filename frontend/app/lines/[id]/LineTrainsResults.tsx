@@ -9,6 +9,7 @@ import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import { LastUpdated } from '@/components/LastUpdated';
 import { formatDate, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import {
+  addCounts,
   DAY_MINUTES,
   directionLabel,
   directionTabs,
@@ -19,9 +20,15 @@ import {
   hubStations,
   lineHref,
   lineTimeMinute,
+  lineTimetableLink,
   londonMinuteOfDay,
   paramsForHref,
+  PHONE_HUB_LINKS,
+  previousDate,
+  previousDayWindow,
+  rankHubs,
   resolveWindow,
+  shiftToNextDay,
   sortByLineTime,
   splitRunning,
   stationName,
@@ -167,15 +174,19 @@ function WindowNav({
   );
 }
 
+/** A train's service date: the page's, or the previous day's for a
+ * train that started before midnight (see `LineTrainsResults`). */
+type DateFor = (train: LineTrainSummary) => string;
+
 function TrainList({
   trains,
-  date,
+  dateFor,
   stations,
   window,
   label,
 }: {
   trains: LineTrainSummary[];
-  date: string;
+  dateFor: DateFor;
   stations: LineCatalogueStation[];
   window?: TrainWindow;
   label: string;
@@ -185,7 +196,16 @@ function TrainList({
       {trains.map((train) => {
         const minute = lineTimeMinute(train.lineDue);
         const beyondPhone = window !== undefined && minute !== null && minute >= window.phoneTo;
-        return <LineTrainRow key={train.uid} train={train} date={date} stations={stations} beyondPhone={beyondPhone} />;
+        const date = dateFor(train);
+        return (
+          <LineTrainRow
+            key={`${date}-${train.uid}`}
+            train={train}
+            date={date}
+            stations={stations}
+            beyondPhone={beyondPhone}
+          />
+        );
       })}
     </ul>
   );
@@ -195,11 +215,11 @@ function TrainList({
  * `<details>`, keyboard- and screen-reader-accessible without script). */
 function PatternGroups({
   trains,
-  date,
+  dateFor,
   stations,
 }: {
   trains: LineTrainSummary[];
-  date: string;
+  dateFor: DateFor;
   stations: LineCatalogueStation[];
 }) {
   const groups = groupPatterns(trains);
@@ -218,7 +238,7 @@ function PatternGroups({
             </Text>
           </summary>
           <div className={classes.detailsBody}>
-            <TrainList trains={group.trains} date={date} stations={stations} label={group.route} />
+            <TrainList trains={group.trains} dateFor={dateFor} stations={stations} label={group.route} />
           </div>
         </details>
       ))}
@@ -231,11 +251,11 @@ function PatternGroups({
  * linking to its page. Collapsed by default. */
 function SharedGroup({
   trains,
-  date,
+  dateFor,
   operatorName,
 }: {
   trains: LineTrainSummary[];
-  date: string;
+  dateFor: DateFor;
   operatorName: (code: string) => string;
 }) {
   if (trains.length === 0) return null;
@@ -258,9 +278,9 @@ function SharedGroup({
                 const minute = lineTimeMinute(train.lineDue);
                 const time = minute === null ? '--:--' : formatClock(minute);
                 return (
-                  <li key={train.uid}>
+                  <li key={`${dateFor(train)}-${train.uid}`}>
                     <TextLink
-                      href={`/train/${encodeURIComponent(train.uid)}/${date}`}
+                      href={`/train/${encodeURIComponent(train.uid)}/${dateFor(train)}`}
                       ariaLabel={`${time} ${group.operator} ${serviceNoun(train.serviceMode).toLowerCase()} to ${train.destination?.name ?? train.destination?.crs ?? 'unknown'}`}
                     >
                       {time}
@@ -287,14 +307,43 @@ function SharedGroup({
 function HubLinks({ stations }: { stations: LineCatalogueStation[] }) {
   const hubs = hubStations(stations);
   if (hubs.length === 0) return null;
+  const link = (hub: LineCatalogueStation) => (
+    <TextLink key={hub.crs} href={`/stations/${hub.crs}#departures`}>
+      Other trains at {hub.name ?? hub.crs} →
+    </TextLink>
+  );
+  // A phone gets the most important few and the rest behind a disclosure
+  // (CSS picks the variant, so no JavaScript is needed); a desktop all.
+  const ranked = rankHubs(hubs);
+  const top = ranked.slice(0, PHONE_HUB_LINKS);
+  const rest = ranked.slice(PHONE_HUB_LINKS);
   return (
-    <Group gap="md" wrap="wrap">
-      {hubs.map((hub) => (
-        <TextLink key={hub.crs} href={`/stations/${hub.crs}#departures`}>
-          Other trains at {hub.name ?? hub.crs} →
-        </TextLink>
-      ))}
-    </Group>
+    <>
+      <div className={classes.desktopBlock} data-hubs="desktop">
+        <Group gap="md" wrap="wrap">
+          {hubs.map(link)}
+        </Group>
+      </div>
+      <div className={classes.phoneBlock} data-hubs="phone">
+        <Stack gap="xs">
+          <Group gap="md" wrap="wrap">
+            {top.map(link)}
+          </Group>
+          {rest.length > 0 && (
+            <details className={classes.details}>
+              <summary>
+                <Text span size="sm">
+                  More stations ({rest.length})
+                </Text>
+              </summary>
+              <Stack gap="xs" className={classes.detailsBody}>
+                {rest.map(link)}
+              </Stack>
+            </details>
+          )}
+        </Stack>
+      </div>
+    </>
   );
 }
 
@@ -484,23 +533,63 @@ export async function LineTrainsResults({
   const window = resolveWindow(params.at ?? nowMinute);
   const pair = params.from && params.to && params.from !== params.to ? { from: params.from, to: params.to } : null;
 
-  let summary: LineTrainsSummary;
-  try {
-    summary = await getLineTrainsSummary(id, {
+  const direction = pair ? undefined : (params.dir ?? undefined);
+  const at = liveView ? nowMinute : null;
+  // Before 03:00 the previous service date's trains are still running
+  // (they belong to the date they started on): its window, 24 h on, is
+  // fetched alongside today's and merged in. Its failure only loses them.
+  const previous = previousDayWindow(window, at);
+  const yesterday = previousDate(date);
+  const [current, earlier] = await Promise.allSettled([
+    getLineTrainsSummary(id, {
       date,
       from: formatApiMinute(window.from),
       to: formatApiMinute(window.to),
-      at: liveView ? formatApiMinute(nowMinute) : undefined,
-      direction: pair ? undefined : (params.dir ?? undefined),
-    });
-  } catch (err) {
-    if (err instanceof ApiNotFoundError) {
+      at: at === null ? undefined : formatApiMinute(at),
+      direction,
+    }),
+    previous
+      ? getLineTrainsSummary(id, {
+          date: yesterday,
+          from: formatApiMinute(previous.from),
+          to: formatApiMinute(previous.to),
+          at: previous.at === null ? undefined : formatApiMinute(previous.at),
+          direction,
+        })
+      : Promise.resolve(null),
+  ]);
+  if (current.status === 'rejected') {
+    if (current.reason instanceof ApiNotFoundError) {
       return <Empty>No scheduled train data is available for this line today.</Empty>;
     }
     return <Empty>Today&apos;s trains aren&apos;t available right now.</Empty>;
   }
+  const prev = earlier.status === 'fulfilled' ? earlier.value : null;
+  const prevTrains = new WeakSet<LineTrainSummary>();
+  const fromPrev = (trains: LineTrainSummary[] | null | undefined) =>
+    (trains ?? []).map((train) => {
+      const shifted = shiftToNextDay(train);
+      prevTrains.add(shifted);
+      return shifted;
+    });
+  const summary: LineTrainsSummary = prev
+    ? {
+        ...current.value,
+        counts: addCounts(current.value.counts, prev.counts),
+        truncated: current.value.truncated || prev.truncated,
+        trains: [...fromPrev(prev.trains), ...current.value.trains],
+        running:
+          current.value.running === null && prev.running === null
+            ? null
+            : sortByLineTime([...fromPrev(prev.running), ...(current.value.running ?? [])]),
+      }
+    : current.value;
+  const dateFor: DateFor = (train) => (prevTrains.has(train) ? yesterday : date);
 
   const stations = summary.stations;
+  const timetableLink = (
+    <TextLink href={lineTimetableLink(id, params, window.from)}>Full day&apos;s timetable →</TextLink>
+  );
   const header = (
     <Group gap="xs" justify="space-between" wrap="wrap">
       <Text size="xs" c="dimmed">
@@ -525,6 +614,7 @@ export async function LineTrainsResults({
           summary={summary}
           result={result}
         />
+        {timetableLink}
       </Stack>
     );
   }
@@ -554,7 +644,7 @@ export async function LineTrainsResults({
           <SectionTitle order={3}>
             Running now{heading ? ` · ${heading}` : ''} ({running.length})
           </SectionTitle>
-          <TrainList trains={running} date={date} stations={stations} label="Running now" />
+          <TrainList trains={running} dateFor={dateFor} stations={stations} label="Running now" />
         </Stack>
       )}
 
@@ -576,10 +666,17 @@ export async function LineTrainsResults({
         {upcoming.length === 0 ? (
           <Empty>No more of this line&apos;s trains are due in this window.</Empty>
         ) : params.view === 'routes' ? (
-          <PatternGroups trains={upcoming} date={date} stations={stations} />
+          <PatternGroups trains={upcoming} dateFor={dateFor} stations={stations} />
         ) : (
-          <TrainList trains={upcoming} date={date} stations={stations} window={window} label="Trains due on the line" />
+          <TrainList
+            trains={upcoming}
+            dateFor={dateFor}
+            stations={stations}
+            window={window}
+            label="Trains due on the line"
+          />
         )}
+        {timetableLink}
         {summary.truncated && (
           <Text size="sm" c="dimmed">
             Only the first {summary.trains.length} trains are shown; use Later for the rest.
@@ -593,7 +690,7 @@ export async function LineTrainsResults({
         )}
       </Stack>
 
-      <SharedGroup trains={shared} date={date} operatorName={operatorName} />
+      <SharedGroup trains={shared} dateFor={dateFor} operatorName={operatorName} />
       <HubLinks stations={stations} />
     </Stack>
   );

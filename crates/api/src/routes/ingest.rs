@@ -904,18 +904,37 @@ struct SchedulePopulationBody {
     population: Box<serde_json::value::RawValue>,
 }
 
+/// Also rewrites the line's `line_train_summaries` rows for the date, in
+/// the same transaction, when the population changed (or the stored rows
+/// were derived against another catalogue) -- see
+/// `data::line_train_summaries::upsert_population_with_summaries`. The
+/// population upsert itself is exactly
+/// `queries::upsert_schedule_line_population`'s.
 async fn post_schedule_line_population(
     State(app): State<App>,
     Json(body): Json<SchedulePopulationBody>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    queries::upsert_schedule_line_population(
+    let line = app.config.lines.iter().find(|l| l.id == body.line_id);
+    let started = std::time::Instant::now();
+    let outcome = crate::data::line_train_summaries::upsert_population_with_summaries(
         &app.database,
+        line,
         &body.line_id,
         body.service_date,
-        body.population.get(),
+        body.population.into(),
     )
     .await
     .map_err(internal_error)?;
+    if let Some(rows) = outcome.summaries_written {
+        tracing::info!(
+            line_id = %body.line_id,
+            service_date = %body.service_date,
+            population_changed = outcome.population_changed,
+            rows,
+            elapsed_ms = started.elapsed().as_millis(),
+            "line_train_summaries rewritten"
+        );
+    }
     Ok(StatusCode::OK)
 }
 
@@ -1534,6 +1553,12 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture schedule_line_population rows");
+        // The POST route also derives `line_train_summaries` rows.
+        sqlx::query("DELETE FROM line_train_summaries WHERE line_id = $1")
+            .bind(line_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture line_train_summaries rows");
     }
 
     fn sample_body(crs: &str, operator: &str, resolved_at: chrono::DateTime<chrono::Utc>) -> Value {

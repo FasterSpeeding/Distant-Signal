@@ -623,6 +623,7 @@ S" means through `distant_signal_read_shared`.
 | `ingest_freshness` | S | SIU (tfl, tocs) | stations, incidents: SIU | – |
 | `schedule_calling_points_full`, `schedule_destination_departures`, `schedule_network_departures`, `schedule_line_population` | S | – | schedule_reference: SIUD | aggregator: SD (retention); full_coverage_ro: S on `schedule_line_population` |
 | `schedule_services` (2026-10-06), `tiploc_locations` (2026-10-07) | S | – | schedule_reference: SIUD | aggregator: SD on `schedule_services` (retention); notifier: S on `schedule_services` (no live alerts for a bus or ferry) |
+| `line_train_summaries` (2026-10-08; derived with each `schedule_line_population` publish, in its transaction) | S | – | schedule_reference: SIUD | aggregator: SD (retention, with the population). The one-off `backfill_line_train_summaries` runs in the api pod with the api's credentials, so it runs before the api is narrowed (or moves with the writer) |
 | `*_publish_keys` (two tables) | – | – | schedule_reference: SID; EXECUTE `analyze_publish_keys` | – |
 | `schedule_reference_publishes` | S | – | schedule_reference: SI | – |
 | `schedule_feed_ingests` | S | – | schedule_ingest: SI | – |

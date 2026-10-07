@@ -2607,10 +2607,11 @@ pub struct LineTrainSummaryRow {
     /// `line_due.time` as stored (`"HH:MM:SS"`).
     pub line_due_time: Option<String>,
     pub line_due_day_offset: Option<i32>,
-    /// The entry's calling points as raw JSON text: only for entries whose
-    /// `line_due` falls in the requested `[due_from, due_to)` minute range,
-    /// or every entry when the population predates `line_due` (the caller
-    /// then works the due time out itself) or no range was given.
+    /// The entry's calling points as raw JSON text: only for the entries
+    /// the caller's `ShipRule` asks for (see
+    /// [`list_line_train_summary_rows`]), or every entry when the
+    /// population predates `line_due` (the caller then works the due time
+    /// out itself).
     pub calling_points_json: Option<String>,
 }
 
@@ -2624,21 +2625,30 @@ pub struct LineTrainSummaryRows {
 
 /// Every element of one line's population (narrowed to `scopes` like
 /// [`list_line_train_entries`]), projected to its small fields, with the
-/// calling points only for entries due on the line in
-/// `[due_from, due_to)` minutes after the service date's midnight
-/// (`line_due.day_offset * 1440` + its time). `due_range: None` ships every
-/// entry's calling points. Published array order.
+/// calling points only for the entries `ship` names: with no window,
+/// every entry; otherwise entries due on the line in the window (minutes
+/// after the service date's midnight, `line_due.day_offset * 1440` + its
+/// time), and with `at` the running candidates -- due at or before `at`
+/// and whose LAST calling point (an upper bound of the last on-line call:
+/// calling points are in time order) is no more than the delay grace
+/// before `at`, or has no time at all. The caller decides exactly with the
+/// on-line stops, as `line_train_summaries::ShipRule::ships` does on the
+/// table. Published array order.
 ///
 /// The small fields of every entry come back so the caller can count
 /// trains per scope and direction without shipping the calling points of
 /// trains it will not show -- those are nearly all of a population's
 /// bytes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one SQL statement and its row decode; splitting would only scatter the column list"
+)]
 pub async fn list_line_train_summary_rows(
     pool: &PgPool,
     line_id: &str,
     service_date: chrono::NaiveDate,
     scopes: Option<&[String]>,
-    due_range: Option<(i32, i32)>,
+    ship: crate::data::line_train_summaries::ShipRule,
 ) -> Result<Option<LineTrainSummaryRows>> {
     #[expect(
         clippy::type_complexity,
@@ -2666,7 +2676,10 @@ pub async fn list_line_train_summary_rows(
                         THEN (x.e -> 'line_due' ->> 'day_offset')::int ELSE 0 END AS due_offset,
                    CASE WHEN x.e -> 'line_due' ->> 'time' ~ '^\d{{2}}:\d{{2}}'
                         THEN substr(x.e -> 'line_due' ->> 'time', 1, 2)::int * 60
-                             + substr(x.e -> 'line_due' ->> 'time', 4, 2)::int END AS due_minute
+                             + substr(x.e -> 'line_due' ->> 'time', 4, 2)::int END AS due_minute,
+                   -- The last calling point's time (an upper bound of the
+                   -- run's end on the line), NULL when it has none.
+                   x.e -> 'calling_points' -> -1 AS last_cp
             FROM pop
             LEFT JOIN LATERAL jsonb_array_elements(pop.population) WITH ORDINALITY AS x(e, ord)
               ON ($3::text[] IS NULL
@@ -2688,16 +2701,33 @@ pub async fn list_line_train_summary_rows(
                       OR (due_minute IS NOT NULL
                           AND due_offset * 1440 + due_minute >= $4::int
                           AND due_offset * 1440 + due_minute < $5::int)
+                      OR ($6::int IS NOT NULL
+                          AND due_minute IS NOT NULL
+                          AND due_offset * 1440 + due_minute <= $6::int
+                          AND (last_minute IS NULL OR last_minute + $7::int >= $6::int))
                     THEN (e -> 'calling_points')::text END
-        FROM entries
+        FROM (
+            SELECT entries.*,
+                   CASE WHEN last_time ~ '^\d{{2}}:\d{{2}}'
+                        THEN substr(last_time, 1, 2)::int * 60 + substr(last_time, 4, 2)::int
+                             + CASE WHEN jsonb_typeof(last_cp -> 'day_offset') = 'number'
+                                    THEN (last_cp ->> 'day_offset')::int * 1440 ELSE 0 END
+                   END AS last_minute
+            FROM entries,
+                 LATERAL (SELECT COALESCE(last_cp ->> 'public_arrival', last_cp ->> 'booked_arrival',
+                                          last_cp ->> 'public_departure', last_cp ->> 'booked_departure',
+                                          last_cp ->> 'booked_pass') AS last_time) lt
+        ) entries
         ORDER BY ord
         "
     ))
     .bind(line_id)
     .bind(service_date)
     .bind(scopes)
-    .bind(due_range.map(|(from, _)| from))
-    .bind(due_range.map(|(_, to)| to))
+    .bind(ship.window.map(|(from, _)| from))
+    .bind(ship.window.map(|(_, to)| to))
+    .bind(ship.at)
+    .bind(crate::data::line_train_summaries::RUNNING_DELAY_GRACE_MINUTES)
     .fetch_all(pool)
     .await?;
     let Some(has_scope) = rows.first().map(|row| row.1) else {

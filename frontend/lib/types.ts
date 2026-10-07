@@ -2211,6 +2211,35 @@ export interface LineTrainsSummary {
   running: LineTrainSummary[] | null;
 }
 
+/** One train of `GET /public/lines/{id}/timetable`: the summary row, plus
+ * the time it is listed at and its arrival at `to`. */
+export interface LineTimetableTrain extends LineTrainSummary {
+  /** Departure from `from` when given, else `lineDue`. */
+  time: LineTime;
+  /** Arrival at `to`, when `to` was given. */
+  arrival: LineTime | null;
+}
+
+/** `GET /public/lines/{id}/timetable` (2026-10-07): one page of the line's
+ * full-day timetable (`crates/api/src/routes/line_timetable.rs`). */
+export interface LineTimetablePage {
+  lineId: string;
+  date: string;
+  scopeApplied: boolean;
+  scopes: LineTrainScope[];
+  directions: LineDirection[] | null;
+  from: string | null;
+  to: string | null;
+  at: string | null;
+  stations: LineCatalogueStation[];
+  /** The day's trains under `scope`/`from`/`to`, per scope then direction
+   * (`none` when a train has none), before `dir`, `at` and the cursor. */
+  counts: Partial<Record<string, Partial<Record<string, number>>>>;
+  trains: LineTimetableTrain[];
+  /** Pass back as `after`; `null` on the last page. */
+  nextCursor: string | null;
+}
+
 /** One row of `GET /public/trains/search` (`render::calling_point_departure_json`). */
 export interface TrainSearchResult {
   uid: string;

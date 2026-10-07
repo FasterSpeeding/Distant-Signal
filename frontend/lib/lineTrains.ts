@@ -13,6 +13,7 @@ import { isTimetableOnly } from './serviceMode';
 import type {
   LineCatalogueStation,
   LineDirection,
+  LineTimetableTrain,
   LineTime,
   LineTrainSummary,
   LineTrainSummaryLive,
@@ -377,4 +378,192 @@ export function liveStatusLabel(
     return { text: 'On time', tone: 'onTime' };
   }
   return { text: 'Scheduled', tone: 'none' };
+}
+
+/** The query of `GET /public/lines/{id}/timetable`, shared by the server
+ * fetch below and the page's client-side "Load more" (through the
+ * `/api` proxy). Empty values are left out. */
+export function lineTimetableQuery(options: {
+  date: string;
+  dir?: LineDirection | null;
+  from?: string | null;
+  to?: string | null;
+  at?: string | null;
+  scope?: string | null;
+  after?: string | null;
+  limit?: number;
+}): string {
+  const params = new URLSearchParams({ date: options.date });
+  if (options.scope) params.set('scope', options.scope);
+  if (options.dir) params.set('dir', options.dir);
+  if (options.from) params.set('from', options.from);
+  if (options.to) params.set('to', options.to);
+  if (options.at) params.set('at', options.at);
+  if (options.after) params.set('after', options.after);
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  return params.toString();
+}
+
+/** Which trains the full-day timetable lists: the line's own (default),
+ * or other trains running a stretch of it. */
+export type TimetableScope = 'line' | 'shared';
+
+/** `/lines/{id}/timetable`'s URL parameters, sanitised (anything
+ * malformed is dropped, never passed to the API). */
+export interface TimetablePageParams {
+  /** `YYYY-MM-DD`; `null` for today. */
+  date: string | null;
+  dir: LineDirection | null;
+  from: string | null;
+  to: string | null;
+  /** First time listed (minutes after the date's midnight). */
+  at: number | null;
+  scope: TimetableScope;
+  /** A `nextCursor` (the no-JavaScript "next trains" link). */
+  after: string | null;
+}
+
+function validDate(raw: string | undefined): string | null {
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const parsed = new Date(`${raw}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== raw ? null : raw;
+}
+
+export function parseTimetableParams(raw: Record<string, string | string[] | undefined>): TimetablePageParams {
+  const line = parseLinePageParams(raw);
+  const after = first(raw.after);
+  return {
+    date: validDate(first(raw.date)),
+    dir: line.dir,
+    from: line.from,
+    to: line.to,
+    at: line.at,
+    scope: first(raw.scope) === 'shared' ? 'shared' : 'line',
+    after: after && /^\d{1,4}\.[A-Za-z0-9-]{1,16}$/.test(after) ? after : null,
+  };
+}
+
+/** `/lines/{id}/timetable` with `params`, empty values (and the default
+ * scope) left out. */
+export function timetableHref(id: string, params: Partial<Record<keyof TimetablePageParams, string | null>>): string {
+  const query = new URLSearchParams();
+  for (const key of ['date', 'dir', 'from', 'to', 'at', 'scope', 'after'] as const) {
+    const value = params[key];
+    if (value && !(key === 'scope' && value === 'line')) query.set(key, value);
+  }
+  const qs = query.toString();
+  return `/lines/${encodeURIComponent(id)}/timetable${qs ? `?${qs}` : ''}`;
+}
+
+/** The current timetable params as `timetableHref` input (no cursor: a
+ * filter change starts from the top). */
+export function timetableParamsForHref(
+  params: TimetablePageParams,
+): Partial<Record<keyof TimetablePageParams, string | null>> {
+  return {
+    date: params.date,
+    dir: params.dir,
+    from: params.from,
+    to: params.to,
+    at: params.at === null ? null : formatApiMinute(params.at),
+    scope: params.scope,
+  };
+}
+
+/** The timetable link on the line page: the line page's direction and
+ * stations, from the start of its current window. */
+export function lineTimetableLink(id: string, params: LinePageParams, windowFrom: number): string {
+  return timetableHref(id, {
+    dir: params.dir,
+    from: params.from,
+    to: params.to,
+    at: formatApiMinute(windowFrom),
+  });
+}
+
+/** Until when (minutes after midnight) the line page also shows the
+ * previous service date's trains: those still running after midnight,
+ * which belong to the date they started on. 03:00 covers every overnight
+ * run's tail on a line. */
+export const OVERNIGHT_UNTIL_MINUTES = 3 * 60;
+
+/** The window and `at` on the previous service date's scale (+24 h), for
+ * a window that starts before {@link OVERNIGHT_UNTIL_MINUTES}; `null`
+ * otherwise. Bounds stay within the API's 47:59. */
+export function previousDayWindow(
+  window: TrainWindow,
+  at: number | null,
+): { from: number; to: number; at: number | null } | null {
+  if (window.from >= OVERNIGHT_UNTIL_MINUTES) return null;
+  return {
+    from: window.from + DAY_MINUTES,
+    to: Math.min(window.to + DAY_MINUTES, MAX_MINUTE),
+    at: at === null ? null : Math.min(at + DAY_MINUTES, MAX_MINUTE),
+  };
+}
+
+/** A previous-date train on today's scale: every day offset one less, so
+ * its 00:20 (offset 1) sorts among today's 00:20 (offset 0). */
+export function shiftToNextDay(train: LineTrainSummary): LineTrainSummary {
+  return {
+    ...train,
+    lineDue: train.lineDue ? { ...train.lineDue, dayOffset: train.lineDue.dayOffset - 1 } : null,
+    onLineStops: train.onLineStops.map((s) => ({ ...s, dayOffset: s.dayOffset - 1 })),
+  };
+}
+
+/** `YYYY-MM-DD` minus one calendar day. */
+export function previousDate(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Two summaries' counts added up. */
+export function addCounts(
+  a: Partial<Record<string, Partial<Record<string, number>>>>,
+  b: Partial<Record<string, Partial<Record<string, number>>>>,
+): Partial<Record<string, Partial<Record<string, number>>>> {
+  const out: Partial<Record<string, Partial<Record<string, number>>>> = {};
+  for (const counts of [a, b]) {
+    for (const [scope, byDir] of Object.entries(counts)) {
+      const target = (out[scope] ??= {});
+      for (const [dir, n] of Object.entries(byDir ?? {})) target[dir] = (target[dir] ?? 0) + (n ?? 0);
+    }
+  }
+  return out;
+}
+
+/** How many hub links a phone shows before "More stations". */
+export const PHONE_HUB_LINKS = 3;
+
+/** The hubs in order of importance for a phone: termini, then major
+ * stations, then junctions; catalogue order within each. */
+export function rankHubs(hubs: LineCatalogueStation[]): LineCatalogueStation[] {
+  const rank = (role: string) => (role === 'terminus' ? 0 : role === 'major' ? 1 : 2);
+  return hubs
+    .map((hub, index) => ({ hub, index }))
+    .sort((a, b) => rank(a.hub.role) - rank(b.hub.role) || a.index - b.index)
+    .map(({ hub }) => hub);
+}
+
+/** A timetable row's listed time (`HH:MM`) and its arrival at `to`. Here,
+ * not in the client component, so the server-rendered first page can call
+ * it too. */
+export function timetableRowTimes(train: LineTimetableTrain): { time: string; arrival: string | undefined } {
+  const time = lineTimeMinute(train.time);
+  const arrival = lineTimeMinute(train.arrival);
+  return {
+    time: time === null ? '--:--' : formatClock(time),
+    arrival: arrival === null ? undefined : formatClock(arrival),
+  };
+}
+
+/** A timetable row as the row component shows it: with a picked `from`
+ * station, its stop strip starts there (the stops before it are not where
+ * this traveller is going). */
+export function fromStationView<T extends LineTrainSummary>(train: T, from: string | null): T {
+  if (!from) return train;
+  const index = train.onLineStops.findIndex((s) => s.crs === from);
+  return index <= 0 ? train : { ...train, onLineStops: train.onLineStops.slice(index) };
 }

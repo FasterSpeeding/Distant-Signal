@@ -28,6 +28,7 @@ import type {
   TrackedTrainState,
   PublicTrainState,
   LineTrainEntry,
+  LineTimetablePage,
   LineTrainsSummary,
   LineDirection,
   TrainSearchPage,
@@ -55,6 +56,7 @@ import type {
   JourneyTemplateDetail,
 } from './types';
 import { createLogger } from './logger';
+import { lineTimetableQuery } from './lineTrains';
 
 const log = createLogger('lib/api');
 
@@ -776,6 +778,20 @@ export async function getLineTrainsSummary(
   if (options.limit !== undefined) params.set('limit', String(options.limit));
   const url = `${baseUrl()}/public/lines/${encodeURIComponent(id)}/trains?${params.toString()}`;
   return fetchJson<LineTrainsSummary>(url, {
+    cache: 'no-store',
+    ...(await cookieForwardInit()),
+  });
+}
+
+/** `GET /public/lines/{id}/timetable` -- one page of the line's full-day
+ * timetable. 404s (`ApiNotFoundError`) when no schedule is published for
+ * the date. */
+export async function getLineTimetable(
+  id: string,
+  options: Parameters<typeof lineTimetableQuery>[0],
+): Promise<LineTimetablePage> {
+  const url = `${baseUrl()}/public/lines/${encodeURIComponent(id)}/timetable?${lineTimetableQuery(options)}`;
+  return fetchJson<LineTimetablePage>(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
