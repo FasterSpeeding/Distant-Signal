@@ -3437,7 +3437,7 @@ mod db_tests {
     }
 
     /// End to end (2026-10-07): a backlog event carrying `gbtt_timestamp`,
-    /// POSTed exactly as trust-backlog-consumer sends it, stores it on both
+    /// posted exactly as trust-backlog-consumer sends it, stores it on both
     /// `trust_event_backlog` and the shared `train_movement_events` row.
     /// Before the fix this route was the primary writer of
     /// `train_movement_events` and never carried the field, so every
