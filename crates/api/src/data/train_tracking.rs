@@ -2825,6 +2825,13 @@ struct TicketListRow {
     /// filled in by `list_tickets_for_user` after the read.
     #[sqlx(skip)]
     destination_delay: Option<crate::data::stop_delay::StopDelay>,
+    /// Whether the train reached [`TicketListRow::measured_at_crs`]
+    /// (`data::delay_repay_outcome`), filled in after the read.
+    #[sqlx(skip)]
+    outcome: Option<delay_repay_rules::Outcome>,
+    /// The train's ATOC code from its schedule, filled in after the read.
+    #[sqlx(skip)]
+    atoc_code: Option<String>,
 }
 
 impl TicketListRow {
@@ -2842,6 +2849,16 @@ impl TicketListRow {
         .map(str::trim)
         .find(|crs| !crs.is_empty())
         .map(str::to_uppercase)
+    }
+
+    /// [`TicketListRow::measured_at_crs`]'s name, when it is the ticket's
+    /// own destination (the only one this query names).
+    fn measured_at_name(&self) -> Option<&str> {
+        self.destination_crs
+            .as_deref()
+            .map(str::trim)
+            .filter(|crs| !crs.is_empty())
+            .and(self.destination_name.as_deref())
     }
 }
 
@@ -2891,34 +2908,30 @@ pub struct TicketListItem {
     pub resolution_status: Option<String>,
     pub train_uid: Option<String>,
     pub status: Option<String>,
-    /// The delay against the PUBLIC arrival at `measured_at_crs`, exactly
-    /// as `GET .../delay-repay`'s own `delayMinutes` (design doc §9
-    /// decision 3): measured once the train has arrived, projected before
-    /// (`provisional`).
-    pub delay_minutes: Option<i32>,
-    /// See `DelayRepayEstimateResponse::provisional` (`routes::train`).
-    pub provisional: bool,
-    pub delay_basis: Option<crate::data::stop_delay::DelayBasis>,
-    pub measured_at_crs: Option<String>,
-    pub estimate: Option<delay_repay_rules::DelayRepayEstimate>,
-    pub claim_url: String,
-    pub disclaimer: &'static str,
+    /// The Delay Repay fields, exactly as `GET .../delay-repay` serves
+    /// them (`delay_repay_rules::assess`, flattened), so the two never
+    /// disagree.
+    #[serde(flatten)]
+    pub delay_repay: delay_repay_rules::DelayRepayFields,
     pub custom_name: Option<String>,
 }
 
-/// Mirrors `routes/train.rs`'s `build_delay_repay_response` exactly (same
-/// `match (operator, delay_minutes)` shape), so the two independently
-/// computed estimates for the same `(ticket, tracked train)` pair can
-/// never disagree.
+/// One row of `GET /Train/tickets/mine`. Its Delay Repay fields come from
+/// `delay_repay_rules::assess`, as `routes/train.rs`'s
+/// `build_delay_repay_response` does, so the two independently computed
+/// estimates for the same `(ticket, tracked train)` pair can never
+/// disagree.
 fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
-    let estimate = delay_repay_rules::estimate_for(row.operator.as_deref(), row.destination_delay);
-    let claim_url = row.operator.as_deref().map_or(
-        delay_repay_rules::GENERIC_CLAIM_URL,
-        delay_repay_rules::claim_url_for,
-    );
-    let measured_at_crs = row.destination_delay.and(row.measured_at_crs());
-    let (delay_minutes, delay_basis, provisional) =
-        crate::data::stop_delay::split(row.destination_delay);
+    let measured_at_crs = row.measured_at_crs();
+    let delay_repay = delay_repay_rules::assess(delay_repay_rules::AssessInputs {
+        operator: row.operator.as_deref(),
+        ticket_type: row.ticket_type.as_deref(),
+        atoc_code: row.atoc_code.as_deref(),
+        delay: row.destination_delay,
+        outcome: row.outcome,
+        measured_at_crs: measured_at_crs.as_deref(),
+        measured_at_name: row.measured_at_name(),
+    });
 
     TicketListItem {
         id: row.id,
@@ -2938,13 +2951,7 @@ fn build_ticket_list_item(row: TicketListRow) -> TicketListItem {
         resolution_status: row.resolution_status,
         train_uid: row.train_uid,
         status: row.status,
-        delay_minutes,
-        provisional,
-        delay_basis,
-        measured_at_crs,
-        estimate,
-        claim_url: claim_url.to_string(),
-        disclaimer: delay_repay_rules::ROUTE_DISCLAIMER,
+        delay_repay,
         custom_name: row.custom_name,
     }
 }
@@ -3029,11 +3036,53 @@ pub async fn list_tickets_for_user(
     }
     if !targets.is_empty() {
         let delays = crate::data::stop_delay::stop_delays(pool, &targets).await?;
-        for (index, delay) in positions.into_iter().zip(delays) {
+        let outcome_targets: Vec<crate::data::delay_repay_outcome::OutcomeTarget> = targets
+            .into_iter()
+            .map(|t| crate::data::delay_repay_outcome::OutcomeTarget {
+                trains_id: t.trains_id,
+                train_uid: t.train_uid,
+                service_date: t.service_date,
+                destination_crs: t.stop_crs.unwrap_or_default(),
+            })
+            .collect();
+        let outcomes = crate::data::delay_repay_outcome::outcomes(pool, &outcome_targets).await?;
+        for ((index, delay), outcome) in positions.into_iter().zip(delays).zip(outcomes) {
             rows[index].destination_delay = delay;
+            rows[index].outcome = outcome;
         }
     }
+    attach_atoc_codes(pool, &mut rows).await;
     Ok(rows.into_iter().map(build_ticket_list_item).collect())
+}
+
+/// Each attached ticket's train's ATOC code (`data::train_operator`), one
+/// read per service date among the rows. Best effort: a failed read leaves
+/// the ticket's own operator text to decide the scheme.
+async fn attach_atoc_codes(pool: &PgPool, rows: &mut [TicketListRow]) {
+    let mut uids_by_date: std::collections::HashMap<chrono::NaiveDate, Vec<String>> =
+        std::collections::HashMap::new();
+    for row in rows.iter() {
+        if let (Some(date), Some(uid)) = (row.service_date, &row.train_uid) {
+            uids_by_date.entry(date).or_default().push(uid.clone());
+        }
+    }
+    for (date, uids) in uids_by_date {
+        match crate::data::train_operator::operators_for_trains(pool, &uids, date).await {
+            Ok(operators) => {
+                for row in rows.iter_mut() {
+                    if row.service_date == Some(date)
+                        && let Some(operator) =
+                            row.train_uid.as_ref().and_then(|uid| operators.get(uid))
+                    {
+                        row.atoc_code = Some(operator.code.clone());
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = ?err, %date, "failed to read train operators for Delay Repay");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3068,6 +3117,8 @@ mod ticket_list_tests {
                 basis: crate::data::stop_delay::DelayBasis::Public,
                 provisional: false,
             }),
+            outcome: None,
+            atoc_code: None,
         }
     }
 
@@ -3100,6 +3151,8 @@ mod ticket_list_tests {
             trains_id: None,
             schedule_destination_crs: None,
             destination_delay: None,
+            outcome: None,
+            atoc_code: None,
         }
     }
 
@@ -3112,15 +3165,16 @@ mod ticket_list_tests {
         let item = build_ticket_list_item(row(Some("LNER"), Some(45)));
 
         let estimate = item
+            .delay_repay
             .estimate
             .expect("LNER + 45 minutes should clear the DR30 30-minute band");
         assert_eq!(estimate.scheme, "DR30");
-        assert_eq!(estimate.percentage, 50);
+        assert_eq!(estimate.percentage, Some(50));
         assert_eq!(
-            item.claim_url,
+            item.delay_repay.claim_url,
             "https://delayrepay.lner.co.uk/delayrepayV2/"
         );
-        assert_eq!(item.delay_minutes, Some(45));
+        assert_eq!(item.delay_repay.delay_minutes, Some(45));
     }
 
     #[test]
@@ -3132,10 +3186,10 @@ mod ticket_list_tests {
             provisional: true,
         });
         let item = build_ticket_list_item(row);
-        assert_eq!(item.delay_minutes, Some(30));
-        assert!(item.provisional);
-        assert_eq!(item.measured_at_crs.as_deref(), Some("EDB"));
-        let estimate = item.estimate.unwrap();
+        assert_eq!(item.delay_repay.delay_minutes, Some(30));
+        assert!(item.delay_repay.provisional);
+        assert_eq!(item.delay_repay.measured_at_crs.as_deref(), Some("EDB"));
+        let estimate = item.delay_repay.estimate.unwrap();
         assert_eq!((estimate.band_minutes, estimate.provisional), (30, true));
     }
 
@@ -3143,22 +3197,31 @@ mod ticket_list_tests {
     fn no_operator_yields_no_estimate_but_still_a_real_claim_link_and_disclaimer() {
         let item = build_ticket_list_item(row(None, Some(45)));
 
-        assert_eq!(item.estimate, None);
-        assert_eq!(item.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
-        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+        assert_eq!(item.delay_repay.estimate, None);
+        assert_eq!(
+            item.delay_repay.claim_url,
+            delay_repay_rules::GENERIC_CLAIM_URL
+        );
+        assert_eq!(
+            item.delay_repay.disclaimer,
+            delay_repay_rules::ROUTE_DISCLAIMER
+        );
     }
 
     #[test]
     fn no_delay_data_yields_no_estimate_but_claim_url_and_disclaimer_are_still_populated() {
         let item = build_ticket_list_item(row(Some("LNER"), None));
 
-        assert_eq!(item.estimate, None);
-        assert_eq!(item.delay_minutes, None);
+        assert_eq!(item.delay_repay.estimate, None);
+        assert_eq!(item.delay_repay.delay_minutes, None);
         assert_eq!(
-            item.claim_url,
+            item.delay_repay.claim_url,
             "https://delayrepay.lner.co.uk/delayrepayV2/"
         );
-        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+        assert_eq!(
+            item.delay_repay.disclaimer,
+            delay_repay_rules::ROUTE_DISCLAIMER
+        );
     }
 
     // A standalone ticket (Part A of this plan) must degrade gracefully,
@@ -3176,22 +3239,63 @@ mod ticket_list_tests {
         assert_eq!(item.pin_origin_crs, None);
         assert_eq!(item.resolution_status, None);
         assert_eq!(item.status, None);
-        assert_eq!(item.delay_minutes, None);
-        assert_eq!(item.estimate, None);
+        assert_eq!(item.delay_repay.delay_minutes, None);
+        assert_eq!(item.delay_repay.estimate, None);
         assert_eq!(
-            item.claim_url,
+            item.delay_repay.claim_url,
             "https://delayrepay.lner.co.uk/delayrepayV2/"
         );
-        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+        assert_eq!(
+            item.delay_repay.disclaimer,
+            delay_repay_rules::ROUTE_DISCLAIMER
+        );
     }
 
     #[test]
     fn a_standalone_ticket_with_no_operator_still_gets_the_generic_claim_url() {
         let item = build_ticket_list_item(standalone_row(None));
 
-        assert_eq!(item.estimate, None);
-        assert_eq!(item.claim_url, delay_repay_rules::GENERIC_CLAIM_URL);
-        assert_eq!(item.disclaimer, delay_repay_rules::ROUTE_DISCLAIMER);
+        assert_eq!(item.delay_repay.estimate, None);
+        assert_eq!(
+            item.delay_repay.claim_url,
+            delay_repay_rules::GENERIC_CLAIM_URL
+        );
+        assert_eq!(
+            item.delay_repay.disclaimer,
+            delay_repay_rules::ROUTE_DISCLAIMER
+        );
+    }
+
+    /// The list serves the same 2026-10-07 fields as the route: a train
+    /// that did not reach the destination names it (with the ticket's own
+    /// station name), and the train's code decides an unrecognised operator.
+    #[test]
+    fn not_reached_and_the_trains_operator_code_reach_the_list() {
+        let mut not_reached = row(Some("Trainline"), Some(70));
+        not_reached.outcome = Some(delay_repay_rules::Outcome::NotReached);
+        let item = build_ticket_list_item(not_reached);
+        assert_eq!(
+            item.delay_repay.outcome,
+            Some(delay_repay_rules::Outcome::NotReached)
+        );
+        assert_eq!(item.delay_repay.delay_minutes, None);
+        assert_eq!(item.delay_repay.estimate, None);
+        assert_eq!(
+            item.delay_repay.measured_at_name.as_deref(),
+            Some("Edinburgh Waverley")
+        );
+
+        let mut row = row(Some("Trainline"), Some(45));
+        row.atoc_code = Some("GR".to_string());
+        let item = build_ticket_list_item(row);
+        assert_eq!(item.delay_repay.estimate.unwrap().scheme, "DR30");
+        assert_eq!(
+            item.delay_repay.claim_url,
+            "https://delayrepay.lner.co.uk/delayrepayV2/"
+        );
+        let json = serde_json::to_value(build_ticket_list_item(standalone_row(None))).unwrap();
+        assert!(json["claimUrl"].is_string() && json["disclaimer"].is_string());
+        assert!(json.get("delayRepay").is_none(), "flattened");
     }
 }
 
