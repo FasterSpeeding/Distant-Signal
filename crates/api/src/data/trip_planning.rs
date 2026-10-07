@@ -245,13 +245,95 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
             });
     }
 
-    Ok(InterchangeData {
+    let mut data = InterchangeData {
         modal_change: schedule_query::ModalChangeBuffer::default(),
         change_time_by_tiploc,
         tiploc_to_crs,
         crs_to_tiplocs,
         fixed_links_from_crs,
-    })
+    };
+
+    // Walks between those stops and their parent stations.
+    let parent_links = crate::data::tiploc_locations::parent_links(pool).await?;
+    add_parent_walk_links(
+        &mut data,
+        &parent_links,
+        &common::tiploc_parents::curated_parents(),
+    );
+    Ok(data)
+}
+
+/// The `mode` of a stop <-> parent station walking link: the same `WALK`
+/// the ALF's own walking links carry, so the leg reads like any other
+/// fixed-link leg (`kind: "transfer"`, `mode: "WALK"`).
+pub const PARENT_WALK_MODE: &str = "WALK";
+
+/// Links every bus stop and ferry terminal that is its own planner end
+/// point (`tiploc:CODE`, see [`add_road_or_water_endpoints`]) to its parent
+/// station with a walk each way, so a journey can change there: bus ->
+/// walk -> train and train -> walk -> bus. Returns how many stops were
+/// linked.
+///
+/// The walk is [`common::tiploc_parents::walk_minutes`]: the curated CSV's
+/// `walk_minutes` when it gives one for this parent, else from the MSN grid
+/// distance (`ceil(m / 80) + 2`, 3 to 15 minutes), else 15.
+///
+/// The bus or ferry change buffer (`schedule_query::ModalChangeBuffer`)
+/// applies on the bus side as at any change, and is not part of the walk:
+/// the forward searches charge it after alighting from a bus or ferry and
+/// before walking on (`trip_planner::csa`'s `alighting_buffer`), and before
+/// boarding one after the walk; the arrive-by search mirrors both. Starting
+/// or ending a journey at the stop owes none.
+///
+/// A linked stop's own change time is left alone (stops have no MSN change
+/// time in `tiploc_crs`/`stanox_crs`, so it is the default 5), except that a
+/// "no interchange" sentinel there is dropped: walking in from the station
+/// and boarding must be possible. An unlinked stop keeps whatever it had.
+///
+/// Skipped: a stop whose TIPLOC is part of a station (it is already that
+/// station's sibling), and a parent the planner has no TIPLOC for.
+pub fn add_parent_walk_links(
+    data: &mut InterchangeData,
+    links: &[crate::data::tiploc_locations::ParentLink],
+    curated: &std::collections::BTreeMap<String, common::tiploc_parents::CuratedParent>,
+) -> usize {
+    let mut linked = 0;
+    for link in links {
+        let code = common::location_naming::tiploc_code(&link.tiploc);
+        if data.tiploc_to_crs.get(&link.tiploc) != Some(&code)
+            || !data.crs_to_tiplocs.contains_key(&link.parent_crs)
+        {
+            continue;
+        }
+        let curated_minutes = curated
+            .get(&link.tiploc)
+            .filter(|row| row.parent_crs == link.parent_crs)
+            .and_then(|row| row.walk_minutes);
+        let walk = common::tiploc_parents::walk_minutes(link.distance_m, curated_minutes);
+        let walk_link = |to_crs: &str, minutes: i32| FixedLink {
+            mode: PARENT_WALK_MODE.to_string(),
+            to_crs: to_crs.to_string(),
+            minutes,
+            valid_from: "0000".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111111".to_string(),
+        };
+        data.fixed_links_from_crs
+            .entry(code.clone())
+            .or_default()
+            .push(walk_link(&link.parent_crs, walk));
+        data.fixed_links_from_crs
+            .entry(link.parent_crs.clone())
+            .or_default()
+            .push(walk_link(&code, walk));
+        if schedule_query::minimum_change_time(data, &link.tiploc)
+            == schedule_query::ChangeTime::NoInterchange
+        {
+            data.change_time_by_tiploc.remove(&link.tiploc);
+        }
+        linked += 1;
+    }
+    linked
 }
 
 /// Makes every bus stop and ferry terminal in `locations` that has no CRS
@@ -816,6 +898,365 @@ mod road_or_water_tests {
         assert_eq!(parse_road_water_change_minutes(Some("8")), 8);
         assert_eq!(parse_road_water_change_minutes(Some("99")), 30);
         assert_eq!(parse_road_water_change_minutes(Some("-1")), 5);
+    }
+}
+
+/// Bus stop <-> parent station walking links (`add_parent_walk_links`),
+/// on a Heathrow-like network: a bus from Woking to the Terminal 3 bus
+/// stop (`HTRBUS3`, 412 m from Heathrow Terminals 2 & 3, `HXX`), trains
+/// between `HXX` and Paddington, and an unlinked stop (`KESWICK`).
+#[cfg(test)]
+mod parent_walk_tests {
+    use std::collections::{BTreeMap, HashSet};
+
+    use chrono::NaiveDate;
+    use common::location_naming::LocationType;
+    use common::tiploc_parents::CuratedParent;
+    use schedule_query::{ChangeTime, minimum_change_time};
+    use trip_planner::{
+        JourneyLeg, RaptorOptions, ScanOptions, TransferLeg, raptor_search, scan_connections,
+    };
+
+    use super::*;
+    use crate::data::tiploc_locations::{LocationInfo, ParentLink};
+
+    const BUFFER: u32 = 5;
+
+    fn conn(uid: &str, from: &str, to: &str, dep: u32, arr: u32) -> Connection {
+        Connection {
+            uid: uid.to_string(),
+            from_tiploc: from.to_string(),
+            to_tiploc: to.to_string(),
+            departure_min: dep,
+            arrival_min: arr,
+            working_departure_min: dep,
+            working_arrival_min: arr,
+            can_board: true,
+            can_alight: true,
+        }
+    }
+
+    fn stop(tiploc: &str) -> LocationInfo {
+        LocationInfo {
+            tiploc: tiploc.to_string(),
+            name: tiploc.to_string(),
+            display_name: tiploc.to_string(),
+            location_type: LocationType::BusStop,
+            parent_crs: None,
+            parent_name: None,
+        }
+    }
+
+    fn link(tiploc: &str, parent: &str, distance_m: Option<i32>) -> ParentLink {
+        ParentLink {
+            tiploc: tiploc.to_string(),
+            parent_crs: parent.to_string(),
+            distance_m,
+        }
+    }
+
+    fn curated(tiploc: &str, parent: &str, minutes: i32) -> BTreeMap<String, CuratedParent> {
+        BTreeMap::from([(
+            tiploc.to_string(),
+            CuratedParent {
+                parent_crs: parent.to_string(),
+                walk_minutes: Some(minutes),
+            },
+        )])
+    }
+
+    /// Stations WOK (`WOKING`), HXX (`HTRWAPT`, 2-minute change), PAD
+    /// (`PADTON`) and BAD (`BANSTED`, with its bus stop `BANSBUS` filed
+    /// under it); bus stops `HTRBUS3` and `KESWICK` as `tiploc:` end
+    /// points; buses `BUS*` get the 5-minute buffer. No links yet.
+    fn network() -> InterchangeData {
+        let mut tiploc_to_crs = HashMap::new();
+        let mut crs_to_tiplocs: HashMap<String, Vec<String>> = HashMap::new();
+        for (tiploc, crs) in [
+            ("WOKING", "WOK"),
+            ("HTRWAPT", "HXX"),
+            ("PADTON", "PAD"),
+            ("PENRITH", "PNR"),
+            ("BANSTED", "BAD"),
+            ("BANSBUS", "BAD"),
+        ] {
+            tiploc_to_crs.insert(tiploc.to_string(), crs.to_string());
+            crs_to_tiplocs
+                .entry(crs.to_string())
+                .or_default()
+                .push(tiploc.to_string());
+        }
+        add_road_or_water_endpoints(
+            &mut tiploc_to_crs,
+            &mut crs_to_tiplocs,
+            &[stop("HTRBUS3"), stop("KESWICK"), stop("BANSBUS")],
+        );
+        InterchangeData {
+            modal_change: schedule_query::ModalChangeBuffer {
+                road_or_water_uids: ["BUS1", "BUS2", "BUS3", "BUSK"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<HashSet<_>>(),
+                minutes: BUFFER,
+            },
+            change_time_by_tiploc: HashMap::from([("HTRWAPT".to_string(), 2)]),
+            tiploc_to_crs,
+            crs_to_tiplocs,
+            fixed_links_from_crs: HashMap::new(),
+        }
+    }
+
+    /// The network with the Terminal 3 stop linked (412 m, no curated
+    /// minutes: ceil(412 / 80) + 2 = 8).
+    fn linked_network() -> InterchangeData {
+        let mut data = network();
+        let linked = add_parent_walk_links(
+            &mut data,
+            &[link("HTRBUS3", "HXX", Some(412))],
+            &BTreeMap::new(),
+        );
+        assert_eq!(linked, 1);
+        data
+    }
+
+    fn date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, 7).unwrap()
+    }
+
+    fn csa(
+        connections: &[Connection],
+        data: &InterchangeData,
+        from: &str,
+        to: &str,
+        at: u32,
+    ) -> Option<trip_planner::Journey> {
+        scan_connections(ScanOptions {
+            connections,
+            interchange: data,
+            from_tiplocs: &data.crs_to_tiplocs[from],
+            to_tiplocs: &data.crs_to_tiplocs[to],
+            departure_min: at,
+            date: date(),
+        })
+    }
+
+    fn raptor(
+        connections: &[Connection],
+        data: &InterchangeData,
+        from: &str,
+        to: &str,
+        at: u32,
+    ) -> Vec<trip_planner::RaptorJourney> {
+        raptor_search(RaptorOptions {
+            connections,
+            interchange: data,
+            from_tiplocs: &data.crs_to_tiplocs[from],
+            to_tiplocs: &data.crs_to_tiplocs[to],
+            departure_min: at,
+            date: date(),
+            max_rounds: 4,
+        })
+    }
+
+    /// `uid` for a train leg, `WALK n` for a walk.
+    fn describe(legs: &[JourneyLeg]) -> Vec<String> {
+        legs.iter()
+            .map(|leg| match leg {
+                JourneyLeg::Train(train) => train.uid.clone(),
+                JourneyLeg::Transfer(TransferLeg { mode, minutes, .. }) => {
+                    format!("{mode} {minutes}")
+                }
+            })
+            .collect()
+    }
+
+    fn sorted(mut connections: Vec<Connection>) -> Vec<Connection> {
+        connections.sort_by_key(|c| c.departure_min);
+        connections
+    }
+
+    #[test]
+    fn a_linked_stop_gets_the_same_walk_each_way() {
+        let data = linked_network();
+        let from_stop = &data.fixed_links_from_crs["tiploc:HTRBUS3"];
+        assert_eq!(from_stop.len(), 1);
+        assert_eq!(from_stop[0].to_crs, "HXX");
+        assert_eq!(from_stop[0].mode, "WALK");
+        // The walk alone: the bus buffer is the planner's, not the link's.
+        assert_eq!(from_stop[0].minutes, 8);
+        assert_eq!(
+            (
+                from_stop[0].valid_from.as_str(),
+                from_stop[0].valid_to.as_str(),
+                from_stop[0].days_mask.as_str()
+            ),
+            ("0000", "2359", "1111111")
+        );
+        let from_station = &data.fixed_links_from_crs["HXX"];
+        assert_eq!(from_station.len(), 1);
+        assert_eq!(from_station[0].to_crs, "tiploc:HTRBUS3");
+        assert_eq!(from_station[0].minutes, 8);
+        // The unlinked stop has no walk either way.
+        assert!(!data.fixed_links_from_crs.contains_key("tiploc:KESWICK"));
+    }
+
+    #[test]
+    fn walk_times_use_the_curated_minutes_only_for_the_same_parent() {
+        let mut data = network();
+        add_parent_walk_links(
+            &mut data,
+            &[link("HTRBUS3", "HXX", Some(412))],
+            &curated("HTRBUS3", "HXX", 11),
+        );
+        assert_eq!(data.fixed_links_from_crs["tiploc:HTRBUS3"][0].minutes, 11);
+        assert_eq!(data.fixed_links_from_crs["HXX"][0].minutes, 11);
+
+        let mut data = network();
+        add_parent_walk_links(
+            &mut data,
+            &[link("HTRBUS3", "HXX", Some(141))],
+            &curated("HTRBUS3", "PAD", 11),
+        );
+        // The CSV names another parent: the distance decides (141 m -> 4).
+        assert_eq!(data.fixed_links_from_crs["HXX"][0].minutes, 4);
+
+        let mut data = network();
+        add_parent_walk_links(&mut data, &[link("HTRBUS3", "HXX", None)], &BTreeMap::new());
+        // No distance and no curated time: the cautious 15.
+        assert_eq!(data.fixed_links_from_crs["HXX"][0].minutes, 15);
+    }
+
+    #[test]
+    fn stops_that_are_a_stations_tiploc_or_have_no_planner_parent_are_skipped() {
+        let mut data = network();
+        let linked = add_parent_walk_links(
+            &mut data,
+            &[
+                // Part of Banstead already: a sibling, not a walk.
+                link("BANSBUS", "BAD", Some(0)),
+                // A parent the planner has no TIPLOC for.
+                link("KESWICK", "ZZZ", Some(100)),
+                // A stop that is not an end point at all.
+                link("NOSUCH", "HXX", Some(100)),
+            ],
+            &BTreeMap::new(),
+        );
+        assert_eq!(linked, 0);
+        assert!(data.fixed_links_from_crs.is_empty());
+    }
+
+    #[test]
+    fn a_no_interchange_sentinel_is_lifted_at_linked_stops_only() {
+        let mut data = network();
+        data.change_time_by_tiploc.insert("HTRBUS3".to_string(), 99);
+        data.change_time_by_tiploc.insert("KESWICK".to_string(), 98);
+        add_parent_walk_links(
+            &mut data,
+            &[link("HTRBUS3", "HXX", Some(412))],
+            &BTreeMap::new(),
+        );
+        assert_eq!(minimum_change_time(&data, "HTRBUS3"), ChangeTime::Finite(5));
+        assert_eq!(
+            minimum_change_time(&data, "KESWICK"),
+            ChangeTime::NoInterchange
+        );
+    }
+
+    /// Bus -> walk -> train. The bus reaches the stop at 10:00; + 5 for
+    /// leaving the bus, then 8 minutes' walk = HXX at 10:13; + HXX's
+    /// 2-minute change = 10:15. The 10:14 train is missed, the 10:15 taken.
+    #[test]
+    fn a_bus_then_a_walk_then_a_train() {
+        let data = linked_network();
+        let connections = sorted(vec![
+            conn("BUS1", "WOKING", "HTRBUS3", 540, 600),
+            conn("T14", "HTRWAPT", "PADTON", 614, 629),
+            conn("T15", "HTRWAPT", "PADTON", 615, 630),
+        ]);
+        let journey = csa(&connections, &data, "WOK", "PAD", 530).expect("a journey");
+        assert_eq!(describe(&journey.legs), ["BUS1", "WALK 8", "T15"]);
+        assert_eq!(journey.arrival_min, 630);
+        let JourneyLeg::Transfer(walk) = &journey.legs[1] else {
+            panic!("the second leg is the walk");
+        };
+        assert_eq!(
+            (walk.from_tiploc.as_str(), walk.to_tiploc.as_str()),
+            ("HTRBUS3", "HTRWAPT")
+        );
+        assert_eq!((walk.departure_min, walk.arrival_min), (605, 613));
+
+        let journeys = raptor(&connections, &data, "WOK", "PAD", 530);
+        assert_eq!(describe(&journeys[0].legs), ["BUS1", "WALK 8", "T15"]);
+        assert_eq!(journeys[0].changes, 1);
+
+        // To the stop's own code as the destination: the walk is the way
+        // in from the station (8 minutes, no bus boarded).
+        let back = csa(
+            &sorted(vec![conn("T1", "PADTON", "HTRWAPT", 500, 515)]),
+            &data,
+            "PAD",
+            "tiploc:HTRBUS3",
+            480,
+        )
+        .expect("a journey");
+        assert_eq!(describe(&back.legs), ["T1", "WALK 8"]);
+        assert_eq!(back.arrival_min, 523);
+    }
+
+    /// Starting at the stop owes no bus buffer: the walk leaves at once.
+    #[test]
+    fn a_journey_from_the_stop_walks_straight_to_the_station() {
+        let data = linked_network();
+        let connections = sorted(vec![
+            conn("T09", "HTRWAPT", "PADTON", 609, 624),
+            conn("T10", "HTRWAPT", "PADTON", 610, 625),
+        ]);
+        let journey = csa(&connections, &data, "tiploc:HTRBUS3", "PAD", 600).expect("a journey");
+        assert_eq!(describe(&journey.legs), ["WALK 8", "T10"]);
+        let journeys = raptor(&connections, &data, "tiploc:HTRBUS3", "PAD", 600);
+        assert_eq!(describe(&journeys[0].legs), ["WALK 8", "T10"]);
+    }
+
+    /// Train -> walk -> bus. The train reaches HXX at 08:35; 8 minutes'
+    /// walk = the stop at 08:43; + the stop's 5-minute change + 5 for
+    /// boarding a bus = 08:53. The 08:52 bus is missed, the 08:53 taken.
+    #[test]
+    fn a_train_then_a_walk_then_a_bus() {
+        let data = linked_network();
+        let connections = sorted(vec![
+            conn("T1", "PADTON", "HTRWAPT", 500, 515),
+            conn("BUS2", "HTRBUS3", "WOKING", 532, 590),
+            conn("BUS3", "HTRBUS3", "WOKING", 533, 591),
+        ]);
+        let journey = csa(&connections, &data, "PAD", "WOK", 480).expect("a journey");
+        assert_eq!(describe(&journey.legs), ["T1", "WALK 8", "BUS3"]);
+        assert_eq!(journey.arrival_min, 591);
+        let journeys = raptor(&connections, &data, "PAD", "WOK", 480);
+        assert_eq!(describe(&journeys[0].legs), ["T1", "WALK 8", "BUS3"]);
+    }
+
+    /// Without the link the same network has no journey: the bus stop and
+    /// the station are unconnected places.
+    #[test]
+    fn an_unlinked_stop_stays_an_end_point_only() {
+        let connections = sorted(vec![
+            conn("BUS1", "WOKING", "HTRBUS3", 540, 600),
+            conn("T15", "HTRWAPT", "PADTON", 615, 630),
+        ]);
+        assert!(csa(&connections, &network(), "WOK", "PAD", 530).is_none());
+        assert!(raptor(&connections, &network(), "WOK", "PAD", 530).is_empty());
+
+        // Keswick is never linked: a train to Penrith does not reach the
+        // Keswick bus, even with the Heathrow stop linked.
+        let data = linked_network();
+        let connections = sorted(vec![
+            conn("T2", "PADTON", "PENRITH", 500, 700),
+            conn("BUSK", "KESWICK", "WOKING", 760, 900),
+        ]);
+        assert!(csa(&connections, &data, "PAD", "WOK", 480).is_none());
+        // ...though Keswick is still an origin of its own.
+        let journey = csa(&connections, &data, "tiploc:KESWICK", "WOK", 700).expect("a journey");
+        assert_eq!(describe(&journey.legs), ["BUSK"]);
     }
 }
 
