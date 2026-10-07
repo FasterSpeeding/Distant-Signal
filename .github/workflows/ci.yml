@@ -2138,6 +2138,83 @@ jobs:
             grep -q -- "- ${c}\$" <<<"${pm}" || { echo "PodMonitor must select ${c}" >&2; exit 1; }
           done
 
+      # Ingest plan 1B.9: ingestWriter (off by default) is one Recreate
+      # replica with its own NetworkPolicy (egress to Postgres only),
+      # PodMonitor entry, IngestWriterDown alert and, with perService, the
+      # distant_signal_writer role; its loops stay off until loops.enabled.
+      - name: helm template (ingest-writer)
+        run: |
+          set -euo pipefail
+          base=(
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+            --set metrics.podMonitor.enabled=true --set metrics.prometheusRule.enabled=true
+            --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+          doc() { awk -v k="$1" -v n="$2" 'BEGIN{RS="\n---\n"} $0 ~ "\nkind: " k "\n" && $0 ~ "\n  name: " n "\n" {print}'; }
+          env_is() { grep -A1 "name: $2\$" <<<"$1" | grep -q "value: \"$3\"" || fail "$2 must be \"$3\""; }
+
+          off=$(render)
+          if grep -q -i 'ingest-writer\|IngestWriter' <<<"${off}"; then fail "ingestWriter off must render nothing of it"; fi
+
+          on=$(render --set ingestWriter.enabled=true --set ingestWriter.image.tag=test)
+          dep=$(doc Deployment distant-signal-ingest-writer <<<"${on}")
+          [[ -n "${dep}" ]] || fail "no ingest-writer Deployment rendered"
+          grep -q '^  replicas: 1$' <<<"${dep}" || fail "the ingest-writer must run one replica"
+          grep -q '^    type: Recreate$' <<<"${dep}" || fail "the ingest-writer must roll with Recreate"
+          grep -q 'image: "ghcr.io/fasterspeeding/distant-signal/ingest-writer:test"' <<<"${dep}" \
+            || fail "ingestWriter.image must set the image"
+          grep -q 'path: /livez' <<<"${dep}" || fail "the ingest-writer needs the worker liveness probe"
+          env_is "${dep}" INGEST_WRITER_LOOPS false
+          env_is "${dep}" RECONCILIATION_SWEEP_INTERVAL_SECS 300
+          env_is "${dep}" DATABASE_MAX_CONNECTIONS 5
+          loops=$(render --set ingestWriter.enabled=true --set ingestWriter.loops.enabled=true \
+            --show-only templates/ingest-writer-deployment.yaml)
+          env_is "${loops}" INGEST_WRITER_LOOPS true
+
+          np=$(doc NetworkPolicy distant-signal-ingest-writer <<<"${on}")
+          grep -q 'port: 5432' <<<"${np}" || fail "the ingest-writer must be allowed out to Postgres"
+          if grep -q -E 'port: 6379|ipBlock' <<<"${np}"; then
+            fail "phase 1B: the ingest-writer gets neither Redis nor the internet"
+          fi
+          grep -q -- '- ingest-writer$' <<<"$(doc NetworkPolicy distant-signal-postgres <<<"${on}")" \
+            || fail "Postgres must admit the ingest-writer"
+          grep -q -- '- ingest-writer$' <<<"$(doc PodMonitor distant-signal <<<"${on}")" \
+            || fail "the PodMonitor must select the ingest-writer"
+          rule=$(doc PrometheusRule distant-signal <<<"${on}")
+          grep -q 'alert: DistantSignalIngestWriterDown$' <<<"${rule}" || fail "IngestWriterDown must render"
+          grep -q 'deployment="distant-signal-ingest-writer"' <<<"${rule}" || fail "IngestWriterDown must name the Deployment"
+
+          # The writer role: created with perService, used only with connect.
+          roles=(--set postgresql.roles.enabled=true --set postgresql.roles.setupJob.enabled=true
+            --set postgresql.roles.perService.enabled=true)
+          ps=$(render "${roles[@]}")
+          grep -q "'--variable=writer_connection_limit=6'" <<<"${ps}" || fail "the writer role's limit must be its pool + 1"
+          grep -q 'name: DS_PG_WRITER_PASSWORD$' <<<"${ps}" || fail "the setup Job must get the writer's password"
+          ps=$(render "${roles[@]}" --set ingestWriter.enabled=true)
+          # shellcheck disable=SC2016 # "$(PGPASSWORD)" is Kubernetes env-var syntax, matched literally
+          grep -q 'postgres://distant_signal_app:\$(PGPASSWORD)@' <<<"$(doc Deployment distant-signal-ingest-writer <<<"${ps}")" \
+            || fail "without connect the ingest-writer connects as app"
+          grep -q "'--variable=app_connection_limit=80'" <<<"${ps}" || fail "the writer's pool (5) must count in app's limit (75)"
+          ps=$(render "${roles[@]}" --set ingestWriter.enabled=true --set postgresql.roles.perService.writer.connect=true)
+          # shellcheck disable=SC2016 # as above
+          grep -q 'postgres://distant_signal_writer:\$(PGPASSWORD)@' <<<"$(doc Deployment distant-signal-ingest-writer <<<"${ps}")" \
+            || fail "writer.connect: the ingest-writer must connect as distant_signal_writer"
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render "${roles[@]}" --set postgresql.roles.perService.writer.connect=true >/dev/null 2>&1; then
+            fail "writer.connect without ingestWriter.enabled must fail the render"
+          fi
+
       # INF-7: with the bundled Postgres, api replicas x pool plus the other
       # pools must fit in max_connections - 3, or rendering fails.
       - name: helm template (Postgres connection budget)

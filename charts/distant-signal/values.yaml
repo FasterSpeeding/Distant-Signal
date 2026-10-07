@@ -334,6 +334,21 @@ postgresql:
         existingSecretPasswordKey: postgres-notifier-password
         # -- CONNECTION LIMIT. Empty: its pool (5) plus 1.
         connectionLimit: ""
+      writer:
+        # -- Connect the ingest-writer (`ingestWriter`, which must be
+        # enabled) as `distant_signal_writer` (plan 1B.9). The role is
+        # created with the others whenever `enabled` is on, unused until
+        # then.
+        connect: false
+        # -- Password. Generated when empty (and no `existingSecret`).
+        password: ""
+        # -- Read the password from this pre-existing Secret instead.
+        existingSecret: ""
+        # -- Key within `existingSecret` (and in the chart's Secret).
+        existingSecretPasswordKey: postgres-writer-password
+        # -- CONNECTION LIMIT. Empty: its pool
+        # (`ingestWriter.database.maxConnections`, 5) plus 1.
+        connectionLimit: ""
   probes:
     # -- startupProbe budget (INF-4). Liveness only begins once pg_isready
     # succeeds, so crash recovery (WAL redo after a node reboot) is never
@@ -1746,6 +1761,58 @@ apiMaintenance:
   podSecurityContext: {}
   nodeSelector: {}
   tolerations: []
+
+# ---------------------------------------------------------------------------
+# ingestWriter -- the ingest-writer (ingest spec §10, plan 1B.6/1B.9): the
+# train-domain background loops now, the Redis ingest streams from phase 3.
+# Off by default.
+# ---------------------------------------------------------------------------
+# NEEDS the ingest-writer image (plan 1B.6: crates/ingest-writer and
+# docker/ingest-writer.Dockerfile). One replica, Recreate. Rollout (release
+# N+1): `enabled` and `loops.enabled`; then, a release later,
+# API_BACKGROUND_LOOPS=false on the api (plan 1B.7). Every loop takes a
+# Postgres advisory lock, so the writer and the api never run the same
+# sweep at once. It connects as the app role (or the bootstrap user), or as
+# `distant_signal_writer` with `postgresql.roles.perService.writer.connect`;
+# its pool counts in the connection budgets. NetworkPolicy: the monitoring
+# namespace to its metrics port, the health port as for every worker,
+# egress to Postgres (Redis joins in phase 3). Alert:
+# DistantSignalIngestWriterDown (metrics.prometheusRule.ingestWriterDown).
+ingestWriter:
+  # -- Deploy the ingest-writer.
+  enabled: false
+  image:
+    repository: ghcr.io/fasterspeeding/distant-signal/ingest-writer
+    tag: ""
+    # -- Content digest override. See api.image.digest's own comment above
+    # for the full rationale; same shape here.
+    digest: ""
+    pullPolicy: IfNotPresent
+  loops:
+    # -- Run the train-domain loops (INGEST_WRITER_LOOPS): schedule-match,
+    # reconciliation, backlog-match, and the CORPUS crosswalk rebuild with
+    # its freshness gauge. Their intervals are the api's
+    # (`api.reconciliationSweepIntervalSecs`,
+    # `api.backlogMatchSweepIntervalSecs`,
+    # `api.scheduleEnrichmentGraceMinutes`), so the two cannot drift.
+    enabled: false
+  database:
+    # -- Its Postgres pool (DATABASE_MAX_CONNECTIONS).
+    maxConnections: 5
+  # -- /livez stall window (PROGRESS_STALL_SECS; see workerHealth).
+  progressStallSecs: 900
+  # -- tracing-subscriber EnvFilter (RUST_LOG).
+  logLevel: info
+  # -- Extra env entries; one with the same name as a chart entry replaces
+  # it.
+  extraEnv: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  # -- Merged over the chart-wide pod securityContext defaults.
+  podSecurityContext: {}
 
 # ---------------------------------------------------------------------------
 # devAuthentik -- OPT-IN local dev-only OIDC identity provider
@@ -4126,6 +4193,14 @@ metrics:
       for: 3m
       severity: critical
       pgUpSelector: ""
+    # DistantSignalIngestWriterDown (critical; ingest spec §14.2): the
+    # ingest-writer's scrape target is down, or its Deployment has no
+    # available replica (kube-state-metrics), for `for`. Renders only with
+    # ingestWriter.enabled. Runbook: docs/alerts.md.
+    ingestWriterDown:
+      enabled: true
+      for: 5m
+      severity: critical
     # DistantSignalApiDatabaseDown (critical): api's own `SELECT 1` probe
     # through its request pool (distant_signal_api_db_up, every 15s) has
     # failed on some replica for `for`. Covers what pg_up cannot see: a

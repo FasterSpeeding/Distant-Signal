@@ -999,6 +999,9 @@ app.connectionLimitSlack.
 {{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "api")) -}}
 {{- $total = add $total (include "distant-signal.apiMaintenancePool" $root) -}}
 {{- end -}}
+{{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "writer")) -}}
+{{- $total = add $total (include "distant-signal.ingestWriterPool" $root) -}}
+{{- end -}}
 {{- $total -}}
 {{- else -}}
 {{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
@@ -1052,10 +1055,10 @@ Every helper takes root unless it says otherwise.
 
 distant-signal.perServiceKeys: the services this chart can move to their
 own role, space-separated. Each must be a created (not `planned`) role in
-db-grants.yaml.
+db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9).
 */}}
 {{- define "distant-signal.perServiceKeys" -}}
-api aggregator enricher notifier
+api aggregator enricher notifier writer
 {{- end }}
 
 {{- define "distant-signal.perServiceEnabled" -}}
@@ -1079,6 +1082,9 @@ True (non-empty) when the service connects as its own role. Takes (dict
 {{- end -}}
 {{- if not (include "distant-signal.postgresRolesEnabled" .root) -}}
 {{- fail (printf "postgresql.roles.perService.%s.connect needs postgresql.roles.enabled: the per-service roles are members of the app role." .service) -}}
+{{- end -}}
+{{- if and (eq .service "writer") (not .root.Values.ingestWriter.enabled) -}}
+{{- fail "postgresql.roles.perService.writer.connect needs ingestWriter.enabled: nothing else connects as the writer role." -}}
 {{- end -}}
 true
 {{- end -}}
@@ -1109,7 +1115,9 @@ The role name from files/db-grants.yaml. Takes (dict "root" $ "service" ...).
 {{/*
 A service's Postgres pool as the chart runs it: the api's DATABASE_MAX_CONNECTIONS
 times its replicas, the workers' crate defaults (common::pg), the
-aggregator's archive pool. Takes (dict "root" $ "service" ...).
+aggregator's archive pool, the ingest-writer's ingestWriter.database.maxConnections
+(whether or not it is enabled; see distant-signal.ingestWriterPool). Takes
+(dict "root" $ "service" ...).
 */}}
 {{- define "distant-signal.servicePool" -}}
 {{- $root := .root -}}
@@ -1117,8 +1125,22 @@ aggregator's archive pool. Takes (dict "root" $ "service" ...).
 {{- mul (int (include "distant-signal.apiPods" $root)) (int (include "distant-signal.apiMaxConnections" $root)) -}}
 {{- else if eq .service "aggregator" -}}
 {{- add 10 (ternary 2 0 ($root.Values.archive.enabled | default false)) -}}
+{{- else if eq .service "writer" -}}
+{{- int $root.Values.ingestWriter.database.maxConnections -}}
 {{- else -}}
 5
+{{- end -}}
+{{- end }}
+
+{{/*
+The ingest-writer's pool (ingestWriter.database.maxConnections) when
+ingestWriter.enabled, else 0. Takes root.
+*/}}
+{{- define "distant-signal.ingestWriterPool" -}}
+{{- if .Values.ingestWriter.enabled -}}
+{{- int .Values.ingestWriter.database.maxConnections -}}
+{{- else -}}
+0
 {{- end -}}
 {{- end }}
 
@@ -1852,7 +1874,7 @@ this chart can render, so a typo cannot silently drop a rule. Takes
 {{- define "distant-signal.npComponent" -}}
 {{- $root := .root -}}
 {{- $all := $root.Values.networkPolicy.components | default dict -}}
-{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" "postgres-roles" "migrate" "api-maintenance" -}}
+{{- $known := list "api" "frontend" "aggregator" "enricher" "notifier" "postgres" "redis" "schedulefeed" "trust-consumer" "trust-backlog-consumer" "full-coverage-consumer" "movement-relay" "poller-irish-rail-gtfs" "poller-irish-rail-live" "poller-nir-stations" "postgres-roles" "migrate" "api-maintenance" "ingest-writer" -}}
 {{- range $name, $_ := $root.Values.pollers -}}
 {{- $known = append $known (printf "poller-%s" $name) -}}
 {{- end -}}

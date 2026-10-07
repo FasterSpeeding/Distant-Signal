@@ -743,6 +743,20 @@ that sets `API_BACKGROUND_LOOPS=false` (plan 1B.7); both are idempotent.
 Postgres admits it, and with egress policies on it may reach Postgres and
 DNS.
 
+**The ingest-writer** (`ingestWriter.enabled`,
+`templates/ingest-writer-deployment.yaml`; its image is plan 1B.6) is one
+`Recreate` replica with the standard worker probes and metrics port. In
+phase 1B it runs the train-domain loops (`ingestWriter.loops.enabled`, i.e.
+`INGEST_WRITER_LOOPS`) under advisory locks, so it can overlap with the
+api's own loops until `API_BACKGROUND_LOOPS=false`. It connects as the app
+role, or as `distant_signal_writer` (a member of app, created by the role
+setup Job with `postgresql.roles.perService.enabled`) with
+`perService.writer.connect`; its pool counts in the connection budgets. Its
+NetworkPolicy admits the monitoring namespace (metrics) and the health port,
+with egress to Postgres (Redis joins in phase 3); Postgres admits it; the
+PodMonitor scrapes it; `DistantSignalIngestWriterDown` fires when it is down
+(see `docs/alerts.md`).
+
 ## Password encoding caveat
 
 `DATABASE_URL` is a URL. A password containing any of `@ : / ? # [ ] %` must
@@ -1314,6 +1328,11 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.perService.notifier.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.roles.perService.notifier.existingSecretPasswordKey` | `postgres-notifier-password` | Key within `existingSecret` (and in the chart's Secret). |
 | `postgresql.roles.perService.notifier.connectionLimit` | `""` | CONNECTION LIMIT. |
+| `postgresql.roles.perService.writer.connect` | `false` | Connect the ingest-writer (`ingestWriter.enabled` required) as `distant_signal_writer`. The role is created with the others whenever `perService.enabled`, unused until then. |
+| `postgresql.roles.perService.writer.password` | `""` | Password. |
+| `postgresql.roles.perService.writer.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
+| `postgresql.roles.perService.writer.existingSecretPasswordKey` | `postgres-writer-password` | Key within `existingSecret` (and in the chart's Secret). |
+| `postgresql.roles.perService.writer.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `ingestWriter.database.maxConnections` + 1. |
 | `postgresql.probes.startup.periodSeconds` | `10` | Startup probe period. Liveness starts only after `pg_isready` succeeds, so WAL redo after a reboot is never killed. |
 | `postgresql.probes.startup.failureThreshold` | `90` | Startup probe failures allowed (90 x 10s = 15 minutes of crash recovery). |
 | `postgresql.persistence.enabled` | `true` | Attach a PVC. When false an emptyDir is used and data is lost on reschedule. |
@@ -1488,6 +1507,7 @@ and [docs/postgres-pitr.md](../../docs/postgres-pitr.md).
 | `postgresql.pgbackrest.backup.image.repository` / `.tag` / `.pullPolicy` | `registry.k8s.io/kubectl`, `v1.36.5@sha256:…`, `IfNotPresent` | The image the CronJobs run `kubectl exec` from. Keep it within one minor version of the cluster. |
 | `postgresql.pgbackrest.backup.resources` | requests `20m`/`32Mi`, limit `128Mi` | CronJob pod resources. The work happens in the Postgres container. |
 | `postgresql.pgbackrest.backup.podSecurityContext` | `{}` | Merged over the CronJob pods' securityContext (non-root uid 65532 by default). |
+| `metrics.prometheusRule.ingestWriterDown` | see `values.yaml` | `DistantSignalIngestWriterDown`: `enabled`, `for` (5m), `severity` (critical). Renders only with `ingestWriter.enabled`. |
 | `metrics.prometheusRule.postgresDown` | see `values.yaml` | `DistantSignalPostgresDown`: `enabled`, `for` (3m), `severity` (critical) and `pgUpSelector`, extra label matchers for postgres_exporter's `pg_up` (see [Alerts](#alerts)). |
 | `metrics.prometheusRule.apiDatabaseDown` | see `values.yaml` | `DistantSignalApiDatabaseDown`: `enabled`, `for` (2m) and `severity` (critical). |
 | `metrics.prometheusRule.consumerApiErrors` | see `values.yaml` | `DistantSignalConsumerApiCallsFailing`: `enabled`, `window` (5m), `minErrors` (3), `for` (10m) and `severity` (warning). |
@@ -1640,6 +1660,26 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `apiMaintenance.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 | `apiMaintenance.nodeSelector` | `{}` | Node selector. |
 | `apiMaintenance.tolerations` | `[]` | Tolerations. |
+
+### ingestWriter
+
+Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-maintenance-and-the-ingest-writer-optional).
+
+| Key | Default | Description |
+|---|---|---|
+| `ingestWriter.enabled` | `false` | Deploy the ingest-writer (one replica, `Recreate`). Needs its image (plan 1B.6). |
+| `ingestWriter.image` | `ghcr.io/fasterspeeding/distant-signal/ingest-writer`, tag `""` (appVersion), digest `""`, `IfNotPresent` | Image; same shape as `api.image`. |
+| `ingestWriter.loops.enabled` | `false` | Run the train-domain loops (`INGEST_WRITER_LOOPS`) with the api's intervals. |
+| `ingestWriter.database.maxConnections` | `5` | Its Postgres pool; counted in the connection budgets. |
+| `ingestWriter.progressStallSecs` | `900` | `/livez` stall window (`PROGRESS_STALL_SECS`). |
+| `ingestWriter.logLevel` | `info` | `RUST_LOG`. |
+| `ingestWriter.extraEnv` | `[]` | Extra env entries; one with a chart entry's name replaces it. |
+| `ingestWriter.resources` | `{}` | Container resources. |
+| `ingestWriter.nodeSelector` | `{}` | Node selector. |
+| `ingestWriter.tolerations` | `[]` | Tolerations. |
+| `ingestWriter.affinity` | `{}` | Affinity. |
+| `ingestWriter.podAnnotations` | `{}` | Pod annotations. |
+| `ingestWriter.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 
 ### devAuthentik
 
