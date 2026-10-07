@@ -1,7 +1,7 @@
 //! `backfill_trains`: the operational, re-runnable backfill that MUST be
 //! run against a database with pre-existing `tracked_trains` data BEFORE it
 //! is upgraded to a build containing
-//! `crates/api/migrations/20260906140000_drop_legacy_columns.sql`.
+//! `crates/ds-store/migrations/20260906140000_drop_legacy_columns.sql`.
 //!
 //! ```text
 //!   DATABASE_URL=postgres://... cargo run -p api --bin backfill_trains

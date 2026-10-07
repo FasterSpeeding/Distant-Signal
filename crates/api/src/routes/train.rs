@@ -2821,9 +2821,9 @@ mod db_tests {
     }
 
     /// Deletes a fixture user and its fixtures. Unlike `custom_lines.user_id`
-    /// (`ON DELETE CASCADE`, per `crates/api/migrations/20260828100000_add_ownership.sql`),
+    /// (`ON DELETE CASCADE`, per `crates/ds-store/migrations/20260828100000_add_ownership.sql`),
     /// `tracked_trains.user_id` has no `ON DELETE CASCADE` at all (see
-    /// `crates/api/migrations/20260828120000_train_tracking.sql`) -- a plain
+    /// `crates/ds-store/migrations/20260828120000_train_tracking.sql`) -- a plain
     /// `DELETE FROM users` here would fail with a foreign-key violation
     /// while any owned `tracked_trains` row still exists. So this deletes
     /// owned `tracked_trains` rows first (which *does* cascade on to

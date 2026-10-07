@@ -228,7 +228,7 @@ fn internal_oauth_route_table(
         // delivery that had never actually been published. schedule-reference
         // now writes its own completion marker here, once per delivery, only
         // after every product for that delivery has published successfully.
-        // See crates/api/migrations/20260925130000_schedule_reference_publishes.sql.
+        // See crates/ds-store/migrations/20260925130000_schedule_reference_publishes.sql.
         (
             "/schedule-reference-publishes",
             Method::GET,

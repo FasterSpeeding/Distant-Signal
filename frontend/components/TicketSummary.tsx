@@ -7,7 +7,7 @@ import { RouteText } from './RouteArrow';
 /** Provenance labels for `TicketSummary`'s badge -- styled after
  * `IssueList.tsx`'s `DATA_QUALITY_LABELS` (`components/IssueList.tsx:38-44`),
  * this feature's own conceptual sibling per
- * `crates/api/migrations/20260829090000_journey_ticket_tracking.sql:17-23`'s
+ * `crates/ds-store/migrations/20260829090000_journey_ticket_tracking.sql:17-23`'s
  * own comment ("extending DESIGN.md's dataQuality philosophy"). Exact
  * wording is a naming detail, not load-bearing -- see
  * docs/superpowers/specs/2026-09-02-ticket-display-delete-original-design.md's

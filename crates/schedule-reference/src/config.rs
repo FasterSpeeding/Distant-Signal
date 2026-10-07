@@ -46,7 +46,7 @@ pub(crate) struct Config {
     /// had already handled a delivery it had never published, so `poll_once`
     /// short-circuited and every product for that delivery silently never
     /// landed until the next delivery arrived ~24 hours later. See
-    /// `crates/api/migrations/20260925130000_schedule_reference_publishes.sql`.
+    /// `crates/ds-store/migrations/20260925130000_schedule_reference_publishes.sql`.
     #[arg(
         long,
         env,

@@ -83,7 +83,7 @@ fn needs_train_origin_board(train_true_origin_crs: &str, leg_origin_crs: &str) -
 /// replaced a per-leg async `leg_skip_status`).
 ///
 /// `train_true_origin_crs` is the leg's train's own `trains.origin_crs`
-/// (nullable, `crates/api/migrations/20260906100000_trains.sql:19`), used
+/// (nullable, `crates/ds-store/migrations/20260906100000_trains.sql:19`), used
 /// only for the symmetric origin-skip check; the leg's own
 /// origin/destination come from its `journey_legs` row. A missing board
 /// degrades to `LegSkipStatus::default()` (both `false`) -- the same
