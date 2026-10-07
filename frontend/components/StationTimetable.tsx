@@ -6,7 +6,7 @@ import {
   AccordionControl,
   AccordionItem,
   AccordionPanel,
-  Group,
+  Flex,
   Stack,
   Text,
   VisuallyHidden,
@@ -240,9 +240,16 @@ export function StationTimetable({
     // outside it with nothing connecting the two. Anchored to the control's
     // own row instead -- right-aligned beside it -- rather than moved
     // inside the panel, which would make it disappear whenever the
-    // accordion is collapsed and break that same guarantee.
+    // accordion is collapsed and break that same guarantee. Below `sm` it
+    // goes under the accordion instead: beside it, a phone left the rows
+    // about 230px, too narrow for a destination name.
     <Stack gap="xs">
-      <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
+      <Flex
+        direction={{ base: 'column', sm: 'row' }}
+        justify="space-between"
+        align={{ base: 'stretch', sm: 'flex-start' }}
+        gap="sm"
+      >
         <Accordion keepMounted={false} onChange={handleChange} style={{ flexGrow: 1, minWidth: 0 }}>
           <AccordionItem value="scheduled-departures">
             <AccordionControl>Scheduled departures</AccordionControl>
@@ -260,10 +267,14 @@ export function StationTimetable({
             </AccordionPanel>
           </AccordionItem>
         </Accordion>
-        <TextLink href={`/trains?station=${crs.toUpperCase()}`} inline underline="always">
-          Search a different day or filter <span aria-hidden="true">→</span>
-        </TextLink>
-      </Group>
+        {/* In a div: a bare flex item would be stretched full-width in the
+            phone column, and so would the link's hit area. */}
+        <div>
+          <TextLink href={`/trains?station=${crs.toUpperCase()}`} inline underline="always">
+            Search a different day or filter <span aria-hidden="true">→</span>
+          </TextLink>
+        </div>
+      </Flex>
     </Stack>
   );
 }

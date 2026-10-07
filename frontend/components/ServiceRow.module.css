@@ -109,6 +109,7 @@ a.row:focus-visible,
 }
 
 .arrival {
+  white-space: nowrap;
   color: var(--mantine-color-dimmed);
   font-size: var(--mantine-font-size-sm);
   font-variant-numeric: tabular-nums;
@@ -209,6 +210,17 @@ a.row:focus-visible,
 
   .actions {
     justify-content: flex-start;
+  }
+
+  /* With actions (journey-leg candidates) the arrival after the
+     destination is part of the choice, so it wraps under the destination
+     rather than being cut off; the destination itself still truncates. */
+  .row[data-actions] .dest {
+    white-space: normal;
+  }
+
+  .row[data-actions] .destLink {
+    white-space: nowrap;
   }
 
   .strip {
