@@ -73,8 +73,9 @@ fn insert_backlog_row(
     sqlx::query(
         "INSERT INTO trust_event_backlog \
             (crs, train_uid, train_id, service_date, msg_type, event_type, \
-             planned_timestamp, actual_timestamp, variation_status, delay_minutes, dedup_key) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             planned_timestamp, actual_timestamp, variation_status, delay_minutes, dedup_key, \
+             gbtt_timestamp) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          ON CONFLICT (dedup_key) DO NOTHING",
     )
     .bind(&event.crs)
@@ -88,6 +89,7 @@ fn insert_backlog_row(
     .bind(&event.variation_status)
     .bind(event.delay_minutes)
     .bind(&event.dedup_key)
+    .bind(event.gbtt_timestamp)
 }
 
 /// The fast path: the whole batch in one `INSERT ... SELECT FROM UNNEST`
@@ -122,13 +124,16 @@ async fn insert_batch_in_one_statement(
         .collect();
     let delay: Vec<Option<i32>> = events.iter().map(|e| e.delay_minutes).collect();
     let dedup_key: Vec<&str> = events.iter().map(|e| e.dedup_key.as_str()).collect();
+    let gbtt: Vec<Option<chrono::DateTime<chrono::Utc>>> =
+        events.iter().map(|e| e.gbtt_timestamp).collect();
     let result = sqlx::query(
         "INSERT INTO trust_event_backlog \
             (crs, train_uid, train_id, service_date, msg_type, event_type, \
-             planned_timestamp, actual_timestamp, variation_status, delay_minutes, dedup_key) \
+             planned_timestamp, actual_timestamp, variation_status, delay_minutes, dedup_key, \
+             gbtt_timestamp) \
          SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::date[], $5::text[], \
                               $6::text[], $7::timestamptz[], $8::timestamptz[], $9::text[], \
-                              $10::int4[], $11::text[]) \
+                              $10::int4[], $11::text[], $12::timestamptz[]) \
          ON CONFLICT (dedup_key) DO NOTHING",
     )
     .bind(&crs)
@@ -142,6 +147,7 @@ async fn insert_batch_in_one_statement(
     .bind(&variation)
     .bind(&delay)
     .bind(&dedup_key)
+    .bind(&gbtt)
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
@@ -653,7 +659,9 @@ pub async fn ingest_shared_movements_batch(
                 let movement = Movement {
                     train_id: event.train_id.clone(),
                     event_type: event.event_type.clone().unwrap_or_default(),
-                    gbtt_timestamp: None,
+                    gbtt_timestamp: event
+                        .gbtt_timestamp
+                        .map(|t| t.timestamp_millis().to_string()),
                     planned_timestamp: event
                         .planned_timestamp
                         .map(|t| t.timestamp_millis().to_string()),
@@ -716,7 +724,7 @@ pub async fn ingest_shared_movements_batch(
             loc_stanox: None,
             loc_crs: event.crs.clone(),
             planned_timestamp: event.planned_timestamp,
-            gbtt_timestamp: None,
+            gbtt_timestamp: event.gbtt_timestamp,
             actual_timestamp: event.actual_timestamp,
             variation_status: event.variation_status.clone(),
             raw_body: serde_json::json!({}),
@@ -891,13 +899,14 @@ pub async fn replay_uidless_backlog(
         Option<String>,
         Option<i32>,
         String,
+        Option<chrono::DateTime<chrono::Utc>>,
     );
     let mut report = UidlessReplayReport::default();
     let mut after_id = 0i64;
     loop {
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT id, crs, train_id, service_date, msg_type, event_type, planned_timestamp, \
-                    actual_timestamp, variation_status, delay_minutes, dedup_key \
+                    actual_timestamp, variation_status, delay_minutes, dedup_key, gbtt_timestamp \
              FROM trust_event_backlog \
              WHERE train_uid IS NULL AND msg_type <> '0001' AND received_at >= $1 AND id > $2 \
              ORDER BY id LIMIT $3",
@@ -926,6 +935,7 @@ pub async fn replay_uidless_backlog(
                 variation_status: r.8,
                 delay_minutes: r.9,
                 dedup_key: r.10,
+                gbtt_timestamp: r.11,
             })
             .collect();
         let results = ingest_shared_movements_batch(pool, &events).await;
@@ -1137,6 +1147,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(1),
             dedup_key: dedup_key.to_string(),
+            gbtt_timestamp: None,
         }
     }
 
@@ -1484,6 +1495,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(1),
             dedup_key: "test-ingest-shared-dedup".to_string(),
+            gbtt_timestamp: None,
         };
 
         ingest_shared_movement(&pool, &event)
@@ -1531,6 +1543,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: dedup.to_string(),
+            gbtt_timestamp: None,
         }
     }
 
@@ -1551,6 +1564,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(1),
             dedup_key: dedup.to_string(),
+            gbtt_timestamp: None,
         }
     }
 
@@ -1731,7 +1745,10 @@ mod db_tests {
                     "2026-10-01",
                     "test-infer-act-5",
                 ),
-                uidless_movement(train_id, "2026-10-01", "test-infer-mov-5"),
+                TrustBacklogEventMessage {
+                    gbtt_timestamp: Some("2026-10-01T08:54:00Z".parse().unwrap()),
+                    ..uidless_movement(train_id, "2026-10-01", "test-infer-mov-5")
+                },
             ],
         )
         .await
@@ -1756,7 +1773,112 @@ mod db_tests {
             .await
             .expect("replay again");
         assert_eq!(count().await, 1, "idempotent");
+        let gbtt: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT m.gbtt_timestamp FROM train_movement_events m JOIN trains t ON t.id = m.trains_id \
+             WHERE t.train_uid = 'TEST-INFER-UID-5'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            gbtt,
+            Some("2026-10-01T08:54:00Z".parse().unwrap()),
+            "the replay carries the stored public time"
+        );
         cleanup_uid_inference(&pool, train_id).await;
+    }
+
+    /// Both backlog insert paths -- the one-statement UNNEST and the
+    /// row-by-row fallback a bad batch-mate forces -- store
+    /// `gbtt_timestamp` (2026-10-07: neither did, and nothing downstream
+    /// could replay what was never stored).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                both_backlog_insert_paths_store_the_gbtt_timestamp -- --ignored --test-threads=1`"]
+    async fn both_backlog_insert_paths_store_the_gbtt_timestamp() {
+        let pool = connect().await;
+        let cleanup =
+            "DELETE FROM trust_event_backlog WHERE dedup_key LIKE 'test-dedup-key-gbtt-%'";
+        sqlx::query(cleanup)
+            .execute(&pool)
+            .await
+            .expect("pre-clean");
+        let gbtt: chrono::DateTime<chrono::Utc> = "2026-09-05T19:14:00Z".parse().unwrap();
+        let with_gbtt = |dedup_key: &str| TrustBacklogEventMessage {
+            gbtt_timestamp: Some(gbtt),
+            ..fixture_event("TEST-TRUST-BACKLOG-GBTT", dedup_key)
+        };
+
+        let fast =
+            upsert_trust_event_backlog_batch(&pool, &[with_gbtt("test-dedup-key-gbtt-fast")])
+                .await
+                .expect("fast path");
+        assert_eq!(fast.inserted, 1);
+        let bad = TrustBacklogEventMessage {
+            msg_type: "0009".to_string(),
+            ..fixture_event("TEST-TRUST-BACKLOG-GBTT", "test-dedup-key-gbtt-bad")
+        };
+        let slow =
+            upsert_trust_event_backlog_batch(&pool, &[with_gbtt("test-dedup-key-gbtt-slow"), bad])
+                .await
+                .expect("row-by-row path");
+        assert_eq!((slow.inserted, slow.rejected.len()), (1, 1));
+
+        let stored: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+            "SELECT dedup_key, gbtt_timestamp FROM trust_event_backlog \
+             WHERE dedup_key LIKE 'test-dedup-key-gbtt-%' ORDER BY dedup_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        sqlx::query(cleanup).execute(&pool).await.expect("cleanup");
+        assert_eq!(
+            stored,
+            vec![
+                ("test-dedup-key-gbtt-fast".to_string(), Some(gbtt)),
+                ("test-dedup-key-gbtt-slow".to_string(), Some(gbtt)),
+            ]
+        );
+    }
+
+    /// The shared write (`ingest_shared_movements_batch`, the path
+    /// `POST /private/trust-event-backlog` drives) stores the event's
+    /// `gbtt_timestamp` on `train_movement_events`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                the_shared_movement_write_stores_the_gbtt_timestamp -- --ignored --test-threads=1`"]
+    async fn the_shared_movement_write_stores_the_gbtt_timestamp() {
+        let pool = connect().await;
+        let uid = "TEST-INGEST-GBTT-UID";
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .ok();
+        let gbtt: chrono::DateTime<chrono::Utc> = "2026-09-06T19:14:00Z".parse().unwrap();
+        let event = TrustBacklogEventMessage {
+            train_uid: Some(uid.to_string()),
+            service_date: "2026-09-06".parse().unwrap(),
+            gbtt_timestamp: Some(gbtt),
+            ..fixture_event("TEST-INGEST-GBTT-TID", "test-ingest-gbtt-dedup")
+        };
+        let results = ingest_shared_movements_batch(&pool, std::slice::from_ref(&event)).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+
+        let stored: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT m.gbtt_timestamp FROM train_movement_events m JOIN trains t ON t.id = m.trains_id \
+             WHERE t.train_uid = $1",
+        )
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .expect("one shared movement row");
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .ok();
+        assert_eq!(stored, Some(gbtt));
     }
 
     /// Corroborating proof, for THIS call path specifically, of the guard
@@ -1789,6 +1911,7 @@ mod db_tests {
             variation_status: Some("ON TIME".to_string()),
             delay_minutes: Some(0),
             dedup_key: "test-backlog-out-of-order-newer-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         ingest_shared_movement(&pool, &newer_movement)
             .await
@@ -1820,6 +1943,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-backlog-out-of-order-stale-cancel-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         ingest_shared_movement(&pool, &stale_cancellation)
             .await
@@ -1873,6 +1997,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-ingest-shared-no-uid-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         ingest_shared_movement(&pool, &event)
             .await
@@ -1918,6 +2043,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(1),
             dedup_key: "test-ingest-shared-twice-dedup".to_string(),
+            gbtt_timestamp: None,
         };
 
         ingest_shared_movement(&pool, &event)
@@ -2020,6 +2146,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(1),
             dedup_key: "test-batch-dedup-a1".to_string(),
+            gbtt_timestamp: None,
         };
         let event_a2 = TrustBacklogEventMessage {
             crs: Some("MKC".to_string()),
@@ -2037,6 +2164,7 @@ mod db_tests {
             variation_status: Some("ON TIME".to_string()),
             delay_minutes: Some(0),
             dedup_key: "test-batch-dedup-a2".to_string(),
+            gbtt_timestamp: None,
         };
         let event_b = TrustBacklogEventMessage {
             crs: Some("WAT".to_string()),
@@ -2050,6 +2178,7 @@ mod db_tests {
             variation_status: Some("ON TIME".to_string()),
             delay_minutes: Some(0),
             dedup_key: "test-batch-dedup-b".to_string(),
+            gbtt_timestamp: None,
         };
         let event_no_uid = TrustBacklogEventMessage {
             crs: Some("WAT".to_string()),
@@ -2063,6 +2192,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-batch-dedup-no-uid".to_string(),
+            gbtt_timestamp: None,
         };
 
         let events = vec![event_a1, event_a2, event_b, event_no_uid];
@@ -2193,6 +2323,7 @@ mod db_tests {
             variation_status: Some("ON TIME".to_string()),
             delay_minutes: Some(0),
             dedup_key: "test-fallback-step1-good-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         let bad = TrustBacklogEventMessage {
             crs: Some("WAT".to_string()),
@@ -2207,6 +2338,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-fallback-step1-bad-dedup".to_string(),
+            gbtt_timestamp: None,
         };
 
         let results = ingest_shared_movements_batch(&pool, &[good, bad]).await;
@@ -2284,6 +2416,7 @@ mod db_tests {
             variation_status: Some("ON TIME".to_string()),
             delay_minutes: Some(0),
             dedup_key: "test-fallback-step2-good-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         let bad = TrustBacklogEventMessage {
             crs: Some("WAT".to_string()),
@@ -2299,6 +2432,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-fallback-step2-bad-dedup".to_string(),
+            gbtt_timestamp: None,
         };
 
         let results = ingest_shared_movements_batch(&pool, &[good, bad]).await;
@@ -2407,6 +2541,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(5),
             dedup_key: "test-fallback-step3-movement-a-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         let movement_b = TrustBacklogEventMessage {
             crs: Some("WAT".to_string()),
@@ -2420,6 +2555,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(3),
             dedup_key: "test-fallback-step3-movement-b-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         let seed_results = ingest_shared_movements_batch(&pool, &[movement_a, movement_b]).await;
         assert!(
@@ -2463,6 +2599,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-fallback-step3-cancel-a-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         let cancel_b = TrustBacklogEventMessage {
             crs: None,
@@ -2478,6 +2615,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-fallback-step3-cancel-b-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         let results = ingest_shared_movements_batch(&pool, &[cancel_a, cancel_b]).await;
 
@@ -2586,6 +2724,7 @@ mod db_tests {
             variation_status: Some("LATE".to_string()),
             delay_minutes: Some(5),
             dedup_key: "test-causality-movement-dedup".to_string(),
+            gbtt_timestamp: None,
         };
         let cancellation = TrustBacklogEventMessage {
             crs: None,
@@ -2605,6 +2744,7 @@ mod db_tests {
             variation_status: None,
             delay_minutes: None,
             dedup_key: "test-causality-cancellation-dedup".to_string(),
+            gbtt_timestamp: None,
         };
 
         let results = ingest_shared_movements_batch(&pool, &[movement, cancellation]).await;
