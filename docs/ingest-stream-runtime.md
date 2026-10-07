@@ -154,6 +154,6 @@ with `metrics::record_oversize(stream)`.
 ## Tests
 
 - Unit and golden: `cargo test -p ingest-stream`.
-- Redis-gated (CI's rust-test job; local valkey on 6379):
+- Redis-gated (CI's rust-db-test job; local valkey on 6379):
   `cargo test -p ingest-stream --test redis_stream -- --ignored --test-threads=1`.
   Each test uses a random key prefix and deletes its keys and ACL users.

@@ -98,7 +98,7 @@ Rollback: the runbook's.
 |---|---|---|---|
 | 0b.1 | `db-grants.yaml`: classify all 69 tables, the sequences, the function and (later) the views, as spec §6.4 | `charts/distant-signal/files/db-grants.yaml` | – |
 | 0b.2 | `gen-db-grants.py`: `render` writes `postgres-grants.sql` (group roles; per-service `LOGIN` roles that are, for now, **members of `distant_signal_app`** with no grants of their own; `CONNECTION LIMIT`s; the `schema_gate` and `read_shared` groups). `check --database-url` fails on any `public` object missing from the YAML, on stale YAML, or on a stale SQL file | `scripts/gen-db-grants.py`, `charts/distant-signal/files/postgres-grants.sql`, `pyproject.toml` (PyYAML in the scripts group), `uv.lock` | `scripts/tests/test_gen_db_grants.py`: classification gaps, stale output, limits summing over budget |
-| 0b.3 | CI: after the `rust-test` migration step, run `gen-db-grants.py check` against the fresh DB | `.github/workflows/*.yml` | CI green; a deliberately unclassified table in a scratch branch fails |
+| 0b.3 | CI: after the `rust-db-test` migration step, run `gen-db-grants.py check` against the fresh DB | `.github/workflows/*.yml` | CI green; a deliberately unclassified table in a scratch branch fails |
 | 0b.4 | Chart: the setup Job also runs `postgres-grants.sql`. Per-service passwords: one `existingSecret` per role (Q12), each defaulting to generated values as today. Each Deployment gets its own `DATABASE_URL` user when `postgresql.roles.perService` is on (default off) | `templates/postgres-roles.yaml`, `_helpers.tpl` (`distant-signal.databaseEnv` takes a role), `values.yaml`, chart README | `helm template` with `perService` on and off: the default render is unchanged; each Deployment names its own role |
 | 0b.5 | The render-time connection budget sums every role's limit (spec §6.6) | `templates/api-deployment.yaml` (the INF-7 check moves to `_helpers.tpl`) | render fails at 98; passes at 92 |
 | 0b.6 | `observe-role-usage.py` (read-only): reads `pg_stat_statements` joined to `pg_roles` and extracts table and verb per role from the normalised text. It writes a Markdown report with a diff against `db-grants.yaml` | `scripts/observe-role-usage.py` | unit tests on fixture query texts (CTEs, `UPDATE … FROM`, `INSERT … SELECT`, `ON CONFLICT`) |
@@ -449,7 +449,7 @@ table below:
 - Dead-letter streams are capped at their source's `MAXLEN` (I3) and the
   budget is 512 MB (D5), both checked by `ingest_stream::budget`.
 - Tests: unit and golden (`cargo test -p ingest-stream`), and Redis-gated
-  (`--test redis_stream -- --ignored`, a new step in CI's rust-test job).
+  (`--test redis_stream -- --ignored`, a step in CI's rust-db-test job).
 
 How the rest of 3a uses it:
 

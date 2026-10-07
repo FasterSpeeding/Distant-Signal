@@ -3,8 +3,12 @@
 Design, 2026-10-06. Status: **accepted**; the user's decisions are in
 [§16, Decisions (2026-10-06)](#decisions-2026-10-06) and
 [(2026-10-07)](#decisions-2026-10-07). Phase 0 is being
-built (chart and tooling, all off by default); the phase 3a stream
-runtime library (`crates/ingest-stream`, §7.7) is built with no callers.
+built (chart and tooling, all off by default). Of phase 1B, the parts that
+need no `ds-store` are built and off by default: the chart (migrate hook
+Job, `api.strategy.type`, the api-maintenance CronJob, the ingest-writer
+Deployment and writer role), the api's `maintenance` bin and the
+`ingest-writer` skeleton (§10). The phase 3a stream runtime library
+(`crates/ingest-stream`, §7.7) is built with no callers.
 [The plan](../plans/2026-10-06-ingest-architecture-plan.md) is how to
 build it, phase by phase.
 
@@ -480,7 +484,7 @@ Consequences:
   `.sqlx` cache, and building `ds-store` needs no database.
 - **Query correctness keeps coming from the DB-gated `#[ignore]` tests.**
   They move with their functions. `ds-store`'s suite runs on a fresh,
-  migrated database in CI (`rust-test`), and it **also runs once per
+  migrated database in CI (`rust-db-test`), and it **also runs once per
   narrowed role** (§6.5). A query a role cannot run fails there, not in
   production.
 - **Recommendation: do not adopt `query!` in `ds-store`.** It would need
@@ -558,7 +562,7 @@ The grants become data:
 
   The existing setup Job runs `postgres-roles.sql` and then this file, both
   idempotent.
-- **CI checks, all in `rust-test` after the migrations run on a fresh
+- **CI checks, all in `rust-db-test` after the migrations run on a fresh
   DB:**
   1. **Every table, view and sequence in `public` is classified.**
      `gen-db-grants.py check --database-url …` lists `pg_class` and fails
