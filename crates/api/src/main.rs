@@ -226,9 +226,12 @@ async fn server_main() -> anyhow::Result<()> {
         .allow_methods([axum::http::Method::GET])
         .allow_origin(Any);
 
+    // `with_default_metrics`' recorder plus the shared per-metric buckets
+    // (the pool's acquire time); see `api::route_metrics::install_recorder`.
+    let recorder_handle = api::route_metrics::install_recorder()?;
     let (metrics_layer, metrics_handle) = PrometheusMetricLayerBuilder::new()
         .with_prefix("distant_signal")
-        .with_default_metrics()
+        .with_metrics_from_fn(|| recorder_handle)
         // Unbounded Prometheus label cardinality fix (found investigating a
         // live 2026-09-26 OOM incident: the `api` pod running over its
         // 1536Mi chart limit and cycling through repeated restarts). See

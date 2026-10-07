@@ -29,6 +29,7 @@
 //! `endpoint` label wins the name; see docs/metrics.md).
 
 use axum::http::Method;
+use axum_prometheus::metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 
 /// The public routes whose request series are registered at 0: what the
 /// MCP calls (`/Trips/plan` above all) and what the frontend's home, line,
@@ -114,6 +115,44 @@ pub fn register(private_routes: &[(&'static str, Method, Vec<String>)]) {
     }
 }
 
+/// The request-duration histogram `axum_prometheus` records, by its full
+/// name under the `distant_signal` prefix `main.rs` sets.
+const HTTP_REQUESTS_DURATION_SECONDS: &str = "distant_signal_http_requests_duration_seconds";
+
+/// The api's recorder, as `axum_prometheus`'s `with_default_metrics` builds
+/// it (its request-duration buckets) plus `common::metrics::SHARED_BUCKETS`
+/// (the pool's acquire time), so those render as histograms here too.
+/// Every other histogram stays a summary, as before.
+fn recorder_builder() -> anyhow::Result<PrometheusBuilder> {
+    let mut builder = PrometheusBuilder::new().set_buckets_for_metric(
+        Matcher::Full(HTTP_REQUESTS_DURATION_SECONDS.to_owned()),
+        axum_prometheus::utils::SECONDS_DURATION_BUCKETS,
+    )?;
+    for (name, buckets) in common::metrics::SHARED_BUCKETS {
+        builder = builder.set_buckets_for_metric(Matcher::Full((*name).to_owned()), buckets)?;
+    }
+    Ok(builder)
+}
+
+/// Builds [`recorder_builder`]'s recorder, installs it as the global one and
+/// keeps it upkept, exactly as `with_default_metrics` does with its own;
+/// for `PrometheusMetricLayerBuilder::with_metrics_from_fn`. Needs a Tokio
+/// runtime.
+pub fn install_recorder() -> anyhow::Result<PrometheusHandle> {
+    let recorder = recorder_builder()?.build_recorder();
+    let handle = recorder.handle();
+    let upkeep = handle.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            upkeep.run_upkeep();
+        }
+    });
+    metrics::set_global_recorder(recorder)
+        .map_err(|_| anyhow::anyhow!("a global metrics recorder is already installed"))?;
+    Ok(handle)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -137,13 +176,38 @@ mod tests {
     }
 
     fn render(f: impl FnOnce()) -> String {
-        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new()
+        let recorder = PrometheusBuilder::new()
             .set_buckets(axum_prometheus::utils::SECONDS_DURATION_BUCKETS)
             .unwrap()
             .build_recorder();
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, f);
         handle.render()
+    }
+
+    /// The api's recorder: request durations and the pool's acquire time
+    /// render as histograms, each with its own buckets.
+    #[test]
+    fn the_recorder_buckets_request_durations_and_pool_acquires() {
+        let recorder = recorder_builder().unwrap().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            metrics::histogram!(HTTP_REQUESTS_DURATION_SECONDS).record(0.003);
+            metrics::histogram!(common::metrics::DB_POOL_ACQUIRE_SECONDS).record(0.0005);
+        });
+        let rendered = handle.render();
+        for series in [
+            r#"distant_signal_http_requests_duration_seconds_bucket{le="0.005"} 1"#,
+            r#"distant_signal_http_requests_duration_seconds_bucket{le="10"} 1"#,
+            r#"distant_signal_db_pool_acquire_seconds_bucket{le="0.001"} 1"#,
+            r#"distant_signal_db_pool_acquire_seconds_bucket{le="5"} 1"#,
+        ] {
+            assert!(
+                rendered.contains(series),
+                "{series} missing from {rendered}"
+            );
+        }
+        assert!(!rendered.contains("quantile"), "{rendered}");
     }
 
     #[tokio::test]
