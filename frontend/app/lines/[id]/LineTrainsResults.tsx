@@ -23,8 +23,10 @@ import {
   lineTimetableLink,
   londonMinuteOfDay,
   paramsForHref,
+  PHONE_HUB_LINKS,
   previousDate,
   previousDayWindow,
+  rankHubs,
   resolveWindow,
   shiftToNextDay,
   sortByLineTime,
@@ -305,14 +307,43 @@ function SharedGroup({
 function HubLinks({ stations }: { stations: LineCatalogueStation[] }) {
   const hubs = hubStations(stations);
   if (hubs.length === 0) return null;
+  const link = (hub: LineCatalogueStation) => (
+    <TextLink key={hub.crs} href={`/stations/${hub.crs}#departures`}>
+      Other trains at {hub.name ?? hub.crs} →
+    </TextLink>
+  );
+  // A phone gets the most important few and the rest behind a disclosure
+  // (CSS picks the variant, so no JavaScript is needed); a desktop all.
+  const ranked = rankHubs(hubs);
+  const top = ranked.slice(0, PHONE_HUB_LINKS);
+  const rest = ranked.slice(PHONE_HUB_LINKS);
   return (
-    <Group gap="md" wrap="wrap">
-      {hubs.map((hub) => (
-        <TextLink key={hub.crs} href={`/stations/${hub.crs}#departures`}>
-          Other trains at {hub.name ?? hub.crs} →
-        </TextLink>
-      ))}
-    </Group>
+    <>
+      <div className={classes.desktopBlock} data-hubs="desktop">
+        <Group gap="md" wrap="wrap">
+          {hubs.map(link)}
+        </Group>
+      </div>
+      <div className={classes.phoneBlock} data-hubs="phone">
+        <Stack gap="xs">
+          <Group gap="md" wrap="wrap">
+            {top.map(link)}
+          </Group>
+          {rest.length > 0 && (
+            <details className={classes.details}>
+              <summary>
+                <Text span size="sm">
+                  More stations ({rest.length})
+                </Text>
+              </summary>
+              <Stack gap="xs" className={classes.detailsBody}>
+                {rest.map(link)}
+              </Stack>
+            </details>
+          )}
+        </Stack>
+      </div>
+    </>
   );
 }
 

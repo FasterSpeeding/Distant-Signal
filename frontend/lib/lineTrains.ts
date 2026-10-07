@@ -532,3 +532,16 @@ export function addCounts(
   }
   return out;
 }
+
+/** How many hub links a phone shows before "More stations". */
+export const PHONE_HUB_LINKS = 3;
+
+/** The hubs in order of importance for a phone: termini, then major
+ * stations, then junctions; catalogue order within each. */
+export function rankHubs(hubs: LineCatalogueStation[]): LineCatalogueStation[] {
+  const rank = (role: string) => (role === 'terminus' ? 0 : role === 'major' ? 1 : 2);
+  return hubs
+    .map((hub, index) => ({ hub, index }))
+    .sort((a, b) => rank(a.hub.role) - rank(b.hub.role) || a.index - b.index)
+    .map(({ hub }) => hub);
+}

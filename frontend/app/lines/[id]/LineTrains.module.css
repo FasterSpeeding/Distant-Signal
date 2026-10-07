@@ -165,6 +165,14 @@
   display: none;
 }
 
+.desktopBlock {
+  display: block;
+}
+
+.phoneBlock {
+  display: none;
+}
+
 @media (max-width: 48em) {
   .desktopOnly {
     display: none;
@@ -172,6 +180,14 @@
 
   .phoneOnly {
     display: inline;
+  }
+
+  .desktopBlock {
+    display: none;
+  }
+
+  .phoneBlock {
+    display: block;
   }
 }
 
