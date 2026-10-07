@@ -52,6 +52,13 @@ uv run python -m unittest discover -s scripts/tests   # the scripts' tests
 uv run scripts/check-migration-order.py "$(git merge-base main HEAD)"
 ```
 
+A migration with destructive DDL (a `DROP` of a table, column, view or
+function, a `RENAME`, a column type change, `SET NOT NULL` on an existing
+column) needs a `-- contract: <what> (code stopped using it in <commit>)`
+line in its leading comments, and ships a release after the code stopped
+using the object; `check-migration-order.py` enforces the header (see its
+docstring).
+
 `uv run` creates `.venv/` and installs the `lint` group on first use. It runs
 shellcheck and shfmt over every `*.sh`, ruff and mypy over `scripts/`,
 actionlint over the workflows, hadolint over the Dockerfiles, and
