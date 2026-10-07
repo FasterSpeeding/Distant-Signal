@@ -558,3 +558,12 @@ export function timetableRowTimes(train: LineTimetableTrain): { time: string; ar
     arrival: arrival === null ? undefined : formatClock(arrival),
   };
 }
+
+/** A timetable row as the row component shows it: with a picked `from`
+ * station, its stop strip starts there (the stops before it are not where
+ * this traveller is going). */
+export function fromStationView<T extends LineTrainSummary>(train: T, from: string | null): T {
+  if (!from) return train;
+  const index = train.onLineStops.findIndex((s) => s.crs === from);
+  return index <= 0 ? train : { ...train, onLineStops: train.onLineStops.slice(index) };
+}

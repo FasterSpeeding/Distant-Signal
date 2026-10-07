@@ -17,6 +17,7 @@ import {
   timetableHref,
   timetableParamsForHref,
   timetableRowTimes,
+  fromStationView,
   type TimetablePageParams,
 } from '@/lib/lineTrains';
 import type { LineCatalogueStation, LineTimetablePage } from '@/lib/types';
@@ -332,7 +333,7 @@ export default async function LineTimetablePage({
                 return (
                   <LineTrainRow
                     key={train.uid}
-                    train={train}
+                    train={fromStationView(train, page.from)}
                     date={date}
                     stations={stations}
                     timeOverride={time}

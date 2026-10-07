@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { VisuallyHidden } from '@mantine/core';
 import { LoadMoreControl } from '@/components/LoadMoreControl';
 import { TextLink } from '@/components/TextLink';
-import { lineTimetableQuery, timetableRowTimes } from '@/lib/lineTrains';
+import { fromStationView, lineTimetableQuery, timetableRowTimes } from '@/lib/lineTrains';
 import type { LineCatalogueStation, LineDirection, LineTimetablePage, LineTimetableTrain } from '@/lib/types';
 import { LineTrainRow } from '../LineTrainRow';
 import classes from '../LineTrains.module.css';
@@ -85,7 +85,7 @@ export function TimetableMore({
             return (
               <LineTrainRow
                 key={train.uid}
-                train={train}
+                train={fromStationView(train, query.from)}
                 date={query.date}
                 stations={stations}
                 timeOverride={time}

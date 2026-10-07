@@ -120,6 +120,8 @@ describe('LineTimetablePage', () => {
     const list = screen.getByRole('list', { name: 'Trains' });
     expect(visibleText(within(list).getByRole('link'))).toMatch(/^06:25 Weymouth · arr 08:30 Scheduled/);
     expect(within(list).getByRole('link')).toHaveAccessibleName(/arriving at 08:30/);
+    // The stop strip starts at the picked station: Waterloo is not listed.
+    expect(within(list).getByRole('link')).toHaveAccessibleName(/Then calls at Weymouth\./);
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
       'This line’s trains, from Woking to Weymouth, towards Weymouth from 06:00',
     );
