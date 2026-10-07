@@ -3,6 +3,42 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-07: live status and origin names on the schedule lists
+
+Additive only: every existing field is unchanged. Applies to each row of
+`GET /public/trains/search` (`results[]`) and of
+`GET /public/stations/{crs}/schedule-departures`.
+
+### New fields on both
+
+- `live`: the same compact object as `live` on
+  `GET /public/lines/{id}/trains?view=summary`:
+  `{"status", "delayMinutes", "delayProvisional", "cancelled",
+  "lastReportedLocation"}`, for the row's train on its service date.
+  `null` when the train has no live state (not activated by TRUST yet, or
+  never looked up), which is common for later trains. Example:
+  `"live": {"status": "en_route", "delayMinutes": 4, "delayProvisional":
+  false, "cancelled": false, "lastReportedLocation": "Reading"}`.
+- `originName`: the station name of `originCrs` (the schedule's true first
+  calling point), or `null` when the code is `null` or has no station.
+
+### New fields on `GET /public/trains/search` only
+
+- `dayOffset`: days after the searched `date` (the service date) that the
+  departure from `station` falls on: `1` for a train that started before
+  midnight and calls at `station` after it. The same convention as
+  `/schedule-departures`' existing `dayOffset`: it moves the departure's
+  calendar day, never the service date, so `GET /Train/by-uid/{uid}/{date}`
+  still takes the searched `date`. `0` otherwise.
+
+### New fields on `GET /public/stations/{crs}/schedule-departures` only
+
+- `originCrs`: the schedule's true origin CRS (the same meaning as on
+  `/public/trains/search`), or `null` when it does not resolve to a
+  station. That route's `dayOffset` already existed.
+- With `?date=` (the entry below), `live`, `originCrs` and `originName`
+  are looked up for the requested service date, like the rows themselves.
+
 ## 2026-10-07: `?date=` on station schedule departures
 
 ### New query parameter (`GET /public/stations/{crs}/schedule-departures`)

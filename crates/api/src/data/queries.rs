@@ -1203,7 +1203,7 @@ pub async fn search_schedule_calling_point_departures(
 
     // train_uid, destination_crs, true_origin_crs, scheduled,
     // destination_arrival, destination_arrival_day_offset, operator_atoc,
-    // public_departure, public_destination_arrival.
+    // public_departure, public_destination_arrival, day_offset.
     type CallingPointDepartureRow = (
         String,
         String,
@@ -1214,12 +1214,13 @@ pub async fn search_schedule_calling_point_departures(
         Option<String>,
         Option<chrono::NaiveTime>,
         Option<chrono::NaiveTime>,
+        i16,
     );
 
     let rows: Vec<CallingPointDepartureRow> = sqlx::query_as(
         r#"
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
-                   main.public_departure, main.public_destination_arrival
+                   main.public_departure, main.public_destination_arrival, main.day_offset
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
@@ -1316,7 +1317,7 @@ pub async fn search_schedule_calling_point_departures(
         page_rows
             .last()
             .map(
-                |(train_uid, _, _, scheduled, _, _, _, _, _)| CallingPointDepartureCursor {
+                |(train_uid, _, _, scheduled, _, _, _, _, _, _)| CallingPointDepartureCursor {
                     scheduled: *scheduled,
                     train_uid: train_uid.clone(),
                 },
@@ -1338,9 +1339,11 @@ pub async fn search_schedule_calling_point_departures(
                 operator_atoc,
                 public_departure,
                 public_destination_arrival,
+                day_offset,
             )| {
                 serde_json::json!({
                     "uid": train_uid,
+                    "day_offset": day_offset,
                     "destination_crs": destination_crs,
                     "true_origin_crs": true_origin_crs,
                     "scheduled": scheduled.format("%H:%M:%S").to_string(),

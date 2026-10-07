@@ -661,10 +661,16 @@ async fn get_trains_search(
     // `routes::departures::get_station_departures` already established:
     // collect every row's `destination_crs`, resolve them all in one query,
     // hand the map to the renderer.
+    // The same one lookup also names each row's true origin (`originName`,
+    // 2026-10-07): the origin codes simply join the destination codes.
     let destination_crs: Vec<String> = page
         .departures
         .iter()
-        .filter_map(|d| d.get("destination_crs").and_then(Value::as_str))
+        .flat_map(|d| {
+            ["destination_crs", "true_origin_crs"]
+                .into_iter()
+                .filter_map(|key| d.get(key).and_then(Value::as_str))
+        })
         .map(str::to_string)
         .collect();
     let destination_names = queries::station_names_for_crs_batch(&app.database, &destination_crs)
@@ -674,8 +680,25 @@ async fn get_trains_search(
     let mut results: Vec<Value> = page
         .departures
         .iter()
-        .map(|row| calling_point_departure_json(row, &station, &destination_names))
+        .map(|row| {
+            let mut rendered = calling_point_departure_json(row, &station, &destination_names);
+            // `dayOffset`: days after `service_date` the departure from
+            // `station` falls on, the same convention as
+            // `/schedule-departures`' own `dayOffset` -- it moves the
+            // departure's calendar day, never the service date, so the
+            // row's `GET /Train/by-uid/{uid}/{date}` stays the searched
+            // date.
+            if let Some(object) = rendered.as_object_mut() {
+                object.insert(
+                    "dayOffset".to_string(),
+                    Value::from(row.get("day_offset").and_then(Value::as_u64).unwrap_or(0)),
+                );
+            }
+            rendered
+        })
         .collect();
+    crate::routes::schedule_rows::attach_origin_names(&mut results, &destination_names);
+    crate::routes::schedule_rows::attach_live(&app.database, service_date, &mut results).await;
     crate::data::schedule_services::annotate_uid_rows(&app.database, service_date, &mut results)
         .await;
     Ok(Json(json!({
@@ -2538,5 +2561,162 @@ mod db_tests {
         assert_eq!(body["trainUid"], "RSLVH1");
         assert_eq!(body["serviceDate"], d.to_string());
         clear_resolve_fixtures(&pool).await;
+    }
+
+    /// Removes the `SRLV*` live-state fixtures and their origin station.
+    /// `train_current_state` first: its `trains_id` is `ON DELETE SET
+    /// NULL`, so deleting the train alone would orphan the state row.
+    async fn clear_live_fixtures(pool: &PgPool) {
+        for sql in [
+            "DELETE FROM train_current_state WHERE trains_id IN \
+                (SELECT id FROM trains WHERE train_uid LIKE 'SRLV%')",
+            "DELETE FROM trains WHERE train_uid LIKE 'SRLV%'",
+            "DELETE FROM schedule_destination_departures WHERE train_uid LIKE 'SRLV%'",
+            "DELETE FROM stations WHERE crs = 'ZSO'",
+        ] {
+            sqlx::query(sql)
+                .execute(pool)
+                .await
+                .expect("clear live fixtures");
+        }
+    }
+
+    /// A `trains` row with live state `status`/`delay` for `uid` on `date`.
+    async fn seed_live_state(
+        pool: &PgPool,
+        uid: &str,
+        date: chrono::NaiveDate,
+        status: &str,
+        delay: Option<i32>,
+    ) {
+        let (trains_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO trains (train_uid, service_date, train_id) VALUES ($1, $2, $1) \
+             RETURNING id",
+        )
+        .bind(uid)
+        .bind(date)
+        .fetch_one(pool)
+        .await
+        .expect("seed trains row");
+        sqlx::query(
+            "INSERT INTO train_current_state (trains_id, status, last_reported_location, \
+                 delay_minutes, updated_at) VALUES ($1, $2, 'Reading', $3, NOW())",
+        )
+        .bind(trains_id)
+        .bind(status)
+        .bind(delay)
+        .execute(pool)
+        .await
+        .expect("seed train_current_state row");
+    }
+
+    /// The 2026-10-07 additive fields: `live` (with state, cancelled, and
+    /// none), the station-level `dayOffset` (a post-midnight call) and
+    /// `originName`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_rows_carry_live_status_day_offset_and_origin_name() {
+        let (pool, _guards) = connect().await;
+        clear_live_fixtures(&pool).await;
+        delete_today(&pool).await;
+        let today = crate::routes::london_today();
+        sqlx::query("INSERT INTO stations (crs, name) VALUES ('ZSO', 'Zed Origin')")
+            .execute(&pool)
+            .await
+            .expect("seed origin station");
+        let hm = |h, m| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        // (uid, scheduled at ZSL, day_offset there, true origin)
+        for (uid, scheduled, day_offset, origin) in [
+            ("SRLVNX", hm(0, 30), 1_i16, Some("ZSO")),
+            ("SRLVLV", hm(12, 30), 0, Some("ZSO")),
+            ("SRLVCX", hm(13, 0), 0, None),
+            ("SRLVNO", hm(13, 30), 0, Some("ZSX")),
+        ] {
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                    (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                     true_origin_crs, day_offset) \
+                 VALUES ($1, 'WAT', $2, $3, 'ZSL', $4, $5)",
+            )
+            .bind(today)
+            .bind(scheduled)
+            .bind(uid)
+            .bind(origin)
+            .bind(day_offset)
+            .execute(&pool)
+            .await
+            .expect("seed search row");
+        }
+        seed_live_state(&pool, "SRLVLV", today, "en_route", Some(4)).await;
+        seed_live_state(&pool, "SRLVCX", today, "cancelled", None).await;
+        // A live row on ANOTHER service date must not leak onto today's.
+        seed_live_state(
+            &pool,
+            "SRLVNO",
+            today - chrono::Duration::days(1),
+            "en_route",
+            Some(9),
+        )
+        .await;
+
+        let (status, body) = get(&pool, "/trains/search?station=ZSL&from=00:00").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = results(&body);
+        let uids: Vec<&str> = rows.iter().map(|r| r["uid"].as_str().unwrap()).collect();
+        assert_eq!(uids, ["SRLVNX", "SRLVLV", "SRLVCX", "SRLVNO"]);
+
+        // Post-midnight: the call is the next calendar day.
+        assert_eq!(rows[0]["dayOffset"], 1, "{}", rows[0]);
+        assert_eq!(rows[1]["dayOffset"], 0, "{}", rows[1]);
+
+        // Origin name, from the true origin.
+        assert_eq!(rows[0]["originCrs"], "ZSO");
+        assert_eq!(rows[0]["originName"], "Zed Origin");
+        assert!(rows[2]["originName"].is_null(), "no origin: {}", rows[2]);
+        assert!(
+            rows[3]["originName"].is_null(),
+            "unknown station: {}",
+            rows[3]
+        );
+
+        // Live state, the line summary's object.
+        assert_eq!(
+            rows[1]["live"],
+            serde_json::json!({
+                "status": "en_route",
+                "delayMinutes": 4,
+                "delayProvisional": false,
+                "cancelled": false,
+                "lastReportedLocation": "Reading",
+            }),
+        );
+        assert_eq!(rows[2]["live"]["cancelled"], true, "{}", rows[2]);
+        assert_eq!(rows[2]["live"]["status"], "cancelled");
+        for row in [&rows[0], &rows[3]] {
+            let object = row.as_object().unwrap();
+            assert!(
+                object.contains_key("live") && row["live"].is_null(),
+                "{row}"
+            );
+        }
+
+        // Paged: the fields ride the same keyset pages.
+        let (_, first) = get(&pool, "/trains/search?station=ZSL&from=00:00&limit=2").await;
+        assert_eq!(results(&first).len(), 2);
+        let cursor = next_cursor(&first).expect("a second page");
+        let (status, second) = get(
+            &pool,
+            &format!("/trains/search?station=ZSL&from=00:00&limit=2&after={cursor}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{second}");
+        let second = results(&second);
+        assert_eq!(second[0]["uid"], "SRLVCX");
+        assert_eq!(second[0]["live"]["cancelled"], true);
+        assert_eq!(second[1]["uid"], "SRLVNO");
+        assert!(second[1]["live"].is_null());
+
+        clear_live_fixtures(&pool).await;
     }
 }
