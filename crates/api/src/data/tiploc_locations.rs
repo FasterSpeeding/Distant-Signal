@@ -273,6 +273,31 @@ pub async fn road_or_water_locations(pool: &PgPool) -> Result<Vec<LocationInfo>>
     Ok(rows.into_iter().map(LocationInfo::from).collect())
 }
 
+/// A bus stop or ferry terminal and its parent station (only when
+/// `stations` has that CRS): what the planner's stop <-> station walking
+/// links are built from (`trip_planning::add_parent_walk_links`).
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct ParentLink {
+    pub tiploc: String,
+    pub parent_crs: String,
+    /// MSN grid distance (100 m resolution); `None` when the stop or the
+    /// station has no grid reference.
+    pub distance_m: Option<i32>,
+}
+
+/// Every bus stop and ferry terminal with a parent station in `stations`,
+/// by TIPLOC.
+pub async fn parent_links(pool: &PgPool) -> Result<Vec<ParentLink>> {
+    Ok(sqlx::query_as(
+        "SELECT l.tiploc, s.crs::text AS parent_crs, l.parent_distance_m AS distance_m \
+         FROM tiploc_locations l JOIN stations s ON s.crs = UPPER(l.parent_crs) \
+         WHERE l.location_type IN ('bus_stop', 'ferry_terminal') \
+         ORDER BY l.tiploc",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
 /// One bus stop or ferry terminal, by `tiploc:` code; `None` for anything
 /// else.
 pub async fn road_or_water_location(pool: &PgPool, code: &str) -> Result<Option<LocationInfo>> {

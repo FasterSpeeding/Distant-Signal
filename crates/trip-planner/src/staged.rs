@@ -336,6 +336,17 @@ impl<'a> Forward<'a> {
             return;
         }
         let grid = self.grid;
+        // A walk on from a bus or ferry is a change off it: the alighting
+        // buffer comes first (`csa::alighting_buffer`). As in
+        // `ready_states`, an advance (a waypoint or via reached here) owes
+        // none of its own, matching `reverse::alighting_extra`.
+        let walk_from = time
+            + match &reached {
+                Reached::Train { connection, .. } => {
+                    self.interchange.modal_change.extra_for(&connection.uid)
+                }
+                Reached::Link { .. } | Reached::Advance { .. } => 0,
+            };
         let label = Label {
             state,
             time,
@@ -374,7 +385,7 @@ impl<'a> Forward<'a> {
             let next = grid.state(at_stage, passed);
             self.relax(labels, next, tiploc, time, Reached::Advance { from: state });
         }
-        self.relax_links(labels, state, tiploc, time);
+        self.relax_links(labels, state, tiploc, walk_from);
     }
 
     #[expect(
@@ -2383,5 +2394,68 @@ mod tests {
             buffer_mattered > 5,
             "the buffer rarely mattered: {buffer_mattered}"
         );
+    }
+
+    /// A walk on from a bus owes the bus buffer first, as in CSA and
+    /// RAPTOR: the bus reaches the stop at 10:00, + 5 off the bus + an
+    /// 8-minute walk to H + H's 2-minute change = 10:15, so the 10:14 is
+    /// missed. Calling at W (on the bus), or passing it as a via, changes
+    /// nothing: the via search state and the walk buffer coexist.
+    #[test]
+    fn walking_on_from_a_bus_owes_the_buffer_first() {
+        let connections = sorted(vec![
+            conn("BUS1", "A", "W", 540, 550),
+            conn("BUS1", "W", "STOP", 551, 600),
+            conn("T14", "H", "C", 614, 629),
+            conn("T15", "H", "C", 615, 630),
+        ]);
+        let mut ic = interchange(&[("H", 2)]);
+        ic.modal_change = schedule_query::ModalChangeBuffer {
+            road_or_water_uids: HashSet::from(["BUS1".to_string()]),
+            minutes: 5,
+        };
+        for (tiploc, crs) in [("STOP", "tiploc:STOP"), ("H", "HXX")] {
+            ic.tiploc_to_crs.insert(tiploc.to_string(), crs.to_string());
+            ic.crs_to_tiplocs
+                .insert(crs.to_string(), vec![tiploc.to_string()]);
+        }
+        let walk = schedule_query::FixedLink {
+            mode: "WALK".to_string(),
+            to_crs: "HXX".to_string(),
+            minutes: 8,
+            valid_from: "0000".to_string(),
+            valid_to: "2359".to_string(),
+            days_mask: "1111111".to_string(),
+        };
+        ic.fixed_links_from_crs
+            .insert("tiploc:STOP".to_string(), vec![walk]);
+        let (from, to) = (s("A"), s("C"));
+        let via_w = vias_for(&connections, &["W"], &[]);
+        let via_stop = vias_for(&connections, &["STOP"], &[]);
+        for (waypoints, vias) in [
+            (vec![], None),
+            (vec![s("W")], None),
+            (vec![], Some(&via_w)),
+            (vec![], Some(&via_stop)),
+        ] {
+            let case = format!("{waypoints:?} via {:?}", vias.is_some());
+            let options = StagedOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &from,
+                waypoints: &waypoints,
+                to_tiplocs: &to,
+                vias,
+                date: date(),
+            };
+            let journey = scan_staged(&options, 500, None, None).expect("a journey");
+            assert_eq!(journey.arrival_min, 630, "{case}");
+            let raptor = raptor_staged(&options, 500, 4, None, None);
+            assert_eq!(
+                raptor.iter().map(|j| j.arrival_min).min(),
+                Some(630),
+                "{case}"
+            );
+        }
     }
 }

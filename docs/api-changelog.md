@@ -3,6 +3,27 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-07: walks between bus stops and their stations in the planner
+
+Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`
+("Walking links to the parent station").
+
+### Changed behaviour (`GET /Trips/plan`, no new fields)
+
+- A journey can now change between a bus stop or ferry terminal and its
+  parent station (`parentCrs`): bus, then walk, then train, and the reverse.
+  The walk is an ordinary transfer leg: `{"kind": "transfer", "mode":
+  "WALK", "originCrs": "tiploc:HTRBUS2", "destinationCrs": "HXX",
+  "minutes": 5}`. So a transfer leg's `originCrs`/`destinationCrs` can now
+  be a `tiploc:` code, as train legs' already could. Clients that branch
+  on `leg.kind` need no change.
+- Walking on from a bus or ferry is now a change off it. It owes the same
+  5-minute buffer (configurable) as changing at the stop, before the walk
+  starts. This applies to every walking or transfer link (e.g. a
+  rail-replacement bus, then a walk to the Underground), and arrive-by
+  already charged it. `minutes` is the walk alone. The buffer shows only
+  in the times.
+
 ## 2026-10-07: named bus stops and timing points; bus stops in the planner
 
 Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`.

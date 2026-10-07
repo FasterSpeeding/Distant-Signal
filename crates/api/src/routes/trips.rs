@@ -2077,6 +2077,141 @@ mod db_tests {
             .ok();
     }
 
+    /// A change between a bus stop and its parent station, modelled on the
+    /// Terminal 3 bus stop 412 m from Heathrow Terminals 2 & 3: the bus
+    /// reaches the stop at 10:00, the 5-minute bus buffer and an 8-minute
+    /// walk reach HXX at 10:13, HXX's change time is 2, so the 10:14 train
+    /// is missed and the 10:15 taken. The walk is a `kind: "transfer"`,
+    /// `mode: "WALK"`, 8-minute leg from the stop's `tiploc:` code;
+    /// arrive-by (the backward search) finds the same plan.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::type_complexity,
+        reason = "test code: one seeded network and two requests against it"
+    )]
+    async fn a_bus_stop_links_to_its_parent_station_with_a_walk() {
+        let pool = connect().await;
+        let date = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        let rows: &[(&str, i16, &str, &str, Option<&str>, Option<&str>)] = &[
+            ("TESTWBUS", 0, "ZWOKING", "origin", None, Some("09:00:00")),
+            (
+                "TESTWBUS",
+                1,
+                "ZHTRBS3",
+                "terminate",
+                Some("10:00:00"),
+                None,
+            ),
+            ("TESTWT14", 0, "ZHTRWAP", "origin", None, Some("10:14:00")),
+            (
+                "TESTWT14",
+                1,
+                "ZPADTON",
+                "terminate",
+                Some("10:29:00"),
+                None,
+            ),
+            ("TESTWT15", 0, "ZHTRWAP", "origin", None, Some("10:15:00")),
+            (
+                "TESTWT15",
+                1,
+                "ZPADTON",
+                "terminate",
+                Some("10:30:00"),
+                None,
+            ),
+        ];
+        for (uid, seq, tiploc, kind, arrival, departure) in rows {
+            sqlx::query(
+                "INSERT INTO schedule_calling_points_full \
+                 (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+                 VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, 0) ON CONFLICT DO NOTHING",
+            )
+            .bind(date)
+            .bind(uid)
+            .bind(seq)
+            .bind(tiploc)
+            .bind(kind)
+            .bind(arrival)
+            .bind(departure)
+            .execute(&pool)
+            .await
+            .expect("seed calling point");
+        }
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, change_time_minutes, \
+                 source_sequence) \
+             VALUES ('TESTWALK-ZWK', 'ZWK', 'ZWOKING', 'ZED WOKING', NULL, 1), \
+                    ('TESTWALK-ZHX', 'ZHX', 'ZHTRWAP', 'ZED HEATHROW', 2, 1), \
+                    ('TESTWALK-ZPD', 'ZPD', 'ZPADTON', 'ZED PADDINGTON', NULL, 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        sqlx::query(
+            "INSERT INTO stations (crs, name) VALUES ('ZHX', 'Zed Heathrow Terminals 2 & 3') \
+             ON CONFLICT (crs) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stations");
+        sqlx::query(
+            "INSERT INTO tiploc_locations (tiploc, location_type, name, display_name, \
+                 parent_crs, parent_source, parent_distance_m, bus_calls, source_sequence) \
+             VALUES ('ZHTRBS3', 'bus_stop', 'Zed Terminal 3', 'Zed Terminal 3 (bus stop)', \
+                     'ZHX', 'curated', 412, 1, 981) \
+             ON CONFLICT (tiploc) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed tiploc_locations");
+
+        let router = test_router(test_app(pool.clone()));
+        for window in ["departAfter=08:30", "arriveBy=10:30"] {
+            let (status, body) = get(
+                router.clone(),
+                format!("/Trips/plan?origin=ZWK&destination=ZPD&date={date}&{window}&live=false"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{window}: {body:?}");
+            let itinerary = &body["segments"][0]["itineraries"][0];
+            let legs = itinerary["legs"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{window}: no itinerary: {body:?}"));
+            assert_eq!(legs.len(), 3, "{window}: {body:?}");
+            assert_eq!(legs[0]["trainUid"], "TESTWBUS");
+            assert_eq!(legs[0]["destinationCrs"], "tiploc:ZHTRBS3");
+            assert_eq!(legs[1]["kind"], "transfer");
+            assert_eq!(legs[1]["mode"], "WALK");
+            assert_eq!(legs[1]["originCrs"], "tiploc:ZHTRBS3");
+            assert_eq!(legs[1]["destinationCrs"], "ZHX");
+            assert_eq!(legs[1]["minutes"], 8);
+            assert_eq!(legs[2]["trainUid"], "TESTWT15", "{window}: {body:?}");
+            assert_eq!(itinerary["changeCount"], 1);
+        }
+
+        sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'TESTW%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTWALK-%'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM tiploc_locations WHERE tiploc = 'ZHTRBS3'")
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stations WHERE crs = 'ZHX'")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
