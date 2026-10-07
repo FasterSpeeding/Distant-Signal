@@ -11,7 +11,7 @@ const KNOWLEDGEBASE_INCIDENT_PREFIX = 'knowledgebase-incident-';
  * `incidents` row, so there is nothing for `/incidents/[id]` to show for
  * either. */
 export function incidentIdFromSource(source: string | null | undefined): string | null {
-  if (!source || !source.startsWith(KNOWLEDGEBASE_INCIDENT_PREFIX)) return null;
+  if (!source?.startsWith(KNOWLEDGEBASE_INCIDENT_PREFIX)) return null;
   return source.slice(KNOWLEDGEBASE_INCIDENT_PREFIX.length);
 }
 

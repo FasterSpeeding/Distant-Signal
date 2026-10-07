@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type SubmitEvent } from 'react';
 import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
@@ -62,7 +62,7 @@ type ChatError =
   | { kind: 'tool-error'; message: string };
 
 function noSubscription(): () => void {
-  return () => {};
+  return () => undefined;
 }
 
 /** The error states whose way forward is (re)running the MCP sign-in. */
@@ -164,7 +164,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
     }
   }
 
-  async function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     const trimmed = input.trim();
     if (!trimmed || sending) return;

@@ -52,7 +52,7 @@ export function AddJourneyToGroupButton({
         setLoading(false);
         return;
       }
-      const all: JourneyListItem[] = await response.json();
+      const all = (await response.json()) as JourneyListItem[];
       setJourneys(all.filter((j) => !excludeJourneyIds.includes(j.id)));
       setLoading(false);
     } catch {

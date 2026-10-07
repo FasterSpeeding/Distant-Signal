@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Box, Group, Stack, Text, type MantineSize } from '@mantine/core';
 import { RouteText } from './RouteArrow';
 
-export type StatusRowProps = {
+export interface StatusRowProps {
   /** The row's heading. A plain string (or number) is wrapped in a `Text`
    * that carries this component's own `fw={500}`/`lineClamp`/
    * `minWidth: 0` — `fw={500}` matches every one of this row's current
@@ -52,7 +52,7 @@ export type StatusRowProps = {
    * they're this component's whole reason to exist — so they aren't
    * overridable here. */
   'data-testid'?: string;
-};
+}
 
 /** A "title (+ optional subtitle) plus trailing status/action content" row
  * — the shrink-guard convention `LineStatusCard.tsx` and `IssueList.tsx`

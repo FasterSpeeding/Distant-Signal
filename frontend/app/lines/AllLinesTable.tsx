@@ -43,7 +43,10 @@ import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
-type SortState = { field: SortField; direction: 'asc' | 'desc' };
+interface SortState {
+  field: SortField;
+  direction: 'asc' | 'desc';
+}
 
 /** A neutral glyph on every sortable column, not just the active one:
  * without it there was no affordance at all until after a click, so the
@@ -54,7 +57,7 @@ function SortGlyph({ field, sort }: { field: SortField; sort: SortState | null }
   return (
     <Text span size="xs" c="dimmed" aria-hidden>
       {' '}
-      {active ? (sort!.direction === 'asc' ? '▲' : '▼') : '↕'}
+      {active ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}
     </Text>
   );
 }
@@ -223,9 +226,7 @@ export function AllLinesTable({
   // rather than a hand-rolled guess at it.
   const unfilteredTitleRef = useRef<string | null>(null);
   useEffect(() => {
-    if (unfilteredTitleRef.current === null) {
-      unfilteredTitleRef.current = document.title;
-    }
+    unfilteredTitleRef.current ??= document.title;
     document.title = statusGroupFilter
       ? `${SEVERITY_GROUP_LABELS[statusGroupFilter]} on All Lines — Distant Signal`
       : unfilteredTitleRef.current;
@@ -360,7 +361,7 @@ export function AllLinesTable({
 
   function toggleSort(field: SortField) {
     setSort((prev) => {
-      if (!prev || prev.field !== field) return { field, direction: 'asc' };
+      if (prev?.field !== field) return { field, direction: 'asc' };
       return { field, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
     });
   }
@@ -401,7 +402,7 @@ export function AllLinesTable({
           </Text>
           <ChipGroup
             value={statusGroupFilter ?? ''}
-            onChange={(value) => setStatusGroupFilterAndUrl(value === '' ? null : (value as SeverityGroup))}
+            onChange={(value) => setStatusGroupFilterAndUrl(value === '' ? null : value)}
           >
             <Group gap="xs" role="group" aria-labelledby={statusLabelId}>
               <Chip value="" size="sm" variant={statusGroupFilter === null ? 'filled' : 'outline'}>
@@ -425,11 +426,7 @@ export function AllLinesTable({
             <Text id={countryLabelId} size="xs" fw={600} c="dimmed">
               {countryChipLabel(selectedCountries.length)}
             </Text>
-            <ChipGroup
-              multiple
-              value={selectedCountries}
-              onChange={(value) => setSelectedCountries(value as Country[])}
-            >
+            <ChipGroup multiple value={selectedCountries} onChange={(value) => setSelectedCountries(value)}>
               <Group gap="xs" role="group" aria-labelledby={countryLabelId}>
                 {countryOptions.map((country) => (
                   <Chip

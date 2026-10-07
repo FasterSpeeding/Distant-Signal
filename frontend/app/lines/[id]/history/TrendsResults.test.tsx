@@ -7,14 +7,14 @@ import type { LineDailyStats, LineHalfHourlyStats, LineHourlyStats, LineSixHourl
 
 vi.mock('@/lib/api');
 
-type MockLineChartProps = {
+interface MockLineChartProps {
   data: unknown[];
   series: { name: string; strokeDasharray?: string | number }[];
   connectNulls?: boolean;
   withLegend?: boolean;
   valueFormatter?: (value: number) => string;
   xAxisProps?: { padding?: unknown; tickFormatter?: (value: string) => string };
-};
+}
 
 const lineChartMock = vi.fn((props: MockLineChartProps) => (
   <div
@@ -55,15 +55,15 @@ function dailyRow(overrides: Partial<LineDailyStats> = {}): LineDailyStats {
 }
 
 function halfHourlyRow(overrides: Partial<LineHalfHourlyStats> = {}): LineHalfHourlyStats {
-  return { ...dailyRow(), halfHourStart: '2026-08-31T14:00:00Z', ...overrides } as LineHalfHourlyStats;
+  return { ...dailyRow(), halfHourStart: '2026-08-31T14:00:00Z', ...overrides };
 }
 
 function hourlyRow(overrides: Partial<LineHourlyStats> = {}): LineHourlyStats {
-  return { ...dailyRow(), bucketStart: '2026-08-31T14:00:00Z', ...overrides } as LineHourlyStats;
+  return { ...dailyRow(), bucketStart: '2026-08-31T14:00:00Z', ...overrides };
 }
 
 function sixHourlyRow(overrides: Partial<LineSixHourlyStats> = {}): LineSixHourlyStats {
-  return { ...dailyRow(), bucketStart: '2026-08-31T12:00:00Z', ...overrides } as LineSixHourlyStats;
+  return { ...dailyRow(), bucketStart: '2026-08-31T12:00:00Z', ...overrides };
 }
 
 describe('toChartPoints (generic)', () => {

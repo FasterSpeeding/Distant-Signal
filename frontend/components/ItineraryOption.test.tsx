@@ -151,7 +151,7 @@ describe('ItineraryOption', () => {
 describe('ItineraryOption: bus and ferry legs', () => {
   it('labels a bus and a ferry leg, and leaves a train leg unlabelled', () => {
     const [trainLeg] = trainItinerary.legs;
-    if (!trainLeg || trainLeg.kind !== 'train') throw new Error('fixture');
+    if (trainLeg?.kind !== 'train') throw new Error('fixture');
     const itinerary: TripPlanItinerary = {
       legs: [
         { ...trainLeg, serviceMode: 'train', liveTracking: true },

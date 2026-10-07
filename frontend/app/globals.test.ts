@@ -238,7 +238,7 @@ describe('dimmed body text contrast', () => {
   // at the same failing 3.32:1 until axe caught it against the
   // banner-visible state (e2e/connectivity-banner.spec.ts).
   it('also lifts a titled Notification description off gray 6 in the light scheme', () => {
-    const rule = css.match(/\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/);
+    const rule = /\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('color: var(--mantine-color-gray-7)');
   });
 
@@ -276,9 +276,10 @@ describe('dimmed body text contrast', () => {
     // Mantine hardcodes the dark half the same way it hardcodes the light
     // half (Notification.css:109, `--mantine-color-dark-2`), so the
     // variable override above does not reach it either.
-    const rule = css.match(
-      /:where\(\[data-mantine-color-scheme=['"]dark['"]\]\)\s*\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/,
-    );
+    const rule =
+      /:where\(\[data-mantine-color-scheme=['"]dark['"]\]\)\s*\.mantine-Notification-description:where\(\[data-with-title\]\)\s*\{[^}]*\}/.exec(
+        css,
+      );
     expect(rule![0]).toContain('color: var(--mantine-color-dark-1)');
   });
 });
@@ -416,12 +417,12 @@ describe('TextLink underline affordance', () => {
   // than inline because `:hover`/`:focus-visible` can't be expressed as a
   // style object; `TextLink` opts in via `data-text-link`.
   it('underlines every TextLink on hover and on keyboard focus', () => {
-    const rule = css.match(/a\[data-text-link\]:hover,\s*a\[data-text-link\]:focus-visible\s*\{[^}]*\}/);
+    const rule = /a\[data-text-link\]:hover,\s*a\[data-text-link\]:focus-visible\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('text-decoration: underline');
   });
 
   it('draws an inherit-tone TextLink (credits in dimmed text) and its underline in the parent colour', () => {
-    const rule = css.match(/a\[data-text-link-tone=['"]inherit['"]\]\s*\{[^}]*\}/);
+    const rule = /a\[data-text-link-tone=['"]inherit['"]\]\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('color: inherit');
     expect(rule![0]).toContain('text-decoration-color: currentColor');
     // Must come after the base rule's anchor-coloured underline to win.
@@ -429,7 +430,7 @@ describe('TextLink underline affordance', () => {
   });
 
   it('underlines always-on TextLinks unconditionally', () => {
-    const rule = css.match(/a\[data-text-link=['"]always['"]\]\s*\{[^}]*\}/);
+    const rule = /a\[data-text-link=['"]always['"]\]\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('text-decoration: underline');
   });
 
@@ -444,13 +445,13 @@ describe('TextLink underline affordance', () => {
     // Review §2.8: the browser default of lifting the line over each
     // word's ascenders/descenders reads as a gapped, dashed-looking
     // underline on a multi-word link.
-    const rule = css.match(/a\[data-text-link\]\s*\{[^}]*\}/);
+    const rule = /a\[data-text-link\]\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('text-decoration-skip-ink: none');
   });
 });
 
 describe('links inside sanitized incident HTML', () => {
-  const rule = css.match(/\[data-rich-text\]\s+a\s*\{[^}]*\}/);
+  const rule = /\[data-rich-text\]\s+a\s*\{[^}]*\}/.exec(css);
 
   it('themes in-content anchors with the shared anchor colour', () => {
     expect(rule).not.toBeNull();
@@ -480,7 +481,7 @@ describe('status badge truncation opt-out', () => {
   // let a flex row squeeze the badge past its own width and paint it over
   // the date range on the line detail page.
   it('opts status badges out of overflow clipping, root and label', () => {
-    const rule = css.match(/\[data-status-badge\][\s\S]*?\{[^}]*\}/);
+    const rule = /\[data-status-badge\][\s\S]*?\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('overflow: visible');
     expect(rule![0]).toContain('text-overflow: clip');
   });
@@ -498,7 +499,7 @@ describe('background theming', () => {
     // `body[data-pride='rainbow'] { ... }`/`body[data-pride='trans'] { ... }`,
     // which follow immediately after in the file and have their own
     // assertions below.
-    const rule = css.match(/body(?!\[)\s*\{\s*background-image:[^}]*\}/);
+    const rule = /body(?!\[)\s*\{\s*background-image:[^}]*\}/.exec(css);
     expect(rule![0]).toContain('color-mix(in srgb, var(--mantine-color-grape-6)');
     expect(rule![0]).not.toMatch(/#[0-9a-f]{3,8}/i);
     // Single-digit percentage: this is meant to be barely perceptible, not
@@ -507,8 +508,8 @@ describe('background theming', () => {
   });
 
   it('overrides the wash under rainbow pride mode with the same seven hexes the flag bars use, still at low opacity', () => {
-    const barRule = css.match(/--ds-pride-rainbow:[^;]*;/);
-    const washRule = css.match(/body\[data-pride='rainbow'\]\s*\{\s*background-image:[^}]*\}/);
+    const barRule = /--ds-pride-rainbow:[^;]*;/.exec(css);
+    const washRule = /body\[data-pride='rainbow'\]\s*\{\s*background-image:[^}]*\}/.exec(css);
     expect(barRule).not.toBeNull();
     expect(washRule).not.toBeNull();
 
@@ -521,8 +522,8 @@ describe('background theming', () => {
   });
 
   it('overrides the wash under trans pride mode with the same hexes the flag bars use, still at low opacity', () => {
-    const barRule = css.match(/--ds-pride-trans:[^;]*;/);
-    const washRule = css.match(/body\[data-pride='trans'\]\s*\{\s*background-image:[^}]*\}/);
+    const barRule = /--ds-pride-trans:[^;]*;/.exec(css);
+    const washRule = /body\[data-pride='trans'\]\s*\{\s*background-image:[^}]*\}/.exec(css);
     expect(barRule).not.toBeNull();
     expect(washRule).not.toBeNull();
 
@@ -542,8 +543,8 @@ describe('background theming', () => {
   it.each(['nonbinary', 'bisexual', 'pansexual', 'asexual', 'sapphic', 'lesbian'])(
     'overrides the wash under %s pride mode with the same hexes the flag bar uses, still at low opacity',
     (mode) => {
-      const barRule = css.match(new RegExp(`--ds-pride-${mode}:[^;]*;`));
-      const washRule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]\\s*\\{\\s*background-image:[^}]*\\}`));
+      const barRule = new RegExp(`--ds-pride-${mode}:[^;]*;`).exec(css);
+      const washRule = new RegExp(`body\\[data-pride='${mode}'\\]\\s*\\{\\s*background-image:[^}]*\\}`).exec(css);
       expect(barRule).not.toBeNull();
       expect(washRule).not.toBeNull();
 
@@ -564,7 +565,7 @@ describe('background theming', () => {
     (mode) => {
       expect(css).toMatch(new RegExp(`--ds-pride-${mode}: linear-gradient\\(\\s*to right,\\s*#`));
       for (const selector of [`::before`, ` nav::after`, ` \\[data-site-title\\]`]) {
-        const rule = css.match(new RegExp(`body\\[data-pride='${mode}'\\]${selector}\\s*\\{[^}]*\\}`));
+        const rule = new RegExp(`body\\[data-pride='${mode}'\\]${selector}\\s*\\{[^}]*\\}`).exec(css);
         expect(rule, selector).not.toBeNull();
         expect(rule![0]).toContain(`background: var(--ds-pride-${mode});`);
         expect(rule![0]).not.toMatch(/#[0-9a-f]{6}/i);
@@ -580,13 +581,13 @@ describe('background theming', () => {
     // stayed pride-only under either mode's selector.
     expect(css).not.toMatch(/body\[data-pride='rainbow'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
     expect(css).not.toMatch(/body\[data-pride='trans'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
-    const rule = css.match(/\bnav\s*\{\s*position:\s*relative;\s*\}/);
+    const rule = /\bnav\s*\{\s*position:\s*relative;\s*\}/.exec(css);
     expect(rule).not.toBeNull();
   });
 
   it('keeps the always-on dashed nav divider clear of the pride bar band so the two never overlap', () => {
-    const divider = css.match(/nav::before\s*\{[^}]*\}/);
-    const prideBar = css.match(/body\[data-pride='rainbow'\]\s*nav::after\s*\{[^}]*\}/);
+    const divider = /nav::before\s*\{[^}]*\}/.exec(css);
+    const prideBar = /body\[data-pride='rainbow'\]\s*nav::after\s*\{[^}]*\}/.exec(css);
     expect(divider).not.toBeNull();
     expect(prideBar).not.toBeNull();
 
@@ -600,13 +601,13 @@ describe('background theming', () => {
 
 describe('collapsed issue row layout', () => {
   it('lays the row out as a single flex line by default', () => {
-    const rule = css.match(/\.issueRow\s*\{[^}]*\}/);
+    const rule = /\.issueRow\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('display: flex');
     expect(rule![0]).toContain('justify-content: space-between');
   });
 
   it('stacks the row into two lines below the sm breakpoint', () => {
-    const query = css.match(/@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/);
+    const query = /@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/.exec(css);
     expect(query).not.toBeNull();
     expect(query![0]).toContain('.issueRow {');
     expect(query![0]).toContain('flex-direction: column');
@@ -617,7 +618,7 @@ describe('collapsed issue row layout', () => {
   });
 
   it('never lets the severity badge shrink out of the row', () => {
-    const rule = css.match(/\.issueRow__badge\s*\{[^}]*\}/);
+    const rule = /\.issueRow__badge\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('flex-shrink: 0');
   });
 });
@@ -631,13 +632,13 @@ describe('collapsed issue row layout', () => {
 // 12px tap target as the only route to an intermediate stop's name.
 describe('journey progress diagram layout', () => {
   it('keeps every horizontal measurement in CSS custom properties the breakpoint can rescale', () => {
-    const rule = css.match(/\.journeyProgressScroll\s*\{[^}]*\}/);
+    const rule = /\.journeyProgressScroll\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('--journey-progress-slot: 56px');
     expect(rule![0]).toContain('--journey-progress-endpoint-slot: 84px');
   });
 
   it('scopes the diagram to its own scroll box and stops a swipe chaining to the page', () => {
-    const rule = css.match(/\.journeyProgressScroll\s*\{[^}]*\}/);
+    const rule = /\.journeyProgressScroll\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('overflow-x: auto');
     expect(rule![0]).toContain('overscroll-behavior-x: contain');
     // Not decoration: `overflow-x: auto` computes `overflow-y` to `auto`
@@ -648,7 +649,7 @@ describe('journey progress diagram layout', () => {
   });
 
   it('sizes the node row from the counts the component supplies', () => {
-    const rule = css.match(/\.journeyProgressLine\s*\{[^}]*\}/);
+    const rule = /\.journeyProgressLine\s*\{[^}]*\}/.exec(css);
     expect(rule).not.toBeNull();
     // Anchored: a bare `toContain('width: 100%')` is also satisfied by the
     // `min-width:` declaration in the same rule, so it could never fail.
@@ -668,8 +669,8 @@ describe('journey progress diagram layout', () => {
   // against `intermediates * slot + endpoints * endpointSlot`), so the
   // equality is worth evaluating rather than eyeballing.
   it("computes a row min-width that is exactly the sum of its nodes' slots", () => {
-    const rule = css.match(/\.journeyProgressLine\s*\{[^}]*\}/)![0];
-    const formula = rule.match(/min-width:\s*calc\(([\s\S]*?)\);/)![1];
+    const rule = /\.journeyProgressLine\s*\{[^}]*\}/.exec(css)![0];
+    const formula = /min-width:\s*calc\(([\s\S]*?)\);/.exec(rule)![1];
 
     function rowMinWidth(count: number, endpoints: number, slot: number, endpointSlot: number) {
       const substituted = formula!
@@ -679,6 +680,7 @@ describe('journey progress diagram layout', () => {
         .replace(/var\(--journey-progress-slot[^)]*\)/g, String(slot))
         .replace(/px/g, '');
       // The formula is pure arithmetic over the four substituted numbers.
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval -- evaluates the stylesheet's own calc() formula, as above
       return Function(`"use strict"; return (${substituted});`)() as number;
     }
 
@@ -703,7 +705,7 @@ describe('journey progress diagram layout', () => {
   });
 
   it('lets nodes grow to fill a short journey, but never shrink and never stretch without limit', () => {
-    const rule = css.match(/\.journeyProgressNode\s*\{[^}]*\}/);
+    const rule = /\.journeyProgressNode\s*\{[^}]*\}/.exec(css);
     expect(rule).not.toBeNull();
     // `1 0 <basis>`: grow into spare width, never shrink.
     expect(rule![0]).toContain('flex: 1 0 var(--journey-progress-slot,');
@@ -733,7 +735,7 @@ describe('journey progress diagram layout', () => {
     // the first and last circle by half a slot.
     expect(css).not.toMatch(/\.journeyProgressLine::before/);
 
-    const segments = css.match(/\.journeyProgressNode::before,\s*\n\s*\.journeyProgressNode::after\s*\{[^}]*\}/);
+    const segments = /\.journeyProgressNode::before,\s*\n\s*\.journeyProgressNode::after\s*\{[^}]*\}/.exec(css);
     expect(segments).not.toBeNull();
     expect(segments![0]).toContain('position: absolute');
     expect(segments![0]).toContain('top: calc(var(--journey-progress-node-slot, 18px) / 2)');
@@ -748,21 +750,20 @@ describe('journey progress diagram layout', () => {
 
     // The outer half at each end is what would dangle; suppressing it also
     // means a single-stop journey draws no line at all.
-    const ends = css.match(
-      /\.journeyProgressNode:first-child::before,\s*\n\s*\.journeyProgressNode:last-child::after\s*\{[^}]*\}/,
-    );
+    const ends =
+      /\.journeyProgressNode:first-child::before,\s*\n\s*\.journeyProgressNode:last-child::after\s*\{[^}]*\}/.exec(css);
     expect(ends).not.toBeNull();
     expect(ends![0]).toContain('content: none');
   });
 
   it('gives an endpoint a wider slot so its always-visible label wraps instead of breaking mid-word', () => {
-    const rule = css.match(/\.journeyProgressNode--endpoint\s*\{[^}]*\}/);
+    const rule = /\.journeyProgressNode--endpoint\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toContain('flex-basis: var(--journey-progress-endpoint-slot,');
     expect(rule![0]).toContain('min-width: var(--journey-progress-endpoint-slot,');
   });
 
   it('contains an endpoint label inside its slot', () => {
-    const rule = css.match(/\.journeyProgressLabel\s*\{[^}]*\}/);
+    const rule = /\.journeyProgressLabel\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toMatch(/[;{]\s*max-width:\s*100%/);
     // `anywhere`, not `break-word`: only `anywhere` also reduces the
     // min-content contribution, which is the thing that would otherwise
@@ -771,7 +772,7 @@ describe('journey progress diagram layout', () => {
   });
 
   it('clears the 24px minimum pointer target for the intermediate-node tooltip trigger', () => {
-    const rule = css.match(/\.journeyProgressTrigger\s*\{[^}]*\}/);
+    const rule = /\.journeyProgressTrigger\s*\{[^}]*\}/.exec(css);
     expect(rule![0]).toMatch(/[;{]\s*width:\s*100%/);
     expect(rule![0]).toContain('min-height: 24px');
     // Keeps the circle pinned to the top of the enlarged trigger so the

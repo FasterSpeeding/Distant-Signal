@@ -17,13 +17,13 @@ import type { FullCoverageAvailability, LineStatus, SampleAvailability, SampleSt
  * `fullCoverageAvailability` stays optional on this shared type (rather
  * than required) only so a hypothetical future caller with neither field
  * still satisfies it structurally. */
-type SampleStatsCarrier = {
+interface SampleStatsCarrier {
   sampleStats?: SampleStats;
   sampleAvailability: SampleAvailability;
   dataQuality?: LineStatus['dataQuality'];
   fullCoverageStats?: SampleStats;
   fullCoverageAvailability?: FullCoverageAvailability;
-};
+}
 
 /** The aggregator attaches the same sample-derived stats to every status on
  * a line's report, so the first one found is representative of all of them

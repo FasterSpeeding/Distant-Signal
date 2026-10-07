@@ -124,7 +124,7 @@ function collapseDay(entries: LineStatusHistoryEntry[]): HistorySpan[] {
     const flips: SeverityFlip[] = [];
     for (const point of points) {
       const current = flips[flips.length - 1];
-      if (current && current.severity === point.status.statusSeverity) {
+      if (current?.severity === point.status.statusSeverity) {
         current.to = point.at;
         current.samples += 1;
         continue;

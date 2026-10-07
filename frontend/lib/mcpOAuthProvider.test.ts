@@ -27,7 +27,7 @@ describe('BrowserMcpOAuthProvider', () => {
   it('round-trips client information through localStorage', () => {
     const provider = new BrowserMcpOAuthProvider('https://status.example.com/chat/callback');
     const info = { client_id: 'c1', redirect_uris: ['https://status.example.com/chat/callback'] };
-    provider.saveClientInformation(info as never);
+    provider.saveClientInformation(info);
     expect(provider.clientInformation()).toEqual(info);
   });
 

@@ -116,10 +116,7 @@ describe('PlanTripFlow', () => {
   it('shows resolved station names (CODE — Name) in the segment heading and itinerary leg summary', async () => {
     mockStationNames.set('EUS', 'London Euston');
     mockStationNames.set('MKC', 'Milton Keynes Central');
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) }));
 
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
@@ -139,10 +136,7 @@ describe('PlanTripFlow', () => {
     // `mockStationNames` is empty by default (cleared in `afterEach`) --
     // this is the "lookup found nothing" case, distinct from the bug this
     // fixes (which was "no lookup was ever attempted").
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) }));
 
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
@@ -156,11 +150,11 @@ describe('PlanTripFlow', () => {
   it('creates the journey via POST /api/Journeys after picking the only itinerary', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) })
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      } as Response);
+      });
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
@@ -246,11 +240,11 @@ describe('PlanTripFlow', () => {
     };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(nullOverridesPlan) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(nullOverridesPlan) })
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      } as Response);
+      });
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
@@ -290,7 +284,7 @@ describe('PlanTripFlow', () => {
         ok: false,
         status: 404,
         text: () => Promise.resolve('no schedule data published'),
-      } as Response),
+      }),
     );
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
@@ -306,10 +300,7 @@ describe('PlanTripFlow', () => {
       results: 'fastest',
       segments: [{ originCrs: 'EUS', destinationCrs: 'ZZZ', itineraries: [], cappedByMaxChanges: false }],
     };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(noRoutePlan) } as Response),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(noRoutePlan) }));
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'ZZZ' } });
@@ -335,10 +326,7 @@ describe('PlanTripFlow', () => {
         },
       ],
     };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(noRoutePlan) } as Response),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(noRoutePlan) }));
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
@@ -401,12 +389,12 @@ describe('PlanTripFlow', () => {
     };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoSegmentPlan) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoSegmentPlan) })
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      } as Response)
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ legId: 2, trackingId: 8 }) } as Response);
+      })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ legId: 2, trackingId: 8 }) });
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
@@ -503,11 +491,11 @@ describe('PlanTripFlow', () => {
     };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(midRoutePlan) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(midRoutePlan) })
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      } as Response);
+      });
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
@@ -600,11 +588,11 @@ describe('PlanTripFlow', () => {
     // though leg 1's journey already exists server-side by this point).
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoTrainLegItinerarySegments) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoTrainLegItinerarySegments) })
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      } as Response)
+      })
       .mockRejectedValueOnce(new TypeError('Failed to fetch'));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -660,9 +648,7 @@ describe('PlanTripFlow', () => {
     // `handleTrackJourney` that a fixed-link-only itinerary would if it
     // could ever be selected.
     const noSegmentsPlan: TripPlanResponse = { results: 'fastest', segments: [] };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noSegmentsPlan) } as Response);
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noSegmentsPlan) });
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
@@ -685,10 +671,7 @@ describe('PlanTripFlow', () => {
       results: 'fastest',
       segments: [{ ...singleSegmentPlan.segments[0]!, cappedByMaxChanges: true }],
     };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(cappedPlan) } as Response),
-    );
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(cappedPlan) }));
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
@@ -700,7 +683,7 @@ describe('PlanTripFlow', () => {
   it('shows the login prompt (not a raw error) on a 401 from the initial POST /Journeys, and never calls onCreated', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) })
       .mockResolvedValueOnce(new Response('no session', { status: 401 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -756,11 +739,11 @@ describe('PlanTripFlow', () => {
     };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoSegmentPlan) } as Response)
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoSegmentPlan) })
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      } as Response)
+      })
       .mockResolvedValueOnce(new Response('no session', { status: 401 }));
     vi.stubGlobal('fetch', fetchMock);
 

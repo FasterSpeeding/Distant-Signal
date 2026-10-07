@@ -10,7 +10,9 @@ import { LoginLink } from './LoginLink';
 
 /** Imperative escape hatch for `TrackedTrainRowMenu` -- see
  * `DeleteTrainButtonHandle` (`DeleteTrainButton.tsx`) for why this exists. */
-export type RenameTrainButtonHandle = { open: () => void };
+export interface RenameTrainButtonHandle {
+  open: () => void;
+}
 
 /** Renames or clears a tracked train's `customName`, via the same-origin
  * `/api/*` proxy (see `app/api/[...path]/route.ts`) -- this is a Client

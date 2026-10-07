@@ -10,7 +10,9 @@ import { LoginLink } from './LoginLink';
 
 /** Imperative escape hatch for `TrackedTrainRowMenu` -- see this
  * component's own `ref` doc comment below for why it exists. */
-export type DeleteTrainButtonHandle = { open: () => void };
+export interface DeleteTrainButtonHandle {
+  open: () => void;
+}
 
 /** Deletes via the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.

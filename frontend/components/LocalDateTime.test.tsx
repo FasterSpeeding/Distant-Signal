@@ -73,7 +73,7 @@ async function hydrateAndCollect(serverHtml: string, element: React.ReactNode) {
     await act(async () => {
       root = hydrateRoot(container, element, {
         onRecoverableError: (error) => {
-          recoverableErrors.push(String((error as Error)?.message ?? error));
+          recoverableErrors.push(error instanceof Error ? error.message : String(error));
         },
       });
     });

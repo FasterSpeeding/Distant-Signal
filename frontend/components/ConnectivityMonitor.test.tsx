@@ -25,7 +25,10 @@ vi.mock('next/navigation', () => ({
 
 const BANNER = 'Reconnecting…';
 
-type Observation = { backendReachable: boolean; observedAt: string };
+interface Observation {
+  backendReachable: boolean;
+  observedAt: string;
+}
 
 // Deliberately NOT @testing-library's `rerender`: `renderWithMantine`
 // wraps its argument in a MantineProvider, but `rerender` replaces the

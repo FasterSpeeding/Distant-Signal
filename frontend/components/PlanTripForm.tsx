@@ -249,7 +249,7 @@ export function PlanTripForm({
       <SegmentedControl
         aria-labelledby={resultsLabelId}
         value={results}
-        onChange={(value) => setResults(value as 'fastest' | 'options')}
+        onChange={(value) => setResults(value)}
         data={[
           { label: 'Fastest', value: 'fastest' },
           { label: 'Compare options', value: 'options' },

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useState, type SubmitEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   Alert,
@@ -283,7 +283,7 @@ export function IncidentSearchForm({
         setResults('error');
         return;
       }
-      const body: IncidentSearchResponse = await response.json();
+      const body = (await response.json()) as IncidentSearchResponse;
       setResults({ rows: body.results, nextCursor: body.nextCursor, query, loadMoreFailed: false });
     } catch {
       setResults('error');
@@ -292,7 +292,7 @@ export function IncidentSearchForm({
     }
   }
 
-  async function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     if (!priorityValid || searching) return;
     // Keep this /incidents history entry's URL in sync with the last search
@@ -406,7 +406,7 @@ export function IncidentSearchForm({
         setResults((current) => (current === pagedFrom ? { ...current, loadMoreFailed: true } : current));
         return;
       }
-      const body: IncidentSearchResponse = await response.json();
+      const body = (await response.json()) as IncidentSearchResponse;
       setResults((current) =>
         current === pagedFrom
           ? {
@@ -716,7 +716,7 @@ export function IncidentSearchForm({
               // See the Period `SegmentedControl` above for why.
               autoContrast={false}
               value={plannedFilter}
-              onChange={(value) => setPlannedFilter(value as 'all' | 'planned' | 'realtime')}
+              onChange={(value) => setPlannedFilter(value)}
               data={[
                 { label: 'All', value: 'all' },
                 { label: 'Planned work', value: 'planned' },
@@ -734,7 +734,7 @@ export function IncidentSearchForm({
               // See the Period `SegmentedControl` above for why.
               autoContrast={false}
               value={stateFilter}
-              onChange={(value) => setStateFilter(value as StateFilter)}
+              onChange={(value) => setStateFilter(value)}
               data={[
                 { label: 'All', value: 'all' },
                 { label: 'Active', value: 'active' },

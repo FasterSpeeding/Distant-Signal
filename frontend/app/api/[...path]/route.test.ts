@@ -624,7 +624,7 @@ describe('/api/[...path] proxy', () => {
         method: 'POST',
         body: stream,
         duplex: 'half',
-      } as ConstructorParameters<typeof NextRequest>[1]);
+      });
       const res = await POST(req, { params: Promise.resolve({ path: ['Train', 'track'] }) });
       expect(res.status).toBe(413);
       expect(fetch).not.toHaveBeenCalled();
@@ -663,7 +663,7 @@ describe('/api/[...path] proxy', () => {
       // Build a real Request from the init, as Node's fetch does, so a body
       // on a HEAD throws here exactly as it did in production.
       vi.mocked(fetch).mockImplementationOnce(async (input, init) => {
-        const upstream = new Request(input as URL, init);
+        const upstream = new Request(input, init);
         expect(upstream.method).toBe('HEAD');
         return new Response(null, {
           status: 200,
@@ -720,7 +720,7 @@ describe('/api/[...path] proxy', () => {
       ['OPTIONS', GET],
     ] as const)('sends no body upstream for a %s request', async (method, handler) => {
       vi.mocked(fetch).mockImplementationOnce(async (input, init) => {
-        const upstream = new Request(input as URL, init);
+        const upstream = new Request(input, init);
         expect(upstream.body).toBeNull();
         return new Response(null, { status: 200 });
       });

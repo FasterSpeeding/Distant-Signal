@@ -8,13 +8,13 @@ import { byVisibleText } from '@/test/routeText';
  * shape `TrainSearchForm.test.tsx::searchBody` builds against the same
  * route. */
 function searchBody(
-  rows: Array<{
+  rows: {
     uid: string;
     scheduled: string;
     stationCrs: string;
     originCrs: string | null;
     destinationCrs: string | null;
-  }>,
+  }[],
   nextCursor: string | null = null,
 ) {
   return JSON.stringify({

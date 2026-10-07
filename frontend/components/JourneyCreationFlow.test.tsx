@@ -74,7 +74,7 @@ function mockFetchByUrl(
         }),
       );
     }
-    if (url === '/api/Journeys/99' && (!init || init.method === undefined || init.method === 'GET')) {
+    if (url === '/api/Journeys/99' && (init?.method === undefined || init.method === 'GET')) {
       return Promise.resolve((options.journeyDetail ?? (() => journeyDetailResponse([leg()])))());
     }
     if (url === '/api/Journeys/99/legs' && init?.method === 'POST') {

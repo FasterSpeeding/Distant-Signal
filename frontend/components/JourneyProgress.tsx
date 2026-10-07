@@ -142,9 +142,9 @@ function reportedLocationIndex(
   if (!target) return -1;
   for (let i = stops.length - 1; i >= 0; i--) {
     const label = resolvedStopLabel(stops[i]!, i, stops.length, endpointNames);
-    if (label && label.trim().toLowerCase() === target) return i;
+    if (label?.trim().toLowerCase() === target) return i;
     const crs = stops[i]!.crs;
-    if (crs && crs.trim().toLowerCase() === target) return i;
+    if (crs?.trim().toLowerCase() === target) return i;
   }
   return -1;
 }
@@ -367,7 +367,7 @@ export function JourneyProgress({
   const markerFromReportedLocation = confirmedIndex === -1 && reportedIndex !== -1;
   const lastIndex = markerFromReportedLocation ? reportedIndex : confirmedIndex;
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const nodeRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const nodeRefs = useRef<(HTMLDivElement | null)[]>([]);
   // One stable callback-ref per index, cached across renders, so a re-render
   // that doesn't change `stops.length` (e.g. a poll refresh with the same
   // stop count) doesn't hand every node a brand-new ref function -- React
@@ -460,33 +460,29 @@ export function JourneyProgress({
         data-journey-progress-scroll
         role="group"
         aria-label={ariaLabel}
-        style={
-          {
-            // Counts only -- every px measurement the diagram uses lives in
-            // `.journeyProgressScroll`'s own custom properties in
-            // globals.css, so the `max-width: $mantine-breakpoint-sm` block
-            // there can rescale the whole diagram for a phone. A media query
-            // can't reach into a React style object, which is exactly why
-            // the old inline `minWidth: stops.length * NODE_SLOT_WIDTH`
-            // could never have a mobile value.
-            '--journey-progress-count': String(stops.length),
-            '--journey-progress-endpoint-count': String(endpointCount),
-          } as React.CSSProperties
-        }
+        style={{
+          // Counts only -- every px measurement the diagram uses lives in
+          // `.journeyProgressScroll`'s own custom properties in
+          // globals.css, so the `max-width: $mantine-breakpoint-sm` block
+          // there can rescale the whole diagram for a phone. A media query
+          // can't reach into a React style object, which is exactly why
+          // the old inline `minWidth: stops.length * NODE_SLOT_WIDTH`
+          // could never have a mobile value.
+          '--journey-progress-count': String(stops.length),
+          '--journey-progress-endpoint-count': String(endpointCount),
+        }}
       >
         <Box
           className="journeyProgressLine"
-          style={
-            {
-              // Read back by `.journeyProgressLine::before`'s `top` in
-              // globals.css, instead of that rule hardcoding half of
-              // `NODE_CIRCLE_SLOT` as its own separate literal -- so the
-              // connecting line's vertical position can't silently drift
-              // out of sync with the circle-centering slot it's meant to
-              // bisect.
-              '--journey-progress-node-slot': `${NODE_CIRCLE_SLOT}px`,
-            } as React.CSSProperties
-          }
+          style={{
+            // Read back by `.journeyProgressLine::before`'s `top` in
+            // globals.css, instead of that rule hardcoding half of
+            // `NODE_CIRCLE_SLOT` as its own separate literal -- so the
+            // connecting line's vertical position can't silently drift
+            // out of sync with the circle-centering slot it's meant to
+            // bisect.
+            '--journey-progress-node-slot': `${NODE_CIRCLE_SLOT}px`,
+          }}
         >
           {/* eslint-disable-next-line react-hooks/refs -- nodeRefSetter reads a ref only to reuse cached callback refs (see nodeRefSetters) */}
           {stops.map((stop, index) => (
