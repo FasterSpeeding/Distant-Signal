@@ -84,7 +84,6 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
-use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::data::journey::{JourneyStop, PlatformStatus};
@@ -99,26 +98,8 @@ pub const BOARD_FRESHNESS: Duration = Duration::minutes(10);
 /// suffix -- the same prefix rule as `train_resolve::resolve`.
 const RSID_PREFIX_LEN: usize = 6;
 
-/// `journeyStops[].board`. See the module doc.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StopBoard {
-    /// Darwin's passenger delay text, verbatim.
-    pub delay_reason: Option<String>,
-    /// Darwin's passenger cancellation text, verbatim.
-    pub cancel_reason: Option<String>,
-    /// The whole service is cancelled at this station.
-    pub is_cancelled: bool,
-    /// `etd - std` in minutes (0 for early), when `etd` is a time or
-    /// "On time"; `null` when it is a status word ("Delayed",
-    /// "Cancelled"), so an unknown delay never reads as on time.
-    pub delay_minutes: Option<i32>,
-    /// LDBWS `etd`, verbatim: `"HH:MM"` (London local), `"On time"`,
-    /// `"Delayed"` or `"Cancelled"`.
-    pub estimated: String,
-    /// When the board was polled (`station_samples.polled_at`).
-    pub observed_at: DateTime<Utc>,
-}
+// Moved to ds_store::trains::types::StopBoard (ingest architecture plan 1A.4)
+pub use ds_store::trains::types::StopBoard;
 
 /// What the matcher needs to know about the train itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
