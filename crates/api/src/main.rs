@@ -226,9 +226,12 @@ async fn server_main() -> anyhow::Result<()> {
         .allow_methods([axum::http::Method::GET])
         .allow_origin(Any);
 
+    // `with_default_metrics`' recorder plus the shared per-metric buckets
+    // (the pool's acquire time); see `api::route_metrics::install_recorder`.
+    let recorder_handle = api::route_metrics::install_recorder()?;
     let (metrics_layer, metrics_handle) = PrometheusMetricLayerBuilder::new()
         .with_prefix("distant_signal")
-        .with_default_metrics()
+        .with_metrics_from_fn(|| recorder_handle)
         // Unbounded Prometheus label cardinality fix (found investigating a
         // live 2026-09-26 OOM incident: the `api` pod running over its
         // 1536Mi chart limit and cycling through repeated restarts). See
@@ -369,7 +372,7 @@ async fn server_main() -> anyhow::Result<()> {
     // probe's 900s budget instead of the pool's 60s, after dropping any
     // INVALID index a failed CREATE INDEX CONCURRENTLY left behind. See
     // `ds_store::migrate`.
-    let migrate = async {
+    let migrate = || async {
         ds_store::migrate::ensure_ready_for_contract_migration(&app.database).await?;
         // MIGRATION_DATABASE_URL (the schema owner) when set, else
         // DATABASE_URL. See `ds_store::migrate::migration_url`.
@@ -387,10 +390,23 @@ async fn server_main() -> anyhow::Result<()> {
         .await?;
         anyhow::Ok(())
     };
+    // Plan task 1B.3: with API_MIGRATE_ON_STARTUP=false (the chart's
+    // `api.migrateOnStartup: false`, allowed only with its migrate hook Job)
+    // the Job migrates, and the api waits on its own pool for the schema and
+    // grants it was built for: the schema gate (`ds_store::schema`, spec
+    // §12.2). The legacy-backfill check above is the migrator's, so it is
+    // skipped too.
+    let gate = || async {
+        ds_store::schema::wait_for_schema(&app.database, ds_store::schema::DbRole::Api, None)
+            .await
+            .map(drop)
+    };
+    let migrate_on_startup =
+        parse_migrate_on_startup(std::env::var(MIGRATE_ON_STARTUP_ENV).ok().as_deref())?;
     let bind_url = app.config.bind_url.clone();
     let header_read_timeout = edge_settings.header_read_timeout();
     run_startup(
-        migrate,
+        prepare_schema(migrate_on_startup, migrate, gate),
         || spawn_background_loops(&app),
         || async move {
             let listener = tokio::net::TcpListener::bind(&bind_url).await?;
@@ -401,22 +417,61 @@ async fn server_main() -> anyhow::Result<()> {
     .await
 }
 
-/// API-1: the startup order, isolated so it is testable. Migrations first;
-/// only then the background sweeps (whose first `interval` tick fires at
-/// once, so spawning them earlier ran DML against a possibly un-migrated
-/// schema while the migrator held its locks); only then the listener (so
-/// the startup/readiness probes only pass on a migrated schema). A failed
-/// migration starts nothing.
-async fn run_startup<M, S, B, BF>(migrate: M, spawn_background: S, serve: B) -> anyhow::Result<()>
+/// API-1: the startup order, isolated so it is testable. The schema first
+/// ([`prepare_schema`]: migrate, or wait at the schema gate); only then the
+/// background sweeps (whose first `interval` tick fires at once, so
+/// spawning them earlier ran DML against a possibly un-migrated schema
+/// while the migrator held its locks); only then the listener (so the
+/// startup/readiness probes only pass on a ready schema). A failed
+/// migration or gate starts nothing.
+async fn run_startup<M, S, B, BF>(schema: M, spawn_background: S, serve: B) -> anyhow::Result<()>
 where
     M: Future<Output = anyhow::Result<()>>,
     S: FnOnce(),
     B: FnOnce() -> BF,
     BF: Future<Output = anyhow::Result<()>>,
 {
-    migrate.await?;
+    schema.await?;
     spawn_background();
     serve().await
+}
+
+/// `API_MIGRATE_ON_STARTUP`: whether the api migrates at startup (plan task
+/// 1B.3). Default true, as before; the chart sets it to false only with its
+/// migrate hook Job (`api.migrateOnStartup`).
+const MIGRATE_ON_STARTUP_ENV: &str = "API_MIGRATE_ON_STARTUP";
+
+/// Unset or empty is true (the default); otherwise `true` or `false`, in
+/// any case. Anything else is an error, so a typo cannot silently skip the
+/// migrations.
+fn parse_migrate_on_startup(value: Option<&str>) -> anyhow::Result<bool> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(true),
+        Some(v) if v.eq_ignore_ascii_case("true") => Ok(true),
+        Some(v) if v.eq_ignore_ascii_case("false") => Ok(false),
+        Some(v) => anyhow::bail!("{MIGRATE_ON_STARTUP_ENV} must be true or false, got {v:?}"),
+    }
+}
+
+/// The schema step of [`run_startup`]: `migrate` when `migrate_on_startup`,
+/// else the schema gate (`gate`). Only the chosen one is built and run.
+async fn prepare_schema<M, MF, G, GF>(
+    migrate_on_startup: bool,
+    migrate: M,
+    gate: G,
+) -> anyhow::Result<()>
+where
+    M: FnOnce() -> MF,
+    MF: Future<Output = anyhow::Result<()>>,
+    G: FnOnce() -> GF,
+    GF: Future<Output = anyhow::Result<()>>,
+{
+    if migrate_on_startup {
+        migrate().await
+    } else {
+        tracing::info!("{MIGRATE_ON_STARTUP_ENV}=false: not migrating; waiting at the schema gate");
+        gate().await
+    }
 }
 
 /// The four background sweeps (the session-cleanup one also runs the
@@ -679,33 +734,29 @@ async fn session_cleanup_sweep_loop(app: App) {
 mod run_startup_tests {
     use std::cell::RefCell;
 
-    use super::run_startup;
+    use super::{parse_migrate_on_startup, prepare_schema, run_startup};
 
-    /// API-1: migrate, then spawn the sweeps, then bind.
-    #[tokio::test]
-    async fn migrations_run_before_the_sweeps_and_the_listener() {
-        let steps = RefCell::new(Vec::new());
-        run_startup(
-            async {
-                steps.borrow_mut().push("migrate");
-                Ok(())
-            },
-            || steps.borrow_mut().push("spawn sweeps"),
-            || async {
-                steps.borrow_mut().push("bind");
-                Ok(())
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(*steps.borrow(), ["migrate", "spawn sweeps", "bind"]);
-    }
-
-    #[tokio::test]
-    async fn a_failed_migration_starts_nothing() {
+    /// Runs the startup with `migrate_on_startup`, a migration and a gate
+    /// that record themselves and return `migrate`/`gate`; returns the
+    /// recorded steps and the startup's result.
+    async fn startup(
+        migrate_on_startup: bool,
+        migrate: anyhow::Result<()>,
+        gate: anyhow::Result<()>,
+    ) -> (Vec<&'static str>, anyhow::Result<()>) {
         let steps = RefCell::new(Vec::new());
         let result = run_startup(
-            async { Err(anyhow::anyhow!("migration failed")) },
+            prepare_schema(
+                migrate_on_startup,
+                || async {
+                    steps.borrow_mut().push("migrate");
+                    migrate
+                },
+                || async {
+                    steps.borrow_mut().push("gate");
+                    gate
+                },
+            ),
             || steps.borrow_mut().push("spawn sweeps"),
             || async {
                 steps.borrow_mut().push("bind");
@@ -713,8 +764,50 @@ mod run_startup_tests {
             },
         )
         .await;
+        (steps.into_inner(), result)
+    }
+
+    /// API-1: migrate, then spawn the sweeps, then bind (the default).
+    #[tokio::test]
+    async fn migrations_run_before_the_sweeps_and_the_listener() {
+        let (steps, result) = startup(true, Ok(()), Ok(())).await;
+        result.unwrap();
+        assert_eq!(steps, ["migrate", "spawn sweeps", "bind"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_migration_starts_nothing() {
+        let (steps, result) = startup(true, Err(anyhow::anyhow!("migration failed")), Ok(())).await;
         assert!(result.is_err());
-        assert!(steps.borrow().is_empty());
+        assert_eq!(steps, ["migrate"]);
+    }
+
+    /// 1B.3: with `API_MIGRATE_ON_STARTUP=false`, the schema gate (and no
+    /// migration), then the sweeps, then bind.
+    #[tokio::test]
+    async fn the_gate_runs_before_the_sweeps_and_the_listener() {
+        let (steps, result) = startup(false, Ok(()), Ok(())).await;
+        result.unwrap();
+        assert_eq!(steps, ["gate", "spawn sweeps", "bind"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_gate_starts_nothing() {
+        let (steps, result) = startup(false, Ok(()), Err(anyhow::anyhow!("timed out"))).await;
+        assert!(result.is_err());
+        assert_eq!(steps, ["gate"]);
+    }
+
+    #[test]
+    fn migrate_on_startup_defaults_to_true_and_rejects_typos() {
+        assert!(parse_migrate_on_startup(None).unwrap());
+        assert!(parse_migrate_on_startup(Some("")).unwrap());
+        assert!(parse_migrate_on_startup(Some("true")).unwrap());
+        assert!(parse_migrate_on_startup(Some("TRUE")).unwrap());
+        assert!(!parse_migrate_on_startup(Some("false")).unwrap());
+        assert!(!parse_migrate_on_startup(Some(" False ")).unwrap());
+        assert!(parse_migrate_on_startup(Some("flase")).is_err());
+        assert!(parse_migrate_on_startup(Some("0")).is_err());
     }
 }
 
