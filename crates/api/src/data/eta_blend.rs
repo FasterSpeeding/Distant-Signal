@@ -225,39 +225,8 @@ fn resolve_near(
 /// board row's wall-clock time is ever half a day from the pin it belongs to.
 const MAX_ANCHOR_DISTANCE: Duration = Duration::hours(12);
 
-/// Resolves a Darwin wall-clock time to the instant it names. Darwin
-/// publishes Europe/London local times, not UTC -- building the
-/// `DateTime<Utc>` directly from `HH:MM` made every `darwin-estimated` ETA
-/// exactly an hour late for the ~7 months of British Summer Time, i.e. most
-/// of the year, and the error was invisible in winter.
-///
-/// Same `LocalResult` handling as
-/// `crates/poller-tfl/src/dlr/timetable.rs::london_to_utc`, and for the same
-/// reason: a departure board really does carry 01:00-01:59 times, which are
-/// the ones that occur twice on the autumn clock change and not at all on
-/// the spring one. The ambiguous hour takes the first (BST) occurrence, and
-/// a nonexistent local time yields `None` so the caller simply leaves TRUST's
-/// own ETA in place -- this whole overlay is best-effort, so declining to
-/// guess costs nothing. (The aggregator's variant panics on those cases
-/// instead, but it only ever resolves local 02:00, which is never ambiguous.)
-///
-/// **Not used for [`resolve_london_time_near`]'s own ambiguous case as of
-/// the L12 fix (2026-09-26 review)** -- that function has a real `anchor`
-/// to disambiguate against and picks the genuinely nearer candidate itself
-/// rather than reaching for this function's fixed "always BST" rule (see
-/// its own doc comment). This function's fixed rule remains exactly right
-/// for every OTHER caller in this crate (`journey.rs`, `reconciliation.rs`,
-/// `schedule_matching.rs`, `routes::train`), none of which have an anchor
-/// instant of their own to pick a nearer candidate against -- they resolve
-/// a bare CIF/schedule date+time with no better information available,
-/// same posture this function has always taken.
-pub(crate) fn london_to_utc(naive: chrono::NaiveDateTime) -> Option<DateTime<Utc>> {
-    match chrono_tz::Europe::London.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
-        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),
-        chrono::LocalResult::None => None,
-    }
-}
+// Moved to ds_store::trains::london_to_utc (ingest architecture plan 1A.4)
+pub(crate) use ds_store::trains::london_to_utc;
 
 #[cfg(test)]
 mod tests {
