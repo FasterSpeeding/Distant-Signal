@@ -4,7 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ActionIcon, Autocomplete, Group, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import { codeStationLabel, isTiplocCode, normalizeLocationCode } from '@/lib/stationLabel';
+import { codeStationLabel, isTiplocCode, normalizeLocationCode, parseGroupCode } from '@/lib/stationLabel';
 import type { Suggestion } from '@/lib/types';
 
 function Chevron({ up }: { up: boolean }) {
@@ -49,11 +49,13 @@ function XIcon() {
 const CRS = /^[A-Za-z]{3}$/;
 
 /** A typed code the picker accepts without a suggestion being chosen: a
- * CRS, or (when stops are allowed) a `tiploc:` code. */
-function typedCode(value: string, allowStops: boolean): string | null {
+ * CRS, or (when stops are allowed) a `tiploc:` code, or (when groups are)
+ * a station group's `group:` code. */
+function typedCode(value: string, allowStops: boolean, allowGroups: boolean): string | null {
   const trimmed = value.trim();
   if (CRS.test(trimmed)) return trimmed.toUpperCase();
   if (allowStops && isTiplocCode(trimmed) && trimmed.length > 'tiploc:'.length) return normalizeLocationCode(trimmed);
+  if (allowGroups) return parseGroupCode(trimmed);
   return null;
 }
 
@@ -82,6 +84,7 @@ export function StationListPicker({
   max,
   ordered = false,
   allowStops,
+  allowGroups = false,
   error,
   itemNoun,
 }: {
@@ -99,6 +102,10 @@ export function StationListPicker({
   ordered?: boolean;
   /** Whether a bus stop's or ferry terminal's `tiploc:` code may be added. */
   allowStops: boolean;
+  /** Whether a station group (`group:LON`) may be added: `search` then
+   * lists the matching groups (`lib/stationGroups.ts`'s
+   * `withGroupSuggestions`), and a typed `group:` code is accepted. */
+  allowGroups?: boolean | undefined;
   error?: string | null | undefined;
   /** What one row is, for the buttons' names, e.g. "via" or "avoided station". */
   itemNoun: string;
@@ -200,7 +207,7 @@ export function StationListPicker({
           // option (`onOptionSubmit`); `aria-activedescendant` says one is.
           if (event.key !== 'Enter' || event.currentTarget.getAttribute('aria-activedescendant')) return;
           event.preventDefault();
-          const code = typedCode(query, allowStops);
+          const code = typedCode(query, allowStops, allowGroups);
           if (code) {
             add(code);
             setQuery('');

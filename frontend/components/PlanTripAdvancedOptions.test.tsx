@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
+import { resetStationGroupsCache } from '@/lib/stationGroups';
 
 // Plain async functions, not `vi.fn()` (see `PlanTripFlow.test.tsx`'s C2
 // note). Every picker, the via one included, uses the planner search,
@@ -201,8 +202,78 @@ describe('PlanTripForm advanced options', () => {
     );
     expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('EUS');
     expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('GLA');
-    expect(screen.getByLabelText(/Call at/)).toHaveValue('PRE');
+    expect(screen.getByRole('combobox', { name: /Call at/ })).toHaveValue('PRE');
     expect(screen.getByLabelText('Depart after (optional)')).toHaveValue('09:15');
     expect(screen.getByRole('radio', { name: 'Compare options' })).toBeChecked();
+  });
+});
+
+describe('PlanTripForm station groups (2026-10-07)', () => {
+  const groupsResponse = {
+    groups: [
+      {
+        group: 'LON',
+        code: 'group:LON',
+        name: 'London Terminals',
+        members: [
+          { crs: 'KGX', name: 'London Kings Cross' },
+          { crs: 'EUS', name: 'London Euston' },
+        ],
+      },
+    ],
+  };
+  const label = 'Any of the London Terminals (2 stations)';
+
+  beforeEach(() => {
+    resetStationGroupsCache();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => groupsResponse })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetStationGroupsCache();
+  });
+
+  it('offers a group in Pass through and Call at, and sends group:LON', async () => {
+    const onSubmit = vi.fn();
+    renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+    fillEnds('CBG', 'BTN');
+
+    await openAdvanced();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Pass through (in order)' }), {
+      target: { value: 'london' },
+    });
+    fireEvent.click(await screen.findByRole('option', { name: label, hidden: true }));
+    const vias = await screen.findByRole('list', { name: 'Pass through (in order)' });
+    expect(within(vias).getByText(label)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Add a stop to call at'));
+    const callAt = screen.getByRole('combobox', { name: /Call at/ });
+    fireEvent.change(callAt, { target: { value: 'london' } });
+    fireEvent.click(await screen.findByRole('option', { name: label, hidden: true }));
+    await waitFor(() => expect(callAt).toHaveValue('group:LON'));
+    expect(callAt).toHaveAccessibleDescription(expect.stringContaining(label));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ viaCrs: ['group:LON'], waypointCrs: ['group:LON'] }),
+    );
+  });
+
+  it('accepts a typed group code, and labels a restored one', async () => {
+    renderWithMantine(<PlanTripForm onSubmit={vi.fn()} initial={{ viaCrs: ['group:LON'] }} />);
+    expect(await screen.findByText(`Pass through ${label}`)).toBeInTheDocument();
+    await openAdvanced();
+    addTyped('Pass through (in order)', 'STA');
+    addTyped('Pass through (in order)', 'group:lon');
+    const vias = screen.getByRole('list', { name: 'Pass through (in order)' });
+    expect(
+      within(vias)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual([`1.${label}`, '2.STA', `3.${label}`]);
   });
 });

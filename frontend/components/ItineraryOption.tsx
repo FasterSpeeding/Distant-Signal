@@ -2,8 +2,15 @@ import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
 import { codeRouteLabel } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import { ServiceModeBadge } from './ServiceModeBadge';
-import { viaSatisfiedLabel } from '@/lib/tripPlan';
-import type { TripPlanItinerary, TripPlanLeg, TripPlanLegLive, TripPlanViaSatisfied } from '@/lib/types';
+import { satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
+import type { StationGroup } from '@/lib/stationGroups';
+import type {
+  TripPlanItinerary,
+  TripPlanLeg,
+  TripPlanLegLive,
+  TripPlanViaSatisfied,
+  TripPlanWaypointSatisfied,
+} from '@/lib/types';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
  * full name -- `GET /Trips/plan` (unlike every other station-bearing
@@ -50,6 +57,8 @@ export function ItineraryOption({
   onSelect,
   stationNames = new Map(),
   viaPasses = [],
+  waypointStops = [],
+  groups = [],
 }: {
   itinerary: TripPlanItinerary;
   selected: boolean;
@@ -61,8 +70,20 @@ export function ItineraryOption({
    * "Pass through" stations its own legs passed, each shown under the leg
    * that passed it. */
   viaPasses?: TripPlanViaSatisfied[] | undefined;
+  /** This itinerary's share of its journey's `waypointSatisfiedBy`
+   * (2026-10-07, only when a "Call at" stop is a group): where it stopped
+   * for each, shown under the legs. */
+  waypointStops?: TripPlanWaypointSatisfied[] | undefined;
+  /** The station groups, to name a group a via or stop satisfied. */
+  groups?: StationGroup[] | undefined;
 }) {
   const hasTrainLeg = itinerary.legs.some((leg) => leg.kind === 'train');
+  const stationLabelOf = (hit: { crs: string; matchedCrs?: string | null }) =>
+    satisfiedStationLabel(
+      hit,
+      (code) => stationNames.get(code) ?? code,
+      (code) => groups.find((group) => group.code === code)?.name,
+    );
 
   return (
     <Card withBorder>
@@ -87,10 +108,15 @@ export function ItineraryOption({
                     .filter((via) => via.leg === index)
                     .map((via, viaIndex) => (
                       <Text key={viaIndex} size="xs" c="dimmed" pl="sm">
-                        {viaSatisfiedLabel(via, stationNames.get(via.crs))}
+                        {viaSatisfiedLabel(via, stationLabelOf(via))}
                       </Text>
                     ))}
                 </Stack>
+              ))}
+              {waypointStops.map((stop, stopIndex) => (
+                <Text key={`stop-${stopIndex}`} size="xs" c="dimmed">
+                  {waypointSatisfiedLabel(stop, stationLabelOf(stop))}
+                </Text>
               ))}
             </Stack>
           }

@@ -9,7 +9,9 @@ import {
   trainLegsForTracking,
   TripPlanError,
   TRIP_PLAN_UNAVAILABLE_MESSAGE,
+  satisfiedStationLabel,
   viaSatisfiedLabel,
+  waypointSatisfiedLabel,
 } from './tripPlan';
 import type { TripPlanItinerary, TripPlanLeg, TripPlanResponse } from './types';
 
@@ -407,5 +409,77 @@ describe('advanced options', () => {
       ],
     });
     expect(codes).toEqual(expect.arrayContaining(['EUS', 'GLA', 'STA', 'BHM']));
+  });
+});
+
+describe('station groups (2026-10-07)', () => {
+  it('sends a group in waypoints and via as group:NAME', () => {
+    const params = new URLSearchParams(
+      buildTripPlanQuery({
+        originCrs: 'CBG',
+        destinationCrs: 'BTN',
+        waypointCrs: ['Group:lon'],
+        viaCrs: ['group:LON', 'sta'],
+        date: '2026-10-08',
+        results: 'fastest',
+      }),
+    );
+    expect(params.get('waypoints')).toBe('group:LON');
+    expect(params.get('via')).toBe('group:LON,STA');
+  });
+
+  it('collects the members a journey used, never a group or choice code', () => {
+    const codes = collectTripPlanStationCodes({
+      results: 'fastest',
+      via: ['group:LON'],
+      segments: [
+        { originCrs: 'CBG', destinationCrs: 'group:LON', itineraries: [], cappedByMaxChanges: false },
+        { originCrs: 'group:LON', destinationCrs: 'BTN', itineraries: [], cappedByMaxChanges: false },
+      ],
+      journeys: [
+        {
+          changeCount: 0,
+          departure: { time: '08:00', dayOffset: 0 },
+          arrival: { time: '10:00', dayOffset: 0 },
+          totalDurationMinutes: 120,
+          viaSatisfiedBy: [{ crs: 'group:LON', matchedCrs: 'KGX', segment: 0, leg: 0, how: 'call' }],
+          waypointSatisfiedBy: [{ crs: 'group:LON', matchedCrs: 'STP', segment: 0, how: 'call' }],
+        },
+      ],
+    });
+    expect(codes.sort()).toEqual(['BTN', 'CBG', 'KGX', 'STP']);
+  });
+
+  it('names the member a choice was satisfied by, and which choice', () => {
+    const names = new Map([
+      ['KGX', 'London Kings Cross'],
+      ['EUS', 'London Euston'],
+    ]);
+    const name = (code: string) => names.get(code) ?? code;
+    const groupName = (code: string) => (code === 'group:LON' ? 'London Terminals' : undefined);
+    expect(satisfiedStationLabel({ crs: 'KGX', matchedCrs: 'KGX' }, name, groupName)).toBe('London Kings Cross');
+    // An older response without matchedCrs.
+    expect(satisfiedStationLabel({ crs: 'KGX' }, name, groupName)).toBe('London Kings Cross');
+    expect(satisfiedStationLabel({ crs: 'group:LON', matchedCrs: 'KGX' }, name, groupName)).toBe(
+      'London Kings Cross (one of the London Terminals)',
+    );
+    // Groups not loaded: the code stands in.
+    expect(satisfiedStationLabel({ crs: 'group:LON', matchedCrs: 'KGX' }, name, () => undefined)).toBe(
+      'London Kings Cross (one of the group:LON)',
+    );
+    expect(satisfiedStationLabel({ crs: 'KGX|EUS', matchedCrs: 'EUS' }, name, groupName)).toBe(
+      'London Euston (one of London Kings Cross, London Euston)',
+    );
+    expect(
+      viaSatisfiedLabel({ crs: 'group:LON', how: 'pass' }, 'London Kings Cross (one of the London Terminals)'),
+    ).toBe('Passes through London Kings Cross (one of the London Terminals) without stopping');
+  });
+
+  it('says where a journey stopped for a group waypoint', () => {
+    const station = 'London Kings Cross (one of the London Terminals)';
+    expect(waypointSatisfiedLabel({ how: 'call' }, station)).toBe('Stops at ' + station);
+    expect(waypointSatisfiedLabel({ how: 'walk' }, station)).toBe('Walks to ' + station);
+    expect(waypointSatisfiedLabel({ how: 'origin' }, station)).toBe('Starts at ' + station);
+    expect(waypointSatisfiedLabel({ how: 'destination' }, station)).toBe('Ends at ' + station);
   });
 });

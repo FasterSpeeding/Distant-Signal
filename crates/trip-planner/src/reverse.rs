@@ -373,22 +373,40 @@ impl<'a> Reverse<'a> {
                     current.offer_origin(connection.departure_min);
                     continue;
                 }
-                let Some(change) = crate::staged::change_minutes(
-                    self.interchange,
-                    self.restrictions,
-                    &self.targets,
-                    grid.stage(state),
-                    from,
-                ) else {
+                let change_at = |stage: usize| {
+                    crate::staged::change_minutes(
+                        self.interchange,
+                        self.restrictions,
+                        &self.targets,
+                        stage,
+                        from,
+                    )
+                };
+                let (mut at, stage) = (state, grid.stage(state));
+                let mut change = change_at(stage);
+                // A `NoInterchange` stop that is this stage's waypoint: the
+                // forward search boards there at the NEXT stage (arriving
+                // advanced it), charging the waypoint fallback. `state` may
+                // stand for that boarding: it dominated it in `aboard_ok`
+                // when the train reaches another stop of the same waypoint
+                // later (an OR group's member, 2026-10-07).
+                if change.is_none()
+                    && stage < self.targets.len()
+                    && self.targets[stage].contains(from)
+                {
+                    change = change_at(stage + 1);
+                    at = grid.state(stage + 1, grid.progress(state));
+                }
+                let Some(change) = change else {
                     continue;
                 };
                 let change = change + self.interchange.modal_change.extra_for(uid);
                 let Some(ready_by) = connection.departure_min.checked_sub(change) else {
                     continue;
                 };
-                self.set_arrival(current, state, from, ready_by);
+                self.set_arrival(current, at, from, ready_by);
                 for sibling in sibling_tiplocs(self.interchange, from) {
-                    self.set_arrival(current, state, sibling, ready_by);
+                    self.set_arrival(current, at, sibling, ready_by);
                 }
             }
         }

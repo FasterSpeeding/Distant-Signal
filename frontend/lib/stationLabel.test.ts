@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { stationLabel, routeLabel, codeStationLabel, codeRouteLabel } from './stationLabel';
+import {
+  stationLabel,
+  routeLabel,
+  codeStationLabel,
+  codeRouteLabel,
+  isGroupCode,
+  normalizeLocationCode,
+  parseGroupCode,
+} from './stationLabel';
 
 describe('stationLabel', () => {
   it('renders "Name (CRS)" when a name resolved', () => {
@@ -102,5 +110,26 @@ describe('codeRouteLabel', () => {
 
   it('accepts a caller-supplied placeholder for a null CRS', () => {
     expect(codeRouteLabel(null, null, null, null, 'Unknown')).toBe('Unknown → Unknown');
+  });
+});
+
+describe('station group codes (2026-10-07)', () => {
+  it('recognises and normalizes group:NAME', () => {
+    expect(isGroupCode('Group:lon')).toBe(true);
+    expect(isGroupCode('KGX')).toBe(false);
+    expect(isGroupCode(null)).toBe(false);
+    expect(normalizeLocationCode(' group:lon ')).toBe('group:LON');
+    expect(normalizeLocationCode('kgx')).toBe('KGX');
+    expect(parseGroupCode('GROUP:lon')).toBe('group:LON');
+    expect(parseGroupCode('group:')).toBeNull();
+    expect(parseGroupCode('group:L')).toBeNull();
+    expect(parseGroupCode('group:LON|KGX')).toBeNull();
+  });
+
+  it('labels a group by its name alone', () => {
+    expect(codeStationLabel('group:LON', 'Any of the London Terminals (18 stations)')).toBe(
+      'Any of the London Terminals (18 stations)',
+    );
+    expect(codeStationLabel('group:LON', undefined)).toBe('group:LON');
   });
 });

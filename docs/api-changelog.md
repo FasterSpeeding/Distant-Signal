@@ -3,6 +3,193 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-07: `/Trips/plan` waypoint groups (`waypoints=group:LON`), `GET /Trips/station-groups`
+
+Design: `docs/superpowers/specs/2026-10-07-trips-plan-or-group-vias-design.md`,
+"Waypoint groups". This closes `viaStop` with `LON` for DS-MCP: send it as
+`waypoints=group:LON`. The entry below (OR vias) still applies; this one
+replaces its "waypoints take single stations" 400.
+
+### Changed parameter: `waypoints` entries may be OR choices
+
+`waypoints=ALT[|ALT...][,ALT[|ALT...]...]`, the same syntax as `via`: commas
+separate the waypoints (ordered, each one a stop), `|` the alternatives of
+one waypoint, and an alternative is a CRS, a `tiploc:` code or `group:NAME`
+(any case). `|` may be raw or `%7C`.
+
+- **Semantics:** the journey must STOP at (call at, alight at, or walk
+  into) ANY one station of each waypoint, in order. A train running
+  through without calling does not count, as for a single waypoint.
+- **Which member:** plain earliest arrival. The member a real train reaches
+  first on the best journey wins (the latest-departing one for
+  `arriveBy`), with no preference order among members. The member can
+  differ per journey.
+- **Dwell and changes:** no group-specific rule. Staying aboard the train
+  that reached the member is no change (`continuesPreviousTrain: true` on
+  the next segment). Otherwise the member's own minimum change time
+  applies (5 minutes at a no-interchange sentinel), and `maxChanges`
+  counts the whole journey.
+- **Ends:** a choice that is the FIRST waypoint and includes the origin is
+  satisfied at the origin, and a LAST one including the destination at
+  the destination. Such a waypoint gets NO segment (see
+  `waypointSatisfiedBy`). One holding both ends is satisfied at the
+  origin. A member equal to an end anywhere else is a real stop (the
+  journey must return to it). A single-station waypoint equal to an end
+  is still a 400.
+- **Avoid lists:** a member in `avoid`, `avoidStop` or `avoidChange` is
+  dropped from the choice. It is a 400 only if no member is left.
+- **Limits:** a choice is ONE waypoint against the cap (20) and in the
+  `results=options` guard `(waypoints + 1) * (2 * vias + 1) * (maxChanges
+  + 2)`. A choice has at most 24 stations, and the waypoints together at
+  most 54, groups expanded and single stations counting 1. That allows 3
+  `group:LON`, or 2 and 18 single stations. This budget is separate from
+  the vias'.
+- Single-station waypoints behave, and are answered, exactly as before.
+
+### New and changed fields
+
+- `segments[s].originCrs`/`destinationCrs`: a choice's label
+  (`group:LON`, `KGX|EUS`) where a segment starts or ends at it. Each
+  journey's legs show the actual station.
+- `journeys[j].waypointSatisfiedBy` (ONLY when at least one waypoint is a
+  choice): one entry per requested waypoint, in order:
+  - `crs`: the waypoint as requested (its label);
+  - `matchedCrs`: the station the journey stopped at (a CRS, or a
+    `tiploc:` code);
+  - `segment`: the index of the segment that ends there (the next one
+    starts there). For `how: "origin"` it is 0; for `"destination"`, the
+    last segment;
+  - `how`: `call` (a train took the traveller there), `walk` (a transfer
+    leg into it), `origin` or `destination` (an end of the trip satisfied
+    it).
+- `stationGroups` also lists the groups named in `waypoints`.
+
+```json
+"segments": [{"originCrs": "CBG", "destinationCrs": "group:LON", "...": "..."},
+             {"originCrs": "group:LON", "destinationCrs": "BTN", "...": "..."}],
+"journeys": [{"waypointSatisfiedBy": [
+  {"crs": "group:LON", "matchedCrs": "KGX", "segment": 0, "how": "call"}
+]}]
+```
+
+With `origin=KGX&waypoints=group:LON&destination=CBG` there is one segment
+(KGX to CBG), and `waypointSatisfiedBy` is
+`[{"crs": "group:LON", "matchedCrs": "KGX", "segment": 0, "how": "origin"}]`.
+
+### New 400s
+
+- `waypoints: 'X' stands for 25 stations, at most 24 allowed in one waypoint`
+- `waypoints: the waypoints stand for 56 stations together, at most 54 allowed`
+- `waypoints: 'group:XYZ' is not a known station group (known: group:LON)`
+- `waypoints: 'KGX|' has an empty alternative`
+- `waypoints: every station of 'KGX|EUS' is in an avoid list; a trip
+  cannot stop at one and avoid them all`
+- `waypoints: 'group:LON' and 'KGX' are next to each other and share 'KGX';
+  one stop there would satisfy both, so name stations they do not share or
+  put another waypoint between them`: two adjacent waypoints, at least one
+  a choice, that share a station (after avoided members are dropped).
+- An unknown station in a choice: `ORIGIN -> LABEL: 'ZZZ' is not a
+  recognised station CRS code` (as for single waypoints).
+- Removed: `waypoints: '...' is a choice of stations; waypoints take single
+  stations ...`.
+
+### New endpoint: `GET /Trips/station-groups`
+
+Every group `group:NAME` accepts, for a picker. No parameters, no
+authentication, `Cache-Control: public, max-age=3600` (the groups change
+only with a deploy).
+
+```json
+{"groups": [{"group": "LON", "code": "group:LON", "name": "London Terminals",
+  "members": [{"crs": "BFR", "name": "London Blackfriars"}, "..."]}]}
+```
+
+`code` is the entry to send. `members` are in a fixed order, and a
+member's `name` may be `null`.
+
+## 2026-10-07: `/Trips/plan` OR-choice vias and station groups (`group:LON`)
+
+Design: `docs/superpowers/specs/2026-10-07-trips-plan-or-group-vias-design.md`.
+This closes the last gap keeping DS-MCP's `plan_journey` on its local engine
+for a `LON` group code in `via` or `avoid`/`avoidStop` (`dsTripPlanEligible`).
+`viaStop` is closed by the entry above (waypoint groups).
+
+### Changed parameter: `via` entries may be OR choices
+
+`via=ALT[|ALT...][,ALT[|ALT...]...]`. Commas still separate the vias, which
+are ordered and at most 3, and must ALL be passed. `|` separates the
+alternatives of one via; ANY one of them satisfies it. An alternative is a
+CRS, a `tiploc:` code or a named group `group:NAME` (any case). `|` may be
+sent raw or as `%7C`.
+
+- `via=group:LON`: through any of the eighteen London Terminals (BFR CST
+  CHX CTK EUS FST KGX LST LBG MYB MOG OLD PAD STP VXH VIC WAT WAE).
+- `via=KGX|EUS|STP`: through any of the three.
+- `via=group:LON|CBG,PBO`: through a London terminal or Cambridge, then
+  Peterborough.
+- What counts as passing a member is what counts for a single via: a
+  call, a timing-point pass, a change or a walk.
+- **Limits:** at most 24 stations in one via, and 54 across all vias, with
+  groups expanded. A choice counts as ONE via against the cap of 3 and in
+  the `results=options` search-size guard.
+- **Ends:** a member equal to the origin or the destination satisfies the
+  via there. Every journey passes it, so for example `origin=KGX` with
+  `via=group:LON` always holds. A single-station via equal to an end is
+  still a 400.
+- **With `avoid`:** avoided members are never used. The via is a 400 only
+  when EVERY station of it is in `avoid`.
+- Single-station vias behave exactly as before.
+
+### Changed parameter: avoid lists take groups
+
+`avoid`, `avoidStop` and `avoidChange` accept `group:NAME` entries, which
+avoid (or don't stop at, or don't change at) every member. A group counts as
+one entry against the cap of 8 per list. An avoid list already means "none
+of these", so it needs no `|`: `|` there is a 400. An avoided member that is
+the origin, the destination or a waypoint is a 400 naming the group.
+
+### New and changed fields
+
+- `stationGroups` (top level, always present): each group the request
+  named, mapped to its members, e.g. `{"LON": ["BFR", "CST", ...]}`.
+  It is `{}` when no group was named.
+- `via`: each via's label as applied, e.g. `["group:LON", "KGX|EUS", "PBO"]`.
+- `avoid`/`avoidStop`/`avoidChange`: as applied, so with groups expanded
+  into their member CRS codes.
+- `journeys[j].viaSatisfiedBy[k].matchedCrs`: the station that satisfied
+  via `k`, which for a choice is the member the journey passed. `crs` stays
+  the via as requested (its label).
+
+```json
+"via": ["group:LON"],
+"stationGroups": {"LON": ["BFR", "CST", "CHX", "...", "WAE"]},
+"journeys": [{"viaSatisfiedBy": [
+  {"crs": "group:LON", "matchedCrs": "KGX", "segment": 0, "leg": 1, "how": "call"}
+]}]
+```
+
+- `noResultReason` (`constraint: "via"`) carries the label in `values`
+  (`["group:LON"]`). Its message reads "... passes through any of
+  group:LON ..." or "any of KGX, EUS".
+
+### New 400s
+
+- `via: 'group:XYZ' is not a known station group (known: group:LON)`
+- `via: 'KGX|' has an empty alternative`
+- `via: 'Z00|...' stands for 25 stations, at most 24 allowed in one via`
+- `via: the vias stand for 60 stations together, at most 54 allowed`
+- `via: 'KGX|EUS' is given twice in a row; name it once`: the same station
+  set twice in a row, however it is written.
+- `via: every station of 'KGX|EUS' is also in avoid; a trip cannot both
+  pass through one and avoid them all`
+- `via: 'ZZZ' is not a recognised station CRS code`: this now also names
+  an unknown alternative.
+- `avoid: 'KGX|EUS' uses '|', which only via takes; ...`
+- `avoid: 'group:LON' includes 'PAD', which is the destination; a trip
+  cannot avoid it`
+- (Superseded by the waypoint-groups entry above: waypoints now take
+  choices.) `waypoints: 'GROUP:LON' is a choice of stations; ...`
+
 ## 2026-10-07: walks between bus stops and their stations in the planner
 
 Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`

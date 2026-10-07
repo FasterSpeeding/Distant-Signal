@@ -1185,6 +1185,23 @@ export interface TripPlanJourney {
   /** With `via` only: one entry per via, in order -- the leg that first
    * passed it (`segments[segment].itineraries[j].legs[leg]`). */
   viaSatisfiedBy?: TripPlanViaSatisfied[];
+  /** Only when a waypoint is a choice of stations (`group:LON`,
+   * 2026-10-07): one entry per waypoint, in order -- where the journey
+   * stopped for it. */
+  waypointSatisfiedBy?: TripPlanWaypointSatisfied[];
+}
+
+/** Where a journey stopped for one of the request's waypoints
+ * (docs/api-changelog.md, 2026-10-07). `segment` is the segment that ends
+ * there; `how` is `call` (a train took the traveller there), `walk`, or
+ * `origin`/`destination` (an end of the trip is one of its stations). */
+export interface TripPlanWaypointSatisfied {
+  /** The waypoint as requested: `KGX`, `group:LON`. */
+  crs: string;
+  /** The station the journey stopped at. */
+  matchedCrs: string | null;
+  segment: number;
+  how: 'call' | 'walk' | 'origin' | 'destination';
 }
 
 /** How a journey passed one of the request's vias
@@ -1192,7 +1209,11 @@ export interface TripPlanJourney {
  * `pass` -- it ran through without calling; `walk` -- a transfer leg into
  * it. */
 export interface TripPlanViaSatisfied {
+  /** The via as requested: `KGX`, or a choice such as `group:LON`. */
   crs: string;
+  /** The station that satisfied it (2026-10-07): for a choice, the member
+   * the journey passed. Absent from older responses. */
+  matchedCrs?: string | null;
   segment: number;
   leg: number;
   how: 'call' | 'pass' | 'walk';
@@ -1266,6 +1287,8 @@ export interface TripPlanResponse {
   avoidChange?: string[];
   /** The pass-through vias as applied, in order (always `[]` without). */
   via?: string[];
+  /** Each station group the request named -> its member CRS codes. */
+  stationGroups?: Record<string, string[]>;
   /** The effective `maxChanges` (the API's default when none was sent). */
   maxChanges?: number;
   /** Present when live data was requested (the default). */

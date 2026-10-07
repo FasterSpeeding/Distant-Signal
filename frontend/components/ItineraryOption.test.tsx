@@ -169,3 +169,40 @@ describe('ItineraryOption: bus and ferry legs', () => {
     expect(screen.getByRole('radio')).not.toBeDisabled();
   });
 });
+
+describe('ItineraryOption: station groups (2026-10-07)', () => {
+  const london = {
+    group: 'LON',
+    code: 'group:LON',
+    name: 'London Terminals',
+    members: [{ crs: 'EUS', name: 'London Euston' }],
+  };
+
+  it('names the member a group via and a group stop used', () => {
+    renderWithMantine(
+      <ItineraryOption
+        itinerary={trainItinerary}
+        selected={false}
+        onSelect={vi.fn()}
+        stationNames={new Map([['EUS', 'London Euston']])}
+        viaPasses={[{ crs: 'group:LON', matchedCrs: 'EUS', segment: 0, leg: 0, how: 'call' }]}
+        waypointStops={[{ crs: 'group:LON', matchedCrs: 'EUS', segment: 0, how: 'origin' }]}
+        groups={[london]}
+      />,
+    );
+    expect(screen.getByText('Calls at London Euston (one of the London Terminals)')).toBeInTheDocument();
+    expect(screen.getByText('Starts at London Euston (one of the London Terminals)')).toBeInTheDocument();
+  });
+
+  it('keeps a single-station via as it was', () => {
+    renderWithMantine(
+      <ItineraryOption
+        itinerary={trainItinerary}
+        selected={false}
+        onSelect={vi.fn()}
+        viaPasses={[{ crs: 'MKC', matchedCrs: 'MKC', segment: 0, leg: 0, how: 'call' }]}
+      />,
+    );
+    expect(screen.getByText('Calls at MKC')).toBeInTheDocument();
+  });
+});

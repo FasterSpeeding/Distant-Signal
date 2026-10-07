@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Alert, Button, List, ListItem, Stack, Text } from '@mantine/core';
 import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
@@ -17,7 +17,8 @@ import {
 } from '@/lib/tripPlan';
 import { planPageSearch, type PlanFormInitial } from '@/lib/tripPlanUrl';
 import { getStationNames } from '@/lib/suggestions';
-import { codeRouteLabel, codeStationLabel, isTiplocCode } from '@/lib/stationLabel';
+import { groupLabels, useStationGroups } from '@/lib/stationGroups';
+import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
@@ -80,7 +81,16 @@ export function PlanTripFlow({
   // `codeRouteLabel` already falls back to the bare code for that case,
   // same "degraded lookup, not broken display" contract as every other
   // station label in this app.
-  const [stationNames, setStationNames] = useState<Map<string, string>>(new Map());
+  const [resolvedNames, setStationNames] = useState<Map<string, string>>(new Map());
+  // Plus the station groups' labels: a segment may start or end at a
+  // group "Call at" stop (`group:LON`, 2026-10-07).
+  const groups = useStationGroups(
+    plan !== null &&
+      [...plan.segments.flatMap((segment) => [segment.originCrs, segment.destinationCrs]), ...(plan.via ?? [])].some(
+        isGroupCode,
+      ),
+  );
+  const stationNames = useMemo(() => new Map([...groupLabels(groups), ...resolvedNames]), [groups, resolvedNames]);
   const [selections, setSelections] = useState<SegmentSelection[]>([]);
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
@@ -399,6 +409,10 @@ export function PlanTripFlow({
                 viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
                   (via) => via.segment === segmentIndex,
                 )}
+                waypointStops={plan.journeys?.[itineraryIndex]?.waypointSatisfiedBy?.filter(
+                  (stop) => stop.segment === segmentIndex,
+                )}
+                groups={groups}
               />
             ))}
           </Stack>

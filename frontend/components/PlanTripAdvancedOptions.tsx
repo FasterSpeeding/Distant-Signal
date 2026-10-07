@@ -3,6 +3,7 @@
 import { Accordion, AccordionControl, AccordionItem, AccordionPanel, NativeSelect, Stack, Text } from '@mantine/core';
 import { StationListPicker } from './StationListPicker';
 import { searchPlannerLocations } from '@/lib/suggestions';
+import { withGroupSuggestions } from '@/lib/stationGroups';
 import { codeStationLabel, normalizeLocationCode } from '@/lib/stationLabel';
 import {
   DEFAULT_MAX_CHANGES,
@@ -101,6 +102,12 @@ export function advancedOptionsSummary(options: TripPlanAdvancedOptions, names =
   return parts.join(' · ');
 }
 
+/** "Pass through" also offers the station groups
+ * (`GET /Trips/station-groups`), e.g. "Any of the London Terminals (18
+ * stations)", sent as `group:LON`. One function for the module's life:
+ * `useSuggestions` refetches whenever its search changes. */
+const searchVias = withGroupSuggestions(searchPlannerLocations);
+
 const MAX_CHANGES_OPTIONS = [
   { value: '', label: `Default (${DEFAULT_MAX_CHANGES})` },
   ...Array.from({ length: MAX_CHANGES_LIMIT + 1 }, (_, n) => ({
@@ -175,15 +182,16 @@ export function PlanTripAdvancedOptions({
           <Stack gap="lg">
             <StationListPicker
               label="Pass through (in order)"
-              description="Every route goes through these stations, in this order, whether or not the train stops there. Unlike “Call at”, you don't need to stop."
+              description="Every route goes through these stations, in this order, whether or not the train stops there. Unlike “Call at”, you don't need to stop. A group such as “Any of the London Terminals” is passed through any one of its stations."
               values={options.viaCrs ?? []}
               onChange={(viaCrs) => onChange({ ...options, viaCrs })}
               names={names}
               onNames={onNames}
-              search={searchPlannerLocations}
+              search={searchVias}
               max={MAX_VIAS}
               ordered
               allowStops
+              allowGroups
               error={errors.viaCrs}
               itemNoun="pass-through station"
             />
