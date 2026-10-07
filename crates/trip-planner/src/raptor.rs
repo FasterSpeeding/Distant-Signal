@@ -233,6 +233,15 @@ fn relax_in_round(
     if arrival_min >= current_best {
         return;
     }
+    // A walk on from a bus or ferry is a change off it: the alighting
+    // buffer comes first (see `csa::alighting_buffer`).
+    let walk_from = arrival_min
+        + match &via {
+            ArrivalSource::Train(connection, _, _) => {
+                interchange.modal_change.extra_for(&connection.uid)
+            }
+            ArrivalSource::Link { .. } => 0,
+        };
     round.arrival.insert(tiploc.to_string(), arrival_min);
     round.arrived_via.insert(tiploc.to_string(), via);
     touched.insert(tiploc.to_string());
@@ -243,7 +252,7 @@ fn relax_in_round(
         restrictions,
         date,
         tiploc,
-        arrival_min,
+        walk_from,
     );
 }
 

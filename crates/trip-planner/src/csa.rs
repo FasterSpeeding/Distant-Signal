@@ -241,6 +241,7 @@ impl Scan<'_> {
         if arrival_min >= current_best {
             return;
         }
+        let walk_from = arrival_min + alighting_buffer(self.interchange, &via);
         self.earliest_arrival
             .insert(tiploc.to_string(), arrival_min);
         self.arrived_via.insert(tiploc.to_string(), via);
@@ -248,7 +249,7 @@ impl Scan<'_> {
             self.best_dest_arrival = arrival_min;
             self.best_dest_tiploc = Some(tiploc.to_string());
         }
-        self.relax_fixed_links(tiploc, arrival_min);
+        self.relax_fixed_links(tiploc, walk_from);
     }
 
     /// Connection Scan WITH footpaths: after a stop's arrival improves,
@@ -291,6 +292,19 @@ impl Scan<'_> {
                 );
             }
         }
+    }
+}
+
+/// The bus or ferry buffer owed before walking on from a stop reached by
+/// `via` (`schedule_query::ModalChangeBuffer`): a walk to another station
+/// or stop is a change off that bus or ferry, just as a fresh boarding at
+/// the same stop is (`Scan::ready_source_at`), and the arrive-by search
+/// charges it there too (`reverse`'s alighting side). Nothing after a
+/// train or a walk. RAPTOR's `relax_in_round` does the same.
+fn alighting_buffer(interchange: &InterchangeData, via: &ArrivalSource) -> u32 {
+    match via {
+        ArrivalSource::Train(connection, _) => interchange.modal_change.extra_for(&connection.uid),
+        ArrivalSource::Link { .. } => 0,
     }
 }
 
