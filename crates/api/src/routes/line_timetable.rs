@@ -56,7 +56,9 @@ pub(crate) fn parse_crs(name: &str, raw: Option<&str>) -> Result<Option<String>,
     if raw.len() == 3 && raw.chars().all(|c| c.is_ascii_alphabetic()) {
         Ok(Some(raw.to_ascii_uppercase()))
     } else {
-        Err(format!("invalid {name} {raw:?}: use a station's three-letter CRS code"))
+        Err(format!(
+            "invalid {name} {raw:?}: use a station's three-letter CRS code"
+        ))
     }
 }
 
@@ -131,7 +133,8 @@ pub(crate) fn parse_params(
     scopes: Option<Vec<String>>,
 ) -> Result<TimetableParams, String> {
     let scopes = scopes.unwrap_or_else(|| vec!["line".to_string(), "shared".to_string()]);
-    let directions = summary::parse_directions(query.dir.as_deref().or(query.direction.as_deref()))?;
+    let directions =
+        summary::parse_directions(query.dir.as_deref().or(query.direction.as_deref()))?;
     let from = parse_crs("from", query.from.as_deref())?;
     let to = parse_crs("to", query.to.as_deref())?;
     if from.is_some() && from == to {
@@ -167,8 +170,14 @@ pub(crate) async fn load_page(
 ) -> anyhow::Result<Option<(lts::TimetablePage, summary::RowSource)>> {
     let stations = lts::LineStations::for_line(summary::catalogue_line(app, id));
     let fingerprint = lts::derivation_fingerprint(&stations);
-    if let Some(page) =
-        lts::timetable_page(&app.database, id, service_date, &fingerprint, &params.filter).await?
+    if let Some(page) = lts::timetable_page(
+        &app.database,
+        id,
+        service_date,
+        &fingerprint,
+        &params.filter,
+    )
+    .await?
     {
         return Ok(Some((page, summary::RowSource::Table)));
     }
@@ -265,7 +274,15 @@ mod tests {
             Ok(Some(cursor))
         );
         assert_eq!(parse_cursor(Some("")), Ok(None));
-        for bad in ["600", "x.C1", "600.", "600.C 1", "-5.C1", "3000.C1", "600.C1;--"] {
+        for bad in [
+            "600",
+            "x.C1",
+            "600.",
+            "600.C 1",
+            "-5.C1",
+            "3000.C1",
+            "600.C1;--",
+        ] {
             assert!(parse_cursor(Some(bad)).is_err(), "{bad}");
         }
     }

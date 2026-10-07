@@ -268,7 +268,11 @@ pub(crate) fn derive_row(
 ) -> SummaryRow {
     let stops = on_line_stops(calling_points, tiploc_to_crs, line);
     let due_minute = parse_due(fields.line_due_time.as_deref(), fields.line_due_day_offset)
-        .or_else(|| (!has_scope).then(|| stops.first().map(|s| s.minute)).flatten());
+        .or_else(|| {
+            (!has_scope)
+                .then(|| stops.first().map(|s| s.minute))
+                .flatten()
+        });
     SummaryRow {
         uid: fields.uid,
         operator_atoc: fields.operator_atoc,
@@ -835,12 +839,10 @@ pub fn timetable_page_in_memory(
     let mut listed: Vec<TimetableEntry> = timed
         .into_iter()
         .filter(|e| {
-            filter.directions.as_ref().is_none_or(|d| {
-                e.row
-                    .direction
-                    .as_ref()
-                    .is_some_and(|own| d.contains(own))
-            })
+            filter
+                .directions
+                .as_ref()
+                .is_none_or(|d| e.row.direction.as_ref().is_some_and(|own| d.contains(own)))
         })
         .filter(|e| filter.at.is_none_or(|at| e.minute >= at))
         .filter(|e| {

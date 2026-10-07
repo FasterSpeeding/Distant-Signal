@@ -233,7 +233,12 @@ async fn get(app: &crate::app::App, uri: &str) -> (StatusCode, Value) {
         .nest("/public", crate::routes::public_router())
         .with_state(app.clone());
     let response = router
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).expect("request"))
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
         .await
         .expect("response");
     let status = response.status();
@@ -384,10 +389,7 @@ async fn the_writer_derives_replaces_per_date_and_skips_identical_publishes(pool
         .await
         .expect("read")
         .expect("stored");
-    assert_eq!(
-        serde_json::from_str::<Value>(&stored).expect("json"),
-        twice
-    );
+    assert_eq!(serde_json::from_str::<Value>(&stored).expect("json"), twice);
     let odd = json!([{"uid": 7, "calling_points": []}]);
     assert_eq!(
         upsert(&pool, &line, date(), &odd).await.summaries_written,
@@ -413,9 +415,15 @@ async fn the_writer_derives_replaces_per_date_and_skips_identical_publishes(pool
         Some(None)
     );
     assert_eq!(
-        lts::rebuild_summaries(&pool, Some(&line), LINE, other_date.succ_opt().expect("d"), false)
-            .await
-            .expect("rebuild"),
+        lts::rebuild_summaries(
+            &pool,
+            Some(&line),
+            LINE,
+            other_date.succ_opt().expect("d"),
+            false
+        )
+        .await
+        .expect("rebuild"),
         None
     );
 }
@@ -546,8 +554,8 @@ async fn the_timetable_pages_and_filters_like_its_reference(pool: PgPool) {
     let crosswalk = queries::crs_for_tiplocs_batch(&pool, &tiplocs)
         .await
         .expect("crosswalk");
-    let rows = derive_rows(decoded, &crosswalk, &LineStations::from_definition(&line))
-        .expect("rows");
+    let rows =
+        derive_rows(decoded, &crosswalk, &LineStations::from_definition(&line)).expect("rows");
 
     let s = |v: &[&str]| Some(v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>());
     let filters = [
@@ -650,8 +658,14 @@ async fn the_timetable_pages_and_filters_like_its_reference(pool: PgPool) {
     assert_eq!(
         uids(&body),
         [
-            "TT-D0600", "TT-LONG", "TT-D0800A", "TT-D0800B", "TT-S0830", "TT-U0910",
-            "TT-NIGHT", "TT-EARLY"
+            "TT-D0600",
+            "TT-LONG",
+            "TT-D0800A",
+            "TT-D0800B",
+            "TT-S0830",
+            "TT-U0910",
+            "TT-NIGHT",
+            "TT-EARLY"
         ]
     );
     assert_eq!(body["nextCursor"], Value::Null);
@@ -659,7 +673,10 @@ async fn the_timetable_pages_and_filters_like_its_reference(pool: PgPool) {
         body["counts"],
         json!({"line": {"down": 5, "up": 2}, "shared": {"down": 1}})
     );
-    assert_eq!(body["trains"][7]["time"], json!({"time": "00:15", "dayOffset": 1}));
+    assert_eq!(
+        body["trains"][7]["time"],
+        json!({"time": "00:15", "dayOffset": 1})
+    );
     assert_eq!(body["trains"][2]["live"]["delayMinutes"], 5);
     assert_eq!(body["trains"][4]["serviceMode"], "replacementBus");
     assert_eq!(body["stations"][1]["role"], "junction");
@@ -696,8 +713,14 @@ async fn the_timetable_pages_and_filters_like_its_reference(pool: PgPool) {
         uids(&body),
         ["TT-D0600", "TT-D0800B", "TT-D0800A", "TT-LONG", "TT-NIGHT"]
     );
-    assert_eq!(body["trains"][1]["time"], json!({"time": "08:25", "dayOffset": 0}));
-    assert_eq!(body["trains"][1]["arrival"], json!({"time": "10:30", "dayOffset": 0}));
+    assert_eq!(
+        body["trains"][1]["time"],
+        json!({"time": "08:25", "dayOffset": 0})
+    );
+    assert_eq!(
+        body["trains"][1]["arrival"],
+        json!({"time": "10:30", "dayOffset": 0})
+    );
     assert_eq!(body["from"], "WOK");
     let (_, body) = get(
         &app,
