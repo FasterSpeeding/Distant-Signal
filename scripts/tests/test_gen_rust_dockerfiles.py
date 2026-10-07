@@ -61,12 +61,12 @@ class RenderTests(unittest.TestCase):
                     bins = re.findall(r"--bin (\S+)", flags)
                     self.assertEqual(tuple(bins), tuple(gen.SERVICES[service]))
 
-    def test_api_ships_its_five_binaries(self) -> None:
-        """Api cooks, builds and copies out all five binaries."""
+    def test_api_ships_its_seven_binaries(self) -> None:
+        """Api cooks, builds and copies out all seven binaries."""
         block = gen.render("api")
         for name in gen.SERVICES["api"]:
             self.assertIn(f"/usr/local/bin/{name} ", block)
-        self.assertEqual(len(gen.SERVICES["api"]), 5)
+        self.assertEqual(len(gen.SERVICES["api"]), 7)
 
     def test_no_target_cache_mount(self) -> None:
         """A target/ cache mount would leave the cook layer empty."""
