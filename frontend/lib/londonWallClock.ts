@@ -101,6 +101,14 @@ export function londonDayEndIso(dateOnly: string): string {
   return new Date(londonMidnight(next).getTime() - 1).toISOString();
 }
 
+/** `dateOnly` (`'YYYY-MM-DD'`) moved by `days` calendar days, as
+ * `'YYYY-MM-DD'`. Date-only arithmetic in UTC, which has no clock changes,
+ * so the result is the same whatever the host zone (the technique
+ * `londonDayEndIso` above uses). */
+export function addCalendarDays(dateOnly: string, days: number): string {
+  return dayjs.utc(dateOnly).add(days, 'day').format('YYYY-MM-DD');
+}
+
 /** London's 00:00 at the start of `dateOnly`. London's clocks change at
  * 01:00 UTC, never at midnight, so this wall-clock time always exists and
  * is never ambiguous. */

@@ -183,9 +183,18 @@ struct StationDeparturesParams {
 /// split: 404 when no row exists for `(crs, today)` at all (this station
 /// isn't in `stanox_crs`, or today's cycle simply hasn't published yet);
 /// `200 []` when a row exists but its `now`-forward filter left nothing.
+///
+/// **`?date=YYYY-MM-DD`** (optional, 2026-10-07) serves another London
+/// service date's bucket instead of today's. Only today and yesterday are
+/// accepted (anything else is a `400`): yesterday exists so a caller between
+/// London midnight and the 02:00 rail-day rollover can still see the
+/// previous evening's services that call here after midnight (its rows with
+/// `dayOffset >= 1`). Every row in a response carries the requested date as
+/// its service date; `dayOffset` is relative to it.
 async fn get_station_schedule_departures(
     State(app): State<App>,
     Path(crs): Path<String>,
+    Query(params): Query<ScheduleDeparturesParams>,
 ) -> Result<Json<Vec<Value>>, (StatusCode, String)> {
     // `today` is London-local, not UTC -- see `routes::trains`'s
     // `london_now`/`today` split (baa4e75) for the original incident this
@@ -195,9 +204,11 @@ async fn get_station_schedule_departures(
     // day. `schedule_network_departures` is keyed by London rail-day date,
     // never UTC, so the lookup key must be computed the same way.
     let today = super::london_today();
-    let Some(departures) = queries::latest_schedule_network_departures(&app.database, &crs, today)
-        .await
-        .map_err(internal_error)?
+    let service_date = schedule_departures_date(params.date, today)?;
+    let Some(departures) =
+        queries::latest_schedule_network_departures(&app.database, &crs, service_date)
+            .await
+            .map_err(internal_error)?
     else {
         return Err((
             StatusCode::NOT_FOUND,
@@ -222,8 +233,33 @@ async fn get_station_schedule_departures(
         .iter()
         .map(|d| schedule_departure_json(d, &destination_names))
         .collect();
-    crate::data::schedule_services::annotate_uid_rows(&app.database, today, &mut rendered).await;
+    crate::data::schedule_services::annotate_uid_rows(&app.database, service_date, &mut rendered)
+        .await;
     Ok(Json(rendered))
+}
+
+/// Query string of [`get_station_schedule_departures`]. Unknown keys are
+/// ignored, as for [`StationDeparturesParams`].
+#[derive(Debug, Deserialize)]
+struct ScheduleDeparturesParams {
+    date: Option<chrono::NaiveDate>,
+}
+
+/// The bucket [`get_station_schedule_departures`] serves: `today` when no
+/// `date` was asked for, the asked-for date when it is today or yesterday,
+/// otherwise a `400`.
+fn schedule_departures_date(
+    requested: Option<chrono::NaiveDate>,
+    today: chrono::NaiveDate,
+) -> Result<chrono::NaiveDate, (StatusCode, String)> {
+    match requested {
+        None => Ok(today),
+        Some(date) if date == today || today.pred_opt() == Some(date) => Ok(date),
+        Some(date) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("date must be today ({today}) or yesterday, got: {date}"),
+        )),
+    }
 }
 
 #[expect(
@@ -999,5 +1035,82 @@ mod db_tests {
         );
 
         delete_schedule_departures_fixture(&pool, "ZRB").await;
+    }
+
+    #[test]
+    fn schedule_departures_date_accepts_only_today_and_yesterday() {
+        let today: chrono::NaiveDate = "2026-10-07".parse().unwrap();
+        assert_eq!(schedule_departures_date(None, today), Ok(today));
+        assert_eq!(schedule_departures_date(Some(today), today), Ok(today));
+        let yesterday: chrono::NaiveDate = "2026-10-06".parse().unwrap();
+        assert_eq!(
+            schedule_departures_date(Some(yesterday), today),
+            Ok(yesterday)
+        );
+        for rejected in ["2026-10-05", "2026-10-08"] {
+            let (status, _) =
+                schedule_departures_date(Some(rejected.parse().unwrap()), today).unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                schedule_departures -- --ignored --test-threads=1`"]
+    async fn schedule_departures_date_param_serves_yesterdays_bucket_and_rejects_older() {
+        // The /track picker asks for yesterday's bucket between London
+        // midnight and 02:00, for the previous evening's services that call
+        // here after midnight (`dayOffset >= 1`).
+        let pool = connect().await;
+        delete_schedule_departures_fixture(&pool, "ZRC").await;
+
+        let today = crate::routes::london_today();
+        let yesterday = today.pred_opt().unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_network_departures (crs, service_date, departures) VALUES ('ZRC', $1, $2)",
+        )
+        .bind(yesterday)
+        .bind(serde_json::json!([
+            {"uid": "F49687", "scheduled": "00:50:00", "day_offset": 1, "destination_crs": "SNF"},
+        ]))
+        .execute(&pool)
+        .await
+        .expect("seed yesterday's fixture row");
+
+        let get = |uri: String| {
+            let router: axum::Router = Router::new()
+                .merge(router())
+                .with_state(test_app(pool.clone()));
+            async move {
+                router
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let response = get(format!(
+            "/stations/ZRC/schedule-departures?date={yesterday}"
+        ))
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json[0]["uid"], "F49687");
+        assert_eq!(json[0]["dayOffset"], 1);
+
+        // No `date`: still today's bucket only, which has no row here.
+        let response = get("/stations/ZRC/schedule-departures".to_string()).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let older = yesterday.pred_opt().unwrap();
+        let response = get(format!("/stations/ZRC/schedule-departures?date={older}")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = get("/stations/ZRC/schedule-departures?date=not-a-date".to_string()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        delete_schedule_departures_fixture(&pool, "ZRC").await;
     }
 }

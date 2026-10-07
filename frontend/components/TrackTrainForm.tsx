@@ -28,7 +28,7 @@ import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
-import { nowInLondon, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
+import { addCalendarDays, nowInLondon, londonToday, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
 import type { BoardCallingPoint, CreateJourneyResponse } from '@/lib/types';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
@@ -173,11 +173,21 @@ function resolveLdbwsDepartureDate(scheduled: string, now: dayjs.Dayjs): string 
  * relative to a same-day `scheduledDeparture`, and be silently filtered out
  * of the picker entirely -- never even reachable to click, regardless of
  * how `pickCifDeparture`/`pickDeparture` themselves compute the date once
- * picked. */
-function matchesScheduledDeparture(rowScheduled: string, scheduledDeparture: string | null, rowDayOffset = 0): boolean {
+ * picked.
+ *
+ * `baseDate` (`'YYYY-MM-DD'`) is the day `rowDayOffset` counts from,
+ * London's today by default. The CIF call site passes the row's own
+ * `serviceDate` (see `CifPickerRow`), which is what its `dayOffset` is
+ * relative to. */
+function matchesScheduledDeparture(
+  rowScheduled: string,
+  scheduledDeparture: string | null,
+  rowDayOffset = 0,
+  baseDate: string = londonToday(),
+): boolean {
   if (scheduledDeparture === null) return true;
   const [hh, mm] = rowScheduled.split(':');
-  const date = nowInLondon().add(rowDayOffset, 'day').format('YYYY-MM-DD');
+  const date = addCalendarDays(baseDate, rowDayOffset);
   const rowDateTime = `${date} ${hh}:${mm}:00`;
   return rowDateTime >= scheduledDeparture;
 }
@@ -243,8 +253,14 @@ interface DepartureRow {
  * (see `schedule_query::resolve`'s own `f49687_raw` doc comment for the
  * live-confirmed c2c Liverpool Street -> Shoeburyness example this exists
  * for). Almost always `0`. `pickCifDeparture` and `matchesScheduledDeparture`
- * both use this to compute the row's REAL calendar date instead of always
- * assuming "today" -- see their own doc comments. */
+ * both use this to compute the row's REAL departure calendar date instead of
+ * always assuming "today" -- see their own doc comments.
+ *
+ * It never moves the row's SERVICE date: every row in one response belongs
+ * to the same CIF service date (the bucket's, `Picker`'s `serviceDate`), and
+ * the `/train/{uid}/{date}` link is keyed on that, not on the departure's
+ * own day. Optional because an `api` pod from before the field existed
+ * (rolled independently of `frontend`) omits it; absent means `0`. */
 interface ScheduleDepartureRow {
   uid: string;
   scheduled: string;
@@ -264,9 +280,89 @@ interface ScheduleDepartureRow {
 
 /** `'unavailable'` replaces the old `'not-sampled'` name: it now means
  * neither the LDBWS live board NOR the CIF-derived timetable had data for
- * this station -- see Decision 3/5. */
-type Picker =
-  { source: 'ldbws'; rows: DepartureRow[] } | { source: 'cif'; rows: ScheduleDepartureRow[] } | 'unavailable' | null;
+ * this station -- see Decision 3/5.
+ *
+ * Each CIF row carries the `serviceDate` of the bucket it was fetched from
+ * (`CifPickerRow`). */
+type Picker = { source: 'ldbws'; rows: DepartureRow[] } | { source: 'cif'; rows: CifPickerRow[] } | 'unavailable' | null;
+
+/** A CIF picker row plus its CIF service date: the London date of the
+ * `schedule-departures` bucket it came from (`?date=`, or the server's own
+ * `london_today()` when absent). A row's own departure day is
+ * `serviceDate + dayOffset`; its `/train/{uid}/{date}` link uses
+ * `serviceDate`. Captured at fetch time rather than re-read from the clock
+ * at render, so a picker fetched at 23:59 doesn't relabel every row a day
+ * later once London midnight passes. Between 00:00 and 02:00 the picker
+ * also holds rows from yesterday's bucket, see `fetchCifPickerRows`. */
+type CifPickerRow = ScheduleDepartureRow & { serviceDate: string };
+
+/** London hour before which the CIF picker also shows yesterday's services
+ * still due here -- this codebase's 02:00 rail-day rollover
+ * (`crates/common/src/rail_day.rs`). Until then, a service that left its
+ * origin last evening can still be on its way to this station. */
+const RAIL_DAY_ROLLOVER_HOUR = 2;
+
+/** The departure's own London wall-clock reading, `'YYYY-MM-DD HH:mm:00'`
+ * -- the same string shape `scheduledDeparture` holds. */
+function cifDepartureDateTime(row: CifPickerRow): string {
+  const [hh, mm] = row.scheduled.split(':');
+  return `${addCalendarDays(row.serviceDate, row.dayOffset ?? 0)} ${hh}:${mm}:00`;
+}
+
+/** The `schedule-departures` rows for `crs`, each tagged with its service
+ * date. Resolves to `'unavailable'` on today's `404`, `null` on any other
+ * failure of today's request -- the picker's existing contract.
+ *
+ * Between London 00:00 and 02:00 it also asks for yesterday's bucket
+ * (`?date=`) and adds its rows that depart after midnight (`dayOffset >= 1`)
+ * and not before now: last evening's services still due here, which
+ * today's bucket can't contain (a CIF service is dated by its origin day).
+ * Those rows keep yesterday as their service date. That request is
+ * best-effort: any failure just leaves them out. An `api` pod from before
+ * `?date=` ignores the parameter and answers with today's bucket, so an
+ * answer identical to today's is discarded rather than relabelled.
+ *
+ * The merged rows are put in departure order. Duplicates (same uid, service
+ * date and departure) are dropped; a service calling here twice keeps both
+ * calls, since those differ in departure. */
+async function fetchCifPickerRows(crs: string, signal: AbortSignal): Promise<CifPickerRow[] | 'unavailable' | null> {
+  const now = nowInLondon();
+  const today = now.format('YYYY-MM-DD');
+  const yesterday = addCalendarDays(today, -1);
+  const base = `/api/stations/${crs}/schedule-departures`;
+  const yesterdayRequest: Promise<ScheduleDepartureRow[] | null> =
+    now.hour() < RAIL_DAY_ROLLOVER_HOUR
+      ? fetch(`${base}?date=${yesterday}`, { signal })
+          .then((res) => (res.ok ? (res.json() as Promise<unknown>) : null))
+          .then((body) => (Array.isArray(body) ? (body as ScheduleDepartureRow[]) : null))
+          .catch(() => null)
+      : Promise.resolve(null);
+  const [todayRes, yesterdayRows] = await Promise.all([fetch(base, { signal }), yesterdayRequest]);
+  if (todayRes.status === 404) {
+    return 'unavailable';
+  }
+  if (!todayRes.ok) {
+    return null;
+  }
+  const todayRows = (await todayRes.json()) as ScheduleDepartureRow[];
+  const rows: CifPickerRow[] = todayRows.map((row) => ({ ...row, serviceDate: today }));
+  if (yesterdayRows === null || JSON.stringify(yesterdayRows) === JSON.stringify(todayRows)) {
+    return rows;
+  }
+  const nowWallClock = now.format('YYYY-MM-DD HH:mm:00');
+  const stillDue = yesterdayRows
+    .map((row): CifPickerRow => ({ ...row, serviceDate: yesterday }))
+    .filter((row) => (row.dayOffset ?? 0) >= 1 && cifDepartureDateTime(row) >= nowWallClock);
+  const seen = new Set<string>();
+  return [...stillDue, ...rows]
+    .filter((row) => {
+      const key = `${row.uid}|${row.serviceDate}|${cifDepartureDateTime(row)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => cifDepartureDateTime(a).localeCompare(cifDepartureDateTime(b)));
+}
 
 /** The v1 entry point for individual train tracking -- a manual form, not
  * a per-departure "track this train" action, per
@@ -553,21 +649,9 @@ export function TrackTrainForm({
           // switching sources on an error condition. Per
           // docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
           // Decision 3.
-          return fetch(`/api/stations/${crs}/schedule-departures`, { signal: controller.signal }).then((cifRes) => {
-            if (cifRes.status === 404) {
-              setPickerLoading(false);
-              setPicker('unavailable');
-              return;
-            }
-            if (!cifRes.ok) {
-              setPickerLoading(false);
-              setPicker(null);
-              return;
-            }
-            return cifRes.json().then((rows: ScheduleDepartureRow[]) => {
-              setPickerLoading(false);
-              setPicker({ source: 'cif', rows });
-            });
+          return fetchCifPickerRows(crs, controller.signal).then((rows) => {
+            setPickerLoading(false);
+            setPicker(rows === 'unavailable' || rows === null ? rows : { source: 'cif', rows });
           });
         }
         if (!res.ok) {
@@ -630,15 +714,26 @@ export function TrackTrainForm({
    * Destination field is left untouched too, for the same "never guess,
    * never clobber with a blank" reason.
    *
-   * Adds `row.dayOffset` days to *today's Europe/London* date
-   * (`nowInLondon()`, not `dayjs()` -- 2026-09-26 review, finding M8: this
-   * feeds `scheduledDeparture`/`serviceDate` directly, so "today" must mean
-   * the London calendar day, not the visitor's own browser zone), rather
-   * than always assuming "today" the way `pickDeparture` (LDBWS, below) still
-   * does -- a post-midnight CIF calling point (`dayOffset: 1`, e.g. `00:07`)
-   * is genuinely TOMORROW relative to when the search itself ran, and
-   * combining it with bare "today" would create a pin dated the WRONG
-   * calendar day (see `ScheduleDepartureRow.dayOffset`'s own doc comment).
+   * Adds `row.dayOffset` days to the row's own `serviceDate` (a
+   * Europe/London date -- 2026-09-26 review, finding M8 -- captured at fetch
+   * time, see `CifPickerRow`), rather than always assuming "today" the way
+   * `pickDeparture` (LDBWS, below) still does -- a post-midnight CIF calling
+   * point (`dayOffset: 1`, e.g. `00:07`) is genuinely TOMORROW relative to
+   * the schedule's service date, and combining it with bare "today" would
+   * create a pin with the wrong departure instant (see
+   * `ScheduleDepartureRow.dayOffset`'s own doc comment).
+   *
+   * The pin's `serviceDate` (the first ten characters of this value, see
+   * `submitTrack`) is therefore the DEPARTURE's London calendar day, not the
+   * CIF service date the row's `/train` link uses. That is deliberate and
+   * is the backend's documented pin contract: a pin is matched by station +
+   * instant, and `ds_store::sweeps::schedule_matching::find_schedule_match`
+   * also searches the previous day's overnight schedules for exactly this
+   * case, keying the matched train on the schedule's own date. The same
+   * contract covers LDBWS and manual pins, which have no service date to
+   * send. A row from yesterday's bucket (00:00-02:00, see
+   * `fetchCifPickerRows`) departs today and so is pinned with today.
+   *
    * `pickDeparture` (LDBWS, above) has the analogous fix,
    * `resolveLdbwsDepartureDate` -- `DepartureRow` still carries no day-offset
    * FIELD (Darwin's live board has no CIF-schedule linkage to derive one
@@ -646,7 +741,7 @@ export function TrackTrainForm({
    * straight off the row, LDBWS instead INFERS it from a bounded-look-ahead
    * heuristic -- see that function's own doc comment for why that's
    * reliable for this specific data source. */
-  function pickCifDeparture(row: ScheduleDepartureRow) {
+  function pickCifDeparture(row: CifPickerRow) {
     if (row.destinationCrs !== null) setDestinationCrs(row.destinationCrs);
     // The CIF SCHEDULE feed has no per-service skip signal at all (Decision
     // 2) -- clears any snapshot a previously-picked LDBWS row may have left
@@ -656,15 +751,7 @@ export function TrackTrainForm({
     setSkippedStations([]);
     setPlatform(null);
     setPlannedPlatform(null);
-    const [hh, mm] = row.scheduled.split(':');
-    // `?? 0`: defends against an old `api` pod (a separate Helm Deployment,
-    // rolled independently of `frontend`) omitting `dayOffset` from the JSON
-    // entirely during a rollout, which would otherwise reach dayjs as
-    // `undefined` and produce an Invalid Date.
-    const date = nowInLondon()
-      .add(row.dayOffset ?? 0, 'day')
-      .format('YYYY-MM-DD');
-    setScheduledDeparture(`${date} ${hh}:${mm}:00`);
+    setScheduledDeparture(cifDepartureDateTime(row));
   }
 
   /** The real submit -- does the `POST /api/Train/track` call and every
@@ -1083,7 +1170,7 @@ export function TrackTrainForm({
     const filtered = picker.rows.filter(
       (row) =>
         matchesDestination(row.destinationCrs, destinationCrs) &&
-        matchesScheduledDeparture(row.scheduled, scheduledDeparture, row.dayOffset),
+        matchesScheduledDeparture(row.scheduled, scheduledDeparture, row.dayOffset, row.serviceDate),
     );
     return (
       <>
@@ -1148,21 +1235,18 @@ export function TrackTrainForm({
                     remains a normal, independently tab-reachable focus
                     stop -- only the *bubbling into the row* is stopped.
 
-                    The linked date is `row.dayOffset` days past today, not
-                    a single hoisted "today" shared by every row -- the
-                    public train page is keyed by `(train_uid,
-                    service_date)`, and a post-midnight row's real
-                    service_date is tomorrow, not today (same reasoning as
-                    `pickCifDeparture` itself). `nowInLondon()`, not
-                    `dayjs()` -- `service_date` is a London calendar day, so
-                    "today" here must mean London's, not the visitor's own
-                    browser zone (2026-09-26 review, finding M8: this is the
-                    exact `/train/{uid}/{date}` link that finding's own
-                    motivating example describes). */}
+                    The linked date is the row's own `serviceDate`, with no `row.dayOffset` added: the public train
+                    page is keyed by `(train_uid, service_date)`, the CIF
+                    date the service left its origin, and `dayOffset` only
+                    moves a row's departure past midnight, never its
+                    service date. A service leaving its origin at 23:30 on
+                    D and calling here at 00:20 (`dayOffset: 1`) is D's
+                    run; D+1 would be the next night's run of the same uid,
+                    or a 404. `serviceDate` is a London date captured at
+                    fetch time (2026-09-26 review, finding M8; see
+                    `CifPickerRow`). */}
                 <TextLink
-                  href={`/train/${encodeURIComponent(row.uid)}/${nowInLondon()
-                    .add(row.dayOffset ?? 0, 'day')
-                    .format('YYYY-MM-DD')}`}
+                  href={`/train/${encodeURIComponent(row.uid)}/${row.serviceDate}`}
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                 >
