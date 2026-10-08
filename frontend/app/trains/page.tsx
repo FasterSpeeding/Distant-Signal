@@ -1,6 +1,7 @@
 import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { TrainSearchForm } from '@/components/TrainSearchForm';
+import { getAllTocs } from '@/lib/api';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -99,6 +100,12 @@ export default async function TrainsPage({
   const arrivalToParam = Array.isArray(arrivalTo) ? arrivalTo[0] : arrivalTo;
   const ticketIdParam = Array.isArray(ticketId) ? ticketId[0] : ticketId;
   const attachTicketId = ticketIdParam && /^\d+$/.test(ticketIdParam) ? Number(ticketIdParam) : undefined;
+  // Names each result row's operator, from the same hour-cached TOC list
+  // `app/stations/[crs]/page.tsx` fetches. If the list fails to load (or
+  // comes back empty) the rows carry no operator at all, rather than a
+  // bare ATOC code.
+  const tocs = await getAllTocs().catch(() => []);
+  const operatorNames = tocs.length > 0 ? Object.fromEntries(tocs.map((toc) => [toc.code, toc.name])) : undefined;
 
   return (
     <Stack p="lg" gap="md">
@@ -118,6 +125,7 @@ export default async function TrainsPage({
         initialArrivalFrom={arrivalFromParam}
         initialArrivalTo={arrivalToParam}
         attachTicketId={attachTicketId}
+        operatorNames={operatorNames}
       />
     </Stack>
   );

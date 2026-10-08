@@ -87,6 +87,7 @@ function searchBody(
     destinationCrs: string | null;
     destinationName?: string | null;
     destinationArrival?: string | null;
+    operator?: string | null;
   }[],
   nextCursor: string | null = null,
 ) {
@@ -516,6 +517,33 @@ describe('TrainSearchForm', () => {
     // No live state from this backend yet: every row reads "Scheduled".
     expect(first.closest('li')).toHaveTextContent('Scheduled');
     expect(screen.getByRole('link', { name: rowName('10:05', 'WAT') }).closest('li')).toHaveTextContent('From CRE');
+  });
+
+  it("names each row's operator from operatorNames on its details line", async () => {
+    const rows = [
+      { uid: 'C10001', scheduled: '08:22', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT', operator: 'GW' },
+    ];
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody(rows), { status: 200 }) }));
+    renderWithMantine(<TrainSearchForm initialStation="MAN" operatorNames={{ GW: 'Great Western Railway' }} />);
+
+    await clickSearch();
+
+    const row = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(row.closest('li')).toHaveTextContent('From EUS · Great Western Railway (GW)');
+  });
+
+  it('shows no operator on the details line without operatorNames', async () => {
+    const rows = [
+      { uid: 'C10001', scheduled: '08:22', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT', operator: 'GW' },
+    ];
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody(rows), { status: 200 }) }));
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    await clickSearch();
+
+    const row = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(row.closest('li')).toHaveTextContent('From EUS');
+    expect(row.closest('li')).not.toHaveTextContent('GW');
   });
 
   // Regression: `destinationCrs` used to be the ONLY thing this row could

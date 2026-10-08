@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type SubmitEvent } from 'react';
+import { useEffect, useMemo, useState, type SubmitEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
@@ -173,7 +173,11 @@ function resolvedDate(rawDate: string): string {
  * for the same time-range pair.
  *
  * Fetches through the same-origin `/api/*` proxy, like every other Client
- * Component in this app (`API_BASE_URL` is server-only). */
+ * Component in this app (`API_BASE_URL` is server-only).
+ *
+ * `operatorNames` (ATOC code to name, from the page's TOC list, as on
+ * `StationTimetable`) names each result row's operator; without it the
+ * row's details line carries no operator. */
 export function TrainSearchForm({
   initialStation = '',
   initialOrigin = '',
@@ -184,6 +188,7 @@ export function TrainSearchForm({
   initialArrivalFrom = '',
   initialArrivalTo = '',
   attachTicketId,
+  operatorNames,
 }: {
   initialStation?: string | undefined;
   initialOrigin?: string | undefined;
@@ -194,8 +199,13 @@ export function TrainSearchForm({
   initialArrivalFrom?: string | undefined;
   initialArrivalTo?: string | undefined;
   attachTicketId?: number | undefined;
+  operatorNames?: Readonly<Record<string, string>> | undefined;
 }) {
   const router = useRouter();
+  const operatorLookup = useMemo(
+    () => (operatorNames ? new Map(Object.entries(operatorNames)) : undefined),
+    [operatorNames],
+  );
   const pathname = usePathname();
   const [stationCrs, setStationCrs] = useState(initialStation);
   const [originCrs, setOriginCrs] = useState(initialOrigin);
@@ -554,7 +564,7 @@ export function TrainSearchForm({
               date={displayDate}
               timeOverride={searchRowTime(row)}
               dayOffset={row.dayOffset}
-              details={searchRowDetails(row)}
+              details={searchRowDetails(row, operatorLookup)}
               actions={
                 <TrackThisTrainButton
                   uid={row.uid}
