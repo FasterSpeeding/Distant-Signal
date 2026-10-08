@@ -42,7 +42,16 @@ async fn run() -> anyhow::Result<()> {
 
     let database_url =
         std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
-    let pool = PgPoolOptions::new().connect(&database_url).await?;
+    let pool = common::startup::retry_until_ready_within(
+        "postgres",
+        common::startup::CONNECT_BACKOFF,
+        common::startup::connect_deadline_from_env(
+            common::startup::BACKFILL_CONNECT_DEADLINE_ENV,
+            common::startup::DEFAULT_CONNECT_DEADLINE,
+        )?,
+        || PgPoolOptions::new().connect(&database_url),
+    )
+    .await?;
 
     let report = api::data::legacy_backfill::run_backfill(&pool).await?;
 

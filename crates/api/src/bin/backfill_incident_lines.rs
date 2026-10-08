@@ -68,7 +68,16 @@ async fn run() -> anyhow::Result<()> {
     println!("loaded {} line definitions from {lines_dir}", lines.len());
 
     let matcher = LineMatcher::new(&lines);
-    let pool = PgPoolOptions::new().connect(&database_url).await?;
+    let pool = common::startup::retry_until_ready_within(
+        "postgres",
+        common::startup::CONNECT_BACKOFF,
+        common::startup::connect_deadline_from_env(
+            common::startup::BACKFILL_CONNECT_DEADLINE_ENV,
+            common::startup::DEFAULT_CONNECT_DEADLINE,
+        )?,
+        || PgPoolOptions::new().connect(&database_url),
+    )
+    .await?;
 
     let report = api::data::incident_line_backfill::run_backfill(&pool, &matcher).await?;
 

@@ -50,10 +50,20 @@ async fn run() -> anyhow::Result<()> {
     );
     println!("loaded {} line definitions from {lines_dir}", lines.len());
 
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&database_url)
-        .await?;
+    let pool = common::startup::retry_until_ready_within(
+        "postgres",
+        common::startup::CONNECT_BACKOFF,
+        common::startup::connect_deadline_from_env(
+            common::startup::BACKFILL_CONNECT_DEADLINE_ENV,
+            common::startup::DEFAULT_CONNECT_DEADLINE,
+        )?,
+        || {
+            PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&database_url)
+        },
+    )
+    .await?;
     let keys: Vec<(String, chrono::NaiveDate)> = sqlx::query_as(
         "SELECT line_id, service_date FROM schedule_line_population ORDER BY service_date, line_id",
     )
