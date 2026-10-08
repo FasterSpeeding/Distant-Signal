@@ -532,11 +532,13 @@ fn out_of_range_message(
 /// `GET /public/trains/search` accepts, for a client to check before it
 /// searches.
 ///
-/// `200 {"from", "to", "publishedFrom", "publishedTo"}`: `from`/`to`
-/// (`"YYYY-MM-DD"`, inclusive) bound what the search accepts (a date
-/// outside is a `400`); `publishedFrom`/`publishedTo` bound the dates the
-/// timetable holds rows for (`null` when it holds none). A date inside
+/// `200 {"from", "to", "publishedFrom", "publishedTo", "provisionalFrom"}`:
+/// `from`/`to` (`"YYYY-MM-DD"`, inclusive) bound what the search accepts (a
+/// date outside is a `400`); `publishedFrom`/`publishedTo` bound the dates
+/// the timetable holds rows for (`null` when it holds none). A date inside
 /// `from..=to` with no rows of its own is a `404` from the search.
+/// `provisionalFrom` (2026-10-08) is the first date whose timetable is
+/// provisional (see `routes::provisional`); it may lie past `to`.
 async fn get_trains_search_dates(
     State(app): State<App>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
@@ -550,6 +552,7 @@ async fn get_trains_search_dates(
         "to": to,
         "publishedFrom": published.map(|(earliest, _)| earliest),
         "publishedTo": published.map(|(_, latest)| latest),
+        "provisionalFrom": crate::routes::provisional::provisional_from(today),
     })))
 }
 
@@ -812,10 +815,17 @@ async fn get_trains_search(
     crate::routes::schedule_rows::attach_live(&app.database, service_date, &mut results).await;
     crate::data::schedule_services::annotate_uid_rows(&app.database, service_date, &mut results)
         .await;
-    Ok(Json(json!({
+    let mut body = json!({
         "results": results,
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
-    })))
+    });
+    // Additive (2026-10-08): whether `service_date`'s timetable is still
+    // provisional -- once per response, since every row shares the date.
+    if let Some(object) = body.as_object_mut() {
+        crate::routes::provisional::TimetableCertainty::for_date(service_date, today)
+            .insert_into(object);
+    }
+    Ok(Json(body))
 }
 
 /// The four `stopsAt*` fields of a search row, present only when the
@@ -2318,6 +2328,39 @@ mod db_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         delete_days(&pool, &[far]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_marks_a_date_past_the_provisional_horizon_provisional() {
+        let (pool, _guards) = connect().await;
+        let today = crate::routes::london_today();
+        let horizon = crate::routes::provisional::DEFAULT_PROVISIONAL_AFTER_DAYS;
+        let firm = today + chrono::Duration::days(horizon);
+        let provisional = firm + chrono::Duration::days(1);
+        let far = today + chrono::Duration::days(FAR_DAYS);
+        delete_days(&pool, &[firm, provisional, far]).await;
+        seed_one_departure(&pool, firm, "C60011").await;
+        seed_one_departure(&pool, provisional, "C60012").await;
+        seed_one_departure(&pool, far, "C60013").await;
+
+        for (date, expected) in [(firm, false), (provisional, true), (far, true)] {
+            let (status, body) =
+                get(&pool, &format!("/trains/search?station=ZRB&date={date}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let json: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(json["provisional"], expected, "{date}: {json}");
+            assert_eq!(json["provisionalFrom"], provisional.to_string(), "{json}");
+            assert_eq!(json["results"].as_array().map(Vec::len), Some(1), "{json}");
+        }
+
+        let (status, body) = get(&pool, "/trains/search/dates").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["provisionalFrom"], provisional.to_string(), "{json}");
+
+        delete_days(&pool, &[firm, provisional, far]).await;
     }
 
     #[test]

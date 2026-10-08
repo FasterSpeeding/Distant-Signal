@@ -924,10 +924,13 @@ async fn post_tracked_train_name(
 /// which matches the board's Retail Service ID (`rsid`) against the CIF
 /// timetable exactly, falling back to a time/destination/operator match --
 /// see `routes::departures::get_station_departures`'s doc comment.
+///
+/// Additive (2026-10-08): the body also carries `provisional` and
+/// `provisionalFrom` for `date` -- see [`PublicTrainResponse`].
 async fn get_by_uid_and_date(
     State(app): State<App>,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
-) -> Result<Json<crate::data::trains::PublicTrainState>, (StatusCode, String)> {
+) -> Result<Json<PublicTrainResponse>, (StatusCode, String)> {
     // 2026-09-26 review, Low finding 11: CIF's own convention (confirmed
     // against `schedule-reference`'s own fixtures/tests, e.g. `"C11052"`)
     // is an uppercase `train_uid` -- every `trains`/schedule row this app
@@ -1000,15 +1003,34 @@ async fn get_by_uid_and_date(
             let state =
                 crate::data::train_operator::attach_to_public_state(&app.database, state).await;
             let state = attach_journey_stops_public(&app, state).await;
-            Ok(Json(
-                crate::data::train_reasons::attach_to_public_state(&app.database, state).await,
-            ))
+            Ok(Json(PublicTrainResponse {
+                state: crate::data::train_reasons::attach_to_public_state(&app.database, state)
+                    .await,
+                certainty: crate::routes::provisional::TimetableCertainty::for_date(
+                    date,
+                    super::london_today(),
+                ),
+            }))
         }
         None => Err((
             StatusCode::NOT_FOUND,
             "no known train for that uid/date".to_string(),
         )),
     }
+}
+
+/// `GET /Train/by-uid/{uid}/{date}`'s body: the [`PublicTrainState`]
+/// fields, plus `provisional`/`provisionalFrom` for the service date
+/// (2026-10-08, see `routes::provisional`). Flattened, so the existing
+/// fields keep their names and place.
+///
+/// [`PublicTrainState`]: crate::data::trains::PublicTrainState
+#[derive(Debug, Serialize)]
+struct PublicTrainResponse {
+    #[serde(flatten)]
+    state: crate::data::trains::PublicTrainState,
+    #[serde(flatten)]
+    certainty: crate::routes::provisional::TimetableCertainty,
 }
 
 /// `trainsId` of a [`schedule_only_public_state`]: no `trains` row exists
@@ -4524,6 +4546,47 @@ mod db_tests {
         assert_eq!(body.get("delayMinutes").and_then(Value::as_i64), Some(12));
 
         cleanup_public_train(&pool, "TEST-PUBLIC-BY-UID").await;
+    }
+
+    /// `provisional`/`provisionalFrom` on the public train-detail route
+    /// (2026-10-08): with the clock pinned, a service date seven days out is
+    /// firm and one eight days out is provisional, and both carry the same
+    /// `provisionalFrom`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_marks -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_marks_a_far_service_date_provisional() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let _clock =
+            crate::routes::pin_london_now_for_tests("2026-08-28T12:00:00Z".parse().unwrap());
+        let firm: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let provisional: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+        cleanup_public_train(&pool, "TEST-PROV-FIRM").await;
+        cleanup_public_train(&pool, "TEST-PROV-FAR").await;
+        seed_public_train(&pool, "TEST-PROV-FIRM", firm).await;
+        seed_public_train(&pool, "TEST-PROV-FAR", provisional).await;
+
+        for (uid, date, expected) in [
+            ("TEST-PROV-FIRM", firm, false),
+            ("TEST-PROV-FAR", provisional, true),
+        ] {
+            let (status, body) = request(
+                test_router(test_app(pool.clone())),
+                format!("/Train/by-uid/{uid}/{date}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "response: {body:?}");
+            assert_eq!(body["provisional"], expected, "{uid}: {body:?}");
+            assert_eq!(body["provisionalFrom"], "2026-09-05", "{body:?}");
+            // The flattened state keeps its own fields alongside.
+            assert_eq!(body["trainUid"], uid);
+            assert_eq!(body["delayMinutes"], 12);
+        }
+
+        cleanup_public_train(&pool, "TEST-PROV-FIRM").await;
+        cleanup_public_train(&pool, "TEST-PROV-FAR").await;
     }
 
     /// `operatorCode`/`operatorName` on the public train-detail route: filled

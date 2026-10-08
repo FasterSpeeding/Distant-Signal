@@ -13,6 +13,7 @@ import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import type { ServiceModeFields, TrainSearchDates, TrainSearchPage, TrainSearchResult } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
+import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
@@ -74,7 +75,13 @@ function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {
  * replacing this whole object. The cursor is deliberately kept on failure --
  * it is still valid, so the retry the footer offers is a real one. */
 type Results =
-  | { rows: TrainSearchResult[]; nextCursor: string | null; date: string; loadMoreFailed: boolean }
+  | {
+      rows: TrainSearchResult[];
+      nextCursor: string | null;
+      date: string;
+      loadMoreFailed: boolean;
+      provisional: boolean;
+    }
   | 'unpublished'
   | 'error'
   | null;
@@ -84,9 +91,13 @@ type Results =
  * early-return guard plus each of its functional `setResults` updaters need
  * this exact three-way check, and spelling it out at every call site invited
  * the copies to drift apart. */
-function hasRows(
-  results: Results,
-): results is { rows: TrainSearchResult[]; nextCursor: string | null; date: string; loadMoreFailed: boolean } {
+function hasRows(results: Results): results is {
+  rows: TrainSearchResult[];
+  nextCursor: string | null;
+  date: string;
+  loadMoreFailed: boolean;
+  provisional: boolean;
+} {
   return results !== null && results !== 'error' && results !== 'unpublished';
 }
 
@@ -354,6 +365,7 @@ export function TrainSearchForm({
         nextCursor: body.nextCursor,
         date: submittedDateValue || '',
         loadMoreFailed: false,
+        provisional: body.provisional === true,
       });
     } catch {
       setResults('error');
@@ -456,6 +468,7 @@ export function TrainSearchForm({
               nextCursor: body.nextCursor,
               date: current.date,
               loadMoreFailed: false,
+              provisional: current.provisional,
             }
           : current,
       );
@@ -517,6 +530,7 @@ export function TrainSearchForm({
     const displayDate = resolvedDate(results.date);
     return (
       <>
+        <ProvisionalTimetableNote provisional={results.provisional} />
         <Text size="sm" c="dimmed">
           Times are when each train leaves the station you searched, from the scheduled timetable, and may be up to 30
           minutes out of date. Open a train to see its live status.

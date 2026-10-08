@@ -256,6 +256,45 @@ describe('TrainSearchForm', () => {
     });
   });
 
+  describe('provisional timetable note', () => {
+    function provisionalBody(rows: typeof PAGE_ONE, nextCursor: string | null, provisional?: boolean) {
+      const body = JSON.parse(searchBody(rows, nextCursor)) as Record<string, unknown>;
+      return JSON.stringify(provisional === undefined ? body : { ...body, provisional, provisionalFrom: '2026-10-16' });
+    }
+
+    it('says the timetable may change when the search is provisional, and keeps it across Load more', async () => {
+      vi.stubGlobal(
+        'fetch',
+        mockFetchByUrl({
+          search: (url) =>
+            url.includes('after=CURSOR1')
+              ? new Response(provisionalBody(PAGE_TWO, null, true), { status: 200 })
+              : new Response(provisionalBody(PAGE_ONE, 'CURSOR1', true), { status: 200 }),
+        }),
+      );
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      await clickSearch();
+      await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+      expect(screen.getByText('Timetable may change')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+      await screen.findByRole('link', { name: rowName('11:40', 'WAT') });
+      expect(screen.getByText('Timetable may change')).toBeInTheDocument();
+    });
+
+    it.each([false, undefined])('shows no note when provisional is %s', async (provisional) => {
+      vi.stubGlobal(
+        'fetch',
+        mockFetchByUrl({ search: () => new Response(provisionalBody(PAGE_ONE, null, provisional), { status: 200 }) }),
+      );
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+      await clickSearch();
+      await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+      expect(screen.queryByText('Timetable may change')).not.toBeInTheDocument();
+    });
+  });
+
   it('omits date from the search request when no date is picked', async () => {
     const fetchMock = mockFetchByUrl();
     vi.stubGlobal('fetch', fetchMock);

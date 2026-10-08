@@ -100,6 +100,7 @@ describe('TrainsPage', () => {
         to: day(28),
         publishedFrom: day(-1),
         publishedTo: day(28),
+        provisionalFrom: day(8),
       });
       renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
       expect(screen.getByText('Search a different day, up to 7 days back and 28 days ahead.')).toBeInTheDocument();
