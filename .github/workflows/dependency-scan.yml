@@ -283,6 +283,17 @@ jobs:
                   body: `The daily dependency vulnerability scan failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean. Leaving this issue open: ${runUrl}`,
                 });
               }
+              // No tracking issue open: open one so a failed cron scan isn't
+              // silent.
+              if (openIssues.length === 0) {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: 'Dependency vulnerability scan failed (inconclusive)',
+                  body: `The daily dependency vulnerability scan failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean.\n\nWorkflow run: ${runUrl}`,
+                  labels: [label],
+                });
+              }
               core.warning(`Dependency scan job result was ${{ needs.scan.result }}; not treating it as clean.`);
               return;
             }
