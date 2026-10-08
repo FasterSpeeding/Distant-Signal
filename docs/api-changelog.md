@@ -3,6 +3,19 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-08: `GET /public/ready` and graceful shutdown
+
+- New `GET /public/ready`, the readiness probe: `200 {"status":"ready"}`,
+  or `503 {"status":"draining"}` while the pod is shutting down. Only with
+  `API_READINESS_CHECKS_DB=true` (default false; meant for 2+ replicas) it
+  also answers `503 {"status":"database_unreachable"}` when the database
+  did not answer `SELECT 1` within 2 s (checked at most every 5 s).
+  `Cache-Control: no-store`. `GET /public/health` is unchanged (liveness).
+- On shutdown the api finishes in-flight requests (up to
+  `API_SHUTDOWN_DRAIN_SECS`, default 20 s) instead of resetting them. A
+  keep-alive connection is closed after its current response, so a client
+  must reconnect for its next request, as on any closed connection.
+
 ## 2026-10-08: timetable data four weeks ahead
 
 DS now publishes its timetable products for today through today+28 (was
@@ -29,19 +42,6 @@ for lack of data now answer.
 - The window is a deployment setting (`SCHEDULE_FORWARD_PUBLISH_DAYS`,
   7-60, default 28). Dates past today+7 appear after the first delivery
   following the deploy (deliveries land around 20:00 UTC).
-
-## 2026-10-08: `GET /public/ready` and graceful shutdown
-
-- New `GET /public/ready`, the readiness probe: `200 {"status":"ready"}`,
-  or `503 {"status":"draining"}` while the pod is shutting down. Only with
-  `API_READINESS_CHECKS_DB=true` (default false; meant for 2+ replicas) it
-  also answers `503 {"status":"database_unreachable"}` when the database
-  did not answer `SELECT 1` within 2 s (checked at most every 5 s).
-  `Cache-Control: no-store`. `GET /public/health` is unchanged (liveness).
-- On shutdown the api finishes in-flight requests (up to
-  `API_SHUTDOWN_DRAIN_SECS`, default 20 s) instead of resetting them. A
-  keep-alive connection is closed after its current response, so a client
-  must reconnect for its next request, as on any closed connection.
 
 ## 2026-10-07: live status and origin names on the schedule lists
 
