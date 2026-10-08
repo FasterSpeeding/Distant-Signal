@@ -84,7 +84,7 @@ services:
       start_period: 5s
 
   redis:
-    image: redis:7@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f
+    image: redis:7.4.11@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -619,14 +619,14 @@ services:
     restart: "no"
 
   schedule-sftp:
-    # Pinned to the same v2.7.5 tag as charts/distant-signal/values.yaml's
+    # Pinned to the same v2.7.6 tag as charts/distant-signal/values.yaml's
     # scheduleFeed.sftp.image.tag (that value's own comment has the full
     # verification/citation) -- "tag pinning is an implementation-time
     # decision" from this comment's earlier revision is now resolved:
     # the chart's equivalent empty-tag default resolved to this chart's
     # own 0.1.0 appVersion, a tag drakkan/sftpgo never published, which is
     # what forced pinning a real version rather than deferring it further.
-    image: drakkan/sftpgo:v2.7.5@sha256:9011fe608d336d3daf6ed6224b16fd40443aab8f3335e0b20853d6a539c58738
+    image: drakkan/sftpgo:v2.7.6@sha256:1edd28d80de2a008863fbfc58c8ff7db47b1b410bae48d4e6076192337809b11
     restart: unless-stopped
     depends_on:
       schedule-feed-volume-permissions:
