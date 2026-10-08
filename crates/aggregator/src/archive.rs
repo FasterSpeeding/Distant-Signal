@@ -51,7 +51,8 @@
 //! date changes between the failed attempt and the retry (e.g. a
 //! subscription is added to a 14-day-old train), the retry's first id can
 //! differ, leaving the stale object behind; every row carries its primary
-//! key `id`, so an offline reader dedupes on it (`docs/cold-archive.md`).
+//! key (`id`, or `train_reasons`' `(trains_id, msg_type)`), so an offline
+//! reader dedupes on it (`docs/cold-archive.md`).
 
 use std::io::Write;
 use std::sync::Arc;

@@ -315,8 +315,9 @@ duplicated. One rare case can still leave a duplicate. It happens when the
 set of eligible trains for that date changes between the failed attempt
 and the retry, for example when someone subscribes to a 14-day-old train.
 The retry can then start at a different id and leave the stale object in
-place. Every row carries its primary key `id`, so readers should
-deduplicate on it (see below).
+place. Every row carries its primary key, so readers should
+deduplicate on it (see below). That key is `id`, except for `train_reasons`,
+whose key is `(trains_id, msg_type)`.
 
 **Metrics:**
 
@@ -324,12 +325,25 @@ deduplicate on it (see below).
 - `distant_signal_aggregator_archive_objects_total`
 - `distant_signal_aggregator_archive_upload_failures_total`
 - `distant_signal_aggregator_archive_batches_changed_total`
+- `distant_signal_aggregator_archive_cycles_total{cycle="trains",result}` and
+  `distant_signal_aggregator_archive_last_success_timestamp_seconds{cycle="trains"}`
+  (a cycle succeeds when it neither errors nor fails an upload; the gauge
+  starts at the aggregator's start time)
+- `distant_signal_aggregator_retention_errors_total{task}` (every retention
+  prune, `task="trains"` included, runs in its own error scope: one failing
+  never skips another)
 - `distant_signal_aggregator_retention_duration_seconds` (the whole retention pass)
 
-**Alert:** with `metrics.prometheusRule.enabled` and `archive.enabled`, the
-chart renders `DistantSignalArchiveUploadFailures`, which fires when at
-least `metrics.prometheusRule.archiveUploadFailures.minFailures` (3) batch
-uploads fail within its `window` (1h).
+**Alerts:** with `metrics.prometheusRule.enabled` and `archive.enabled`, the
+chart renders:
+
+- `DistantSignalArchiveUploadFailures`: at least
+  `metrics.prometheusRule.archiveUploadFailures.minFailures` (3) batch
+  uploads fail within its `window` (1h).
+- `DistantSignalArchiveStale`: no successful archive cycle for
+  `archiveStale.maxAgeSeconds` (6h).
+- `DistantSignalArchiveBatchChurn`: more than `archiveBatchChurn.threshold`
+  (10) batches changed before their delete within its `window` (6h).
 
 `distant_signal_aggregator_trains_rows_pruned_total` keeps its existing meaning.
 
