@@ -16,6 +16,11 @@
 //!    `STALE_PUSH_SUBSCRIPTION_DAYS`, `INACTIVE_ACCOUNT_RETENTION_DAYS`,
 //!    same defaults).
 //!
+//! It connects with the shared retry (`common::startup`), giving up after
+//! `MAINTENANCE_CONNECT_DEADLINE_SECS` (default 120): a fresh pod on a
+//! saturated node, or one whose `NetworkPolicy` is not programmed yet, would
+//! otherwise fail on its first 5 s acquire.
+//!
 //! Each step runs even if an earlier one failed, as in the loop. The exit
 //! status is 0 only if all three succeeded, so a failing step fails the
 //! Job. Every step is idempotent. The loop stays in the api, behind
@@ -45,6 +50,10 @@ struct Args {
     stale_push_subscription_days: i64,
     #[arg(long, env, default_value_t = 0)]
     inactive_account_retention_days: i64,
+    /// How long to keep retrying the first connection (a saturated node, a
+    /// late `NetworkPolicy`) before exiting non-zero. Seconds, at least 1.
+    #[arg(long, env, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..))]
+    maintenance_connect_deadline_secs: u64,
 }
 
 impl Args {
@@ -79,9 +88,16 @@ async fn run() -> anyhow::Result<()> {
         common::logging::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| common::logging::EnvFilter::new("info")),
     );
-    let pool = common::pg::PoolSettings::from_env(APPLICATION_NAME, DEFAULT_MAX_CONNECTIONS)?
-        .connect(args.database_url.expose())
-        .await?;
+    let settings = common::pg::PoolSettings::from_env(APPLICATION_NAME, DEFAULT_MAX_CONNECTIONS)?;
+    // Retried, within MAINTENANCE_CONNECT_DEADLINE_SECS: one 5 s acquire
+    // (DATABASE_ACQUIRE_TIMEOUT_SECS) is not enough on a saturated node.
+    let pool = common::startup::retry_until_ready_within(
+        "postgres",
+        common::startup::CONNECT_BACKOFF,
+        std::time::Duration::from_secs(args.maintenance_connect_deadline_secs),
+        || settings.connect(args.database_url.expose()),
+    )
+    .await?;
     let report = run_pass(&pool, args.retention_policy(), chrono::Utc::now()).await;
     pool.close().await;
     tracing::info!(
@@ -161,6 +177,31 @@ mod tests {
             };
             assert_eq!(find(&ours), find(&server), "{id}");
         }
+    }
+
+    /// The chart sets `MAINTENANCE_CONNECT_DEADLINE_SECS`
+    /// (`apiMaintenance.database.connectDeadlineSecs`, default 120); 0 is
+    /// refused rather than meaning "no wait at all".
+    #[test]
+    fn the_connect_deadline_reads_its_variable() {
+        let arg = Args::command()
+            .get_arguments()
+            .find(|arg| arg.get_id() == "maintenance_connect_deadline_secs")
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            arg.get_env(),
+            Some(std::ffi::OsStr::new("MAINTENANCE_CONNECT_DEADLINE_SECS"))
+        );
+        assert_eq!(arg.get_default_values(), ["120"]);
+        let url = "--database-url=postgres://unused";
+        let parsed =
+            Args::try_parse_from(["maintenance", url, "--maintenance-connect-deadline-secs=30"]);
+        assert_eq!(parsed.unwrap().maintenance_connect_deadline_secs, 30);
+        assert!(
+            Args::try_parse_from(["maintenance", url, "--maintenance-connect-deadline-secs=0"])
+                .is_err()
+        );
     }
 
     async fn count(pool: &sqlx::PgPool, sql: &str, key: &str) -> i64 {

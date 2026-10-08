@@ -46,10 +46,20 @@ async fn run() -> anyhow::Result<()> {
             .map_err(|err| anyhow::anyhow!("{raw:?} is not an RFC 3339 timestamp: {err}"))?,
         None => chrono::Utc::now() - chrono::Duration::hours(24),
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&database_url)
-        .await?;
+    let pool = common::startup::retry_until_ready_within(
+        "postgres",
+        common::startup::CONNECT_BACKOFF,
+        common::startup::connect_deadline_from_env(
+            common::startup::BACKFILL_CONNECT_DEADLINE_ENV,
+            common::startup::DEFAULT_CONNECT_DEADLINE,
+        )?,
+        || {
+            PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&database_url)
+        },
+    )
+    .await?;
     let report = ds_store::backlog::replay_uidless_backlog(&pool, since, CHUNK).await?;
     println!(
         "replayed {} uid-less backlog rows received since {since} ({} failed; re-run to retry them)",
