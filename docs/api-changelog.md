@@ -16,6 +16,31 @@ needs to know about. Newest first. Field names are as served (camelCase).
   keep-alive connection is closed after its current response, so a client
   must reconnect for its next request, as on any closed connection.
 
+## 2026-10-08: track trains four weeks ahead
+
+The tracking horizon follows the timetable window below: a train can now
+be tracked up to 28 days before it runs (was 7). No request or response
+shape changes.
+
+- `POST /Train/by-uid/{uid}/{date}/track`, `POST /Train/track` and a
+  `pin`-mode leg on `POST /Journeys` accept a date up to today+28
+  (London). Later dates are still `400`, now reading
+  `... trains can be tracked up to 28 days before they run.` A pin's
+  `scheduled_departure` may be up to 29 days after the request (the extra
+  day covers a service running past midnight).
+- A far pin is accepted as `resolutionStatus: "pending"` and normally
+  schedule-matches the day before it runs, when that date's line
+  timetable is published; nothing changes for the client in between.
+- Notifications are unchanged: a far tracked train is notified only for
+  real movement (delay, cancellation) and the same-day skip check.
+- The per-user cap of 100 upcoming tracked trains is unchanged; with the
+  longer window it covers more days ahead.
+- Unchanged: `GET /public/trains/resolve` keeps its 7-day window (it
+  resolves live departure-board rows, which never reach that far), and
+  `GET /public/trains/search` keeps its own window (see below).
+- `SCHEDULE_FORWARD_PUBLISH_DAYS` now accepts 28-60 (was 7-60): it can no
+  longer be set below the tracking horizon.
+
 ## 2026-10-08: timetable data four weeks ahead
 
 DS now publishes its timetable products for today through today+28 (was
@@ -32,15 +57,16 @@ for lack of data now answer.
   "any published date" change to `date` lands; from then on its range
   (and `GET /public/trains/search/dates`'s `publishedTo`) reaches
   today+28 with nothing else to change.
-- Unchanged: tracking a train (`/Train/by-uid/{uid}/{date}/track`, pins)
-  and `GET /public/trains/resolve` keep their 7-day forward limit.
+- Tracking a train (`/Train/by-uid/{uid}/{date}/track`, pins) now
+  reaches today+28 too: see "track trains four weeks ahead" above.
+  `GET /public/trains/resolve` keeps its 7-day forward limit.
 - A far date shows the timetable as planned at the latest daily
   delivery. Late changes (engineering-works replacements, cancellations)
   often reach the timetable only a few weeks ahead, so results for a
   date 2-4 weeks away can change between deliveries. Nothing in a
   response marks a row as provisional.
 - The window is a deployment setting (`SCHEDULE_FORWARD_PUBLISH_DAYS`,
-  7-60, default 28). Dates past today+7 appear after the first delivery
+  28-60 since the tracking change above, default 28). Dates past today+7 appear after the first delivery
   following the deploy (deliveries land around 20:00 UTC).
 
 ## 2026-10-07: live status and origin names on the schedule lists
