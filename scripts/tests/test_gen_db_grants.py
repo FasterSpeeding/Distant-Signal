@@ -278,15 +278,24 @@ class RenderTest(unittest.TestCase):
         # targets and the subscription lookup only.
         for table in ("trains", "train_movement_events", "notifier_forward_queue"):
             self.assertNotIn(table, tables("trust_consumer", "SELECT"))
-        for row in (
-            "('train_movement_events', 'trust_consumer', 'SELECT', 'trains_id,dedup_key')",
-            "('notifier_forward_queue', 'trust_consumer', 'SELECT', 'dedup_key')",
-            "('train_subscriptions', 'trust_consumer', 'SELECT', 'id,trains_id')",
-            "('train_subscriptions', 'trust_backlog', 'UPDATE', "
-            "'resolution_status,unresolved_from')",
-            "('schedule_feed_ingests', 'schedule_ingest', 'SELECT', 'delivered_at')",
+        for table, kind, privilege, columns in (
+            (
+                "train_movement_events",
+                "trust_consumer",
+                "SELECT",
+                "trains_id,dedup_key",
+            ),
+            ("notifier_forward_queue", "trust_consumer", "SELECT", "dedup_key"),
+            ("train_subscriptions", "trust_consumer", "SELECT", "id,trains_id"),
+            (
+                "train_subscriptions",
+                "trust_backlog",
+                "UPDATE",
+                "resolution_status,unresolved_from",
+            ),
+            ("schedule_feed_ingests", "schedule_ingest", "SELECT", "delivered_at"),
         ):
-            self.assertIn(row, sql)
+            self.assertIn(f"('{table}', '{kind}', '{privilege}', '{columns}')", sql)
         self.assertNotIn("train_movement_events", tables("trust_backlog", "UPDATE"))
         self.assertNotIn("train_subscriptions", tables("trust_backlog", "UPDATE"))
         # The writer (M1, L3): narrow, without the unused grants.
