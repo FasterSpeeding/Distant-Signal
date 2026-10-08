@@ -311,6 +311,12 @@ test.describe('accessibility: logged in', () => {
   test('/groups/join/[token]', async ({ page }) => {
     test.skip(!GROUP_INVITE_TOKEN, 'set E2E_GROUP_INVITE_TOKEN to a live invite token');
     await page.goto(`/groups/join/${GROUP_INVITE_TOKEN}`);
+    // The token must actually resolve: an unknown/expired one renders the
+    // (equally accessible) "Invite link not found" page, which is how this
+    // test kept passing while seed.sql's invite insert silently failed
+    // against the hashed `token_hash` column. Accepts both resolved
+    // branches -- anonymous ("Join X?") and already-a-member.
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(/^(Join .+\?|You[’']re already in .+)$/);
     await expectNoViolations(page);
   });
 

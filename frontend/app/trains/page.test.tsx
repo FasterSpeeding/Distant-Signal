@@ -1,10 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrainsPage, { metadata } from './page';
+import * as api from '@/lib/api';
 // Namespace import alongside the named one purely so the "no
 // generateMetadata export" case below can test the module's shape.
 import * as pageModule from './page';
+
+// Only the TOC list is stubbed; every other export stays real.
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+  return { ...actual, getAllTocs: vi.fn(async () => []) };
+});
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -72,6 +79,59 @@ describe('TrainsPage', () => {
   it('pre-fills the date from the query string', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'man', date: '2026-09-16' }) }));
     expect(screen.getByDisplayValue('2026-09-16')).toBeInTheDocument();
+  });
+
+  describe("result rows' operator", () => {
+    // A pre-filled station fires the form's mount-time search; answer it
+    // with one GW row and everything else (suggestions, groups) with `[]`.
+    function stubSearchWithOneGwRow() {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) =>
+          String(input).startsWith('/api/trains/search')
+            ? new Response(
+                JSON.stringify({
+                  results: [
+                    {
+                      uid: 'C10001',
+                      scheduled: '08:22',
+                      stationCrs: 'MAN',
+                      originCrs: 'EUS',
+                      destinationCrs: 'WAT',
+                      destinationName: null,
+                      destinationArrival: null,
+                      operator: 'GW',
+                    },
+                  ],
+                  nextCursor: null,
+                }),
+                { status: 200 },
+              )
+            : new Response('[]', { status: 200 }),
+        ),
+      );
+    }
+
+    afterEach(() => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('[]', { status: 200 })),
+      );
+    });
+
+    it('names it from the TOC list', async () => {
+      vi.mocked(api.getAllTocs).mockResolvedValueOnce([{ code: 'GW', name: 'Great Western Railway' }]);
+      stubSearchWithOneGwRow();
+      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'MAN' }) }));
+      expect(await screen.findByText('From EUS · Great Western Railway (GW)')).toBeInTheDocument();
+    });
+
+    it('leaves it out when the TOC list fails to load', async () => {
+      vi.mocked(api.getAllTocs).mockRejectedValueOnce(new Error('api down'));
+      stubSearchWithOneGwRow();
+      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'MAN' }) }));
+      expect(await screen.findByText('From EUS')).toBeInTheDocument();
+    });
   });
 
   it('uses the first value when a query param is repeated', async () => {

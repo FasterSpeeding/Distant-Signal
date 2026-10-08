@@ -7,7 +7,7 @@
 -- accessibility.spec.ts's own "Fixtures" comment for the full rationale on
 -- each var.
 --
--- Applied via `psql "$DATABASE_URL" -f frontend/e2e/fixtures/seed.sql` after
+-- Applied via `psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f frontend/e2e/fixtures/seed.sql` after
 -- `sqlx migrate run` and before the `api` binary starts.
 --
 -- Idempotent (ON CONFLICT DO NOTHING/DO UPDATE throughout) so re-running it
@@ -223,9 +223,14 @@ VALUES
   ('fixture-group-1', 'fixture-member', 'member', NOW())
 ON CONFLICT (group_id, user_id) DO NOTHING;
 
-INSERT INTO group_invite_links (token, group_id, created_by, created_at, expires_at)
-VALUES ('fixture-invite-token-123456789', 'fixture-group-1', 'fixture-owner', NOW(), NOW() + INTERVAL '7 days')
-ON CONFLICT (token) DO NOTHING;
+-- The invite token is stored hashed (`token_hash`, migration
+-- 20260926150000_hash_share_and_invite_tokens.sql): the RAW token is
+-- E2E_GROUP_INVITE_TOKEN in ci.yml, and this row stores its SHA-256 lowercase
+-- hex digest -- the same value auth::hash_session_token (and so
+-- unlisted_links::hash_link_token) produces when the api looks it up.
+INSERT INTO group_invite_links (token_hash, group_id, created_by, created_at, expires_at)
+VALUES (encode(sha256(convert_to('fixture-invite-token-123456789', 'UTF8')), 'hex'), 'fixture-group-1', 'fixture-owner', NOW(), NOW() + INTERVAL '7 days')
+ON CONFLICT (token_hash) DO NOTHING;
 
 WITH sub AS (
   SELECT ts.id FROM train_subscriptions ts
