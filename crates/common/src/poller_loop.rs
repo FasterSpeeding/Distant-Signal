@@ -135,6 +135,14 @@ where
     .await
 }
 
+/// The `<service>` of [`crate::metrics::register_cycle`]'s metric names for
+/// every poller: `distant_signal_poller_last_success_timestamp_seconds` and
+/// `distant_signal_poller_cycles_total`, with the poller's label as
+/// `cycle`. The latter repeats `poller_cycle_total{poller}` (which the
+/// existing alerts read) under the shared helper's name; the gauge is the
+/// new signal.
+pub const LAST_SUCCESS_SERVICE: &str = "poller";
+
 /// Registers both `result` series of `poller_cycle_total` at 0 for
 /// `poller_label`, so an alert's `increase()` sees the first failure (or
 /// success) after a pod start rather than the series merely appearing.
@@ -168,6 +176,9 @@ where
     Fut: Future<Output = anyhow::Result<()>>,
 {
     register_cycle_metrics(poller_label);
+    // `poller_last_success_timestamp_seconds{cycle=<poller>}`: the chart's
+    // DistantSignalPollerStale reads it (see `common::metrics::register_cycle`).
+    crate::metrics::register_cycle(LAST_SUCCESS_SERVICE, poller_label);
     let delay = ingest::time_until_next_poll_waiting(
         client,
         api_ingest_url,
@@ -221,6 +232,7 @@ where
             "result" => if result.is_ok() { "success" } else { "failure" }
         )
         .increment(1);
+        crate::metrics::record_cycle(LAST_SUCCESS_SERVICE, poller_label, result.is_ok());
 
         match result {
             Ok(()) => consecutive_failures = 0,
@@ -420,6 +432,61 @@ mod tests {
             2,
             "one failed cycle, one prompt retry, then back to the 24h interval"
         );
+    }
+
+    /// Every poller exports its last successful cycle through the shared
+    /// helper: registered at start, left alone by a failure, and counted.
+    #[tokio::test]
+    async fn the_loop_exports_the_last_successful_cycle() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "fetchedAt": null
+            })))
+            .mount(&server)
+            .await;
+        let tokens = token_cache(&server).await;
+        let client = reqwest::Client::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in_cycle = Arc::clone(&calls);
+        let ingest_url = format!("{}/ingest", server.uri());
+        let progress = Progress::new(Duration::from_secs(60));
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let loop_future = run_poll_loop_with(
+            &FAST_POLICY,
+            "test-poller",
+            &client,
+            &ingest_url,
+            &tokens,
+            Duration::from_secs(86_400),
+            &progress,
+            || {
+                let n = calls_in_cycle.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    if n == 0 {
+                        Err(transient_post_failure())
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_future).await;
+
+        let rendered = handle.render();
+        for series in [
+            r#"distant_signal_poller_cycles_total{cycle="test-poller",result="failure"} 1"#,
+            r#"distant_signal_poller_cycles_total{cycle="test-poller",result="success"} 1"#,
+            r#"distant_signal_poller_last_success_timestamp_seconds{cycle="test-poller"}"#,
+        ] {
+            assert!(
+                rendered.contains(series),
+                "{series} missing from {rendered}"
+            );
+        }
     }
 
     /// A data rejection will be refused again: it waits the normal interval.
