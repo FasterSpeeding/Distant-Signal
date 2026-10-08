@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use common::secret::Secret;
+
+use crate::sink::SinkKind;
 
 /// Default for [`Config::cif_file_pattern`]: exactly the name DTD delivers
 /// the full CIF timetable under. Locked to that name by the repo owner
@@ -224,6 +227,19 @@ pub(crate) struct Config {
     )]
     pub api_ingest_url: String,
 
+    /// Where each delivery's record and each CORPUS load go (ingest
+    /// architecture plan 2d.1, `sink.rs`): `http`, api's `/private/*`
+    /// routes at `API_INGEST_URL`/`CORPUS_API_URL` (the default), or `db`,
+    /// Postgres directly at `DATABASE_URL`.
+    #[arg(long, env, value_enum, default_value_t = SinkKind::Http)]
+    pub ingest_sink: SinkKind,
+
+    /// Postgres, for `INGEST_SINK=db` only (ignored under `http`). The
+    /// pool reads the shared `DATABASE_*` settings (`common::pg`); its
+    /// default size is 1.
+    #[arg(long, env, hide_env_values = true)]
+    pub database_url: Option<Secret>,
+
     /// Shared, non-secret `OAuth2` client-credentials config (same value
     /// across all 9 real callers).
     #[command(flatten)]
@@ -294,6 +310,9 @@ mod chart_env_wiring_tests {
         let declared: Vec<String> = command
             .get_arguments()
             .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+            // DATABASE_URL: only under `INGEST_SINK=db`, from the shared
+            // databaseEnvFor helper (checked below).
+            .filter(|env| *env != "DATABASE_URL")
             .filter(|env| {
                 env.starts_with("CORPUS_") || env.starts_with("CIF_") || env.ends_with("_URL")
             })
@@ -313,5 +332,41 @@ mod chart_env_wiring_tests {
              container in charts/distant-signal/templates/schedulefeed-deployment.yaml: \
              {missing:?}"
         );
+    }
+
+    /// Plan 2d.2: `scheduleFeed.ingest.sink=db` sets `INGEST_SINK` and the
+    /// `schedule_ingest` role's `DATABASE_URL` on this container.
+    #[test]
+    fn the_db_sink_env_is_set_on_the_charts_ingest_container() {
+        let block = ingest_container_block();
+        assert!(block.contains("- name: INGEST_SINK\n"), "INGEST_SINK");
+        assert!(
+            block.contains(
+                "include \"distant-signal.databaseEnvFor\" (dict \"root\" . \"service\" \"schedule_ingest\")"
+            ),
+            "DATABASE_URL from databaseEnvFor, as the schedule_ingest role"
+        );
+        let command = Config::command();
+        let env = |id: &str| {
+            command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .and_then(|arg| arg.get_env())
+                .and_then(|env| env.to_str())
+                .map(str::to_owned)
+        };
+        assert_eq!(env("ingest_sink").as_deref(), Some("INGEST_SINK"));
+        let sink_default: Vec<String> = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "ingest_sink")
+            .map(|arg| {
+                arg.get_default_values()
+                    .iter()
+                    .map(|v| v.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(sink_default, ["http"], "off by default");
+        assert_eq!(env("database_url").as_deref(), Some("DATABASE_URL"));
     }
 }

@@ -13,8 +13,9 @@
 //!    row with no NLC or fewer than `CORPUS_MIN_ROWS` rows is REJECTED:
 //!    counted, logged and moved to `storage_dir/corpus/rejected/`, never
 //!    loaded;
-//! 3. POSTs the whole set to api, which replaces `corpus_locations` in one
-//!    transaction;
+//! 3. hands the whole set to the sink (`sink.rs`): POSTed to api, or under
+//!    `INGEST_SINK=db` written directly; either way `corpus_locations` is
+//!    replaced in one transaction;
 //! 4. on success moves the file to `storage_dir/corpus/`, keeping the
 //!    newest `CORPUS_RETENTION_KEEP`, so files never pile up in
 //!    `watch_dir`.
@@ -31,13 +32,13 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::config::CorpusArgs;
 use crate::delivery::delivery_dir_name;
 use crate::pattern::Routing;
 use crate::scan::{DirSnapshot, StabilityTracker, scan_incoming};
+use crate::sink::{CorpusLoadRequest, IngestSink};
 
 /// Counts rejected CORPUS files; `DistantSignalCorpusRejected` reads it.
 pub(crate) const REJECTED_METRIC: &str = "schedule_feed_corpus_rejected_total";
@@ -49,29 +50,9 @@ const ARCHIVE_DIR: &str = "corpus";
 /// Subdirectory of [`ARCHIVE_DIR`] for rejected files.
 const REJECTED_DIR: &str = "rejected";
 
-/// One normalised CORPUS location. Mirrors api's
-/// `data::corpus::CorpusLocation` field for field (JSON names included).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct CorpusLocation {
-    pub nlc: String,
-    pub stanox: Option<String>,
-    pub tiploc: Option<String>,
-    pub crs: Option<String>,
-    pub uic: Option<String>,
-    pub nlc_desc: Option<String>,
-    pub nlc_desc16: Option<String>,
-}
-
-/// Mirrors api's private `routes::ingest::CorpusLoadRequest`.
-#[derive(Debug, Serialize)]
-struct CorpusLoadRequest<'a> {
-    delivered_at: DateTime<Utc>,
-    source_file: &'a str,
-    locations: &'a [CorpusLocation],
-    /// The delivered file's size and SHA-256 (`audit.rs`).
-    source_bytes: u64,
-    sha256: &'a str,
-}
+/// One normalised CORPUS location: `ds_store`'s own type (plan 2d.1), the
+/// one the api route deserialises and the direct sink writes.
+pub(crate) use ds_store::corpus::CorpusLocation;
 
 /// Why a file can never be loaded. Its bytes cannot change without its
 /// `(mtime, size)` changing, so it is moved aside rather than retried.
@@ -309,16 +290,14 @@ fn archive(watch_dir: &Path, name: &str, stat: (SystemTime, u64), dest_dir: &Pat
 /// problem is logged and handled.
 #[expect(
     clippy::cast_precision_loss,
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them; metric gauges take f64, and these counts and timestamps stay far below 2^52"
+    reason = "metric gauges take f64, and these counts and timestamps stay far below 2^52"
 )]
 pub(crate) async fn run_corpus_cycle(
-    client: &Client,
+    sink: &impl IngestSink,
     watch_dir: &Path,
     storage_dir: &Path,
     args: &CorpusArgs,
     routing: &Routing,
-    internal_oauth: &common::oauth_client::OAuthTokenCache,
     stability_cycles: u32,
     state: &mut CorpusState,
 ) -> anyhow::Result<()> {
@@ -388,9 +367,9 @@ pub(crate) async fn run_corpus_cycle(
         source_bytes: delivered.bytes,
         sha256: &delivered.sha256,
     };
-    if let Err(err) =
-        common::ingest::post_json(client, &args.corpus_api_url, internal_oauth, &request).await
-    {
+    if let Err(err) = sink.load_corpus(&request).await {
+        // Every failure is retried, a rejection too (as before the sink):
+        // the file stays in watch_dir.
         tracing::error!(error = %err, file = %name, "CORPUS load POST to api failed; retrying next cycle");
         return Ok(());
     }
@@ -610,6 +589,19 @@ mod tests {
         }
     }
 
+    /// The HTTP sink at `args.corpus_api_url`, as `main` builds it.
+    fn http_sink(
+        args: &CorpusArgs,
+        tokens: common::oauth_client::OAuthTokenCache,
+    ) -> crate::sink::HttpSink {
+        crate::sink::HttpSink::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1/unused".to_string(),
+            args.corpus_api_url.clone(),
+            tokens,
+        )
+    }
+
     fn oauth(token_url: String) -> common::oauth_client::OAuthTokenCache {
         common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
             token_url,
@@ -625,19 +617,17 @@ mod tests {
         watch: &Path,
         storage: &Path,
         args: &CorpusArgs,
-        tokens: &common::oauth_client::OAuthTokenCache,
+        sink: &impl IngestSink,
         state: &mut CorpusState,
         cycles: usize,
     ) {
-        let client = Client::new();
         for _ in 0..cycles {
             run_corpus_cycle(
-                &client,
+                sink,
                 watch,
                 storage,
                 args,
                 &Routing::with_corpus(),
-                tokens,
                 2,
                 state,
             )
@@ -694,10 +684,10 @@ mod tests {
         .unwrap();
 
         let args = args(format!("{}/private/corpus-locations", server.uri()));
-        let tokens = oauth(format!("{}/token", server.uri()));
+        let sink = http_sink(&args, oauth(format!("{}/token", server.uri())));
         let mut state = CorpusState::new();
         let (guard, logs) = crate::audit::tests::capture_default();
-        run(watch.path(), storage.path(), &args, &tokens, &mut state, 4).await;
+        run(watch.path(), storage.path(), &args, &sink, &mut state, 4).await;
         drop(guard);
 
         // Provenance: the POST and one audit line carry the file's hash.
@@ -742,9 +732,9 @@ mod tests {
         )
         .unwrap();
         let args = args("http://127.0.0.1:1/private/corpus-locations".to_string());
-        let tokens = oauth("http://127.0.0.1:1/token".to_string());
+        let sink = http_sink(&args, oauth("http://127.0.0.1:1/token".to_string()));
         let mut state = CorpusState::new();
-        run(watch.path(), storage.path(), &args, &tokens, &mut state, 3).await;
+        run(watch.path(), storage.path(), &args, &sink, &mut state, 3).await;
 
         assert_eq!(names(watch.path()), ["CORPUSExtract.json.gz"]);
         assert!(names(storage.path()).is_empty());
@@ -763,10 +753,10 @@ mod tests {
         )
         .unwrap();
         let args = args("http://127.0.0.1:1/private/corpus-locations".to_string());
-        let tokens = oauth("http://127.0.0.1:1/token".to_string());
+        let sink = http_sink(&args, oauth("http://127.0.0.1:1/token".to_string()));
         let mut state = CorpusState::new();
         let (guard, logs) = crate::audit::tests::capture_default();
-        run(watch.path(), storage.path(), &args, &tokens, &mut state, 3).await;
+        run(watch.path(), storage.path(), &args, &sink, &mut state, 3).await;
         drop(guard);
 
         let audit = logs.audit_lines();
