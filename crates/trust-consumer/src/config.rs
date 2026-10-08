@@ -184,6 +184,11 @@ pub(crate) struct Config {
     /// suspect, without a rebuild.
     #[arg(long, env, default_value_t = true)]
     pub trust_timestamp_correction_enabled: bool,
+
+    /// `TRACKED_TRAINS_SOURCE`, `STANOX_CRS_SOURCE` and their
+    /// `DATABASE_URL` (ingest architecture plan 4.4): see `reads.rs`.
+    #[command(flatten)]
+    pub reads: crate::reads::InternalReadArgs,
 }
 
 #[cfg(test)]

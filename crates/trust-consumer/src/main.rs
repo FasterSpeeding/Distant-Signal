@@ -14,6 +14,7 @@ mod feed;
 mod matching;
 mod process;
 mod queries;
+mod reads;
 mod stanox_crs;
 
 use std::time::Duration;
@@ -73,6 +74,7 @@ async fn run() -> anyhow::Result<()> {
     common::logging::init("trust-consumer");
 
     let config = Config::parse();
+    config.reads.validate()?;
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
@@ -96,6 +98,19 @@ async fn run() -> anyhow::Result<()> {
     );
     let http = common::ingest::consumer_http_client()?;
     let internal_oauth = config.internal_oauth.token_cache();
+    // TRACKED_TRAINS_SOURCE / STANOX_CRS_SOURCE=db (ingest plan 4.4):
+    // Postgres and the schema gate before anything is read. None while
+    // both are http (the default): nothing connects to Postgres.
+    let read_pool = config.reads.connect(&progress).await?;
+    let reads = reads::Reads {
+        http: &http,
+        tokens: &internal_oauth,
+        tracked_trains_url: &config.api_tracked_trains_url,
+        stanox_crs_url: &config.stanox_crs_url,
+        pool: read_pool.as_ref(),
+        tracked_trains_source: config.reads.tracked_trains_source,
+        stanox_crs_source: config.reads.stanox_crs_source,
+    };
 
     let mut feed = match config.movement_feed_backend {
         MovementFeedBackend::RedisStream => ActiveFeed::RedisStream(
@@ -141,14 +156,7 @@ async fn run() -> anyhow::Result<()> {
     // train among them -- was lost from the live path. Retried on a short,
     // doubling backoff rather than the 60s reload interval.
     let refs = load_reference_until_ok(
-        async || {
-            queries::fetch_active_tracked_trains(
-                &http,
-                &config.api_tracked_trains_url,
-                &internal_oauth,
-            )
-            .await
-        },
+        async || reads.tracked_trains().await,
         STARTUP_RETRY_MIN,
         STARTUP_RETRY_MAX,
         || progress.beat(),
@@ -167,13 +175,7 @@ async fn run() -> anyhow::Result<()> {
 
     loop {
         if reference_reload.is_due() {
-            match queries::fetch_active_tracked_trains(
-                &http,
-                &config.api_tracked_trains_url,
-                &internal_oauth,
-            )
-            .await
-            {
+            match reads.tracked_trains().await {
                 Ok(refs) => {
                     apply_loaded_reference(refs, &mut reference, &mut state);
                     reference_reload.succeeded();
@@ -199,8 +201,7 @@ async fn run() -> anyhow::Result<()> {
         }
 
         if last_stanox_crs_reload.elapsed() >= stanox_crs_reload_interval {
-            let fetched =
-                queries::fetch_stanox_crs(&http, &config.stanox_crs_url, &internal_oauth).await;
+            let fetched = reads.stanox_crs().await;
             process::apply_stanox_crs_reload(fetched, &stanox_crs);
             last_stanox_crs_reload = tokio::time::Instant::now();
         }
