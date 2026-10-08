@@ -3051,6 +3051,12 @@ movementRelay:
     # keys in the same chart-rendered Secret. See secret.yaml's comment.
     existingSecretUsernameKey: movement-relay-kafka-sasl-username
     existingSecretPasswordKey: movement-relay-kafka-sasl-password
+    # -- Where to start when the consumer group has no committed offset
+    # (KAFKA_AUTO_OFFSET_RESET): `earliest` replays from the oldest message
+    # Kafka retains, which downstream dedup keys absorb; `latest` skips to
+    # new messages and loses the gap. See
+    # crates/movement-relay/src/kafka_source.rs.
+    autoOffsetReset: earliest
   streamLagPollSecs: 30
   # -- `MAXLEN ~` cap on the movement-events stream, in entries
   # (MOVEMENT_STREAM_MAXLEN). The default is a 1 GiB memory budget at a

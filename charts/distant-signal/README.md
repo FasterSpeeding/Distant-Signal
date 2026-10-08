@@ -2171,6 +2171,7 @@ credential of its own it uses trust-consumer's; see "Install" above.
 | `movementRelay.kafka.topic` | `""` | Train Movements topic. Empty: `trustConsumer.kafka.topic`. |
 | `movementRelay.kafka.consumerGroup` | `""` | RDM-issued consumer group id (`SC-...`). Empty: `trustConsumer.kafka.consumerGroup`. |
 | `movementRelay.kafka.saslMechanism` | `""` | SASL mechanism. Empty: `trustConsumer.kafka.saslMechanism`. |
+| `movementRelay.kafka.autoOffsetReset` | `earliest` | Where to start when the consumer group has no committed offset: `earliest` replays the oldest retained message (downstream dedup keys absorb the duplicates), `latest` skips to new messages. |
 | `movementRelay.kafka.saslUsername` | `""` | movement-relay's own SASL username, rendered into the chart Secret as `movement-relay-kafka-sasl-username`. With this, `saslPassword` and `existingSecret` all empty, trust-consumer's credential is used. |
 | `movementRelay.kafka.saslPassword` | `""` | movement-relay's own SASL password (`movement-relay-kafka-sasl-password`). |
 | `movementRelay.kafka.existingSecret` | `""` | Read movement-relay's own SASL credential from this pre-existing Secret. |
