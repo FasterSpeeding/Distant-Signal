@@ -422,9 +422,13 @@ Details and differences from the table below:
   releasing their advisory locks, within `API_SHUTDOWN_DRAIN_SECS`
   (`api.shutdown.drainSecs`, 20 s); the chart adds a 5 s `preStop` sleep and
   a 35 s grace period (the render checks sleep + drain + 5 fits). The
-  readiness probe is `/public/ready` (503 while a bounded, cached `SELECT 1`
-  fails and while draining); liveness and startup stay on `/public/health`.
-  `api.minReadySeconds` (10) renders with `RollingUpdate`.
+  readiness probe is `/public/ready`, 503 while draining; liveness and
+  startup stay on `/public/health`. `api.minReadySeconds` (10) renders with
+  `RollingUpdate`. The readiness DB check (bounded, cached `SELECT 1`) is
+  opt-in, `api.readiness.checkDatabase` / `API_READINESS_CHECKS_DB`
+  (default false), and refused below 2 replicas (user decision,
+  2026-10-08): with one replica NotReady empties the Service, so a DB blip
+  would be a full outage. Turn it on only once the api runs 2+ replicas.
 
 | # | Task | Files | Tests |
 |---|---|---|---|

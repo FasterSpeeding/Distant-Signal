@@ -101,6 +101,13 @@ release and process exit.
 {{- if gt (add $preStopSleepSecs $drainSecs 5) $graceSecs }}
 {{- fail (printf "api.terminationGracePeriodSeconds (%d) must be at least api.shutdown.preStopSleepSecs (%d) + api.shutdown.drainSecs (%d) + 5, or the kubelet kills the api mid-drain." $graceSecs $preStopSleepSecs $drainSecs) }}
 {{- end }}
+{{- /*
+The readiness DB check is for 2+ replicas only (user decision, 2026-10-08):
+with one, NotReady on a database blip empties the Service.
+*/}}
+{{- if and (dig "readiness" "checkDatabase" false .Values.api) (lt (int .Values.api.replicaCount) 2) }}
+{{- fail "api.readiness.checkDatabase needs api.replicaCount 2 or more: with one replica a database blip would make the only pod NotReady and empty the Service." }}
+{{- end }}
 spec:
   replicas: {{ .Values.api.replicaCount }}
   strategy:
@@ -229,10 +236,11 @@ spec:
             periodSeconds: {{ .Values.api.probes.startup.periodSeconds }}
             failureThreshold: {{ .Values.api.probes.startup.failureThreshold }}
             timeoutSeconds: {{ .Values.api.probes.startup.timeoutSeconds }}
-          # /public/ready, not /public/health: 503 while the database is
-          # unreachable or the pod is draining (crates/api/src/readiness.rs).
-          # Liveness stays on /public/health so a database blip never
-          # restarts the pod.
+          # /public/ready, not /public/health: 503 while the pod is
+          # draining, and with api.readiness.checkDatabase while the
+          # database is unreachable (crates/api/src/readiness.rs). Liveness
+          # stays on /public/health so a database blip never restarts the
+          # pod.
           readinessProbe:
             httpGet:
               path: {{ .Values.api.probes.readinessPath | default "/public/ready" }}
@@ -383,6 +391,9 @@ with api.extraEnv, which replaces an entry of the same name.
             # Graceful shutdown drain; see api.shutdown.
             - name: API_SHUTDOWN_DRAIN_SECS
               value: {{ dig "drainSecs" 20 (.Values.api.shutdown | default dict) | quote }}
+            # Readiness also checks the database; see api.readiness.
+            - name: API_READINESS_CHECKS_DB
+              value: {{ dig "readiness" "checkDatabase" false .Values.api | toString | quote }}
             - name: API_RATE_LIMIT_ENABLED
               value: {{ .Values.api.rateLimit.enabled | quote }}
             - name: API_RATE_LIMIT_TRUST_X_REAL_IP

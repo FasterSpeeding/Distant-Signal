@@ -6,10 +6,11 @@ needs to know about. Newest first. Field names are as served (camelCase).
 ## 2026-10-08: `GET /public/ready` and graceful shutdown
 
 - New `GET /public/ready`, the readiness probe: `200 {"status":"ready"}`,
-  or `503` with `{"status":"database_unreachable"}` (the database did not
-  answer `SELECT 1` within 2 s; checked at most every 5 s) or
-  `{"status":"draining"}` (the pod is shutting down). `Cache-Control:
-  no-store`. `GET /public/health` is unchanged (liveness).
+  or `503 {"status":"draining"}` while the pod is shutting down. Only with
+  `API_READINESS_CHECKS_DB=true` (default false; meant for 2+ replicas) it
+  also answers `503 {"status":"database_unreachable"}` when the database
+  did not answer `SELECT 1` within 2 s (checked at most every 5 s).
+  `Cache-Control: no-store`. `GET /public/health` is unchanged (liveness).
 - On shutdown the api finishes in-flight requests (up to
   `API_SHUTDOWN_DRAIN_SECS`, default 20 s) instead of resetting them. A
   keep-alive connection is closed after its current response, so a client

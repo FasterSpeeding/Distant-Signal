@@ -1203,6 +1203,15 @@ api:
   # -- The pod's terminationGracePeriodSeconds (Kubernetes' default is 30):
   # preStop sleep + drain + a margin, after which the kubelet SIGKILLs.
   terminationGracePeriodSeconds: 35
+  readiness:
+    # -- `API_READINESS_CHECKS_DB`: also answer 503 on /public/ready while
+    # the request pool cannot run SELECT 1 within 2 s (checked at most once
+    # per 5 s). Explicit opt-in, and the render refuses it below 2 replicas:
+    # with one replica NotReady empties the Service, turning a short
+    # database blip into a full outage where callers get connection errors
+    # instead of the api's 503 + Retry-After. Off, readiness fails only
+    # while the pod drains.
+    checkDatabase: false
   service:
     type: ClusterIP
     port: 8080
@@ -1590,9 +1599,8 @@ api:
     # never restarts the pod.
     path: /public/health
     # -- The readiness probe's path (crates/api/src/readiness.rs): 503 while
-    # the request pool cannot run SELECT 1 within 2 s (checked at most once
-    # per 5 s) and while the pod is shutting down, so the Service only
-    # routes to a pod that can serve.
+    # the pod is shutting down, and (only with api.readiness.checkDatabase)
+    # while the database is unreachable.
     readinessPath: /public/ready
     startup:
       # 450 x 2s = 900s (15 minutes) of headroom, matching the Postgres

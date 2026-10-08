@@ -275,9 +275,13 @@ async fn server_main() -> anyhow::Result<()> {
     // background loops (stop, release their locks) all watch. See
     // `api::shutdown`.
     let shutdown = api::shutdown::ShutdownSignal::new();
-    // `/public/ready`: the readiness probe (DB reachable and not draining);
+    // `/public/ready`: the readiness probe (503 while draining, and, only
+    // with API_READINESS_CHECKS_DB=true, while the database is unreachable);
     // `/public/health` stays the liveness probe. See `api::readiness`.
-    let readiness = api::readiness::Readiness::new(app.database.clone(), shutdown.clone());
+    let readiness_checks_db = api::readiness::check_database_from_env()?;
+    tracing::info!(readiness_checks_db, "api readiness");
+    let readiness =
+        api::readiness::Readiness::new(app.database.clone(), shutdown.clone(), readiness_checks_db);
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
