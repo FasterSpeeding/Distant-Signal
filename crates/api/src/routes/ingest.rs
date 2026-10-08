@@ -411,100 +411,19 @@ async fn post_trust_event_backlog(
     State(app): State<App>,
     Json(events): Json<Vec<common::TrustBacklogEventMessage>>,
 ) -> Result<Json<common::TrustBacklogIngestResponse>, (StatusCode, String)> {
+    // The backlog insert, then the parallel write onto the shared
+    // trains/train_movement_events/train_current_state tables for the rows
+    // it accepted (API-4), with each rejected row logged and counted and a
+    // transient shared-movement failure failing the batch (PL-7). Moved to
+    // ds-store (ingest architecture plan 3b.1) so trust-backlog-consumer's
+    // direct DB sink runs exactly this.
     let outcome =
-        crate::data::trust_event_backlog::upsert_trust_event_backlog_batch(&app.database, &events)
+        crate::data::trust_event_backlog::ingest_trust_event_backlog(&app.database, &events)
             .await
             .map_err(internal_error)?;
-    for rejected in &outcome.rejected {
-        tracing::warn!(
-            index = rejected.index,
-            dedup_key = %rejected.dedup_key,
-            sqlstate = %rejected.sqlstate,
-            reason = %rejected.reason,
-            constraint = ?rejected.constraint,
-            message = %rejected.message,
-            event = ?events.get(rejected.index),
-            "rejected trust-event-backlog row; inserted the rest of its batch"
-        );
-        metrics::counter!(
-            common::metrics::metric_name("api_trust_event_backlog_rejected_rows_total"),
-            "reason" => rejected.reason.clone()
-        )
-        .increment(1);
-    }
-
-    // Additional, parallel write onto the shared trains/train_movement_events/
-    // train_current_state tables -- see ingest_shared_movements_batch's own
-    // doc comment. Only for rows the backlog insert accepted (API-4): a row
-    // Postgres refused there is already reported as rejected, and must not
-    // go on to create `trains` rows or movements.
-    //
-    // PL-7: a failure here is no longer warned about and swallowed behind a
-    // 200. Classified like the backlog insert: a data error on one event is
-    // reported in `rejected` (the consumer dead-letters it), while anything
-    // transient fails the request with a 500 so the consumer keeps the batch
-    // and retries it. The retry is safe: the backlog rows that already
-    // committed conflict harmlessly on `dedup_key`, and every shared write is
-    // idempotent too.
-    let already_rejected: std::collections::HashSet<usize> =
-        outcome.rejected.iter().map(|r| r.index).collect();
-    let accepted: Vec<usize> = (0..events.len())
-        .filter(|index| !already_rejected.contains(index))
-        .collect();
-    let accepted_events: Vec<common::TrustBacklogEventMessage> = accepted
-        .iter()
-        .map(|&index| events[index].clone())
-        .collect();
-    let shared_movement_results = crate::data::trust_event_backlog::ingest_shared_movements_batch(
-        &app.database,
-        &accepted_events,
-    )
-    .await;
-    let mut rejected = outcome.rejected;
-    let mut transient: Option<anyhow::Error> = None;
-    for (&index, result) in accepted.iter().zip(shared_movement_results) {
-        let Err(err) = result else { continue };
-        let event = &events[index];
-        if let Some(data_error) = crate::data::trust_event_backlog::classify_anyhow_data_error(&err)
-        {
-            tracing::warn!(
-                index,
-                error = ?err,
-                train_id = %event.train_id,
-                event = ?event,
-                "shared movement write rejected this backlog event for a data error"
-            );
-            metrics::counter!(
-                common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
-                "class" => "data"
-            )
-            .increment(1);
-            let mut row = data_error.into_rejected_row(index, &event.dedup_key);
-            row.message = format!("shared movement write: {}", row.message);
-            rejected.push(row);
-        } else {
-            tracing::error!(
-                index,
-                error = ?err,
-                train_id = %event.train_id,
-                "shared movement write failed transiently; failing the batch so it is retried"
-            );
-            metrics::counter!(
-                common::metrics::metric_name("api_trust_event_backlog_shared_movement_errors_total"),
-                "class" => "transient"
-            )
-            .increment(1);
-            transient.get_or_insert(err);
-        }
-    }
-    if let Some(err) = transient {
-        return Err(internal_error(err));
-    }
-    rejected.sort_by_key(|row| row.index);
-
     Ok(Json(common::TrustBacklogIngestResponse {
         upserted: outcome.inserted,
-        rejected,
+        rejected: outcome.rejected,
     }))
 }
 

@@ -778,6 +778,63 @@ Rollback: producer `http`.
 
 ### 3b. The TRUST backlog (direct) and train events (stream)
 
+**Status (2026-10-08): 3b.1–3b.4 built, off by default**
+(`trustBacklogConsumer.ingest.sink: http`, `trustConsumer.ingest.sink:
+http`). Differences from the table:
+
+- 3b.1: the api handler's whole write (the backlog insert, the shared
+  movements for the accepted rows, the PL-7 classification, the sorted
+  `rejected`) moved into `ds_store::backlog::ingest_trust_event_backlog`;
+  `post_trust_event_backlog` and `DbSink` both call it, with its
+  `api_trust_event_backlog_*` metrics (names unchanged; under `db` the
+  consumer pod emits them). Under `db` the rejected rows dead-letter as
+  `rejected_by_db`, the failure counters are `db_write` and
+  `db_write_reasons`, and a transient failure backs off 1 s → 60 s (the
+  HTTP sink keeps 2 s → 60 s). The STANOX/CRS reload honours the api's
+  `CORPUS_FALLBACK_ENABLED` (the chart passes `api.corpusFallback.enabled`),
+  so `trust_backlog` also gets SELECT on `tiploc_crs` and
+  `corpus_stanox_crs`.
+- 3b.2/3b.4: both roles are `narrow` from creation (they were `planned`;
+  neither ever was a member of `app`), connected with
+  `postgresql.roles.perService.{trust_backlog,trust_consumer}.connect`.
+  `trust_consumer` keeps SELECT only on `train_subscriptions` (decided
+  2026-10-08; see 3b.3 for the outbox). trust-consumer's
+  `API_CALL_OPERATIONS` gains `db_write`. Under `db` trust-backlog-consumer
+  has no api egress (it calls nothing there); trust-consumer keeps it for
+  its reads (tracked trains, STANOX/CRS), which stay on the api until
+  phase 4. CI runs both crates' DB tests as the superuser, and as their
+  narrow roles in the per-service step (fixtures through
+  `DATABASE_URL_API`; nothing the narrow roles lack is needed).
+- 3b.3: the dedup of a redelivered forward signal needed an expand
+  migration: `notifier_forward_queue.dedup_key` (nullable,
+  `20261009120000`) with a partial unique index (`20261009120100`, no
+  transaction). The key is `<trains_id>:<dedup_key of the movement that
+  raised it>` (the movement entry carries no stream id into the event);
+  both sinks send it, and `insert_forward_signals` skips a known key. The
+  DB sink runs `upsert_train_events_batch_in` and `insert_forward_signals_on`
+  in one transaction.
+- 3b.3, the subscription writes (decided 2026-10-08: no UPDATE on
+  `train_subscriptions` for `trust_consumer`): `upsert_train_event_on`
+  updates a subscription for a resolution (`resolved_train_id`: the
+  status flip and the `trains_id` link), a cancellation (`status =
+  'cancelled'`) and a reinstatement (`0005`). The DB sink
+  (`ds_store::tracking::outbox::write_train_events_deferring`) writes
+  those, and every later event of the same subscription while one of its
+  rows is pending, to `train_event_outbox` (expand migration
+  `20261009130000`; `trust_consumer` SI, writer SUD) in the batch's
+  transaction, with the forward signal each raised; the rest go direct.
+  The ingest-writer's `train_event_outbox` loop
+  (`TRAIN_EVENT_OUTBOX` lock, `INGEST_WRITER_TRAIN_EVENT_OUTBOX_INTERVAL_SECS`,
+  5 s) applies them in id order with `upsert_train_event_on`, queues
+  their signals and deletes them; a data error leaves the row with
+  `rejected_at` (logged, `store_train_event_outbox_total{outcome="rejected"}`)
+  instead of the movement dead-letter stream. A watermark loop over
+  `train_current_state` (option a) was rejected: the resolution decides
+  which `trains` row the subscription's movements land on, so it cannot
+  be derived after them. The chart refuses `trustConsumer.ingest.sink: db`
+  without `ingestWriter.enabled` and `ingestWriter.loops.enabled`. Under
+  `http` nothing changes: the api applies everything inline.
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 3b.1 | trust-backlog-consumer: a `BacklogSink` trait (`HttpSink` as today; `DbSink` calling `upsert_trust_event_backlog_batch`, then `ingest_shared_movements_batch` for the accepted rows, then `upsert_reasons`, keeping the exact `rejected` handling of `post_trust_event_backlog`); a transient failure means **pause** (backoff 1 s → 60 s) before the next read; STANOX/CRS from `list_stanox_crs` under `db`; pool 3 | `crates/trust-backlog-consumer/src/{sink.rs,main.rs,queries.rs,config.rs}` | DB: same rows as the HTTP route for a fixture batch; a data-error row is rejected and dead-lettered while the rest commit; a transient error leaves the batch un-ACKed and backs off; `deliver_batch` tests over both sinks |
