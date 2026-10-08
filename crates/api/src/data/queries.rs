@@ -19,95 +19,87 @@ pub use ds_store::freshness::normalize_code;
 
 // Moved to ds_store::incidents (ingest architecture plan 1A.8)
 pub use ds_store::incidents::{
-    INCIDENTS_WITHOUT_PLACE_METRIC, IncidentSnapshotOutcome, load_station_gazetteer,
+    INCIDENTS_WITHOUT_PLACE_METRIC, IncidentSnapshotOutcome, RowHeartbeat, load_station_gazetteer,
 };
 
-/// [`ds_store::incidents::upsert_incidents`], publishing the text changes
-/// to Redis with [`publish_text_changed`].
+/// [`upsert_incident_snapshot`] as an INCOMPLETE snapshot (it resets the
+/// "no longer listed" state of every incident it names, but never infers
+/// that an absent one has left the feed), with the row heartbeat on.
 pub async fn upsert_incidents(
     pool: &PgPool,
     redis: &redis::Client,
     line_matcher: &common::matcher::LineMatcher,
     incidents: &[IncidentMessage],
 ) -> Result<u64> {
-    let outcome = upsert_incident_snapshot(pool, redis, line_matcher, incidents, false).await?;
+    let outcome = upsert_incident_snapshot(
+        pool,
+        redis,
+        line_matcher,
+        incidents,
+        false,
+        RowHeartbeat::On,
+    )
+    .await?;
     Ok(outcome.upserted)
 }
 
-/// [`ds_store::incidents::upsert_incident_snapshot`] (moved there by plan
-/// task 1A.8), with the api's Redis publisher as its `publish_text_changed`
-/// callback: called after every chunk has committed and before the removal
-/// inference, exactly where the publish always ran.
+/// One incident snapshot, the api's way (`POST /private/incidents`):
+/// [`ds_store::incidents::apply_snapshot`], then the Redis
+/// `XADD incident-text-changed` of its text changes
+/// ([`common::incident_text_changed::publish`], best effort), then
+/// [`ds_store::incidents::removal::infer_removals`]. The split is plan task
+/// 2c.1; the order is unchanged (see [`upsert_incident_snapshot_with`]).
 pub async fn upsert_incident_snapshot(
     pool: &PgPool,
     redis: &redis::Client,
     line_matcher: &common::matcher::LineMatcher,
     incidents: &[IncidentMessage],
     complete: bool,
+    heartbeat: RowHeartbeat,
 ) -> Result<IncidentSnapshotOutcome> {
-    ds_store::incidents::upsert_incident_snapshot(pool, line_matcher, incidents, complete, |ids| {
-        publish_text_changed(redis, ids)
+    upsert_incident_snapshot_with(pool, line_matcher, incidents, complete, heartbeat, |ids| {
+        common::incident_text_changed::publish(redis, ids)
     })
     .await
 }
 
-/// XADDs one `incident-text-changed` entry per id, best effort: every
-/// failure is logged and skipped, never returned (the enricher's hourly
-/// sweep is the backstop for a missed publish).
+/// [`upsert_incident_snapshot`] with the publisher as a parameter, for the
+/// order test. The three steps of `ds_store::incidents`' module docs:
 ///
-/// Connecting happens HERE, not at api startup: `AppState.redis` is a lazy
-/// `redis::Client` that has never opened a socket. A Redis that is down
-/// therefore surfaces as a failed publish instead of failing
-/// `AppState::init` and crash-looping the public status API.
-///
-/// The connection is `common::redis_conn::connect`'s (INF-5): ONE connect
-/// attempt bounded by `CONNECT_TIMEOUT`, every command bounded by
-/// `RESPONSE_TIMEOUT`. It used to be redis-rs's default
-/// `get_connection_manager()`, which retries a failed connect 6 more times
-/// on a 1s-then-60s backoff with no connect or response timeout: about
-/// five minutes inside the poller's ingest request whenever the Redis pod
-/// was being recreated, and no bound at all on a half-open connection.
-async fn publish_text_changed(redis: &redis::Client, incident_ids: Vec<String>) {
-    let mut conn = match common::redis_conn::connect(redis).await {
-        Ok(conn) => conn,
-        Err(err) => {
-            tracing::warn!(
-                error = ?err,
-                pending = incident_ids.len(),
-                "could not connect to redis to publish text-changed events; hourly sweep will catch them"
-            );
-            return;
-        }
-    };
-    for incident_id in incident_ids {
-        let result: redis::RedisResult<String> =
-            text_changed_xadd(&incident_id).query_async(&mut conn).await;
-        if let Err(err) = result {
-            tracing::warn!(error = ?err, incident_id, "failed to publish text-changed event; hourly sweep will catch it");
-        }
+/// - publish only after every chunk has committed: a publish before commit
+///   could announce an incident that a later failure in this same batch
+///   rolls back. `publish_text_changed` must be best effort (log, do not
+///   fail); the enricher's hourly sweep is the backstop for a missed one;
+/// - before the inference, so an inference failure (a 500, and a retried
+///   POST that finds no text change left to publish) cannot drop these;
+/// - only a fully written snapshot may say what is absent from it, so the
+///   inference runs last (`apply_snapshot` returns an error on any chunk
+///   failure, before it).
+async fn upsert_incident_snapshot_with<F, Fut>(
+    pool: &PgPool,
+    line_matcher: &common::matcher::LineMatcher,
+    incidents: &[IncidentMessage],
+    complete: bool,
+    heartbeat: RowHeartbeat,
+    publish_text_changed: F,
+) -> Result<IncidentSnapshotOutcome>
+where
+    F: FnOnce(Vec<String>) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let applied =
+        ds_store::incidents::apply_snapshot(pool, line_matcher, incidents, heartbeat).await?;
+    if !applied.text_changed_ids.is_empty() {
+        publish_text_changed(applied.text_changed_ids).await;
     }
-}
-
-/// Approximate cap on the `incident-text-changed` stream (API-8). The api
-/// is its only producer and nothing else trims it, so an enricher that is
-/// down, or never catches up, would otherwise grow it without bound in the
-/// same Redis that runs `maxmemory` for the movement streams. Text changes
-/// are rare (tens a day), so 10,000 entries is weeks of backlog; anything
-/// trimmed unprocessed is caught by the enricher's hourly sweep.
-const INCIDENT_TEXT_CHANGED_MAXLEN: usize = 10_000;
-
-/// `XADD incident-text-changed MAXLEN ~ <cap> * incident_id <id>`. `~` lets
-/// Redis trim whole macro-nodes only, so the cap costs nothing per write.
-fn text_changed_xadd(incident_id: &str) -> redis::Cmd {
-    let mut cmd = redis::cmd("XADD");
-    cmd.arg("incident-text-changed")
-        .arg("MAXLEN")
-        .arg("~")
-        .arg(INCIDENT_TEXT_CHANGED_MAXLEN)
-        .arg("*")
-        .arg("incident_id")
-        .arg(incident_id);
-    cmd
+    let present_ids: Vec<&str> = incidents.iter().map(|i| i.incident_id.as_str()).collect();
+    let inference =
+        ds_store::incidents::removal::infer_removals(pool, &present_ids, complete, heartbeat)
+            .await?;
+    Ok(IncidentSnapshotOutcome {
+        upserted: applied.upserted,
+        inference,
+    })
 }
 
 // Moved to `ds_store::reference` (ingest architecture plan 1A.6).
@@ -2525,16 +2517,21 @@ pub struct IncidentRow {
 /// lookup -- no new index needed. Deliberately does not filter on
 /// `is_cleared`: a cleared incident is still a real, fully valid detail
 /// page (Decision 2 of the design spec).
+///
+/// `fetched_at` is the display time, `ds_store::incidents::FETCHED_AT_SQL`
+/// (plan 2c.4): the row's own while the row heartbeat runs.
 pub async fn incident_by_id(pool: &PgPool, incident_id: &str) -> Result<Option<IncidentRow>> {
-    let row = sqlx::query_as::<_, IncidentRow>(
+    let sql = format!(
         "SELECT incident_id, summary, description, operators, affected_stations, priority, \
-                validity_periods, is_planned, is_cleared, first_seen_at, fetched_at, \
-                source_removed_at \
+                validity_periods, is_planned, is_cleared, first_seen_at, \
+                {fetched_at} AS fetched_at, source_removed_at \
          FROM incidents WHERE incident_id = $1",
-    )
-    .bind(incident_id)
-    .fetch_optional(pool)
-    .await?;
+        fetched_at = ds_store::incidents::FETCHED_AT_SQL,
+    );
+    let row = sqlx::query_as::<_, IncidentRow>(&sql)
+        .bind(incident_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 
@@ -2760,11 +2757,13 @@ pub async fn search_incidents(
 ) -> Result<IncidentSearchPage> {
     let fetch = limit.saturating_add(1);
 
-    let rows: Vec<IncidentSummaryRow> = sqlx::query_as(
+    // `fetched_at`: the display time (plan 2c.4), as in `incident_by_id`.
+    let sql = format!(
         r"
             SELECT incident_id, summary, operators, affected_stations,
-                   COALESCE(affected_lines, '{}') AS affected_lines,
-                   priority, is_planned, is_cleared, first_seen_at, fetched_at,
+                   COALESCE(affected_lines, '{{}}') AS affected_lines,
+                   priority, is_planned, is_cleared, first_seen_at,
+                   {fetched_at} AS fetched_at,
                    source_removed_at
             FROM incidents
             WHERE ($1::text[]      IS NULL OR operators && $1)
@@ -2783,20 +2782,22 @@ pub async fn search_incidents(
             ORDER BY first_seen_at DESC, incident_id DESC
             LIMIT $11
             ",
-    )
-    .bind(operators)
-    .bind(line)
-    .bind(is_planned)
-    .bind(state.map(IncidentState::as_str))
-    .bind(priority_min)
-    .bind(priority_max)
-    .bind(first_seen_from)
-    .bind(first_seen_to)
-    .bind(after.map(|c| c.first_seen_at))
-    .bind(after.map(|c| c.incident_id.as_str()))
-    .bind(fetch)
-    .fetch_all(pool)
-    .await?;
+        fetched_at = ds_store::incidents::FETCHED_AT_SQL,
+    );
+    let rows: Vec<IncidentSummaryRow> = sqlx::query_as(&sql)
+        .bind(operators)
+        .bind(line)
+        .bind(is_planned)
+        .bind(state.map(IncidentState::as_str))
+        .bind(priority_min)
+        .bind(priority_max)
+        .bind(first_seen_from)
+        .bind(first_seen_to)
+        .bind(after.map(|c| c.first_seen_at))
+        .bind(after.map(|c| c.incident_id.as_str()))
+        .bind(fetch)
+        .fetch_all(pool)
+        .await?;
 
     let has_more = rows.len() as i64 > limit;
     let mut page_rows = rows;
@@ -4059,48 +4060,6 @@ pub fn tiploc_of_destination_key(code: &str) -> Option<String> {
 )]
 mod tests {
     use super::*;
-
-    /// INF-5: an unreachable Redis costs the ingest request one bounded
-    /// connect attempt, not redis-rs's default retry schedule (seven
-    /// attempts on a 1s-then-60s backoff, about five minutes).
-    #[tokio::test]
-    async fn publishing_to_an_unreachable_redis_gives_up_after_one_bounded_attempt() {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let client = redis::Client::open(format!("redis://127.0.0.1:{port}")).unwrap();
-
-        tokio::time::timeout(
-            common::redis_conn::CONNECT_TIMEOUT * 2,
-            publish_text_changed(&client, vec!["INC-1".to_string()]),
-        )
-        .await
-        .expect("a refused connection must fail the publish at once, not be retried for minutes");
-    }
-
-    /// API-8: the text-changed publish carries an approximate MAXLEN cap.
-    #[test]
-    fn text_changed_xadd_caps_the_stream() {
-        let packed = String::from_utf8(text_changed_xadd("INC-1").get_packed_command()).unwrap();
-        // RESP: `*<n>` then a `$<len>`, `<value>` pair per argument.
-        let parts: Vec<&str> = packed.trim_end().split("\r\n").collect();
-        let args: Vec<&str> = parts[1..].chunks(2).map(|pair| pair[1]).collect();
-        assert_eq!(
-            args,
-            [
-                "XADD",
-                "incident-text-changed",
-                "MAXLEN",
-                "~",
-                "10000",
-                "*",
-                "incident_id",
-                "INC-1"
-            ]
-        );
-    }
 
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
@@ -7991,5 +7950,238 @@ mod db_review_guard_and_normalisation_tests {
         ] {
             assert_can_use_index(&pool, sql, index).await;
         }
+    }
+}
+
+/// The publish-order contract of [`upsert_incident_snapshot`] (plan task
+/// 1A.8; moved here from `ds_store::incidents` by 2c.1, with the order),
+/// against a real database: the publisher runs once, after every chunk has
+/// committed (another connection already sees the rows) and before the
+/// removal inference (no feed-state baseline yet), and is not called when
+/// no text changed. In both row-heartbeat modes. Resets
+/// `incident_feed_state`, like the `incident_removal` DB tests, so needs
+/// `--test-threads=1`.
+#[cfg(test)]
+mod incident_snapshot_db_tests {
+    use std::sync::Mutex;
+
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+    use crate::data::incident_removal::Inference;
+
+    const PREFIX: &str = "TEST-PUBLISH-ORDER-";
+
+    async fn test_pool() -> PgPool {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres")
+    }
+
+    async fn reset(pool: &PgPool) {
+        for sql in [
+            "DELETE FROM incident_history WHERE incident_id LIKE 'TEST-PUBLISH-ORDER-%'",
+            "DELETE FROM incidents WHERE incident_id LIKE 'TEST-PUBLISH-ORDER-%'",
+            "DELETE FROM incident_feed_state",
+        ] {
+            sqlx::query(sql).execute(pool).await.expect(sql);
+        }
+    }
+
+    fn incident(suffix: &str, summary: &str) -> IncidentMessage {
+        IncidentMessage {
+            incident_id: format!("{PREFIX}{suffix}"),
+            summary: summary.to_string(),
+            description: format!("{suffix} description"),
+            operators: vec!["ZZ".to_string()],
+            affected_stations: vec![],
+            priority: 2,
+            validity: vec![],
+            is_planned: false,
+            is_cleared: false,
+        }
+    }
+
+    /// What the publisher saw when it ran.
+    #[derive(Debug, PartialEq, Eq)]
+    struct AtPublish {
+        ids: Vec<String>,
+        /// This test's rows visible to ANOTHER connection: committed ones.
+        committed_rows: i64,
+        /// `incident_feed_state` rows: 0 until the inference has run.
+        feed_state_rows: i64,
+    }
+
+    async fn feed_state_rows(pool: &PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM incident_feed_state")
+            .fetch_one(pool)
+            .await
+            .expect("count feed state")
+    }
+
+    /// One complete snapshot; returns what the publisher saw, if it ran.
+    async fn snapshot(
+        pool: &PgPool,
+        batch: &[IncidentMessage],
+        heartbeat: RowHeartbeat,
+    ) -> (Option<AtPublish>, IncidentSnapshotOutcome) {
+        let seen: Mutex<Vec<AtPublish>> = Mutex::new(Vec::new());
+        let matcher = common::matcher::LineMatcher::new(&[]);
+        let outcome =
+            upsert_incident_snapshot_with(pool, &matcher, batch, true, heartbeat, |ids| async {
+                let committed_rows: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM incidents WHERE incident_id LIKE 'TEST-PUBLISH-ORDER-%'",
+                )
+                .fetch_one(pool)
+                .await
+                .expect("count committed rows");
+                let feed_state_rows = feed_state_rows(pool).await;
+                seen.lock().expect("not poisoned").push(AtPublish {
+                    ids,
+                    committed_rows,
+                    feed_state_rows,
+                });
+            })
+            .await
+            .expect("upsert snapshot");
+        let mut seen = seen.into_inner().expect("not poisoned");
+        assert!(
+            seen.len() <= 1,
+            "published at most once per snapshot: {seen:?}"
+        );
+        (seen.pop(), outcome)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_snapshot_db_tests -- --ignored --test-threads=1`"]
+    async fn text_changes_are_published_after_commit_and_before_inference() {
+        let pool = test_pool().await;
+        for heartbeat in [RowHeartbeat::On, RowHeartbeat::Off] {
+            reset(&pool).await;
+
+            // More than one chunk, so "after commit" means after the LAST chunk.
+            let batch: Vec<IncidentMessage> = (0..=ds_store::incidents::UPSERT_CHUNK_SIZE)
+                .map(|n| incident(&format!("{n:03}"), "Signal failure"))
+                .collect();
+            let (published, outcome) = snapshot(&pool, &batch, heartbeat).await;
+            let expected_ids: Vec<String> = batch.iter().map(|i| i.incident_id.clone()).collect();
+            assert_eq!(
+                published,
+                Some(AtPublish {
+                    ids: expected_ids,
+                    committed_rows: i64::try_from(batch.len()).expect("small"),
+                    feed_state_rows: 0,
+                }),
+                "{heartbeat:?}: every chunk committed, inference not yet run"
+            );
+            assert_eq!(outcome.inference, Inference::NoBaseline);
+            assert_eq!(
+                feed_state_rows(&pool).await,
+                1,
+                "{heartbeat:?}: the inference ran after the publish"
+            );
+
+            // Unchanged text: no publish at all.
+            let (published, _) = snapshot(&pool, &batch, heartbeat).await;
+            assert_eq!(published, None, "{heartbeat:?}");
+
+            // One summary edited: only that id.
+            let mut edited = batch.clone();
+            edited[1].summary = "Signal failure (updated)".to_string();
+            let (published, _) = snapshot(&pool, &edited, heartbeat).await;
+            assert_eq!(
+                published.map(|at| at.ids),
+                Some(vec![edited[1].incident_id.clone()]),
+                "{heartbeat:?}"
+            );
+        }
+        reset(&pool).await;
+    }
+
+    /// `(raw incidents.fetched_at, incident_by_id's, search_incidents')`
+    /// for one of this module's rows.
+    async fn fetched_ats(
+        pool: &PgPool,
+        id: &str,
+    ) -> (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) {
+        let raw: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT fetched_at FROM incidents WHERE incident_id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .expect("raw fetched_at");
+        let by_id = incident_by_id(pool, id)
+            .await
+            .expect("incident_by_id")
+            .expect("exists")
+            .fetched_at;
+        let page = search_incidents(
+            pool,
+            Some(vec!["ZZ".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            500,
+        )
+        .await
+        .expect("search_incidents");
+        let searched = page
+            .results
+            .iter()
+            .find(|row| row.incident_id == id)
+            .expect("found by the archive search")
+            .fetched_at;
+        (raw, by_id, searched)
+    }
+
+    /// Plan 2c.4: the readers (`incident_by_id`, `search_incidents`) return
+    /// exactly `incidents.fetched_at` while the per-row bump runs, and the
+    /// feed's time for an unchanged listed incident once it is off.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_snapshot_db_tests -- --ignored --test-threads=1`"]
+    async fn the_readers_show_the_display_time() {
+        let pool = test_pool().await;
+        reset(&pool).await;
+        let batch = vec![incident("R1", "Signal failure")];
+        let id = batch[0].incident_id.clone();
+
+        // Heartbeat on: identical to the column, snapshot after snapshot.
+        for _ in 0..2 {
+            snapshot(&pool, &batch, RowHeartbeat::On).await;
+            let (raw, by_id, searched) = fetched_ats(&pool, &id).await;
+            assert_eq!((by_id, searched), (raw, raw));
+        }
+
+        // Heartbeat off: the row is not touched, the feed time is shown.
+        sqlx::query(
+            "UPDATE incident_feed_state SET last_complete_at = now() - interval '10 minutes'",
+        )
+        .execute(&pool)
+        .await
+        .expect("backdate the baseline");
+        snapshot(&pool, &batch, RowHeartbeat::Off).await;
+        let (raw, by_id, searched) = fetched_ats(&pool, &id).await;
+        let feed: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT last_snapshot_at FROM incident_feed_state WHERE singleton")
+                .fetch_one(&pool)
+                .await
+                .expect("feed time");
+        assert!(feed > raw, "the row kept its older time");
+        assert_eq!((by_id, searched), (feed, feed));
+        reset(&pool).await;
     }
 }

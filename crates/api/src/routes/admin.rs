@@ -263,6 +263,7 @@ mod session_revocation_db_tests {
             backlog_match_sweep_interval_secs: 300,
             session_cleanup_interval_secs: 3600,
             background_loops: true,
+            incidents_row_heartbeat: true,
             past_travel_retention_days: 548,
             stale_push_subscription_days: 365,
             inactive_account_retention_days: 0,
