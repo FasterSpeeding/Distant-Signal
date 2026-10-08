@@ -235,18 +235,18 @@ pub async fn serve_with_shutdown(
         drain_deadline_secs = drain_deadline.as_secs(),
         "shutting down: no longer accepting connections; draining the open ones"
     );
-    let outcome = match tokio::time::timeout(drain_deadline, graceful.shutdown()).await {
-        Ok(()) => {
-            tracing::info!("every connection drained");
-            DrainOutcome::Drained
-        }
-        Err(_) => {
-            tracing::warn!(
-                drain_deadline_secs = drain_deadline.as_secs(),
-                "drain deadline reached with connections still open; exiting anyway"
-            );
-            DrainOutcome::DeadlineReached
-        }
+    let outcome = if tokio::time::timeout(drain_deadline, graceful.shutdown())
+        .await
+        .is_ok()
+    {
+        tracing::info!("every connection drained");
+        DrainOutcome::Drained
+    } else {
+        tracing::warn!(
+            drain_deadline_secs = drain_deadline.as_secs(),
+            "drain deadline reached with connections still open; exiting anyway"
+        );
+        DrainOutcome::DeadlineReached
     };
     Ok(outcome)
 }

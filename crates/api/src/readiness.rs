@@ -10,7 +10,7 @@
 //! - the request pool cannot run `SELECT 1` within [`PROBE_TIMEOUT`].
 //!
 //! The database check is OFF by default (user decision, 2026-10-08): with a
-//! single api replica, NotReady empties the Service, so a short database
+//! single api replica, `NotReady` empties the Service, so a short database
 //! blip or pool contention would become a full outage, and callers would
 //! get connection errors instead of the api's 503 + `Retry-After`. It is
 //! for two or more replicas, where one pod that cannot reach the database
@@ -211,7 +211,7 @@ mod tests {
     }
 
     /// Default (check off, the single-replica setting): a database that
-    /// cannot be reached does not make the pod NotReady.
+    /// cannot be reached does not make the pod `NotReady`.
     #[tokio::test]
     async fn with_the_check_off_an_unreachable_database_is_still_ready() {
         let readiness = Readiness::new(unreachable_pool(), ShutdownSignal::new(), false);
