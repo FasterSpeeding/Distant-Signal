@@ -24,6 +24,8 @@ const TEST_FILES = [
 ];
 const NODE_SCRIPT_FILES = [
   'scripts/stamp-sw-version.mjs',
+  'scripts/build-id.mjs',
+  'scripts/build-id.test.js',
   'e2e/screenshots/take-screenshots.mjs',
   'e2e/screenshots/_interactive-shots.mjs',
   'eslint.config.mjs',

@@ -6,7 +6,10 @@
 // AFTER `next build` (so .next/BUILD_ID exists) and BEFORE the Docker
 // image layer finalizes (so the stamped file, not the placeholder, is
 // what ships) -- substitutes sw.js's CACHE_NAME placeholder with the real
-// per-build id, so sw.js's own byte content changes on every deploy. This
+// build id, so sw.js's own byte content changes whenever the frontend does
+// (the id is a hash of the frontend's inputs, scripts/build-id.mjs, set
+// by next.config.mjs's generateBuildId; an unchanged frontend keeps its
+// service worker and caches across deploys). This
 // is what the browser's native SW-update check (a byte-for-byte
 // comparison against the currently-installed worker) and sw.js's own
 // `activate` purge (Task 4) both depend on to actually invalidate a prior

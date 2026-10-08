@@ -31,9 +31,12 @@ importScripts('/sw-cache-rules.js');
 
 // Stamped by scripts/stamp-sw-version.mjs at build time (Task 5),
 // substituting .next/BUILD_ID's real value for this placeholder -- see
-// Decision 5. Changing this string on every deploy is what makes this
-// file's own bytes differ deploy-to-deploy, which both the browser's
-// native SW-update check and the activate purge below depend on.
+// Decision 5. The build ID is a hash of the frontend's inputs
+// (scripts/build-id.mjs), so this string, and with it this file's bytes,
+// changes exactly when the frontend does. Both the browser's native
+// SW-update check and the activate purge below depend on that; a deploy
+// that leaves the frontend unchanged keeps the installed worker and its
+// caches.
 const CACHE_NAME = 'distant-signal-__BUILD_ID__';
 
 // Precached eagerly on install. Deliberately NOT every /_next/static/*
