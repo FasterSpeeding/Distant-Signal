@@ -1042,6 +1042,45 @@ Corrections from that inventory:
     `replay_uidless_movements` write tables the narrow api role cannot.
   - Dropping `distant_signal_app` is its own release.
 
+**Decisions (user, 2026-10-08).** These answer the runbook's Q1–Q10, and
+the runbook's steps follow them.
+
+- **Q1.** In phase 5 (5.4), rename the `api_*` metrics `ds-store` emits to
+  `store_*`. For one release, the alerts sum over both names.
+- **Q2. New task 5.4b**, before 5.5. Move `backfill_incident_lines`,
+  `backfill_line_train_summaries`, `replay_uidless_movements` and
+  `backfill_trains` out of the api image, into `ds-migrate` or writer-role
+  maintenance tooling, so they never run with api credentials.
+- **Q3.** 5.5 extends `gen-db-grants.py` and `db-grants.yaml` so the
+  enricher gets column-level UPDATE beside a table-level SELECT on
+  `incidents`.
+- **Q4.** 5.1: with `API_PRIVATE_ROUTES=false`, a fallback route answers
+  404 and increments a counter.
+- **Q5.** Drop `distant_signal_app` 7 days after the narrowing, in its own
+  release.
+- **Q6.** 5.6: Ranma narrows or removes `allow-egress-same-namespace` once
+  every flow is accounted for.
+- **Q7.** Phase 5 does not wait for a real CORPUS load through the `db`
+  sink.
+- **Q8.** 5.3 keeps `INGEST_SINK`/`*_SOURCE` for one release that accepts
+  only the new value and refuses `http` with a clear error. The next
+  release removes them.
+- **Q9.** The caller-less routes are deleted now, outside phase 5:
+  - the `GET`s of `/full-coverage-stats`, `/full-coverage-window-stats`,
+    `/station-full-coverage-samples` and `/schedule-feed-ingests`;
+  - the six island-of-Ireland pairs.
+- **Q10. New task 5.3b**, in 5.3's release. Local dev mirrors production:
+  docker-compose runs the ingest-writer, and the producers use the
+  `db`/`stream` sinks against local Postgres and Redis. Update the
+  `*.env.example` files to match.
+- **Ops note (Ranma).** `mint-sealed-secret.sh` seals one value into every
+  `--target` of a run, so per-role passwords need one run per role.
+
+| # | Task | Files | Tests |
+|---|---|---|---|
+| 5.3b | Local dev mirrors production (Q10) | `docker-compose.yml`, `local.env.example`, `dev.env.example` | `docker compose up` from a clean volume: data lands through the writer |
+| 5.4b | The api's writing binaries move to `ds-migrate` or writer-role tooling (Q2) | `crates/api/src/bin/{backfill_incident_lines,backfill_line_train_summaries,replay_uidless_movements,backfill_trains}.rs`, `crates/{ds-migrate,ingest-writer}`, Dockerfiles, the backfill docs | each moved binary's DB test as its new role |
+
 Entry:
 
 - every switch in spec §13.1 has been on its new value for 14 days;

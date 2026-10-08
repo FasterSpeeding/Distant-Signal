@@ -22,13 +22,17 @@ which is live. Every producer still calls `/private` today (§1.2).
 Agents only read production. Every flip and every Ranma-Config change below
 is made by the user or by Ranma.
 
+The user decided all ten open questions on 2026-10-08. They are recorded
+under [Decisions](#decisions-2026-10-08), and the steps follow them. The
+caller-less routes (Q9) are deleted ahead of phase 5, in their own commit.
+
 ## Contents
 
 1. [Entry criteria and the `/private` inventory](#1-entry-criteria-and-the-private-inventory)
 2. [Steps 5.1–5.7](#2-steps-5157)
 3. [The api's Redis client (5.4)](#3-the-apis-redis-client-54)
 4. [Final grants (5.5) and NetworkPolicies (5.6)](#4-final-grants-55-and-networkpolicies-56)
-5. [Risks and open questions](#5-risks-and-open-questions)
+5. [Risks and decisions](#5-risks-and-decisions)
 
 ## 1. Entry criteria and the `/private` inventory
 
@@ -158,7 +162,7 @@ new path at least once since the flip:
 | Producer | Evidence on the new path |
 |---|---|
 | schedule-reference | `distant_signal_db_writes_total{outcome="ok"}` from the schedulefeed pod rising since the flip; a new `schedule_reference_publishes` row since the flip (`SELECT delivery, completed_at FROM schedule_reference_publishes ORDER BY completed_at DESC LIMIT 3`); `pg_stat_activity.usename = 'distant_signal_schedule_reference'` while it publishes |
-| schedule-ingest (CIF markers and CORPUS) | a `schedule_feed_ingests` row since the flip; **a `corpus_deliveries` row since the flip** (one monthly CORPUS load on `db`), or an explicit decision to accept the config alone (Q7) |
+| schedule-ingest (CIF markers and CORPUS) | a `schedule_feed_ingests` row since the flip; for CORPUS, the deployed `INGEST_SINK=db` alone. Phase 5 does not wait for a real monthly load through the `db` sink (decided, Q7); the first one after the flip is watched with `DistantSignalCorpusRejected` and `…CorpusStale` |
 | poller-stations | `ingest_freshness` row `source = 'stations'` advancing daily; `db_writes_total` from the poller pod |
 | poller-incidents | `ingest_freshness` `source = 'incidents'` advancing every 5 min; `XLEN incident-text-changed` still growing (now from the poller) |
 | poller-tocs, poller-tfl, poller-ldbws, full-coverage-consumer | `distant_signal_ingest_stream_produce_total{stream=…, outcome="ok"}` rising; the writer's `distant_signal_ingest_stream_consumed_total{stream=…, outcome="applied"}` rising; no `DistantSignalIngestStreamStalled`, `…Backlog` or `…DeadLetters` alert for 7 days |
@@ -216,8 +220,8 @@ incident-text-changed` inside `POST /private/incidents` (§3). The evidence:
 
 ## 2. Steps 5.1–5.7
 
-Order: **5.1 → 7-day soak → 5.2 + 5.3 → 5.4 → 5.5 → 5.6**. 5.7 can run at
-any point after 5.2. The constraints:
+Order: **5.1 → 7-day soak → 5.2 + 5.3 (+ 5.3b) → 5.4 → 5.4b → 5.5 →
+5.6**. 5.7 can run at any point after 5.2. The constraints:
 
 - **5.3 must not ship before the 5.1 soak ends.** Deleting the producers'
   HTTP sinks removes the per-producer rollback (`sink: http`). After that,
@@ -230,7 +234,12 @@ any point after 5.2. The constraints:
   holds an HTTP path. Its api-to-Redis cut comes after 5.4.
 - **Authentik decommissioning (Ranma) after 5.3 has run for a day.**
 - **Dropping `distant_signal_app` is the last DB change.** Do it in its own
-  release, 7 days after the narrowing (Q5).
+  release, 7 days after the narrowing (decided, Q5).
+- **5.4b before 5.5.** The binaries must no longer run with api
+  credentials when the api role is narrowed (decided, Q2).
+- **5.3's sink switches go in two releases** (decided, Q8). The first
+  accepts only the new value and refuses `http` at startup; the next
+  removes the switch.
 
 ### 5.1 `API_PRIVATE_ROUTES` and the 7-day soak
 
@@ -364,9 +373,12 @@ this step, never before.
 
 ### 5.3 Delete the producers' HTTP paths
 
-Each producer collapses to its new path. `INGEST_SINK` and `*_SOURCE`
-either go entirely, or stay with a single accepted value for one release,
-so an old Ranma value fails loudly instead of being ignored (Q10).
+Each producer collapses to its new path. **Decided (Q8):** `INGEST_SINK`
+and `*_SOURCE` stay for one release that accepts only the new value (`db`
+or `stream`). Under `http` or `http+shadow` the process refuses to start
+with a clear error naming the variable and the phase 5 runbook. The next
+release removes the variables, together with the chart values and their
+env.
 
 | Crate | Delete |
 |---|---|
@@ -398,23 +410,14 @@ so an old Ranma value fails loudly instead of being ignored (Q10).
     1091, 1172, 1239, 1337, 3077, 3206, 3333, 4020, 4208);
   - `pollers.*.ingestPath`;
   - `pollers.ldbws.sampleStationsPath`;
-  - the `ingest.sink` and `internalReads.source` values.
+  - the `ingest.sink` and `internalReads.source` values. The first
+    release keeps them with a render-time `fail` for anything but the
+    new value; the second removes them (Q8).
 - `_helpers.tpl`: `pollerSinkDb`, `pollerSinkStream`, `trustSinkDb`,
   `internalReadsDb`, `scheduleFeedPostgres` and `trustConsumerPool` lose
   their HTTP cases.
 - `distant-signal.apiBaseUrl` keeps only the frontend and the helm test as
   users.
-
-**Local dev (missed by the plan):**
-
-- `docker-compose.yml` wires 18 producer env vars to `http://api:8080/private/…`
-  with Authentik credentials, and has no ingest-writer and no
-  per-producer DB or Redis users.
-- `local.env.example` and `dev.env.example` document the internal OAuth
-  service accounts.
-
-Either add the writer and give each producer `DATABASE_URL`/`REDIS_URL`
-(superuser locally), or drop the producers from the default profile (Q10).
 
 **Ranma:**
 
@@ -453,6 +456,45 @@ Either add the writer and give each producer `DATABASE_URL`/`REDIS_URL`
 **Rollback:** revert the code and chart and redeploy. Restoring the
 Authentik accounts needs their sealed passwords, so keep the old sealed
 values in Ranma's git history.
+
+### 5.3b Local dev mirrors production
+
+Decided (Q10): local dev runs the same paths as production. Ship this in
+the same release as 5.3, since that release deletes the HTTP paths local
+dev uses today.
+
+Today:
+
+- `docker-compose.yml` wires 18 producer env vars to
+  `http://api:8080/private/…` with Authentik credentials. It has no
+  ingest-writer and no per-producer DB or Redis users.
+- `local.env.example` and `dev.env.example` document the internal OAuth
+  service accounts.
+
+**Changes:**
+
+- `docker-compose.yml`:
+  - add an `ingest-writer` service, with its loops on and the
+    `station-samples`, `full-coverage`, `tfl` and `reference` streams on
+    `apply`;
+  - point every producer at the `db` or `stream` sink against the local
+    `postgres` and `redis`, using the same `INGEST_SINK` values as
+    production;
+  - give the readers `*_SOURCE=db`;
+  - remove every `API_*_URL`, `*_URL: http://api:8080/private/…` and
+    `INTERNAL_OAUTH_*` from the producers;
+  - keep the api's `INTERNAL_OAUTH_ISSUER_URL`, `INTERNAL_OAUTH_CLIENT_ID`
+    and `INTERNAL_OAUTH_GROUP_MCP`.
+- Local roles: the producers connect as the local superuser by default.
+  A compose profile that runs `postgres-grants.sql` and connects each
+  producer as its own role is optional; CI's per-role suites already
+  cover the grants.
+- `local.env.example` and `dev.env.example`: drop the ingest service-account
+  sections and keep the MCP's.
+- Check: `docker compose up` from a clean volume. Each producer's data
+  lands (station samples, incidents, TfL); the writer's
+  `ingest_stream_consumed_total{outcome="applied"}` rises; the frontend
+  renders.
 
 ### 5.4 Delete the api's Redis client
 
@@ -493,8 +535,20 @@ producers' pods:
 - `api_corpus_comparison_*`.
 
 `DistantSignalCorpusStale` and `DistantSignalIncidentRemovalStalled` read
-those names. Either rename them all to `store_*` with a one-release
-`(api|store)` regex in each alert, or keep the names (Q1).
+those names.
+
+**Decided (Q1): rename every one of them to `store_*`** in `ds-store`
+(and in the api, wherever it still registers one). For the rename release:
+
+- every alert and recording rule that reads them matches both names, as
+  `DistantSignalSchedulePublishStagedMismatch` already does. Use
+  `{__name__=~"distant_signal_(api|store)_…"}` summed, not `A or B`,
+  because both are registered at 0;
+- Grafana panels change in the same release.
+
+The next release drops the `api` alternative. The alert-rules tests
+(`scripts/alert-rules-tests/`) cover both names during the transition and
+only `store_` afterwards.
 
 **Ranma:**
 
@@ -514,17 +568,53 @@ those names. Either rename them all to `store_*` with a one-release
 
 **Rollback:** revert the commit.
 
+### 5.4b Move the api's writing binaries out of the api image
+
+Decided (Q2): these binaries must never run with api credentials, because
+they write tables the narrowed api role cannot write. Move them before
+5.5.
+
+| Binary (today `crates/api/src/bin/`) | Writes | New home |
+|---|---|---|
+| `backfill_incident_lines` | `UPDATE incidents` (`data::incident_line_backfill`) | writer-role maintenance tooling: a `maintenance` subcommand of `ingest-writer`, or a separate bin in the writer image. It needs `UPDATE` on `incidents.affected_lines`, which the writer role does not hold today, so add a column grant (Q3's mechanism) or run it as the `incidents` role |
+| `backfill_line_train_summaries` | `line_train_summaries` | `ds-migrate` (owner role), as a one-off data step beside the migrations, or the `schedule_reference` role, which already holds SIUD there |
+| `replay_uidless_movements` | `trust_event_backlog`, `train_movement_events`, `train_current_state` (via `ds_store::backlog`) | writer-role tooling (the writer holds SU on the backlog and SIU on the movements) |
+| `backfill_trains` | `trains` (`data::legacy_backfill`) | `ds-migrate`. Its precondition, `ensure_ready_for_contract_migration`, already lives in `ds_store::migrate`; every environment has passed that contract migration, so it may simply be deleted |
+
+**Code:**
+
+- move each binary's logic into `ds-store` (most already sits there behind
+  api shims), and its entry point into `crates/ds-migrate` or
+  `crates/ingest-writer`;
+- delete the api `[[bin]]` entries and their `data::*` modules;
+- update `docker/` (the Dockerfiles that copy the bins) via
+  `gen-rust-dockerfiles.py`, and the docs that say "run it in the api pod"
+  (the `db-grants.yaml` comment on `line_train_summaries`,
+  `docs/incident-affected-lines-backfill.md`,
+  `docs/shared-train-identity-backfill.md`).
+
+**Checks:**
+
+- the api image has no `backfill_*` or `replay_*` binary;
+- each moved binary's DB test runs as its new role in
+  `test-postgres-roles.py --mode per-service`.
+
+**Rollback:** revert the commit. The binaries are run by hand, so nothing
+in production changes until someone runs one.
+
 ### 5.5 Final grants
 
 The diff against `db-grants.yaml` is in §4.1. Code and chart:
 
 - `charts/distant-signal/files/db-grants.yaml`, then `uv run
   scripts/gen-db-grants.py render`; `postgres-grants.sql`;
-- **a `gen-db-grants.py` change**: one role per table takes a single
-  privilege string, and `columns` apply to every letter of it. "enricher:
-  SELECT on `incidents`, UPDATE on five columns" cannot be written today.
-  Allow a list of grants per role (for example `enricher: [S, {privileges:
-  U, columns: […]}]`), plus a unit test in `scripts/tests/test_gen_db_grants.py`;
+- **a `gen-db-grants.py` change** (decided, Q3): one role per table takes
+  a single privilege string, and `columns` apply to every letter of it.
+  "enricher: SELECT on `incidents`, UPDATE on five columns" cannot be
+  written today. Allow a list of grants per role (for example `enricher:
+  [S, {privileges: U, columns: […]}]`). Add a unit test in
+  `scripts/tests/test_gen_db_grants.py`, and a per-role DB check that the
+  enricher can update its columns and nothing else;
 - `scripts/db-grants.sql.tpl` and `files/postgres-roles.sql`: stop
   creating `distant_signal_app` and its membership grants; revoke
   membership from every role; then `REASSIGN OWNED`/`DROP OWNED BY
@@ -544,9 +634,15 @@ The diff against `db-grants.yaml` is in §4.1. Code and chart:
      the grants;
    - the per-role connection counts against their limits
      (`DistantSignalDbRoleNearConnectionLimit`).
-2. **Drop `app`.** In the next release, delete `postgresql.roles.app` and
-   the `distant-signal-postgres-app` SealedSecret
+2. **Drop `app`, 7 days after the narrowing** (decided, Q5), in its own
+   release. Do it only after `pg_stat_activity` has shown no `usename =
+   'distant_signal_app'` for those 7 days. Delete `postgresql.roles.app`
+   and the `distant-signal-postgres-app` SealedSecret
    (`distant-signal-postgres-roles-sealed.yaml`).
+
+Per-role passwords: `mint-sealed-secret.sh` seals **one** value into every
+`--target` of a run. Run it once per role, never with several role
+targets at once, or every role gets the same password.
 
 **Negative checks (Ranma):** `psql` as each role:
 
@@ -566,14 +662,8 @@ The diff against `db-grants.yaml` is in §4.1. Code and chart:
 - every `perService.*.connect` must be back on `app` before anything
   connects as it again.
 
-**Before narrowing the api:** these api binaries write tables the narrow
-api role cannot write. Run them first, or give them a home (Q2):
-
-- `backfill_incident_lines`: `UPDATE incidents`;
-- `backfill_line_train_summaries`: `line_train_summaries`;
-- `replay_uidless_movements`: backlog and movements;
-- `backfill_trains`: `trains`, but only before the legacy contract
-  migration, which every environment has passed.
+**Before narrowing the api:** 5.4b must be deployed. The api image then
+holds no binary that writes outside the api's grants.
 
 ### 5.6 NetworkPolicies
 
@@ -586,8 +676,15 @@ plus Ranma's comments.
   `clusters/mine-bringer/apps/netpol-distant-signal.yaml` (lines ~24–40):
   api's in-namespace clients become the frontend and the helm test; Redis
   loses api and gains the stream producers; Postgres gains the producers;
-- optionally narrow `allow-egress-same-namespace`, today every pod to
-  every pod (Q6).
+- **narrow or remove `allow-egress-same-namespace`** (decided, Q6). Today
+  it lets every pod reach every pod. Once every in-namespace flow is
+  accounted for, the chart's per-component egress lists cover them all
+  (with `networkPolicy.egress.enabled`), and Ranma removes the broad rule.
+  If a flow the chart does not list remains, Ranma narrows the rule to it
+  instead. Account for the flows with the §4.2 table plus the Redis and
+  Postgres ingress lists, and check them against a day of `kubectl logs`
+  for connection errors after a narrowing in a quiet hour. Do this in its
+  own release after the chart's 5.6 release. Rollback: restore the rule.
 
 **Checks:**
 
@@ -628,7 +725,8 @@ Check with `chart-values-doc.py check`, plus `command grep -rn
 | Sessions, pub/sub, locks | Postgres sessions; advisory locks in Postgres; no pub/sub | – | no |
 | Readiness | `/public/ready` checks Postgres only (`readiness.rs`) | – | no |
 
-The only open choice in 5.4 is the `api_*` metric names (Q1). Two things
+5.4 also renames the `api_*` metrics `ds-store` emits to `store_*`
+(decided, Q1). Two things
 change in the api's environment: it loses `REDIS_URL`, and
 `distant-signal-redis-auth` is no longer mounted.
 
@@ -830,7 +928,7 @@ On 2026-10-08, full-coverage-consumer keeps `api` egress even with
 frontend. Its `devAuthentik` clause (`or $deps.api $deps.idp`) then only
 matters for the api and frontend.
 
-## 5. Risks and open questions
+## 5. Risks and decisions
 
 ### Risks
 
@@ -840,22 +938,32 @@ matters for the api and frontend.
 | Prometheus keeps about 8 days, so a 7-day `increase` is at its edge and the 14-day rule cannot come from it | the switch dates come from Ranma's git history; run the 7-day query on the last possible day |
 | A 5.1 straggler is invisible as `/{unmatched}` | the counted 404 fallback in 5.1 |
 | 5.3 deletes the last rollback path | ship 5.3 only after the 5.1 soak; keep the producers' old sealed OAuth values in Ranma's git history |
-| Narrowing breaks a rare api path the 0b window did not see (a backfill binary, an account deletion edge) | the 0b report; the per-role suites in CI; §5.5's binary list; one-release rollback via the setup Job |
+| Narrowing breaks a rare api path the 0b window did not see (a backfill binary, an account deletion edge) | the 0b report; the per-role suites in CI; 5.4b moves the writing binaries out of the api image first; one-release rollback via the setup Job |
 | Dropping `distant_signal_app` while a forgotten client still uses it | its own release, after `pg_stat_activity` shows no `usename = 'distant_signal_app'` for 7 days |
 | Decommissioning an Authentik object the MCP needs | §1.2's keep list; the MCP's own 401 rate after the change |
-| Local dev breaks after 5.3 | 5.3's local-dev item (Q10) |
+| Local dev breaks after 5.3 | 5.3b ships in the same release (decided, Q10) |
+| Every role gets the same password, because `mint-sealed-secret.sh` seals one value into every `--target` of a run | one run per role (ops note under Decisions) |
 
-### Open questions for the user
+### Decisions (2026-10-08)
 
-| # | Question | Suggested default |
+The user answered all ten questions on 2026-10-08. The steps above
+already follow these answers.
+
+| # | Question | Decision |
 |---|---|---|
-| Q1 | `ds-store` still emits `api_*` metric names (corpus, incident removal, TRUST backlog, train reasons) from the producers' pods. Rename them to `store_*` in 5.4 (with a one-release `(api\|store)` regex in each alert and in any Grafana panel), or keep the names? | rename, with the regex |
-| Q2 | The api's one-off binaries that write (`backfill_incident_lines`, `backfill_line_train_summaries`, `replay_uidless_movements`, `backfill_trains`) cannot run as the narrowed api role. Run them before 5.5 and then delete them, move them to the ingest-writer image (writer role), or keep a break-glass role? | delete those already run; move `replay_uidless_movements` to the writer image |
-| Q3 | Extend `gen-db-grants.py` so a role can hold a table-level privilege and a column-level one on the same table (needed for the enricher)? | yes |
-| Q4 | Under `API_PRIVATE_ROUTES=false`, answer 404 with a counted fallback (as above), or 410 Gone? | 404, counted |
-| Q5 | Drop `distant_signal_app` in the narrowing release, or 7 days later? | 7 days later |
-| Q6 | In phase 5, should Ranma also narrow `allow-egress-same-namespace` (every pod to every pod) to the chart's egress lists? | yes, as a follow-up release after 5.6 |
-| Q7 | For `/corpus-locations` (monthly), wait for one CORPUS load on the `db` sink before starting, or accept the deployed config as enough? | wait for one load |
-| Q8 | After 5.3, should `INGEST_SINK` and `*_SOURCE` disappear, or stay for one release with only the new value accepted (so a stale Ranma value fails at startup)? | stay one release, then go |
-| Q9 | The four never-called GET routes (`/full-coverage-stats`, `/full-coverage-window-stats`, `/station-full-coverage-samples`, `/schedule-feed-ingests`) and the IoI routes have no caller now. Delete them early, as a cleanup outside phase 5, so the inventory shrinks? | yes |
-| Q10 | Local dev after 5.3: add the ingest-writer and DB/Redis URLs to `docker-compose.yml`, or drop the producers from the default compose profile? | add the writer; producers use the superuser locally |
+| Q1 | `ds-store` still emits `api_*` metric names (corpus, incident removal, TRUST backlog, train reasons) from the producers' pods. Rename them or keep them? | **Rename them to `store_*` in phase 5 (5.4).** For one release, each alert takes the `or` over both names (a `(api\|store)` regex). Grafana panels change in the same release |
+| Q2 | The api binaries that write (`backfill_incident_lines`, `backfill_line_train_summaries`, `replay_uidless_movements`, `backfill_trains`) cannot run as the narrowed api role. Where do they go? | **Move them out of the api image (step 5.4b)** into `ds-migrate` or writer-role maintenance tooling, so they never run with api credentials |
+| Q3 | Extend `gen-db-grants.py` so a role can hold table-level SELECT and column-level UPDATE on the same table (the enricher on `incidents`)? | **Yes**: extend `gen-db-grants.py` and `db-grants.yaml` (5.5) |
+| Q4 | Under `API_PRIVATE_ROUTES=false`, answer 404 or 410? | **A counted 404**: a fallback route that answers 404 and increments a counter (5.1) |
+| Q5 | Drop `distant_signal_app` in the narrowing release, or later? | **7 days after the narrowing**, in its own release |
+| Q6 | Should Ranma also narrow `allow-egress-same-namespace`? | **Yes, in phase 5** (5.6): Ranma narrows or removes it once every flow is accounted for |
+| Q7 | Wait for one CORPUS load on the `db` sink before starting? | **No.** Phase 5 does not wait for a real CORPUS load; the deployed config and the 2d tests are enough |
+| Q8 | After 5.3, remove `INGEST_SINK` and `*_SOURCE` at once? | **Keep them one release**, accepting only the new value and refusing `http` (and `http+shadow`) at startup with a clear error. Remove them in the next release |
+| Q9 | Delete the caller-less routes early, outside phase 5? | **Yes, done now** (§1.2): the four GETs and the six island-of-Ireland pairs are deleted |
+| Q10 | How does local docker-compose keep working after 5.3? | **Local dev mirrors production** (step 5.3b): compose runs the ingest-writer, and the producers use the `db`/`stream` sinks against local Postgres and Redis |
+
+**Ops note (Ranma).** `mint-sealed-secret.sh` seals ONE value into every
+`--target` of a run. Per-role passwords (the 0b roles, the `app` drop's
+replacements, the Redis ACL users) therefore need a separate run per role.
+Running it once with several targets would give every role the same
+password.
