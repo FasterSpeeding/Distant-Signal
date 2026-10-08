@@ -1,4 +1,6 @@
 {{- if .Values.pollerIrishRailLive.enabled }}
+{{- /* Its only sink is its stream: its own narrow Redis user (security review H3). */}}
+{{- include "distant-signal.requireOwnRedisUser" (dict "root" . "client" "pollerIrishRailLive" "what" "pollerIrishRailLive.enabled") }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

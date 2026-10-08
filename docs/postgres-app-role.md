@@ -321,6 +321,20 @@ chart's Secret. Nothing connects as it until both switches are on, and
 `connect` refuses to render without the db sink. CI runs schedule-reference's
 DB suite as this role.
 
+### Narrow components never fall back (security review H2, 2026-10-08)
+
+Every component whose role is narrow (schedule_reference, schedule_ingest,
+stations, incidents, trust_backlog, trust_consumer, full_coverage_ro,
+ldbws_ro) fails the render on its db sink or db source unless its
+`perService.<role>.connect` is on: it connects as its own role or not at
+all, never as `distant_signal_app` or the superuser. So the Stage 0b
+switches (`roles.enabled`, `setupJob.enabled`, `perService.enabled`) and
+the role's `connect` go in the same values change as (or before) the
+sink flip. The ingest-writer may still run as app, except that
+`ingestWriter.streams.tfl: apply` needs `perService.writer.connect` (M4):
+`line_status`'s row policy binds the writer's own role only. The table is
+in the chart README ("Per-service Postgres roles").
+
 ### pg_stat_statements
 
 Checked in production (read-only, 2026-10-06): the extension is installed

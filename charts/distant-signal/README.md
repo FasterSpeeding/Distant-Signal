@@ -696,6 +696,25 @@ The four-step, no-downtime rollout (`stage: open`, then the clients one by
 one, then `stage: narrow`, then `defaultUser: "off"`), its checks and its
 rollback are in `docs/redis-acl.md`.
 
+**Render guards (security review, 2026-10-08).** An ingest stream producer
+or the ingest-writer must reach Redis as its own narrow user, never as
+`default` (`~* &* +@all`) or as a `client` user at stage `open` (the same
+rights). The render fails:
+
+- with `redis.acl.enabled` and `defaultUser` on but `redis.auth.enabled`
+  off (`default` would be passwordless, M3);
+- for `pollers.<ldbws|tfl|tocs>.ingest.sink` `http+shadow` or `stream`,
+  `fullCoverageConsumer.ingest.sink` `http+shadow` or `stream`, an enabled
+  island-of-Ireland poller, or any `ingestWriter.streams` entry not `off`,
+  unless `redis.acl.enabled`, `redis.acl.stage: narrow` and that
+  component's own `redis.acl.clients.<client>` are all set (H3);
+- for any `ingestWriter.streams` entry on `apply` unless
+  `redis.acl.defaultUser: "off"` (H3), which in turn needs every client on
+  its own user.
+
+So the ACL rollout through `stage: narrow` comes before the first stream
+`shadow`, and `defaultUser: "off"` before the first `apply`.
+
 ## Per-service Postgres roles (optional)
 
 Off by default (`postgresql.roles.perService.enabled: false`). Stage 0b of
@@ -709,6 +728,28 @@ which the role setup Job runs. `perService.<service>.connect` moves one
 service at a time; with the api on its own role its pool is
 `perService.api.maxConnections` (16). The render fails if the connection
 limits of every role in use exceed `max_connections` minus 3.
+
+**Narrow-role components connect only as their role (security review H2,
+2026-10-08).** Every component with a narrow role fails the render unless
+its `postgresql.roles.perService.<role>.connect` is on (which needs
+`postgresql.roles.enabled`, `setupJob.enabled` and `perService.enabled`):
+it never falls back to `distant_signal_app` or the superuser.
+
+| Values | Needs `perService.<role>.connect` |
+|---|---|
+| `pollers.stations.ingest.sink: db` | `stations` |
+| `pollers.incidents.ingest.sink: db` | `incidents` |
+| `trustBacklogConsumer.ingest.sink: db` | `trust_backlog` |
+| `trustConsumer.ingest.sink: db` or `trustConsumer.internalReads.source: db` | `trust_consumer` |
+| `fullCoverageConsumer.internalReads.source: db` | `full_coverage_ro` |
+| `pollers.ldbws.internalReads.source: db` | `ldbws_ro` |
+| `scheduleFeed.ingest.sink: db` | `schedule_ingest` |
+| `scheduleFeed.reference.ingest.sink: db` | `schedule_reference` |
+| `ingestWriter.streams.tfl: apply` (M4: `line_status`'s row policy binds the writer's role only) | `writer` |
+
+Any other poller on `ingest.sink: db` fails too: it has no narrow role.
+These sinks therefore need the bundled Postgres with `postgresql.roles`;
+an external database cannot use them.
 
 ## Migrations, maintenance and the ingest-writer (optional)
 
@@ -1806,7 +1847,7 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `ingestWriter.loops.enabled` | `false` | Run the train-domain loops (`INGEST_WRITER_LOOPS`) with the api's intervals. |
 | `ingestWriter.streams.station-samples` | `off` | Mode of `ds:ingest:station-samples` (`INGEST_WRITER_STREAMS`): `off` (not read), `shadow` (decode, validate, ack, write nothing) or `apply`. Any stream not `off` gives the writer `REDIS_URL`, its Redis user (`redis.acl.clients.ingestWriter`) and the NetworkPolicy paths to Redis. The writer refuses a stream it has no handlers for yet (plan 3a.6). |
 | `ingestWriter.streams.full-coverage` | `off` | Mode of `ds:ingest:full-coverage`, as `station-samples` (handlers: plan 3a.6). |
-| `ingestWriter.streams.tfl` | `off` | Mode of `ds:ingest:tfl`, as `station-samples` (handlers: plan 3c). |
+| `ingestWriter.streams.tfl` | `off` | Mode of `ds:ingest:tfl`, as `station-samples` (handlers: plan 3c). `apply` needs `postgresql.roles.perService.writer.connect` (security review M4: `line_status`'s row policy binds only the writer's own role; the render fails otherwise). |
 | `ingestWriter.streams.reference` | `off` | Mode of `ds:ingest:reference` (tocs), as `station-samples` (handlers: plan 3c). |
 | `ingestWriter.streams.ioi-gtfs` | `off` | Mode of `ds:ingest:ioi-gtfs` (`pollerIrishRailGtfs`: `ioi-stations`, `ioi-lines`), as `station-samples` (handlers: plan 3c). One stream per island-of-Ireland poller (security review H1): the writer applies only the schemas each stream carries. The old shared `island-of-ireland` key fails the render unless `off`. |
 | `ingestWriter.streams.ioi-nir` | `off` | Mode of `ds:ingest:ioi-nir` (`pollerNirStations`: `ioi-stations`, `ioi-lines`), as `ioi-gtfs`. |
