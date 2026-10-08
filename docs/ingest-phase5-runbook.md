@@ -24,7 +24,7 @@ is made by the user or by Ranma.
 
 The user decided all ten open questions on 2026-10-08. They are recorded
 under [Decisions](#decisions-2026-10-08), and the steps follow them. The
-caller-less routes (Q9) are deleted ahead of phase 5, in their own commit.
+caller-less routes (Q9) have been deleted ahead of phase 5 (§1.1).
 
 ## Contents
 
@@ -39,10 +39,24 @@ caller-less routes (Q9) are deleted ahead of phase 5, in their own commit.
 ### 1.1 The routes
 
 `crates/api/src/routes/mod.rs::private_router` merges `ingest::router()`
-(28 paths, `crates/api/src/routes/ingest.rs`) and `samples::router()`
-(`/sample-stations`, `crates/api/src/routes/samples.rs`). That makes
-**29 paths and 44 path-and-method pairs**. The spec's 27/44 predates
-`/tiploc-locations` and `/schedule-services`.
+(`crates/api/src/routes/ingest.rs`) and `samples::router()`
+(`/sample-stations`, `crates/api/src/routes/samples.rs`).
+
+- **At `dc2b4405`:** 29 paths and 44 path-and-method pairs. The spec's
+  27/44 predates `/tiploc-locations` and `/schedule-services`.
+- **Since the Q9 cleanup (2026-10-08): 26 paths and 34 pairs.** Ten pairs
+  that no code called and production never saw were deleted ahead of
+  phase 5, with their handlers, tests and route-table entries:
+  - the `GET`s of `/full-coverage-stats`, `/full-coverage-window-stats`,
+    `/station-full-coverage-samples` and `/schedule-feed-ingests` (their
+    POSTs stay);
+  - all six island-of-Ireland pairs, with the api's three
+    `INTERNAL_OAUTH_GROUP_{IRISH_RAIL_GTFS,IRISH_RAIL_LIVE,NIR_STATIONS}`
+    and `api.internalOauth.groups.{irishRailGtfs,irishRailLive,nirStations}`.
+
+  Before the delete, a check found no caller in any crate, the frontend,
+  the scripts or the chart (the pollers mention the routes only in
+  comments), and 0 requests for each pair in the 7 days to 2026-10-08.
 
 `crates/api/src/main.rs` nests them under `/private`, behind
 `require_internal_oauth` (`crates/api/src/auth.rs`). That middleware checks
@@ -90,9 +104,9 @@ read-only, for the 7 days to 2026-10-08 (query in §1.3).
 | `/stations` | POST, GET | poller-stations | 2, 2 | `pollers.stations.ingest.sink: db` (2b) |
 | `/tocs` | POST, GET | poller-tocs | 2, 1 | `pollers.tocs.ingest.sink: stream` with writer `streams.reference: apply` (3c.2) |
 | `/corpus-locations` | POST | schedule-ingest's CORPUS mode (`CORPUS_API_URL`) | 0 (monthly) | `scheduleFeed.ingest.sink: db` (2d) |
-| `/full-coverage-stats`, `/full-coverage-window-stats`, `/station-full-coverage-samples` | GET | **no caller in the code** | 0 | nothing to move |
-| `/schedule-feed-ingests` | GET | **no caller in the code** (schedule-reference's grant was removed 2026-09-25) | 0 | nothing to move |
-| `/island-of-ireland-{stations,lines,station-samples}` | GET, POST | **no caller**: since 3c.2 (D8) the three pollers are stream-only and disabled | 0 | nothing to move |
+| ~~`/full-coverage-stats`, `/full-coverage-window-stats`, `/station-full-coverage-samples`~~ | GET | no caller in the code | 0 | **deleted 2026-10-08 (Q9)** |
+| ~~`/schedule-feed-ingests`~~ | GET | no caller in the code (schedule-reference's grant was removed 2026-09-25) | 0 | **deleted 2026-10-08 (Q9)** |
+| ~~`/island-of-ireland-{stations,lines,station-samples}`~~ | GET, POST | no caller: since 3c.2 (D8) the three pollers are stream-only and disabled | 0 | **deleted 2026-10-08 (Q9)** |
 
 `/{unmatched}` saw 19 `GET` 404s in the same 7 days.
 
@@ -137,9 +151,10 @@ sum by (exported_endpoint, method) (
     namespace="distant-signal", exported_endpoint=~"/private/.*"}[7d]))
 ```
 
-Every one of the 44 rows must be 0. A missing row means that api pod
-generation never registered the pair, which is not the same as 0, so check
-that all 44 rows are present. The label is `exported_endpoint` behind the
+Every one of the 34 rows (44 before the Q9 cleanup) must be 0. A missing
+row means that api pod generation never registered the pair, which is not
+the same as 0, so check that all 34 rows are present. The ten deleted
+pairs keep old series in Prometheus until they age out of retention. The label is `exported_endpoint` behind the
 PodMonitor (`metrics.prometheusRule.api5xx.routeLabel`).
 
 **Prometheus keeps about 8 days** (`time() -
@@ -253,7 +268,7 @@ Order: **5.1 → 7-day soak → 5.2 + 5.3 (+ 5.3b) → 5.4 → 5.4b → 5.5 →
   no longer see which route a straggler called. Instead, nest a fallback
   router under `/private` that answers 404 and increments
   `distant_signal_api_private_disabled_total{route}`. Use the matched
-  pair's label from the existing table, so cardinality stays bounded (44
+  pair's label from the existing table, so cardinality stays bounded (34
   values plus `other`), and log the caller's `sub`/`azp` claim if a
   bearer is present. Also skip `route_metrics::register`'s private pairs.
 - `charts/distant-signal/values.yaml`: `api.privateRoutes.enabled: true`.
@@ -302,8 +317,11 @@ producer back on `sink: http` / `source: http`.
     `srv-ds-mcp` bearer still gets the MCP budget;
   - the `/private` text in `AppState`'s docs and `Debug` impl.
 - `crates/api/src/data/config.rs`:
-  - the 13 `internal_oauth_group_*` fields except `internal_oauth_group_mcp`;
-  - `chart_env_wiring_tests`' `>= 13` sanity bound. It becomes "exactly
+  - the 11 `internal_oauth_group_*` fields other than
+    `internal_oauth_group_mcp` (the three island-of-Ireland ones already
+    went with Q9);
+  - `chart_env_wiring_tests`' `>= 12` sanity bound, and the `>= 12` in
+    `app.rs`'s default-group test. It becomes "exactly
     `INTERNAL_OAUTH_GROUP_MCP`";
   - `private_routes` from 5.1.
 - `crates/api/src/test_support.rs`: the deleted groups.
@@ -337,7 +355,7 @@ producer back on `sink: http` / `source: http`.
 
 **Chart:**
 
-- `templates/api-deployment.yaml`: the 13 `INTERNAL_OAUTH_GROUP_*` env
+- `templates/api-deployment.yaml`: the 11 `INTERNAL_OAUTH_GROUP_*` env
   except `_MCP`, `API_PRIVATE_REQUEST_TIMEOUT_SECS` and `API_PRIVATE_ROUTES`.
 - `values.yaml`: `api.privateRoutes`, `api.timeouts.privateRequestTimeoutSecs`,
   and `api.internalOauth.groups.*` except `mcp`. Rewrite the

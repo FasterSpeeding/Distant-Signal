@@ -78,9 +78,9 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value = "svc-schedule-reference")]
     pub internal_oauth_group_schedule_reference: String,
     /// Gates every route the (now real, merged) `full-coverage-consumer`
-    /// producer surface uses: `POST`/`GET /private/station-full-coverage-samples`
+    /// producer surface uses: `POST /private/station-full-coverage-samples`
     /// (per-station, `docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md`
-    /// Open Question #4) and `POST`/`GET /private/full-coverage-stats`
+    /// Open Question #4) and `POST /private/full-coverage-stats`
     /// (per-line, this plan's own Task 6) -- one producer service, one
     /// credential, both endpoints it writes to. See
     /// docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md
@@ -91,35 +91,6 @@ pub struct ServiceArguments {
     /// `trust-backlog-consumer`'s own service-account group.
     #[arg(long, env, default_value = "svc-trust-backlog-consumer")]
     pub internal_oauth_group_trust_backlog: String,
-    /// Gates `POST`/`GET /private/island-of-ireland-stations` and
-    /// `/island-of-ireland-lines` -- the new `poller-irish-rail-gtfs`
-    /// crate's own credential. See
-    /// docs/superpowers/plans/2026-09-05-ireland-rail-support-plan.md Task A3.
-    ///
-    /// Empty by default (2026-09-30), as are the other two island-of-Ireland
-    /// groups below: those pollers ship disabled and no such Authentik group
-    /// exists, so the api no longer names one. Empty closes the routes it
-    /// gates (every caller gets `403`); set it when enabling the poller.
-    #[arg(long, env, default_value = "")]
-    pub internal_oauth_group_irish_rail_gtfs: String,
-    /// Gates `POST`/`GET /private/island-of-ireland-station-samples` -- the
-    /// new `poller-irish-rail-live` crate's own credential. See
-    /// docs/superpowers/plans/2026-09-05-ireland-rail-support-plan.md Task B3.
-    /// Empty by default: see `internal_oauth_group_irish_rail_gtfs`.
-    #[arg(long, env, default_value = "")]
-    pub internal_oauth_group_irish_rail_live: String,
-    /// Gates `POST`/`GET /private/island-of-ireland-stations` and
-    /// `/island-of-ireland-lines` ALONGSIDE `poller-irish-rail-gtfs`'s own
-    /// credential above -- `poller-nir-stations`'s own credential. Two
-    /// independent producer services write to these same two tables (one
-    /// per island-of-ireland network); each keeps its own service
-    /// identity rather than sharing `internal_oauth_group_irish_rail_gtfs`,
-    /// matching this file's existing one-producer-one-credential
-    /// convention. See
-    /// docs/superpowers/plans/2026-09-05-nir-tier-a-implementation-plan.md
-    /// Task 1. Empty by default: see `internal_oauth_group_irish_rail_gtfs`.
-    #[arg(long, env, default_value = "")]
-    pub internal_oauth_group_nir_stations: String,
     /// Gates `POST /private/corpus-locations` -- Network Rail CORPUS loads
     /// from `schedule-ingest`'s CORPUS mode
     /// (docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md).
@@ -694,9 +665,9 @@ mod chart_env_wiring_tests {
             .map(str::to_string)
             .collect();
         assert!(
-            declared.len() >= 13,
+            declared.len() >= 12,
             "sanity check: this ServiceArguments declares one {GROUP_ENV_PREFIX}* env var per \
-             real /private/* caller (13 of them as of 2026-09-25); got {declared:?}"
+             real /private/* caller, plus the MCP's (12 as of 2026-10-08); got {declared:?}"
         );
 
         let missing: Vec<&String> = declared

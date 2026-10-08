@@ -986,13 +986,15 @@ production (user decision).
 
 Corrections from that inventory:
 
-- **The route count.** There are 29 paths and 44 path-and-method pairs
-  (`/tiploc-locations` and `/schedule-services` came after the spec's
-  count of 27).
-- **Routes with no caller.** Some have none today:
+- **The route count.** At `dc2b4405` there were 29 paths and 44
+  path-and-method pairs (`/tiploc-locations` and `/schedule-services`
+  came after the spec's count of 27). After the Q9 cleanup there are 26
+  paths and 34 pairs.
+- **Routes with no caller.** These were deleted on 2026-10-08 (Q9):
   - the `GET`s of `/full-coverage-stats`, `/full-coverage-window-stats`,
     `/station-full-coverage-samples` and `/schedule-feed-ingests`;
-  - all six island-of-Ireland pairs (stream-only since 3c.2).
+  - all six island-of-Ireland pairs (stream-only since 3c.2), with the
+    api's three island-of-Ireland OAuth groups.
 - **The entry criteria.**
   - "0 requests for 7 days" proves nothing for `/corpus-locations`
     (monthly) or schedule-reference's routes (per delivery: one in the 7

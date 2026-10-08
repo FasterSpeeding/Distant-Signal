@@ -998,9 +998,6 @@ mod route_scoping_tests {
             internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
             internal_oauth_group_trust_backlog: "svc-trust-backlog-consumer".to_string(),
-            internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
-            internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
-            internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
             internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
@@ -1320,9 +1317,6 @@ mod route_scoping_tests {
             &config.internal_oauth_group_schedule_ingest,
             &config.internal_oauth_group_full_coverage,
             &config.internal_oauth_group_trust_backlog,
-            &config.internal_oauth_group_irish_rail_gtfs,
-            &config.internal_oauth_group_irish_rail_live,
-            &config.internal_oauth_group_nir_stations,
         ];
 
         for group in other_groups {
@@ -1405,7 +1399,9 @@ mod route_scoping_tests {
     }
 
     /// `/full-coverage-window-stats` (2026-09-27) is full-coverage-consumer's
-    /// alone, both methods, like `/full-coverage-stats`.
+    /// alone, POST only, like `/full-coverage-stats`. Its read-back GET had
+    /// no caller and was deleted (2026-10-08), so a GET is refused even with
+    /// the right group: it is not in the table.
     #[tokio::test]
     async fn only_full_coverage_consumers_token_is_accepted_on_full_coverage_window_stats() {
         let (server, app, _routes) = test_app().await;
@@ -1416,19 +1412,26 @@ mod route_scoping_tests {
             "svc-full-coverage-consumer-1",
             &[config.internal_oauth_group_full_coverage.as_str()],
         );
-        for method in [Method::GET, Method::POST] {
-            assert_eq!(
-                send(
-                    &router,
-                    method.clone(),
-                    "/full-coverage-window-stats",
-                    Some(&token)
-                )
-                .await,
-                StatusCode::OK,
-                "{method}"
-            );
-        }
+        assert_eq!(
+            send(
+                &router,
+                Method::POST,
+                "/full-coverage-window-stats",
+                Some(&token)
+            )
+            .await,
+            StatusCode::OK,
+        );
+        assert_eq!(
+            send(
+                &router,
+                Method::GET,
+                "/full-coverage-window-stats",
+                Some(&token)
+            )
+            .await,
+            StatusCode::FORBIDDEN,
+        );
 
         let other_groups = [
             &config.internal_oauth_group_incidents,
@@ -1506,20 +1509,17 @@ mod route_scoping_tests {
         );
     }
 
-    /// The island-of-Ireland groups are empty by default (no such
-    /// Authentik groups exist; the pollers ship disabled). An empty group
-    /// is dropped from its route entry, so the path stays in the table but
-    /// admits nobody -- not even a token whose `groups` claim holds an
-    /// empty string -- while every other route keeps its own group.
+    /// A blank group is dropped from its route entry, so the path stays in
+    /// the table but admits nobody -- not even a token whose `groups` claim
+    /// holds an empty string -- while every other route keeps its own
+    /// group. Exercised with the CORPUS group, which gates one route only.
     #[tokio::test]
     async fn a_blank_group_closes_its_routes_to_every_caller() {
         let mut config = test_config();
-        config.internal_oauth_group_irish_rail_gtfs = String::new();
-        config.internal_oauth_group_irish_rail_live = String::new();
-        config.internal_oauth_group_nir_stations = "  ".to_string();
+        config.internal_oauth_group_corpus = "  ".to_string();
         let (server, app, routes) = test_app_with(config).await;
         for (path, method, groups) in &routes {
-            if path.starts_with("/island-of-ireland") {
+            if *path == "/corpus-locations" {
                 assert!(groups.is_empty(), "{method} {path}: {groups:?}");
             } else {
                 assert!(!groups.is_empty(), "{method} {path}");
@@ -1527,21 +1527,13 @@ mod route_scoping_tests {
         }
 
         let router = test_router(app);
-        for groups in [&[""][..], &["  "][..], &["svc-poller-irish-rail-gtfs"][..]] {
+        for groups in [&[""][..], &["  "][..], &["svc-corpus-ingest"][..]] {
             let token = token_for(&server.uri(), "svc-under-test", groups);
-            for method in [Method::GET, Method::POST] {
-                assert_eq!(
-                    send(
-                        &router,
-                        method.clone(),
-                        "/island-of-ireland-stations",
-                        Some(&token)
-                    )
-                    .await,
-                    StatusCode::FORBIDDEN,
-                    "{method} with groups {groups:?}"
-                );
-            }
+            assert_eq!(
+                send(&router, Method::POST, "/corpus-locations", Some(&token)).await,
+                StatusCode::FORBIDDEN,
+                "groups {groups:?}"
+            );
         }
     }
 
@@ -1552,11 +1544,9 @@ mod route_scoping_tests {
     /// still be accepted on that exact method -- tested individually per
     /// group (not just the union), since the whole point of a caller
     /// being listed is that ITS OWN token, alone, is sufficient. A couple
-    /// of entries now carry more than one group -- GET /stanox-crs
+    /// of entries carry more than one group -- GET /stanox-crs
     /// (trust-consumer, full-coverage-consumer, and trust-backlog-consumer
-    /// all read it) and GET /schedule-feed-ingests (schedule-ingest and
-    /// schedule-reference both read it) -- every other entry still carries
-    /// exactly one. This is the check that "nothing else broke" -- if a
+    /// all read it) -- every other entry carries exactly one. This is the check that "nothing else broke" -- if a
     /// future edit to
     /// `build_internal_oauth_routes` drops or mis-scopes any entry, this
     /// test fails alongside the explicit `/stanox-crs` tests above.
