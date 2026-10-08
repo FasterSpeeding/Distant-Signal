@@ -3,14 +3,23 @@ import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrainsPage, { metadata } from './page';
 import * as api from '@/lib/api';
+import { nowInLondon } from '@/lib/londonWallClock';
 // Namespace import alongside the named one purely so the "no
 // generateMetadata export" case below can test the module's shape.
 import * as pageModule from './page';
 
-// Only the TOC list is stubbed; every other export stays real.
+// Only the TOC list and the search-date range are stubbed; every other
+// export stays real. The date range fails by default, so the picker shows
+// its fallback window unless a test says otherwise.
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
-  return { ...actual, getAllTocs: vi.fn(async () => []) };
+  return {
+    ...actual,
+    getAllTocs: vi.fn(async () => []),
+    getTrainSearchDates: vi.fn(async () => {
+      throw new Error('not stubbed');
+    }),
+  };
 });
 
 vi.mock('next/navigation', () => ({
@@ -79,6 +88,28 @@ describe('TrainsPage', () => {
   it('pre-fills the date from the query string', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'man', date: '2026-09-16' }) }));
     expect(screen.getByDisplayValue('2026-09-16')).toBeInTheDocument();
+  });
+
+  describe('the date picker bounds', () => {
+    const today = nowInLondon();
+    const day = (offset: number) => today.add(offset, 'day').format('YYYY-MM-DD');
+
+    it('come from the search-date range when it loads', async () => {
+      vi.mocked(api.getTrainSearchDates).mockResolvedValueOnce({
+        from: day(-7),
+        to: day(28),
+        publishedFrom: day(-1),
+        publishedTo: day(28),
+        provisionalFrom: day(8),
+      });
+      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
+      expect(screen.getByText('Search a different day, up to 7 days back and 28 days ahead.')).toBeInTheDocument();
+    });
+
+    it('fall back to a week either side when the range fails to load', async () => {
+      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
+      expect(screen.getByText('Search a different day, up to a week either side of today.')).toBeInTheDocument();
+    });
   });
 
   describe("result rows' operator", () => {

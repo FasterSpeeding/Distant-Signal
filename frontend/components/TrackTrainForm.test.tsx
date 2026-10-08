@@ -114,30 +114,45 @@ vi.mock('next/navigation', () => ({
 // just standing in for the one component this stand-in actually needs to
 // replace. Same pattern `TrainSearchForm.test.tsx`'s own `DatePickerInput`
 // mock already uses.
-vi.mock('@mantine/dates', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@mantine/dates')>()),
-  DateTimePicker: ({
-    label,
-    value,
-    onChange,
-    description,
-  }: {
-    label: string;
-    value: string | null;
-    onChange: (value: string | null) => void;
-    description?: string;
-  }) => (
-    <div>
-      <label htmlFor="test-scheduled-departure">{label}</label>
-      <input
-        id="test-scheduled-departure"
-        value={value ?? ''}
-        onChange={(event) => onChange(event.target.value || null)}
-      />
-      {description && <p>{description}</p>}
-    </div>
-  ),
-}));
+// The window-mode `DatePickerInput` stays the real component; this only
+// records the `maxDate` it was last rendered with, so its horizon can be
+// asserted without clicking through the calendar.
+const datePickerInputProps = vi.hoisted((): { maxDate: unknown } => ({ maxDate: undefined }));
+vi.mock('@mantine/dates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@mantine/dates')>();
+  const RealDatePickerInput = actual.DatePickerInput;
+  return {
+    ...actual,
+    DatePickerInput: (props: Parameters<typeof RealDatePickerInput>[0]) => {
+      datePickerInputProps.maxDate = props.maxDate;
+      return <RealDatePickerInput {...props} />;
+    },
+    DateTimePicker: ({
+      label,
+      value,
+      onChange,
+      description,
+      maxDate,
+    }: {
+      label: string;
+      value: string | null;
+      onChange: (value: string | null) => void;
+      description?: string;
+      maxDate?: string;
+    }) => (
+      <div>
+        <label htmlFor="test-scheduled-departure">{label}</label>
+        <input
+          id="test-scheduled-departure"
+          data-max-date={maxDate}
+          value={value ?? ''}
+          onChange={(event) => onChange(event.target.value || null)}
+        />
+        {description && <p>{description}</p>}
+      </div>
+    ),
+  };
+});
 
 // A fixed "now" well before every fixture departure time used below
 // (earliest is '08:22') -- `scheduledDeparture` now defaults to `nowInLondon()`
@@ -357,6 +372,46 @@ describe('TrackTrainForm', () => {
     expect(body.leg).not.toHaveProperty('destinationCrs');
     expect(body.leg).not.toHaveProperty('operator');
     expect(body.leg).not.toHaveProperty('skippedStations');
+  });
+
+  // The 28-day pin horizon (`PIN_MAX_DAYS_AHEAD`, mirroring the backend's).
+  // `FIXED_NOW` is 2026-09-05 in London, so the last pin date is 2026-10-03.
+  it('limits the departure picker to 28 days ahead and says so', () => {
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    expect(screen.getByLabelText(/Scheduled departure/)).toHaveAttribute('data-max-date', '2026-10-03 23:59:59');
+    expect(screen.getByText('Must be within the last 6 hours, or up to 28 days ahead')).toBeInTheDocument();
+  });
+
+  it('submits a pin 20 days ahead', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-09-25 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
+    });
+    expect(journeyCallBody(fetchMock).leg.serviceDate).toBe('2026-09-25');
+  });
+
+  it('refuses a pin 29 days ahead without calling the backend', () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-10-04 08:00:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    expect(
+      screen.getByText('That departure is too far ahead — trains can be tracked up to 28 days before they run.'),
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
   });
 
   it('on success, POSTs to /api/Journeys and redirects to /journeys/{journeyId}', async () => {
@@ -1099,6 +1154,35 @@ describe('TrackTrainForm', () => {
       switchToWindowMode();
 
       expect(screen.getByText('At least one of the four times below is required to search.')).toBeInTheDocument();
+    });
+
+    // The same 28-day horizon as a pin (`FIXED_NOW` is 2026-09-05 in
+    // London, so the last date is 2026-10-03).
+    it('limits the window Date picker to 28 days ahead', () => {
+      renderWithMantine(<TrackTrainForm />);
+      switchToWindowMode();
+      expect(datePickerInputProps.maxDate).toBe('2026-10-03');
+    });
+
+    it('refuses a window 29 days ahead without calling the backend', () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(
+        <TrackTrainForm
+          initialMode="window"
+          initialOrigin="WAT"
+          initialDestination="RDG"
+          initialDepartAfter="09:00"
+          initialServiceDate="2026-10-04"
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
+
+      expect(
+        screen.getByText('That departure is too far ahead — trains can be tracked up to 28 days before they run.'),
+      ).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
     });
 
     // Review §2.2/M13: the field shows a real default value, not a grey

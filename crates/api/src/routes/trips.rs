@@ -738,6 +738,16 @@ async fn get_trip_plan(
     if let Some(summary) = live_summary {
         body["live"] = summary;
     }
+    // Additive (2026-10-08): whether `date`'s timetable is still
+    // provisional. Once per response, not per journey or leg: every leg of
+    // a plan runs on the one requested service date.
+    if let Some(object) = body.as_object_mut() {
+        crate::routes::provisional::TimetableCertainty::for_date(
+            date,
+            crate::routes::london_today(),
+        )
+        .insert_into(object);
+    }
     Ok(Json(body))
 }
 
@@ -3200,6 +3210,48 @@ mod db_tests {
             .execute(pool)
             .await
             .ok();
+    }
+
+    /// `provisional`/`provisionalFrom` (2026-10-08): the same plan is firm
+    /// when "now" is the service date itself and provisional when it is
+    /// fifteen days before it; `provisionalFrom` follows the clock.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn plan_for_a_far_date_is_marked_provisional() {
+        let pool = connect().await;
+        cleanup_live(&pool, &["TWPROV1"], "TWPROV").await;
+        seed_stations(&pool, "TWPROV", &[("ZPA", "ZPROVA"), ("ZPB", "ZPROVB")]).await;
+        seed_schedule(
+            &pool,
+            "TWPROV1",
+            &[
+                (0, "ZPROVA", "origin", None, Some("10:00:00")),
+                (1, "ZPROVB", "terminate", Some("10:30:00"), None),
+            ],
+        )
+        .await;
+        let uri = format!(
+            "/Trips/plan?origin=ZPA&destination=ZPB&date={}&departAfter=09:00&live=false",
+            live_date()
+        );
+
+        for (now, expected, from) in [
+            (live_now(), false, "2026-10-13"),
+            ("2026-09-20T08:30:00Z".parse().unwrap(), true, "2026-09-28"),
+        ] {
+            let _now = crate::routes::pin_london_now_for_tests(now);
+            let (status, body) = get(test_router(test_app(pool.clone())), uri.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(
+                body["segments"][0]["itineraries"][0]["legs"][0]["trainUid"], "TWPROV1",
+                "{body:?}"
+            );
+            assert_eq!(body["provisional"], expected, "{now}: {body:?}");
+            assert_eq!(body["provisionalFrom"], from, "{body:?}");
+        }
+
+        cleanup_live(&pool, &["TWPROV1"], "TWPROV").await;
     }
 
     fn train_uids(body: &Value, segment: usize) -> Vec<String> {

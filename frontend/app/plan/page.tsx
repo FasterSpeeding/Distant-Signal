@@ -2,6 +2,7 @@ import { Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
+import { getTrainSearchDates } from '@/lib/api';
 import { TRACK_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { parsePlanSearchParams } from '@/lib/tripPlanUrl';
 
@@ -61,6 +62,10 @@ export default async function PlanPage({
   const originParam = Array.isArray(origin) ? origin[0] : origin;
   const planOrigin = originParam && CRS_PATTERN.test(originParam) ? originParam.toUpperCase() : undefined;
   const planQuery = parsePlanSearchParams(params);
+  // The date picker's last day: what the timetable search accepts
+  // (`getTrainSearchDates`, cached for a few minutes), as on `/trains`. A
+  // failure leaves `null`, and the picker falls back to a week ahead.
+  const searchDates = await getTrainSearchDates().catch(() => null);
 
   return (
     <Stack p="lg" gap="md">
@@ -77,7 +82,7 @@ export default async function PlanPage({
         You don&apos;t need an account to plan. To track the route you pick, you&apos;ll be asked to log in when you
         save it.
       </Text>
-      <JourneyCreationFlow planOnly planOrigin={planOrigin} planQuery={planQuery} />
+      <JourneyCreationFlow planOnly planOrigin={planOrigin} planQuery={planQuery} planSearchDates={searchDates} />
     </Stack>
   );
 }

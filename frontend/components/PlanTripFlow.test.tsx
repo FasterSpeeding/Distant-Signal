@@ -681,6 +681,29 @@ describe('PlanTripFlow', () => {
     await screen.findByText('A faster route exists with more changes than shown below.');
   });
 
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+  ])('provisional %s shows the timetable note: %s', async (provisional, shown) => {
+    const plan: TripPlanResponse =
+      provisional === undefined
+        ? singleSegmentPlan
+        : { ...singleSegmentPlan, provisional, provisionalFrom: '2026-10-16' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(plan) }));
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    fireEvent.click(screen.getByText('Find routes'));
+
+    await screen.findByText(byVisibleText('EUS → MKC'));
+    if (shown) {
+      expect(screen.getByText('Timetable may change')).toBeInTheDocument();
+    } else {
+      expect(screen.queryByText('Timetable may change')).not.toBeInTheDocument();
+    }
+  });
+
   it('shows the login prompt (not a raw error) on a 401 from the initial POST /Journeys, and never calls onCreated', async () => {
     const fetchMock = vi
       .fn()

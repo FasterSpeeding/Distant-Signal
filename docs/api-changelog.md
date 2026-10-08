@@ -3,6 +3,153 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-08: the same tracking limits for every leg type
+
+The 28-day horizon and the cap of 100 upcoming tracked trains used to
+apply only to pins and track-by-uid. They now apply to every way of
+tracking. No request or response shape changes; the new refusals are
+`400` (`text/plain`) with the pins' own wording.
+
+- Horizon (a `serviceDate` after today+28, London):
+  `That departure is too far ahead — trains can be tracked up to 28 days
+  before they run.` Now checked for `knownTrain` and `window` legs on
+  `POST /Journeys` and `POST /Journeys/{id}/legs`, the picked train on
+  `POST /Journeys/{id}/legs/{legId}/train`, and the date on
+  `POST /JourneyTemplates/{id}/materialize`. `POST
+  /Train/by-uid/{uid}/{date}/track` now uses this wording too (it said
+  "That train is too far ahead").
+- Cap (100 or more subscriptions dated today or later):
+  `You're already tracking 100 upcoming trains, which is the maximum.
+  Remove some to make room.` Now checked on the same routes. A
+  `knownTrain` leg or a train pick for a train the user already tracks
+  reuses that subscription and is still allowed at the cap. A `window`
+  leg (and a template run, whose legs are window legs) is checked even
+  though it holds no subscription until its train is picked.
+- Only creation is checked. Existing journeys, legs and subscriptions
+  past either limit are untouched, and the notifier's scheduled template
+  runs and auto-commits are not checked.
+- Group shares are unaffected: sharing links an existing subscription or
+  journey and creates neither.
+
+## 2026-10-08: `provisional` for far-ahead service dates
+
+Additive only: two new top-level keys on three responses, and one on
+`GET /public/trains/search/dates`. Nothing is filtered or changed.
+
+### The rule
+
+A service date is **provisional** when it is more than N days after
+today (London): `serviceDate > today + N`, i.e. `serviceDate >=
+provisionalFrom` where `provisionalFrom = today + N + 1`. N is the
+deployment setting `SCHEDULE_PROVISIONAL_AFTER_DAYS` (0-60, default 7, the
+old publish horizon), so by default today..today+7 are firm and
+today+8..today+28 are provisional.
+
+Why: late STP overlays and cancellations (engineering works, replacement
+buses) reach the CIF only a few weeks before the day, so a far date's
+timetable can still change between daily deliveries. No per-row field in
+the data says whether a date's short-term plan is complete
+(`schedule_services.stp` says which record won, `P`/`O`/`N`, not whether
+another is coming), so the rule is distance from today, applied once per
+response.
+
+### New keys
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `provisional` | boolean | `true` when the response's service date is `provisionalFrom` or later. |
+| `provisionalFrom` | `"YYYY-MM-DD"` | The first provisional service date, so a client can mark dates without its own copy of N. Moves at London midnight. |
+
+Both are top-level, once per response (every row, journey and leg in the
+response shares its one service date):
+
+- `GET /public/trains/search`: next to `results` and `nextCursor`, for the
+  searched `date` (today when omitted). Rows are unchanged. Every page of
+  one search carries the same values.
+- `GET /Train/by-uid/{uid}/{date}`: next to the train's own fields, for
+  `{date}`. Distinct from `delayProvisional`, which is about a delay
+  forecast, not the timetable.
+- `GET /Trips/plan`: next to `segments`/`journeys`, for `date`. Applies to
+  every journey and leg in the plan; there is no per-journey or per-leg
+  copy.
+- `GET /public/trains/search/dates`: gains `provisionalFrom` only (it may be
+  later than `to` when N is raised).
+
+Example (today 2026-10-08, default N=7),
+`GET /public/trains/search?station=PAD&date=2026-10-20`:
+`{"results": [...], "nextCursor": null, "provisional": true,
+"provisionalFrom": "2026-10-16"}`; the same search for `2026-10-15` has
+`"provisional": false`.
+
+A client should treat a missing `provisional` (an older DS) as `false`.
+Errors (`400`/`404`, `text/plain`) are unchanged and carry neither key.
+
+## 2026-10-08: `/public/trains/search` dates beyond 7 days, and the arrival at `stops_at`
+
+Additive only: a request that worked before gets the same answer, plus
+the new `stopsAt*` fields when it sets `stops_at`.
+
+### `date`: any published date
+
+- `date` is now accepted when it is within 7 days of today (as before) OR
+  within the range of service dates DS holds timetable rows for. DS
+  publishes today plus 28 days ahead (`SCHEDULE_FORWARD_PUBLISH_DAYS`) and
+  keeps 8 days back, so in practice the range is today−8 to today+28. It
+  follows the publish window and retention on its own. Querying a far date costs the same as
+  querying today.
+- A date outside both is a `400` (`text/plain`) naming both ranges:
+  `date must be between 2026-09-30 and 2026-10-15: schedule data is
+  published for 2026-09-30 to 2026-10-14`. With no rows at all, it is the
+  text from before plus a suffix: `date must be within 7 days ago and 7
+  days from today: no schedule data is published`.
+- Unchanged: a date inside the range with no rows of its own (not yet
+  published, or a gap) is still a `404`, `no CIF-derived schedule data has
+  been published for YYYY-MM-DD`; a malformed date is still `400 date must
+  be YYYY-MM-DD`. `GET /public/trains/resolve` keeps the plain ±7-day
+  window.
+
+### New: `GET /public/trains/search/dates`
+
+`200 {"from": "2026-09-30", "to": "2026-10-15", "publishedFrom":
+"2026-09-30", "publishedTo": "2026-10-14"}`. `from`/`to` (inclusive) bound
+the `date`s the search accepts; `publishedFrom`/`publishedTo` bound the
+dates with rows (`null` when there are none). Dates are London service
+dates.
+
+### New row fields with `stops_at`
+
+Only when the request sets `stops_at`, each `results[]` row gains the
+arrival at that station. Without `stops_at` the keys are absent.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `stopsAtArrival` | `"HH:MM"` or `null` | Public (GBTT) arrival at `stops_at`. |
+| `stopsAtArrivalDayOffset` | integer or `null` | Days after `date` (the service date) that `stopsAtArrival` falls on. |
+| `stopsAtWorkingArrival` | `"HH:MM"` or `null` | Working-timetable arrival there: the time `arrival_from`/`arrival_to` compare. |
+| `stopsAtWorkingArrivalDayOffset` | integer or `null` | Days after `date` for `stopsAtWorkingArrival`. |
+
+- **Which call.** The call is the same one the `stops_at` filter matched:
+  the EARLIEST call at `stops_at` that comes after `station` in the journey,
+  allows alighting, and, when given, has its working arrival inside
+  `arrival_from`/`arrival_to`. If `stops_at` is the train's terminus and no
+  earlier call qualifies, it is the terminus (then the fields equal
+  `publicDestinationArrival`/`destinationArrival` and their offset). So a
+  train calling at `stops_at` twice reports the first call, unless an
+  arrival bound excludes it, in which case it reports the call that
+  satisfied the bound.
+- **Day offsets** count from the service date, like `dayOffset`. A stop
+  reached after midnight has `1`. An arrival before midnight at a stop left
+  after midnight has the earlier day. A public time that rounds across
+  midnight (23:59H working, 00:00 public) is on the next day.
+- **Null.** A time and its offset are `null` together, when that call has
+  no such time stored (a public time before the schedule's next publish).
+- Example, `?station=PAD&stops_at=RDG&date=2026-10-20`:
+  `{"uid": "C12345", "stationCrs": "PAD", "publicDeparture": "23:48",
+  "dayOffset": 0, "destinationCrs": "BRI", "publicDestinationArrival":
+  "01:32", "destinationArrivalDayOffset": 1, "stopsAtArrival": "00:15",
+  "stopsAtArrivalDayOffset": 1, "stopsAtWorkingArrival": "00:14",
+  "stopsAtWorkingArrivalDayOffset": 1, ...}`
+
 ## 2026-10-08: `GET /public/ready` and graceful shutdown
 
 - New `GET /public/ready`, the readiness probe: `200 {"status":"ready"}`,
@@ -15,6 +162,59 @@ needs to know about. Newest first. Field names are as served (camelCase).
   `API_SHUTDOWN_DRAIN_SECS`, default 20 s) instead of resetting them. A
   keep-alive connection is closed after its current response, so a client
   must reconnect for its next request, as on any closed connection.
+
+## 2026-10-08: track trains four weeks ahead
+
+The tracking horizon follows the timetable window below: a train can now
+be tracked up to 28 days before it runs (was 7). No request or response
+shape changes.
+
+- `POST /Train/by-uid/{uid}/{date}/track`, `POST /Train/track` and a
+  `pin`-mode leg on `POST /Journeys` accept a date up to today+28
+  (London). Later dates are still `400`, now reading
+  `... trains can be tracked up to 28 days before they run.` A pin's
+  `scheduled_departure` may be up to 29 days after the request (the extra
+  day covers a service running past midnight).
+- A far pin is accepted as `resolutionStatus: "pending"` and normally
+  schedule-matches the day before it runs, when that date's line
+  timetable is published; nothing changes for the client in between.
+- Notifications are unchanged: a far tracked train is notified only for
+  real movement (delay, cancellation) and the same-day skip check.
+- The per-user cap of 100 upcoming tracked trains is unchanged; with the
+  longer window it covers more days ahead.
+- Unchanged: `GET /public/trains/resolve` keeps its 7-day window (it
+  resolves live departure-board rows, which never reach that far), and
+  `GET /public/trains/search` keeps its own window (see below).
+- `SCHEDULE_FORWARD_PUBLISH_DAYS` now accepts 28-60 (was 7-60): it can no
+  longer be set below the tracking horizon.
+
+## 2026-10-08: timetable data four weeks ahead
+
+DS now publishes its timetable products for today through today+28 (was
+today+7). No request or response shape changes; dates that used to `404`
+for lack of data now answer.
+
+- `GET /Trips/plan`: a `date` up to today+28 now plans. Past that it is
+  still `404`, `no CIF-derived schedule data has been published for
+  YYYY-MM-DD yet`.
+- `GET /Train/by-uid/{uid}/{date}`: a train's scheduled stops and its
+  bus/ferry mode are available up to today+28.
+- `GET /public/trains/search`: the rows exist up to today+28. The route
+  itself still accepts only dates within 7 days of today until the
+  "any published date" change to `date` lands; from then on its range
+  (and `GET /public/trains/search/dates`'s `publishedTo`) reaches
+  today+28 with nothing else to change.
+- Tracking a train (`/Train/by-uid/{uid}/{date}/track`, pins) now
+  reaches today+28 too: see "track trains four weeks ahead" above.
+  `GET /public/trains/resolve` keeps its 7-day forward limit.
+- A far date shows the timetable as planned at the latest daily
+  delivery. Late changes (engineering-works replacements, cancellations)
+  often reach the timetable only a few weeks ahead, so results for a
+  date 2-4 weeks away can change between deliveries. (Since the
+  `provisional` entry above, responses mark such dates.)
+- The window is a deployment setting (`SCHEDULE_FORWARD_PUBLISH_DAYS`,
+  28-60 since the tracking change above, default 28). Dates past today+7 appear after the first delivery
+  following the deploy (deliveries land around 20:00 UTC).
 
 ## 2026-10-07: live status and origin names on the schedule lists
 

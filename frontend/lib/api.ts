@@ -32,6 +32,7 @@ import type {
   LineTrainsSummary,
   LineDirection,
   TrainSearchPage,
+  TrainSearchDates,
   TrackedTrainListItem,
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
@@ -815,6 +816,23 @@ export async function searchTrainsBetween(options: {
   if (options.limit !== undefined) params.set('limit', String(options.limit));
   return fetchJson<TrainSearchPage>(`${baseUrl()}/public/trains/search?${params.toString()}`, {
     cache: 'no-store',
+  });
+}
+
+/** How long `getTrainSearchDates` is cached, in seconds. Shorter than the
+ * hour reference data gets: the range moves at London midnight (its static
+ * part is relative to today) and when a CIF delivery publishes, so an
+ * hour would leave the picker a day off for up to an hour after midnight. */
+export const TRAIN_SEARCH_DATES_REVALIDATE_SECONDS = 300;
+
+/** `GET /public/trains/search/dates` -- the `date` range
+ * `/public/trains/search` accepts, for the `/trains` date picker's bounds.
+ * Public and per-deployment, not per-visitor, so it is cached like the
+ * other public reads (`getAllTocs`), for
+ * `TRAIN_SEARCH_DATES_REVALIDATE_SECONDS`. */
+export async function getTrainSearchDates(): Promise<TrainSearchDates> {
+  return fetchJson<TrainSearchDates>(`${baseUrl()}/public/trains/search/dates`, {
+    next: { revalidate: TRAIN_SEARCH_DATES_REVALIDATE_SECONDS },
   });
 }
 

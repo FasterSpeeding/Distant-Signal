@@ -619,6 +619,41 @@ fn build_delay_repay_response(
     }
 }
 
+/// 400 with the pin's copy when `service_date` is past the tracking
+/// horizon ([`train_tracking::beyond_tracking_horizon`]). Every route that
+/// creates a subscription or a journey leg calls this on its date.
+pub(crate) fn enforce_tracking_horizon(
+    service_date: NaiveDate,
+) -> Result<(), (StatusCode, String)> {
+    if train_tracking::beyond_tracking_horizon(service_date, super::london_today()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            train_tracking::too_far_ahead_message(),
+        ));
+    }
+    Ok(())
+}
+
+/// [`enforce_pin_cap`] unless `user_id` already tracks `(train_uid,
+/// service_date)`, in which case the request reuses that subscription
+/// (`create_subscription_for_train` is idempotent) and adds nothing to
+/// count. `train_uid` must already be normalised (trimmed, uppercase).
+pub(crate) async fn enforce_pin_cap_for_train(
+    app: &App,
+    user_id: &str,
+    train_uid: &str,
+    service_date: NaiveDate,
+) -> Result<(), (StatusCode, String)> {
+    let already_tracked =
+        train_tracking::user_tracks_train_uid(&app.database, user_id, train_uid, service_date)
+            .await
+            .map_err(internal_error("check existing subscription"))?;
+    if already_tracked {
+        return Ok(());
+    }
+    enforce_pin_cap(app, user_id).await
+}
+
 /// 400 once the user has [`train_tracking::MAX_FUTURE_PINS_PER_USER`]
 /// upcoming subscriptions (API-6).
 pub(crate) async fn enforce_pin_cap(app: &App, user_id: &str) -> Result<(), (StatusCode, String)> {
@@ -924,10 +959,13 @@ async fn post_tracked_train_name(
 /// which matches the board's Retail Service ID (`rsid`) against the CIF
 /// timetable exactly, falling back to a time/destination/operator match --
 /// see `routes::departures::get_station_departures`'s doc comment.
+///
+/// Additive (2026-10-08): the body also carries `provisional` and
+/// `provisionalFrom` for `date` -- see [`PublicTrainResponse`].
 async fn get_by_uid_and_date(
     State(app): State<App>,
     Path((train_uid, date)): Path<(String, NaiveDate)>,
-) -> Result<Json<crate::data::trains::PublicTrainState>, (StatusCode, String)> {
+) -> Result<Json<PublicTrainResponse>, (StatusCode, String)> {
     // 2026-09-26 review, Low finding 11: CIF's own convention (confirmed
     // against `schedule-reference`'s own fixtures/tests, e.g. `"C11052"`)
     // is an uppercase `train_uid` -- every `trains`/schedule row this app
@@ -1000,15 +1038,34 @@ async fn get_by_uid_and_date(
             let state =
                 crate::data::train_operator::attach_to_public_state(&app.database, state).await;
             let state = attach_journey_stops_public(&app, state).await;
-            Ok(Json(
-                crate::data::train_reasons::attach_to_public_state(&app.database, state).await,
-            ))
+            Ok(Json(PublicTrainResponse {
+                state: crate::data::train_reasons::attach_to_public_state(&app.database, state)
+                    .await,
+                certainty: crate::routes::provisional::TimetableCertainty::for_date(
+                    date,
+                    super::london_today(),
+                ),
+            }))
         }
         None => Err((
             StatusCode::NOT_FOUND,
             "no known train for that uid/date".to_string(),
         )),
     }
+}
+
+/// `GET /Train/by-uid/{uid}/{date}`'s body: the [`PublicTrainState`]
+/// fields, plus `provisional`/`provisionalFrom` for the service date
+/// (2026-10-08, see `routes::provisional`). Flattened, so the existing
+/// fields keep their names and place.
+///
+/// [`PublicTrainState`]: crate::data::trains::PublicTrainState
+#[derive(Debug, Serialize)]
+struct PublicTrainResponse {
+    #[serde(flatten)]
+    state: crate::data::trains::PublicTrainState,
+    #[serde(flatten)]
+    certainty: crate::routes::provisional::TimetableCertainty,
 }
 
 /// `trainsId` of a [`schedule_only_public_state`]: no `trains` row exists
@@ -1166,15 +1223,7 @@ async fn post_track_by_uid(
     // and the same per-user cap unless this is a repeat track of a train
     // the user already has.
     let today = super::london_today();
-    if date > today + chrono::Duration::days(train_tracking::PIN_MAX_DAYS_AHEAD) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "That train is too far ahead — trains can be tracked up to {} days before they run.",
-                train_tracking::PIN_MAX_DAYS_AHEAD
-            ),
-        ));
-    }
+    enforce_tracking_horizon(date)?;
     // 2026-10-01 review: and a past window, which this route never had --
     // see `TRACK_BY_UID_MAX_DAYS_BEHIND`.
     let earliest = today - chrono::Duration::days(train_tracking::TRACK_BY_UID_MAX_DAYS_BEHIND);
@@ -4523,6 +4572,47 @@ mod db_tests {
         cleanup_public_train(&pool, "TEST-PUBLIC-BY-UID").await;
     }
 
+    /// `provisional`/`provisionalFrom` on the public train-detail route
+    /// (2026-10-08): with the clock pinned, a service date seven days out is
+    /// firm and one eight days out is provisional, and both carry the same
+    /// `provisionalFrom`.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                get_by_uid_and_date_marks -- --ignored --test-threads=1`"]
+    async fn get_by_uid_and_date_marks_a_far_service_date_provisional() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let _clock =
+            crate::routes::pin_london_now_for_tests("2026-08-28T12:00:00Z".parse().unwrap());
+        let firm: chrono::NaiveDate = "2026-09-04".parse().unwrap();
+        let provisional: chrono::NaiveDate = "2026-09-05".parse().unwrap();
+        cleanup_public_train(&pool, "TEST-PROV-FIRM").await;
+        cleanup_public_train(&pool, "TEST-PROV-FAR").await;
+        seed_public_train(&pool, "TEST-PROV-FIRM", firm).await;
+        seed_public_train(&pool, "TEST-PROV-FAR", provisional).await;
+
+        for (uid, date, expected) in [
+            ("TEST-PROV-FIRM", firm, false),
+            ("TEST-PROV-FAR", provisional, true),
+        ] {
+            let (status, body) = request(
+                test_router(test_app(pool.clone())),
+                format!("/Train/by-uid/{uid}/{date}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "response: {body:?}");
+            assert_eq!(body["provisional"], expected, "{uid}: {body:?}");
+            assert_eq!(body["provisionalFrom"], "2026-09-05", "{body:?}");
+            // The flattened state keeps its own fields alongside.
+            assert_eq!(body["trainUid"], uid);
+            assert_eq!(body["delayMinutes"], 12);
+        }
+
+        cleanup_public_train(&pool, "TEST-PROV-FIRM").await;
+        cleanup_public_train(&pool, "TEST-PROV-FAR").await;
+    }
+
     /// `operatorCode`/`operatorName` on the public train-detail route: filled
     /// from the CIF schedule's ATOC code and the `tocs` name when known, and
     /// present-but-null when the train has no schedule row.
@@ -6003,6 +6093,61 @@ mod db_tests {
         assert_eq!(far_rows, 0, "a rejected track must not mint a trains row");
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// 2026-10-08: the by-uid route's future window is the 28-day pin
+    /// horizon -- 20 days ahead is tracked, 29 days ahead is refused.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                track_by_uid_accepts_20_days_ahead_and_refuses_29 \
+                -- --ignored --test-threads=1`"]
+    async fn track_by_uid_accepts_20_days_ahead_and_refuses_29() {
+        let pool = connect().await;
+        let user_id = "TEST-PIN28-BY-UID";
+        let uids = ["PIN28A", "PIN28B"];
+        let delete_trains = || {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+                    .bind(&uids[..])
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        cleanup_user(&pool, user_id).await;
+        delete_trains().await;
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+        let today = super::super::london_today();
+
+        let near = today + chrono::Duration::days(20);
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Train/by-uid/{}/{near}/track", uids[0]),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "20 days ahead: {body:?}");
+
+        let far = today + chrono::Duration::days(29);
+        let (status, body) = post_json(
+            router,
+            format!("/Train/by-uid/{}/{far}/track", uids[1]),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "29 days ahead: {body:?}");
+        assert!(
+            body.as_str()
+                .is_some_and(|b| b.contains("up to 28 days before they run")),
+            "{body:?}"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        delete_trains().await;
     }
 
     /// 2026-10-01 review: the by-uid route validates the uid's shape,

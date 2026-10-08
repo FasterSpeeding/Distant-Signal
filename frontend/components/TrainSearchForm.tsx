@@ -11,7 +11,9 @@ import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
-import type { ServiceModeFields, TrainSearchPage, TrainSearchResult } from '@/lib/types';
+import type { ServiceModeFields, TrainSearchDates, TrainSearchPage, TrainSearchResult } from '@/lib/types';
+import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
+import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
@@ -40,20 +42,6 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  * where the control degrades to a plain text field with no sanitization
  * whatsoever. */
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-/** Mirrors the backend's exact window --
- * `crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
- * `SEARCH_WINDOW_BACKWARD_DAYS` -- computed once per render.
- *
- * Anchored to Europe/London via `nowInLondon()` (FE-4), like the server's
- * own window, so a visitor whose device isn't on UK time gets the same
- * edges the server enforces rather than a 400 at either end. */
-function dateWindow() {
-  return {
-    minDate: nowInLondon().subtract(7, 'day').format('YYYY-MM-DD'),
-    maxDate: nowInLondon().add(7, 'day').format('YYYY-MM-DD'),
-  };
-}
 
 /** The track button's noun for a search row. */
 function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {
@@ -87,7 +75,13 @@ function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {
  * replacing this whole object. The cursor is deliberately kept on failure --
  * it is still valid, so the retry the footer offers is a real one. */
 type Results =
-  | { rows: TrainSearchResult[]; nextCursor: string | null; date: string; loadMoreFailed: boolean }
+  | {
+      rows: TrainSearchResult[];
+      nextCursor: string | null;
+      date: string;
+      loadMoreFailed: boolean;
+      provisional: boolean;
+    }
   | 'unpublished'
   | 'error'
   | null;
@@ -97,9 +91,13 @@ type Results =
  * early-return guard plus each of its functional `setResults` updaters need
  * this exact three-way check, and spelling it out at every call site invited
  * the copies to drift apart. */
-function hasRows(
-  results: Results,
-): results is { rows: TrainSearchResult[]; nextCursor: string | null; date: string; loadMoreFailed: boolean } {
+function hasRows(results: Results): results is {
+  rows: TrainSearchResult[];
+  nextCursor: string | null;
+  date: string;
+  loadMoreFailed: boolean;
+  provisional: boolean;
+} {
   return results !== null && results !== 'error' && results !== 'unpublished';
 }
 
@@ -177,7 +175,12 @@ function resolvedDate(rawDate: string): string {
  *
  * `operatorNames` (ATOC code to name, from the page's TOC list, as on
  * `StationTimetable`) names each result row's operator; without it the
- * row's details line carries no operator. */
+ * row's details line carries no operator.
+ *
+ * `searchDates` (`GET /public/trains/search/dates`, read by the page on the
+ * server) bounds the date picker to what the search accepts; `null` or
+ * absent (the read failed) falls back to a week either side of today, the
+ * API's static window -- see `lib/searchDates.ts`. */
 export function TrainSearchForm({
   initialStation = '',
   initialOrigin = '',
@@ -189,6 +192,7 @@ export function TrainSearchForm({
   initialArrivalTo = '',
   attachTicketId,
   operatorNames,
+  searchDates,
 }: {
   initialStation?: string | undefined;
   initialOrigin?: string | undefined;
@@ -200,6 +204,7 @@ export function TrainSearchForm({
   initialArrivalTo?: string | undefined;
   attachTicketId?: number | undefined;
   operatorNames?: Readonly<Record<string, string>> | undefined;
+  searchDates?: TrainSearchDates | null | undefined;
 }) {
   const router = useRouter();
   const operatorLookup = useMemo(
@@ -290,7 +295,11 @@ export function TrainSearchForm({
     !searching;
 
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
-  const { minDate, maxDate } = dateWindow();
+  // Anchored to Europe/London (FE-4), like the server's own window, so a
+  // visitor whose device isn't on UK time gets the edges the server
+  // enforces rather than a 400 at either end.
+  const today = nowInLondon().format('YYYY-MM-DD');
+  const dateBounds = searchDateBounds(searchDates, today);
 
   // What the "Earliest/Latest departure" and "Earliest/Latest arrival"
   // fields' `description`s name as the station they are scoped to --
@@ -356,6 +365,7 @@ export function TrainSearchForm({
         nextCursor: body.nextCursor,
         date: submittedDateValue || '',
         loadMoreFailed: false,
+        provisional: body.provisional === true,
       });
     } catch {
       setResults('error');
@@ -458,6 +468,7 @@ export function TrainSearchForm({
               nextCursor: body.nextCursor,
               date: current.date,
               loadMoreFailed: false,
+              provisional: current.provisional,
             }
           : current,
       );
@@ -519,6 +530,7 @@ export function TrainSearchForm({
     const displayDate = resolvedDate(results.date);
     return (
       <>
+        <ProvisionalTimetableNote provisional={results.provisional} />
         <Text size="sm" c="dimmed">
           Times are when each train leaves the station you searched, from the scheduled timetable, and may be up to 30
           minutes out of date. Open a train to see its live status.
@@ -611,11 +623,11 @@ export function TrainSearchForm({
       <DatePickerInput
         label="Date (optional)"
         placeholder="Today"
-        description="Search a different day, up to a week either side of today."
+        description={searchDateDescription(dateBounds, today)}
         value={dateValue}
         onChange={setDateValue}
-        minDate={minDate}
-        maxDate={maxDate}
+        minDate={dateBounds.minDate}
+        maxDate={dateBounds.maxDate}
         clearable
         clearButtonProps={{ 'aria-label': 'Clear the date' }}
       />
