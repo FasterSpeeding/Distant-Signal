@@ -1,5 +1,11 @@
 //! Pure logic for computing which stations `poller-ldbws` should sample,
 //! independent of any HTTP/DB concern so it's testable without either.
+//!
+//! Moved from the api's `data::samples` (ingest architecture plan 4.2,
+//! spec §11.2), which re-exports it: the api's `GET /private/sample-stations`
+//! and poller-ldbws under `SAMPLE_STATIONS_SOURCE=db` run this same code, so
+//! the two selections cannot drift. The aggregator's `sampled_stations` is
+//! the reference implementation of the unrestricted set.
 
 use common::LineDefinition;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -30,9 +36,9 @@ fn normalize_crs(crs: &str) -> String {
 /// Operator knobs (LEG-18) that narrow the sample-station list. Both are
 /// off by default, and with both off [`select_sample_stations`] returns
 /// exactly [`dedup_sample_stations`]'s list. `poller-ldbws` sends them as
-/// query parameters on `GET /private/sample-stations`; see
+/// query parameters on `GET /private/sample-stations` (see the api's
 /// `routes/samples.rs` for why they live there rather than in `api`'s own
-/// config.
+/// config), or applies them itself under `SAMPLE_STATIONS_SOURCE=db`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SampleSelection {
     /// Only sample lines at least one user has pinned.

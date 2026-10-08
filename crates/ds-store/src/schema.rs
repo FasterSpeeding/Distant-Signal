@@ -94,6 +94,12 @@ pub enum DbRole {
     Stations,
     /// poller-incidents' DB sink (plan 2c.3).
     Incidents,
+    /// full-coverage-consumer's direct reads (plan 4.3).
+    FullCoverageRo,
+    /// trust-consumer's direct reads (plan 4.4); its writes too, from 3b.
+    TrustConsumer,
+    /// poller-ldbws's direct sample-station read (plan 4.5).
+    LdbwsRo,
 }
 
 impl DbRole {
@@ -109,6 +115,9 @@ impl DbRole {
             Self::ScheduleReference => "schedule_reference",
             Self::Stations => "stations",
             Self::Incidents => "incidents",
+            Self::FullCoverageRo => "full_coverage_ro",
+            Self::TrustConsumer => "trust_consumer",
+            Self::LdbwsRo => "ldbws_ro",
         }
     }
 
@@ -335,6 +344,9 @@ mod tests {
             DbRole::ScheduleReference,
             DbRole::Stations,
             DbRole::Incidents,
+            DbRole::FullCoverageRo,
+            DbRole::TrustConsumer,
+            DbRole::LdbwsRo,
         ] {
             assert!(privileges_for(role.key()).is_some(), "{role:?}");
             assert!(!role.required_privileges().is_empty(), "{role:?}");
@@ -392,6 +404,33 @@ mod tests {
         assert!(has(DbRole::Incidents, "stations", "SELECT"));
         assert!(!has(DbRole::Incidents, "stations", "UPDATE"));
         assert!(!has(DbRole::Incidents, "tocs", "SELECT"));
+        // The phase 4 readers (plan 4.7): SELECT on what they read, the
+        // views rather than the personal tables behind them.
+        assert!(has(
+            DbRole::FullCoverageRo,
+            "schedule_line_population",
+            "SELECT"
+        ));
+        assert!(has(DbRole::FullCoverageRo, "stanox_crs", "SELECT"));
+        assert!(!has(
+            DbRole::FullCoverageRo,
+            "schedule_line_population",
+            "UPDATE"
+        ));
+        assert!(has(DbRole::LdbwsRo, "ingest_sample_station_pins", "SELECT"));
+        assert!(has(
+            DbRole::LdbwsRo,
+            "ingest_custom_line_stations",
+            "SELECT"
+        ));
+        assert!(!has(DbRole::LdbwsRo, "pinned_lines", "SELECT"));
+        assert!(!has(DbRole::LdbwsRo, "custom_lines", "SELECT"));
+        assert!(has(
+            DbRole::TrustConsumer,
+            "ingest_active_tracked_trains",
+            "SELECT"
+        ));
+        assert!(has(DbRole::TrustConsumer, "stanox_crs", "SELECT"));
         // No role is required to hold anything on the migrations table
         // beyond what the version query itself needs.
         assert!(
