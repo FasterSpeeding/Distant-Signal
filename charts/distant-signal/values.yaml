@@ -4456,6 +4456,21 @@ metrics:
       ratioWindow: 15m
       for: 10m
       severity: warning
+    # DistantSignalPollerStale: a poller's last successful cycle
+    # (distant_signal_poller_last_success_timestamp_seconds{cycle}, the
+    # process start until one succeeds) is older than intervalMultiple times
+    # its own pollIntervalSecs, and at least minAgeSeconds. Unlike
+    # pollerFailures it needs no failed cycle, so it also catches a poller
+    # that has stopped completing cycles at all. 2x is the smallest safe
+    # multiple: a restarted daily poller can wait up to one interval before
+    # its first cycle. One rule per enabled poller, in the
+    # `<fullname>-pollers` PrometheusRule.
+    pollerStale:
+      enabled: true
+      intervalMultiple: 2
+      minAgeSeconds: 1800
+      for: 10m
+      severity: warning
     # DistantSignalLdbwsStationStale (SVC-04): the least recently sampled
     # LDBWS station was last sampled more than `maxAgeSeconds` ago
     # (distant_signal_ldbws_stalest_station_age_seconds), i.e. the rotation
