@@ -29,12 +29,15 @@ pub(crate) const DB_POOL_SIZE: u32 = 3;
 /// ~490k `schedule_calling_points_full` rows) and ~30 s of publish cycle.
 pub(crate) const DEFAULT_FORWARD_PUBLISH_DAYS: i64 = 28;
 
-/// The smallest [`Config::forward_publish_days`] accepted: a pin may be up
-/// to `PIN_MAX_DAYS_AHEAD` days ahead and schedule-matches against the
-/// published `schedule_destination_departures`, and `api`'s train search
-/// always accepts a date that far ahead (`SEARCH_WINDOW_FORWARD_DAYS` in
-/// `crates/api/src/routes/trains.rs`, also 7), so a shorter window would
-/// leave both answering dates nothing is published for.
+/// The smallest [`Config::forward_publish_days`] accepted: the pin horizon
+/// itself, `ds_store::tracking::PIN_MAX_DAYS_AHEAD` (28 since 2026-10-08),
+/// so raising that constant raises this bound with it. A train may be
+/// tracked (pinned, or by uid) that far ahead, and its page reads its stops
+/// from `schedule_calling_points_full` and its true origin from
+/// `schedule_destination_departures`; `api`'s train search accepts dates
+/// up to `SEARCH_WINDOW_FORWARD_DAYS` (`crates/api/src/routes/trains.rs`,
+/// 7, inside this bound) ahead. A shorter window would leave both
+/// answering dates nothing is published for.
 pub(crate) const MIN_FORWARD_PUBLISH_DAYS: i64 = ds_store::tracking::PIN_MAX_DAYS_AHEAD;
 
 /// The largest [`Config::forward_publish_days`] accepted. The cost is
@@ -436,15 +439,20 @@ mod tests {
     fn the_forward_publish_window_defaults_to_28_days_and_is_bounded() {
         assert_eq!(parse(&[]).forward_publish_days, 28);
         assert_eq!(
-            parse(&["--forward-publish-days", "14"]).forward_publish_days,
-            14
+            parse(&["--forward-publish-days", "45"]).forward_publish_days,
+            45
         );
         assert_eq!(
-            parse(&["--forward-publish-days", "7"]).forward_publish_days,
+            super::MIN_FORWARD_PUBLISH_DAYS,
             ds_store::tracking::PIN_MAX_DAYS_AHEAD,
             "the minimum is the pin horizon"
         );
-        for out_of_range in ["6", "61", "-1"] {
+        assert_eq!(
+            parse(&["--forward-publish-days", "28"]).forward_publish_days,
+            28
+        );
+        // 27 is one day short of the 28-day pin horizon.
+        for out_of_range in ["27", "7", "61", "-1"] {
             assert!(
                 Config::try_parse_from(argv(&["--forward-publish-days", out_of_range])).is_err(),
                 "{out_of_range} must be refused"

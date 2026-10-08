@@ -2620,7 +2620,7 @@ one-pod layout.
 | `scheduleFeed.reference.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `scheduleFeed.reference.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `scheduleFeed.reference.pollIntervalSecs` | `1800` | How often the storage folder is checked for a new complete delivery. |
-| `scheduleFeed.reference.forwardPublishDays` | `28` | Days beyond today each delivery publishes the per-date timetable products for (`SCHEDULE_FORWARD_PUBLISH_DAYS`, 7-60): how far ahead train search, `/Train/by-uid` stops, service modes and `/Trips/plan` reach. Each day costs ~190 MB of Postgres and ~30 s of publish cycle. Raising it fills the new dates on the next delivery. |
+| `scheduleFeed.reference.forwardPublishDays` | `28` | Days beyond today each delivery publishes the per-date timetable products for (`SCHEDULE_FORWARD_PUBLISH_DAYS`, 28-60, never below the 28-day tracking horizon): how far ahead train search, `/Train/by-uid` stops, service modes and `/Trips/plan` reach. Each day costs ~190 MB of Postgres and ~30 s of publish cycle. Raising it fills the new dates on the next delivery. |
 | `scheduleFeed.reference.ingest.sink` | `http` | Where the products go (`INGEST_SINK`, ingest plan 2a): `http`, the api's `/private` routes; `db`, Postgres directly (the container gets `DATABASE_URL`, the pod Postgres egress, and the schema gate runs before the first poll). Rollback is `http`. |
 | `scheduleFeed.reference.ingest.database.maxConnections` | `3` | The `db` sink's pool (`DATABASE_MAX_CONNECTIONS`). |
 | `scheduleFeed.reference.healthPort` | `8091` | Health port. Must differ from `workerHealth.port`, which the ingest container in the same pod uses. |

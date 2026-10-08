@@ -4188,7 +4188,8 @@ scheduleFeed:
     # -- How many days beyond today each delivery publishes the per-date
     # timetable products for (`SCHEDULE_FORWARD_PUBLISH_DAYS`): train search,
     # `/Train/by-uid` stops, service modes and `/Trips/plan` reach this far
-    # ahead. 7-60. Each day costs ~190 MB of Postgres (table and indexes)
+    # ahead. 28-60: no lower than the 28-day tracking horizon (pins and
+    # track-by-uid). Each day costs ~190 MB of Postgres (table and indexes)
     # and ~30 s of publish cycle at production sizes; dates further out
     # carry fewer of the CIF's late (STP) changes.
     forwardPublishDays: 28

@@ -1354,15 +1354,19 @@ mod tests {
 
     #[test]
     fn a_pin_beyond_the_timetable_horizon_is_rejected() {
+        assert_eq!(PIN_MAX_DAYS_AHEAD, 28, "the horizon is four weeks");
         let now: DateTime<Utc> = "2026-06-15T12:00:00Z".parse().unwrap();
-        let last_day: DateTime<Utc> = "2026-06-22T18:00:00Z".parse().unwrap();
-        assert!(validate_pin(&pin("WAT", last_day), now).is_ok());
-        let too_far: DateTime<Utc> = "2026-06-23T08:00:00Z".parse().unwrap();
+        let twenty_days: DateTime<Utc> = "2026-07-05T08:00:00Z".parse().unwrap();
         assert!(
-            validate_pin(&pin("WAT", too_far), now)
-                .unwrap_err()
-                .contains("too far ahead")
+            validate_pin(&pin("WAT", twenty_days), now).is_ok(),
+            "a pin 20 days ahead is accepted"
         );
+        let last_day: DateTime<Utc> = "2026-07-13T18:00:00Z".parse().unwrap();
+        assert!(validate_pin(&pin("WAT", last_day), now).is_ok());
+        let too_far: DateTime<Utc> = "2026-07-14T08:00:00Z".parse().unwrap();
+        let err = validate_pin(&pin("WAT", too_far), now).unwrap_err();
+        assert!(err.contains("too far ahead"), "29 days ahead: {err}");
+        assert!(err.contains("up to 28 days"), "{err}");
         let far_future: DateTime<Utc> = "2090-01-01T08:00:00Z".parse().unwrap();
         assert!(validate_pin(&pin("WAT", far_future), now).is_err());
         // A near-term departure with a far-off service_date is caught too.
