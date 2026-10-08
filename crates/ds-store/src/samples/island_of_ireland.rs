@@ -64,7 +64,11 @@ pub async fn upsert_stations_observed(
 }
 
 /// The shared upsert: `observed_at` `None` stamps `NOW()` with no guard
-/// (the api's route), `Some` stamps it and guards on `fetched_at`.
+/// (the api's route), `Some` stamps it and guards on `fetched_at`, and
+/// never moves an existing row to another network: the ingest-writer pins
+/// each catalogue stream to one network (security review, Irish network
+/// pinning), so one network's poller cannot take over the other's row by
+/// sending its id. Such a row is skipped (not counted as written).
 async fn write_stations(
     conn: &mut PgConnection,
     stations: &[IslandOfIrelandStation],
@@ -96,6 +100,8 @@ async fn write_stations(
           AND ($6::timestamptz IS NULL
                OR EXCLUDED.fetched_at >= island_of_ireland_stations.fetched_at
                OR island_of_ireland_stations.fetched_at > now() + interval '2 min')
+          AND ($6::timestamptz IS NULL
+               OR island_of_ireland_stations.network = EXCLUDED.network)
         ",
     )
     .bind(&ids)
@@ -169,6 +175,8 @@ async fn write_lines(
           AND ($5::timestamptz IS NULL
                OR EXCLUDED.fetched_at >= island_of_ireland_lines.fetched_at
                OR island_of_ireland_lines.fetched_at > now() + interval '2 min')
+          AND ($5::timestamptz IS NULL
+               OR island_of_ireland_lines.network = EXCLUDED.network)
         ",
     )
     .bind(&ids)
