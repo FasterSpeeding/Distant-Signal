@@ -269,8 +269,12 @@ jobs:
         run: |
           set -euo pipefail
           version="$(docker buildx inspect | sed -n 's/^BuildKit version: *v//p' | head -n 1)"
+          oldest="$(printf '%s\n' 0.13.0 "${version}" | sort -V | head -n 1)"
           echo "BuildKit ${version}"
-          [[ "$(printf '%s\n' 0.13.0 "${version}" | sort -V | head -n 1)" == "0.13.0" ]] || { echo "::error::BuildKit ${version} is older than v0.13, which rewrite-timestamp needs" >&2; exit 1; }
+          if [[ -z "${version}" || "${oldest}" != "0.13.0" ]]; then
+            echo "::error::BuildKit '${version}' is older than v0.13 (or unknown); rewrite-timestamp needs v0.13+" >&2
+            exit 1
+          fi
 
       # On every event, PRs included: the build reads its layer cache from
       # ${IMAGE_BASE}/buildcache (see the build step). A PR's token can
