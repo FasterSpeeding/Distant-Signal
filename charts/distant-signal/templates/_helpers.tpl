@@ -1002,6 +1002,12 @@ app.connectionLimitSlack.
 {{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" "writer")) -}}
 {{- $total = add $total (include "distant-signal.ingestWriterPool" $root) -}}
 {{- end -}}
+{{- /* Phase 3b: the TRUST consumers that write directly, as the app role. */ -}}
+{{- range $service := list "trust_backlog" "trust_consumer" -}}
+{{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" $service)) -}}
+{{- $total = add $total (include "distant-signal.trustSinkPool" (dict "root" $root "service" $service)) -}}
+{{- end -}}
+{{- end -}}
 {{- $total -}}
 {{- else -}}
 {{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
@@ -1055,10 +1061,12 @@ Every helper takes root unless it says otherwise.
 
 distant-signal.perServiceKeys: the services this chart can move to their
 own role, space-separated. Each must be a created (not `planned`) role in
-db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9).
+db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9);
+`trust_backlog` and `trust_consumer` are trust-backlog-consumer's and
+trust-consumer's under their ingest.sink db (plan 3b), narrow.
 */}}
 {{- define "distant-signal.perServiceKeys" -}}
-api aggregator enricher notifier writer
+api aggregator enricher notifier writer trust_backlog trust_consumer
 {{- end }}
 
 {{- define "distant-signal.perServiceEnabled" -}}
@@ -1086,8 +1094,58 @@ True (non-empty) when the service connects as its own role. Takes (dict
 {{- if and (eq .service "writer") (not .root.Values.ingestWriter.enabled) -}}
 {{- fail "postgresql.roles.perService.writer.connect needs ingestWriter.enabled: nothing else connects as the writer role." -}}
 {{- end -}}
+{{- if and (has .service (list "trust_backlog" "trust_consumer")) (not (include "distant-signal.trustSinkDb" (dict "root" .root "service" .service))) -}}
+{{- fail (printf "postgresql.roles.perService.%s.connect needs %s.ingest.sink: db: nothing else connects as its role." .service (include "distant-signal.trustSinkValuesKey" .service)) -}}
+{{- end -}}
 true
 {{- end -}}
+{{- end }}
+
+{{/*
+Phase 3b: the values key of a TRUST consumer's per-service role (takes the
+role key): trust_backlog -> trustBacklogConsumer, trust_consumer ->
+trustConsumer.
+*/}}
+{{- define "distant-signal.trustSinkValuesKey" -}}
+{{- if eq . "trust_backlog" -}}trustBacklogConsumer{{- else if eq . "trust_consumer" -}}trustConsumer{{- else -}}{{- fail (printf "no TRUST consumer for role %q" .) -}}{{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when the TRUST consumer behind the role writes Postgres
+directly: <consumer>.ingest.sink is `db` (trust-backlog-consumer, plan 3b.1;
+trust-consumer, plan 3b.3). Fails on a sink other than `http` or `db`.
+Takes (dict "root" $ "service" "trust_backlog"|"trust_consumer").
+*/}}
+{{- define "distant-signal.trustSinkDb" -}}
+{{- $key := include "distant-signal.trustSinkValuesKey" .service -}}
+{{- $ingest := (get .root.Values $key).ingest | default dict -}}
+{{- $sink := toString ($ingest.sink | default "http") -}}
+{{- if not (has $sink (list "http" "db")) -}}
+{{- fail (printf "%s.ingest.sink must be http or db, not %q." $key $sink) -}}
+{{- end -}}
+{{- if eq $sink "db" -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+The TRUST consumer's Postgres pool (<consumer>.ingest.database.maxConnections)
+under ingest.sink db, else 0. Takes (dict "root" $ "service" ...).
+*/}}
+{{- define "distant-signal.trustSinkPool" -}}
+{{- if include "distant-signal.trustSinkDb" . -}}
+{{- int (get .root.Values (include "distant-signal.trustSinkValuesKey" .service)).ingest.database.maxConnections -}}
+{{- else -}}
+0
+{{- end -}}
+{{- end }}
+
+{{/*
+Both TRUST consumers' pools under ingest.sink db, summed (the api's
+INF-7 budget check). Takes root.
+*/}}
+{{- define "distant-signal.trustSinkPools" -}}
+{{- add (include "distant-signal.trustSinkPool" (dict "root" . "service" "trust_backlog")) (include "distant-signal.trustSinkPool" (dict "root" . "service" "trust_consumer")) -}}
 {{- end }}
 
 {{/*
@@ -1128,6 +1186,9 @@ aggregator's archive pool, the ingest-writer's ingestWriter.database.maxConnecti
 {{- else if eq .service "writer" -}}
 {{- /* Its pool plus the loop-lock session (crates/ingest-writer). */ -}}
 {{- add1 (int $root.Values.ingestWriter.database.maxConnections) -}}
+{{- else if has .service (list "trust_backlog" "trust_consumer") -}}
+{{- /* Phase 3b: <consumer>.ingest.database.maxConnections. */ -}}
+{{- int (get $root.Values (include "distant-signal.trustSinkValuesKey" .service)).ingest.database.maxConnections -}}
 {{- else -}}
 5
 {{- end -}}

@@ -11,7 +11,7 @@
 --     -f postgres-grants.sql
 --
 -- Passwords come from the environment (psql's \getenv), one per created
--- role: DS_PG_API_PASSWORD, DS_PG_AGGREGATOR_PASSWORD, DS_PG_ENRICHER_PASSWORD, DS_PG_NOTIFIER_PASSWORD, DS_PG_WRITER_PASSWORD.
+-- role: DS_PG_API_PASSWORD, DS_PG_AGGREGATOR_PASSWORD, DS_PG_ENRICHER_PASSWORD, DS_PG_NOTIFIER_PASSWORD, DS_PG_WRITER_PASSWORD, DS_PG_TRUST_BACKLOG_PASSWORD, DS_PG_TRUST_CONSUMER_PASSWORD.
 --
 -- In ONE transaction:
 --   1. the group roles (NOLOGIN) and every role whose status is not
@@ -78,6 +78,22 @@
 \else
 \set writer_connection_limit 7
 \endif
+\if :{?trust_backlog}
+\else
+\set trust_backlog distant_signal_trust_backlog
+\endif
+\if :{?trust_backlog_connection_limit}
+\else
+\set trust_backlog_connection_limit 4
+\endif
+\if :{?trust_consumer}
+\else
+\set trust_consumer distant_signal_trust_consumer
+\endif
+\if :{?trust_consumer_connection_limit}
+\else
+\set trust_consumer_connection_limit 3
+\endif
 \getenv api_password DS_PG_API_PASSWORD
 \if :{?api_password}
 \else
@@ -103,6 +119,16 @@
 \else
 \set writer_password ''
 \endif
+\getenv trust_backlog_password DS_PG_TRUST_BACKLOG_PASSWORD
+\if :{?trust_backlog_password}
+\else
+\set trust_backlog_password ''
+\endif
+\getenv trust_consumer_password DS_PG_TRUST_CONSUMER_PASSWORD
+\if :{?trust_consumer_password}
+\else
+\set trust_consumer_password ''
+\endif
 
 BEGIN;
 
@@ -125,7 +151,13 @@ SELECT
     set_config('ds_grants.notifier_connection_limit', :'notifier_connection_limit', true),
     set_config('ds_grants.writer', :'writer', true),
     set_config('ds_grants.writer_password', :'writer_password', true),
-    set_config('ds_grants.writer_connection_limit', :'writer_connection_limit', true)
+    set_config('ds_grants.writer_connection_limit', :'writer_connection_limit', true),
+    set_config('ds_grants.trust_backlog', :'trust_backlog', true),
+    set_config('ds_grants.trust_backlog_password', :'trust_backlog_password', true),
+    set_config('ds_grants.trust_backlog_connection_limit', :'trust_backlog_connection_limit', true),
+    set_config('ds_grants.trust_consumer', :'trust_consumer', true),
+    set_config('ds_grants.trust_consumer_password', :'trust_consumer_password', true),
+    set_config('ds_grants.trust_consumer_connection_limit', :'trust_consumer_connection_limit', true)
 \gset ignored_
 
 -- 1. Roles.
@@ -175,7 +207,9 @@ BEGIN
         ('aggregator', 'observed'),
         ('enricher', 'observed'),
         ('notifier', 'observed'),
-        ('writer', 'observed')) AS v(kind, status)
+        ('writer', 'observed'),
+        ('trust_backlog', 'narrow'),
+        ('trust_consumer', 'narrow')) AS v(kind, status)
     LOOP
         IF r.name = app OR r.name = current_user OR r.name = ANY (seen) THEN
             RAISE EXCEPTION 'the % role name % must be a new, separate role',
@@ -220,7 +254,9 @@ BEGIN
         ('aggregator', 'observed'),
         ('enricher', 'observed'),
         ('notifier', 'observed'),
-        ('writer', 'observed')) AS v(kind, status)
+        ('writer', 'observed'),
+        ('trust_backlog', 'narrow'),
+        ('trust_consumer', 'narrow')) AS v(kind, status)
     LOOP
         member_oid := (SELECT oid FROM pg_roles WHERE rolname = r.name);
         IF r.status = 'observed' AND NOT EXISTS (
@@ -248,7 +284,9 @@ BEGIN
         ('notifier', 'read_shared'),
         ('notifier', 'schema_gate'),
         ('writer', 'read_shared'),
-        ('writer', 'schema_gate')) AS v(kind, grp)
+        ('writer', 'schema_gate'),
+        ('trust_backlog', 'schema_gate'),
+        ('trust_consumer', 'schema_gate')) AS v(kind, grp)
     LOOP
         IF NOT EXISTS (
             SELECT 1 FROM pg_auth_members
@@ -278,7 +316,9 @@ BEGIN
         ('aggregator'),
         ('enricher'),
         ('notifier'),
-        ('writer')) AS v(kind)
+        ('writer'),
+        ('trust_backlog'),
+        ('trust_consumer')) AS v(kind)
     LOOP
         EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', grantee);
         EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', grantee);
@@ -346,7 +386,40 @@ BEGIN
     FOR r IN
         SELECT v.tbl, current_setting('ds_grants.' || v.kind) AS grantee,
                v.priv, v.cols
-        FROM (SELECT NULL::text, NULL::text, NULL::text, NULL::text WHERE false) AS v(tbl, kind, priv, cols)
+        FROM (VALUES
+        ('trains', 'trust_backlog', 'SELECT', ''),
+        ('trains', 'trust_backlog', 'INSERT', ''),
+        ('trains', 'trust_backlog', 'UPDATE', ''),
+        ('trains', 'trust_consumer', 'SELECT', ''),
+        ('trains', 'trust_consumer', 'INSERT', ''),
+        ('trains', 'trust_consumer', 'UPDATE', ''),
+        ('train_subscriptions', 'trust_backlog', 'SELECT', ''),
+        ('train_subscriptions', 'trust_backlog', 'UPDATE', ''),
+        ('train_subscriptions', 'trust_consumer', 'SELECT', ''),
+        ('train_subscriptions', 'trust_consumer', 'UPDATE', ''),
+        ('train_movement_events', 'trust_backlog', 'SELECT', ''),
+        ('train_movement_events', 'trust_backlog', 'INSERT', ''),
+        ('train_movement_events', 'trust_backlog', 'UPDATE', ''),
+        ('train_movement_events', 'trust_consumer', 'SELECT', ''),
+        ('train_movement_events', 'trust_consumer', 'INSERT', ''),
+        ('train_movement_events', 'trust_consumer', 'UPDATE', ''),
+        ('train_current_state', 'trust_backlog', 'SELECT', ''),
+        ('train_current_state', 'trust_backlog', 'INSERT', ''),
+        ('train_current_state', 'trust_backlog', 'UPDATE', ''),
+        ('train_current_state', 'trust_consumer', 'SELECT', ''),
+        ('train_current_state', 'trust_consumer', 'INSERT', ''),
+        ('train_current_state', 'trust_consumer', 'UPDATE', ''),
+        ('trust_event_backlog', 'trust_backlog', 'SELECT', ''),
+        ('trust_event_backlog', 'trust_backlog', 'INSERT', ''),
+        ('train_reasons', 'trust_backlog', 'SELECT', ''),
+        ('train_reasons', 'trust_backlog', 'INSERT', ''),
+        ('train_reasons', 'trust_backlog', 'UPDATE', ''),
+        ('notifier_forward_queue', 'trust_consumer', 'SELECT', ''),
+        ('notifier_forward_queue', 'trust_consumer', 'INSERT', ''),
+        ('corpus_stanox_crs', 'trust_backlog', 'SELECT', ''),
+        ('stanox_crs', 'trust_backlog', 'SELECT', ''),
+        ('stanox_crs', 'trust_consumer', 'SELECT', ''),
+        ('tiploc_crs', 'trust_backlog', 'SELECT', '')) AS v(tbl, kind, priv, cols)
         WHERE to_regclass(format('public.%I', v.tbl)) IS NOT NULL
     LOOP
         IF r.cols = '' THEN
@@ -360,7 +433,15 @@ BEGIN
     END LOOP;
     FOR r IN
         SELECT v.seq, current_setting('ds_grants.' || v.kind) AS grantee
-        FROM (SELECT NULL::text, NULL::text WHERE false) AS v(seq, kind)
+        FROM (VALUES
+        ('trains_id_seq', 'trust_backlog'),
+        ('trains_id_seq', 'trust_consumer'),
+        ('train_movement_events_id_seq', 'trust_backlog'),
+        ('train_movement_events_id_seq', 'trust_consumer'),
+        ('train_current_state_id_seq', 'trust_backlog'),
+        ('train_current_state_id_seq', 'trust_consumer'),
+        ('trust_event_backlog_id_seq', 'trust_backlog'),
+        ('notifier_forward_queue_id_seq', 'trust_consumer')) AS v(seq, kind)
         WHERE to_regclass(format('public.%I', v.seq)) IS NOT NULL
     LOOP
         EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE public.%I TO %I',

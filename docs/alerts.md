@@ -157,8 +157,8 @@ The operations counted (`distant_signal_<consumer>_errors_total{operation}`):
 
 | Consumer | Operations |
 | --- | --- |
-| trust-consumer | `reload_tracked_trains`, `post_train_events`, `reload_stanox_crs`, `startup_reference_load` |
-| trust-backlog-consumer | `post_batch`, `post_train_reasons`, `reload_stanox_crs` |
+| trust-consumer | `reload_tracked_trains`, `post_train_events`, `reload_stanox_crs`, `startup_reference_load`; `db_write` with `trustConsumer.ingest.sink: db` |
+| trust-backlog-consumer | `post_batch`, `post_train_reasons`, `reload_stanox_crs`; `db_write`, `db_write_reasons` with `trustBacklogConsumer.ingest.sink: db` |
 | full-coverage-consumer | `reload_line_population_fetch`, `post_line_stats`, `post_station_samples`, `reload_stanox_crs` |
 
 Data rejections (`post_rejected`) are not counted: those are poison entries,
@@ -172,7 +172,10 @@ isolated by the dead-letter path. full-coverage-consumer's
 2. Otherwise `sum by (operation) (increase(distant_signal_<consumer>_errors_total[10m]))`
    shows which call fails, and the consumer's error log has api's status and
    body. A 401/403 points at the internal OAuth client (Authentik); a 5xx at
-   api's own log.
+   api's own log. `db_write*` (ingest plan 3b, `ingest.sink: db`) are the
+   consumer's own Postgres writes: its log has the SQLSTATE; a
+   `permission denied` means its role lacks a grant (the schema gate
+   should have caught it; check the roles setup Job ran).
 3. Failed POSTs leave their batches pending in movement-events and are
    retried, so nothing is lost until the stream's MAXLEN trims them: watch
    [DistantSignalMovementLagHigh](#distantsignalmovementlaghigh).

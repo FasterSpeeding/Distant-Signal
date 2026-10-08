@@ -214,15 +214,17 @@ spec:
         2026-10-01: trust-consumer failed GET /private/tracked-trains about
         23.6k times and trust-backlog-consumer about 2,200 POSTs, with no
         alert (their *_ready gauges only follow Redis). Each consumer's
-        <consumer>_errors_total operations that are failed calls to api
-        (not data rejections), registered at 0 at startup; each crate's
+        <consumer>_errors_total operations that are failed calls to api,
+        or failed direct writes under ingest.sink db (db_write,
+        db_write_reasons; ingest plan 3b.2) -- not data rejections --
+        registered at 0 at startup; each crate's
         API_CALL_OPERATIONS lists the same operations, and its tests check
         this list. Summed per consumer (not per operation), so an api outage
         is at most three alerts in one notification.
         */}}
         {{- $consumers := list
-          (list "trust_consumer" "trust-consumer" "reload_tracked_trains|post_train_events|reload_stanox_crs|startup_reference_load")
-          (list "trust_backlog_consumer" "trust-backlog-consumer" "post_batch|post_train_reasons|reload_stanox_crs")
+          (list "trust_consumer" "trust-consumer" "reload_tracked_trains|post_train_events|reload_stanox_crs|startup_reference_load|db_write")
+          (list "trust_backlog_consumer" "trust-backlog-consumer" "post_batch|post_train_reasons|reload_stanox_crs|db_write|db_write_reasons")
           (list "full_coverage_consumer" "full-coverage-consumer" "reload_line_population_fetch|post_line_stats|post_station_samples|reload_stanox_crs") }}
         - record: distant_signal:consumer_api_errors:increase
           expr: |

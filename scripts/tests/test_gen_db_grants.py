@@ -48,14 +48,22 @@ class RepoFilesTest(unittest.TestCase):
             status = gen.main(["check"])
         self.assertEqual(status, 0, out.getvalue())
 
-    def test_phase_0b_creates_only_observed_members_of_app(self) -> None:
-        """Phase 0b/1B: the four DB services and the writer, nothing narrowed."""
+    def test_phase_0b_creates_observed_members_of_app_and_the_narrow_ones(self) -> None:
+        """Phase 0b/1B: four DB services and the writer; 3b: the TRUST two, narrow."""
         model = gen.load()
+        status = {r.key: r.status for r in model.created()}
         self.assertEqual(
-            sorted(r.key for r in model.created()),
-            ["aggregator", "api", "enricher", "notifier", "writer"],
+            status,
+            {
+                "aggregator": "observed",
+                "api": "observed",
+                "enricher": "observed",
+                "notifier": "observed",
+                "writer": "observed",
+                "trust_backlog": "narrow",
+                "trust_consumer": "narrow",
+            },
         )
-        self.assertTrue(all(r.status == "observed" for r in model.created()))
 
 
 class ParseTest(unittest.TestCase):
@@ -182,10 +190,54 @@ class RenderTest(unittest.TestCase):
             self.assertIn("is stale", out.getvalue())
 
     def test_observed_roles_get_no_table_grants(self) -> None:
-        """Phase 0b: no per-role GRANT rows, only memberships."""
+        """Phase 0b: observed roles get memberships, never GRANT rows.
+
+        3b's narrow TRUST roles get exactly their tables.
+        """
         sql = gen.render(gen.load())
         self.assertIn("('api', 'observed')", sql)
-        self.assertNotIn("'SELECT', ''", sql)
+        for kind in ("api", "aggregator", "enricher", "notifier", "writer"):
+            self.assertNotIn(f"'{kind}', 'SELECT', ''", sql)
+        self.assertIn("('trust_backlog', 'narrow')", sql)
+        self.assertIn("('trust_consumer', 'narrow')", sql)
+
+        def tables(kind: str, privilege: str) -> list[str]:
+            return sorted(
+                line.strip().split(",")[0].strip("('")
+                for line in sql.splitlines()
+                if f"'{kind}', '{privilege}', ''" in line
+            )
+
+        self.assertEqual(
+            tables("trust_consumer", "INSERT"),
+            [
+                "notifier_forward_queue",
+                "train_current_state",
+                "train_movement_events",
+                "trains",
+            ],
+        )
+        self.assertEqual(
+            tables("trust_consumer", "UPDATE"),
+            [
+                "train_current_state",
+                "train_movement_events",
+                "train_subscriptions",
+                "trains",
+            ],
+        )
+        self.assertEqual(
+            tables("trust_backlog", "INSERT"),
+            [
+                "train_current_state",
+                "train_movement_events",
+                "train_reasons",
+                "trains",
+                "trust_event_backlog",
+            ],
+        )
+        self.assertEqual(tables("trust_backlog", "DELETE"), [])
+        self.assertEqual(tables("trust_consumer", "DELETE"), [])
         self.assertIn("\\getenv api_password DS_PG_API_PASSWORD", sql)
 
     def test_a_narrow_role_gets_its_grants_and_sequences(self) -> None:
