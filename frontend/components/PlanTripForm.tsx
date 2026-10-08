@@ -148,11 +148,11 @@ export function PlanTripForm({
   /** A restored search (`/plan`'s own query string, `lib/tripPlanUrl.ts`);
    * only read on mount. Its `originCrs` wins over `initialOriginCrs`. */
   initial?: PlanFormInitial | undefined;
-  /** `/plan` only: `GET /public/trains/search/dates`, read by the page on
-   * the server. Its `to` is the date picker's last day, as on `/trains`;
-   * `null` (the read failed) falls back to a week ahead
-   * (`lib/searchDates.ts`). Absent, as on `/journeys/new`'s planner, which
-   * doesn't read the range, the picker has no upper bound. */
+  /** `GET /public/trains/search/dates`, read by the page (`/plan` or
+   * `/journeys/new`) on the server. Its `to` is the date picker's last day,
+   * as on `/trains`; `null` (the read failed) falls back to a week ahead
+   * (`lib/searchDates.ts`). Absent (a caller that doesn't read the range),
+   * the picker has no upper bound. */
   searchDates?: TrainSearchDates | null | undefined;
 }) {
   const maxDate = searchDates === undefined ? undefined : searchDateBounds(searchDates, londonToday()).maxDate;

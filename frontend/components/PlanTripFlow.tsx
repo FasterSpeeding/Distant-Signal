@@ -66,7 +66,7 @@ export function PlanTripFlow({
    * reopens the same form. Off on `/journeys/new`, whose query means
    * something else. */
   syncUrl?: boolean;
-  /** `/plan` only: the date picker's range -- see `PlanTripForm`. */
+  /** The date picker's range -- see `PlanTripForm`. */
   searchDates?: TrainSearchDates | null | undefined;
 }) {
   const [plan, setPlan] = useState<TripPlanResponse | null>(null);

@@ -2,6 +2,7 @@ import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
+import { getTrainSearchDates } from '@/lib/api';
 import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 
 /** `/journeys/new` -- the app's primary, nav-linked entry point for
@@ -78,7 +79,12 @@ export const metadata: Metadata = {
   twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
 };
 
-export default function JourneysNewPage() {
+export default async function JourneysNewPage() {
+  // The planner's date picker ends where the timetable search does
+  // (`getTrainSearchDates`, cached for a few minutes), as on `/plan`. A
+  // failure leaves `null`, and the picker falls back to a week ahead.
+  const searchDates = await getTrainSearchDates().catch(() => null);
+
   return (
     <Stack p="lg" gap="md">
       <Title order={1}>Track a Journey</Title>
@@ -95,7 +101,7 @@ export default function JourneysNewPage() {
         </TextLink>{' '}
         — no account needed.
       </Text>
-      <JourneyCreationFlow />
+      <JourneyCreationFlow planSearchDates={searchDates} />
     </Stack>
   );
 }
