@@ -243,6 +243,9 @@ jobs:
       issues: write
     steps:
       - name: Download scan results
+        # The artifact is missing when the scan failed before writing it; the
+        # script below still has to run and record the failed scan.
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: osv-scanner-results
@@ -255,7 +258,11 @@ jobs:
             const label = 'dependency-vulnerability';
             const highOrCritical = parseInt('${{ needs.scan.outputs.high_or_critical_count }}', 10) || 0;
             const total = '${{ needs.scan.outputs.total_count }}';
-            const passed = highOrCritical === 0;
+            // A failed scan job (e.g. no valid scanner JSON) leaves its
+            // outputs empty, which would parse as 0 findings: never treat
+            // that as clean.
+            const scanOk = '${{ needs.scan.result }}' === 'success';
+            const passed = scanOk && highOrCritical === 0;
 
             const { data: openIssues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -265,6 +272,20 @@ jobs:
             });
 
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            if (!scanOk) {
+              // Keep any open tracking issue open; just record the failure.
+              for (const issue of openIssues) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `The daily dependency vulnerability scan failed (result: ${{ needs.scan.result }}), so it is inconclusive, not clean. Leaving this issue open: ${runUrl}`,
+                });
+              }
+              core.warning(`Dependency scan job result was ${{ needs.scan.result }}; not treating it as clean.`);
+              return;
+            }
 
             if (passed) {
               for (const issue of openIssues) {
