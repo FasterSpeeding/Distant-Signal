@@ -34,9 +34,11 @@ pub mod data;
 pub mod edge;
 pub use ds_store::migrate;
 pub mod rate_limit;
+pub mod readiness;
 pub mod render;
 pub mod route_metrics;
 pub mod routes;
+pub mod shutdown;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod unavailable;

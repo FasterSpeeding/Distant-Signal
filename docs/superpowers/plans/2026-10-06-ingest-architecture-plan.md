@@ -412,6 +412,23 @@ Details and differences from the table below:
 - **1B.10 (chart).** The surge pod's pool counts in the INF-7 budget and
   the app role's computed limit, so `RollingUpdate` needs a smaller api
   pool (or the api on its own role).
+- **1B.10 prerequisite, done (2026-10-08): graceful shutdown and
+  readiness.** Rollout research found `RollingUpdate` alone could not meet
+  the "zero failed requests" exit: the api had no SIGTERM handler (its
+  custom accept loop in `edge.rs` reset every in-flight request, producers'
+  `/private` POSTs included) and `/public/health` answered 200 with the
+  database down. Now, on SIGTERM the api stops accepting, drains in-flight
+  requests (idle keep-alive closed, HTTP/2 GOAWAY) and stops its loops,
+  releasing their advisory locks, within `API_SHUTDOWN_DRAIN_SECS`
+  (`api.shutdown.drainSecs`, 20 s); the chart adds a 5 s `preStop` sleep and
+  a 35 s grace period (the render checks sleep + drain + 5 fits). The
+  readiness probe is `/public/ready`, 503 while draining; liveness and
+  startup stay on `/public/health`. `api.minReadySeconds` (10) renders with
+  `RollingUpdate`. The readiness DB check (bounded, cached `SELECT 1`) is
+  opt-in, `api.readiness.checkDatabase` / `API_READINESS_CHECKS_DB`
+  (default false), and refused below 2 replicas (user decision,
+  2026-10-08): with one replica NotReady empties the Service, so a DB blip
+  would be a full outage. Turn it on only once the api runs 2+ replicas.
 
 | # | Task | Files | Tests |
 |---|---|---|---|
@@ -449,7 +466,8 @@ Exit:
 - the api pod has no `MIGRATION_DATABASE_URL` and runs no loops;
 - the writer runs the train-domain loops, and the CronJob the user-data
   ones;
-- one api deploy with zero failed requests;
+- one api deploy with zero failed requests (needs the graceful shutdown
+  and `/public/ready` above; both done);
 - a deliberately failing migration on a test cluster leaves the old pods
   serving.
 
