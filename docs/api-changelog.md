@@ -82,6 +82,33 @@ arrival at that station. Without `stops_at` the keys are absent.
   keep-alive connection is closed after its current response, so a client
   must reconnect for its next request, as on any closed connection.
 
+## 2026-10-08: timetable data four weeks ahead
+
+DS now publishes its timetable products for today through today+28 (was
+today+7). No request or response shape changes; dates that used to `404`
+for lack of data now answer.
+
+- `GET /Trips/plan`: a `date` up to today+28 now plans. Past that it is
+  still `404`, `no CIF-derived schedule data has been published for
+  YYYY-MM-DD yet`.
+- `GET /Train/by-uid/{uid}/{date}`: a train's scheduled stops and its
+  bus/ferry mode are available up to today+28.
+- `GET /public/trains/search`: the rows exist up to today+28. The route
+  itself still accepts only dates within 7 days of today until the
+  "any published date" change to `date` lands; from then on its range
+  (and `GET /public/trains/search/dates`'s `publishedTo`) reaches
+  today+28 with nothing else to change.
+- Unchanged: tracking a train (`/Train/by-uid/{uid}/{date}/track`, pins)
+  and `GET /public/trains/resolve` keep their 7-day forward limit.
+- A far date shows the timetable as planned at the latest daily
+  delivery. Late changes (engineering-works replacements, cancellations)
+  often reach the timetable only a few weeks ahead, so results for a
+  date 2-4 weeks away can change between deliveries. Nothing in a
+  response marks a row as provisional.
+- The window is a deployment setting (`SCHEDULE_FORWARD_PUBLISH_DAYS`,
+  7-60, default 28). Dates past today+7 appear after the first delivery
+  following the deploy (deliveries land around 20:00 UTC).
+
 ## 2026-10-07: live status and origin names on the schedule lists
 
 Additive only: every existing field is unchanged. Applies to each row of
