@@ -357,6 +357,40 @@ async fn a_data_error_rejects_its_row_and_the_rest_commit() {
     db.cleanup().await;
 }
 
+/// Security review L2: a key is claimed per stream, so the same key on
+/// another stream is never acked as an applied duplicate. (Until the
+/// contract step drops the old primary key on `key`, it is a unique
+/// violation: poison, dead-lettered.)
+#[tokio::test]
+#[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+async fn a_key_claimed_on_one_stream_is_no_duplicate_on_another() {
+    let db = Db::new().await;
+    let handler = db.handler(Mode::Apply);
+    let entry = db.entry(rows_schema(), "k1", Utc::now(), &[row("a", 1)]);
+    assert!(matches!(handler.handle(&entry).await, Ok(Handled::Applied)));
+    let elsewhere = StreamEntry {
+        stream: "ds:ingest:writer-test-other".to_owned(),
+        ..entry
+    };
+    let result = handler.handle(&elsewhere).await;
+    assert!(
+        matches!(&result, Ok(Handled::Applied))
+            || matches!(&result, Err(HandlerError::Poison(reason)) if reason.contains("duplicate key")),
+        "{result:?}"
+    );
+    let claims: Vec<(String, String)> =
+        sqlx::query_as("SELECT stream, key FROM ingest_dedup WHERE key = $1 ORDER BY stream")
+            .bind(db.key("k1"))
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        claims.first().map(|(stream, _)| stream.as_str()),
+        Some("ds:ingest:writer-test")
+    );
+    db.cleanup().await;
+}
+
 #[tokio::test]
 #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
 async fn shadow_mode_writes_nothing() {
