@@ -1916,6 +1916,7 @@ used for and why persistence defaults on.
 | `redis.acl.clients.trustBacklogConsumer` | `false` | trust-backlog-consumer, as user `trust-backlog-consumer`. |
 | `redis.acl.clients.ingestWriter` | `false` | ingest-writer, as user `ingest-writer` (only once an `ingestWriter.streams` entry is not `off`). |
 | `redis.acl.clients.pollerIncidents` | `false` | poller-incidents' DB sink (`pollers.incidents.ingest.sink: db`), as user `poller-incidents`. |
+| `redis.acl.clients.pollerLdbws` | `false` | poller-ldbws' stream sinks (`pollers.ldbws.ingest.sink: http+shadow` or `stream`), as user `poller-ldbws` (`~ds:ingest:station-samples +xadd +xrevrange`). |
 | `redis.image.repository` | `redis` | Redis image repository (upstream image; this repo builds no Redis image). |
 | `redis.image.tag` | `7.4.11@sha256:…` | Redis 7.4, digest-pinned in the tag. |
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
@@ -2347,6 +2348,7 @@ separate top-level values (`pollerIrishRailGtfs`, `pollerIrishRailLive`,
 | `pollers.incidents.ingest.sink` | `http` | incidents only (ingest plan 2c.2): `http` POSTs snapshots to the api; `db` writes Postgres directly (DATABASE_URL: the incidents role with `perService.incidents.connect`, else app) and XADDs `incident-text-changed` from the poller (the `poller-incidents` user with `redis.acl.clients.pollerIncidents`), with Postgres and Redis egress and admission. Rollback: `http`. |
 | `pollers.incidents.ingest.rowHeartbeat` | `true` | incidents only (plan 2c.6): `INCIDENTS_ROW_HEARTBEAT` for both writers (the api's `POST /private/incidents` and the `db` sink). `false` writes only changed rows (about 600k fewer `incidents` updates a day); readers show the feed's snapshot time. Rendered only when `false`. Rollback: `true`. |
 | `pollers.incidents.ingest.database.maxConnections` | `2` | incidents only: its Postgres pool under `db` (`DATABASE_MAX_CONNECTIONS`; spec §6.6). |
+| `pollers.ldbws.ingest.sink` | `http` | ldbws only (ingest plan 3a.7): `http` POSTs each cycle to `ingestPath`; `http+shadow` also XADDs a copy to `ds:ingest:station-samples` (for `ingestWriter.streams.station-samples: shadow`); `stream` XADDs only and reads the startup cursor from the stream, and needs `ingestWriter.enabled` with `ingestWriter.streams.station-samples: apply` (the render fails otherwise; flip both together). Either stream sink renders `INGEST_SINK` and `REDIS_URL` (the `poller-ldbws` user with `redis.acl.clients.pollerLdbws`) and the Redis egress and admission. Rollback: `http`. |
 | `pollers.tfl.apiKeyEnvVar` | `TFL_APP_KEY` | tfl only: env var the key is passed in (the RDM pollers default to `RDM_API_KEY`). Do not change. |
 | `pollers.tfl.dlrPilotEnabled` | `false` | tfl only: DLR arrivals-diffing pilot (`DLR_PILOT_ENABLED`). |
 | `pollers.tfl.dlrPilotStopPointId` | `940GZZDLPOP` | tfl only: the DLR pilot's stop point (`DLR_PILOT_STOP_POINT_ID`). |

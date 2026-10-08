@@ -27,6 +27,7 @@ mod config;
 mod platform_history;
 mod rotation;
 mod schema;
+mod sink;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -41,6 +42,7 @@ use config::Config;
 use platform_history::PlatformHistory;
 use reqwest::{Client, StatusCode};
 use rotation::Rotation;
+use sink::SampleSink;
 
 /// Per-request timeout — see the other three pollers' identical rationale.
 /// 30s is comfortably short relative to the 60s default poll interval.
@@ -137,11 +139,14 @@ async fn run() -> anyhow::Result<()> {
         );
     }
 
-    common::poller_loop::run_poll_loop(
+    // Plan 3a.7: where the samples go (INGEST_SINK; `sink.rs`), and so
+    // where the startup cursor comes from.
+    let sink = SampleSink::from_config(&config)?;
+    tracing::info!(ingest_sink = %sink.mode(), "station samples sink");
+
+    common::poller_loop::run_poll_loop_with_cursor(
         "ldbws",
-        &client,
-        &config.api_ingest_url,
-        &internal_oauth,
+        || sink.last_fetched(&client, &config, &internal_oauth),
         poll_interval,
         config.metrics.metrics_enabled,
         config.metrics_port,
@@ -150,6 +155,7 @@ async fn run() -> anyhow::Result<()> {
             let platform_history = Rc::clone(&platform_history);
             let rotation = Rc::clone(&rotation);
             let budget = Rc::clone(&budget);
+            let sink = &sink;
             let client = &client;
             let config = &config;
             let internal_oauth = &internal_oauth;
@@ -169,6 +175,7 @@ async fn run() -> anyhow::Result<()> {
                     &mut rotation_state,
                     &mut budget_state,
                     internal_oauth,
+                    sink,
                 )
                 .await;
                 *platform_history.borrow_mut() = history;
@@ -188,6 +195,7 @@ async fn poll_once(
     rotation: &mut Rotation,
     request_budget: &mut RequestBudget,
     internal_oauth: &common::oauth_client::OAuthTokenCache,
+    sink: &SampleSink,
 ) -> anyhow::Result<()> {
     let stations =
         well_formed_stations(fetch_sample_stations(client, config, internal_oauth).await?);
@@ -246,12 +254,11 @@ async fn poll_once(
         return Ok(());
     }
 
-    ingest::post_batch_retrying(
+    sink.deliver(
         client,
-        &config.api_ingest_url,
+        config,
         internal_oauth,
         &samples,
-        "station samples",
         common::poller_loop::post_retry_budget(Duration::from_secs(config.poll_interval_secs)),
     )
     .await
@@ -887,6 +894,7 @@ mod tests {
                 internal_oauth_username: "svc-poller-ldbws".to_string(),
                 internal_oauth_password: "app-password".to_string(),
             },
+            ingest: config::IngestArgs::default(),
             poll_interval_secs: 60,
             hourly_request_budget: 0,
             sample_pinned_lines_only: false,

@@ -1175,6 +1175,17 @@ pollers:
     baseUrl: ""
     baseUrlEnvVar: LDBWS_BASE_URL
     ingestPath: /private/station-samples
+    # Ingest architecture plan 3a.7: where the samples go.
+    ingest:
+      # -- `http` (today): POST each cycle to `ingestPath`. `http+shadow`:
+      # the same POST, plus a copy XADDed to `ds:ingest:station-samples`
+      # for `ingestWriter.streams.station-samples: shadow`. `stream`: XADD
+      # only (with `ingestWriter.streams.station-samples: apply`, in the
+      # same values change). Either stream sink renders INGEST_SINK and
+      # REDIS_URL (the `poller-ldbws` ACL user with
+      # `redis.acl.clients.pollerLdbws`) and the Redis egress and
+      # admission. Rollback: `http`.
+      sink: http
     # -- ldbws only: the api endpoint listing which stations to sample. This
     # is a SECOND api URL, separate from ingestPath -- see
     # crates/poller-ldbws/src/config.rs.
@@ -2547,6 +2558,10 @@ redis:
       # -- poller-incidents' DB sink (`pollers.incidents.ingest.sink: db`),
       # as user `poller-incidents` (`%W~incident-text-changed +xadd`).
       pollerIncidents: false
+      # -- poller-ldbws' stream sinks (`pollers.ldbws.ingest.sink:
+      # http+shadow` or `stream`), as user `poller-ldbws`
+      # (`~ds:ingest:station-samples +xadd +xrevrange`).
+      pollerLdbws: false
   image:
     repository: redis
     # -- Pinned to an exact 7.4 patch release and content digest (INF-11);

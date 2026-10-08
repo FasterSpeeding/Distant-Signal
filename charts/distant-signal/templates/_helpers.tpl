@@ -1125,14 +1125,40 @@ Takes (dict "root" $ "name" <pollers key> "poller" <its values>).
 {{- define "distant-signal.pollerSinkDb" -}}
 {{- $ingest := .poller.ingest | default dict -}}
 {{- $sink := toString ($ingest.sink | default "http") -}}
-{{- if not (has $sink (list "http" "db")) -}}
-{{- fail (printf "pollers.%s.ingest.sink must be http or db, not %q." .name $sink) -}}
+{{- if not (has $sink (list "http" "db" "http+shadow" "stream")) -}}
+{{- fail (printf "pollers.%s.ingest.sink must be http or db (or, for a stream producer, http+shadow or stream), not %q." .name $sink) -}}
 {{- end -}}
 {{- if and .poller.enabled (eq $sink "db") -}}
 {{- if and (eq .name "stations") (not (and .root.Values.ingestWriter.enabled .root.Values.ingestWriter.loops.enabled)) -}}
 {{- fail "pollers.stations.ingest.sink=db needs ingestWriter.enabled and ingestWriter.loops.enabled: without the api's POST, the ingest-writer's CORPUS crosswalk loop rebuilds the crosswalk after a stations refresh (ingest architecture plan 2b.2)." -}}
 {{- end -}}
 true
+{{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when the poller is enabled and pollers.<name>.ingest.sink
+is `http+shadow` or `stream` (ingest architecture phase 3: it XADDs its
+snapshots to its ds:ingest:* stream, so it needs Redis). Only the stream
+producers take those sinks (plan 3a.7: ldbws; 3c adds tfl and tocs); any
+other poller fails the render. Takes (dict "root" $ "name" <pollers key>
+"poller" <its values>).
+*/}}
+{{- define "distant-signal.pollerSinkStream" -}}
+{{- $ingest := .poller.ingest | default dict -}}
+{{- $sink := toString ($ingest.sink | default "http") -}}
+{{- if has $sink (list "http+shadow" "stream") -}}
+{{- $streams := dict "ldbws" "station-samples" -}}
+{{- if not (hasKey $streams .name) -}}
+{{- fail (printf "pollers.%s.ingest.sink %s: only a stream producer (ldbws) takes http+shadow or stream." .name $sink) -}}
+{{- end -}}
+{{- if .poller.enabled -}}
+{{- $stream := get $streams .name -}}
+{{- if and (eq $sink "stream") (not (and .root.Values.ingestWriter.enabled (eq (toString (get .root.Values.ingestWriter.streams $stream)) "apply"))) -}}
+{{- fail (printf "pollers.%s.ingest.sink=stream needs ingestWriter.enabled and ingestWriter.streams.%s: apply (flip both in the same values change, spec §13.1): with no writer applying the stream, nothing would reach the database." .name $stream) -}}
+{{- end -}}
+true
+{{- end -}}
 {{- end -}}
 {{- end }}
 
