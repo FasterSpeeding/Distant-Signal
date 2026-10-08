@@ -683,8 +683,14 @@ it (an api route, a direct writer, a stream handler), the source's data has
 not landed for that long. Defaults: `incidents` and `tfl` 15 min (polled
 every 5 min), `stations` and `tocs` 2 days (daily), the stream-only sources
 (`station-samples`, `full-coverage-*`, `station-full-coverage-samples`) 30
-min, and those only while the writer applies their stream
+min, the island-of-Ireland catalogues 2 days (daily; one source per table
+and network: `island_of_ireland_{stations,lines}_gtfs` from
+poller-irish-rail-gtfs, `_nir` from poller-nir-stations), and the
+stream-only ones only while the writer applies their stream
 (`whileStreamApplies`): their rows are written only on the stream path.
+An unsuffixed `island_of_ireland_stations`/`_lines` row is what writers
+recorded before the per-network split; it is no longer written or
+checked.
 
 1. The source's poller: [DistantSignalPollerFailing](#distantsignalpollerfailing)
    / [DistantSignalPollerStale](#distantsignalpollerstale), its log.

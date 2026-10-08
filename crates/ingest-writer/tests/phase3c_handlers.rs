@@ -451,7 +451,8 @@ async fn tocs_rows_are_counted_written_then_skipped() {
 async fn island_of_ireland_schemas_are_applied_under_the_guard() {
     let db = Db::new().await;
     db.cleanup().await;
-    db.age_freshness("island_of_ireland_stations").await;
+    db.age_freshness("island_of_ireland_stations_nir").await;
+    db.age_freshness("island_of_ireland_lines_nir").await;
     // Stations and lines on poller-nir-stations' stream, samples on
     // poller-irish-rail-live's (security review H1: one stream per poller).
     let stream = "ds:ingest:ioi-nir";
@@ -487,7 +488,15 @@ async fn island_of_ireland_schemas_are_applied_under_the_guard() {
     .await
     .unwrap();
     assert_eq!((name.as_str(), fetched_at), ("New", t0));
-    assert_eq!(db.freshness("island_of_ireland_stations").await, Some(t0));
+    // Its own network's marker (poller-nir-stations' feed), not GTFS's.
+    assert_eq!(
+        db.freshness("island_of_ireland_stations_nir").await,
+        Some(t0)
+    );
+    assert_ne!(
+        db.freshness("island_of_ireland_stations_gtfs").await,
+        Some(t0)
+    );
 
     let lines = [IslandOfIrelandLineDefinition {
         id: "TEST-3C-LINE".into(),
@@ -504,6 +513,7 @@ async fn island_of_ireland_schemas_are_applied_under_the_guard() {
     .await
     .unwrap();
     assert_eq!(line_fetched, t0);
+    assert_eq!(db.freshness("island_of_ireland_lines_nir").await, Some(t0));
 
     let sample = |polled_at: DateTime<Utc>| IslandOfIrelandStationSample {
         station_id: "TEST-3C-STN".into(),
