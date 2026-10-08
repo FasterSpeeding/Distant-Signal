@@ -119,7 +119,20 @@ consumer.run(&handler, shutdown_signal()).await;
   name → `Poison`, unknown version → `UnsupportedSchema`), `classify`
   (SQLSTATE class 22/23 → `Poison`, anything else → `Transient`) and
   `apply_rows` (a savepoint per row; refused rows become
-  `PartiallyRejected`). No product handler yet (3a.6).
+  `PartiallyRejected`), `apply_batch` (the whole batch in one savepoint,
+  falling back to `apply_rows` only on a data error).
+- `handlers::snapshots` (plan 3a.6): `station-samples/1`,
+  `full-coverage-stats/1`, `full-coverage-window-stats/1` (validated as the
+  api route validates it: an invalid row is poison) and
+  `station-full-coverage-samples/1`. Each is the api route's `ds-store`
+  upsert (its `_on` form, on the writer's transaction) with the row's
+  observed time clamped (`polled_at`, `computed_at`, `resolved_at`; line
+  stats get `source_updated_at := produced_at`) and the ordering guard on
+  that column, then `record_ingest(<schema name>, produced_at)` in
+  `ingest_freshness` (`GREATEST`, never backwards). Line stats advance
+  `source_updated_at` on every snapshot, even unchanged (`updated_at`
+  still means "last changed"), so the guard compares against the newest
+  snapshot applied.
 - `dedup`: `ingest_dedup`, claimed in each `apply` entry's transaction
   (`Duplicate` when already there), pruned hourly after 48 h under the
   `ingest_dedup_prune` loop lock.
@@ -165,6 +178,8 @@ All prefixed `distant_signal_` (`common::metrics::metric_name`); names in
 | `ingest_stream_bytes` | gauge | `stream` | consumer, every 30 s (`MEMORY USAGE` of the stream plus its dead-letter stream) |
 | `ingest_stream_last_applied_timestamp_seconds` | gauge | `stream` | consumer |
 | `ingest_stream_observed_at_clamped_total` | counter | `stream`, `schema` | the ingest-writer's guard helpers (`ingest_writer::observed`, spec §7.8): an observed time clamped to `now() + 2 min` |
+| `ingest_stream_rows_total` | counter | `stream`, `schema`, `mode` (`shadow`, `apply`) | the ingest-writer's snapshot handlers: rows decoded and validated (shadow) or written (apply) |
+| `ingest_stream_sink_rows_total` | counter | `stream`, `schema`, `sink` (`http`, `stream`) | the producers (poller-ldbws, full-coverage-consumer): rows the api accepted, or rows whose snapshot was fully XADDed |
 
 `register_producer(stream)` / `register_consumer(stream)` (called by
 `Producer::spawn` / `StreamConsumer::new`) register the alerting series at
