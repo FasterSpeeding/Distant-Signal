@@ -72,6 +72,18 @@ cosign verify ghcr.io/fasterspeeding/charts/distant-signal@sha256:<digest> \
 In Flux, set `verify.provider: cosign` with a `matchOIDCIdentity` entry for
 that issuer and subject on the chart's OCIRepository/HelmRepository.
 
+**Debian package updates.** Each image's runtime stage runs `apt-get upgrade`
+in the same layer as its `apt-get install`. That upgrades the base image's
+own packages (libc, openssl, ...) to whatever the Debian archive carries when
+the layer is built. Ordinary builds reuse that layer from the build cache,
+and so does a local rebuild, so they don't pick up new fixes. Only the
+workflow's weekly forced rebuild (Mondays 02:41 UTC, or a manual run with
+`no-cache`) rebuilds the runtime stage uncached and refreshes them; a
+base-image digest bump (Renovate) does too. An image's digest, and with it
+a rollout of its Deployment, therefore changes at least weekly. Images are
+reproducible otherwise: an unchanged service keeps its digest from push to
+push.
+
 | Dockerfile | Default image repository |
 |---|---|
 | `docker/api.Dockerfile` | `ghcr.io/fasterspeeding/distant-signal/api` |

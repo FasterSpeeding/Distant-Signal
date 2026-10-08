@@ -359,6 +359,42 @@ def hidden_inputs() -> Iterator[tuple[str, str]]:
 RUNTIME_STAGE = "runtime"
 
 
+# The weekly rebuild's point: besides the packages a runtime stage installs,
+# the base image's own (libc, openssl, ...) are upgraded to the archive's
+# current versions at build time. Inserted after the runtime stage's
+# `RUN apt-get update \` (its first RUN), in every Rust Dockerfile and in
+# frontend/Dockerfile's runtime-prod stage; `--check` fails without it.
+# Cached builds reuse that layer, so only the weekly no-cache rebuild (or a
+# base-image digest bump) actually refreshes the packages.
+APT_UPDATE = "RUN apt-get update \\"
+APT_UPGRADE = "    && apt-get upgrade -y --no-install-recommends \\"
+FRONTEND_RUNTIME_STAGE = "runtime-prod"
+
+
+def with_runtime_upgrade(text: str, stage: str, path: Path) -> str:
+    """Return `text` with APT_UPGRADE after `stage`'s `RUN apt-get update`."""
+    lines = text.splitlines(keepends=True)
+    starts = [
+        i
+        for i, line in enumerate(lines)
+        if line.startswith("FROM ") and line.split()[-2:] == ["AS", stage]
+    ]
+    run = next(
+        (
+            i
+            for i in range(starts[0] + 1 if starts else len(lines), len(lines))
+            if lines[i].startswith(("FROM ", "RUN "))
+        ),
+        None,
+    )
+    if run is None or lines[run].rstrip("\n") != APT_UPDATE:
+        msg = f"{path}: stage {stage!r}'s first RUN must be {APT_UPDATE!r}"
+        raise ValueError(msg)
+    if run + 1 < len(lines) and lines[run + 1].rstrip("\n") == APT_UPGRADE:
+        return text
+    return "".join([*lines[: run + 1], f"{APT_UPGRADE}\n", *lines[run + 1 :]])
+
+
 def runtime_stage_problems(found: Mapping[str, Path]) -> list[str]:
     """Return the Dockerfiles whose last stage isn't named RUNTIME_STAGE."""
     problems: list[str] = []
@@ -412,9 +448,18 @@ def wanted_files(found: Mapping[str, Path]) -> tuple[dict[Path, str], list[str]]
     for name in sorted(found.keys() & SERVICES.keys()):
         path = found[name]
         try:
-            wanted[path] = splice(path.read_text(encoding="utf-8"), render(name), path)
+            text = splice(path.read_text(encoding="utf-8"), render(name), path)
+            wanted[path] = with_runtime_upgrade(text, RUNTIME_STAGE, path)
         except ValueError as error:
             problems.append(str(error))
+    try:
+        wanted[FRONTEND_DOCKERFILE] = with_runtime_upgrade(
+            FRONTEND_DOCKERFILE.read_text(encoding="utf-8"),
+            FRONTEND_RUNTIME_STAGE,
+            FRONTEND_DOCKERFILE,
+        )
+    except ValueError as error:
+        problems.append(str(error))
     return wanted, problems
 
 

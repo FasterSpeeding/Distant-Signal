@@ -166,6 +166,34 @@ class RuntimeStageTests(unittest.TestCase):
         self.assertIn("docker/bad.Dockerfile", problems[0])
 
 
+class RuntimeUpgradeTests(unittest.TestCase):
+    """`apt-get upgrade` in the runtime stage's apt RUN."""
+
+    TEXT = (
+        "FROM a AS chef\n"
+        f"{gen.APT_UPDATE}\n"
+        "    && apt-get install -y x\n"
+        "FROM debian@sha256:0 AS runtime\n"
+        "ARG X=1\n"
+        f"{gen.APT_UPDATE}\n"
+        "    && apt-get install -y y\n"
+    )
+
+    def test_inserted_once_in_the_runtime_stage_only(self) -> None:
+        """Added after the runtime stage's update, and idempotent."""
+        out = gen.with_runtime_upgrade(self.TEXT, "runtime", Path("x"))
+        lines = out.splitlines()
+        self.assertEqual(lines.count(gen.APT_UPGRADE), 1)
+        self.assertEqual(lines[lines.index(gen.APT_UPGRADE) - 2], "ARG X=1")
+        self.assertEqual(gen.with_runtime_upgrade(out, "runtime", Path("x")), out)
+
+    def test_runtime_stage_without_apt_update_is_an_error(self) -> None:
+        """A runtime stage whose first RUN isn't the update is rejected."""
+        text = "FROM debian@sha256:0 AS runtime\nRUN true\n"
+        with self.assertRaises(ValueError):
+            gen.with_runtime_upgrade(text, "runtime", Path("x"))
+
+
 class CommittedFilesTests(unittest.TestCase):
     """The repo's own Dockerfiles."""
 

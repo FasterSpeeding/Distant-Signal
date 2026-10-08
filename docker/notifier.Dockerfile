@@ -102,6 +102,7 @@ ARG TINI_VERSION=0.19.0-1
 
 # hadolint ignore=DL3008 # apt versions unpinned on purpose; see .hadolint.yaml
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 "tini=${TINI_VERSION}*" \
     && rm -rf /var/lib/apt/lists/* \
     && tini --version \

@@ -86,6 +86,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ARG TINI_VERSION=0.19.0-1
 # hadolint ignore=DL3008 # tini pinned to its Debian source version; see docker/api.Dockerfile
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends "tini=${TINI_VERSION}*" \
     && rm -rf /var/lib/apt/lists/* \
     && tini --version

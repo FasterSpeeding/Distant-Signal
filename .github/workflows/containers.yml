@@ -128,12 +128,12 @@ on:
   # Weekly forced rebuild (Mondays 02:41 UTC, off the hour, before
   # prune-buildcache.yml's 04:17 run deletes the cache versions it untags).
   # Every leg rebuilds its runtime stage with no cache, so its `apt-get
-  # install` picks up Debian's security updates for the runtime packages,
-  # which a cached build would keep forever; the Rust and Next builds still
-  # come from the cache. It then pushes, signs, attests, writes the cache
-  # and packages the chart exactly like a push to main. Packages that come
-  # with the base image itself (libc and the like) update when Renovate
-  # bumps its digest, not here.
+  # upgrade` and `apt-get install` (one RUN, see gen-rust-dockerfiles.py's
+  # APT_UPGRADE) pick up Debian's security updates, for the base image's
+  # own packages (libc and the like) as well as the installed ones; a
+  # cached build would keep the old layer forever. The Rust and Next builds
+  # still come from the cache. It then pushes, signs, attests, writes the
+  # cache and packages the chart exactly like a push to main.
   schedule:
     - cron: "41 2 * * 1"
   # By hand, from main/master (another ref builds without publishing, like
