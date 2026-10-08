@@ -1,3 +1,5 @@
+import { computeBuildId } from './scripts/build-id.mjs';
+
 // Origins `next dev` accepts cross-origin dev requests (HMR, the dev
 // overlay, /_next/* assets) from. Supplied by docker-compose.dev.yml from
 // NEXT_ALLOWED_DEV_ORIGINS in `dev.env` — comma-separated — rather than
@@ -68,6 +70,12 @@ const nextConfig = {
   // so none of `output: 'standalone'`'s other edge cases (custom
   // `outputFileTracingRoot`, workspace-relative tracing) apply.
   output: 'standalone',
+  // A hash of the frontend's inputs (scripts/build-id.mjs), not Next's
+  // random default: the build ID is stamped into public/sw.js, so a random
+  // one made every deploy install a new service worker and drop its
+  // caches, and made every image build differ. Now both change only when
+  // frontend/ does.
+  generateBuildId: () => computeBuildId(import.meta.dirname),
   ...(devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
   // /track/tickets and /track/mine were two separate pages
   // (docs/superpowers/specs/2026-08-31-tickets-list-design.md,
@@ -98,8 +106,8 @@ const nextConfig = {
       },
     ];
   },
-  // /sw.js's own byte content changes on every deploy (scripts/
-  // stamp-sw-version.mjs stamps a fresh BUILD_ID into it) -- an
+  // /sw.js's own byte content changes whenever the frontend does (scripts/
+  // stamp-sw-version.mjs stamps the BUILD_ID into it) -- an
   // aggressively browser-HTTP-cached response could mask that from the
   // browser's own service-worker update check, which re-fetches this URL
   // on every navigation and does a byte-for-byte comparison. `no-cache`
