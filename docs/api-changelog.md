@@ -3,6 +3,18 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-08: `GET /public/ready` and graceful shutdown
+
+- New `GET /public/ready`, the readiness probe: `200 {"status":"ready"}`,
+  or `503` with `{"status":"database_unreachable"}` (the database did not
+  answer `SELECT 1` within 2 s; checked at most every 5 s) or
+  `{"status":"draining"}` (the pod is shutting down). `Cache-Control:
+  no-store`. `GET /public/health` is unchanged (liveness).
+- On shutdown the api finishes in-flight requests (up to
+  `API_SHUTDOWN_DRAIN_SECS`, default 20 s) instead of resetting them. A
+  keep-alive connection is closed after its current response, so a client
+  must reconnect for its next request, as on any closed connection.
+
 ## 2026-10-07: walks between bus stops and their stations in the planner
 
 Design: `docs/superpowers/specs/2026-10-06-tiploc-locations-design.md`
