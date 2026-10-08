@@ -28,7 +28,7 @@ glob = "0.3.3"
 # `edge::serve`: the listener loop, so the HTTP/1 header-read timeout and
 # HTTP/2 keep-alive can be set (API-2). Same versions axum already uses.
 hyper = "1"
-hyper-util = { version = "0.1.20", features = ["tokio", "server", "server-auto", "service", "http1", "http2"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "server", "server-auto", "server-graceful", "service", "http1", "http2"] }
 # `setrlimit`/`getrlimit` in the ticket-parse child's `pre_exec`
 # (`data::ticket_subprocess`). Already in the tree via tokio/std deps.
 libc = "0.2"
@@ -68,7 +68,7 @@ serde-inline-default = "1.0.1"
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 sha2 = "0.10"
 sqlx = { version = "0.8.6", features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio", "tls-native-tls", "json"] }
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "tracing", "time", "process", "io-util"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "tracing", "time", "process", "io-util", "signal"] }
 toml = { version = "1.1.2", features = ["serde"] }
 tower = "0.5.3"
 tower-http = { version = "0.6.10", features = ["cors", "limit", "normalize-path", "timeout", "trace"] }

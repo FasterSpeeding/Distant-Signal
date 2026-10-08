@@ -17,6 +17,11 @@
 //!   layer times;
 //! - HTTP/2 keep-alive pings, so a dead HTTP/2 peer's connection is closed.
 //!
+//! On shutdown ([`serve_with_shutdown`]) the listener stops accepting, every
+//! open connection is told to finish (HTTP/1 closes after its in-flight
+//! response, keep-alive or not; HTTP/2 gets a GOAWAY), and the server waits
+//! up to `API_SHUTDOWN_DRAIN_SECS` for them.
+//!
 //! These are read from the environment with their own parser rather than
 //! from `data::config::ServiceArguments`, so adding one doesn't touch every
 //! test that builds a `ServiceArguments` by hand.
@@ -59,6 +64,15 @@ pub struct EdgeSettings {
     /// database, short enough that a pod restart is retried promptly.
     #[arg(long, env = "API_UNAVAILABLE_RETRY_AFTER_SECS", default_value_t = 30)]
     pub unavailable_retry_after_secs: u64,
+
+    /// On SIGTERM, how long in-flight requests get to finish (and the
+    /// background loops to stop and release their locks) before the process
+    /// exits anyway. Must fit inside the pod's terminationGracePeriodSeconds
+    /// after the `preStop` sleep; the chart checks that. A request still
+    /// running at the deadline is cut off, so a `/private` publish chunk
+    /// longer than this is retried by its producer as before.
+    #[arg(long, env = "API_SHUTDOWN_DRAIN_SECS", default_value_t = 20)]
+    pub shutdown_drain_secs: u64,
 }
 
 impl Default for EdgeSettings {
@@ -68,6 +82,7 @@ impl Default for EdgeSettings {
             private_request_timeout_secs: 300,
             header_read_timeout_secs: 10,
             unavailable_retry_after_secs: 30,
+            shutdown_drain_secs: 20,
         }
     }
 }
@@ -99,6 +114,7 @@ impl EdgeSettings {
                 "API_UNAVAILABLE_RETRY_AFTER_SECS",
                 self.unavailable_retry_after_secs,
             ),
+            ("API_SHUTDOWN_DRAIN_SECS", self.shutdown_drain_secs),
         ] {
             ensure!(value > 0, "{name} must be at least 1 second");
         }
@@ -106,7 +122,15 @@ impl EdgeSettings {
             self.unavailable_retry_after_secs <= 3600,
             "API_UNAVAILABLE_RETRY_AFTER_SECS must be at most 3600 seconds"
         );
+        ensure!(
+            self.shutdown_drain_secs <= 3600,
+            "API_SHUTDOWN_DRAIN_SECS must be at most 3600 seconds"
+        );
         Ok(())
+    }
+
+    pub fn shutdown_drain(&self) -> Duration {
+        Duration::from_secs(self.shutdown_drain_secs)
     }
 
     pub fn public_timeout_layer(&self) -> TimeoutLayer {
@@ -137,28 +161,94 @@ impl EdgeSettings {
 const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Serves `router` on `listener` until the process exits: `axum::serve`'s
+/// Serves `router` on `listener` until the process exits; see
+/// [`serve_with_shutdown`].
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    header_read_timeout: Duration,
+) -> std::io::Result<()> {
+    serve_with_shutdown(
+        listener,
+        router,
+        header_read_timeout,
+        std::future::pending(),
+        Duration::MAX,
+    )
+    .await
+    .map(drop)
+}
+
+/// How a [`serve_with_shutdown`] drain ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrainOutcome {
+    /// Every connection finished within the deadline.
+    Drained,
+    /// The deadline passed with connections still open; they are dropped
+    /// when the process exits.
+    DeadlineReached,
+}
+
+/// Serves `router` on `listener` until `shutdown` resolves: `axum::serve`'s
 /// accept loop, plus the HTTP/1 header-read timeout and HTTP/2 keep-alive
 /// it doesn't expose. Each request carries the peer's
 /// `axum::extract::ConnectInfo<SocketAddr>`, as
 /// `into_make_service_with_connect_info` would give it.
-pub async fn serve(
+///
+/// Once `shutdown` resolves the listener is closed (a new connection is
+/// refused), each open connection is shut down gracefully (an in-flight
+/// request finishes and gets its response; an idle keep-alive connection is
+/// closed; HTTP/2 gets a GOAWAY), and this returns when they have all
+/// ended or after `drain_deadline`, whichever is first.
+pub async fn serve_with_shutdown(
     mut listener: tokio::net::TcpListener,
     router: axum::Router,
     header_read_timeout: Duration,
-) -> std::io::Result<()> {
+    shutdown: impl Future<Output = ()>,
+    drain_deadline: Duration,
+) -> std::io::Result<DrainOutcome> {
+    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+    tokio::pin!(shutdown);
     loop {
-        // `axum::serve::Listener::accept` retries transient accept errors
-        // (EMFILE and friends) with a backoff instead of returning them.
-        let (stream, remote_addr) = axum::serve::Listener::accept(&mut listener).await;
-        let router = router.clone();
+        let (stream, remote_addr) = tokio::select! {
+            // `axum::serve::Listener::accept` retries transient accept
+            // errors (EMFILE and friends) with a backoff instead of
+            // returning them. Cancel-safe: dropping it mid-wait loses no
+            // connection.
+            accepted = axum::serve::Listener::accept(&mut listener) => accepted,
+            () = &mut shutdown => break,
+        };
         tokio::spawn(serve_connection(
             stream,
             remote_addr,
-            router,
+            router.clone(),
             header_read_timeout,
+            graceful.watcher(),
         ));
     }
+    // Close the listening socket first, so the kernel refuses new
+    // connections instead of queueing them on a backlog nobody accepts.
+    drop(listener);
+    let open = graceful.count();
+    tracing::info!(
+        open_connections = open,
+        drain_deadline_secs = drain_deadline.as_secs(),
+        "shutting down: no longer accepting connections; draining the open ones"
+    );
+    let outcome = match tokio::time::timeout(drain_deadline, graceful.shutdown()).await {
+        Ok(()) => {
+            tracing::info!("every connection drained");
+            DrainOutcome::Drained
+        }
+        Err(_) => {
+            tracing::warn!(
+                drain_deadline_secs = drain_deadline.as_secs(),
+                "drain deadline reached with connections still open; exiting anyway"
+            );
+            DrainOutcome::DeadlineReached
+        }
+    };
+    Ok(outcome)
 }
 
 async fn serve_connection(
@@ -166,6 +256,7 @@ async fn serve_connection(
     remote_addr: SocketAddr,
     router: axum::Router,
     header_read_timeout: Duration,
+    watcher: hyper_util::server::graceful::Watcher,
 ) {
     let service =
         hyper::service::service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
@@ -189,10 +280,10 @@ async fn serve_connection(
         // Same as axum::serve: needed for HTTP/2 websockets.
         .enable_connect_protocol();
 
-    if let Err(err) = builder
+    let connection = builder
         .serve_connection_with_upgrades(TokioIo::new(stream), service)
-        .await
-    {
+        .into_owned();
+    if let Err(err) = watcher.watch(connection).await {
         tracing::trace!(error = %err, %remote_addr, "connection ended with an error");
     }
 }
@@ -213,6 +304,17 @@ mod tests {
         // The environment of a test run doesn't set these; if it ever does,
         // this is the test to look at.
         assert_eq!(parsed, EdgeSettings::default());
+    }
+
+    #[test]
+    fn an_out_of_range_drain_is_rejected() {
+        for secs in [0, 3601] {
+            let settings = EdgeSettings {
+                shutdown_drain_secs: secs,
+                ..EdgeSettings::default()
+            };
+            assert!(settings.validate().is_err(), "{secs}");
+        }
     }
 
     #[test]
@@ -291,6 +393,157 @@ mod tests {
         let text = String::from_utf8_lossy(&buf);
         assert!(text.starts_with("HTTP/1.1 200"), "{text}");
         assert!(text.ends_with("127.0.0.1"), "{text}");
+    }
+
+    async fn read_all(stream: &mut tokio::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut buf))
+            .await
+            .expect("the server must close the connection")
+            .expect("read");
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// Graceful shutdown: once the signal fires, a request already in
+    /// flight still gets its full response, an idle keep-alive connection
+    /// is closed, a new connection is refused, and the server returns once
+    /// the in-flight request is done.
+    #[tokio::test]
+    async fn shutdown_drains_in_flight_requests_and_refuses_new_connections() {
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let router = axum::Router::new()
+            .route("/fast", get(|| async { "fast" }))
+            .route(
+                "/slow",
+                get({
+                    let entered = std::sync::Arc::clone(&entered);
+                    let release = std::sync::Arc::clone(&release);
+                    move || async move {
+                        entered.notify_one();
+                        release.notified().await;
+                        "slow done"
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let server = tokio::spawn(serve_with_shutdown(
+            listener,
+            router,
+            Duration::from_secs(5),
+            shutdown.triggered(),
+            Duration::from_secs(10),
+        ));
+
+        // An idle keep-alive connection: one request served, left open.
+        let mut idle = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        idle.write_all(b"GET /fast HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("write");
+        let mut buf = vec![0u8; 512];
+        let n = idle.read(&mut buf).await.expect("read");
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+
+        // An in-flight request (keep-alive, too), parked in its handler.
+        let mut in_flight = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        in_flight
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("write");
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("the slow handler starts");
+
+        shutdown.trigger();
+
+        // New connections are refused once the listener is closed.
+        let refused = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match tokio::net::TcpStream::connect(addr).await {
+                    Err(err) => break err,
+                    Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .expect("new connections must be refused after the shutdown signal");
+        // A connect racing the close can be reset instead (it landed on the
+        // backlog the kernel then dropped); once closed, it is refused.
+        let _ = refused;
+        let after = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect_err("the listener is closed");
+        assert_eq!(after.kind(), std::io::ErrorKind::ConnectionRefused);
+
+        // The idle keep-alive connection is closed without a response.
+        assert_eq!(read_all(&mut idle).await, "");
+
+        // Still draining: the slow request holds the server open.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !server.is_finished(),
+            "returned before the in-flight request finished"
+        );
+
+        release.notify_one();
+        let response = read_all(&mut in_flight).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("slow done"), "{response}");
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the server returns once drained")
+            .expect("task")
+            .expect("serve");
+        assert_eq!(outcome, DrainOutcome::Drained);
+    }
+
+    /// A request that outlives the drain deadline does not hold the
+    /// process: the server returns at the deadline.
+    #[tokio::test]
+    async fn shutdown_gives_up_at_the_drain_deadline() {
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        let router = axum::Router::new().route(
+            "/stuck",
+            get({
+                let entered = std::sync::Arc::clone(&entered);
+                move || async move {
+                    entered.notify_one();
+                    std::future::pending::<()>().await;
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let shutdown = crate::shutdown::ShutdownSignal::new();
+        let server = tokio::spawn(serve_with_shutdown(
+            listener,
+            router,
+            Duration::from_secs(5),
+            shutdown.triggered(),
+            Duration::from_millis(200),
+        ));
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /stuck HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .expect("write");
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("the handler starts");
+        shutdown.trigger();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the server returns at the deadline")
+            .expect("task")
+            .expect("serve");
+        assert_eq!(outcome, DrainOutcome::DeadlineReached);
     }
 
     /// API-2: a body that trickles in slower than the request timeout gets a

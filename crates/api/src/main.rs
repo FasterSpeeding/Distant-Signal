@@ -270,13 +270,24 @@ async fn server_main() -> anyhow::Result<()> {
     }
     let rate_limiter =
         api::rate_limit::RateLimiter::with_service_callers(rate_limit_settings, service_callers);
+    // Graceful shutdown (2026-10-08): one flag, set on SIGTERM, that the
+    // listener (stop accepting, drain), `/public/ready` (503) and the
+    // background loops (stop, release their locks) all watch. See
+    // `api::shutdown`.
+    let shutdown = api::shutdown::ShutdownSignal::new();
+    // `/public/ready`: the readiness probe (DB reachable and not draining);
+    // `/public/health` stays the liveness probe. See `api::readiness`.
+    let readiness = api::readiness::Readiness::new(app.database.clone(), shutdown.clone());
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
         .merge(routes::journeys::router())
         .merge(routes::journey_templates::router())
         .merge(routes::trips::router())
-        .nest("/public", routes::public_router())
+        .nest(
+            "/public",
+            routes::public_router().merge(api::readiness::router(readiness)),
+        )
         .layer(edge_settings.public_timeout_layer())
         .nest(
             "/private",
@@ -405,16 +416,72 @@ async fn server_main() -> anyhow::Result<()> {
         parse_migrate_on_startup(std::env::var(MIGRATE_ON_STARTUP_ENV).ok().as_deref())?;
     let bind_url = app.config.bind_url.clone();
     let header_read_timeout = edge_settings.header_read_timeout();
+    let drain_deadline = edge_settings.shutdown_drain();
+    let loops_shutdown = shutdown.clone();
     run_startup(
         prepare_schema(migrate_on_startup, migrate, gate),
-        || spawn_background_loops(&app),
-        || async move {
+        || spawn_background_loops(&app, &loops_shutdown),
+        |loops| async move {
             let listener = tokio::net::TcpListener::bind(&bind_url).await?;
-            api::edge::serve(listener, router, header_read_timeout).await?;
-            Ok(())
+            // Installed only now: until the listener is up, SIGTERM keeps
+            // its default action, so a pod stopped mid-migration or at the
+            // schema gate exits at once.
+            let trigger = shutdown.clone();
+            tokio::spawn(async move {
+                api::shutdown::wait_for_os_signal().await;
+                tracing::info!("shutdown signal received");
+                trigger.trigger();
+            });
+            serve_until_shutdown(
+                listener,
+                router,
+                header_read_timeout,
+                &shutdown,
+                drain_deadline,
+                loops,
+            )
+            .await
         },
     )
     .await
+}
+
+/// Serves until `shutdown` fires, then drains the connections and stops the
+/// background loops side by side, both within `drain_deadline`, so the
+/// loops' advisory locks are released while the last requests finish
+/// rather than after.
+async fn serve_until_shutdown(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    header_read_timeout: std::time::Duration,
+    shutdown: &api::shutdown::ShutdownSignal,
+    drain_deadline: std::time::Duration,
+    loops: BackgroundLoops,
+) -> anyhow::Result<()> {
+    let stop_loops = async {
+        shutdown.triggered().await;
+        if tokio::time::timeout(drain_deadline, loops.stopped())
+            .await
+            .is_err()
+        {
+            tracing::warn!("the background loops did not stop within the drain deadline");
+        } else {
+            tracing::info!("background loops stopped; their locks are released");
+        }
+    };
+    let (served, ()) = tokio::join!(
+        api::edge::serve_with_shutdown(
+            listener,
+            router,
+            header_read_timeout,
+            shutdown.triggered(),
+            drain_deadline,
+        ),
+        stop_loops,
+    );
+    served?;
+    tracing::info!("api shut down");
+    Ok(())
 }
 
 /// API-1: the startup order, isolated so it is testable. The schema first
@@ -424,16 +491,16 @@ async fn server_main() -> anyhow::Result<()> {
 /// while the migrator held its locks); only then the listener (so the
 /// startup/readiness probes only pass on a ready schema). A failed
 /// migration or gate starts nothing.
-async fn run_startup<M, S, B, BF>(schema: M, spawn_background: S, serve: B) -> anyhow::Result<()>
+async fn run_startup<M, S, T, B, BF>(schema: M, spawn_background: S, serve: B) -> anyhow::Result<()>
 where
     M: Future<Output = anyhow::Result<()>>,
-    S: FnOnce(),
-    B: FnOnce() -> BF,
+    S: FnOnce() -> T,
+    B: FnOnce(T) -> BF,
     BF: Future<Output = anyhow::Result<()>>,
 {
     schema.await?;
-    spawn_background();
-    serve().await
+    let background = spawn_background();
+    serve(background).await
 }
 
 /// `API_MIGRATE_ON_STARTUP`: whether the api migrates at startup (plan task
@@ -488,26 +555,38 @@ where
 /// connection budgets are unchanged), each runs only while this process
 /// holds its lock, so with the writer's loops on too each sweep runs in one
 /// process at a time (spec §12.3). A held lock is kept until the process
-/// exits. The CORPUS check takes its lock only for the
-/// one run, so the writer's 10-minute loop is never kept off it.
-fn spawn_background_loops(app: &App) {
+/// is shut down (`shutdown`), when every loop stops and the lock session
+/// is closed (`pg_advisory_unlock_all`), so the ingest-writer or the next
+/// api pod takes the locks on its next tick. The CORPUS check takes its
+/// lock only for the one run, so the writer's 10-minute loop is never kept
+/// off it.
+fn spawn_background_loops(app: &App, shutdown: &api::shutdown::ShutdownSignal) -> BackgroundLoops {
     if !app.config.background_loops {
         tracing::info!(
             "API_BACKGROUND_LOOPS is false: the api runs no background loops \
              (the ingest-writer and the api-maintenance CronJob run them)"
         );
-        return;
+        return BackgroundLoops::default();
     }
     let runner = api_loop_runner(app);
     let session = std::sync::Arc::clone(runner.session());
-    // The periodic sweeps, for the life of the process (dropping the
-    // `RunningLoops` would abort them).
-    tokio::spawn(
+    let mut tasks = Vec::new();
+    // The periodic sweeps, until shutdown; then the lock session is closed.
+    tasks.push(tokio::spawn(
         runner
             .spawn(BACKGROUND_LOOP_STALL_AFTER)
-            .run_until_all_end(),
-    );
-    tokio::spawn(session_cleanup_sweep_loop(app.clone()));
+            .run_until(shutdown.triggered()),
+    ));
+    // No lock: dropping a sweep mid-statement rolls that statement back,
+    // and every step is idempotent.
+    let stop = shutdown.triggered();
+    let cleanup_app = app.clone();
+    tasks.push(tokio::spawn(async move {
+        tokio::select! {
+            () = session_cleanup_sweep_loop(cleanup_app) => {}
+            () = stop => {}
+        }
+    }));
     // One-shot, alongside them: rebuilds the CORPUS crosswalk if the stored
     // one predates the newest delivery or this build's rules (one MAX()
     // when no CORPUS), then seeds the CORPUS freshness gauge from the
@@ -515,17 +594,40 @@ fn spawn_background_loops(app: &App) {
     // monthly deliveries -- unless the ingest-writer holds the loop's lock
     // (it does both every 10 minutes).
     let pool = app.database.clone();
-    tokio::spawn(async move {
+    let stop = shutdown.triggered();
+    tasks.push(tokio::spawn(async move {
         let corpus =
             ds_store::loops::corpus_crosswalk(ds_store::loops::CORPUS_CROSSWALK_DEFAULT_INTERVAL);
-        if ds_store::loops::runner::run_once(&pool, &session, &corpus).await
-            == ds_store::loops::TickOutcome::Skipped
-        {
-            tracing::info!(
-                "CORPUS crosswalk startup check skipped: another process holds its lock"
-            );
+        tokio::select! {
+            outcome = ds_store::loops::runner::run_once(&pool, &session, &corpus) => {
+                if outcome == ds_store::loops::TickOutcome::Skipped {
+                    tracing::info!(
+                        "CORPUS crosswalk startup check skipped: another process holds its lock"
+                    );
+                }
+            }
+            // Its lock is on the shared session, which the runner task
+            // closes.
+            () = stop => {}
         }
-    });
+    }));
+    BackgroundLoops(tasks)
+}
+
+/// The tasks [`spawn_background_loops`] started; each ends once the
+/// shutdown signal fires.
+#[derive(Default)]
+struct BackgroundLoops(Vec<tokio::task::JoinHandle<()>>);
+
+impl BackgroundLoops {
+    /// Resolves once every task has ended (after the shutdown signal).
+    async fn stopped(self) {
+        for task in self.0 {
+            if let Err(err) = task.await {
+                tracing::error!(error = ?err, "a background loop task ended abnormally");
+            }
+        }
+    }
 }
 
 /// The api has no per-loop liveness (its `/livez` is the HTTP listener), so
@@ -732,7 +834,8 @@ mod run_startup_tests {
                 },
             ),
             || steps.borrow_mut().push("spawn sweeps"),
-            || async {
+            // The spawn step's result is handed to the serve step.
+            |()| async {
                 steps.borrow_mut().push("bind");
                 Ok(())
             },
