@@ -494,6 +494,21 @@ mod db_tests {
         .await
         .unwrap();
         assert_eq!(first, 3);
+        let tuple_of = |uid: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, (String, String, String)>(
+                    "SELECT xmin::text, xmax::text, ctid::text FROM schedule_services \
+                     WHERE service_date = $1 AND uid = $2",
+                )
+                .bind(date)
+                .bind(uid)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let unchanged_before = tuple_of("TSS0001").await;
 
         // Re-publish: one unchanged, one changed, one dropped.
         let second = replace_for_date(
@@ -507,6 +522,12 @@ mod db_tests {
         .await
         .unwrap();
         assert_eq!(second, 1, "only the changed row is rewritten");
+        let unchanged_after = tuple_of("TSS0001").await;
+        assert_eq!(
+            unchanged_after, unchanged_before,
+            "the unchanged row is neither rewritten nor locked (xmin, xmax, ctid)"
+        );
+        assert_eq!(unchanged_after.1, "0");
 
         let uids = vec![
             "TSS0001".to_string(),
