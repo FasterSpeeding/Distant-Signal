@@ -391,8 +391,6 @@ BEGIN
         ('trains', 'trust_backlog', 'INSERT', ''),
         ('trains', 'trust_backlog', 'UPDATE', ''),
         ('trains', 'trust_consumer', 'SELECT', ''),
-        ('trains', 'trust_consumer', 'INSERT', ''),
-        ('trains', 'trust_consumer', 'UPDATE', ''),
         ('train_subscriptions', 'trust_backlog', 'SELECT', ''),
         ('train_subscriptions', 'trust_backlog', 'UPDATE', ''),
         ('train_subscriptions', 'trust_consumer', 'SELECT', ''),
@@ -436,7 +434,6 @@ BEGIN
         SELECT v.seq, current_setting('ds_grants.' || v.kind) AS grantee
         FROM (VALUES
         ('trains_id_seq', 'trust_backlog'),
-        ('trains_id_seq', 'trust_consumer'),
         ('train_movement_events_id_seq', 'trust_backlog'),
         ('train_movement_events_id_seq', 'trust_consumer'),
         ('train_current_state_id_seq', 'trust_backlog'),

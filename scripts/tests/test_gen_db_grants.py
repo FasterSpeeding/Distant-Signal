@@ -215,16 +215,11 @@ class RenderTest(unittest.TestCase):
                 "train_current_state",
                 "train_event_outbox",
                 "train_movement_events",
-                "trains",
             ],
         )
         self.assertEqual(
             tables("trust_consumer", "UPDATE"),
-            [
-                "train_current_state",
-                "train_movement_events",
-                "trains",
-            ],
+            ["train_current_state", "train_movement_events"],
         )
         self.assertEqual(
             tables("trust_backlog", "INSERT"),

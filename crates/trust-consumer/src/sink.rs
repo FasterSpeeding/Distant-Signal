@@ -824,6 +824,67 @@ mod db_tests {
         assert!(can_read);
     }
 
+    /// Decided 2026-10-08: the `trust_consumer` role only reads `trains`
+    /// (a train's row is created and marked by a resolution, which the
+    /// outbox path applies), and a normal batch still lands. The refusals
+    /// are checked when the tests run as that role (CI's per-service step).
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn the_trust_consumer_role_cannot_write_trains_and_a_batch_still_lands() {
+        let fixtures = fixture_pool().await;
+        let fixture = Fixture::new(&fixtures, "t").await;
+        let pool = pool().await;
+        let user: String = sqlx::query_scalar("SELECT current_user::text")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let refusals = if user.contains("trust_consumer") {
+            let insert = sqlx::query(
+                "INSERT INTO trains (train_uid, service_date) VALUES ($1, '2099-05-05')",
+            )
+            .bind(format!("{}X", fixture.tag))
+            .execute(&pool)
+            .await;
+            let update = sqlx::query("UPDATE trains SET train_id = train_id WHERE id = $1")
+                .bind(fixture.trains_id)
+                .execute(&pool)
+                .await;
+            Some([insert, update].map(|result| {
+                result
+                    .expect_err("no INSERT or UPDATE on trains")
+                    .as_database_error()
+                    .and_then(|err| err.code())
+                    .map(|code| code.into_owned())
+            }))
+        } else {
+            eprintln!("running as {user}, not the trust_consumer role: refusals not checked");
+            None
+        };
+        let db = DbSink { pool };
+        let mut events = fixture.events();
+        events.remove(1);
+        let rejected = db
+            .write(&events, &fixture.trains_id_by_tracked_train_id())
+            .await;
+        let rows = fixture.snapshot(&fixtures).await;
+        fixture.cleanup(&fixtures).await;
+
+        if let Some(codes) = refusals {
+            assert_eq!(
+                codes,
+                [Some("42501".to_string()), Some("42501".to_string())]
+            );
+        }
+        assert!(rejected.unwrap().is_empty());
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.starts_with("movement "))
+                .count(),
+            2,
+            "{rows:#?}"
+        );
+    }
+
     /// The narrow role's grants cover an empty batch's no-op and the
     /// schema the sink writes (CI's per-service step).
     #[tokio::test]

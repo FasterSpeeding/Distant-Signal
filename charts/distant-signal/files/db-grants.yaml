@@ -154,6 +154,8 @@ roles:
     # train_subscriptions (decided 2026-10-08): the events that update a
     # subscription go into train_event_outbox, which the writer's loop
     # applies (ds_store::tracking::outbox).
+    # SELECT only on trains too (decided 2026-10-08): creating and marking a
+    # train's row is part of a resolution, which the outbox path applies.
     status: narrow
     phase: 3b
     groups: [schema_gate]
@@ -203,7 +205,7 @@ tables:
 
   # --- shared-train: trains and their movements, shared by users.
   # aggregator: SELECT ... FOR UPDATE OF t needs U or D (it has D).
-  trains: {class: shared-train, grants: {api: SIUD, writer: SIU, trust_backlog: SIU, trust_consumer: SIU, aggregator: SD, notifier: SIU}}
+  trains: {class: shared-train, grants: {api: SIUD, writer: SIU, trust_backlog: SIU, trust_consumer: S, aggregator: SD, notifier: SIU}}
   train_subscriptions: {class: shared-train, grants: {api: SIUD, writer: SU, trust_backlog: SU, trust_consumer: S, aggregator: S, notifier: SIU}}
   train_movement_events: {class: shared-train, grants: {api: S, writer: SIU, trust_backlog: SIU, trust_consumer: SIU, aggregator: S, notifier: S}}
   train_current_state: {class: shared-train, grants: {api: S, writer: SIU, trust_backlog: SIU, trust_consumer: SIU, aggregator: S, notifier: S}}

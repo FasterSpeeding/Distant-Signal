@@ -623,7 +623,7 @@ S" means through `distant_signal_read_shared`.
 | Tables | api | writer | direct writers | readers and others |
 |---|---|---|---|---|
 | **Personal** (`users`, `sessions`, `oidc_login_state`, `pinned_*`, `custom_lines`, `custom_line_group_grants`, `groups`, `group_*`, `journeys`, `journey_legs`, `journey_templates`, `journey_template_legs`, `journey_template_skipped_dates`, `push_subscriptions`, `tracked_train_tickets`, `unlisted_links`) | SIUD | – | – | notifier: S on what it notifies from (`push_subscriptions`, `journeys`, `journey_legs`, `users`, …; phase 0b gives the exact list), plus D on `push_subscriptions` (gone endpoints, `notifier/src/queries.rs`); aggregator: S on `custom_lines` (custom-line status), or the `ingest_custom_line_stations` view once it exists; dump: S (all) |
-| **Shared train** `trains` | SIU (+D: the journey cleanup path) | SIU | trust_backlog: SIU | aggregator: SUD (archive/expiry); notifier: S |
+| **Shared train** `trains` | SIU (+D: the journey cleanup path) | SIU (also the `train_event_outbox` loop's resolutions) | trust_backlog: SIU; trust_consumer: S only (decided 2026-10-08) | aggregator: SUD (archive/expiry); notifier: S |
 | `train_subscriptions` | SIUD | SU (match sweeps bind; the `train_event_outbox` loop applies trust-consumer's resolutions, cancellations and reinstatements) | trust_backlog: SU (reinstatement reopen); trust_consumer: S only (decided 2026-10-08) | notifier: S; trust_consumer_ro: through the view only |
 | `train_movement_events`, `train_current_state` | S (+I/D only if 0b observes it; the public "replay" paths) | SIU | trust_backlog: SIU | aggregator: SID (archive) |
 | `trust_event_backlog` | S | SU (backlog-match sweep) | trust_backlog: SI | aggregator: SD (retention) |

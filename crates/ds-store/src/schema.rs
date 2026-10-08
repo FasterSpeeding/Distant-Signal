@@ -356,6 +356,9 @@ mod tests {
         // and queues the events that change them; the writer applies them.
         assert!(has(DbRole::TrustConsumer, "train_subscriptions", "SELECT"));
         assert!(!has(DbRole::TrustConsumer, "train_subscriptions", "UPDATE"));
+        assert!(has(DbRole::TrustConsumer, "trains", "SELECT"));
+        assert!(!has(DbRole::TrustConsumer, "trains", "INSERT"));
+        assert!(!has(DbRole::TrustConsumer, "trains", "UPDATE"));
         assert!(has(DbRole::TrustConsumer, "train_event_outbox", "INSERT"));
         assert!(!has(DbRole::TrustConsumer, "train_event_outbox", "DELETE"));
         for privilege in ["SELECT", "UPDATE", "DELETE"] {
