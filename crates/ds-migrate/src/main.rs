@@ -396,7 +396,7 @@ mod tests {
         let roles = std::iter::once(None).chain(Role::value_variants().iter().copied().map(Some));
         for role in roles {
             let gate = SchemaGate {
-                deadline: std::time::Duration::ZERO,
+                deadline: Duration::ZERO,
                 ..gate(role)
             };
             let applied = wait(database_options(), &gate)
@@ -414,7 +414,7 @@ mod tests {
     async fn wait_fails_at_the_deadline_on_an_older_schema() {
         let gate = SchemaGate {
             required_migration: i64::MAX,
-            deadline: std::time::Duration::ZERO,
+            deadline: Duration::ZERO,
             ..gate(None)
         };
         let err = wait(database_options(), &gate).await.unwrap_err();
