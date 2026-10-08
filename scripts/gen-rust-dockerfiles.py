@@ -353,6 +353,29 @@ def hidden_inputs() -> Iterator[tuple[str, str]]:
         yield from ((where, path) for path in copy_sources(dockerfile))
 
 
+# The name every Rust Dockerfile gives its last (runtime) stage. The weekly
+# forced rebuild in .github/workflows/containers.yml rebuilds exactly this
+# stage uncached (`no-cache-filters`) to pick up Debian security updates.
+RUNTIME_STAGE = "runtime"
+
+
+def runtime_stage_problems(found: Mapping[str, Path]) -> list[str]:
+    """Return the Dockerfiles whose last stage isn't named RUNTIME_STAGE."""
+    problems: list[str] = []
+    for name in sorted(found):
+        froms = [
+            line.split()
+            for line in found[name].read_text(encoding="utf-8").splitlines()
+            if line.startswith("FROM ")
+        ]
+        if not froms or [w.lower() for w in froms[-1][-2:]] != ["as", RUNTIME_STAGE]:
+            problems.append(
+                f"docker/{name}.Dockerfile: the last stage must be `AS "
+                f"{RUNTIME_STAGE}` (containers.yml's weekly rebuild names it)"
+            )
+    return problems
+
+
 def ignore_files(found: Mapping[str, Path]) -> dict[Path, str]:
     """Return every generated .dockerignore path and its wanted text."""
     ignores = {
@@ -455,6 +478,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for name in sorted(SERVICES.keys() - found.keys())
     ]
     problems += input_problems(found)
+    problems += runtime_stage_problems(found)
     wanted, splice_problems = wanted_files(found)
     problems += splice_problems
     stale: list[str] = []

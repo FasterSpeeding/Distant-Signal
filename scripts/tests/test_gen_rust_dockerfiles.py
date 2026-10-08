@@ -8,6 +8,7 @@ import importlib.util
 import io
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -148,6 +149,21 @@ class BuildInputsTests(unittest.TestCase):
             gen.ignore_path(Path("/r/docker/api.Dockerfile")),
             Path("/r/docker/api.Dockerfile.dockerignore"),
         )
+
+
+class RuntimeStageTests(unittest.TestCase):
+    """The last stage's name, which containers.yml's weekly rebuild uses."""
+
+    def test_unnamed_last_stage_is_a_problem(self) -> None:
+        """Only a last stage `AS runtime` passes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "good.Dockerfile"
+            good.write_text("FROM a AS chef\nFROM debian@sha256:0 AS runtime\n")
+            bad = Path(tmp) / "bad.Dockerfile"
+            bad.write_text("FROM a AS runtime\nFROM debian@sha256:0\n")
+            problems = gen.runtime_stage_problems({"good": good, "bad": bad})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("docker/bad.Dockerfile", problems[0])
 
 
 class CommittedFilesTests(unittest.TestCase):

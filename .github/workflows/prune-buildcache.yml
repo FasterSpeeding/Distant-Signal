@@ -2,9 +2,11 @@ name: Prune build cache
 
 # containers.yml writes each image's BuildKit layer cache to
 # ghcr.io/fasterspeeding/distant-signal/buildcache:<service> on every push
-# to main. Each write moves the tag to a new manifest and leaves the old
-# one untagged, still stored, so untagged versions pile up at ~19 per
-# push. This deletes them weekly. The tagged versions (the live cache) are
+# to main, and on its weekly forced rebuild (Mondays 02:41 UTC, so before
+# this run). Each write moves the tag to a new manifest and leaves the old
+# one untagged, still stored, so untagged versions pile up at ~20 per
+# run. This deletes them weekly. A build running meanwhile is unaffected:
+# it reads and writes only the tagged versions. The tagged versions (the live cache) are
 # never touched, and neither is any image package: `package-name` is the
 # buildcache package only.
 #
