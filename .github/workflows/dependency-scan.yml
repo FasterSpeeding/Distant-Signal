@@ -55,9 +55,15 @@ name: Dependency vulnerability scan
 # ============================================================================
 #
 # - pull_request (branches: [main, dev], matching ci.yml's own branch set):
-#   fails the job on any HIGH/CRITICAL finding -- a human is looking at this
-#   PR right now, and this failing check can gate merge via branch
-#   protection.
+#   fails the job only on a BLOCKING finding: CRITICAL (CVSS >= 9.0) with a
+#   fixed version available, or an inconclusive scan. Every other
+#   HIGH/CRITICAL finding is non-blocking: a ::warning:: annotation per
+#   finding plus a neutral (grey) "security findings (non-blocking)" check
+#   run, so a red X here always means "act now" and never hides among
+#   build/test failures. (A job-level continue-on-error would not do this:
+#   GitHub still shows the failed job's red X. GitHub commit statuses have
+#   no warning state; the Checks API's `neutral` conclusion is the only
+#   non-red, non-green result a workflow can produce.)
 # - push (branches: [main] only -- deliberately narrower than ci.yml's
 #   [main, master, dev], scoped to just what this workflow's own ask needs;
 #   widen to match ci.yml if a reviewer prefers full consistency): same scan,
@@ -103,7 +109,11 @@ permissions:
 
 jobs:
   scan:
+    name: osv-scanner (blocks on critical + fixable)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: write # the neutral "security findings (non-blocking)" check run
     outputs:
       high_or_critical_count: ${{ steps.scan.outputs.high_or_critical_count }}
       total_count: ${{ steps.scan.outputs.total_count }}
@@ -131,6 +141,12 @@ jobs:
           echo "osv-scanner exited $? (ignored -- see this workflow's own header comment: the binary's exit code doesn't distinguish severity, so HIGH/CRITICAL is computed below instead)"
           set -e
 
+          # A crashed scanner is a CI error, not a clean scan and not a finding.
+          if [[ ! -s osv-results.json ]] || ! jq -e . osv-results.json > /dev/null 2>&1; then
+            echo "::error::osv-scanner produced no valid JSON -- treating this run as inconclusive, not clean."
+            exit 1
+          fi
+
           total=$(jq '[.results[]?.packages[]? | .groups[]?] | length' osv-results.json)
           high_or_critical=$(jq '
             [.results[]?.packages[]?
@@ -139,9 +155,32 @@ jobs:
             ] | length
           ' osv-results.json)
 
-          echo "total_count=${total}" >> "${GITHUB_OUTPUT}"
-          echo "high_or_critical_count=${high_or_critical}" >> "${GITHUB_OUTPUT}"
-          echo "Found ${high_or_critical} HIGH/CRITICAL (CVSS >= 7.0) finding(s) out of ${total} total advisory group(s)."
+          # One row per HIGH/CRITICAL group: blocking = CVSS >= 9.0 and some
+          # advisory in the group lists a fixed version for this package.
+          jq -r --arg ws "${GITHUB_WORKSPACE}/" '
+            .results[]? as $r | $r.packages[]? as $p | $p.groups[]?
+            | select(.max_severity != null and .max_severity != "" and (.max_severity | tonumber) >= 7.0)
+            | . as $g
+            | ([$p.vulnerabilities[]? | select(.id as $id | $g.ids | index($id))
+                | .affected[]? | select((.package.name | ascii_downcase) == ($p.package.name | ascii_downcase))
+                | .ranges[]?.events[]? | select(has("fixed"))] | length > 0) as $fix
+            | [(if ((.max_severity | tonumber) >= 9.0 and $fix) then "error" else "warning" end),
+               ($r.source.path | ltrimstr($ws)),
+               "\($p.package.ecosystem)/\($p.package.name)@\($p.package.version): \(.ids | join(", ")) (max CVSS \(.max_severity), \(if $fix then "fix available" else "no fix yet" end))"]
+            | @tsv' osv-results.json > findings.tsv
+          blocking=$(grep -c '^error' findings.tsv || true)
+          # GitHub shows at most 10 warning/10 error annotations per step;
+          # the full list stays in the log and the artifact.
+          while IFS=$'\t' read -r level file text; do
+            echo "::${level} file=${file},title=$([[ ${level} == error ]] && echo 'Blocking dependency vulnerability' || echo 'Dependency vulnerability (non-blocking)')::${text}"
+          done < findings.tsv
+
+          {
+            echo "total_count=${total}"
+            echo "high_or_critical_count=${high_or_critical}"
+            echo "blocking_count=${blocking}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Found ${high_or_critical} HIGH/CRITICAL (CVSS >= 7.0) finding(s), ${blocking} blocking (CVSS >= 9.0 and fixable), out of ${total} total advisory group(s)."
 
       - name: Upload scan results
         if: always()
@@ -151,15 +190,37 @@ jobs:
           path: osv-results.json
           retention-days: 30
 
-      - name: Fail on HIGH/CRITICAL findings (pull_request/push only)
+      # Neutral (grey) when there are non-blocking findings, success when
+      # there are none. Never fails the run. Known quirk: a check run made
+      # with GITHUB_TOKEN joins the GitHub Actions check suite, so it may be
+      # listed under a different workflow run in the Checks tab.
+      - name: Post the non-blocking findings check run
+        if: github.event_name != 'schedule' && steps.scan.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNT: ${{ steps.scan.outputs.high_or_critical_count }}
+          BLOCKING: ${{ steps.scan.outputs.blocking_count }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ "${COUNT}" -gt 0 ]]; then conclusion=neutral; else conclusion=success; fi
+          summary="${COUNT} HIGH/CRITICAL finding(s), ${BLOCKING} blocking. Details: ${RUN_URL}"
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="security findings (non-blocking)" -f head_sha="${SHA}" \
+            -f status=completed -f conclusion="${conclusion}" -f details_url="${RUN_URL}" \
+            -f "output[title]=${COUNT} HIGH/CRITICAL dependency finding(s)" \
+            -f "output[summary]=${summary}" --silent \
+            || echo "::warning::Couldn't create the findings check run; ${summary}"
+
+      - name: Fail on blocking findings (pull_request/push only)
         if: github.event_name != 'schedule'
         run: |
-          count="${{ steps.scan.outputs.high_or_critical_count }}"
+          count="${{ steps.scan.outputs.blocking_count }}"
           if [[ "${count}" -gt 0 ]]; then
-            echo "::error::${count} HIGH/CRITICAL (CVSS >= 7.0) dependency vulnerability finding(s) -- see the osv-scanner-results artifact for full detail."
+            echo "::error::SECURITY (blocking): ${count} CRITICAL (CVSS >= 9.0) dependency finding(s) with a fix available -- see the annotations and the osv-scanner-results artifact."
             exit 1
           fi
-          echo "No HIGH/CRITICAL findings."
+          echo "No blocking findings. Non-blocking HIGH/CRITICAL ones: ${{ steps.scan.outputs.high_or_critical_count }} (see the annotations and the 'security findings (non-blocking)' check)."
 
   # Cron-only alerting path -- mirrors validate-line-catalogue.yml's own
   # report-findings job almost exactly (same pinned actions/github-script
