@@ -1198,6 +1198,10 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 schedule_departures -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test code: scenario tests read top to bottom"
+    )]
     async fn schedule_departures_rows_carry_live_status_and_origin_name() {
         let pool = connect().await;
         clear_live_fixtures(&pool).await;

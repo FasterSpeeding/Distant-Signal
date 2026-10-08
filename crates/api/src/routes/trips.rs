@@ -1255,9 +1255,9 @@ fn parse_vias(raw: Option<&str>) -> Result<Vec<StationChoice>, (StatusCode, Stri
         )));
     }
     // The same stations twice in a row, however written (`KGX|EUS,EUS|KGX`).
-    fn set(choice: &StationChoice) -> std::collections::BTreeSet<&String> {
-        choice.codes.iter().collect()
-    }
+    let set = |choice: &StationChoice| -> std::collections::BTreeSet<String> {
+        choice.codes.iter().cloned().collect()
+    };
     let same = |a: &StationChoice, b: &StationChoice| set(a) == set(b);
     if let Some([repeated, _]) = vias.windows(2).find(|pair| same(&pair[0], &pair[1])) {
         return Err(bad(format!(
@@ -4305,6 +4305,10 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p api \
                 routes::trips -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test code: scenario tests read top to bottom"
+    )]
     async fn via_passes_through_without_calling_end_to_end() {
         let pool = connect().await;
         let uids = ["TWVF1", "TWVN1"];
