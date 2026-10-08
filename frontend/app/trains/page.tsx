@@ -1,7 +1,7 @@
 import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { TrainSearchForm } from '@/components/TrainSearchForm';
-import { getAllTocs } from '@/lib/api';
+import { getAllTocs, getTrainSearchDates } from '@/lib/api';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -104,7 +104,14 @@ export default async function TrainsPage({
   // `app/stations/[crs]/page.tsx` fetches. If the list fails to load (or
   // comes back empty) the rows carry no operator at all, rather than a
   // bare ATOC code.
-  const tocs = await getAllTocs().catch(() => []);
+  // The date picker's bounds: what the search accepts
+  // (`getTrainSearchDates`, cached for a few minutes). Fetched alongside
+  // the TOC list; a failure leaves `null`, and the form falls back to a
+  // week either side of today.
+  const [tocs, searchDates] = await Promise.all([
+    getAllTocs().catch(() => []),
+    getTrainSearchDates().catch(() => null),
+  ]);
   const operatorNames = tocs.length > 0 ? Object.fromEntries(tocs.map((toc) => [toc.code, toc.name])) : undefined;
 
   return (
@@ -126,6 +133,7 @@ export default async function TrainsPage({
         initialArrivalTo={arrivalToParam}
         attachTicketId={attachTicketId}
         operatorNames={operatorNames}
+        searchDates={searchDates}
       />
     </Stack>
   );

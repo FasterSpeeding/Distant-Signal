@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { TrainSearchForm } from './TrainSearchForm';
+import { nowInLondon } from '@/lib/londonWallClock';
 
 /** A small, fixed, real-station-shaped dataset backing every autocomplete
  * field in this file (Station/Departing from/Stops at all share the same
@@ -55,15 +56,25 @@ vi.mock('@mantine/dates', async (importOriginal) => ({
     value,
     onChange,
     description,
+    minDate,
+    maxDate,
   }: {
     label: string;
     value: string | null;
     onChange: (value: string | null) => void;
     description?: string;
+    minDate?: string;
+    maxDate?: string;
   }) => (
     <div>
       <label htmlFor="test-search-date">{label}</label>
-      <input id="test-search-date" value={value ?? ''} onChange={(event) => onChange(event.target.value || null)} />
+      <input
+        id="test-search-date"
+        value={value ?? ''}
+        data-min-date={minDate}
+        data-max-date={maxDate}
+        onChange={(event) => onChange(event.target.value || null)}
+      />
       {description && <p>{description}</p>}
     </div>
   ),
@@ -218,6 +229,31 @@ describe('TrainSearchForm', () => {
     await clickSearch();
 
     await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&date=2026-09-16'));
+  });
+
+  describe('date picker bounds', () => {
+    const today = nowInLondon();
+    const day = (offset: number) => today.add(offset, 'day').format('YYYY-MM-DD');
+
+    it('come from searchDates when the page has them', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(
+        <TrainSearchForm searchDates={{ from: day(-7), to: day(28), publishedFrom: day(-1), publishedTo: day(28) }} />,
+      );
+      const input = screen.getByLabelText('Date (optional)');
+      expect(input).toHaveAttribute('data-min-date', day(-7));
+      expect(input).toHaveAttribute('data-max-date', day(28));
+      expect(screen.getByText('Search a different day, up to 7 days back and 28 days ahead.')).toBeInTheDocument();
+    });
+
+    it('fall back to a week either side of London today without them', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm searchDates={null} />);
+      const input = screen.getByLabelText('Date (optional)');
+      expect(input).toHaveAttribute('data-min-date', day(-7));
+      expect(input).toHaveAttribute('data-max-date', day(7));
+      expect(screen.getByText('Search a different day, up to a week either side of today.')).toBeInTheDocument();
+    });
   });
 
   it('omits date from the search request when no date is picked', async () => {

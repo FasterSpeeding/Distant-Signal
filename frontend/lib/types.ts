@@ -2316,3 +2316,15 @@ export interface TrainSearchPage {
   results: TrainSearchResult[];
   nextCursor: string | null;
 }
+
+/** `GET /public/trains/search/dates` (`crates/api/src/routes/trains.rs`'s
+ * `get_trains_search_dates`): the `date` range the search accepts
+ * (`from`/`to`, inclusive) and the range the timetable holds rows for
+ * (`publishedFrom`/`publishedTo`, `null` when it holds none). All
+ * `"YYYY-MM-DD"`. */
+export interface TrainSearchDates {
+  from: string;
+  to: string;
+  publishedFrom: string | null;
+  publishedTo: string | null;
+}
