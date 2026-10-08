@@ -1404,34 +1404,32 @@ pub async fn search_schedule_calling_point_departures(
                 "public_destination_arrival": row.public_destination_arrival.map(hms),
             });
             if stops_at.is_some() {
-                let (working, public) = match (row.stop_scheduled, row.stop_day_offset) {
-                    // An intermediate call. Its stored `day_offset` is its
-                    // DEPARTURE's, so its arrival is dated from that, and
-                    // the public arrival from the working one.
-                    (Some(stop_scheduled), Some(stop_day_offset)) => {
-                        let working = row.stop_arrival.map(|t| {
-                            (
-                                t,
-                                nearest_day_offset(stop_scheduled, i64::from(stop_day_offset), t),
-                            )
-                        });
-                        let reference =
-                            working.unwrap_or((stop_scheduled, i64::from(stop_day_offset)));
-                        let public = row
-                            .stop_public_arrival
-                            .map(|t| (t, nearest_day_offset(reference.0, reference.1, t)));
-                        (working, public)
-                    }
+                // An intermediate call. Its stored `day_offset` is its
+                // DEPARTURE's, so its arrival is dated from that, and the
+                // public arrival from the working one.
+                let (working, public) = if let (Some(stop_scheduled), Some(stop_day_offset)) =
+                    (row.stop_scheduled, row.stop_day_offset)
+                {
+                    let working = row.stop_arrival.map(|t| {
+                        (
+                            t,
+                            nearest_day_offset(stop_scheduled, i64::from(stop_day_offset), t),
+                        )
+                    });
+                    let reference = working.unwrap_or((stop_scheduled, i64::from(stop_day_offset)));
+                    let public = row
+                        .stop_public_arrival
+                        .map(|t| (t, nearest_day_offset(reference.0, reference.1, t)));
+                    (working, public)
+                } else {
                     // Otherwise the row matched on the true terminus.
-                    _ => {
-                        let offset = i64::from(row.destination_arrival_day_offset);
-                        let working = row.destination_arrival.map(|t| (t, offset));
-                        let public = row.public_destination_arrival.map(|t| match working {
-                            Some((reference, _)) => (t, nearest_day_offset(reference, offset, t)),
-                            None => (t, offset),
-                        });
-                        (working, public)
-                    }
+                    let offset = i64::from(row.destination_arrival_day_offset);
+                    let working = row.destination_arrival.map(|t| (t, offset));
+                    let public = row.public_destination_arrival.map(|t| match working {
+                        Some((reference, _)) => (t, nearest_day_offset(reference, offset, t)),
+                        None => (t, offset),
+                    });
+                    (working, public)
                 };
                 if let Some(object) = json.as_object_mut() {
                     object.insert(

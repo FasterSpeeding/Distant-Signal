@@ -468,6 +468,10 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 schedule_services -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture, then each publish outcome (upsert, unchanged skip, delete, other date) checked in turn"
+    )]
     async fn replace_for_date_upserts_deletes_missing_and_leaves_other_dates() {
         let pool = connect().await;
         let date = NaiveDate::from_ymd_opt(2031, 3, 3).unwrap();

@@ -32,10 +32,6 @@ use crate::data::queries::{
 };
 use crate::data::train_tracking as queries_train_tracking;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "a flat route table, one entry per private route; splitting it would hide routes"
-)]
 pub fn router() -> Router {
     Router::new()
         .route(

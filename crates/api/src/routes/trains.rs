@@ -2426,6 +2426,26 @@ mod db_tests {
         chrono::NaiveTime::from_hms_opt(h, m, s).unwrap()
     }
 
+    /// A fixture call: `(crs, departure, day offset, working arrival,
+    /// public arrival)`.
+    type StopsAtSeedStop = (
+        &'static str,
+        chrono::NaiveTime,
+        i16,
+        Option<chrono::NaiveTime>,
+        Option<chrono::NaiveTime>,
+    );
+    /// A fixture train: `(uid, destination, destination arrival, its day
+    /// offset, public destination arrival, calls)`.
+    type StopsAtSeedTrain = (
+        &'static str,
+        &'static str,
+        chrono::NaiveTime,
+        i16,
+        chrono::NaiveTime,
+        Vec<StopsAtSeedStop>,
+    );
+
     /// Seeds tomorrow (no `now` floor) with four trains out of `ZQA`, each
     /// call given as `(crs, departure, day offset, working arrival, public
     /// arrival)`:
@@ -2436,24 +2456,14 @@ mod db_tests {
     ///   public) and departs after it; arrives `ZQE` at 23:59:30 working,
     ///   rounded to a 00:00 public arrival the next day.
     /// * `T54004`: calls at `ZQB` twice, at 10:10 and 10:40.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "four literal fixture trains, one call per line"
+    )]
     async fn seed_stops_at_arrivals(pool: &PgPool) -> chrono::NaiveDate {
         let date = crate::routes::london_today() + chrono::Duration::days(1);
         delete_days(pool, &[date]).await;
-        type Stop = (
-            &'static str,
-            chrono::NaiveTime,
-            i16,
-            Option<chrono::NaiveTime>,
-            Option<chrono::NaiveTime>,
-        );
-        let trains: [(
-            &str,
-            &str,
-            chrono::NaiveTime,
-            i16,
-            chrono::NaiveTime,
-            Vec<Stop>,
-        ); 4] = [
+        let trains: [StopsAtSeedTrain; 4] = [
             (
                 "T54001",
                 "ZQD",
