@@ -86,6 +86,10 @@ pub enum DbRole {
     Enricher,
     Notifier,
     Writer,
+    /// trust-backlog-consumer under `INGEST_SINK=db` (plan 3b.1).
+    TrustBacklog,
+    /// trust-consumer under `INGEST_SINK=db` (plan 3b.3, D1).
+    TrustConsumer,
 }
 
 impl DbRole {
@@ -97,6 +101,8 @@ impl DbRole {
             Self::Enricher => "enricher",
             Self::Notifier => "notifier",
             Self::Writer => "writer",
+            Self::TrustBacklog => "trust_backlog",
+            Self::TrustConsumer => "trust_consumer",
         }
     }
 
@@ -319,6 +325,8 @@ mod tests {
             DbRole::Enricher,
             DbRole::Notifier,
             DbRole::Writer,
+            DbRole::TrustBacklog,
+            DbRole::TrustConsumer,
         ] {
             assert!(privileges_for(role.key()).is_some(), "{role:?}");
             assert!(!role.required_privileges().is_empty(), "{role:?}");
