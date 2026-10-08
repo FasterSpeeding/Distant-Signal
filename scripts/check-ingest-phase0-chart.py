@@ -124,9 +124,18 @@ CLIENTS = {
 }
 # redis.acl.clients keys whose workload renders nothing with the defaults
 # (the ingest-writer's streams, plan 3a.3; poller-incidents' db sink, plan
-# 2c): no per-client Deployment check, but defaultUser off still needs
+# 2c; the tfl and tocs stream sinks and the island-of-Ireland pollers, plan
+# 3c.2): no per-client Deployment check, but defaultUser off still needs
 # each of them on.
-DORMANT_CLIENTS = ("ingestWriter", "pollerIncidents")
+DORMANT_CLIENTS = (
+    "ingestWriter",
+    "pollerIncidents",
+    "pollerTfl",
+    "pollerTocs",
+    "pollerIrishRailGtfs",
+    "pollerIrishRailLive",
+    "pollerNirStations",
+)
 ALL_CLIENTS = sets(
     *(f"redis.acl.clients.{k}=true" for k in (*CLIENTS, *DORMANT_CLIENTS))
 )

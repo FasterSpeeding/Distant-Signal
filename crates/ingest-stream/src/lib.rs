@@ -7,6 +7,8 @@
 //!   policies while Redis is unavailable, backoff and metrics.
 //! - [`consumer`]: the writer's consumer-group runtime: PEL first,
 //!   `XAUTOCLAIM`, dead letters, graceful shutdown and metrics.
+//! - [`snapshot_sink`]: a snapshot poller's `INGEST_SINK`, Redis settings
+//!   and latest-snapshot producer (plan 3c.2).
 //! - [`budget`]: per-stream `MAXLEN` from rates, sizes and the 2-hour
 //!   outage target, checked against the 512 MB budget.
 //!
@@ -17,6 +19,7 @@ pub mod consumer;
 pub mod envelope;
 pub mod metrics;
 pub mod producer;
+pub mod snapshot_sink;
 
 pub use consumer::{
     ConsumerConfig, Handled, Handler, HandlerError, RetryReason, Step, StreamConsumer, StreamEntry,

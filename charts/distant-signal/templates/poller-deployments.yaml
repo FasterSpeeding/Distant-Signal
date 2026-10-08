@@ -160,6 +160,17 @@ with $poller.extraEnv, which replaces an entry of the same name.
             - name: DATABASE_MAX_CONNECTIONS
               value: {{ $poller.ingest.database.maxConnections | int | quote }}
             {{- end }}
+            {{- if include "distant-signal.pollerSinkStream" (dict "root" $root "name" $name "poller" $poller) }}
+            # Ingest architecture plan 3c.2 (pollers.<name>.ingest.sink
+            # http+shadow or stream): XADD each snapshot to the poller's
+            # ds:ingest:* stream, as its own ACL user with
+            # redis.acl.clients.poller<Name>.
+            - name: INGEST_SINK
+              value: {{ $poller.ingest.sink | quote }}
+            - name: REDIS_URL
+              value: {{ include "distant-signal.redisUrl" $root | quote }}
+            {{- include "distant-signal.redisClientAuthEnv" (dict "root" $root "client" (include "distant-signal.pollerRedisClient" $name) "user" (printf "poller-%s" $name)) }}
+            {{- end }}
             {{- if $poller.sampleStationsPath }}
             # ldbws only: a SECOND api endpoint, listing which stations to
             # sample (crates/poller-ldbws/src/config.rs).

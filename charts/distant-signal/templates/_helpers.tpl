@@ -757,79 +757,6 @@ each with its own existingSecret toggle.
 {{- end }}
 
 {{/*
-Resolved Secret name/key for poller-irish-rail-gtfs's own OAuth2 credential
--- same shape as scheduleIngest/scheduleReference above (its own
-existingSecret toggle, falling back to the shared chart-rendered Secret).
-*/}}
-{{- define "distant-signal.pollerIrishRailGtfsSecretName" -}}
-{{- default (include "distant-signal.secretName" .) .Values.pollerIrishRailGtfs.existingSecret }}
-{{- end }}
-
-{{- define "distant-signal.pollerIrishRailGtfsOauthUsernameSecretKey" -}}
-{{- if .Values.pollerIrishRailGtfs.existingSecret }}
-{{- .Values.pollerIrishRailGtfs.existingSecretInternalOauthUsernameKey }}
-{{- else }}
-{{- print "internal-oauth-username-poller-irish-rail-gtfs" }}
-{{- end }}
-{{- end }}
-
-{{- define "distant-signal.pollerIrishRailGtfsOauthPasswordSecretKey" -}}
-{{- if .Values.pollerIrishRailGtfs.existingSecret }}
-{{- .Values.pollerIrishRailGtfs.existingSecretInternalOauthPasswordKey }}
-{{- else }}
-{{- print "internal-oauth-password-poller-irish-rail-gtfs" }}
-{{- end }}
-{{- end }}
-
-{{/*
-Resolved Secret name/key for poller-irish-rail-live's own OAuth2
-credential -- same shape as pollerIrishRailGtfs above.
-*/}}
-{{- define "distant-signal.pollerIrishRailLiveSecretName" -}}
-{{- default (include "distant-signal.secretName" .) .Values.pollerIrishRailLive.existingSecret }}
-{{- end }}
-
-{{- define "distant-signal.pollerIrishRailLiveOauthUsernameSecretKey" -}}
-{{- if .Values.pollerIrishRailLive.existingSecret }}
-{{- .Values.pollerIrishRailLive.existingSecretInternalOauthUsernameKey }}
-{{- else }}
-{{- print "internal-oauth-username-poller-irish-rail-live" }}
-{{- end }}
-{{- end }}
-
-{{- define "distant-signal.pollerIrishRailLiveOauthPasswordSecretKey" -}}
-{{- if .Values.pollerIrishRailLive.existingSecret }}
-{{- .Values.pollerIrishRailLive.existingSecretInternalOauthPasswordKey }}
-{{- else }}
-{{- print "internal-oauth-password-poller-irish-rail-live" }}
-{{- end }}
-{{- end }}
-
-{{/*
-Resolved Secret name/key for poller-nir-stations's own OAuth2 credential --
-same shape as pollerIrishRailGtfs/pollerIrishRailLive above.
-*/}}
-{{- define "distant-signal.pollerNirStationsSecretName" -}}
-{{- default (include "distant-signal.secretName" .) .Values.pollerNirStations.existingSecret }}
-{{- end }}
-
-{{- define "distant-signal.pollerNirStationsOauthUsernameSecretKey" -}}
-{{- if .Values.pollerNirStations.existingSecret }}
-{{- .Values.pollerNirStations.existingSecretInternalOauthUsernameKey }}
-{{- else }}
-{{- print "internal-oauth-username-poller-nir-stations" }}
-{{- end }}
-{{- end }}
-
-{{- define "distant-signal.pollerNirStationsOauthPasswordSecretKey" -}}
-{{- if .Values.pollerNirStations.existingSecret }}
-{{- .Values.pollerNirStations.existingSecretInternalOauthPasswordKey }}
-{{- else }}
-{{- print "internal-oauth-password-poller-nir-stations" }}
-{{- end }}
-{{- end }}
-
-{{/*
 Environment entries giving a workload a working DATABASE_URL, plus the pool
 session settings from `databasePool` (DATABASE_*_SECS). Takes root. Used
 identically by the api, aggregator, notifier and enricher Deployments.
@@ -1125,8 +1052,8 @@ Takes (dict "root" $ "name" <pollers key> "poller" <its values>).
 {{- define "distant-signal.pollerSinkDb" -}}
 {{- $ingest := .poller.ingest | default dict -}}
 {{- $sink := toString ($ingest.sink | default "http") -}}
-{{- if not (has $sink (list "http" "db")) -}}
-{{- fail (printf "pollers.%s.ingest.sink must be http or db, not %q." .name $sink) -}}
+{{- if not (has $sink (list "http" "db" "http+shadow" "stream")) -}}
+{{- fail (printf "pollers.%s.ingest.sink must be http, db, http+shadow or stream, not %q." .name $sink) -}}
 {{- end -}}
 {{- if and .poller.enabled (eq $sink "db") -}}
 {{- if and (eq .name "stations") (not (and .root.Values.ingestWriter.enabled .root.Values.ingestWriter.loops.enabled)) -}}
@@ -1134,6 +1061,34 @@ Takes (dict "root" $ "name" <pollers key> "poller" <its values>).
 {{- end -}}
 true
 {{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when the poller is enabled and pollers.<name>.ingest.sink
+is a stream sink (`http+shadow` or `stream`, ingest plan 3c.2): it gets
+INGEST_SINK, REDIS_URL and its Redis credentials (the `poller-<name>` ACL
+user under redis.acl.clients.poller<Name>), and the NetworkPolicy paths to
+Redis. Fails for a poller whose binary has no stream sink. Takes (dict
+"root" $ "name" <pollers key> "poller" <its values>).
+*/}}
+{{- define "distant-signal.pollerSinkStream" -}}
+{{- $sink := toString (dig "ingest" "sink" "http" (.poller | default dict)) -}}
+{{- if has $sink (list "http+shadow" "stream") -}}
+{{- if not (has .name (list "tfl" "tocs")) -}}
+{{- fail (printf "pollers.%s.ingest.sink %s: poller-%s has no stream sink (ingest plan 3c.2 covers tfl and tocs)." .name $sink .name) -}}
+{{- end -}}
+{{- if .poller.enabled -}}
+true
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The redis.acl.clients key of a poller in .Values.pollers: poller<Name>
+(pollerTfl, pollerTocs). Takes the pollers key.
+*/}}
+{{- define "distant-signal.pollerRedisClient" -}}
+{{- printf "poller%s" (title .) -}}
 {{- end }}
 
 {{/*
