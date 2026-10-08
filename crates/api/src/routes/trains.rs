@@ -150,12 +150,12 @@ pub(crate) const MAX_SEARCH_LIMIT: i64 = 200;
 
 /// Forward static search window, in days: a future `date` this route
 /// always accepts, published or not (a later one is accepted only when the
-/// timetable holds rows that far out -- see `searchable_range`). Kept in
-/// sync by hand with `schedule-reference`'s
-/// own forward-publish loop
-/// (`crates/schedule-reference/src/main.rs::DESTINATION_DEPARTURES_FORWARD_DAYS`)
-/// -- there is no shared constant across the crate boundary, matching this
-/// codebase's existing per-crate-constant convention. See
+/// timetable holds rows that far out -- see `searchable_range`). This is
+/// the floor of `schedule-reference`'s forward-publish window
+/// (`SCHEDULE_FORWARD_PUBLISH_DAYS`, `crates/schedule-reference/src/config.rs`,
+/// 7-60, default 28), not a copy of it: the published range read by
+/// `searchable_range` carries the rest, so raising that setting needs no
+/// change here. See
 /// docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md §1.2.
 const SEARCH_WINDOW_FORWARD_DAYS: i64 = 7;
 
