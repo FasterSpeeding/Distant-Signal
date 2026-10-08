@@ -135,6 +135,47 @@ where
     .await
 }
 
+/// [`run_poll_loop`] with the caller's own [`RetryPolicy`] instead of
+/// [`DEFAULT_RETRY_POLICY`]. `poller-ldbws` passes one whose `api_wait`
+/// gives up after a single attempt: it keeps sampling upstream through an
+/// api outage and holds the unsent samples itself, so waiting for api
+/// before each cycle would only lose samples.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
+pub async fn run_poll_loop_with_policy<F, Fut>(
+    policy: &RetryPolicy,
+    poller_label: &'static str,
+    client: &reqwest::Client,
+    api_ingest_url: &str,
+    internal_oauth: &OAuthTokenCache,
+    poll_interval: Duration,
+    metrics_enabled: bool,
+    metrics_port: u16,
+    progress: &Progress,
+    cycle: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
+    if metrics_enabled {
+        crate::metrics::install(metrics_port)?;
+    }
+    run_poll_loop_with(
+        policy,
+        poller_label,
+        client,
+        api_ingest_url,
+        internal_oauth,
+        poll_interval,
+        progress,
+        cycle,
+    )
+    .await
+}
+
 /// The `<service>` of [`crate::metrics::register_cycle`]'s metric names for
 /// every poller: `distant_signal_poller_last_success_timestamp_seconds` and
 /// `distant_signal_poller_cycles_total`, with the poller's label as
@@ -487,6 +528,54 @@ mod tests {
                 "{series} missing from {rendered}"
             );
         }
+    }
+
+    /// A policy whose `api_wait` gives up at once (`poller-ldbws`'s) runs
+    /// its cycles on schedule through an api outage instead of waiting for
+    /// api first: here api never answers, and the cycle still runs at once,
+    /// then again after the failed-cycle backoff.
+    #[tokio::test]
+    async fn a_zero_api_wait_policy_polls_through_an_api_outage() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ingest"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let tokens = token_cache(&server).await;
+        let client = reqwest::Client::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_in_cycle = Arc::clone(&calls);
+        let ingest_url = format!("{}/ingest", server.uri());
+        let progress = Progress::new(Duration::from_secs(60));
+        let policy = RetryPolicy {
+            api_wait: ingest::ApiWait {
+                backoff: Backoff::new(Duration::from_secs(30), Duration::from_secs(30)),
+                max_wait: Duration::ZERO,
+            },
+            failed_cycle: Backoff::new(Duration::from_millis(50), Duration::from_millis(50)),
+        };
+
+        let loop_future = run_poll_loop_with(
+            &policy,
+            "test",
+            &client,
+            &ingest_url,
+            &tokens,
+            Duration::from_millis(100),
+            &progress,
+            || {
+                calls_in_cycle.fetch_add(1, Ordering::Relaxed);
+                async { Err(transient_post_failure()) }
+            },
+        );
+        // With the default 10-minute wait, no cycle would run in this time.
+        let _ = tokio::time::timeout(Duration::from_millis(500), loop_future).await;
+        assert!(
+            calls.load(Ordering::Relaxed) >= 3,
+            "cycles kept running while api was down: {}",
+            calls.load(Ordering::Relaxed)
+        );
     }
 
     /// A data rejection will be refused again: it waits the normal interval.
