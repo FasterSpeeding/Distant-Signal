@@ -2297,7 +2297,65 @@ fn london_local_time_at(instant: chrono::DateTime<chrono::Utc>) -> chrono::Naive
 }
 
 fn london_local_time_now() -> chrono::NaiveTime {
-    london_local_time_at(chrono::Utc::now())
+    london_local_time_at(utc_now())
+}
+
+/// The current instant behind [`london_local_time_now`] and
+/// [`london_local_date_now`]: the system clock, except in a test that has
+/// pinned this thread's clock with [`test_clock::pin`].
+fn utc_now() -> chrono::DateTime<chrono::Utc> {
+    #[cfg(test)]
+    if let Some(pinned) = test_clock::pinned() {
+        return pinned;
+    }
+    chrono::Utc::now()
+}
+
+/// The test seam for [`utc_now`]. Thread-local, so a pin is seen by its own
+/// test only: `#[tokio::test]`'s default current-thread runtime runs the
+/// whole test, publish cycle included, on the test's thread, while other
+/// tests running in parallel keep the real clock.
+#[cfg(test)]
+mod test_clock {
+    use std::cell::Cell;
+
+    thread_local! {
+        static PINNED: Cell<Option<chrono::DateTime<chrono::Utc>>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn pinned() -> Option<chrono::DateTime<chrono::Utc>> {
+        PINNED.with(Cell::get)
+    }
+
+    /// Unpins (restores the previous pin) when dropped.
+    #[must_use = "the clock is unpinned when the guard is dropped"]
+    pub(super) struct Pin(Option<chrono::DateTime<chrono::Utc>>);
+
+    impl Drop for Pin {
+        fn drop(&mut self) {
+            PINNED.with(|cell| cell.set(self.0));
+        }
+    }
+
+    /// Pins this thread's clock to `at` for the guard's lifetime.
+    pub(super) fn pin(at: chrono::DateTime<chrono::Utc>) -> Pin {
+        Pin(PINNED.with(|cell| cell.replace(Some(at))))
+    }
+
+    /// Pins this thread's clock to `time` London-local on the (real)
+    /// London-local date today, so a fixture built around today's date
+    /// still resolves while times of day stop depending on when the test
+    /// runs. `time` must not fall in a DST-transition hour (01:00-02:00).
+    pub(super) fn pin_london_today_at(time: chrono::NaiveTime) -> Pin {
+        use chrono::TimeZone as _;
+        let today = super::london_local_date_at(chrono::Utc::now());
+        let at = chrono_tz::Europe::London
+            .from_local_datetime(&today.and_time(time))
+            .single()
+            .expect("an unambiguous London-local time")
+            .with_timezone(&chrono::Utc);
+        pin(at)
+    }
 }
 
 /// The London-local CALENDAR DATE at `instant` -- the date half of
@@ -2327,7 +2385,7 @@ fn london_local_date_at(instant: chrono::DateTime<chrono::Utc>) -> chrono::Naive
 }
 
 fn london_local_date_now() -> chrono::NaiveDate {
-    london_local_date_at(chrono::Utc::now())
+    london_local_date_at(utc_now())
 }
 
 /// Every catalogued line with at least one station resolvable to a real,
@@ -6131,6 +6189,12 @@ mod db_sink_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
     async fn a_small_cif_day_through_each_sink_gives_identical_tables() {
+        // The fixture's only departure is at 08:22, and network departures
+        // leave out what has already left: pin the clock before it, so the
+        // parity check compares a non-empty table at any time of day.
+        let _clock = test_clock::pin_london_today_at(
+            chrono::NaiveTime::from_hms_opt(6, 0, 0).expect("a valid time"),
+        );
         let pool = pool().await;
         let original = TableSnapshot::take(&pool).await;
         let root = tempfile::tempdir().unwrap();
