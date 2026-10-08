@@ -74,9 +74,9 @@ pub struct AppState {
 /// of `AppState::init` (a live database connection, etc.).
 ///
 /// A blank group is dropped from its entry, so an entry whose only group is
-/// unset (the island-of-Ireland producers', off by default) keeps its path
-/// in the table with no group at all: every caller is refused `403`, and a
-/// token that somehow carried an empty-string group matches nothing.
+/// unset keeps its path in the table with no group at all: every caller is
+/// refused `403`, and a token that somehow carried an empty-string group
+/// matches nothing.
 pub(crate) fn build_internal_oauth_routes(
     config: &ServiceArguments,
 ) -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
@@ -191,7 +191,10 @@ fn internal_oauth_route_table(
             Method::POST,
             vec![config.internal_oauth_group_trust_backlog.clone()],
         ),
-        // ONE reader again: schedule-ingest reading back its own last write.
+        // POST-only: schedule-ingest's per-delivery marker. The GET that
+        // read it back had no caller and was deleted (2026-10-08, ingest
+        // phase 5 runbook Q9): schedule-ingest seeds its dedup from its own
+        // delivery scan, and its db sink reads the marker from Postgres.
         //
         // schedule-reference's read grant here was REMOVED (2026-09-25): it
         // used to seed its restart dedup marker from this route, which was
@@ -208,19 +211,12 @@ fn internal_oauth_route_table(
         // data loss).
         (
             "/schedule-feed-ingests",
-            Method::GET,
-            vec![config.internal_oauth_group_schedule_ingest.clone()],
-        ),
-        (
-            "/schedule-feed-ingests",
             Method::POST,
             vec![config.internal_oauth_group_schedule_ingest.clone()],
         ),
         // BOTH methods, ONE group -- schedule-reference reading back its own
-        // last write, exactly the shape /full-coverage-stats below documents
-        // ("this producer reading back its own last write, not a second
-        // caller"), and deliberately NOT /schedule-feed-ingests' split shape
-        // directly above: no other service writes or reads this marker.
+        // last write ("this producer reading back its own last write, not a
+        // second caller"): no other service writes or reads this marker.
         //
         // This route exists because seeding schedule-reference's restart
         // dedup from /schedule-feed-ingests (schedule-INGEST's
@@ -306,11 +302,6 @@ fn internal_oauth_route_table(
         ),
         (
             "/station-full-coverage-samples",
-            Method::GET,
-            vec![config.internal_oauth_group_full_coverage.clone()],
-        ),
-        (
-            "/station-full-coverage-samples",
             Method::POST,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
@@ -383,78 +374,25 @@ fn internal_oauth_route_table(
             Method::POST,
             vec![config.internal_oauth_group_schedule_reference.clone()],
         ),
-        // Same group, both methods -- this producer reading back its own
-        // last write, not a second caller (see Correction 2).
+        // POST-only, full-coverage-consumer's per-line stats. Its read-back
+        // GET had no caller and was deleted (2026-10-08, ingest phase 5
+        // runbook Q9), as were the GETs of /full-coverage-window-stats and
+        // /station-full-coverage-samples.
         (
             "/full-coverage-stats",
             Method::POST,
-            vec![config.internal_oauth_group_full_coverage.clone()],
-        ),
-        (
-            "/full-coverage-stats",
-            Method::GET,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
         // The windowed stats of the same producer (2026-09-27): same group,
-        // both methods, exactly like /full-coverage-stats.
+        // POST-only, like /full-coverage-stats.
         (
             "/full-coverage-window-stats",
             Method::POST,
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
-        (
-            "/full-coverage-window-stats",
-            Method::GET,
-            vec![config.internal_oauth_group_full_coverage.clone()],
-        ),
-        // Two independent producers write to each of these tables now --
-        // poller-irish-rail-gtfs (RepublicOfIreland rows) and
-        // poller-nir-stations (NorthernIreland rows) -- so both GET and
-        // POST accept either credential. See
-        // docs/superpowers/plans/2026-09-05-nir-tier-a-implementation-plan.md
-        // Task 1.
-        (
-            "/island-of-ireland-stations",
-            Method::GET,
-            vec![
-                config.internal_oauth_group_irish_rail_gtfs.clone(),
-                config.internal_oauth_group_nir_stations.clone(),
-            ],
-        ),
-        (
-            "/island-of-ireland-stations",
-            Method::POST,
-            vec![
-                config.internal_oauth_group_irish_rail_gtfs.clone(),
-                config.internal_oauth_group_nir_stations.clone(),
-            ],
-        ),
-        (
-            "/island-of-ireland-lines",
-            Method::GET,
-            vec![
-                config.internal_oauth_group_irish_rail_gtfs.clone(),
-                config.internal_oauth_group_nir_stations.clone(),
-            ],
-        ),
-        (
-            "/island-of-ireland-lines",
-            Method::POST,
-            vec![
-                config.internal_oauth_group_irish_rail_gtfs.clone(),
-                config.internal_oauth_group_nir_stations.clone(),
-            ],
-        ),
-        (
-            "/island-of-ireland-station-samples",
-            Method::GET,
-            vec![config.internal_oauth_group_irish_rail_live.clone()],
-        ),
-        (
-            "/island-of-ireland-station-samples",
-            Method::POST,
-            vec![config.internal_oauth_group_irish_rail_live.clone()],
-        ),
+        // No island-of-Ireland routes: since ingest plan 3c.2 (D8) those
+        // pollers write only to the ds:ingest:island-of-ireland stream, and
+        // their /private routes were deleted (2026-10-08, runbook Q9).
     ]
 }
 
@@ -756,9 +694,6 @@ impl AppState {
                 "internal_oauth_group_trust_backlog",
                 &config.internal_oauth_group_trust_backlog,
             ),
-            // Not the three island-of-Ireland groups: those are empty by
-            // default, which closes their routes (see
-            // `build_internal_oauth_routes`).
         ] {
             ensure!(
                 !value.is_empty(),
@@ -872,7 +807,9 @@ mod internal_oauth_startup_guard_tests {
             .map(|(_, default)| default.clone())
             .expect("INTERNAL_OAUTH_GROUP_MCP is declared");
         assert_eq!(mcp, "srv-ds-mcp");
-        assert!(defaults.len() >= 14, "{defaults:?}");
+        // 12 since the island-of-Ireland groups went with their routes
+        // (2026-10-08, ingest phase 5 runbook Q9).
+        assert!(defaults.len() >= 12, "{defaults:?}");
         for (env, default) in &defaults {
             if env != "INTERNAL_OAUTH_GROUP_MCP" {
                 assert_ne!(default, &mcp, "{env}");

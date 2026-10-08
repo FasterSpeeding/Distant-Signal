@@ -972,6 +972,117 @@ Rollback: `source=http`.
 
 ## Phase 5: remove `/private` and lock down
 
+**Runbook: [docs/ingest-phase5-runbook.md](../../ingest-phase5-runbook.md)**
+(2026-10-08). It holds:
+
+- the route-by-route caller inventory, with production's 7-day counts;
+- the evidence each producer needs before phase 5 starts;
+- per-step file lists, Ranma changes, checks and rollbacks;
+- the grants and NetworkPolicy diffs;
+- the open questions.
+
+Phase 5 code starts only once every producer runs off `/private` in
+production (user decision).
+
+Corrections from that inventory:
+
+- **The route count.** At `dc2b4405` there were 29 paths and 44
+  path-and-method pairs (`/tiploc-locations` and `/schedule-services`
+  came after the spec's count of 27). After the Q9 cleanup there are 26
+  paths and 34 pairs.
+- **Routes with no caller.** These were deleted on 2026-10-08 (Q9):
+  - the `GET`s of `/full-coverage-stats`, `/full-coverage-window-stats`,
+    `/station-full-coverage-samples` and `/schedule-feed-ingests`;
+  - all six island-of-Ireland pairs (stream-only since 3c.2), with the
+    api's three island-of-Ireland OAuth groups.
+- **The entry criteria.**
+  - "0 requests for 7 days" proves nothing for `/corpus-locations`
+    (monthly) or schedule-reference's routes (per delivery: one in the 7
+    days to 2026-10-08).
+  - Production Prometheus keeps about 8 days, so the 14-day switch age
+    comes from Ranma-Config's git history.
+  - Phase 0b (`perService` connect for api, aggregator, enricher,
+    notifier and writer, plus the 7-day report) must be live first. It is
+    off in production on 2026-10-08.
+- **5.1.** Do not just skip the nest: a straggler then shows only as
+  `/{unmatched}`. Mount a counted 404 fallback under `/private` instead.
+- **5.2 also deletes:**
+  - `require_internal_oauth`;
+  - the private timeout (`edge.rs`, `API_PRIVATE_REQUEST_TIMEOUT_SECS`,
+    `api.timeouts.privateRequestTimeoutSecs`) and the 100 MB body limit;
+  - `rate_limit.rs`'s `/private` exemption;
+  - `route_metrics::register`'s private half;
+  - the `ingest` scope of the api 5xx rules, with its alert test and its
+    `docs/alerts.md` entry;
+  - the ingest-only metric registrations in `main.rs`.
+
+  It keeps `auth/internal_oauth.rs`, `INTERNAL_OAUTH_{ISSUER_URL,CLIENT_ID,GROUP_MCP}`
+  and the api's egress to the issuer. The Distant-Signal-MCP's `srv-ds-mcp`
+  token (same Authentik provider, `distant-signal-internal`) still buys its
+  rate-limit budget.
+- **5.3 also covers:**
+  - `common::oauth_client`, `common::ingest`'s HTTP helpers, and
+    `ingest_stream::snapshot::SinkMode::{Http,HttpShadow}`;
+  - `DistantSignalConsumerApiCallsFailing`'s HTTP operations;
+  - **local dev**: `docker-compose.yml`, `local.env.example` and
+    `dev.env.example` wire every producer to `/private`;
+  - Ranma's Authentik decommissioning: 10 `srv-ds-*` accounts and 11
+    groups, marked `state: absent`; `srv-ds-mcp` stays.
+- **5.4.** The api's only Redis use is `post_incidents`' `XADD
+  incident-text-changed`. The step also covers `unavailable.rs`'s
+  `RedisError` branch and the `redis_acl.rs` api client. The `api_*`
+  metric names are more than one `or` clause: `ds-store` still emits
+  `api_corpus_*`, `api_incident_*`, `api_trust_event_backlog_*` and
+  `api_train_reasons_*` from the producers' pods.
+- **5.5.**
+  - The **writer** role is `observed` too and must be narrowed with the
+    other four.
+  - The enricher's column-level UPDATE plus a table-level SELECT cannot
+    be expressed by `gen-db-grants.py` today (one privilege string per
+    role per table); it needs a generator change.
+  - `backfill_incident_lines`, `backfill_line_train_summaries` and
+    `replay_uidless_movements` write tables the narrow api role cannot.
+  - Dropping `distant_signal_app` is its own release.
+
+**Decisions (user, 2026-10-08).** These answer the runbook's Q1–Q10, and
+the runbook's steps follow them.
+
+- **Q1.** In phase 5 (5.4), rename the `api_*` metrics `ds-store` emits to
+  `store_*`. For one release, the alerts sum over both names.
+- **Q2. New task 5.4b**, before 5.5. Move `backfill_incident_lines`,
+  `backfill_line_train_summaries`, `replay_uidless_movements` and
+  `backfill_trains` out of the api image, into `ds-migrate` or writer-role
+  maintenance tooling, so they never run with api credentials.
+- **Q3.** 5.5 extends `gen-db-grants.py` and `db-grants.yaml` so the
+  enricher gets column-level UPDATE beside a table-level SELECT on
+  `incidents`.
+- **Q4.** 5.1: with `API_PRIVATE_ROUTES=false`, a fallback route answers
+  404 and increments a counter.
+- **Q5.** Drop `distant_signal_app` 7 days after the narrowing, in its own
+  release.
+- **Q6.** 5.6: Ranma narrows or removes `allow-egress-same-namespace` once
+  every flow is accounted for.
+- **Q7.** Phase 5 does not wait for a real CORPUS load through the `db`
+  sink.
+- **Q8.** 5.3 keeps `INGEST_SINK`/`*_SOURCE` for one release that accepts
+  only the new value and refuses `http` with a clear error. The next
+  release removes them.
+- **Q9.** The caller-less routes are deleted now, outside phase 5:
+  - the `GET`s of `/full-coverage-stats`, `/full-coverage-window-stats`,
+    `/station-full-coverage-samples` and `/schedule-feed-ingests`;
+  - the six island-of-Ireland pairs.
+- **Q10. New task 5.3b**, in 5.3's release. Local dev mirrors production:
+  docker-compose runs the ingest-writer, and the producers use the
+  `db`/`stream` sinks against local Postgres and Redis. Update the
+  `*.env.example` files to match.
+- **Ops note (Ranma).** `mint-sealed-secret.sh` seals one value into every
+  `--target` of a run, so per-role passwords need one run per role.
+
+| # | Task | Files | Tests |
+|---|---|---|---|
+| 5.3b | Local dev mirrors production (Q10) | `docker-compose.yml`, `local.env.example`, `dev.env.example` | `docker compose up` from a clean volume: data lands through the writer |
+| 5.4b | The api's writing binaries move to `ds-migrate` or writer-role tooling (Q2) | `crates/api/src/bin/{backfill_incident_lines,backfill_line_train_summaries,replay_uidless_movements,backfill_trains}.rs`, `crates/{ds-migrate,ingest-writer}`, Dockerfiles, the backfill docs | each moved binary's DB test as its new role |
+
 Entry:
 
 - every switch in spec §13.1 has been on its new value for 14 days;

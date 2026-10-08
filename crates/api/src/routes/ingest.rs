@@ -8,11 +8,13 @@
 //! targets `line_status`/`line_status_history` directly (see
 //! `queries::upsert_tfl_line_status`).
 //!
-//! Each POST route also has a same-path GET counterpart (see `router()`)
-//! returning when that table was last successfully populated. Pollers call
-//! it once at startup, before their poll loop begins, to skip an
-//! immediately-redundant first fetch if the existing data is still fresh —
-//! see `common::ingest::time_until_next_poll`.
+//! A poller's POST route also has a same-path GET counterpart (see
+//! `router()`) returning when that table was last successfully populated.
+//! Pollers call it once at startup, before their poll loop begins, to skip
+//! an immediately-redundant first fetch if the existing data is still
+//! fresh — see `common::ingest::time_until_next_poll`. The GETs no caller
+//! used (full coverage, schedule feed ingests) and the island-of-Ireland
+//! routes were deleted on 2026-10-08 (ingest phase 5 runbook Q9).
 
 use axum::Json;
 use axum::extract::State;
@@ -54,8 +56,7 @@ pub fn router() -> Router {
         )
         .route(
             "/station-full-coverage-samples",
-            axum::routing::get(get_station_full_coverage_samples_last_fetched)
-                .post(post_station_full_coverage_samples),
+            axum::routing::post(post_station_full_coverage_samples),
         )
         .route(
             "/tfl-line-status",
@@ -77,7 +78,7 @@ pub fn router() -> Router {
         .route("/train-reasons", axum::routing::post(post_train_reasons))
         .route(
             "/schedule-feed-ingests",
-            axum::routing::get(get_schedule_feed_last_fetched).post(post_schedule_feed_ingest),
+            axum::routing::post(post_schedule_feed_ingest),
         )
         .route(
             "/schedule-reference-publishes",
@@ -104,12 +105,11 @@ pub fn router() -> Router {
         )
         .route(
             "/full-coverage-stats",
-            axum::routing::get(get_full_coverage_stats_last_fetched).post(post_full_coverage_stats),
+            axum::routing::post(post_full_coverage_stats),
         )
         .route(
             "/full-coverage-window-stats",
-            axum::routing::get(get_full_coverage_window_stats_last_fetched)
-                .post(post_full_coverage_window_stats),
+            axum::routing::post(post_full_coverage_window_stats),
         )
         .route(
             "/schedule-network-departures",
@@ -126,21 +126,6 @@ pub fn router() -> Router {
         .route(
             "/schedule-services",
             axum::routing::post(post_schedule_services),
-        )
-        .route(
-            "/island-of-ireland-stations",
-            axum::routing::get(get_island_of_ireland_stations_last_fetched)
-                .post(post_island_of_ireland_stations),
-        )
-        .route(
-            "/island-of-ireland-lines",
-            axum::routing::get(get_island_of_ireland_lines_last_fetched)
-                .post(post_island_of_ireland_lines),
-        )
-        .route(
-            "/island-of-ireland-station-samples",
-            axum::routing::get(get_island_of_ireland_station_samples_last_fetched)
-                .post(post_island_of_ireland_station_samples),
         )
 }
 
@@ -268,15 +253,6 @@ async fn post_station_samples(
         .await
         .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
-}
-
-async fn get_station_full_coverage_samples_last_fetched(
-    State(app): State<App>,
-) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at = queries::last_station_full_coverage_samples_fetch(&app.database)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(LastFetchedResponse { fetched_at }))
 }
 
 async fn post_station_full_coverage_samples(
@@ -461,15 +437,6 @@ use ds_store::schedule::ScheduleFeedIngestRequest;
 
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
 use ds_store::schedule::schedule_feed_ingest_problem;
-
-async fn get_schedule_feed_last_fetched(
-    State(app): State<App>,
-) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at = queries::last_schedule_feed_fetch(&app.database)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(LastFetchedResponse { fetched_at }))
-}
 
 async fn post_schedule_feed_ingest(
     State(app): State<App>,
@@ -1044,13 +1011,10 @@ async fn post_schedule_services(
     Ok(Json(UpsertResponse { upserted }))
 }
 
-/// `full-coverage-consumer`'s own periodic snapshot write/read-back --
-/// unlike `/schedule-line-population`, both methods here share the SAME
-/// group (`internal_oauth_group_full_coverage`), matching `/incidents`'s
-/// "one producer, one group, both methods" shape rather than
-/// `/stanox-crs`'s split, since this GET is only ever this producer
-/// re-checking its own last write, not a second, different caller (see
-/// Correction 2).
+/// `full-coverage-consumer`'s own periodic per-line snapshot write
+/// (group `internal_oauth_group_full_coverage`). POST only: the read-back
+/// GET had no caller and was deleted (2026-10-08, ingest phase 5 runbook
+/// Q9).
 async fn post_full_coverage_stats(
     State(app): State<App>,
     Json(rows): Json<Vec<common::FullCoverageLineStatsRow>>,
@@ -1061,18 +1025,9 @@ async fn post_full_coverage_stats(
     Ok(Json(UpsertResponse { upserted }))
 }
 
-async fn get_full_coverage_stats_last_fetched(
-    State(app): State<App>,
-) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at = queries::last_full_coverage_line_stats_fetch(&app.database)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(LastFetchedResponse { fetched_at }))
-}
-
 /// `full-coverage-consumer`'s windowed stats (`recent` and `day_to_date` per
 /// line, every minute, only with `FULL_COVERAGE_WINDOWED_STATS=true`) --
-/// same producer, same group, both methods, as `/full-coverage-stats`. A
+/// same producer, same group, POST only, as `/full-coverage-stats`. A
 /// malformed row is a 400 (retrying cannot help); see
 /// `data::full_coverage_window`.
 async fn post_full_coverage_window_stats(
@@ -1085,79 +1040,6 @@ async fn post_full_coverage_window_stats(
         crate::data::full_coverage_window::upsert_full_coverage_window_stats(&app.database, &rows)
             .await
             .map_err(internal_error)?;
-    Ok(Json(UpsertResponse { upserted }))
-}
-
-async fn get_full_coverage_window_stats_last_fetched(
-    State(app): State<App>,
-) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at =
-        crate::data::full_coverage_window::last_full_coverage_window_stats_fetch(&app.database)
-            .await
-            .map_err(internal_error)?;
-    Ok(Json(LastFetchedResponse { fetched_at }))
-}
-
-/// `poller-irish-rail-gtfs`'s per-poll-cycle station/line catalogue batch --
-/// see `crate::data::island_of_ireland::{upsert_stations,upsert_lines}`.
-/// Tier A of docs/superpowers/specs/2026-09-05-ireland-rail-support-design.md.
-async fn get_island_of_ireland_stations_last_fetched(
-    State(app): State<App>,
-) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at = crate::data::island_of_ireland::last_stations_fetch(&app.database)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(LastFetchedResponse { fetched_at }))
-}
-
-async fn post_island_of_ireland_stations(
-    State(app): State<App>,
-    Json(stations): Json<Vec<common::island_of_ireland::IslandOfIrelandStation>>,
-) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = crate::data::island_of_ireland::upsert_stations(&app.database, &stations)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(UpsertResponse { upserted }))
-}
-
-async fn get_island_of_ireland_lines_last_fetched(
-    State(app): State<App>,
-) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at = crate::data::island_of_ireland::last_lines_fetch(&app.database)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(LastFetchedResponse { fetched_at }))
-}
-
-async fn post_island_of_ireland_lines(
-    State(app): State<App>,
-    Json(lines): Json<Vec<common::island_of_ireland::IslandOfIrelandLineDefinition>>,
-) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = crate::data::island_of_ireland::upsert_lines(&app.database, &lines)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(UpsertResponse { upserted }))
-}
-
-/// `poller-irish-rail-live`'s per-poll-cycle raw departure-board batch --
-/// see `crate::data::island_of_ireland::upsert_station_samples`. Tier B of
-/// docs/superpowers/specs/2026-09-05-ireland-rail-support-design.md.
-async fn get_island_of_ireland_station_samples_last_fetched(
-    State(app): State<App>,
-) -> Result<Json<LastFetchedResponse>, (StatusCode, String)> {
-    let fetched_at = crate::data::island_of_ireland::last_station_samples_fetch(&app.database)
-        .await
-        .map_err(internal_error)?;
-    Ok(Json(LastFetchedResponse { fetched_at }))
-}
-
-async fn post_island_of_ireland_station_samples(
-    State(app): State<App>,
-    Json(samples): Json<Vec<common::island_of_ireland::IslandOfIrelandStationSample>>,
-) -> Result<Json<UpsertResponse>, (StatusCode, String)> {
-    let upserted = crate::data::island_of_ireland::upsert_station_samples(&app.database, &samples)
-        .await
-        .map_err(internal_error)?;
     Ok(Json(UpsertResponse { upserted }))
 }
 
@@ -1245,9 +1127,6 @@ mod db_tests {
             internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
             internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
             internal_oauth_group_trust_backlog: "svc-trust-backlog-consumer".to_string(),
-            internal_oauth_group_irish_rail_gtfs: "svc-poller-irish-rail-gtfs".to_string(),
-            internal_oauth_group_irish_rail_live: "svc-poller-irish-rail-live".to_string(),
-            internal_oauth_group_nir_stations: "svc-poller-nir-stations".to_string(),
             internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
@@ -1481,89 +1360,6 @@ mod db_tests {
         );
 
         delete_fixture(&pool, "ZFB", "ZB").await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api \
-                station_full_coverage_samples -- --ignored --test-threads=1`"]
-    async fn station_full_coverage_samples_get_last_fetched_after_seeding_is_not_null() {
-        let pool = connect().await;
-        delete_fixture(&pool, "ZFC", "ZC").await;
-
-        let resolved_at = chrono::Utc::now();
-        sqlx::query(
-            "INSERT INTO station_full_coverage_samples (crs, operator, resolved_at, stats) \
-             VALUES ('ZFC', 'ZC', $1, '{\"total\":1,\"delayed\":0,\"cancelled\":0,\"skipped\":0,\"avg_delay_minutes\":0.0}')",
-        )
-        .bind(resolved_at)
-        .execute(&pool)
-        .await
-        .expect("seed fixture row");
-
-        let router: axum::Router = Router::new()
-            .merge(router())
-            .with_state(test_app(pool.clone()));
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .uri("/station-full-coverage-samples")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
-        let fetched_at = json["fetchedAt"]
-            .as_str()
-            .expect("fetchedAt should be a non-null timestamp string");
-        let fetched_at: chrono::DateTime<chrono::Utc> = fetched_at.parse().unwrap();
-        assert!(
-            (fetched_at - resolved_at).num_seconds().abs() < 5,
-            "fetchedAt {fetched_at} should be close to the seeded resolved_at {resolved_at}"
-        );
-
-        delete_fixture(&pool, "ZFC", "ZC").await;
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live database; run with `cargo test -p api \
-                station_full_coverage_samples -- --ignored --test-threads=1`"]
-    async fn station_full_coverage_samples_get_last_fetched_on_an_empty_table_is_null() {
-        // No fixture row is seeded by this test at all, on either the CRS
-        // this test uses or otherwise -- `last_station_full_coverage_samples_fetch`
-        // is a bare `MAX(resolved_at)` over the whole table (unlike every
-        // other query in this module, it isn't scoped by CRS), so this
-        // assertion relies on the plan's own binding Non-goal that no real
-        // producer writes any row into this table yet (see the plan's
-        // Non-goals section) -- in any test/CI database this table is
-        // therefore expected to be genuinely empty, not forced empty by a
-        // destructive TRUNCATE against a real deployment's table.
-        let pool = connect().await;
-
-        let router: axum::Router = Router::new()
-            .merge(router())
-            .with_state(test_app(pool.clone()));
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .uri("/station-full-coverage-samples")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json, serde_json::json!({"fetchedAt": null}));
     }
 
     #[tokio::test]
