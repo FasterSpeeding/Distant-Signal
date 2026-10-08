@@ -1630,6 +1630,7 @@ Prefix `distant_signal_`, `service` label from the process.
 | `ingest_stream_produce_buffered` (was `ingest_producer_pending_snapshot`) | producers | `stream` (items not yet written: 0/1 for a snapshot stream) |
 | `ingest_stream_produce_bytes_total` | producers | `stream` |
 | `ingest_stream_observed_at_clamped_total` | writer (guard helpers, §7.8) | `stream, schema` |
+| `ingest_stream_row_writes_total` | writer (snapshot handlers; 3a.9's changed-rows-only effect, §7.8) | `stream, schema, outcome` (`written`, `skipped`) |
 | `notifier_line_history_skipped_total` | notifier (§7.8) | `reason` (`stale`) |
 | `db_writes_total`, `db_write_seconds` | direct writers (via `ds-store`) | `operation, outcome` |
 | `db_pool_connections` | every DB service (`ds_store::pool`, sampled every 15 s from `PgPool::size`/`num_idle`) | `state` (`idle`, `in_use`) |

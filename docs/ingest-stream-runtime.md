@@ -228,6 +228,7 @@ All prefixed `distant_signal_` (`common::metrics::metric_name`); names in
 | `ingest_stream_last_applied_timestamp_seconds` | gauge | `stream` | consumer |
 | `ingest_stream_observed_at_clamped_total` | counter | `stream`, `schema` | the ingest-writer's guard helpers (`ingest_writer::observed`, spec §7.8): an observed time clamped to `now() + 2 min` |
 | `ingest_stream_rows_total` | counter | `stream`, `schema`, `mode` (`shadow`, `apply`) | the ingest-writer's snapshot handlers: rows decoded and validated (shadow) or written (apply) |
+| `ingest_stream_row_writes_total` | counter | `stream`, `schema`, `outcome` (`written`, `skipped`) | the ingest-writer's snapshot handlers: of the applied rows, those an upsert inserted or updated, and those it left alone (unchanged, or refused as older); `INGEST_WRITER_CHANGED_ROWS_ONLY` (plan 3a.9) moves unchanged rows to `skipped` |
 | `ingest_stream_sink_rows_total` | counter | `stream`, `schema`, `sink` (`http`, `stream`) | the producers (poller-ldbws, full-coverage-consumer): rows the api accepted, or rows whose snapshot was fully XADDed |
 
 `register_producer(stream)` / `register_consumer(stream)` (called by
