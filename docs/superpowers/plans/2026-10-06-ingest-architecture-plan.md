@@ -897,8 +897,9 @@ Rollback: `sink=http` per producer.
 **Status (2026-10-08): 3c.1–3c.4 built and integrated (batch 50), every
 switch off** (`pollers.<tfl,tocs>.ingest.sink: http`, the writer's `tfl`,
 `reference` and IoI streams `off` (`island-of-ireland`, split into
-`ioi-gtfs`, `ioi-nir` and `ioi-live` by security review H1), the IoI
-pollers disabled). What ships on by default: the notifier's stale-history skip
+`ioi-gtfs`, `ioi-nir` and `ioi-live` by security review H1; since batch
+53 each catalogue stream only writes its own network's rows and records a
+per-network `ingest_freshness` source), the IoI pollers disabled). What ships on by default: the notifier's stale-history skip
 (3c.4, `LINE_HISTORY_MAX_AGE_SECS=900`) and the `line_status` RLS (3c.3: an
 allow-all policy plus the writer's RESTRICTIVE one).
 
@@ -1009,6 +1010,16 @@ Rollback: `source=http`.
 
 ## Phase 5: remove `/private` and lock down
 
+**Status (2026-10-08, batch 53): not started; the prep that changes no
+default is built.** 5.1's `API_PRIVATE_ROUTES` counted-404 fallback (default
+`true`: routes unchanged) and its alert, Q1's `(api|store)` alert rules,
+5.4b's new entry points (`ds-migrate backfill-trains` and
+`backfill-line-train-summaries`, `writer-maintenance` in the ingest-writer
+image; the api binaries stay, deprecated), Q3's enricher column target in
+`db-grants.yaml` (enricher still `observed`) and 5.3b's opt-in
+`docker-compose.direct.yml`. The runbook marks each part **Built** or
+**Prepared**.
+
 **Runbook: [docs/ingest-phase5-runbook.md](../../ingest-phase5-runbook.md)**
 (2026-10-08). It holds:
 
@@ -1074,11 +1085,13 @@ Corrections from that inventory:
 - **5.5.**
   - The **writer** role is `observed` too and must be narrowed with the
     other four.
-  - The enricher's column-level UPDATE plus a table-level SELECT cannot
-    be expressed by `gen-db-grants.py` today (one privilege string per
-    role per table); it needs a generator change.
+  - The enricher's column-level UPDATE plus a table-level SELECT needed
+    a generator change; the list form (`[S, {privileges: U, columns:
+    […]}]`) has existed since batch 51 and `db-grants.yaml` states the
+    enricher's target in it (batch 53, Q3 prep).
   - `backfill_incident_lines`, `backfill_line_train_summaries` and
-    `replay_uidless_movements` write tables the narrow api role cannot.
+    `replay_uidless_movements` write tables the narrow api role cannot;
+    their replacements outside the api image exist (batch 53, 5.4b prep).
   - Dropping `distant_signal_app` is its own release.
 
 **Decisions (user, 2026-10-08).** These answer the runbook's Q1–Q10, and
