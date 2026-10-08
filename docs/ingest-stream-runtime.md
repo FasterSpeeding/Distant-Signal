@@ -66,6 +66,21 @@ let receipt = producer.submit(parts).await?;  // never waits under LatestSnapsho
   (`XREVRANGE + - COUNT 1`), the producer's last-fetched cursor (§11.3).
 - `xadd_entry(conn, stream, maxlen, &entry)`: one XADD, for one-shot use.
 
+## A poller's sink (`ingest_stream::snapshot_sink`, plan 3c.2)
+
+- `SinkMode` (`INGEST_SINK`): `http`, `http+shadow` (the POST stays
+  authoritative, plus a best-effort stream copy) or `stream`.
+- `RedisArgs`: `REDIS_URL`, `REDIS_USERNAME`, `REDIS_PASSWORD`, flattened
+  into the poller's clap config; `client(why)` applies the ACL user.
+- `SnapshotStream::spawn(client, stream, schema, component, rows_per_part)`
+  wraps a `LatestSnapshot` producer; `publish(&rows, fetched_at)` splits the
+  rows (the body is today's HTTP body, a JSON array) and never waits for
+  Redis; `last_produced_at()` is the newest `produced_at` of its own schema,
+  read backwards a page at a time (the island-of-Ireland stream carries
+  five schemas from three pollers).
+- Used by poller-tfl, poller-tocs (`http+shadow`/`stream`) and the three
+  island-of-Ireland pollers (`stream` only, decision D8).
+
 ## Consumer (`ingest_stream::consumer`, for the ingest-writer)
 
 ```rust
