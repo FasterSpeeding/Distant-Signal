@@ -972,6 +972,76 @@ Rollback: `source=http`.
 
 ## Phase 5: remove `/private` and lock down
 
+**Runbook: [docs/ingest-phase5-runbook.md](../../ingest-phase5-runbook.md)**
+(2026-10-08). It holds:
+
+- the route-by-route caller inventory, with production's 7-day counts;
+- the evidence each producer needs before phase 5 starts;
+- per-step file lists, Ranma changes, checks and rollbacks;
+- the grants and NetworkPolicy diffs;
+- the open questions.
+
+Phase 5 code starts only once every producer runs off `/private` in
+production (user decision).
+
+Corrections from that inventory:
+
+- **The route count.** There are 29 paths and 44 path-and-method pairs
+  (`/tiploc-locations` and `/schedule-services` came after the spec's
+  count of 27).
+- **Routes with no caller.** Some have none today:
+  - the `GET`s of `/full-coverage-stats`, `/full-coverage-window-stats`,
+    `/station-full-coverage-samples` and `/schedule-feed-ingests`;
+  - all six island-of-Ireland pairs (stream-only since 3c.2).
+- **The entry criteria.**
+  - "0 requests for 7 days" proves nothing for `/corpus-locations`
+    (monthly) or schedule-reference's routes (per delivery: one in the 7
+    days to 2026-10-08).
+  - Production Prometheus keeps about 8 days, so the 14-day switch age
+    comes from Ranma-Config's git history.
+  - Phase 0b (`perService` connect for api, aggregator, enricher,
+    notifier and writer, plus the 7-day report) must be live first. It is
+    off in production on 2026-10-08.
+- **5.1.** Do not just skip the nest: a straggler then shows only as
+  `/{unmatched}`. Mount a counted 404 fallback under `/private` instead.
+- **5.2 also deletes:**
+  - `require_internal_oauth`;
+  - the private timeout (`edge.rs`, `API_PRIVATE_REQUEST_TIMEOUT_SECS`,
+    `api.timeouts.privateRequestTimeoutSecs`) and the 100 MB body limit;
+  - `rate_limit.rs`'s `/private` exemption;
+  - `route_metrics::register`'s private half;
+  - the `ingest` scope of the api 5xx rules, with its alert test and its
+    `docs/alerts.md` entry;
+  - the ingest-only metric registrations in `main.rs`.
+
+  It keeps `auth/internal_oauth.rs`, `INTERNAL_OAUTH_{ISSUER_URL,CLIENT_ID,GROUP_MCP}`
+  and the api's egress to the issuer. The Distant-Signal-MCP's `srv-ds-mcp`
+  token (same Authentik provider, `distant-signal-internal`) still buys its
+  rate-limit budget.
+- **5.3 also covers:**
+  - `common::oauth_client`, `common::ingest`'s HTTP helpers, and
+    `ingest_stream::snapshot::SinkMode::{Http,HttpShadow}`;
+  - `DistantSignalConsumerApiCallsFailing`'s HTTP operations;
+  - **local dev**: `docker-compose.yml`, `local.env.example` and
+    `dev.env.example` wire every producer to `/private`;
+  - Ranma's Authentik decommissioning: 10 `srv-ds-*` accounts and 11
+    groups, marked `state: absent`; `srv-ds-mcp` stays.
+- **5.4.** The api's only Redis use is `post_incidents`' `XADD
+  incident-text-changed`. The step also covers `unavailable.rs`'s
+  `RedisError` branch and the `redis_acl.rs` api client. The `api_*`
+  metric names are more than one `or` clause: `ds-store` still emits
+  `api_corpus_*`, `api_incident_*`, `api_trust_event_backlog_*` and
+  `api_train_reasons_*` from the producers' pods.
+- **5.5.**
+  - The **writer** role is `observed` too and must be narrowed with the
+    other four.
+  - The enricher's column-level UPDATE plus a table-level SELECT cannot
+    be expressed by `gen-db-grants.py` today (one privilege string per
+    role per table); it needs a generator change.
+  - `backfill_incident_lines`, `backfill_line_train_summaries` and
+    `replay_uidless_movements` write tables the narrow api role cannot.
+  - Dropping `distant_signal_app` is its own release.
+
 Entry:
 
 - every switch in spec §13.1 has been on its new value for 14 days;
