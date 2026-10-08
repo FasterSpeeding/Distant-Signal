@@ -470,6 +470,21 @@ For each producer:
    until the 2.x "narrow" task;
 2. its NetworkPolicy egress to postgres has rendered.
 
+**Status (2026-10-08, batch 48): 2a–2d are built and merged, every switch
+off.** All four roles (`schedule_reference`, `stations`, `incidents`,
+`schedule_ingest`) were created `narrow` from the start, never `app`
+members, so step 1's narrowing is already done for each. The integration
+unified the chart wiring: both schedulefeed sinks share
+`distant-signal.scheduleFeedPostgres` ("either sink is `db`") and the
+max_connections budget sums both containers' pools; both pollers use 2b's
+generic `pollers.<name>.ingest` helpers (2c's incidents-only copies became
+thin wrappers, with `pollers.incidents.ingest.database.maxConnections: 2`
+added), and every `db`-sink poller's pool now counts in the max_connections
+budget. CI runs every phase 2 crate's DB suite as the superuser and as its
+narrow role (`--mode per-service`). Rollout order: after the 1B release,
+one producer per release with a few days' soak each, the incidents
+heartbeat-off step last.
+
 ### 2a. schedule-reference
 
 **Status (2026-10-07): 2a.1–2a.6 are built, every switch off**
@@ -578,6 +593,15 @@ Rollback: `sink=http`.
 
 ### 2c. poller-incidents, then the write-amplification fix
 
+**Status (2026-10-08): 2c.1–2c.6 built, off by default**
+(`pollers.incidents.ingest.sink: http`, `rowHeartbeat: true`). Since the
+batch 48 merge the sink's `INGEST_SINK`/`DATABASE_URL`/
+`DATABASE_MAX_CONNECTIONS` come from 2b's shared `pollers.<name>.ingest`
+block (`pollers.incidents.ingest.database.maxConnections`, 2); the
+incidents-only template keeps Redis and `INCIDENTS_ROW_HEARTBEAT`. Its DB
+tests run as the superuser and as the narrow role (cleanup through the
+schema owner, since the role has no `DELETE`).
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 2c.1 | **Done 2026-10-07.** Split `ds_store::incidents` into `apply_snapshot` (returns `text_changed_ids`) and `infer_removals`; the api's handler calls them in today's order and publishes in between. The order lives in `api::data::queries::upsert_incident_snapshot` (the handler calls it) and `DbSink::write_once`; the XADD moved to `common::incident_text_changed` (shared). `ds_store::upsert_incident_snapshot`/`upsert_incidents` are gone | `ds-store/src/incidents/*.rs`, `api/src/routes/ingest.rs` | moved order test (now in the api's `queries`, both heartbeat modes); inference tests unchanged |
@@ -595,8 +619,11 @@ Rollout:
 4. `INCIDENTS_ROW_HEARTBEAT=false`.
 
 Verification: `n_tup_upd` on `incidents` per day drops from about 600k to
-under 1k (read-only `pg_stat_user_tables` deltas); `fetchedAt` on the
-incidents page tracks the poll time.
+about 10k (read-only `pg_stat_user_tables` deltas); `fetchedAt` on the
+incidents page tracks the poll time. Not under 1k: the user accepted
+keeping the per-row bump for listed cleared incidents (2c.6's deviation),
+so their dates stay correct; about 33 listed cleared rows at one update
+per poll is about 10k a day.
 
 Exit: 7 days on each step; `DistantSignalIncidentRemovalStalled` silent;
 removal counts in line with the 2026-10-06 baseline.
@@ -657,11 +684,15 @@ Entry:
 
 ### 3a. The stream runtime, then station samples and full coverage
 
-**Status (2026-10-07): the runtime library is built, with no callers**
+**Status (2026-10-08): the runtime is built, every stream `off`**
 (`crates/ingest-stream`, spec §7.7, [`docs/ingest-stream-runtime.md`](../../ingest-stream-runtime.md)).
-3a.1 and 3a.2 are done; 3a.3's Redis half (groups, PEL first, XAUTOCLAIM,
-DELCONSUMER, dead letters, retries, graceful shutdown, metrics) is done in
-`ingest_stream::consumer`, and the writer keeps its DB half. Decisions D5–D8
+3a.1–3a.5 are done: 3a.3's Redis half (groups, PEL first, XAUTOCLAIM,
+DELCONSUMER, dead letters, retries, graceful shutdown, metrics) in
+`ingest_stream::consumer`, its writer half (dedup, observed-at guards,
+modes, handler registry) in `crates/ingest-writer`; 3a.4's alerts (off
+unless `ingestWriter.enabled`; `crates/ingest-stream/tests/chart_values.rs`
+keeps their per-stream maps equal to `budget.rs`); 3a.5's migrations. No
+stream has handlers yet, so every stream stays `off` until 3a.6. Decisions D5–D8
 and implementation choices I1–I3 (spec §16) apply. Differences from the
 table below:
 
