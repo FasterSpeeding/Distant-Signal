@@ -92,7 +92,9 @@ SERVICES: Mapping[str, Sequence[str]] = {
     ),
     "enricher": ("enricher",),
     "full-coverage-consumer": ("full-coverage-consumer",),
-    "ingest-writer": ("ingest-writer",),
+    # writer-maintenance: the one-off ingest repairs moved out of the api
+    # image (ingest phase 5 prep, Q2).
+    "ingest-writer": ("ingest-writer", "writer-maintenance"),
     "movement-relay": ("movement-relay",),
     "notifier": ("notifier",),
     "poller-incidents": ("poller-incidents",),

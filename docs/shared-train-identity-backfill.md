@@ -23,12 +23,17 @@ database that has already applied `20260906140000`.
    to re-run after a partial failure.
 
    ```sh
-   # From a checkout
-   DATABASE_URL=postgres://... cargo run -p api --bin backfill_trains
+   # From a checkout, as the schema owner (DATABASE_URL is the fallback)
+   MIGRATION_DATABASE_URL=postgres://owner@... cargo run -p ds-migrate -- backfill-trains
 
-   # From the api container image (the binary ships alongside `api` itself)
-   /usr/local/bin/backfill_trains
+   # From the api container image (ds-migrate ships alongside `api`)
+   /usr/local/bin/ds-migrate backfill-trains
    ```
+
+   It refuses the api's own role (`distant_signal_api`): since the ingest
+   phase 5 prep (Q2 of `docs/ingest-phase5-runbook.md`) these one-offs never
+   run with the api's credentials. The old `backfill_trains` binary in the
+   api image still works but is deprecated; it goes in phase 5 step 5.4b.
 
 3. **Check the output.** It reports how many subscription /
    `train_movement_events` / `train_current_state` rows it linked, plus
@@ -41,7 +46,7 @@ database that has already applied `20260906140000`.
 ## This ordering is enforced, not just documented
 
 `api`'s startup calls
-`data::legacy_backfill::ensure_ready_for_contract_migration` immediately
+`ds_store::migrate::ensure_ready_for_contract_migration` immediately
 before `sqlx::migrate!().run(...)`. If `20260906140000` has not been applied
 yet and rows still exist that a backfill *would* have linked, `api` refuses
 to start and names this document's step 2 in the error. It cannot silently

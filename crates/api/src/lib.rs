@@ -33,6 +33,7 @@ pub mod auth;
 pub mod data;
 pub mod edge;
 pub use ds_store::migrate;
+pub mod private_retired;
 pub mod rate_limit;
 pub mod readiness;
 pub mod render;

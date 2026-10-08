@@ -11,24 +11,6 @@
 pub(crate) use ds_store::test_support::{FixtureCleanup, assert_synthetic_date};
 use sqlx::PgPool;
 
-/// URL for the few database-gated tests that need the schema owner's rights
-/// (DDL: creating and dropping tables and indexes, running the migrator):
-/// `MIGRATION_DATABASE_URL` when set and not blank, else `DATABASE_URL`.
-///
-/// With the role split (docs/postgres-app-role.md) the suite runs with
-/// `DATABASE_URL` as the non-superuser app role, which only has DML, and
-/// `MIGRATION_DATABASE_URL` as the owner role -- exactly as in production,
-/// where only the migrator (`ds_store::migrate`) uses the owner. Without it both are the same
-/// (super)user, as before.
-pub(crate) fn owner_database_url() -> String {
-    let database_url =
-        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
-    let migration_database_url = std::env::var(ds_store::migrate::MIGRATION_DATABASE_URL_ENV).ok();
-    ds_store::migrate::migration_url(&database_url, migration_database_url.as_deref())
-        .0
-        .to_owned()
-}
-
 /// The fabricated train UIDs the journeys and train route/data tests create
 /// `trains` rows for (through `find_or_create_train` and the known-train
 /// leg paths), on the service date they use. Those tests cleaned up their

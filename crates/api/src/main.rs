@@ -282,6 +282,9 @@ async fn server_main() -> anyhow::Result<()> {
     tracing::info!(readiness_checks_db, "api readiness");
     let readiness =
         api::readiness::Readiness::new(app.database.clone(), shutdown.clone(), readiness_checks_db);
+    // Ingest phase 5, step 5.1: API_PRIVATE_ROUTES=false (default true)
+    // retires /private/* behind a counted 404. See `api::private_retired`.
+    let private_routes = api::private_retired::private_routes_from_env()?;
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
@@ -295,7 +298,8 @@ async fn server_main() -> anyhow::Result<()> {
         .layer(edge_settings.public_timeout_layer())
         .nest(
             "/private",
-            routes::private_router(app.clone()).layer(edge_settings.private_timeout_layer()),
+            routes::private_or_retired_router(app.clone(), private_routes)
+                .layer(edge_settings.private_timeout_layer()),
         );
 
     // Unlike the other seven binaries, api's own PUBLIC listener stays up
@@ -320,7 +324,14 @@ async fn server_main() -> anyhow::Result<()> {
         // Key routes' request series (and the graph-cache outcomes) at 0, so
         // a rare route's first request after a restart is visible to
         // increase()/rate(). See `api::route_metrics`.
-        api::route_metrics::register(&app.internal_oauth_routes);
+        // Retired /private routes (API_PRIVATE_ROUTES=false) get no request
+        // series; their counted 404s are pre-registered instead.
+        if private_routes {
+            api::route_metrics::register(&app.internal_oauth_routes);
+        } else {
+            api::route_metrics::register(&[]);
+            api::private_retired::register_metrics(&app.internal_oauth_routes);
+        }
         tokio::spawn(data::db_health::probe_loop(app.database.clone()));
     }
 
@@ -372,12 +383,12 @@ async fn server_main() -> anyhow::Result<()> {
     // pre-existing row's shared-train identity can still be recovered. On a
     // database that has not yet applied that migration and still has rows
     // whose `trains_id` was never backfilled, this refuses to start and
-    // names the fix (`cargo run -p api --bin backfill_trains`), rather than
+    // names the fix (`ds-migrate backfill-trains`), rather than
     // letting the migration run and silently lose the link. On every
     // already-contracted database -- which is every environment this plan
     // has already touched -- it is a single `_sqlx_migrations` lookup that
     // returns immediately. See
-    // `crates/api/src/data/legacy_backfill.rs`'s module doc for the full
+    // `crates/ds-store/src/migrate/legacy_backfill.rs`'s module doc for the full
     // required deploy sequence and for why this check cannot live inside
     // the migration file itself. `ds-migrate run` (the chart's migrate Job)
     // runs the same two steps.

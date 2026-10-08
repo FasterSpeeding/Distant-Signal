@@ -37,6 +37,14 @@ For local development, see `docker-compose.yml` (its header explains the
 `local.env` / `dev.env` modes). For a real deployment, see
 `charts/distant-signal/README.md` for the Helm chart.
 
+By default the local producers still POST to the api's `/private/*` routes.
+To run the ingest paths production moves to (an `ingest-writer`, and every
+producer writing Postgres or a Redis stream directly), append
+`:docker-compose.direct.yml` to `COMPOSE_FILE` in your `local.env` or
+`dev.env`; see that file's header and the comment beside `COMPOSE_FILE` in
+either `*.env.example`. That overlay becomes the default when ingest phase 5
+removes the HTTP paths (`docs/ingest-phase5-runbook.md`, step 5.3b).
+
 ## Scripts and their lint
 
 The Python tooling is managed with [uv](https://docs.astral.sh/uv/):

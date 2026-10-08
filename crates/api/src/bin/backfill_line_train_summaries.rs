@@ -3,6 +3,12 @@
 //! populations published before the table existed, or derived against an
 //! older catalogue.
 //!
+//! **Deprecated (ingest phase 5 prep, Q2 of docs/ingest-phase5-runbook.md):**
+//! use `ds-migrate backfill-line-train-summaries`,
+//! as the schema owner (`MIGRATION_DATABASE_URL`), from the api image. This binary stays, unchanged in
+//! what it does, until step 5.4b removes it from the api image; it must not
+//! run with the api's credentials.
+//!
 //! ```text
 //!   DATABASE_URL=postgres://... LINES_DIR=./lines \
 //!     cargo run -p api --bin backfill_line_train_summaries [-- --force]
@@ -37,6 +43,10 @@ async fn run() -> anyhow::Result<()> {
         "backfill-line-train-summaries",
         common::logging::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| common::logging::EnvFilter::new("info")),
+    );
+    tracing::warn!(
+        "backfill_line_train_summaries is deprecated (ingest phase 5, Q2): use `ds-migrate backfill-line-train-summaries` instead, as \
+         the schema owner (MIGRATION_DATABASE_URL), from the api image; this binary leaves the api image in step 5.4b"
     );
     let force = std::env::args().skip(1).any(|a| a == "--force");
     let database_url =
