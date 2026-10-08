@@ -2300,6 +2300,16 @@ export interface TrainSearchResult extends ServiceModeFields {
    * none; absent from an older backend. Either way the row reads
    * "Scheduled". */
   live?: LineTrainSummaryLive | null;
+  /** Only when the search set `stops_at`: the public arrival (`HH:MM`) at
+   * the earliest call at `stops_at` the filter accepted, `null` when
+   * unknown. Absent without `stops_at` and from an older backend. */
+  stopsAtArrival?: string | null;
+  /** Days after the searched date `stopsAtArrival` falls on; `null` with it. */
+  stopsAtArrivalDayOffset?: number | null;
+  /** The working-timetable arrival at that call (what
+   * `arrival_from`/`arrival_to` compare), `HH:MM`, and its day offset. */
+  stopsAtWorkingArrival?: string | null;
+  stopsAtWorkingArrivalDayOffset?: number | null;
 }
 
 export interface TrainSearchPage {

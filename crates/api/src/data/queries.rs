@@ -999,6 +999,27 @@ async fn schedule_destination_departures_published_for(
     Ok(probe.is_some())
 }
 
+/// The earliest and latest `service_date` with any
+/// `schedule_destination_departures` rows, or `None` when the table is
+/// empty. This is the timetable `GET /public/trains/search` can actually
+/// answer from: `schedule-reference` publishes today plus its forward
+/// window, and the aggregator prunes behind its retention window, so the
+/// range follows both settings without either being copied here.
+///
+/// Two index endpoint probes (the primary key and the calling-point index
+/// both lead with `service_date`), not a scan.
+pub async fn schedule_destination_departures_date_range(
+    pool: &PgPool,
+) -> Result<Option<(chrono::NaiveDate, chrono::NaiveDate)>> {
+    let (earliest, latest): (Option<chrono::NaiveDate>, Option<chrono::NaiveDate>) =
+        sqlx::query_as(
+            "SELECT min(service_date), max(service_date) FROM schedule_destination_departures",
+        )
+        .fetch_one(pool)
+        .await?;
+    Ok(earliest.zip(latest))
+}
+
 /// The calling-point-first train search's one read: a bounded index range
 /// scan over `schedule_destination_departures_calling_point_idx`, with a
 /// keyset cursor. Replaces `search_schedule_destination_departures`
@@ -1166,14 +1187,22 @@ async fn schedule_destination_departures_published_for(
 /// `schedule_destination_departures_published_for` unchanged -- that probe
 /// was already day-scoped, not destination-scoped, so it needs no change
 /// for the new leading column.
+///
+/// **With `stops_at` set, every row also carries the arrival at the call
+/// `stops_at` matched on** (2026-10-08): `stops_at_arrival` (public,
+/// `"HH:MM:SS"`) and `stops_at_working_arrival` (WTT, the time the arrival
+/// bounds compare), each with a `*_day_offset` counted from
+/// `service_date`; a time and its offset are `null` together when the call
+/// has no such time stored. The call is the EARLIEST one the filter
+/// accepts -- see the comment above the SQL. Without `stops_at` the keys
+/// are absent.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::items_after_statements,
     clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them; limit is a validated page size, far below usize::MAX and i64::MAX; a local type or import sits next to its only use; long but linear; splitting it would scatter its shared state across helpers"
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them; limit is a validated page size, far below usize::MAX and i64::MAX; long but linear; splitting it would scatter its shared state across helpers"
 )]
 pub async fn search_schedule_calling_point_departures(
     pool: &PgPool,
@@ -1188,26 +1217,57 @@ pub async fn search_schedule_calling_point_departures(
     after: Option<&CallingPointDepartureCursor>,
     limit: i64,
 ) -> Result<Option<CallingPointDeparturePage>> {
+    /// One result row. The `stop_*` columns describe the intermediate call
+    /// `stops_at` matched on; all `None` when `stops_at` is unset or
+    /// matched the true terminus instead.
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        train_uid: String,
+        destination_crs: String,
+        true_origin_crs: Option<String>,
+        scheduled: chrono::NaiveTime,
+        destination_arrival: Option<chrono::NaiveTime>,
+        destination_arrival_day_offset: i16,
+        operator_atoc: Option<String>,
+        public_departure: Option<chrono::NaiveTime>,
+        public_destination_arrival: Option<chrono::NaiveTime>,
+        day_offset: i16,
+        stop_scheduled: Option<chrono::NaiveTime>,
+        stop_day_offset: Option<i16>,
+        stop_arrival: Option<chrono::NaiveTime>,
+        stop_public_arrival: Option<chrono::NaiveTime>,
+    }
+
     let fetch = limit.saturating_add(1);
 
-    // train_uid, destination_crs, true_origin_crs, scheduled,
-    // destination_arrival, destination_arrival_day_offset, operator_atoc,
-    // public_departure, public_destination_arrival, day_offset.
-    type CallingPointDepartureRow = (
-        String,
-        String,
-        Option<String>,
-        chrono::NaiveTime,
-        Option<chrono::NaiveTime>,
-        i16,
-        Option<String>,
-        Option<chrono::NaiveTime>,
-        Option<chrono::NaiveTime>,
-        i16,
-    );
-
-    let rows: Vec<CallingPointDepartureRow> = sqlx::query_as(
+    // The inner query is the search exactly as it was before the `stops_at`
+    // arrival was added (2026-10-08), so its plan -- an ordered range scan
+    // of the calling-point index that stops at `LIMIT` -- is unchanged. The
+    // outer `LEFT JOIN LATERAL` runs only on that page's rows (at most
+    // `limit + 1`), and only when `stops_at` is set (`$5 IS NOT NULL` is a
+    // one-time filter): it picks the EARLIEST call at `stops_at` that
+    // satisfies the SAME predicate as the second `EXISTS` below -- later in
+    // the journey by `(day_offset, scheduled)`, alightable, inside the
+    // optional arrival bounds. That predicate is the one the filter
+    // accepted the row on, so the arrival reported is always of a call the
+    // filter matched. When it finds none, the row matched on the true
+    // terminus (which has no row of its own here), and the caller reports
+    // the terminus arrival. The terminus is every schedule's last call, so
+    // "`stop`, else the terminus" is the earliest qualifying call for a
+    // train calling at `stops_at` twice, too. Keep the lateral's predicate
+    // and the second `EXISTS` identical.
+    //
+    // (A single-level `LEFT JOIN LATERAL` with the filter folded into it was
+    // tried first: equivalent results, but Postgres's generic plan for it
+    // drops the ordered index scan for a bitmap scan plus a sort of every
+    // row at the station, even with no `stops_at`.)
+    let rows: Vec<Row> = sqlx::query_as(
         r#"
+            SELECT page.*,
+                   stop.scheduled AS stop_scheduled, stop.day_offset AS stop_day_offset,
+                   stop.calling_point_arrival AS stop_arrival,
+                   stop.public_calling_point_arrival AS stop_public_arrival
+            FROM (
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
                    main.public_departure, main.public_destination_arrival, main.day_offset
             FROM schedule_destination_departures main
@@ -1269,6 +1329,22 @@ pub async fn search_schedule_calling_point_departures(
                    OR (main.scheduled, main.train_uid) > ($9, $10))
             ORDER BY main.scheduled, main.train_uid
             LIMIT $11
+            ) page
+            LEFT JOIN LATERAL (
+                SELECT s.scheduled, s.day_offset, s.calling_point_arrival, s.public_calling_point_arrival
+                FROM schedule_destination_departures s
+                WHERE $5::text IS NOT NULL
+                  AND s.service_date = $1
+                  AND s.train_uid = page.train_uid
+                  AND s.origin_crs = $5
+                  AND s.can_alight IS NOT FALSE
+                  AND (s.day_offset, s.scheduled) > (page.day_offset, page.scheduled)
+                  AND ($7::time IS NULL OR s.calling_point_arrival >= $7)
+                  AND ($8::time IS NULL OR s.calling_point_arrival <= $8)
+                ORDER BY s.day_offset, s.scheduled
+                LIMIT 1
+            ) stop ON TRUE
+            ORDER BY page.scheduled, page.train_uid
             "#,
     )
     .bind(service_date)
@@ -1303,53 +1379,111 @@ pub async fn search_schedule_calling_point_departures(
     };
 
     let next_cursor = if has_more {
-        page_rows
-            .last()
-            .map(
-                |(train_uid, _, _, scheduled, _, _, _, _, _, _)| CallingPointDepartureCursor {
-                    scheduled: *scheduled,
-                    train_uid: train_uid.clone(),
-                },
-            )
+        page_rows.last().map(|row| CallingPointDepartureCursor {
+            scheduled: row.scheduled,
+            train_uid: row.train_uid.clone(),
+        })
     } else {
         None
     };
 
+    let hms = |t: chrono::NaiveTime| t.format("%H:%M:%S").to_string();
     let departures = page_rows
         .iter()
-        .map(
-            |(
-                train_uid,
-                destination_crs,
-                true_origin_crs,
-                scheduled,
-                destination_arrival,
-                destination_arrival_day_offset,
-                operator_atoc,
-                public_departure,
-                public_destination_arrival,
-                day_offset,
-            )| {
-                serde_json::json!({
-                    "uid": train_uid,
-                    "day_offset": day_offset,
-                    "destination_crs": destination_crs,
-                    "true_origin_crs": true_origin_crs,
-                    "scheduled": scheduled.format("%H:%M:%S").to_string(),
-                    "destination_arrival": destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
-                    "destination_arrival_day_offset": destination_arrival_day_offset,
-                    "operator_atoc": operator_atoc,
-                    "public_departure": public_departure.map(|t| t.format("%H:%M:%S").to_string()),
-                    "public_destination_arrival": public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
-                })
-            },
-        )
+        .map(|row| {
+            let mut json = serde_json::json!({
+                "uid": row.train_uid,
+                "day_offset": row.day_offset,
+                "destination_crs": row.destination_crs,
+                "true_origin_crs": row.true_origin_crs,
+                "scheduled": hms(row.scheduled),
+                "destination_arrival": row.destination_arrival.map(hms),
+                "destination_arrival_day_offset": row.destination_arrival_day_offset,
+                "operator_atoc": row.operator_atoc,
+                "public_departure": row.public_departure.map(hms),
+                "public_destination_arrival": row.public_destination_arrival.map(hms),
+            });
+            if stops_at.is_some() {
+                let (working, public) = match (row.stop_scheduled, row.stop_day_offset) {
+                    // An intermediate call. Its stored `day_offset` is its
+                    // DEPARTURE's, so its arrival is dated from that, and
+                    // the public arrival from the working one.
+                    (Some(stop_scheduled), Some(stop_day_offset)) => {
+                        let working = row.stop_arrival.map(|t| {
+                            (
+                                t,
+                                nearest_day_offset(stop_scheduled, i64::from(stop_day_offset), t),
+                            )
+                        });
+                        let reference =
+                            working.unwrap_or((stop_scheduled, i64::from(stop_day_offset)));
+                        let public = row
+                            .stop_public_arrival
+                            .map(|t| (t, nearest_day_offset(reference.0, reference.1, t)));
+                        (working, public)
+                    }
+                    // Otherwise the row matched on the true terminus.
+                    _ => {
+                        let offset = i64::from(row.destination_arrival_day_offset);
+                        let working = row.destination_arrival.map(|t| (t, offset));
+                        let public = row.public_destination_arrival.map(|t| match working {
+                            Some((reference, _)) => (t, nearest_day_offset(reference, offset, t)),
+                            None => (t, offset),
+                        });
+                        (working, public)
+                    }
+                };
+                if let Some(object) = json.as_object_mut() {
+                    object.insert(
+                        "stops_at_arrival".to_string(),
+                        serde_json::json!(public.map(|(t, _)| hms(t))),
+                    );
+                    object.insert(
+                        "stops_at_arrival_day_offset".to_string(),
+                        serde_json::json!(public.map(|(_, d)| d)),
+                    );
+                    object.insert(
+                        "stops_at_working_arrival".to_string(),
+                        serde_json::json!(working.map(|(t, _)| hms(t))),
+                    );
+                    object.insert(
+                        "stops_at_working_arrival_day_offset".to_string(),
+                        serde_json::json!(working.map(|(_, d)| d)),
+                    );
+                }
+            }
+            json
+        })
         .collect();
 
     Ok(Some(CallingPointDeparturePage {
         departures,
         next_cursor,
     }))
+}
+
+/// The day offset of clock time `time`, given that it lies within twelve
+/// hours of `reference` (which falls on day `reference_offset`). Dates an
+/// arrival from its own call's departure (a dwell never nears twelve hours)
+/// and a public time from its working one (they differ by minutes). A time
+/// more than twelve clock hours "after" its reference is really before the
+/// previous midnight (a 23:58 arrival for a 00:02 departure); one more than
+/// twelve hours "before" it is really after the next midnight (a 23:59H
+/// working arrival rounded to a 00:00 public one). Never negative.
+fn nearest_day_offset(
+    reference: chrono::NaiveTime,
+    reference_offset: i64,
+    time: chrono::NaiveTime,
+) -> i64 {
+    const HALF_DAY_SECONDS: i64 = 12 * 60 * 60;
+    let delta = (time - reference).num_seconds();
+    if delta > HALF_DAY_SECONDS {
+        (reference_offset - 1).max(0)
+    } else if delta < -HALF_DAY_SECONDS {
+        reference_offset + 1
+    } else {
+        reference_offset
+    }
 }
 
 /// The time-window candidate search behind journey-leg matching (`GET
