@@ -30,6 +30,15 @@
 
 \set ON_ERROR_STOP on
 
+-- No statement logging in this session (security review L8): the
+-- passwords are literals in the set_config call below, so a failing
+-- statement (log_min_error_statement), a slow one
+-- (log_min_duration_statement) or log_statement = all would otherwise
+-- write them to the server log.
+SET log_min_error_statement = panic;
+SET log_min_duration_statement = -1;
+SET log_statement = none;
+
 \if :{?app}
 \else
 \set app distant_signal_app

@@ -321,6 +321,23 @@ chart's Secret. Nothing connects as it until both switches are on, and
 `connect` refuses to render without the db sink. CI runs schedule-reference's
 DB suite as this role.
 
+### Database CONNECT, TEMPORARY and logging (security review L5, L8, 2026-10-08)
+
+`postgres-roles.sql` revokes `CONNECT` and `TEMPORARY` on the application
+database from `PUBLIC` and grants `CONNECT` to the owner, app, exporter,
+dump and backup roles (`postgres-grants.sql` grants it to each per-service
+role). Any other login role, such as one created by hand, can no longer
+connect to the application database until it is granted `CONNECT`
+(superusers are not affected). No role may create temporary tables; no
+service does. `ALTER DEFAULT PRIVILEGES FOR ROLE <owner> REVOKE EXECUTE ON
+FUNCTIONS FROM PUBLIC` keeps a function a later migration creates from
+being executable by everyone.
+
+Both setup scripts start with `SET log_min_error_statement = panic`,
+`log_min_duration_statement = -1` and `log_statement = none`, so a failing
+or slow statement never writes the role passwords (literals in their
+`set_config` calls) to the server log.
+
 ### The writer is narrow; no member may SET ROLE (security review M1, 2026-10-08)
 
 A RESTRICTIVE row policy binds the role a session *runs as*. While the
