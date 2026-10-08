@@ -146,6 +146,17 @@ pub fn public_router() -> Router {
 /// token value at the point it's constructed: `axum::middleware::from_fn`
 /// fixes its handler's state to `()`, so a stateful check has to go through
 /// `from_fn_with_state`, which takes the state by value up front.
+/// What `main.rs` nests at `/private`: the ingest routes ([`private_router`])
+/// while `API_PRIVATE_ROUTES` is on (the default), else the counted-404
+/// fallback of [`crate::private_retired`] (ingest phase 5, step 5.1).
+pub fn private_or_retired_router(app: App, private_routes: bool) -> Router {
+    if private_routes {
+        private_router(app)
+    } else {
+        crate::private_retired::router()
+    }
+}
+
 pub fn private_router(app: App) -> Router {
     Router::new()
         .merge(ingest::router())

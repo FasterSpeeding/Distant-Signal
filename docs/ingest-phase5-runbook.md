@@ -259,6 +259,20 @@ Order: **5.1 → 7-day soak → 5.2 + 5.3 (+ 5.3b) → 5.4 → 5.4b → 5.5 →
 
 ### 5.1 `API_PRIVATE_ROUTES` and the 7-day soak
 
+**Built (2026-10-08, off by default).** `crates/api/src/private_retired.rs`
+reads `API_PRIVATE_ROUTES` (unset or `true`: unchanged). With `false`,
+`/private` nests a fallback that answers `404
+{"error":"private_routes_retired"}`, counts
+`distant_signal_api_private_route_retired_total{route, method}` (each pair
+of the route table, plus `route="other", method="other"`; all registered at
+0) and logs the caller's verified `sub`. The chart value is
+`api.privateRoutes.enabled` (default `true`); the alert
+`DistantSignalApiPrivateRouteRetiredCalled` (`metrics.prometheusRule.apiPrivateRouteRetired`)
+fires on any increase and renders only while the value is `false`. The
+counter is named `…_route_retired_total`, not the `…_disabled_total` this
+section first proposed; the soak query below uses the built name. What
+remains for 5.1 is Ranma's flip.
+
 **Code (one commit):**
 
 - `crates/api/src/data/config.rs`: `private_routes: bool`, env
@@ -282,7 +296,7 @@ Order: **5.1 → 7-day soak → 5.2 + 5.3 (+ 5.3b) → 5.4 → 5.4b → 5.5 →
 
 **Checks during the soak:**
 
-- `sum(increase(distant_signal_api_private_disabled_total[1d])) == 0`
+- `sum(increase(distant_signal_api_private_route_retired_total[1d])) == 0`
   every day;
 - `DistantSignalApiPublic5xx` is silent;
 - the MCP's budget still applies: the api logs "MCP service caller

@@ -54,12 +54,13 @@ so that clause fired on every rollout.
 {{- $archiveExpiryOn := and ($rule.archiveExpiry).enabled .Values.archive.enabled (.Values.archive.expiry).enabled }}
 {{- $postgresDownOn := ($rule.postgresDown).enabled }}
 {{- $apiDbDownOn := ($rule.apiDatabaseDown).enabled }}
+{{- $privateRetiredOn := and ($rule.apiPrivateRouteRetired).enabled (not (dig "privateRoutes" "enabled" true .Values.api)) }}
 {{- $consumerApiOn := ($rule.consumerApiErrors).enabled }}
 {{- $cyclesOn := ($rule.cycleStalled).enabled }}
 {{- $api5xxOn := ($rule.api5xx).enabled }}
 {{- $schemaGateOn := ($rule.schemaGateWaiting).enabled }}
 {{- $imagePullOn := and ($rule.statefulImagePull).enabled (or .Values.postgresql.enabled .Values.redis.enabled) }}
-{{- $healthOn := or $postgresDownOn $apiDbDownOn $schemaGateOn $consumerApiOn $cyclesOn $api5xxOn $imagePullOn }}
+{{- $healthOn := or $postgresDownOn $apiDbDownOn $privateRetiredOn $schemaGateOn $consumerApiOn $cyclesOn $api5xxOn $imagePullOn }}
 {{- $tokenExchangeOn := and ($rule.enricherTokenExchange).enabled (include "distant-signal.enricherWif" .) }}
 {{- $writerDownOn := and ($rule.ingestWriterDown).enabled .Values.ingestWriter.enabled }}
 {{- $ingestStreamsOn := and .Values.ingestWriter.enabled (or ($rule.ingestStreamBacklog).enabled ($rule.ingestStreamStalled).enabled ($rule.ingestDeadLetters).enabled ($rule.ingestDeadLetterExpiring).enabled ($rule.ingestUnsupportedSchema).enabled ($rule.ingestProducerXaddFailing).enabled ($rule.ingestStreamMemoryHigh).enabled ($rule.ingestClockSkew).enabled ($rule.ingestShadowMismatch).enabled) }}
@@ -190,6 +191,30 @@ spec:
             summary: "api cannot query its database"
             description: "api's SELECT 1 probe has failed for {{ .for }}: ingest and most pages fail. See DistantSignalPostgresDown and api's log."
             runbook_url: {{ printf "%s#distantsignalapidatabasedown" $runbook | quote }}
+        {{- end }}
+        {{- end }}
+        {{- if $privateRetiredOn }}
+        {{- with $rule.apiPrivateRouteRetired }}
+        {{- /*
+        Ingest phase 5, step 5.1 (docs/ingest-phase5-runbook.md): with
+        api.privateRoutes.enabled false the api answers every /private/*
+        request with a counted 404 (api::private_retired). Any call is a
+        producer still on its HTTP sink (route = the pair it called) or a
+        stray (route="other"). Registered at 0, so a first call counts.
+        */}}
+        - alert: DistantSignalApiPrivateRouteRetiredCalled
+          expr: |
+            sum by (namespace, route, method) (increase(distant_signal_api_private_route_retired_total{namespace="{{ $ns }}"}[{{ .window }}])) > 0
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "Something still calls retired {{ "{{ $labels.method }} {{ $labels.route }}" }}"
+            description: "API_PRIVATE_ROUTES is false and this answered 404. A producer may still be on its HTTP sink: check api's log for the caller."
+            runbook_url: {{ printf "%s#distantsignalapiprivaterouteretiredcalled" $runbook | quote }}
         {{- end }}
         {{- end }}
         {{- with $rule.schemaGateWaiting }}
