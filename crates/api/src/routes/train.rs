@@ -6008,6 +6008,61 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
+    /// 2026-10-08: the by-uid route's future window is the 28-day pin
+    /// horizon -- 20 days ahead is tracked, 29 days ahead is refused.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                track_by_uid_accepts_20_days_ahead_and_refuses_29 \
+                -- --ignored --test-threads=1`"]
+    async fn track_by_uid_accepts_20_days_ahead_and_refuses_29() {
+        let pool = connect().await;
+        let user_id = "TEST-PIN28-BY-UID";
+        let uids = ["PIN28A", "PIN28B"];
+        let delete_trains = || {
+            let pool = pool.clone();
+            async move {
+                sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+                    .bind(&uids[..])
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        cleanup_user(&pool, user_id).await;
+        delete_trains().await;
+        let token = seed_session(&pool, user_id).await;
+        let router = test_router(test_app(pool.clone()));
+        let today = super::super::london_today();
+
+        let near = today + chrono::Duration::days(20);
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Train/by-uid/{}/{near}/track", uids[0]),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "20 days ahead: {body:?}");
+
+        let far = today + chrono::Duration::days(29);
+        let (status, body) = post_json(
+            router,
+            format!("/Train/by-uid/{}/{far}/track", uids[1]),
+            Some(&token),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "29 days ahead: {body:?}");
+        assert!(
+            body.as_str()
+                .is_some_and(|b| b.contains("up to 28 days before they run")),
+            "{body:?}"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        delete_trains().await;
+    }
+
     /// 2026-10-01 review: the by-uid route validates the uid's shape,
     /// refuses dates before its past window, and caps past-dated tracks
     /// (which `MAX_FUTURE_PINS_PER_USER` never counted) -- and none of the

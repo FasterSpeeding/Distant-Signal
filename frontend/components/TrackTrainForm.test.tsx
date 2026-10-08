@@ -121,16 +121,19 @@ vi.mock('@mantine/dates', async (importOriginal) => ({
     value,
     onChange,
     description,
+    maxDate,
   }: {
     label: string;
     value: string | null;
     onChange: (value: string | null) => void;
     description?: string;
+    maxDate?: string;
   }) => (
     <div>
       <label htmlFor="test-scheduled-departure">{label}</label>
       <input
         id="test-scheduled-departure"
+        data-max-date={maxDate}
         value={value ?? ''}
         onChange={(event) => onChange(event.target.value || null)}
       />
@@ -357,6 +360,46 @@ describe('TrackTrainForm', () => {
     expect(body.leg).not.toHaveProperty('destinationCrs');
     expect(body.leg).not.toHaveProperty('operator');
     expect(body.leg).not.toHaveProperty('skippedStations');
+  });
+
+  // The 28-day pin horizon (`PIN_MAX_DAYS_AHEAD`, mirroring the backend's).
+  // `FIXED_NOW` is 2026-09-05 in London, so the last pin date is 2026-10-03.
+  it('limits the departure picker to 28 days ahead and says so', () => {
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    expect(screen.getByLabelText(/Scheduled departure/)).toHaveAttribute('data-max-date', '2026-10-03 23:59:59');
+    expect(screen.getByText('Must be within the last 6 hours, or up to 28 days ahead')).toBeInTheDocument();
+  });
+
+  it('submits a pin 20 days ahead', async () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-09-25 18:32:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/Journeys', expect.objectContaining({ method: 'POST' }));
+    });
+    expect(journeyCallBody(fetchMock).leg.serviceDate).toBe('2026-09-25');
+  });
+
+  it('refuses a pin 29 days ahead without calling the backend', () => {
+    const fetchMock = mockFetchByUrl();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    fireEvent.change(screen.getByLabelText(/Scheduled departure/), {
+      target: { value: '2026-10-04 08:00:00' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
+
+    expect(
+      screen.getByText('That departure is too far ahead — trains can be tracked up to 28 days before they run.'),
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
   });
 
   it('on success, POSTs to /api/Journeys and redirects to /journeys/{journeyId}', async () => {

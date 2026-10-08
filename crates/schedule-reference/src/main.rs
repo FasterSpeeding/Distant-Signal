@@ -59,7 +59,7 @@ enum EmptyPublish {
     Clear(chrono::NaiveDate),
     /// Send nothing and fail with [`RefusedToClear`]: used when EVERY date of
     /// the publish window is empty, which is far more likely a broken
-    /// delivery than a network with no trains for a week.
+    /// delivery than a network with no trains for weeks.
     Refuse,
 }
 
@@ -1156,44 +1156,6 @@ async fn seed_last_processed_delivery(sink: &impl PublishSink, config: &Config) 
     }
 }
 
-/// Forward publish window, in days, for `schedule_destination_departures`:
-/// how many days beyond today this service also computes and publishes on
-/// every cycle. See
-/// docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md §1.2.
-/// The route-side search window
-/// (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`) must be
-/// kept in sync with this value by hand -- there is no shared constant
-/// across the `api`/`schedule-reference` crate boundary, matching this
-/// codebase's existing per-crate-constant convention (e.g.
-/// `MAX_DEPARTURES_PER_STATION` here vs. `MAX_SEARCH_LIMIT` in `api`).
-const DESTINATION_DEPARTURES_FORWARD_DAYS: i64 = 7;
-
-/// Forward publish window for `schedule_calling_points_full` -- same value
-/// as `DESTINATION_DEPARTURES_FORWARD_DAYS` (both are whole-network,
-/// full-day products published on the same cycle for the same reason: a
-/// trip-planning query needs the query date, which may be up to a week
-/// ahead, immediately queryable without waiting for a same-day publish).
-#[allow(
-    dead_code,
-    reason = "rustc 1.88 doesn't count the const assert below as a use; newer rustc does"
-)]
-const TRIP_PLANNING_FORWARD_DAYS: i64 = 7;
-
-/// Enforced at COMPILE time, not merely asserted at runtime (a
-/// `debug_assert_eq!` would compile to nothing in a release build, giving
-/// no real guarantee): `publish_cif_derived_products`'s per-date loop
-/// deliberately reuses ONE `forward_publish_dates` call, bounded by
-/// `DESTINATION_DEPARTURES_FORWARD_DAYS`, for both
-/// `publish_schedule_destination_departures` and
-/// `publish_schedule_calling_points_full` -- see that loop's own comment.
-/// The two constants above are kept separate and independently documented
-/// (they answer different design questions and could legitimately diverge
-/// later), so this is what actually keeps the reused bound honest: if
-/// either constant ever changes without the other, this fails the BUILD,
-/// not just a debug-mode assertion, forcing whoever changes one to either
-/// change both back into sync or split the loop into two.
-const _: () = assert!(TRIP_PLANNING_FORWARD_DAYS == DESTINATION_DEPARTURES_FORWARD_DAYS);
-
 /// `today..=today+forward_days`, inclusive, today first. Pure and
 /// unit-testable without a mock HTTP server or a `ScheduleIndex`, same
 /// convention as `lines_to_publish` just below it in this file.
@@ -1314,7 +1276,7 @@ async fn publish_cif_derived_products(
     // already published can skip that build (the ~2.3GiB `ScheduleIndex` and
     // a full read of the 700MB+ MCA) entirely.
     let today = london_local_date_now();
-    let dates = forward_publish_dates(today, DESTINATION_DEPARTURES_FORWARD_DAYS);
+    let dates = forward_publish_dates(today, config.forward_publish_days);
     let crs_to_tiploc = crs_to_tiploc_map(stanox_crs_records, tiploc_crs_records);
     let cif_products: Vec<String> = lines_to_publish(&config.lines, &crs_to_tiploc)
         .flat_map(|line| {
@@ -1392,23 +1354,22 @@ async fn publish_cif_derived_products(
     // the design doc's Approach B is explicit that this must not trigger a
     // second parse or a resident index. Unlike the two products above (line
     // populations: today and tomorrow; network departures: today), this one
-    // publishes the whole 8-day WINDOW of dates: see
-    // docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md
+    // publishes the whole forward WINDOW of dates
+    // (`Config::forward_publish_days`, today through today+28 by default):
+    // see docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md
     // §1/§2. `publish_schedule_destination_departures` itself is
     // unmodified -- it already accepts an arbitrary date; only the number
-    // of times it's called per cycle changes.
-    // `TRIP_PLANNING_FORWARD_DAYS` is a separate, independently-documented
-    // constant from `DESTINATION_DEPARTURES_FORWARD_DAYS` -- the two answer
-    // different design questions and could legitimately diverge later --
-    // but this loop reuses the SAME `forward_publish_dates` call for both
-    // per-date publishes below (this file's own "one pass, multiple
-    // outputs" precedent, Task 1 Step 4). The compile-time `const _: ()`
-    // assertion next to both constants' declarations, above, is what keeps
-    // this reused bound honest if either constant ever changes.
+    // of times it's called per cycle changes. The calling-point and
+    // service-mode publishes below share the SAME dates (this file's own
+    // "one pass, multiple outputs" precedent): a search result links to
+    // `/Train/by-uid`, whose stops come from `schedule_calling_points_full`,
+    // so the two products must reach equally far. Each date is its own
+    // diff publish: an unchanged far date costs the row build, the POSTs
+    // and its staged keys, but rewrites no row.
     // PL-14: an empty date is published as empty (clearing its previous
     // rows) only when some date of the window has schedules at all -- a
-    // delivery that yields nothing for a whole week is broken, and must not
-    // wipe a week of good rows. Stops at the first public calling point.
+    // delivery that yields nothing for the whole window is broken, and must
+    // not wipe the window's good rows. Stops at the first public calling point.
     let window_has_schedules = dates.iter().any(|&date| {
         schedule_calling_points_full_row_iter(&index, date)
             .next()
@@ -4251,6 +4212,7 @@ LTWVRMPTN 2211 22113     TF";
                 health_bind_url: "127.0.0.1:0".to_string(),
                 progress_stall_secs: 1800,
             },
+            forward_publish_days: config::DEFAULT_FORWARD_PUBLISH_DAYS,
             startup_backoff: FAST_BACKOFF,
             publish_retry: config::PublishRetry {
                 attempts: 3,
@@ -4700,7 +4662,7 @@ mod poll_once_retry_tests {
         let from = (today - chrono::Duration::days(1))
             .format("%y%m%d")
             .to_string();
-        // Wider than the publish window (`DESTINATION_DEPARTURES_FORWARD_DAYS`)
+        // Wider than the default publish window (`Config::forward_publish_days`)
         // so every date this cycle publishes resolves the schedule, not just
         // the first.
         let to = (today + chrono::Duration::days(30))
@@ -4899,10 +4861,6 @@ mod poll_once_retry_tests {
 /// the cycle, and one that keeps failing is the ONLY thing the next cycle
 /// republishes.
 #[cfg(test)]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "test code: casts of small known test values"
-)]
 mod per_product_retry_tests {
     use super::poll_once_retry_tests::{mount_all_publishes_ok, posts_to, write_fixture_delivery};
     use super::poll_once_tests::http_sink;
@@ -4980,7 +4938,7 @@ mod per_product_retry_tests {
         let ids = publish_ids(&requests, "/private/schedule-calling-points-full");
         assert_eq!(
             ids.len(),
-            (DESTINATION_DEPARTURES_FORWARD_DAYS + 2) as usize,
+            usize::try_from(config.forward_publish_days + 2).unwrap(),
             "one POST per date, plus the one retried"
         );
         let distinct: HashSet<&String> = ids.iter().collect();
@@ -5083,13 +5041,103 @@ mod per_product_retry_tests {
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
         assert_eq!(
             posts_to(&server, "/private/schedule-calling-points-full").await,
-            (DESTINATION_DEPARTURES_FORWARD_DAYS + 1) as usize
+            usize::try_from(config.forward_publish_days + 1).unwrap()
         );
         assert_eq!(
             posts_to(&server, "/private/schedule-destination-departures").await,
             0
         );
         assert_eq!(posts_to(&server, "/private/stanox-crs").await, 0);
+    }
+
+    /// Every distinct service date posted to `path`: from a row body's
+    /// `service_date` fields, or the `service_date` query parameter (an
+    /// empty publish, and every `schedule_services` request).
+    fn published_dates(
+        requests: &[wiremock::Request],
+        path: &str,
+    ) -> std::collections::BTreeSet<chrono::NaiveDate> {
+        let mut dates = std::collections::BTreeSet::new();
+        for req in requests.iter().filter(|req| req.url.path() == path) {
+            if let Some((_, date)) = req.url.query_pairs().find(|(k, _)| k == "service_date") {
+                dates.insert(date.parse().expect("service_date query is a date"));
+            }
+            if let Ok(serde_json::Value::Array(rows)) =
+                serde_json::from_slice::<serde_json::Value>(&req.body)
+            {
+                for row in rows {
+                    if let Some(date) = row.get("service_date").and_then(|d| d.as_str()) {
+                        dates.insert(date.parse().expect("row service_date is a date"));
+                    }
+                }
+            }
+        }
+        dates
+    }
+
+    /// The default window publishes four weeks ahead, not one: every
+    /// per-date product reaches today+28 (the fixture schedule runs to
+    /// today+30), and nothing past it.
+    #[tokio::test]
+    async fn the_per_date_products_are_published_through_the_whole_forward_window() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, config, client, _storage) = setup(&server).await;
+        assert_eq!(config.forward_publish_days, 28);
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+            .await
+            .expect("cycle");
+        assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
+
+        let today = london_local_date_now();
+        let expected: std::collections::BTreeSet<chrono::NaiveDate> = (0..=28)
+            .map(|offset| today + chrono::Duration::days(offset))
+            .collect();
+        let requests = server.received_requests().await.unwrap();
+        for path in [
+            "/private/schedule-destination-departures",
+            "/private/schedule-calling-points-full",
+            "/private/schedule-services",
+        ] {
+            assert_eq!(published_dates(&requests, path), expected, "{path}");
+        }
+        // The far end has real rows, not just an empty clearing publish.
+        let last = today + chrono::Duration::days(28);
+        let far_rows = requests
+            .iter()
+            .filter(|req| req.url.path() == "/private/schedule-calling-points-full")
+            .filter_map(|req| serde_json::from_slice::<serde_json::Value>(&req.body).ok())
+            .filter_map(|body| body.as_array().cloned())
+            .flatten()
+            .filter(|row| row["service_date"] == last.to_string())
+            .count();
+        assert!(
+            far_rows > 0,
+            "today+28 must carry the fixture's calling points"
+        );
+    }
+
+    /// The window is a setting: a shorter one publishes only its own dates.
+    #[tokio::test]
+    async fn a_configured_forward_window_bounds_the_published_dates() {
+        let server = wiremock::MockServer::start().await;
+        let (tokens, mut config, client, _storage) = setup(&server).await;
+        config.forward_publish_days = 10;
+        mount_all_publishes_ok(&server).await;
+
+        let mut state = PublishState::default();
+        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+            .await
+            .expect("cycle");
+
+        let today = london_local_date_now();
+        let requests = server.received_requests().await.unwrap();
+        let dates = published_dates(&requests, "/private/schedule-calling-points-full");
+        assert_eq!(dates.len(), 11);
+        assert_eq!(dates.first(), Some(&today));
+        assert_eq!(dates.last(), Some(&(today + chrono::Duration::days(10))));
     }
 
     fn reject_always(path: &str, status: u16) -> wiremock::Mock {
@@ -5164,7 +5212,7 @@ mod per_product_retry_tests {
 
             assert_eq!(
                 posts_to(&server, "/private/schedule-calling-points-full").await,
-                (DESTINATION_DEPARTURES_FORWARD_DAYS + 1) as usize,
+                usize::try_from(config.forward_publish_days + 1).unwrap(),
                 "{status}: one attempt per date, no retries"
             );
             assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
@@ -5876,7 +5924,7 @@ mod db_sink_tests {
         let window = format!(
             "service_date BETWEEN '{}' AND '{}'",
             today - chrono::Duration::days(1),
-            today + chrono::Duration::days(DESTINATION_DEPARTURES_FORWARD_DAYS + 1)
+            today + chrono::Duration::days(config::DEFAULT_FORWARD_PUBLISH_DAYS + 1)
         );
         let whole = |table| Scope {
             table,
