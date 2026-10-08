@@ -226,11 +226,12 @@ Renders only while `api.privateRoutes.enabled` is false
 ([runbook](ingest-phase5-runbook.md#51-api_private_routes-and-the-7-day-soak)).
 The api then answers every `/private/*` request with a 404 and counts it in
 `distant_signal_api_private_route_retired_total{route, method}`; this fires
-on any increase within `window` (15m).
+on any increase of a known route within `window` (15m).
 
-1. `route` and `method` name the pair that was called, or `other` for a
-   path or method the old route table never had (a scanner through the
-   Ingress, a typo). `other` alone is usually noise.
+1. `route` and `method` name the pair that was called. Calls to a path or
+   method the old route table never had (a scanner through the Ingress, a
+   typo) are counted as `route="other"` but never alert; query the counter
+   to see them.
 2. For a real pair, find the caller: api logs `call to a retired /private
    route` with `caller`, the verified `sub` of its internal OAuth bearer
    (`none` without one). Check that producer's deployed `INGEST_SINK` /

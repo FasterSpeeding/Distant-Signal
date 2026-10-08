@@ -268,7 +268,10 @@ of the route table, plus `route="other", method="other"`; all registered at
 0) and logs the caller's verified `sub`. The chart value is
 `api.privateRoutes.enabled` (default `true`); the alert
 `DistantSignalApiPrivateRouteRetiredCalled` (`metrics.prometheusRule.apiPrivateRouteRetired`)
-fires on any increase and renders only while the value is `false`. The
+fires on any increase of a known pair (not `route="other"`, which is
+counted but does not alert: decided 2026-10-08, since scanners reach
+`/private/*` through the Ingress) and renders only while the value is
+`false`. The
 counter is named `…_route_retired_total`, not the `…_disabled_total` this
 section first proposed; the soak query below uses the built name. What
 remains for 5.1 is Ranma's flip.
@@ -296,7 +299,7 @@ remains for 5.1 is Ranma's flip.
 
 **Checks during the soak:**
 
-- `sum(increase(distant_signal_api_private_route_retired_total[1d])) == 0`
+- `sum(increase(distant_signal_api_private_route_retired_total{route!="other"}[1d])) == 0`
   every day;
 - `DistantSignalApiPublic5xx` is silent;
 - the MCP's budget still applies: the api logs "MCP service caller

@@ -200,11 +200,13 @@ spec:
         api.privateRoutes.enabled false the api answers every /private/*
         request with a counted 404 (api::private_retired). Any call is a
         producer still on its HTTP sink (route = the pair it called) or a
-        stray (route="other"). Registered at 0, so a first call counts.
+        stray (route="other": a scanner through the Ingress, a typo). Only
+        known pairs alert (decided 2026-10-08); `other` is still counted.
+        Registered at 0, so a first call counts.
         */}}
         - alert: DistantSignalApiPrivateRouteRetiredCalled
           expr: |
-            sum by (namespace, route, method) (increase(distant_signal_api_private_route_retired_total{namespace="{{ $ns }}"}[{{ .window }}])) > 0
+            sum by (namespace, route, method) (increase(distant_signal_api_private_route_retired_total{namespace="{{ $ns }}", route!="other"}[{{ .window }}])) > 0
           for: {{ .for }}
           labels:
             severity: {{ .severity }}

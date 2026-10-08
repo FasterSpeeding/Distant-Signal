@@ -1613,7 +1613,8 @@ api:
   # served as before. false retires them for the phase 5 soak: every
   # /private/* request answers 404 and is counted in
   # distant_signal_api_private_route_retired_total{route,method}, and the
-  # DistantSignalApiPrivateRouteRetiredCalled alert fires on any increase.
+  # DistantSignalApiPrivateRouteRetiredCalled alert fires when a known
+  # route's count rises (route="other" is counted, not alerted).
   # Set false only once every producer runs on its db/stream sink (the
   # runbook's entry criteria); rolling back is setting it true again.
   privateRoutes:
@@ -4952,7 +4953,8 @@ metrics:
     # DistantSignalApiPrivateRouteRetiredCalled (ingest phase 5, step 5.1):
     # with api.privateRoutes.enabled false, something called a retired
     # /private/* route (distant_signal_api_private_route_retired_total rose
-    # within `window`). Renders only while the routes are retired.
+    # within `window` for a known route; route="other" is counted, never
+    # alerted). Renders only while the routes are retired.
     # Runbook: docs/alerts.md.
     apiPrivateRouteRetired:
       enabled: true

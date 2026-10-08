@@ -31,3 +31,24 @@ tests:
       - eval_time: 30m
         alertname: DistantSignalApiPrivateRouteRetiredCalled
         exp_alerts: []
+
+  # Scanners through the Ingress: route="other" climbs steadily (counted)
+  # but never fires; a known route's single call alongside it still does.
+  - interval: 1m
+    input_series:
+      - series: 'distant_signal_api_private_route_retired_total{namespace="distant-signal", pod="api-a", route="other", method="other"}'
+        values: '0+5x40'
+      - series: 'distant_signal_api_private_route_retired_total{namespace="distant-signal", pod="api-a", route="/private/stations", method="GET"}'
+        values: '0x19 1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DistantSignalApiPrivateRouteRetiredCalled
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: DistantSignalApiPrivateRouteRetiredCalled
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: distant-signal, route: /private/stations, method: GET}
+            exp_annotations:
+              summary: Something still calls retired GET /private/stations
+              description: "API_PRIVATE_ROUTES is false and this answered 404. A producer may still be on its HTTP sink: check api's log for the caller."
+              runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalapiprivaterouteretiredcalled
