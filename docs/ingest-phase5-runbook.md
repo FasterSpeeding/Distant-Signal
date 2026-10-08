@@ -504,6 +504,19 @@ Today:
 - `local.env.example` and `dev.env.example` document the internal OAuth
   service accounts.
 
+**Prepared (2026-10-08), opt-in:** `docker-compose.direct.yml` is that
+target as an overlay. Append `:docker-compose.direct.yml` to `COMPOSE_FILE`
+in `local.env` or `dev.env` (both `*.env.example` files and the README's
+"Running it" say how). It adds the `ingest-writer` (loops on, the four
+streams on `apply`), puts every producer on production's `db`/`stream` sink
+and every reader on `*_SOURCE=db` against the local `postgres` and `redis`
+(as the superuser and Redis's default user), and sets the api's
+`API_BACKGROUND_LOOPS=false` and `API_PRIVATE_ROUTES=false`. The producers'
+`API_*_URL` and `INTERNAL_OAUTH_*` stay in `docker-compose.yml`, unused: the
+binaries still require the OAuth variables until 5.3. The default compose
+path is unchanged. 5.3b then folds the overlay into `docker-compose.yml`
+and deletes the HTTP wiring as listed below.
+
 **Changes:**
 
 - `docker-compose.yml`:
