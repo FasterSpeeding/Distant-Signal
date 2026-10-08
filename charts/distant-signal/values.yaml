@@ -4497,6 +4497,17 @@ metrics:
       window: 15m
       for: 0m
       severity: warning
+    # DistantSignalIngestShadowMismatch: the rollout's compare step (plan
+    # 3a; spec §13.1). While a producer is on `http+shadow`, the rows the
+    # ingest-writer handled for a schema over `window` differ from the
+    # rows the api accepted by more than `ratio`, for `for`. Also records
+    # distant_signal:ingest_stream_rows_vs_http:ratio (1 when they agree).
+    ingestShadowMismatch:
+      enabled: true
+      window: 1h
+      ratio: 0.02
+      for: 30m
+      severity: warning
     # DistantSignalApiDatabaseDown (critical): api's own `SELECT 1` probe
     # through its request pool (distant_signal_api_db_up, every 15s) has
     # failed on some replica for `for`. Covers what pg_up cannot see: a

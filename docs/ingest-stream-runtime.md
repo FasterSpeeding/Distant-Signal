@@ -4,7 +4,9 @@ The Redis Streams runtime of the ingest architecture
 ([spec §7](superpowers/specs/2026-10-06-ingest-architecture-design.md#7-stream-design),
 plan phase 3a). It has no database dependency, so the stream producers
 (pollers) stay light; the ingest-writer adds its own handlers on top.
-Status (2026-10-07): built and tested, no callers yet.
+Status (2026-10-08): built and tested; its first callers (plan 3a.6-3a.8:
+the writer's snapshot handlers, poller-ldbws and full-coverage-consumer)
+ship with every stream `off` and every sink `http`.
 
 ## Why a crate and not `common::ingest_stream`
 
@@ -65,6 +67,53 @@ let receipt = producer.submit(parts).await?;  // never waits under LatestSnapsho
 - `last_produced_at(conn, stream)`: the newest entry's `produced_at`
   (`XREVRANGE + - COUNT 1`), the producer's last-fetched cursor (§11.3).
 - `xadd_entry(conn, stream, maxlen, &entry)`: one XADD, for one-shot use.
+
+### Snapshot sinks (`ingest_stream::snapshot`, plan 3a.7 and 3a.8)
+
+What a poller or consumer with `INGEST_SINK` uses:
+
+- `SinkMode`: `http` (default), `http+shadow` (the POST stays
+  authoritative; what the api accepted is also XADDed, best effort),
+  `stream` (XADD only).
+- `Snapshot::add(stream, schema, producer, produced_at, rows, 100)`: one
+  schema's rows as parts of today's POST body, batch and `produced_at`
+  the snapshot's fetch time. A snapshot can carry several schemas
+  (full-coverage's three outputs), and goes to the producer as **one**
+  item, so the latest-only policy replaces a whole unsent snapshot.
+- `SnapshotProducer`: the stream's `LatestSnapshot` producer, spawned on
+  first use; `submit(snapshot)` (counts `ingest_stream_sink_rows_total
+  {sink="stream"}` once written) and `cursor()` (`XREVRANGE`, spec §11.3).
+
+| Producer | Stream | Each cycle under `stream` | Startup cursor under `stream` |
+|---|---|---|---|
+| poller-ldbws (`pollers.ldbws.ingest.sink`) | `ds:ingest:station-samples` | one snapshot; waits for the XADD up to the POST retry budget, then fails the cycle (transient) with the snapshot held | the stream's newest `produced_at` |
+| full-coverage-consumer (`fullCoverageConsumer.ingest.sink`) | `ds:ingest:full-coverage` | one snapshot of its three outputs; never waits | (none: it is not a poller) |
+
+### The rollout (plan 3a; spec §13.1)
+
+Per producer, values changes in Ranma-Config:
+
+1. writer `ingestWriter.streams.<stream>: shadow` (with
+   `redis.acl.clients.ingestWriter`);
+2. producer `ingest.sink: http+shadow` (with its own Redis user:
+   `redis.acl.clients.pollerLdbws`; full-coverage-consumer already has
+   one);
+3. compare for 3 days: `distant_signal:ingest_stream_rows_vs_http:ratio`
+   (the writer's rows over the api's, per schema; 1 when they agree) stays
+   at 1 and `DistantSignalIngestShadowMismatch` silent, 0 dead letters,
+   `ingest_stream_bytes` within budget;
+4. flip both in one change: writer `apply`, producer `stream` (the chart
+   refuses `stream` without the writer on `apply`);
+5. soak 7 days: no backlog, stalled or dead-letter alert, the api route at
+   0 requests, `DistantSignalLdbwsStationStale` and
+   `DistantSignalFullCoverageWindowStatsStalled` silent.
+
+Rollback: producer `http` (the writer can stay on `apply`).
+
+The spec's first compare metric, `ingest_stream_consumed_total
+{outcome="skipped"}` against the api's request count, counts entries, and
+a snapshot is several entries (parts of 100 rows), so the compare is by
+rows instead.
 
 ## Consumer (`ingest_stream::consumer`, for the ingest-writer)
 
