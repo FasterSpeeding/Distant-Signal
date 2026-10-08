@@ -109,6 +109,25 @@ consumer.run(&handler, shutdown_signal()).await;
   in the middle of a handler. `step()` runs one iteration, for tests or a
   writer that wants its own loop.
 
+### The writer's half (`crates/ingest-writer`, plan 3a.3)
+
+- `stream`: `INGEST_WRITER_STREAMS` modes (`off`/`shadow`/`apply`, all
+  `off` by default), one `StreamConsumer` task per stream not `off` with
+  `WriterHandler` as its `Handler`, and the hourly `XTRIM <dlq> MINID ~
+  <now − 7 d>` of the dead-letter streams.
+- `handlers`: the registry (`schema name/version → SchemaHandler`; unknown
+  name → `Poison`, unknown version → `UnsupportedSchema`), `classify`
+  (SQLSTATE class 22/23 → `Poison`, anything else → `Transient`) and
+  `apply_rows` (a savepoint per row; refused rows become
+  `PartiallyRejected`). No product handler yet (3a.6).
+- `dedup`: `ingest_dedup`, claimed in each `apply` entry's transaction
+  (`Duplicate` when already there), pruned hourly after 48 h under the
+  `ingest_dedup_prune` loop lock.
+- `observed`: `Observed::observed_at(row_time)` (the row's own time, else
+  `produced_at`, clamped to `now() + 2 min` and counted) and
+  `guard(table, column)`, the upsert `WHERE`: `(t.c IS NULL OR
+  EXCLUDED.c >= t.c OR t.c > now() + interval '2 min')`.
+
 ## Budget (`ingest_stream::budget`)
 
 `INGEST_STREAMS` declares each stream's rate, worst-case entry size (after
@@ -145,6 +164,7 @@ All prefixed `distant_signal_` (`common::metrics::metric_name`); names in
 | `ingest_stream_dlq_length`, `ingest_stream_dlq_oldest_age_seconds` | gauge | `stream` | consumer, every 30 s (`XLEN`, `XRANGE - + COUNT 1`) |
 | `ingest_stream_bytes` | gauge | `stream` | consumer, every 30 s (`MEMORY USAGE` of the stream plus its dead-letter stream) |
 | `ingest_stream_last_applied_timestamp_seconds` | gauge | `stream` | consumer |
+| `ingest_stream_observed_at_clamped_total` | counter | `stream`, `schema` | the ingest-writer's guard helpers (`ingest_writer::observed`, spec §7.8): an observed time clamped to `now() + 2 min` |
 
 `register_producer(stream)` / `register_consumer(stream)` (called by
 `Producer::spawn` / `StreamConsumer::new`) register the alerting series at
