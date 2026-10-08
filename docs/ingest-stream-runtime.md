@@ -68,7 +68,7 @@ let receipt = producer.submit(parts).await?;  // never waits under LatestSnapsho
   (`XREVRANGE + - COUNT 1`), the producer's last-fetched cursor (§11.3).
 - `xadd_entry(conn, stream, maxlen, &entry)`: one XADD, for one-shot use.
 
-### Snapshot sinks (`ingest_stream::snapshot`, plan 3a.7 and 3a.8)
+### Snapshot sinks (`ingest_stream::snapshot`, plans 3a.7, 3a.8 and 3c.2)
 
 What a poller or consumer with `INGEST_SINK` uses:
 
@@ -83,11 +83,23 @@ What a poller or consumer with `INGEST_SINK` uses:
 - `SnapshotProducer`: the stream's `LatestSnapshot` producer, spawned on
   first use; `submit(snapshot)` (counts `ingest_stream_sink_rows_total
   {sink="stream"}` once written) and `cursor()` (`XREVRANGE`, spec §11.3).
+- `RedisArgs`: `REDIS_URL`, `REDIS_USERNAME`, `REDIS_PASSWORD`, flattened
+  into a poller's clap config; `client(why)` applies the ACL user.
+- `SnapshotStream::spawn(client, stream, schema, component, rows_per_part)`:
+  the one-schema form over a `SnapshotProducer`, spawned at once;
+  `publish(&rows, fetched_at)` never waits for Redis (an empty `rows` is
+  one empty part); `last_produced_at()` is the newest `produced_at` of its
+  own schema, read backwards a page at a time (the island-of-Ireland
+  stream carries five schemas from three pollers); `shutdown(grace)`.
+  Used by poller-tfl, poller-tocs (`http+shadow`/`stream`) and the three
+  island-of-Ireland pollers (`stream` only, decision D8).
 
 | Producer | Stream | Each cycle under `stream` | Startup cursor under `stream` |
 |---|---|---|---|
 | poller-ldbws (`pollers.ldbws.ingest.sink`) | `ds:ingest:station-samples` | one snapshot; waits for the XADD up to the POST retry budget, then fails the cycle (transient) with the snapshot held | the stream's newest `produced_at` |
 | full-coverage-consumer (`fullCoverageConsumer.ingest.sink`) | `ds:ingest:full-coverage` | one snapshot of its three outputs; never waits | (none: it is not a poller) |
+| poller-tfl, poller-tocs (`pollers.<name>.ingest.sink`) | `ds:ingest:tfl`, `ds:ingest:reference` | one snapshot; never waits | the newest `produced_at` of its schema |
+| the island-of-Ireland pollers (stream only) | `ds:ingest:island-of-ireland` | one snapshot per schema; never waits | the newest `produced_at` of its schema |
 
 ### The rollout (plan 3a; spec §13.1)
 
