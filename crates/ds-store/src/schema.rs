@@ -367,6 +367,10 @@ mod tests {
     /// Spot checks against db-grants.yaml: own grants, each letter, and the
     /// `read_shared` group's SELECT.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one spot check per role and grant, in a row"
+    )]
     fn privileges_follow_db_grants() {
         // `users: {class: personal, grants: {api: SIUD}}`
         for privilege in ["SELECT", "INSERT", "UPDATE", "DELETE"] {

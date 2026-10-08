@@ -193,7 +193,7 @@ pub struct OutboxTick {
     /// `rejected_at` and `rejection`.
     pub rejected: Vec<RejectedTrustBacklogRow>,
     /// Rows rejected without being applied: their `tracked_train_id`
-    /// column is not their event's (the trust_consumer role wrote a row
+    /// column is not their event's (the `trust_consumer` role wrote a row
     /// for another subscription), or they failed `max_attempts` times.
     pub rejected_other: u64,
     /// Rejected rows deleted after `rejected_retention`.
@@ -235,6 +235,73 @@ async fn reject_row(conn: &mut PgConnection, id: i64, rejection: &str) -> sqlx::
         .execute(conn)
         .await
         .map(|_| ())
+}
+
+/// What [`row_failed`] did with a row whose apply failed.
+enum RowFailure {
+    /// A data error: rejected.
+    DataError(RejectedTrustBacklogRow),
+    /// Another error, on the row's last allowed attempt: rejected.
+    GaveUp,
+    /// Another error, attempt counted: the tick stops here.
+    Retry(anyhow::Error),
+}
+
+/// Handles outbox row `id`'s failed apply (its savepoint already rolled
+/// back): a data error rejects it; any other error counts an attempt and,
+/// at `policy.max_attempts`, rejects it too.
+async fn row_failed(
+    tx: &mut PgConnection,
+    id: i64,
+    attempts: i32,
+    event: &TrainMovementEventMessage,
+    err: anyhow::Error,
+    policy: &OutboxPolicy,
+) -> anyhow::Result<RowFailure> {
+    if let Some(data_error) = crate::backlog::classify_anyhow_data_error(&err) {
+        let rejected = data_error
+            .into_rejected_row(usize::try_from(id).unwrap_or(usize::MAX), &event.dedup_key);
+        tracing::error!(
+            outbox_id = id,
+            tracked_train_id = event.tracked_train_id,
+            dedup_key = %event.dedup_key,
+            sqlstate = %rejected.sqlstate,
+            message = %rejected.message,
+            event = ?event,
+            "train-event outbox row refused for a data error; left in the table"
+        );
+        let rejection = format!(
+            "{} {} (constraint {}): {}",
+            rejected.sqlstate,
+            rejected.reason,
+            rejected.constraint.as_deref().unwrap_or("-"),
+            rejected.message
+        );
+        reject_row(tx, id, &rejection).await?;
+        return Ok(RowFailure::DataError(rejected));
+    }
+    let attempts = attempts.saturating_add(1);
+    sqlx::query("UPDATE train_event_outbox SET attempts = $2 WHERE id = $1")
+        .bind(id)
+        .bind(attempts)
+        .execute(&mut *tx)
+        .await?;
+    if u32::try_from(attempts).unwrap_or(u32::MAX) >= policy.max_attempts.max(1) {
+        tracing::error!(
+            outbox_id = id,
+            tracked_train_id = event.tracked_train_id,
+            dedup_key = %event.dedup_key,
+            attempts,
+            error = ?err,
+            "train-event outbox row failed on every attempt; rejected"
+        );
+        reject_row(tx, id, &format!("failed {attempts} times: {err:#}")).await?;
+        return Ok(RowFailure::GaveUp);
+    }
+    Ok(RowFailure::Retry(err.context(format!(
+        "train-event outbox row {id} failed (attempt {attempts} of {})",
+        policy.max_attempts
+    ))))
 }
 
 /// [`apply_train_event_outbox_with`] with the default [`OutboxPolicy`].
@@ -315,73 +382,17 @@ pub async fn apply_train_event_outbox_with(
                 tick.applied += 1;
             }
             Err(err) => {
-                let Some(data_error) = crate::backlog::classify_anyhow_data_error(&err) else {
-                    // Not a data error. If the savepoint cannot even roll
-                    // back, the connection is gone: nothing is row-specific
-                    // about that, so the whole tick is retried.
-                    savepoint.rollback().await?;
-                    let attempts = row.attempts.saturating_add(1);
-                    if u32::try_from(attempts).unwrap_or(u32::MAX) >= policy.max_attempts.max(1) {
-                        tracing::error!(
-                            outbox_id = row.id,
-                            tracked_train_id = event.tracked_train_id,
-                            dedup_key = %event.dedup_key,
-                            attempts,
-                            error = ?err,
-                            "train-event outbox row failed on every attempt; rejected"
-                        );
-                        sqlx::query("UPDATE train_event_outbox SET attempts = $2 WHERE id = $1")
-                            .bind(row.id)
-                            .bind(attempts)
-                            .execute(&mut *tx)
-                            .await?;
-                        reject_row(
-                            &mut tx,
-                            row.id,
-                            &format!("failed {attempts} times: {err:#}"),
-                        )
-                        .await?;
-                        tick.rejected_other += 1;
-                        continue;
-                    }
-                    sqlx::query("UPDATE train_event_outbox SET attempts = $2 WHERE id = $1")
-                        .bind(row.id)
-                        .bind(attempts)
-                        .execute(&mut *tx)
-                        .await?;
-                    failed = Some(err.context(format!(
-                        "train-event outbox row {} failed (attempt {attempts} of {})",
-                        row.id, policy.max_attempts
-                    )));
-                    break;
-                };
+                // If the savepoint cannot even roll back, the connection is
+                // gone: nothing row-specific, so the whole tick is retried.
                 savepoint.rollback().await?;
-                let rejected = data_error.into_rejected_row(
-                    usize::try_from(row.id).unwrap_or(usize::MAX),
-                    &event.dedup_key,
-                );
-                tracing::error!(
-                    outbox_id = row.id,
-                    tracked_train_id = event.tracked_train_id,
-                    dedup_key = %event.dedup_key,
-                    sqlstate = %rejected.sqlstate,
-                    message = %rejected.message,
-                    event = ?event,
-                    "train-event outbox row refused for a data error; left in the table"
-                );
-                reject_row(
-                    &mut tx,
-                    row.id,
-                    &format!(
-                        "{} {} (constraint {}): {}",
-                        rejected.sqlstate,
-                        rejected.reason,
-                        rejected.constraint.as_deref().unwrap_or("-"),
-                        rejected.message
-                    ),
-                )
-                .await?;
-                tick.rejected.push(rejected);
+                match row_failed(&mut tx, row.id, row.attempts, &event, err, policy).await? {
+                    RowFailure::DataError(rejected) => tick.rejected.push(rejected),
+                    RowFailure::GaveUp => tick.rejected_other += 1,
+                    RowFailure::Retry(err) => {
+                        failed = Some(err);
+                        break;
+                    }
+                }
             }
         }
     }

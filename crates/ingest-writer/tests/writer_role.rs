@@ -21,7 +21,6 @@
 
 #![expect(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "test code: a panic is the right failure in a test"
 )]
 
@@ -58,6 +57,10 @@ fn rand_suffix() -> String {
 /// with a cancelled train (reconciliation), and an unresolved one.
 #[tokio::test]
 #[ignore = "requires the per-service roles: run under scripts/test-postgres-roles.py --mode per-service"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "fixtures, one tick of every loop, then cleanup, in order"
+)]
 async fn every_writer_loop_runs_as_the_writer_role() {
     let (Some(writer), Some(api)) = (
         pool("DATABASE_URL_WRITER").await,
@@ -186,8 +189,9 @@ async fn every_writer_loop_runs_as_the_writer_role() {
 
 /// No service role may `SET ROLE` to any role it is a member of: the app
 /// role (an observed role inherits its privileges, `SET FALSE`) or a group.
-/// A RESTRICTIVE row policy binds the role a session runs as, so `SET ROLE
-/// app` would shed the writer's line_status policy (security review M1).
+/// A RESTRICTIVE row policy binds the role a session runs as, so
+/// `SET ROLE app` would shed the writer's `line_status` policy (security
+/// review M1).
 #[tokio::test]
 #[ignore = "requires the per-service roles: run under scripts/test-postgres-roles.py --mode per-service"]
 async fn no_service_role_can_set_role_into_its_memberships() {
