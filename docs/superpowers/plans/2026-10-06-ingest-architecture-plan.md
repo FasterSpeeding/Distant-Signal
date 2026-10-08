@@ -636,8 +636,9 @@ Rollout:
 3. 2c.5 migration.
 4. `INCIDENTS_ROW_HEARTBEAT=false`.
 
-Verification: `n_tup_upd` on `incidents` per day drops from about 600k to
-about 10k (read-only `pg_stat_user_tables` deltas); `fetchedAt` on the
+Verification: `n_tup_upd` on `incidents` per day drops from about 285k
+(measured in production, 2026-10-08; this plan first estimated about 600k)
+to about 10k (read-only `pg_stat_user_tables` deltas); `fetchedAt` on the
 incidents page tracks the poll time. Not under 1k: the user accepted
 keeping the per-row bump for listed cleared incidents (2c.6's deviation),
 so their dates stay correct; about 33 listed cleared rows at one update
@@ -785,6 +786,27 @@ the api route's request count; `ingest_stream_bytes` within budget;
 `DistantSignalLdbwsStationStale` and
 `DistantSignalFullCoverageWindowStatsStalled` silent.
 
+DB-side apply checks, after each flip to `apply` (read-only, the
+metrics alone cannot show the rows landed):
+
+- `DistantSignalIngestApplyWritesNothing` and
+  `DistantSignalIngestSourceStale` silent
+  (`ingest_freshness_timestamp_seconds{source}`, exported by the writer);
+- `SELECT source, now() - fetched_at FROM ingest_freshness WHERE source IN
+  ('station-samples', 'full-coverage-stats', 'full-coverage-window-stats',
+  'station-full-coverage-samples');` under 2 minutes, and the tables' own
+  newest row times (`max(polled_at)` on `station_samples`,
+  `max(computed_at)` on `full_coverage_line_window_stats`) within one
+  cadence of it;
+- `pg_stat_user_tables` deltas (`n_tup_ins + n_tup_upd`) on the stream's
+  tables per hour within 10% of the same hour's on `http` (lower for
+  `station_full_coverage_samples` with `changedRowsOnly`), and
+  `ingest_stream_row_writes_total{outcome="written"}` over the same hour
+  of the same order;
+- `SELECT count(*) FROM ingest_dedup WHERE applied_at > now() - interval
+  '1 hour'` matching the entries the writer applied
+  (`ingest_stream_consumed_total{outcome=~"applied|rejected"}`).
+
 Exit: both streams on `apply` for 7 days; the api routes at 0.
 
 Rollback: producer `http`.
@@ -858,8 +880,11 @@ http`). trust-consumer's sink and its phase 4 reads (4.4) share one
 
 Rollout:
 
-1. backlog `sink=db`, 7 days (watch the movement lag, `db_writes_total`,
-   and backlog rows per hour against the about 30k/h baseline);
+1. backlog `sink=db`, 7 days (watch the movement lag, `db_writes_total`
+   (both DbSinks record it: `operation="trust_event_backlog"` and
+   `"train_reasons"` here, `"train_events"` for trust-consumer's; alert
+   `DistantSignalDirectWritesFailing`), and backlog rows per hour against
+   the about 30k/h baseline);
 2. then trust-consumer `sink=db` (D1), 7 days.
 
 Exit: the api's `/private/trust-event-backlog`, `/train-reasons`,
@@ -884,6 +909,17 @@ allow-all policy plus the writer's RESTRICTIVE one).
 | 3c.4 | **Done 2026-10-08** (`notifier::queries::poll_line_candidates_with_max_age`; `LINE_HISTORY_MAX_AGE_SECS` default 900, chart `notifier.lineHistoryMaxAgeSeconds`; DB tests `stale_line_history_*`; no render guard, the plan asks for none). **Before TfL goes to `apply`** (D13, spec §7.8): the notifier skips line-status history rows whose `computed_at` is older than `LINE_HISTORY_MAX_AGE_SECS` (default 900; `0` disables; chart `notifier.lineHistoryMaxAgeSeconds`). It advances its cursor past them, keeps them as the "previous" status for the next row, and counts them in `notifier_line_history_skipped_total{reason="stale"}` | `crates/notifier/src/{queries.rs,main.rs,config.rs}`, the chart's notifier env and values | DB: a burst of history rows, all but the last older than 15 min, pushes only the last change and counts the rest; a fresh row after a stale one is compared with the stale one's statuses; `0` pushes all; the chart env wiring test |
 
 Order: 3c.4 is deployed before the writer's `tfl` stream goes to `apply`.
+
+Rollout and checks as 3a's: writer `shadow`, producer `http+shadow` (the
+poller POSTs first and copies only a snapshot the api accepted, counting
+`ingest_stream_sink_rows_total{sink="http"}`; the 3c handlers count
+`ingest_stream_rows_total` and `row_writes_total`, so the compare step and
+`DistantSignalIngestShadowMismatch` cover `tfl-line-status` and `tocs`),
+then `apply` plus `stream`, with 3a's DB-side apply checks on
+`ingest_freshness('tfl')` / `('tocs')`, `max(computed_at)` of the TfL rows
+in `line_status`, and the `line_status`/`line_status_history` row rates.
+`tocs` usually writes 0 rows (an unchanged daily list), so
+`DistantSignalIngestApplyWritesNothing` leaves `ds:ingest:reference` out.
 
 Exit: TfL and tocs on `stream` for 7 days. The IoI pollers are on
 `stream` but disabled (D8, Q9), so they have no soak; they are prod-tested
