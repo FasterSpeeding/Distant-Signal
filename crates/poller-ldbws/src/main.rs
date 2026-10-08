@@ -26,6 +26,7 @@ mod budget;
 mod config;
 mod platform_history;
 mod rotation;
+mod sample_source;
 mod schema;
 
 use std::cell::RefCell;
@@ -100,8 +101,12 @@ async fn run() -> anyhow::Result<()> {
 
     common::logging::init("poller-ldbws");
 
-    let config = Config::parse();
+    let mut config = Config::parse();
+    config.reads.validate()?;
     let progress = health_http::spawn_liveness(&config.health);
+    // SAMPLE_STATIONS_SOURCE=db (ingest plan 4.5): the catalogue, Postgres
+    // and the schema gate before the first cycle. Nothing under http.
+    config.reads.connect(&progress).await?;
     let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
     let internal_oauth = config.internal_oauth.token_cache();
     let poll_interval = Duration::from_secs(config.poll_interval_secs);
@@ -544,12 +549,21 @@ async fn sample_all_stations(
 /// Calls the `api` crate's own `/private/sample-stations` endpoint — not an
 /// RDM endpoint — to get the deduplicated CRS list computed from the
 /// loaded line catalogue. Sent with an internal-oauth bearer token, not
-/// the RDM API key.
+/// the RDM API key. Under `SAMPLE_STATIONS_SOURCE=db` (plan 4.5) the same
+/// list is computed here instead (`sample_source`).
 async fn fetch_sample_stations(
     client: &Client,
     config: &Config,
     tokens: &common::oauth_client::OAuthTokenCache,
 ) -> anyhow::Result<Vec<String>> {
+    if let Some(direct) = &config.reads.direct {
+        return direct
+            .select(sample_source::selection(
+                config.sample_pinned_lines_only,
+                config.sample_max_stations,
+            ))
+            .await;
+    }
     let url = sample_stations_url(config)?;
     ingest::get_json(client, &url, tokens).await
 }
@@ -899,6 +913,7 @@ mod tests {
                 health_bind_url: "127.0.0.1:0".to_string(),
                 progress_stall_secs: 1800,
             },
+            reads: sample_source::SampleStationsArgs::default(),
         }
     }
 
