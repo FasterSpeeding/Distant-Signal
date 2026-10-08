@@ -54,6 +54,32 @@ pub async fn record_ingest(conn: &mut sqlx::PgConnection, source: &str) -> Resul
     Ok(())
 }
 
+/// [`record_ingest`] for data observed at `observed_at` (ingest decision
+/// D13: "data as of"): the ingest-writer passes the stream entry's
+/// `produced_at`, so a snapshot applied late records when it was fetched,
+/// not when it was written. The marker never moves backwards
+/// (`GREATEST`), so an older snapshot applied after a newer one leaves it
+/// alone.
+///
+/// Plan 3a.6 turns [`record_ingest`] itself into this shape for every
+/// caller; until both land, the stream handlers of plan 3c call this.
+pub async fn record_ingest_at(
+    conn: &mut sqlx::PgConnection,
+    source: &str,
+    observed_at: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO ingest_freshness (source, fetched_at) VALUES ($1, $2) \
+         ON CONFLICT (source) DO UPDATE \
+         SET fetched_at = GREATEST(ingest_freshness.fetched_at, EXCLUDED.fetched_at)",
+    )
+    .bind(source)
+    .bind(observed_at)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Timestamp of the most recent `TfL` line-status ingest, or `None` if none
 /// has ever landed. Backs both `GET /private/tfl-line-status` (the poller's
 /// startup freshness check) and the public `/public/freshness` endpoint.

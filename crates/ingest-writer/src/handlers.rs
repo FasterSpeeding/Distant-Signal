@@ -21,10 +21,12 @@
 //! name with an unknown *version* is [`HandlerError::UnsupportedSchema`] (the
 //! producer is newer: the entry stays pending and alerts, spec §13.3).
 //!
-//! **No product handler is registered yet** ([`registry`] is empty): the
-//! snapshot handlers are plan 3a.6 and later. The writer refuses to start a
-//! stream whose schemas have no handler (`stream::StreamModes::uncovered`),
-//! so a stream turned on early cannot dead-letter everything as unknown.
+//! [`registry`] holds the product handlers: plan 3c's `tfl-line-status/1`
+//! ([`tfl`]), `tocs/1` ([`tocs`]) and the three island-of-Ireland schemas
+//! ([`island_of_ireland`]); plan 3a.6 adds the station-sample and
+//! full-coverage ones. The writer refuses to start a stream whose schemas
+//! have no handler (`stream::StreamModes::uncovered`), so a stream turned
+//! on early cannot dead-letter everything as unknown.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -38,6 +40,10 @@ use serde_json::value::RawValue;
 use sqlx::PgConnection;
 
 use crate::observed::Observed;
+
+pub mod island_of_ireland;
+pub mod tfl;
+pub mod tocs;
 
 /// A boxed, sendable future borrowing for `'a`.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -129,11 +135,37 @@ impl Registry {
     }
 }
 
-/// The writer's registry: every product schema it applies. Empty until
-/// plan 3a.6 (`station-samples/1`, the three full-coverage schemas), then
-/// 3c (`tfl-line-status/1`, `tocs/1`, the island-of-Ireland schemas).
+/// The writer's registry: every product schema it applies. Plan 3c:
+/// `tfl-line-status/1`, `tocs/1` and the island-of-Ireland schemas; plan
+/// 3a.6 adds `station-samples/1` and the three full-coverage schemas.
+///
+/// # Panics
+///
+/// If a schema is registered twice or a schema name is invalid: a
+/// programming error the unit tests catch.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixed table of schemas; the unit tests build it"
+)]
 pub fn registry() -> Registry {
-    Registry::new()
+    fn v1(name: &str) -> SchemaId {
+        SchemaId::new(name, 1).expect("a valid schema name")
+    }
+    let mut registry = Registry::new();
+    let registered = [
+        registry.register(&v1("tfl-line-status"), tfl::TflLineStatus),
+        registry.register(&v1("tocs"), tocs::Tocs),
+        registry.register(&v1("ioi-stations"), island_of_ireland::Stations),
+        registry.register(&v1("ioi-lines"), island_of_ireland::Lines),
+        registry.register(
+            &v1("ioi-station-samples"),
+            island_of_ireland::StationSamples,
+        ),
+    ];
+    for result in registered {
+        result.expect("each schema registered once");
+    }
+    registry
 }
 
 /// Maps a database error to the runtime's outcome (spec §7.3):
@@ -160,6 +192,33 @@ pub fn is_data_error(err: &sqlx::Error) -> bool {
             .code()
             .is_some_and(|code| code.starts_with("22") || code.starts_with("23")),
         _ => false,
+    }
+}
+
+/// [`classify`] for a `ds_store` write's `anyhow::Error`:
+///
+/// - a `TfL` line owned by another source
+///   (`ds_store::samples::TflLineOwnedElsewhere`) is the entry's fault:
+///   [`HandlerError::Poison`];
+/// - so is a row-level-security refusal (SQLSTATE 42501 from a policy):
+///   under the writer's role a `TfL` report colliding with an aggregator
+///   line is refused by `line_status`'s policy (plan 3c.3, D10) before the
+///   ownership read can see the row; retrying cannot help;
+/// - any other database error goes through [`classify`];
+/// - anything else (a value that does not serialize) is poison.
+pub fn classify_anyhow(err: &anyhow::Error) -> HandlerError {
+    if let Some(owned) = err.downcast_ref::<ds_store::samples::TflLineOwnedElsewhere>() {
+        return HandlerError::Poison(owned.to_string());
+    }
+    match err.downcast_ref::<sqlx::Error>() {
+        Some(sqlx::Error::Database(db))
+            if db.code().as_deref() == Some("42501")
+                && db.message().contains("row-level security") =>
+        {
+            HandlerError::Poison(format!("refused by a row-level security policy: {db}"))
+        }
+        Some(db_err) => classify(db_err),
+        None => HandlerError::Poison(format!("{err:#}")),
     }
 }
 
@@ -309,9 +368,30 @@ mod tests {
     }
 
     #[test]
-    fn no_product_handler_yet() {
-        // Plan 3a.6 registers the first ones.
-        assert!(registry().schemas().is_empty());
+    fn plan_3c_registers_its_schemas() {
+        let schemas = registry().schemas();
+        for schema in [
+            "tfl-line-status/1",
+            "tocs/1",
+            "ioi-stations/1",
+            "ioi-lines/1",
+            "ioi-station-samples/1",
+        ] {
+            assert!(schemas.iter().any(|s| s == schema), "{schema}: {schemas:?}");
+        }
+    }
+
+    #[test]
+    fn an_ownership_refusal_and_a_serialization_fault_are_poison() {
+        let owned = anyhow::Error::from(ds_store::samples::TflLineOwnedElsewhere {
+            line_id: "victoria".into(),
+            owner: Some("aggregator".into()),
+        });
+        assert!(matches!(classify_anyhow(&owned), HandlerError::Poison(_)));
+        let pool = anyhow::Error::from(sqlx::Error::PoolTimedOut);
+        assert!(matches!(classify_anyhow(&pool), HandlerError::Transient(_)));
+        let other = anyhow::anyhow!("not a database error");
+        assert!(matches!(classify_anyhow(&other), HandlerError::Poison(_)));
     }
 
     #[test]
