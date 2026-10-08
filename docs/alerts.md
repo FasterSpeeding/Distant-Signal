@@ -831,6 +831,15 @@ schema (spec §13.3: writer first, then producers), or roll the producer
 back. Nothing is lost while the entry stays pending, up to the stream's
 `MAXLEN`. Do not `XACK` it by hand.
 
+After `ingestWriter.unsupportedDeadlineSecs` (1 h by default; by the
+entry's id time or by how long the writer has retried it, whichever is
+longer) the writer dead-letters the entry with reason
+`unsupported_expired` and moves on (security review L6), and
+[DistantSignalIngestDeadLetters](#distantsignalingestdeadletters) fires
+instead. A snapshot entry lost that way is replaced by the producer's next
+one once the writer understands it; to apply it anyway, roll the writer
+forward and re-`XADD` its fields from the dead-letter stream.
+
 ### DistantSignalIngestProducerXaddFailing
 
 Every XADD to a stream failed over `ingestProducerXaddFailing.window`

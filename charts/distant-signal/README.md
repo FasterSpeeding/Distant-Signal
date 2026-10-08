@@ -1860,6 +1860,7 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `ingestWriter.streams.ioi-nir` | `off` | Mode of `ds:ingest:ioi-nir` (`pollerNirStations`: `ioi-stations`, `ioi-lines`), as `ioi-gtfs`. |
 | `ingestWriter.streams.ioi-live` | `off` | Mode of `ds:ingest:ioi-live` (`pollerIrishRailLive`: `ioi-station-samples`), as `ioi-gtfs`. |
 | `ingestWriter.changedRowsOnly` | `false` | Changed rows only (`INGEST_WRITER_CHANGED_ROWS_ONLY`, plan 3a.9): `station_full_coverage_samples` rows whose stats are unchanged are not rewritten, and readers derive their age from the feed's observed time. The other snapshot tables keep their per-row time. Turn on only after the api with the derived readers is deployed and `streams.full-coverage` has soaked on `apply`. |
+| `ingestWriter.unsupportedDeadlineSecs` | `3600` | `INGEST_WRITER_UNSUPPORTED_DEADLINE_SECS`: an entry pending as unsupported (a newer schema or envelope version) this long is dead-lettered, reason `unsupported_expired`, instead of blocking its stream for good. Roll the writer forward within this time. `0` never dead-letters it. |
 | `ingestWriter.database.maxConnections` | `6` | Its Postgres pool; counted, plus its one loop-lock session, in the connection budgets. |
 | `ingestWriter.progressStallSecs` | `900` | `/livez` stall window (`PROGRESS_STALL_SECS`). |
 | `ingestWriter.logLevel` | `info` | `RUST_LOG`. |
@@ -2045,6 +2046,7 @@ used for and why persistence defaults on.
 | `redis.persistence.existingClaim` | `""` | Use a pre-existing PVC instead of a chart-rendered one. |
 | `redis.maxmemory` | `1536mb` | Passed as `--maxmemory`. With `noeviction`, a full Redis refuses writes (movement-relay backs off and Kafka holds the backlog) instead of being OOMKilled. Empty or null leaves it unbounded. |
 | `redis.maxmemoryPolicy` | `noeviction` | Passed as `--maxmemory-policy`. Keep `noeviction`: any evicting policy deletes whole stream keys. |
+| `redis.protoMaxBulkLen` | `2mb` | Passed as `--proto-max-bulk-len`: the largest single argument a client may send (Redis' default is 512mb). The largest legitimate one is an ingest entry's body (1 MiB accepted). At least `1mb`; empty or null keeps Redis' default. Changing it restarts Redis. |
 | `redis.save` | `""` | Passed as `--save`. `""` disables RDB snapshots (AOF covers durability); null keeps the image's built-in schedule. |
 | `redis.resources` | `{requests: {cpu: 50m, memory: 1536Mi}, limits: {memory: 2560Mi}}` | Container resource requests/limits, sized for `movementRelay.streamMaxLen` at `redis.maxmemory` plus fork copy-on-write; see values.yaml for the arithmetic. |
 | `redis.nodeSelector` | `{}` | Pod node selector. |
