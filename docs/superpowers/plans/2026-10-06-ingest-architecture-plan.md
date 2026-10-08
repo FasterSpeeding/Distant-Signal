@@ -472,6 +472,45 @@ For each producer:
 
 ### 2a. schedule-reference
 
+**Status (2026-10-07): 2a.1–2a.6 are built, every switch off**
+(`scheduleFeed.reference.ingest.sink: http`,
+`perService.schedule_reference.connect: false`). The default render is
+unchanged. What is left is the rollout below. Differences from the table:
+
+- **2a.1.** `SinkError` variants keep their cause (`Rejected(anyhow::Error)`,
+  not `Rejected(String)`), so logs still show the HTTP status or SQLSTATE.
+  `HttpSink` maps exactly what today's retry logic treated as a rejection
+  (400, 413, 422) to `Rejected`, not every other 4xx: a 401/403/404 stays
+  retryable, as it was. This client's own timeout maps to `Timeout`, like
+  503, so a final chunk still defers as before.
+- **2a.2.** Three writers the api's routes called were still api-only and
+  moved to `ds-store` first (the api re-exports them):
+  `schedule::services` (`schedule_services`), `reference::replace_tiploc_locations`
+  and `schedule::summaries` (the population upsert with its
+  `line_train_summaries`, which needs the line catalogue: `DbSink` uses
+  schedule-reference's own `LINES_DIR`, and reads `CORPUS_FALLBACK_ENABLED`
+  as the api does). The CIF rows still go through the JSON values the
+  routes take, read with `ds_store`'s own `Deserialize` (parity by
+  construction); building typed rows straight from the parser is a later
+  optimisation. The parity test applies `HttpSink`'s captured requests
+  with the same `ds_store` calls as the api's handlers rather than
+  starting the api.
+- **2a.2/2a.3** share a commit (`main.rs`). The schema gate is
+  `DbRole::ScheduleReference`; `tests/schema_gate.rs` checks it.
+- **2a.4.** `INGEST_SINK` renders only with `db`, so the default pod
+  template is unchanged; the Postgres egress/ingress hangs off
+  `distant-signal.scheduleFeedPostgres`, which 2d extends.
+- **2a.5.** `db_writes_total`/`db_write_seconds` are recorded by `DbSink`
+  through `ds_store::writes` (with `WriteFailure`/`classify`, which later
+  direct writers reuse). The staged mismatch counts as `store_…` only in
+  a process that calls `ds_store::schedule::use_store_metric_names` (the
+  api keeps `api_…`). The alert is one sum over both names: a bare `or`
+  would always pick the api's 0-registered series.
+- **2a.6.** Beyond spec §6.4: `U` on `schedule_reference_publishes` (the
+  marker's `ON CONFLICT ... DO UPDATE`) and `S` on `corpus_tiploc_crs` (the
+  summaries' CORPUS fallback). CI runs schedule-reference's DB suite as the
+  narrowed role; ds-store's publish tests still run as the api role.
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 2a.1 | `PublishSink` trait plus `SinkError` in schedule-reference; `HttpSink` wraps today's `post_batch*`/`post_json` calls, mapping 409 to `Busy`, 503 to `Timeout`, other 4xx to `Rejected` and the rest to `Transient` | `crates/schedule-reference/src/{sink.rs,main.rs}` | the existing wiremock tests, now through `HttpSink` (unchanged assertions) |

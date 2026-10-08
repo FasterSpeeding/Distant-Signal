@@ -2,14 +2,50 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use common::config::{LineCatalogue, parse_lines};
+use common::secret::Secret;
+
+/// Where the products go (`INGEST_SINK`, chart value
+/// `scheduleFeed.reference.ingest.sink`; ingest architecture spec §9.1,
+/// §13.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum IngestSink {
+    /// The api's `/private` ingest routes, with the internal `OAuth2`
+    /// client: today's path, and the default.
+    Http,
+    /// Postgres directly, through `ds_store`, as the
+    /// `distant_signal_schedule_reference` role (`DATABASE_URL`).
+    Db,
+}
+
+/// The `db` sink's pool size by default (spec §6.6: publishes are
+/// sequential and the final chunk holds one connection; the role's limit is
+/// 4). `DATABASE_MAX_CONNECTIONS` overrides it (`common::pg`).
+pub(crate) const DB_POOL_SIZE: u32 = 3;
 
 /// CLI/env configuration for the `schedule-reference` service.
 ///
 /// Mounts the same PVC `schedule-ingest` writes to, READ-ONLY -- see
 /// docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md's
 /// Decision 1(c). Never writes to `storage_dir`.
+///
+/// `Debug` is safe to log: `DATABASE_URL` is a [`Secret`], and the `OAuth2`
+/// password is redacted by `InternalOAuthArgs`' own `Debug`.
 #[derive(Debug, Parser)]
 pub(crate) struct Config {
+    /// Where the products go: `http` (the default, today's path) or `db`
+    /// (Postgres directly). See [`IngestSink`]. Everything else this
+    /// service does -- the delivery scan, the parse, the retries, the
+    /// dedup marker -- is the same either way.
+    #[arg(long, env = "INGEST_SINK", value_enum, default_value_t = IngestSink::Http)]
+    pub ingest_sink: IngestSink,
+
+    /// The `schedule_reference` role's connection, for `INGEST_SINK=db`
+    /// (required then, unused otherwise). Pool size and timeouts come from
+    /// the shared `DATABASE_*` variables (`common::pg`); the default pool
+    /// is [`DB_POOL_SIZE`].
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
+    pub database_url: Option<Secret>,
+
     /// Root of the shared PVC -- same path `schedule-ingest`'s own
     /// `--storage-dir` writes into (`crates/schedule-ingest/src/config.rs`),
     /// mounted read-only in this container.
@@ -199,6 +235,28 @@ pub(crate) struct Config {
     pub publish_retry: PublishRetry,
 }
 
+impl Config {
+    /// Rejects a configuration that cannot run: `INGEST_SINK=db` without a
+    /// `DATABASE_URL`.
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if self.ingest_sink == IngestSink::Db
+            && self.database_url.as_ref().is_none_or(Secret::is_empty)
+        {
+            anyhow::bail!("INGEST_SINK=db needs DATABASE_URL");
+        }
+        Ok(())
+    }
+
+    /// `DATABASE_URL`, for the `db` sink (after [`Self::validate`]).
+    pub(crate) fn database_url(&self) -> anyhow::Result<&str> {
+        self.database_url
+            .as_ref()
+            .map(Secret::expose)
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("INGEST_SINK=db needs DATABASE_URL"))
+    }
+}
+
 /// Production value of [`Config::startup_backoff`]: 1s doubling to a 60s cap,
 /// so a dependency that comes back after the ~1 minute the 2026-09-26 node
 /// reboot's SSO outage lasted is noticed within seconds, while a long outage
@@ -260,6 +318,96 @@ pub(crate) const PUBLISH_RETRY: PublishRetry = PublishRetry {
 /// a late whole-branch review. A test is what makes the next one impossible
 /// to ship.
 #[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Config, IngestSink};
+
+    /// The repo's own line catalogue and the internal `OAuth2` client's
+    /// required arguments, plus `args`.
+    fn argv(args: &[&str]) -> Vec<String> {
+        let lines = common::manifest_dir!().join("../../lines");
+        let mut argv: Vec<String> = [
+            "schedule-reference",
+            "--lines-dir",
+            lines.to_str().unwrap(),
+            "--internal-oauth-token-url",
+            "http://idp/token/",
+            "--internal-oauth-client-id",
+            "client",
+            "--internal-oauth-username",
+            "user",
+            "--internal-oauth-password",
+            "password",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        argv.extend(args.iter().map(ToString::to_string));
+        argv
+    }
+
+    fn parse(args: &[&str]) -> Config {
+        Config::try_parse_from(argv(args)).expect("parses")
+    }
+
+    #[test]
+    fn the_sink_defaults_to_http_and_needs_no_database() {
+        // `try_parse_from` also reads the environment, and the DB-gated runs
+        // set DATABASE_URL, so the URL is cleared by hand.
+        let mut config = parse(&[]);
+        assert_eq!(config.ingest_sink, IngestSink::Http);
+        config.database_url = None;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn the_db_sink_needs_a_database_url() {
+        let mut config = parse(&["--ingest-sink", "db"]);
+        assert_eq!(config.ingest_sink, IngestSink::Db);
+        config.database_url = None;
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("DATABASE_URL"), "{err}");
+
+        let config = parse(&[
+            "--ingest-sink",
+            "db",
+            "--database-url",
+            "postgres://u:p@db/ds",
+        ]);
+        config.validate().unwrap();
+        assert_eq!(config.database_url().unwrap(), "postgres://u:p@db/ds");
+    }
+
+    #[test]
+    fn an_unknown_sink_is_a_startup_error() {
+        assert!(Config::try_parse_from(argv(&["--ingest-sink", "redis"])).is_err());
+    }
+
+    #[test]
+    fn debug_hides_the_database_url() {
+        let config = parse(&["--database-url", "postgres://u:hunter2@db/ds"]);
+        assert!(!format!("{config:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn the_sink_and_database_variables_keep_their_names() {
+        use clap::CommandFactory;
+        let command = Config::command();
+        let env = |id: &str| {
+            command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .and_then(|arg| arg.get_env())
+                .and_then(|env| env.to_str())
+                .map(str::to_string)
+        };
+        assert_eq!(env("ingest_sink").as_deref(), Some("INGEST_SINK"));
+        assert_eq!(env("database_url").as_deref(), Some("DATABASE_URL"));
+    }
+}
+
+#[cfg(test)]
 mod chart_env_wiring_tests {
     use clap::CommandFactory;
 
@@ -298,6 +446,9 @@ mod chart_env_wiring_tests {
             .get_arguments()
             .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
             .filter(|env| env.ends_with("_URL"))
+            // Not an api URL: the db sink's connection, rendered by the
+            // chart's `databaseEnvFor` helper (checked below).
+            .filter(|env| *env != "DATABASE_URL")
             .map(str::to_string)
             .collect();
         assert!(
@@ -312,6 +463,20 @@ mod chart_env_wiring_tests {
             .iter()
             .filter(|env| !block.contains(&format!("- name: {env}")))
             .collect();
+
+        // The db sink (plan 2a.4): `INGEST_SINK` and the role's
+        // `DATABASE_URL` (through `databaseEnvFor`, as every DB service).
+        assert!(
+            block.contains("- name: INGEST_SINK"),
+            "the reference container must set INGEST_SINK (scheduleFeed.reference.ingest.sink)"
+        );
+        assert!(
+            block.contains(
+                r#"include "distant-signal.databaseEnvFor" (dict "root" . "service" "schedule_reference")"#
+            ),
+            "the reference container must get DATABASE_URL for the schedule_reference role \
+             under the db sink"
+        );
 
         assert!(
             missing.is_empty(),
