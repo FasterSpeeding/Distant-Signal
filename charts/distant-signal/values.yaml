@@ -5135,6 +5135,17 @@ metrics:
       threshold: 10
       for: 0m
       severity: warning
+    # DistantSignalRetentionStepFailing: one aggregator retention step
+    # (`task` label: history, trains, daily_stats, ...) failed at least
+    # `minErrors` times within `window`. Retention runs every
+    # aggregator.pollIntervalSecs (60s), so 2 catches two consecutive failed
+    # passes, and a single transient failure stays quiet.
+    retentionStepFailing:
+      enabled: true
+      window: 2h
+      minErrors: 2
+      for: 0m
+      severity: warning
     # Cold-archive expiry (archive.expiry). Renders only when archive.enabled
     # and archive.expiry.enabled are also true. Expiry runs once a day, so
     # keep `window` at least 1d.

@@ -820,6 +820,27 @@ its delete" warnings for the `service_date` and `first_id`. Then find what
 writes to those rows: a backfill script, or a consumer replaying an old
 backlog. If the writes are legitimate and finite, wait for them to finish.
 
+### DistantSignalRetentionStepFailing
+
+One aggregator retention step failed at least `minErrors` times (2 by
+default) within `window` (2h): `aggregator_retention_errors_total{task}`.
+Retention runs every `aggregator.pollIntervalSecs` (60s), so two consecutive
+failed passes are enough to fire. A single transient failure does not. Every
+step has its own error scope, so the other steps keep running. The failing
+step's table keeps growing past its window until the step succeeds. Some of
+those windows are licensing obligations: `trust_event_backlog` (1 day) and the
+LDBWS-derived `daily_stats`, `half_hourly_stats` and coverage stats.
+
+1. Find the error in the aggregator's "retention step failed" logs for the
+   alert's `task`.
+2. A statement timeout usually means a large backlog after an outage. It
+   clears as later passes catch up. A lock wait points at a long transaction
+   in `pg_stat_activity`. "relation does not exist" means the migrations
+   are behind the aggregator image.
+3. For `task="trains"` with the cold archive on, also see
+   DistantSignalArchiveStale. Upload failures do not count here; only
+   database errors do.
+
 ### DistantSignalArchiveExpiryErrors
 
 Cold-archive expiry hit errors (`aggregator_archive_expiry_errors_total{stage}`):

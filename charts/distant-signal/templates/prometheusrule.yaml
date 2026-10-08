@@ -66,7 +66,7 @@ so that clause fired on every rollout.
 {{- $outboxOn := and ($rule.trainEventOutbox).enabled .Values.ingestWriter.enabled }}
 {{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn $healthOn $tokenExchangeOn $writerDownOn $ingestStreamsOn $outboxOn }}
 {{- $archiveHealthOn := and .Values.archive.enabled (or ($rule.archiveStale).enabled ($rule.archiveBatchChurn).enabled) }}
-{{- $anyOn = or $anyOn $archiveHealthOn }}
+{{- $anyOn = or $anyOn $archiveHealthOn ($rule.retentionStepFailing).enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -1300,6 +1300,32 @@ spec:
             runbook_url: {{ printf "%s#distantsignalarchivebatchchurn" $runbook | quote }}
         {{- end }}
         {{- end }}
+    {{- end }}
+    {{- with $rule.retentionStepFailing }}
+    {{- if .enabled }}
+    - name: distant-signal.retention
+      rules:
+        {{- /*
+        Every aggregator retention step (one pass per pollIntervalSecs, 60s
+        by default) counts its errors under its own `task`, registered at 0.
+        `>= minErrors` (2) over `window` covers two consecutive failed
+        passes and any two within the window, while one transient blip
+        (~1 after increase()'s extrapolation) stays quiet.
+        */}}
+        - alert: DistantSignalRetentionStepFailing
+          expr: |
+            sum by (namespace, task) (increase(distant_signal_aggregator_retention_errors_total{namespace="{{ $ns }}"}[{{ .window }}])) >= {{ .minErrors }}
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "aggregator retention step {{ "{{ $labels.task }}" }} failing ({{ "{{ $value | humanize }}" }} in {{ .window }})"
+            description: "Its rows stop being pruned (some are licensing deadlines); the other steps still run. See the aggregator's log."
+            runbook_url: {{ printf "%s#distantsignalretentionstepfailing" $runbook | quote }}
+    {{- end }}
     {{- end }}
     {{- if $archiveExpiryOn }}
     {{- $retentionDays := int .Values.archive.expiry.retentionDays }}
