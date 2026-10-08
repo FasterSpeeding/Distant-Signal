@@ -31,6 +31,10 @@ pub(crate) trait StationsSink {
     /// loop waits out the rest of the interval after a restart.
     async fn last_fetched(&self) -> anyhow::Result<Option<DateTime<Utc>>>;
 
+    /// The same cursor as the poll loop reads it (plan 4.6): the api's GET
+    /// for [`HttpSink`], the freshness row for [`DbSink`].
+    fn cursor(&self) -> ingest::CursorSource<'_>;
+
     /// Writes one whole parsed feed.
     async fn publish(&self, stations: &[StationRecord<'_>]) -> anyhow::Result<()>;
 }
@@ -50,6 +54,10 @@ impl StationsSink for HttpSink {
         let body: LastFetchedResponse =
             ingest::get_json(&self.client, &self.url, &self.tokens).await?;
         Ok(body.fetched_at)
+    }
+
+    fn cursor(&self) -> ingest::CursorSource<'_> {
+        ingest::CursorSource::http(&self.client, &self.url, &self.tokens)
     }
 
     async fn publish(&self, stations: &[StationRecord<'_>]) -> anyhow::Result<()> {
@@ -77,6 +85,10 @@ pub(crate) struct DbSink {
 impl StationsSink for DbSink {
     async fn last_fetched(&self) -> anyhow::Result<Option<DateTime<Utc>>> {
         ds_store::freshness::last_stations_fetch(&self.pool).await
+    }
+
+    fn cursor(&self) -> ingest::CursorSource<'_> {
+        ingest::CursorSource::db(|| ds_store::freshness::last_stations_fetch(&self.pool))
     }
 
     async fn publish(&self, stations: &[StationRecord<'_>]) -> anyhow::Result<()> {
