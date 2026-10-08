@@ -854,7 +854,7 @@ strictly wider audience than `get secrets` — never sees it.
 Off by default. When `archive.enabled` is false, the aggregator renders no
 `ARCHIVE_*` env and its retention prunes simply delete. When enabled, the
 rows that `trains` retention is about to prune (together with their
-`train_movement_events`/`train_current_state` children) are written first to
+`train_movement_events`/`train_current_state`/`train_reasons` children) are written first to
 S3-compatible storage as zstd JSON Lines, and deleted only once the upload
 is confirmed (size plus ETag = body MD5). `archive.s3.bucket` and
 `archive.s3.existingSecret` are required when enabled. Something must also

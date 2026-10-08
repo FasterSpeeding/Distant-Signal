@@ -2405,8 +2405,9 @@ aggregator:
 archive:
   enabled: false
   # -- Tables to archive before pruning (explicit opt-in). Supported:
-  #   - trains  -> the trains row plus its cascaded train_movement_events and
-  #                train_current_state rows, one object per table per batch
+  #   - trains  -> the trains row plus its cascaded train_movement_events,
+  #                train_current_state and train_reasons rows (not the
+  #                transient notifier_forward_queue), one object per table per batch
   #                under service_date=YYYY-MM-DD/. Movement events are
   #                archived WITHOUT raw_body (the verbatim TRUST message).
   # Deliberately NOT archivable (the binary refuses to start if listed):
@@ -2455,8 +2456,8 @@ archive:
   # Client-side expiry (crates/aggregator/src/archive_expiry.rs), for stores
   # with no lifecycle API. OFF BY DEFAULT, and DRY-RUN by default once
   # enabled. Needs archive.enabled. A task in the aggregator lists
-  # <prefix>/<table>/ for trains, train_movement_events and
-  # train_current_state and deletes an object only if its key matches
+  # <prefix>/<table>/ for trains, train_movement_events, train_current_state
+  # and train_reasons and deletes an object only if its key matches
   # <prefix>/<table>/service_date=YYYY-MM-DD/part-<19 digits>.jsonl.zst
   # exactly and the service_date IN THE KEY (never LastModified) is older
   # than the current rail day (02:00 Europe/London) minus retentionDays.
