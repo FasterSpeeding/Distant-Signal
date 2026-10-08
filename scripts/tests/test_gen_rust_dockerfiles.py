@@ -94,11 +94,67 @@ class SpliceTests(unittest.TestCase):
                 gen.splice(text, "new\n", Path("x"))
 
 
+class BuildInputsTests(unittest.TestCase):
+    """The per-Dockerfile build-context allowlists."""
+
+    def test_rust_allows(self) -> None:
+        """RUST_INPUTS and their contents, minus target/ and env files."""
+        for path in (
+            "Cargo.toml",
+            "crates/api/src/main.rs",
+            "reference-data/toc-codes.csv",
+            "charts/distant-signal/files/db-grants.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(gen.rust_allows(path))
+        for path in (
+            "docs/README.md",
+            "frontend/package.json",
+            "charts/distant-signal/values.yaml",
+            "crates/api/target/debug/api",
+            "crates/api/local.env",
+            "Cargo.toml.orig",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(gen.rust_allows(path))
+
+    def test_every_hidden_input_is_allowed(self) -> None:
+        """Each include_str!/build.rs/COPY input is in the Rust context."""
+        found = list(gen.hidden_inputs())
+        paths = {path for _, path in found}
+        # The scan sees the known ones (so it is not silently empty).
+        for known in (
+            "charts/distant-signal/files/db-grants.yaml",
+            "reference-data/tiploc-parent-stations.csv",
+            "reference-data/delay-attribution-reasons.tsv",
+            "crates/ds-store/migrations",
+            "lines",
+        ):
+            self.assertIn(known, paths)
+        for where, path in found:
+            with self.subTest(where=where, path=path):
+                self.assertTrue(gen.rust_allows(path))
+
+    def test_ignore_file_is_an_allowlist(self) -> None:
+        """Everything is ignored first, then RUST_INPUTS let back in."""
+        lines = gen.rust_ignore_lines()
+        self.assertEqual(lines[0], "*")
+        for path in gen.RUST_INPUTS:
+            self.assertIn(f"!{path}", lines)
+
+    def test_ignore_path_is_buildkits(self) -> None:
+        """BuildKit's name: `<Dockerfile>.dockerignore` beside it."""
+        self.assertEqual(
+            gen.ignore_path(Path("/r/docker/api.Dockerfile")),
+            Path("/r/docker/api.Dockerfile.dockerignore"),
+        )
+
+
 class CommittedFilesTests(unittest.TestCase):
     """The repo's own Dockerfiles."""
 
     def test_committed_dockerfiles_are_current(self) -> None:
-        """`--check` passes on the committed docker/*.Dockerfile."""
+        """`--check` passes on the committed Dockerfiles and ignore files."""
         with contextlib.redirect_stdout(io.StringIO()) as out:
             status = gen.main(["--check"])
         self.assertEqual(status, 0, out.getvalue())

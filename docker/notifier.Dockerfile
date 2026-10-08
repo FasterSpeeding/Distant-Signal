@@ -50,6 +50,9 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
 WORKDIR /app
 
 FROM chef AS planner
+# `.` is the build context as this Dockerfile's .dockerignore allowlist
+# leaves it: the workspace and the data files it embeds or ships, not the
+# whole repo (see the generator's docstring, "Build inputs").
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
