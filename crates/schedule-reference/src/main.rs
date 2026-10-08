@@ -913,10 +913,6 @@ async fn record_completed_publish(sink: &impl PublishSink, delivery: &str) {
 /// the per-TIPLOC service-mode tally; a failed read is retryable, like an
 /// unreadable ALF file. An empty result (no `TI` records at all) is never
 /// sent: the route replaces the whole table, so it would wipe it.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
-)]
 async fn publish_tiploc_locations(
     sink: &impl PublishSink,
     config: &Config,
@@ -1502,10 +1498,6 @@ async fn publish_cif_derived_products(
 /// hide which of them each publish actually reads. The eighth argument is
 /// `outcome`, the per-cycle failure ledger the 2026-09-25 retry fix threads
 /// through every publish -- see [`CycleOutcome`].
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them; see the doc comment"
-)]
 async fn publish_schedule_line_population(
     sink: &impl PublishSink,
     config: &Config,
@@ -1968,10 +1960,6 @@ fn schedule_destination_departures_row_iter(
 ///    (`crates/api/src/routes/mod.rs:86`) with ~3.3x headroom, but it is
 ///    sent in [`PUBLISH_CHUNK_ROWS`]-row chunks anyway, as one diff publish
 ///    -- see [`post_date_scoped_rows_in_chunks`] for the chunk contract.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
-)]
 async fn publish_schedule_destination_departures(
     sink: &impl PublishSink,
     config: &Config,

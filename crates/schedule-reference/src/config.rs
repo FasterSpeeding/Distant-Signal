@@ -327,7 +327,7 @@ mod tests {
     /// required arguments, plus `args`.
     fn argv(args: &[&str]) -> Vec<String> {
         let lines = common::manifest_dir!().join("../../lines");
-        let mut argv: Vec<String> = [
+        let mut full: Vec<String> = [
             "schedule-reference",
             "--lines-dir",
             lines.to_str().unwrap(),
@@ -343,8 +343,8 @@ mod tests {
         .iter()
         .map(ToString::to_string)
         .collect();
-        argv.extend(args.iter().map(ToString::to_string));
-        argv
+        full.extend(args.iter().map(ToString::to_string));
+        full
     }
 
     fn parse(args: &[&str]) -> Config {

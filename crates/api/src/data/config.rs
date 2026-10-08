@@ -11,6 +11,10 @@ fn parse_toml_path<T: DeserializeOwned>(path: &'_ str) -> Result<T> {
 }
 
 #[derive(Debug, clap::Parser)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "clap arguments: each bool is an independent on/off env setting, not a state machine"
+)]
 pub struct ServiceArguments {
     #[arg(short, long, env, default_value = "0.0.0.0:8080")]
     pub bind_url: String,

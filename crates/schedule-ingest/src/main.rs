@@ -101,6 +101,10 @@ async fn main() -> std::process::ExitCode {
     clippy::expect_used,
     reason = "parse_check_times guarantees a non-empty list"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the process's startup sequence, read top to bottom; plan 2d's sink choice tipped it over"
+)]
 async fn run() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 

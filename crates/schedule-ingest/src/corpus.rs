@@ -13,7 +13,7 @@
 //!    row with no NLC or fewer than `CORPUS_MIN_ROWS` rows is REJECTED:
 //!    counted, logged and moved to `storage_dir/corpus/rejected/`, never
 //!    loaded;
-//! 3. hands the whole set to the sink (`sink.rs`): POSTed to api, or under
+//! 3. hands the whole set to the sink (`sink.rs`): sent by POST to api, or under
 //!    `INGEST_SINK=db` written directly; either way `corpus_locations` is
 //!    replaced in one transaction;
 //! 4. on success moves the file to `storage_dir/corpus/`, keeping the

@@ -83,7 +83,7 @@ impl SinkError {
             .chain()
             .filter_map(|cause| cause.downcast_ref::<sqlx::Error>())
             .filter_map(sqlx::Error::as_database_error)
-            .filter_map(|db| db.code())
+            .filter_map(sqlx::error::DatabaseError::code)
             .any(|code| code.starts_with("22") || code.starts_with("23"));
         if data_error {
             Self::Rejected(err)
@@ -128,6 +128,10 @@ pub(crate) trait IngestSink {
 }
 
 /// The configured sink.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one value per process, built once at startup; boxing buys nothing"
+)]
 pub(crate) enum Sink {
     Http(HttpSink),
     Db(DbSink),
@@ -212,6 +216,7 @@ pub(crate) struct DbSink {
 
 impl DbSink {
     /// A sink on an existing pool (tests).
+    #[cfg(test)]
     pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -414,8 +419,9 @@ pub(crate) mod tests {
     /// deserialises from the HTTP body), and never reaches the database.
     #[tokio::test]
     async fn the_direct_sink_refuses_a_bad_feed_record_with_the_route_s_message() {
+        type Mutation = Box<dyn Fn(&mut ScheduleFeedIngestRequest)>;
         let sink = offline_sink();
-        let cases: Vec<Box<dyn Fn(&mut ScheduleFeedIngestRequest)>> = vec![
+        let cases: Vec<Mutation> = vec![
             Box::new(|r| r.source_sha256 = "NOT-A-SHA".to_string()),
             Box::new(|r| r.source_bytes = u64::MAX),
             Box::new(|r| r.source_file = "  ".to_string()),
@@ -616,6 +622,13 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
     async fn the_direct_sink_records_a_feed_delivery_as_the_route_does() {
+        type Row = (
+            DateTime<Utc>,
+            serde_json::Value,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        );
         let delivered_at = Utc.with_ymd_and_hms(2001, 2, 3, 4, 5, 6).unwrap();
         let cleanup = cleanup_pool().await;
         let delete = || async {
@@ -652,13 +665,6 @@ mod db_tests {
         again.source_file = "other.zip".to_string();
         sink.record_feed_ingest(&again).await.unwrap();
 
-        type Row = (
-            DateTime<Utc>,
-            serde_json::Value,
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-        );
         let row: Row = sqlx::query_as(
             "SELECT ingested_at, files, source_file, source_bytes, source_sha256 \
              FROM schedule_feed_ingests WHERE delivered_at = $1",
