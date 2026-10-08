@@ -22,6 +22,35 @@ pub(crate) enum IngestSink {
 /// 4). `DATABASE_MAX_CONNECTIONS` overrides it (`common::pg`).
 pub(crate) const DB_POOL_SIZE: u32 = 3;
 
+/// [`Config::forward_publish_days`] by default: four weeks ahead (raised
+/// from 7 on 2026-10-08 so the train search and DS-MCP's `find_services`
+/// can see that far). At production sizes each extra day costs ~190 MB of
+/// table and index (~266k `schedule_destination_departures` rows and
+/// ~490k `schedule_calling_points_full` rows) and ~30 s of publish cycle.
+pub(crate) const DEFAULT_FORWARD_PUBLISH_DAYS: i64 = 28;
+
+/// The smallest [`Config::forward_publish_days`] accepted: a pin may be up
+/// to `PIN_MAX_DAYS_AHEAD` days ahead and schedule-matches against the
+/// published `schedule_destination_departures`, and `api`'s train search
+/// always accepts a date that far ahead (`SEARCH_WINDOW_FORWARD_DAYS` in
+/// `crates/api/src/routes/trains.rs`, also 7), so a shorter window would
+/// leave both answering dates nothing is published for.
+pub(crate) const MIN_FORWARD_PUBLISH_DAYS: i64 = ds_store::tracking::PIN_MAX_DAYS_AHEAD;
+
+/// The largest [`Config::forward_publish_days`] accepted. The cost is
+/// linear (see [`DEFAULT_FORWARD_PUBLISH_DAYS`]): 60 days is ~6 GB more
+/// table than the default window and ~15 more minutes per cycle. A whole
+/// cycle must finish inside the container's /livez stall window
+/// (`scheduleFeed.reference.progressStallSecs`, 7200 s), and the further
+/// out a date is, the more of its late (STP) changes the CIF does not
+/// hold yet.
+pub(crate) const MAX_FORWARD_PUBLISH_DAYS: i64 = 60;
+
+const _: () = assert!(
+    MIN_FORWARD_PUBLISH_DAYS <= DEFAULT_FORWARD_PUBLISH_DAYS
+        && DEFAULT_FORWARD_PUBLISH_DAYS <= MAX_FORWARD_PUBLISH_DAYS
+);
+
 /// CLI/env configuration for the `schedule-reference` service.
 ///
 /// Mounts the same PVC `schedule-ingest` writes to, READ-ONLY -- see
@@ -194,6 +223,30 @@ pub(crate) struct Config {
         default_value = "http://api:8080/private/tiploc-locations"
     )]
     pub tiploc_locations_url: String,
+
+    /// How many days beyond today the per-date products are published on
+    /// every cycle (`SCHEDULE_FORWARD_PUBLISH_DAYS`, chart value
+    /// `scheduleFeed.reference.forwardPublishDays`): today through
+    /// today+N, inclusive, for `schedule_destination_departures`,
+    /// `schedule_calling_points_full` and `schedule_services`. See
+    /// `main::publish_cif_derived_products`.
+    ///
+    /// One window for all three, on purpose: a search result
+    /// (`schedule_destination_departures`) links to `/Train/by-uid`, whose
+    /// stops come from `schedule_calling_points_full`, and both label buses
+    /// and ferries from `schedule_services`. `/Trips/plan` reads
+    /// `schedule_calling_points_full` for whatever date it is asked, so it
+    /// reaches as far as this window too.
+    ///
+    /// Bounded below by [`MIN_FORWARD_PUBLISH_DAYS`] and above by
+    /// [`MAX_FORWARD_PUBLISH_DAYS`]; see those for why.
+    #[arg(
+        long,
+        env = "SCHEDULE_FORWARD_PUBLISH_DAYS",
+        default_value_t = DEFAULT_FORWARD_PUBLISH_DAYS,
+        value_parser = clap::value_parser!(i64).range(MIN_FORWARD_PUBLISH_DAYS..=MAX_FORWARD_PUBLISH_DAYS),
+    )]
+    pub forward_publish_days: i64,
 
     /// The static line catalogue -- same `--lines-dir`/`LINES_DIR`
     /// `value_parser` pattern as `crates/aggregator/src/config.rs`'s own
@@ -380,6 +433,26 @@ mod tests {
     }
 
     #[test]
+    fn the_forward_publish_window_defaults_to_28_days_and_is_bounded() {
+        assert_eq!(parse(&[]).forward_publish_days, 28);
+        assert_eq!(
+            parse(&["--forward-publish-days", "14"]).forward_publish_days,
+            14
+        );
+        assert_eq!(
+            parse(&["--forward-publish-days", "7"]).forward_publish_days,
+            ds_store::tracking::PIN_MAX_DAYS_AHEAD,
+            "the minimum is the pin horizon"
+        );
+        for out_of_range in ["6", "61", "-1"] {
+            assert!(
+                Config::try_parse_from(argv(&["--forward-publish-days", out_of_range])).is_err(),
+                "{out_of_range} must be refused"
+            );
+        }
+    }
+
+    #[test]
     fn an_unknown_sink_is_a_startup_error() {
         assert!(Config::try_parse_from(argv(&["--ingest-sink", "redis"])).is_err());
     }
@@ -404,6 +477,10 @@ mod tests {
         };
         assert_eq!(env("ingest_sink").as_deref(), Some("INGEST_SINK"));
         assert_eq!(env("database_url").as_deref(), Some("DATABASE_URL"));
+        assert_eq!(
+            env("forward_publish_days").as_deref(),
+            Some("SCHEDULE_FORWARD_PUBLISH_DAYS")
+        );
     }
 }
 
@@ -466,6 +543,11 @@ mod chart_env_wiring_tests {
 
         // The db sink (plan 2a.4): `INGEST_SINK` and the role's
         // `DATABASE_URL` (through `databaseEnvFor`, as every DB service).
+        assert!(
+            block.contains("- name: SCHEDULE_FORWARD_PUBLISH_DAYS"),
+            "the reference container must set SCHEDULE_FORWARD_PUBLISH_DAYS \
+             (scheduleFeed.reference.forwardPublishDays)"
+        );
         assert!(
             block.contains("- name: INGEST_SINK"),
             "the reference container must set INGEST_SINK (scheduleFeed.reference.ingest.sink)"
