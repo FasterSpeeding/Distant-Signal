@@ -48,6 +48,10 @@ fn rand_suffix() -> String {
 
 struct Db {
     pool: PgPool,
+    /// Fixture cleanup: `MIGRATION_DATABASE_URL` (the owner, under
+    /// scripts/test-postgres-roles.py) when set, since the narrow writer
+    /// role may not delete what its handlers write; else `DATABASE_URL`.
+    admin: PgPool,
     prefix: String,
 }
 
@@ -59,8 +63,17 @@ impl Db {
             .connect(&url)
             .await
             .expect("connect");
+        let admin = match std::env::var("MIGRATION_DATABASE_URL") {
+            Ok(admin_url) => sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&admin_url)
+                .await
+                .expect("connect MIGRATION_DATABASE_URL"),
+            Err(_) => pool.clone(),
+        };
         Self {
             pool,
+            admin,
             prefix: format!("p3c-test-{}:", rand_suffix()),
         }
     }
@@ -138,7 +151,7 @@ impl Db {
         ] {
             sqlx::query(sql)
                 .bind(&self.prefix)
-                .execute(&self.pool)
+                .execute(&self.admin)
                 .await
                 .unwrap_or_else(|err| panic!("{sql}: {err}"));
         }

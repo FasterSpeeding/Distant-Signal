@@ -321,6 +321,32 @@ chart's Secret. Nothing connects as it until both switches are on, and
 `connect` refuses to render without the db sink. CI runs schedule-reference's
 DB suite as this role.
 
+### The writer is narrow; no member may SET ROLE (security review M1, 2026-10-08)
+
+A RESTRICTIVE row policy binds the role a session *runs as*. While the
+writer was an `observed` member of `distant_signal_app` it could run
+`SET ROLE distant_signal_app` and shed `line_status`'s `ds_grants_writer`
+policy (reproduced in the review), and a writer connecting as app had no
+policy at all. So, correcting the header of migration
+`20261009131300_line_status_rls.sql` (migrations are immutable, so the
+correction lives here), "a restrictive policy ... narrows the writer
+whatever else applies" holds only for a session that is, and stays, the
+writer's own role:
+
+- the writer's role is `narrow` in `db-grants.yaml`: no longer a member of
+  app, exactly its grants (its loops, handlers and outbox applier; the
+  unused U on `train_movement_events` and `trust_event_backlog`, D on
+  `corpus_crosswalk_build` and U on the `corpus_*_crs` tables dropped);
+- every membership `postgres-grants.sql` grants is `WITH INHERIT TRUE,
+  SET FALSE` (Postgres 16+; production runs 16.15): an observed role still
+  uses app's privileges but may not `SET ROLE` to it, nor to a group;
+- the chart refuses `ingestWriter.streams.tfl: apply` unless the writer
+  connects as its own role (M4).
+
+`train_subscriptions` (each user's subscriptions) is class `personal` now,
+so out of `read_shared`; each role has column grants for exactly what it
+reads and writes (M2).
+
 ### Narrow components never fall back (security review H2, 2026-10-08)
 
 Every component whose role is narrow (schedule_reference, schedule_ingest,

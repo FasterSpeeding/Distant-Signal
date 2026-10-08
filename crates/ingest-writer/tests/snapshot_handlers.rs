@@ -48,6 +48,10 @@ fn rand_suffix() -> String {
 struct Db {
     pool: PgPool,
     run: String,
+    /// Fixture cleanup: `MIGRATION_DATABASE_URL` (the owner, under
+    /// scripts/test-postgres-roles.py) when set, since the narrow writer
+    /// role may not delete what its handlers write; else `DATABASE_URL`.
+    admin: PgPool,
 }
 
 impl Db {
@@ -58,9 +62,18 @@ impl Db {
             .connect(&url)
             .await
             .expect("connect");
+        let admin = match std::env::var("MIGRATION_DATABASE_URL") {
+            Ok(admin_url) => sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&admin_url)
+                .await
+                .expect("connect MIGRATION_DATABASE_URL"),
+            Err(_) => pool.clone(),
+        };
         Self {
             pool,
             run: rand_suffix(),
+            admin,
         }
     }
 
@@ -114,12 +127,13 @@ impl Db {
             .unwrap();
     }
 
-    /// Best effort: the writer role has no DELETE.
+    /// Best effort, through the owner when there is one (the writer role
+    /// has no DELETE on the snapshot tables).
     async fn cleanup(&self, sql: &str, bind: &str) {
-        let _ = sqlx::query(sql).bind(bind).execute(&self.pool).await;
+        let _ = sqlx::query(sql).bind(bind).execute(&self.admin).await;
         let _ = sqlx::query("DELETE FROM ingest_dedup WHERE key LIKE '%:' || $1 || '%'")
             .bind(format!("test-3a6-{}:", self.run))
-            .execute(&self.pool)
+            .execute(&self.admin)
             .await;
     }
 }

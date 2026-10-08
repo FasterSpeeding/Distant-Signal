@@ -286,9 +286,15 @@ async fn an_entry_is_applied_once_with_dedup() {
         0
     );
     assert_eq!(db.dedup_keys().await.len(), 2);
+    // Aged through the owner when there is one: the writer role has no
+    // UPDATE on ingest_dedup.
+    let admin = match std::env::var("MIGRATION_DATABASE_URL") {
+        Ok(url) => PgPool::connect(&url).await.unwrap(),
+        Err(_) => db.pool.clone(),
+    };
     sqlx::query("UPDATE ingest_dedup SET applied_at = now() - interval '49 hours' WHERE key = $1")
         .bind(db.key("k1"))
-        .execute(&db.pool)
+        .execute(&admin)
         .await
         .unwrap();
     assert!(
