@@ -34,6 +34,19 @@ import type { BoardCallingPoint, CreateJourneyResponse, LineTrainSummaryLive } f
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
 
+/** How many days past London's today a pin's service date may be. Mirrors
+ * the backend's `PIN_MAX_DAYS_AHEAD` (`crates/ds-store/src/tracking.rs`,
+ * 28 since 2026-10-08, the timetable's publish window), which rejects
+ * anything later with the same copy as `pinTooFarMessage`. */
+export const PIN_MAX_DAYS_AHEAD = 28;
+
+/** The last London calendar day a pin may be for, `'YYYY-MM-DD'`. */
+export function lastPinDate(): string {
+  return addCalendarDays(londonToday(), PIN_MAX_DAYS_AHEAD);
+}
+
+const pinTooFarMessage = `That departure is too far ahead — trains can be tracked up to ${PIN_MAX_DAYS_AHEAD} days before they run.`;
+
 /** True unless `destinationCrs` looks like a resolved 3-letter code AND
  * the row's own destination doesn't case-insensitively match it. While
  * the field still holds partial/typed-name text (or is empty), every row
@@ -1015,6 +1028,14 @@ export function TrackTrainForm({
       );
       return;
     }
+    // The picker's `maxDate` already stops a far pick; this catches a typed
+    // or prefilled one before the round trip. `scheduledDeparture` is a
+    // London wall-clock string, so its first 10 characters are the
+    // service date the backend checks.
+    if (scheduledDeparture.slice(0, 10) > lastPinDate()) {
+      setFieldError(pinTooFarMessage);
+      return;
+    }
     setFieldError(null);
     if (groups.length > 0) {
       setDestinationPromptOpened(true);
@@ -1471,7 +1492,12 @@ export function TrackTrainForm({
                 // (`crates/api/src/data/train_tracking.rs`'s `MAX_PIN_AGE`) --
                 // this hint is here so a rejection is rare rather than the
                 // user's first encounter with the rule, per Decision 1.
-                description="Must be within the last 6 hours, or any time in the future"
+                description={`Must be within the last 6 hours, or up to ${PIN_MAX_DAYS_AHEAD} days ahead`}
+                // The backend's pin horizon (`PIN_MAX_DAYS_AHEAD`), as the
+                // last minute of that London day: Mantine clamps the picked
+                // date-time against this on close, so a bare date would
+                // turn an evening departure on the last day into midnight.
+                maxDate={`${lastPinDate()} 23:59:59`}
                 // Same reasoning as the Origin field above -- a cleared
                 // departure is validated by `handleSubmit` itself now, not by
                 // native `required` constraint validation.
