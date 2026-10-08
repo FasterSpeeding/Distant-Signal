@@ -67,6 +67,28 @@ pub async fn list_population_versions(
     .await?)
 }
 
+/// The tag a reader holds for a population version: exactly the api's
+/// `ETag` for it (`"slp-<updated_at in µs>"`, `routes/ingest.rs`'s
+/// `population_etag`), so full-coverage-consumer keeps one kind of
+/// validator whichever source it reads from.
+pub fn population_version_tag(updated_at: DateTime<Utc>) -> String {
+    format!("\"slp-{}\"", updated_at.timestamp_micros())
+}
+
+/// The version a [`population_version_tag`] (or the api's `ETag`, weak or
+/// not) names; `None` for anything else.
+pub fn parse_population_version_tag(tag: &str) -> Option<DateTime<Utc>> {
+    let tag = tag.trim();
+    let tag = tag.strip_prefix("W/").unwrap_or(tag);
+    let micros = tag
+        .strip_prefix('"')?
+        .strip_suffix('"')?
+        .strip_prefix("slp-")?
+        .parse::<i64>()
+        .ok()?;
+    DateTime::from_timestamp_micros(micros)
+}
+
 /// trust-consumer's reference set, from the view
 /// `ingest_active_tracked_trains`: the same rows as
 /// [`crate::tracking::list_active_tracked_trains`] (the api's
@@ -157,6 +179,23 @@ pub async fn select_sample_stations_from(
         &pin_counts,
         selection,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_population_version_tag_round_trips_and_matches_the_api_etag() {
+        let at = DateTime::from_timestamp_micros(1_790_000_000_123_456).unwrap();
+        let tag = population_version_tag(at);
+        assert_eq!(tag, "\"slp-1790000000123456\"");
+        assert_eq!(parse_population_version_tag(&tag), Some(at));
+        assert_eq!(parse_population_version_tag(&format!("W/{tag}")), Some(at));
+        for other in ["*", "\"abc\"", "slp-1", "\"slp-x\"", ""] {
+            assert_eq!(parse_population_version_tag(other), None, "{other}");
+        }
+    }
 }
 
 /// Database-gated: each test gets its own throwaway database
