@@ -111,6 +111,7 @@ async fn run() -> anyhow::Result<()> {
     common::logging::init("schedule-ingest");
 
     let config = Config::parse();
+    common::metrics::ingest_sink_info(&common::metrics::value_enum_name(&config.ingest_sink));
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }

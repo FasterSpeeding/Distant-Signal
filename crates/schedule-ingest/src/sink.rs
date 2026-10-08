@@ -242,6 +242,8 @@ impl DbSink {
             },
         )
         .await;
+        // The db_pool_* series at 0 (main installs the recorder first).
+        ds_store::pool::register_metrics();
         let pool =
             ds_store::pool::PoolSettings::from_env(APPLICATION_NAME, DEFAULT_MAX_CONNECTIONS)?
                 .connect(database_url.expose())
