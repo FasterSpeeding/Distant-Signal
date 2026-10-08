@@ -1424,10 +1424,12 @@ so changing any of them rolls the StatefulSet (`RollingUpdate`, one pod).
 Postgres restarts, which `shared_buffers`, `wal_buffers` and `huge_pages`
 need anyway. Expect a short outage. Postgres stops cleanly (the image's
 SIGINT stop signal requests a fast shutdown), then starts with a cold
-buffer cache. Because the pod template carries the `helm.sh/chart` and
-`app.kubernetes.io/version` labels, **every chart upgrade restarts
-Postgres anyway**, even when these settings don't change. No config
-checksum annotation is needed.
+buffer cache. The pod template carries only labels that stay the same
+across releases (no `helm.sh/chart` or `app.kubernetes.io/version`), so a
+chart upgrade that changes none of these settings (and not the Postgres
+image or the rest of the pod spec) leaves Postgres running. Because the
+settings are in the pod template itself, no config checksum annotation is
+needed.
 
 #### Observability settings (2026-09-27)
 
