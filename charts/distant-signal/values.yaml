@@ -369,8 +369,9 @@ postgresql:
       trust_consumer:
         # -- Connect trust-consumer (`trustConsumer.ingest.sink: db`
         # required) as `distant_signal_trust_consumer` (plan 3b.4, D1). A
-        # narrow role, not a member of `app`: the train-event and
-        # forward-signal writes only. Created with the others whenever
+        # narrow role, not a member of `app`: the train-event,
+        # forward-signal and outbox writes, SELECT only on
+        # train_subscriptions. Created with the others whenever
         # `enabled` is on, unused until then.
         connect: false
         # -- Password. Generated when empty (and no `existingSecret`).
@@ -2799,6 +2800,10 @@ trustConsumer:
     # `distant_signal_trust_consumer`. Adds Postgres egress and admission to
     # the NetworkPolicies and the pool to the connection budgets. The
     # reads (tracked trains, STANOX/CRS) stay on the api until phase 4.
+    # `db` needs `ingestWriter.enabled` and `ingestWriter.loops.enabled`
+    # (the render fails otherwise): the events that change a subscription
+    # (resolutions, cancellations, reinstatements) wait in
+    # train_event_outbox for the writer's 5 s train_event_outbox loop.
     sink: http
     database:
       # -- Its Postgres pool under `db` (DATABASE_MAX_CONNECTIONS; spec

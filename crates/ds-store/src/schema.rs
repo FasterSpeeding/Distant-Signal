@@ -352,6 +352,19 @@ mod tests {
         assert!(has(DbRole::Aggregator, "tocs", "SELECT"));
         // ...but not on a personal one.
         assert!(!has(DbRole::Aggregator, "users", "SELECT"));
+        // Plan 3b (decided 2026-10-08): trust-consumer reads subscriptions
+        // and queues the events that change them; the writer applies them.
+        assert!(has(DbRole::TrustConsumer, "train_subscriptions", "SELECT"));
+        assert!(!has(DbRole::TrustConsumer, "train_subscriptions", "UPDATE"));
+        assert!(has(DbRole::TrustConsumer, "train_event_outbox", "INSERT"));
+        assert!(!has(DbRole::TrustConsumer, "train_event_outbox", "DELETE"));
+        for privilege in ["SELECT", "UPDATE", "DELETE"] {
+            assert!(
+                has(DbRole::Writer, "train_event_outbox", privilege),
+                "{privilege}"
+            );
+        }
+        assert!(has(DbRole::Writer, "train_subscriptions", "UPDATE"));
         // No role is required to hold anything on the migrations table
         // beyond what the version query itself needs.
         assert!(

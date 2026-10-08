@@ -396,7 +396,6 @@ BEGIN
         ('train_subscriptions', 'trust_backlog', 'SELECT', ''),
         ('train_subscriptions', 'trust_backlog', 'UPDATE', ''),
         ('train_subscriptions', 'trust_consumer', 'SELECT', ''),
-        ('train_subscriptions', 'trust_consumer', 'UPDATE', ''),
         ('train_movement_events', 'trust_backlog', 'SELECT', ''),
         ('train_movement_events', 'trust_backlog', 'INSERT', ''),
         ('train_movement_events', 'trust_backlog', 'UPDATE', ''),
@@ -416,6 +415,8 @@ BEGIN
         ('train_reasons', 'trust_backlog', 'UPDATE', ''),
         ('notifier_forward_queue', 'trust_consumer', 'SELECT', ''),
         ('notifier_forward_queue', 'trust_consumer', 'INSERT', ''),
+        ('train_event_outbox', 'trust_consumer', 'SELECT', ''),
+        ('train_event_outbox', 'trust_consumer', 'INSERT', ''),
         ('corpus_stanox_crs', 'trust_backlog', 'SELECT', ''),
         ('stanox_crs', 'trust_backlog', 'SELECT', ''),
         ('stanox_crs', 'trust_consumer', 'SELECT', ''),
@@ -441,7 +442,8 @@ BEGIN
         ('train_current_state_id_seq', 'trust_backlog'),
         ('train_current_state_id_seq', 'trust_consumer'),
         ('trust_event_backlog_id_seq', 'trust_backlog'),
-        ('notifier_forward_queue_id_seq', 'trust_consumer')) AS v(seq, kind)
+        ('notifier_forward_queue_id_seq', 'trust_consumer'),
+        ('train_event_outbox_id_seq', 'trust_consumer')) AS v(seq, kind)
         WHERE to_regclass(format('public.%I', v.seq)) IS NOT NULL
     LOOP
         EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE public.%I TO %I',

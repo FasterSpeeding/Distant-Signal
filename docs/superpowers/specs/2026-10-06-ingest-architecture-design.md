@@ -624,11 +624,12 @@ S" means through `distant_signal_read_shared`.
 |---|---|---|---|---|
 | **Personal** (`users`, `sessions`, `oidc_login_state`, `pinned_*`, `custom_lines`, `custom_line_group_grants`, `groups`, `group_*`, `journeys`, `journey_legs`, `journey_templates`, `journey_template_legs`, `journey_template_skipped_dates`, `push_subscriptions`, `tracked_train_tickets`, `unlisted_links`) | SIUD | – | – | notifier: S on what it notifies from (`push_subscriptions`, `journeys`, `journey_legs`, `users`, …; phase 0b gives the exact list), plus D on `push_subscriptions` (gone endpoints, `notifier/src/queries.rs`); aggregator: S on `custom_lines` (custom-line status), or the `ingest_custom_line_stations` view once it exists; dump: S (all) |
 | **Shared train** `trains` | SIU (+D: the journey cleanup path) | SIU | trust_backlog: SIU | aggregator: SUD (archive/expiry); notifier: S |
-| `train_subscriptions` | SIUD | SU (match sweeps bind) | trust_backlog: SU (reinstatement reopen) | notifier: S; trust_consumer_ro: through the view only |
+| `train_subscriptions` | SIUD | SU (match sweeps bind; the `train_event_outbox` loop applies trust-consumer's resolutions, cancellations and reinstatements) | trust_backlog: SU (reinstatement reopen); trust_consumer: S only (decided 2026-10-08) | notifier: S; trust_consumer_ro: through the view only |
 | `train_movement_events`, `train_current_state` | S (+I/D only if 0b observes it; the public "replay" paths) | SIU | trust_backlog: SIU | aggregator: SID (archive) |
 | `trust_event_backlog` | S | SU (backlog-match sweep) | trust_backlog: SI | aggregator: SD (retention) |
 | `train_reasons` | S | – | trust_backlog: SIU | |
-| `notifier_forward_queue` | S | SI | – | notifier: SD |
+| `notifier_forward_queue` | S | SI | trust_consumer: SI | notifier: SD |
+| `train_event_outbox` (new, plan 3b.3) | S | SUD (its loop applies and deletes rows, or marks one rejected) | trust_consumer: SI (the events that change a subscription, and those queued behind them) | – |
 | **Notifier state** (`notifier_cursor`, `train_notification_state`, `line_notification_state`, `journey_leg_notification_state`) | S (+D if 0b observes the account-deletion path) | – | – | notifier: SIUD |
 | **Ingest snapshots** `station_samples`, `station_full_coverage_samples`, `full_coverage_line_stats`, `full_coverage_line_window_stats`, `island_of_ireland_*` | S | SIU | – | aggregator: S, plus D on `station_samples` and U/I on `full_coverage_line_stats` (it writes both today); readers: S where §11 lists it |
 | `line_status`, `line_status_history` | S | SIU (TfL rows) | – | aggregator: SIUD |

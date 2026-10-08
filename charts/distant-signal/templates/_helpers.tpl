@@ -1113,7 +1113,9 @@ trustConsumer.
 {{/*
 True (non-empty) when the TRUST consumer behind the role writes Postgres
 directly: <consumer>.ingest.sink is `db` (trust-backlog-consumer, plan 3b.1;
-trust-consumer, plan 3b.3). Fails on a sink other than `http` or `db`.
+trust-consumer, plan 3b.3). Fails on a sink other than `http` or `db`, and
+for trust-consumer's `db` without the ingest-writer's loops (its
+train_event_outbox loop applies the subscription changes).
 Takes (dict "root" $ "service" "trust_backlog"|"trust_consumer").
 */}}
 {{- define "distant-signal.trustSinkDb" -}}
@@ -1124,6 +1126,9 @@ Takes (dict "root" $ "service" "trust_backlog"|"trust_consumer").
 {{- fail (printf "%s.ingest.sink must be http or db, not %q." $key $sink) -}}
 {{- end -}}
 {{- if eq $sink "db" -}}
+{{- if and (eq .service "trust_consumer") (not (and .root.Values.ingestWriter.enabled .root.Values.ingestWriter.loops.enabled)) -}}
+{{- fail "trustConsumer.ingest.sink=db needs ingestWriter.enabled and ingestWriter.loops.enabled: the ingest-writer's train_event_outbox loop applies the events that change a subscription (resolutions, cancellations, reinstatements), which the trust_consumer role may not write (ingest architecture plan 3b.3)." -}}
+{{- end -}}
 true
 {{- end -}}
 {{- end }}

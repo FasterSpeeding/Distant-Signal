@@ -213,6 +213,7 @@ class RenderTest(unittest.TestCase):
             [
                 "notifier_forward_queue",
                 "train_current_state",
+                "train_event_outbox",
                 "train_movement_events",
                 "trains",
             ],
@@ -222,7 +223,6 @@ class RenderTest(unittest.TestCase):
             [
                 "train_current_state",
                 "train_movement_events",
-                "train_subscriptions",
                 "trains",
             ],
         )

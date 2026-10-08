@@ -8,6 +8,7 @@
 //! re-exports these.
 
 pub mod forward_queue;
+pub mod outbox;
 
 pub use forward_queue::{insert_forward_signals, insert_forward_signals_on};
 

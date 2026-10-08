@@ -3,8 +3,12 @@
 //!
 //! | | [`HttpSink`] (`http`, the default) | [`DbSink`] (`db`) |
 //! |---|---|---|
-//! | train events | `POST /private/train-events` | `ds_store::tracking::upsert_train_events_batch_in` |
-//! | forward signals | `POST /private/train-forward-signals` (best effort) | `ds_store::tracking::insert_forward_signals_on`, in the same transaction |
+//! | train events | `POST /private/train-events` | `ds_store::tracking::outbox::write_train_events_deferring`: most directly (`upsert_train_events_batch_in`); a resolution, cancellation or reinstatement, and the later events of its subscription, into `train_event_outbox` for the ingest-writer's loop |
+//! | forward signals | `POST /private/train-forward-signals` (best effort) | `insert_forward_signals_on`, in the same transaction (a deferred event's in its outbox row) |
+//!
+//! The `trust_consumer` role may only read `train_subscriptions` (decided
+//! 2026-10-08), so the events that update a subscription wait for the
+//! writer's `train_event_outbox` loop (5 s); see `ds_store::tracking::outbox`.
 //!
 //! The api's two handlers call the same ds-store writers, so the rows are
 //! the same either way, and so is the `rejected` list the consumer
@@ -169,27 +173,33 @@ impl TrainEventSink for DbSink {
             return Ok(Vec::new());
         }
         let mut tx = self.pool.begin().await?;
-        let outcome = ds_store::tracking::upsert_train_events_batch_in(&mut tx, events).await?;
-        for rejected in &outcome.rejected {
+        let outcome =
+            ds_store::tracking::outbox::write_train_events_deferring(&mut tx, events, |kept| {
+                process::build_forward_signals(kept.iter().copied(), trains_id_by_tracked_train_id)
+            })
+            .await?;
+        tx.commit().await?;
+        let rejected = outcome.written.rejected;
+        for row in &rejected {
             // As `post_train_events` logs each one.
             tracing::warn!(
-                index = rejected.index,
-                dedup_key = %rejected.dedup_key,
-                sqlstate = %rejected.sqlstate,
-                reason = %rejected.reason,
-                constraint = ?rejected.constraint,
-                message = %rejected.message,
-                event = ?events.get(rejected.index),
+                index = row.index,
+                dedup_key = %row.dedup_key,
+                sqlstate = %row.sqlstate,
+                reason = %row.reason,
+                constraint = ?row.constraint,
+                message = %row.message,
+                event = ?events.get(row.index),
                 "rejected train event for a data error; wrote the rest of its batch"
             );
         }
-        let signals = process::build_forward_signals(
-            written(events, &outcome.rejected),
-            trains_id_by_tracked_train_id,
-        );
-        ds_store::tracking::insert_forward_signals_on(&mut *tx, &signals).await?;
-        tx.commit().await?;
-        Ok(outcome.rejected)
+        if !outcome.deferred.is_empty() {
+            tracing::debug!(
+                deferred = outcome.deferred.len(),
+                "train events that change a subscription queued for the ingest-writer"
+            );
+        }
+        Ok(rejected)
     }
 }
 
@@ -199,7 +209,9 @@ impl TrainEventSink for DbSink {
 /// create the users and subscriptions events are written for, nor delete
 /// anything: those fixtures go through `DATABASE_URL_API` when it is set
 /// (the per-service step sets it; the api role may), else `DATABASE_URL`.
-/// Every run writes under its own tag, so nothing has to be deleted first.
+/// The writer's outbox loop runs as `DATABASE_URL_WRITER` when set (the
+/// writer role), else `DATABASE_URL`. Every run writes under its own tag,
+/// so nothing has to be deleted first.
 #[cfg(test)]
 mod db_tests {
     use common::oauth_client::OAuthCredentials;
@@ -231,8 +243,20 @@ mod db_tests {
         connect(&std::env::var("DATABASE_URL_API").unwrap_or_else(|_| database_url())).await
     }
 
+    /// The ingest-writer's outbox loop: see the module docs.
+    async fn writer_pool() -> PgPool {
+        connect(&std::env::var("DATABASE_URL_WRITER").unwrap_or_else(|_| database_url())).await
+    }
+
+    /// One tick of the writer's `train_event_outbox` loop.
+    async fn tick(writer: &PgPool) -> ds_store::tracking::outbox::OutboxTick {
+        ds_store::tracking::outbox::apply_train_event_outbox(writer)
+            .await
+            .unwrap()
+    }
+
     /// One subscriber's train: a user, a `trains` row and a subscription
-    /// linked to it, all under `tag`.
+    /// (linked to it unless pending), all under `tag`.
     struct Fixture {
         tag: String,
         user_id: String,
@@ -242,6 +266,12 @@ mod db_tests {
 
     impl Fixture {
         async fn new(pool: &PgPool, kind: &str) -> Self {
+            Self::with_status(pool, kind, "schedule_matched").await
+        }
+
+        /// `pending` leaves the subscription unlinked, for a resolution to
+        /// link; any other status links it to the train.
+        async fn with_status(pool: &PgPool, kind: &str, status: &str) -> Self {
             let tag = format!("p3bc{kind}{}", chrono::Utc::now().timestamp_micros());
             let user_id = format!("{tag}-user");
             let date: chrono::NaiveDate = "2099-05-05".parse().unwrap();
@@ -255,8 +285,8 @@ mod db_tests {
                 date,
                 Some("EUS"),
                 Some("2099-05-05T18:15:00Z".parse().unwrap()),
-                "schedule_matched",
-                Some(trains_id),
+                status,
+                (status != "pending").then_some(trains_id),
             )
             .await;
             Self {
@@ -312,7 +342,9 @@ mod db_tests {
                  SELECT 'signal ' || (to_jsonb(q) - ARRAY['id', 'trains_id', 'created_at'])::text \
                    FROM notifier_forward_queue q WHERE q.trains_id = $1 \
                  UNION ALL \
-                 SELECT 'subscription ' || resolution_status || ' ' || (trains_id = $1)::text \
+                 SELECT 'subscription ' || resolution_status || ' ' \
+                        || coalesce(unresolved_from, '-') || ' ' \
+                        || coalesce((trains_id = $1)::text, 'unlinked') \
                    FROM train_subscriptions WHERE id = $2",
             )
             .bind(self.trains_id)
@@ -331,8 +363,58 @@ mod db_tests {
             rows
         }
 
+        /// The events of a train resolved by its origin departure: the
+        /// resolving departure, an arrival behind it, and a cancellation and
+        /// reinstatement of the same subscription afterwards.
+        fn resolving_events(&self) -> Vec<TrainMovementEventMessage> {
+            let event = |key: &str| {
+                ds_store::test_support::fixture_event(
+                    self.tracked_train_id,
+                    &format!("{}-{key}", self.tag),
+                )
+            };
+            let mut events = self.events();
+            events.remove(1);
+            events[0].resolved_train_uid = Some(format!("{}U", self.tag));
+            events[0].resolved_train_id = Some(format!("{}T", self.tag));
+            events[0].identity_date = Some("2099-05-05".parse().unwrap());
+            events.push(TrainMovementEventMessage {
+                msg_type: "0002".to_string(),
+                event_type: None,
+                status: "cancelled".to_string(),
+                ..event("canx")
+            });
+            events.push(TrainMovementEventMessage {
+                msg_type: "0005".to_string(),
+                event_type: None,
+                ..event("reinst")
+            });
+            events
+        }
+
+        /// The outbox rows still waiting for this subscription.
+        async fn pending(&self, pool: &PgPool) -> i64 {
+            sqlx::query_scalar(
+                "SELECT count(*) FROM train_event_outbox \
+                 WHERE tracked_train_id = $1 AND rejected_at IS NULL",
+            )
+            .bind(self.tracked_train_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
         /// Deleting the train cascades to its movements, state and signals.
+        /// The outbox rows go through the writer, which may delete them.
         async fn cleanup(&self, pool: &PgPool) {
+            if let Err(err) =
+                sqlx::query("DELETE FROM train_event_outbox WHERE tracked_train_id = $1")
+                    .bind(self.tracked_train_id)
+                    .execute(&writer_pool().await)
+                    .await
+            {
+                eprintln!("leaving the {} outbox rows in place: {err}", self.tag);
+            }
             ds_store::test_support::cleanup_user(pool, &self.user_id).await;
             sqlx::query("DELETE FROM trains WHERE id = $1")
                 .bind(self.trains_id)
@@ -549,14 +631,88 @@ mod db_tests {
         assert_eq!(after, before, "nothing of the batch was left behind");
     }
 
-    /// A cancellation closes the subscription and a reinstatement reopens
-    /// it: the `UPDATE`s on `train_subscriptions` the `trust_consumer` role
-    /// is granted for (db-grants.yaml), run as that role in CI's
-    /// per-service step.
+    /// Decided 2026-10-08: a resolution, a cancellation and a reinstatement
+    /// (and the events queued behind them) wait in the outbox, and one tick
+    /// of the writer's loop leaves the subscription, the train and its
+    /// movements, state and forward signal exactly as the api's HTTP path
+    /// does. Also checks the writer role can do what the loop needs.
     #[tokio::test]
     #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
-    async fn a_cancellation_and_a_reinstatement_update_the_subscription() {
+    async fn subscription_changes_after_one_writer_tick_match_the_http_path() {
         let fixtures = fixture_pool().await;
+        let writer = writer_pool().await;
+        let via_http = Fixture::with_status(&fixtures, "rh", "pending").await;
+        let via_db = Fixture::with_status(&fixtures, "rd", "pending").await;
+        let pool = pool().await;
+
+        // The api's POST /private/train-events and train-forward-signals,
+        // as the api role (`fixtures`).
+        let events = via_http.resolving_events();
+        let api_outcome = ds_store::tracking::upsert_train_events_batch(&fixtures, &events)
+            .await
+            .unwrap();
+        let signals = process::build_forward_signals(
+            written(&events, &api_outcome.rejected),
+            &via_http.trains_id_by_tracked_train_id(),
+        );
+        ds_store::tracking::insert_forward_signals(&fixtures, &signals)
+            .await
+            .unwrap();
+
+        let db = DbSink { pool };
+        let before = via_db.snapshot(&fixtures).await;
+        let rejected = db
+            .write(
+                &via_db.resolving_events(),
+                &via_db.trains_id_by_tracked_train_id(),
+            )
+            .await
+            .unwrap();
+        let queued = via_db.snapshot(&fixtures).await;
+        let waiting = via_db.pending(&fixtures).await;
+        let applied = tick(&writer).await;
+        let rows_http = via_http.snapshot(&fixtures).await;
+        let rows_db = via_db.snapshot(&fixtures).await;
+        let left = via_db.pending(&fixtures).await;
+        via_http.cleanup(&fixtures).await;
+        via_db.cleanup(&fixtures).await;
+
+        assert!(rejected.is_empty() && api_outcome.rejected.is_empty());
+        assert_eq!(
+            queued, before,
+            "nothing of the subscription's events lands before the tick"
+        );
+        assert_eq!(
+            waiting, 4,
+            "the resolution and every later event of it wait"
+        );
+        assert!(
+            applied.applied >= 4 && applied.rejected.is_empty(),
+            "{applied:?}"
+        );
+        assert_eq!(left, 0);
+        assert_eq!(rows_db, rows_http);
+        assert!(
+            rows_db.contains(&"subscription resolved - true".to_string()),
+            "{rows_db:#?}"
+        );
+        assert_eq!(
+            rows_db
+                .iter()
+                .filter(|row| row.starts_with("signal "))
+                .count(),
+            1,
+            "{rows_db:#?}"
+        );
+    }
+
+    /// A cancellation closes the subscription and a reinstatement reopens
+    /// it, through the outbox; neither lands before the writer's tick.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn a_cancellation_and_a_reinstatement_update_the_subscription_on_the_tick() {
+        let fixtures = fixture_pool().await;
+        let writer = writer_pool().await;
         let fixture = Fixture::new(&fixtures, "c").await;
         let db = DbSink { pool: pool().await };
         let map = fixture.trains_id_by_tracked_train_id();
@@ -581,17 +737,91 @@ mod db_tests {
             .write(&[event("0002", "cancelled", "canx")], &map)
             .await
             .unwrap();
+        let before_tick = status().await;
+        tick(&writer).await;
         let after_cancellation = status().await;
         let reinstated = db
             .write(&[event("0005", "en_route", "reinst")], &map)
             .await
             .unwrap();
+        tick(&writer).await;
         let after_reinstatement = status().await;
         fixture.cleanup(&fixtures).await;
 
         assert!(cancelled.is_empty() && reinstated.is_empty());
+        assert_eq!(before_tick, "schedule_matched");
         assert_eq!(after_cancellation, "unresolved");
         assert_eq!(after_reinstatement, "schedule_matched");
+    }
+
+    /// A redelivered entry whose events wait in the outbox adds no second
+    /// row, and one redelivered after the tick applied it is re-applied
+    /// harmlessly: the same rows and one forward signal either way.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn a_redelivered_deferred_entry_is_applied_once() {
+        let fixtures = fixture_pool().await;
+        let writer = writer_pool().await;
+        let fixture = Fixture::with_status(&fixtures, "rr", "pending").await;
+        let db = DbSink { pool: pool().await };
+        let events = fixture.resolving_events();
+        let map = fixture.trains_id_by_tracked_train_id();
+
+        db.write(&events, &map).await.unwrap();
+        db.write(&events, &map).await.unwrap();
+        let waiting = fixture.pending(&fixtures).await;
+        tick(&writer).await;
+        let first = fixture.snapshot(&fixtures).await;
+        db.write(&events, &map).await.unwrap();
+        tick(&writer).await;
+        let again = fixture.snapshot(&fixtures).await;
+        fixture.cleanup(&fixtures).await;
+
+        assert_eq!(waiting, 4, "the redelivery queued nothing new");
+        assert_eq!(again, first);
+        assert_eq!(
+            again
+                .iter()
+                .filter(|row| row.starts_with("signal "))
+                .count(),
+            1,
+            "{again:#?}"
+        );
+    }
+
+    /// Decided 2026-10-08: the `trust_consumer` role reads
+    /// `train_subscriptions` and cannot update it. Checked when the tests
+    /// run as that role (CI's per-service step); any other role skips.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with DATABASE_URL set and --ignored"]
+    async fn the_trust_consumer_role_cannot_update_subscriptions() {
+        let pool = pool().await;
+        let user: String = sqlx::query_scalar("SELECT current_user::text")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        if !user.contains("trust_consumer") {
+            eprintln!("running as {user}, not the trust_consumer role: skipped");
+            return;
+        }
+        let err =
+            sqlx::query("UPDATE train_subscriptions SET resolution_status = resolution_status")
+                .execute(&pool)
+                .await
+                .expect_err("no UPDATE on train_subscriptions");
+        assert_eq!(
+            err.as_database_error()
+                .and_then(|err| err.code())
+                .as_deref(),
+            Some("42501"),
+            "{err}"
+        );
+        let can_read: bool =
+            sqlx::query_scalar("SELECT has_table_privilege('train_subscriptions', 'SELECT')")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(can_read);
     }
 
     /// The narrow role's grants cover an empty batch's no-op and the
