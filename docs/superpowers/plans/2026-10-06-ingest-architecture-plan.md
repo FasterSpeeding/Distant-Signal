@@ -896,8 +896,9 @@ Rollback: `sink=http` per producer.
 
 **Status (2026-10-08): 3c.1–3c.4 built and integrated (batch 50), every
 switch off** (`pollers.<tfl,tocs>.ingest.sink: http`, the writer's `tfl`,
-`reference` and `island-of-ireland` streams `off`, the IoI pollers
-disabled). What ships on by default: the notifier's stale-history skip
+`reference` and IoI streams `off` (`island-of-ireland`, split into
+`ioi-gtfs`, `ioi-nir` and `ioi-live` by security review H1), the IoI
+pollers disabled). What ships on by default: the notifier's stale-history skip
 (3c.4, `LINE_HISTORY_MAX_AGE_SECS=900`) and the `line_status` RLS (3c.3: an
 allow-all policy plus the writer's RESTRICTIVE one).
 

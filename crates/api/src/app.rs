@@ -391,7 +391,7 @@ fn internal_oauth_route_table(
             vec![config.internal_oauth_group_full_coverage.clone()],
         ),
         // No island-of-Ireland routes: since ingest plan 3c.2 (D8) those
-        // pollers write only to the ds:ingest:island-of-ireland stream, and
+        // pollers write only to their ds:ingest:ioi-{gtfs,nir,live} streams, and
         // their /private routes were deleted (2026-10-08, runbook Q9).
     ]
 }
