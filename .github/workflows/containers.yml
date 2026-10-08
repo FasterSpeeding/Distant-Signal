@@ -123,6 +123,17 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_BASE: ghcr.io/fasterspeeding/distant-signal
+  # Reproducible images: BuildKit (via buildx, which passes this env var on
+  # as the SOURCE_DATE_EPOCH build arg) stamps the image config's `created`
+  # and its history entries with this time instead of the build's, and
+  # `rewrite-timestamp=true` on the build's output (below) clamps every
+  # layer file's mtime to it. A constant, not the commit time: with a
+  # per-commit value every push would mint a new config, so a new digest,
+  # for byte-identical layers. With it, an image whose inputs didn't change
+  # gets the same digest as last time, and the chart's pinned digest (so
+  # the Deployment) doesn't change. 0 is the Unix epoch, which is what
+  # `docker inspect` shows as Created.
+  SOURCE_DATE_EPOCH: "0"
 
 jobs:
   build-and-push:
@@ -131,7 +142,8 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write # required for cosign's keyless/OIDC signing
+      id-token: write # cosign's keyless/OIDC signing, and the attestation's
+      attestations: write # the build provenance attestation (see its step)
 
     strategy:
       fail-fast: false
@@ -216,6 +228,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
 
+      # The build's `rewrite-timestamp=true` output option needs BuildKit
+      # v0.13+; an older daemon ignores it silently and the digests stop
+      # being reproducible. setup-buildx-action runs the current stable
+      # moby/buildkit (v0.2x as of 2026-10), so this only fails if that
+      # ever stops being true.
+      - name: Check BuildKit supports rewrite-timestamp
+        run: |
+          set -euo pipefail
+          version="$(docker buildx inspect | sed -n 's/^BuildKit version: *v//p' | head -n 1)"
+          echo "BuildKit ${version}"
+          [[ "$(printf '%s\n' 0.13.0 "${version}" | sort -V | head -n 1)" == "0.13.0" ]] || { echo "::error::BuildKit ${version} is older than v0.13, which rewrite-timestamp needs" >&2; exit 1; }
+
       # On every event, PRs included: the build reads its layer cache from
       # ${IMAGE_BASE}/buildcache (see the build step). A PR's token can
       # still only read (a fork's gets no packages:write), and only pushes
@@ -235,8 +259,13 @@ jobs:
       # (schedule/branch/tag/pr -- see this file's top-of-file "Tagging"
       # comment) and adds `type=sha` on top, so every image also gets an
       # immutable `sha-<short-sha>` tag that `push-helm-chart` can pin the
-      # chart's default `appVersion`/image references to.
-      - name: Extract metadata (tags, labels)
+      # chart's default `appVersion`/image references to. Only its tags are
+      # used: its labels include `org.opencontainers.image.created` (the
+      # build time) and `.revision` (the commit), which made every push a
+      # new image config and so a new digest even for byte-identical
+      # layers. The build step sets static labels instead; the commit is in
+      # the `sha-<short>` tag and the provenance attestation.
+      - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
@@ -267,6 +296,19 @@ jobs:
       # the cache as an OCI image manifest rather than BuildKit's default
       # cache index, which some registries refuse. Each write untags the
       # previous cache manifest; prune-buildcache.yml deletes those weekly.
+      #
+      # Reproducible digests (an unchanged image keeps its digest, so its
+      # Deployment doesn't restart):
+      #   - static `labels:` only, none per build (see the meta step);
+      #   - `provenance: false`: build-push-action's default provenance
+      #     attestation is part of the pushed image index and records the
+      #     build's time and run, so it changed the index digest on every
+      #     push. Provenance is published as a separate attestation instead
+      #     (the next step), which leaves the image digest alone;
+      #   - `outputs:` with `rewrite-timestamp=true`, and SOURCE_DATE_EPOCH
+      #     (workflow env), so even a cold-cache rebuild of the same inputs
+      #     produces the same layers and config. `push=` in the output
+      #     replaces the action's `push:` input (which only adds an output).
       - name: Build${{ github.event_name != 'pull_request' && ' and push' || '' }} image
         id: build
         uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6.9.0
@@ -274,11 +316,31 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
-          push: ${{ github.event_name != 'pull_request' }}
+          outputs: type=image,push=${{ github.event_name != 'pull_request' }},rewrite-timestamp=true
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            org.opencontainers.image.title=distant-signal/${{ matrix.service }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=registry,ref=${{ env.IMAGE_BASE }}/buildcache:${{ matrix.service }}
           cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0}/buildcache:{1},mode=max,image-manifest=true,oci-mediatypes=true', env.IMAGE_BASE, matrix.service) || '' }}
+
+      # SLSA build provenance for the pushed digest, signed keylessly
+      # (sigstore's public-good instance, the repo being public) and stored
+      # in GitHub's attestation API and, as an OCI referrer, next to the
+      # image in ghcr.io; neither changes the image's own digest. Verify
+      # with `gh attestation verify oci://<image>@<digest> --repo
+      # FasterSpeeding/Distant-Signal`. No storage record: those are for
+      # organization-owned repositories only.
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_BASE }}/${{ matrix.service }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
 
       - name: Install cosign
         if: github.event_name != 'pull_request'
