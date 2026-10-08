@@ -3,6 +3,12 @@
 //! restart left out of them, now that api infers a uid-less event's train
 //! from its Activation in `trust_event_backlog` (2026-10-01 outage review).
 //!
+//! **Deprecated (ingest phase 5 prep, Q2 of docs/ingest-phase5-runbook.md):**
+//! use `writer-maintenance replay-uidless-movements`,
+//! as the writer role, from the ingest-writer image. This binary stays, unchanged in
+//! what it does, until step 5.4b removes it from the api image; it must not
+//! run with the api's credentials.
+//!
 //! ```text
 //!   DATABASE_URL=postgres://... \
 //!     cargo run -p api --bin replay_uidless_movements -- 2026-10-01T00:00:00Z
@@ -37,6 +43,10 @@ async fn run() -> anyhow::Result<()> {
         "replay-uidless-movements",
         common::logging::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| common::logging::EnvFilter::new("info")),
+    );
+    tracing::warn!(
+        "replay_uidless_movements is deprecated (ingest phase 5, Q2): use `writer-maintenance replay-uidless-movements` instead, as \
+         the writer role, from the ingest-writer image; this binary leaves the api image in step 5.4b"
     );
     let database_url =
         std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;

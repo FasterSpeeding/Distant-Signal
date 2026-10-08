@@ -34,7 +34,15 @@
 # ordering (it refuses to apply `20260906140000_drop_legacy_columns.sql`
 # while unbackfilled rows remain), so shipping both here is what makes the
 # enforced sequence actually satisfiable from inside the cluster. See
-# crates/api/src/data/legacy_backfill.rs's module doc.
+# crates/ds-store/src/migrate/legacy_backfill.rs's module doc.
+#
+# Ingest phase 5 prep (Q2, docs/ingest-phase5-runbook.md): the four writing
+# one-offs are DEPRECATED here and leave this image in step 5.4b, since they
+# must never run with the api's credentials. Their replacements:
+# `ds-migrate backfill-trains` and `ds-migrate backfill-line-train-summaries`
+# (this image, as the schema owner), and `writer-maintenance
+# replay-uidless-movements` / `backfill-incident-lines` (the ingest-writer
+# image, as the writer and incidents roles).
 #
 # Migrations note: `api` (at startup) and `ds-migrate` both run
 # `ds_store::migrate::run`, whose `sqlx::migrate!()` has no path argument,
@@ -173,13 +181,15 @@ RUN apt-get update \
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
 # The operational, one-off backfill this image must be able to run BEFORE it
 # is first started against a database with pre-existing `tracked_trains`
-# data -- see crates/api/src/data/legacy_backfill.rs's module doc for the
+# data -- see crates/ds-store/src/migrate/legacy_backfill.rs's module doc for the
 # required deploy sequence. Shipped in the same image (rather than a second
 # one) so it is guaranteed to be the exact build whose migrations are about
 # to run:
 #   kubectl run ... --image=<this image> --command -- /usr/local/bin/backfill_trains
 # `api`'s own startup refuses to apply the contract migration until this has
 # been run, so the two can never get out of order silently.
+# DEPRECATED (phase 5 prep): `ds-migrate backfill-trains` (below) does the same as
+# the schema owner.
 COPY --from=builder /usr/local/bin/backfill_trains /usr/local/bin/backfill_trains
 # The one-off `incidents.affected_lines` backfill. Unlike `backfill_trains`
 # nothing refuses to start without it -- the archive's Line filter simply
@@ -188,6 +198,8 @@ COPY --from=builder /usr/local/bin/backfill_trains /usr/local/bin/backfill_train
 # (copied in just below), the same default as `api`'s own `--lines-dir`, so
 # it needs no arguments here either:
 #   kubectl run ... --image=<this image> --command -- /usr/local/bin/backfill_incident_lines
+# DEPRECATED (phase 5 prep): `writer-maintenance backfill-incident-lines` in the
+# ingest-writer image, as the incidents role.
 COPY --from=builder /usr/local/bin/backfill_incident_lines /usr/local/bin/backfill_incident_lines
 # Read-only CORPUS-vs-timetable crosswalk report (api::data::corpus_comparison),
 # run in the api pod with its own DATABASE_URL:
@@ -197,11 +209,15 @@ COPY --from=builder /usr/local/bin/corpus_compare /usr/local/bin/corpus_compare
 # TRUST rows a trust-backlog-consumer restart left out of them (2026-10-01),
 # from trust_event_backlog (kept a day), with the api pod's DATABASE_URL:
 #   kubectl exec deploy/<api deployment> -c api -- replay_uidless_movements [<since, RFC 3339>]
+# DEPRECATED (phase 5 prep): `writer-maintenance replay-uidless-movements` in the
+# ingest-writer image, as the writer role.
 COPY --from=builder /usr/local/bin/replay_uidless_movements /usr/local/bin/replay_uidless_movements
 # Optional, idempotent: derives `line_train_summaries` for line populations
 # stored before the table existed (or derived against an older catalogue);
 # until then the line page reads the population JSONB. Reads /app/lines:
 #   kubectl exec deploy/<api deployment> -c api -- backfill_line_train_summaries
+# DEPRECATED (phase 5 prep): `ds-migrate backfill-line-train-summaries` (below), as
+# the schema owner.
 COPY --from=builder /usr/local/bin/backfill_line_train_summaries /usr/local/bin/backfill_line_train_summaries
 # One pass of the user-data sweeps (expired sessions, dead links,
 # personal-data retention), then exit: the hourly api-maintenance CronJob's
@@ -211,7 +227,11 @@ COPY --from=builder /usr/local/bin/maintenance /usr/local/bin/maintenance
 # what the api does at startup (the contract-migration check, then every
 # pending migration, as MIGRATION_DATABASE_URL), the chart's migrate hook
 # Job's command (migrate.job). Built from the same source as `api`, so the
-# Job applies exactly the migrations this image's api expects.
+# Job applies exactly the migrations this image's api expects. Also the
+# one-off backfills `backfill-trains` and `backfill-line-train-summaries`
+# (phase 5 prep, Q2), as MIGRATION_DATABASE_URL:
+#   kubectl run ... --image=<this image> --command -- \
+#     /usr/local/bin/ds-migrate backfill-line-train-summaries
 COPY --from=builder /usr/local/bin/ds-migrate /usr/local/bin/ds-migrate
 COPY --chown=api:api lines/ /app/lines/
 

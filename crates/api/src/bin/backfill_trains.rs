@@ -3,6 +3,12 @@
 //! is upgraded to a build containing
 //! `crates/ds-store/migrations/20260906140000_drop_legacy_columns.sql`.
 //!
+//! **Deprecated (ingest phase 5 prep, Q2 of docs/ingest-phase5-runbook.md):**
+//! use `ds-migrate backfill-trains`,
+//! as the schema owner (`MIGRATION_DATABASE_URL`), from the api image. This binary stays, unchanged in
+//! what it does, until step 5.4b removes it from the api image; it must not
+//! run with the api's credentials.
+//!
 //! ```text
 //!   DATABASE_URL=postgres://... cargo run -p api --bin backfill_trains
 //! ```
@@ -38,6 +44,10 @@ async fn run() -> anyhow::Result<()> {
         "backfill-trains",
         common::logging::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| common::logging::EnvFilter::new("info")),
+    );
+    tracing::warn!(
+        "backfill_trains is deprecated (ingest phase 5, Q2): use `ds-migrate backfill-trains` instead, as \
+         the schema owner (MIGRATION_DATABASE_URL), from the api image; this binary leaves the api image in step 5.4b"
     );
 
     let database_url =

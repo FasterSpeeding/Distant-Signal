@@ -2,6 +2,12 @@
 //! were ingested before the column existed (or before a `lines/*.toml`
 //! change), so the incident archive's Line filter can find them.
 //!
+//! **Deprecated (ingest phase 5 prep, Q2 of docs/ingest-phase5-runbook.md):**
+//! use `writer-maintenance backfill-incident-lines`,
+//! as the incidents role, from the ingest-writer image. This binary stays, unchanged in
+//! what it does, until step 5.4b removes it from the api image; it must not
+//! run with the api's credentials.
+//!
 //! ```text
 //!   DATABASE_URL=postgres://... LINES_DIR=./lines \
 //!     cargo run -p api --bin backfill_incident_lines
@@ -41,6 +47,10 @@ async fn run() -> anyhow::Result<()> {
         "backfill-incident-lines",
         common::logging::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| common::logging::EnvFilter::new("info")),
+    );
+    tracing::warn!(
+        "backfill_incident_lines is deprecated (ingest phase 5, Q2): use `writer-maintenance backfill-incident-lines` instead, as \
+         the incidents role, from the ingest-writer image; this binary leaves the api image in step 5.4b"
     );
 
     let database_url =

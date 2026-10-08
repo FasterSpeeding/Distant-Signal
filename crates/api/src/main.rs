@@ -383,12 +383,12 @@ async fn server_main() -> anyhow::Result<()> {
     // pre-existing row's shared-train identity can still be recovered. On a
     // database that has not yet applied that migration and still has rows
     // whose `trains_id` was never backfilled, this refuses to start and
-    // names the fix (`cargo run -p api --bin backfill_trains`), rather than
+    // names the fix (`ds-migrate backfill-trains`), rather than
     // letting the migration run and silently lose the link. On every
     // already-contracted database -- which is every environment this plan
     // has already touched -- it is a single `_sqlx_migrations` lookup that
     // returns immediately. See
-    // `crates/api/src/data/legacy_backfill.rs`'s module doc for the full
+    // `crates/ds-store/src/migrate/legacy_backfill.rs`'s module doc for the full
     // required deploy sequence and for why this check cannot live inside
     // the migration file itself. `ds-migrate run` (the chart's migrate Job)
     // runs the same two steps.

@@ -643,11 +643,34 @@ they write tables the narrowed api role cannot write. Move them before
 | `replay_uidless_movements` | `trust_event_backlog`, `train_movement_events`, `train_current_state` (via `ds_store::backlog`) | writer-role tooling (the writer holds SU on the backlog and SIU on the movements) |
 | `backfill_trains` | `trains` (`data::legacy_backfill`) | `ds-migrate`. Its precondition, `ensure_ready_for_contract_migration`, already lives in `ds_store::migrate`; every environment has passed that contract migration, so it may simply be deleted |
 
+**Prepared (2026-10-08): the new entry points exist; the old binaries
+stay, deprecated.**
+
+| Old api binary | New entry point | Image | Connects as | Logic |
+|---|---|---|---|---|
+| `backfill_trains` | `ds-migrate backfill-trains` | api (ds-migrate ships there) | `MIGRATION_DATABASE_URL` (the schema owner), else `DATABASE_URL` | `ds_store::migrate::legacy_backfill` (moved from `api::data`) |
+| `backfill_line_train_summaries` | `ds-migrate backfill-line-train-summaries [--force] [--lines-dir]` | api | same | `ds_store::schedule::summaries::backfill_all` |
+| `replay_uidless_movements` | `writer-maintenance replay-uidless-movements [--since]` | ingest-writer | `DATABASE_URL`: the writer role | `ds_store::backlog::replay_uidless_backlog` |
+| `backfill_incident_lines` | `writer-maintenance backfill-incident-lines` | ingest-writer | `DATABASE_URL`: the **`incidents` role** (it holds `UPDATE` on `incidents`; the writer does not, and no grant was added) | `ds_store::incidents::line_backfill` (moved from `api::data`) |
+
+Every new entry point refuses to run as `distant_signal_api`
+(`ds_store::maintenance::refuse_api_role`); `backfill-incident-lines` also
+checks `SELECT` on `incidents` and `stations` and `UPDATE (affected_lines)`
+on `incidents` first, naming what is missing. The api binaries log a
+deprecation warning and otherwise behave as before; `api::data::legacy_backfill`
+and `api::data::incident_line_backfill` are `pub use` shims of the moved
+modules. `docs/shared-train-identity-backfill.md`,
+`docs/incident-affected-lines-backfill.md`, the api and ingest-writer
+Dockerfiles and the `db-grants.yaml` comment on `line_train_summaries` point
+at the new commands. What 5.4b still does: delete the four `[[bin]]`
+sources, the two shims and their `SERVICES` entries in
+`gen-rust-dockerfiles.py`, and add the per-role CI line below.
+
 **Code:**
 
 - move each binary's logic into `ds-store` (most already sits there behind
   api shims), and its entry point into `crates/ds-migrate` or
-  `crates/ingest-writer`;
+  `crates/ingest-writer` (done, above);
 - delete the api `[[bin]]` entries and their `data::*` modules;
 - update `docker/` (the Dockerfiles that copy the bins) via
   `gen-rust-dockerfiles.py`, and the docs that say "run it in the api pod"

@@ -46,26 +46,39 @@ and `api` are running. It writes only `affected_lines`, only for rows whose
 recomputed value differs from what is stored, so a second run reports zero
 updates.
 
+It runs as the **`incidents` role** (`distant_signal_incidents`,
+poller-incidents' own credentials), never the api's: it needs `UPDATE` on
+`incidents.affected_lines`, which the writer role does not hold, and since
+the ingest phase 5 prep (Q2 of `docs/ingest-phase5-runbook.md`) these
+one-offs never run with the api's credentials. It checks its grants before
+reading anything and refuses the api role. While `postgresql.roles.perService`
+is off, every service shares the app role, which also passes.
+
 ```sh
 # From a checkout
-DATABASE_URL=postgres://... LINES_DIR=./lines \
-  cargo run -p api --bin backfill_incident_lines
+DATABASE_URL=postgres://<incidents role>@... LINES_DIR=./lines \
+  cargo run -p ingest-writer --bin writer-maintenance -- backfill-incident-lines
 
-# From the api container image (the binary ships alongside `api` itself,
-# and defaults LINES_DIR to the image's own /app/lines)
-/usr/local/bin/backfill_incident_lines
+# From the ingest-writer container image (defaults LINES_DIR to the image's
+# own /app/lines)
+/usr/local/bin/writer-maintenance backfill-incident-lines
 ```
 
-In the production cluster, the usual shape is a one-off pod from the same
-image the running `api` was built from:
+In the production cluster, the usual shape is a one-off pod from the image
+the running ingest-writer was built from, with poller-incidents'
+`DATABASE_URL`:
 
 ```sh
 kubectl -n distant-signal run backfill-incident-lines \
   --rm -it --restart=Never \
-  --image=<the image the api Deployment is running> \
-  --env=DATABASE_URL=<the api Deployment's DATABASE_URL> \
-  --command -- /usr/local/bin/backfill_incident_lines
+  --image=<the image the ingest-writer Deployment is running> \
+  --env=DATABASE_URL=<poller-incidents' DATABASE_URL> \
+  --command -- /usr/local/bin/writer-maintenance backfill-incident-lines
 ```
+
+The api image's `backfill_incident_lines` binary still works but is
+deprecated (it runs with whatever `DATABASE_URL` it is given); it goes in
+phase 5 step 5.4b.
 
 ## Reading the output
 

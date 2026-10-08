@@ -349,9 +349,10 @@ tables:
   # Each line population's slim per-train summary (2026-10-08), written in
   # the same transaction as schedule_line_population (the api's ingest
   # endpoint until phase 2a), read by the api's line pages; the aggregator
-  # prunes old dates. The one-off backfill_line_train_summaries binary runs
-  # in the api pod and writes with its credentials: run it before the api
-  # role is narrowed, or move it with the writer.
+  # prunes old dates. The one-off backfill is `ds-migrate
+  # backfill-line-train-summaries`, as the schema owner (phase 5 prep, Q2);
+  # the api image's deprecated backfill_line_train_summaries binary, which
+  # writes with the api's credentials, goes in step 5.4b.
   line_train_summaries: {class: reference, grants: {api: S, schedule_reference: SIUD, aggregator: SD}}
   # Each schedule's vehicle (train, bus, ferry) per service date, published
   # by schedule-reference (through the api's ingest endpoint until phase
