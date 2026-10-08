@@ -64,6 +64,9 @@ class RepoFilesTest(unittest.TestCase):
                 "schedule_ingest": "narrow",
                 "schedule_reference": "narrow",
                 "stations": "narrow",
+                # Phase 4 (plan 4.7): the read-only readers.
+                "full_coverage_ro": "narrow",
+                "ldbws_ro": "narrow",
             },
         )
 
@@ -161,7 +164,7 @@ class DatabaseComparisonTest(unittest.TestCase):
         """A migration that adds an object must classify it."""
         objects = self.objects()
         objects["table"].add("new_table")
-        objects["view"].add("ingest_active_tracked_trains")
+        objects["view"].add("new_view")
         objects["sequence"].add("new_table_id_seq")
         problems = gen.problems_against_database(gen.load(), objects)
         self.assertEqual(len(problems), 3, problems)

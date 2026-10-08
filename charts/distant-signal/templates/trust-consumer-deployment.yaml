@@ -123,6 +123,7 @@ with trustConsumer.extraEnv, which replaces an entry of the same name.
               value: {{ .Values.trustConsumer.stanoxCrsReloadSecs | quote }}
             - name: STANOX_CRS_URL
               value: {{ printf "%s/private/stanox-crs" (include "distant-signal.apiBaseUrl" .) | quote }}
+            {{- with include "distant-signal.internalReadsEnv" (dict "root" . "role" "trust_consumer" "corpus" true "sources" (list "TRACKED_TRAINS_SOURCE" "STANOX_CRS_SOURCE")) | trim }}{{ . | nindent 12 }}{{- end }}
             - name: RETENTION_DAYS
               value: {{ .Values.trustConsumer.retentionDays | quote }}
             - name: HEALTH_BIND_URL

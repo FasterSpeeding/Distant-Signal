@@ -233,6 +233,15 @@ mod tests {
             Some("STANOX_CRS_SOURCE")
         );
         assert_eq!(env("database_url").as_deref(), Some("DATABASE_URL"));
+        // The template passes them to `distant-signal.internalReadsEnv`.
+        let template = std::fs::read_to_string(
+            common::manifest_dir!()
+                .join("../../charts/distant-signal/templates/trust-consumer-deployment.yaml"),
+        )
+        .unwrap();
+        for name in ["TRACKED_TRAINS_SOURCE", "STANOX_CRS_SOURCE"] {
+            assert!(template.contains(&format!("\"{name}\"")), "{name}");
+        }
     }
 
     /// `db` reads the view and `stanox_crs`; `http` would call the api,

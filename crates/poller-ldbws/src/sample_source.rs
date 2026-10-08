@@ -184,6 +184,32 @@ mod tests {
         assert!(!format!("{db:?}").contains(":pw@"));
     }
 
+    /// The chart sets it (templates/poller-deployments.yaml passes it to
+    /// `distant-signal.internalReadsEnv`).
+    #[test]
+    fn the_source_reads_the_chart_s_env_name() {
+        use clap::CommandFactory;
+        let command = Config::command();
+        let env = |id: &str| {
+            command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .and_then(|arg| arg.get_env())
+                .map(|env| env.to_string_lossy().into_owned())
+        };
+        assert_eq!(
+            env("sample_stations_source").as_deref(),
+            Some("SAMPLE_STATIONS_SOURCE")
+        );
+        assert_eq!(env("database_url").as_deref(), Some("DATABASE_URL"));
+        let template = std::fs::read_to_string(
+            common::manifest_dir!()
+                .join("../../charts/distant-signal/templates/poller-deployments.yaml"),
+        )
+        .unwrap();
+        assert!(template.contains("\"SAMPLE_STATIONS_SOURCE\""));
+    }
+
     #[test]
     fn the_knobs_map_onto_the_api_s_query_parameters() {
         assert_eq!(selection(false, 0), SampleSelection::default());

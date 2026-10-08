@@ -1010,6 +1010,15 @@ app.connectionLimitSlack.
 {{- end -}}
 {{- /* Phase 2: the pollers that write directly, as the app role. */ -}}
 {{- $total = add $total (include "distant-signal.pollerAppPools" $root) -}}
+{{- /* Phase 4: the readers on internalReads.source db, as the app role.
+     trust-consumer's reads always count here until plan 3b's
+     trust_consumer role is created (its merge moves them with it). */ -}}
+{{- range $role := list "full_coverage_ro" "ldbws_ro" -}}
+{{- if not (include "distant-signal.perServiceConnects" (dict "root" $root "service" $role)) -}}
+{{- $total = add $total (include "distant-signal.internalReadsPool" (dict "root" $root "role" $role)) -}}
+{{- end -}}
+{{- end -}}
+{{- $total = add $total (include "distant-signal.internalReadsPool" (dict "root" $root "role" "trust_consumer")) -}}
 {{- $total -}}
 {{- else -}}
 {{- fail (printf "postgresql.roles.%s.connectionLimit must be set." .role) -}}
@@ -1068,10 +1077,11 @@ db-grants.yaml. `writer` is the ingest-writer's (ingestWriter, plan 1B.9);
 (plan 2d.2); `schedule_reference` is schedule-reference's db sink's (plan
 2a); `stations` and `incidents` are poller-stations' and poller-incidents'
 (pollers.<name>.ingest.sink db, plans 2b.3 and 2c.3). All four are narrow
-roles.
+roles. `full_coverage_ro` and `ldbws_ro` are the phase 4 readers'
+(<component>.internalReads.source db, plan 4.7), narrow and read-only.
 */}}
 {{- define "distant-signal.perServiceKeys" -}}
-api aggregator enricher notifier writer schedule_ingest schedule_reference stations incidents
+api aggregator enricher notifier writer schedule_ingest schedule_reference stations incidents full_coverage_ro ldbws_ro
 {{- end }}
 
 {{- define "distant-signal.perServiceEnabled" -}}
@@ -1104,6 +1114,9 @@ True (non-empty) when the service connects as its own role. Takes (dict
 {{- end -}}
 {{- if and (eq .service "schedule_reference") (not (include "distant-signal.scheduleReferenceDbSink" .root)) -}}
 {{- fail "postgresql.roles.perService.schedule_reference.connect needs scheduleFeed.enabled and scheduleFeed.reference.ingest.sink: db: nothing else connects as the schedule_reference role." -}}
+{{- end -}}
+{{- if and (has .service (list "full_coverage_ro" "ldbws_ro")) (not (include "distant-signal.internalReadsDb" (dict "root" .root "role" .service))) -}}
+{{- fail (printf "postgresql.roles.perService.%s.connect needs %s.internalReads.source: db: nothing else connects as its role." .service (include "distant-signal.internalReadsValuesKey" .service)) -}}
 {{- end -}}
 {{- if hasKey .root.Values.pollers .service -}}
 {{- if not (include "distant-signal.pollerSinkDb" (dict "root" .root "name" .service "poller" (get .root.Values.pollers .service))) -}}
@@ -1171,6 +1184,114 @@ budget in api-deployment.yaml. Takes root.
 {{- end }}
 
 {{/*
+Ingest architecture phase 4 (plan 4.7): the internal readers. Each reader's
+`internalReads.source` (http, the default, or db) switches every *_SOURCE
+of that component; under db it connects to Postgres with a pool of
+`internalReads.database.maxConnections`, as the app role or, with
+postgresql.roles.perService.<role>.connect, its read-only role. The readers,
+by their db-grants.yaml role: full_coverage_ro (fullCoverageConsumer),
+ldbws_ro (pollers.ldbws), trust_consumer (trustConsumer; the role itself is
+plan 3b's).
+
+distant-signal.internalReadsValuesKey: the values path of a reader's role.
+*/}}
+{{- define "distant-signal.internalReadsValuesKey" -}}
+{{- if eq . "full_coverage_ro" -}}fullCoverageConsumer
+{{- else if eq . "ldbws_ro" -}}pollers.ldbws
+{{- else if eq . "trust_consumer" -}}trustConsumer
+{{- else -}}{{- fail (printf "no internal reader for role %q" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+True (non-empty) when the reader behind the role reads Postgres directly:
+its component runs (pollers.ldbws.enabled; the two consumers always do) and
+its internalReads.source is db. Fails on a source other than http or db.
+Takes (dict "root" $ "role" "full_coverage_ro"|"ldbws_ro"|"trust_consumer").
+*/}}
+{{- define "distant-signal.internalReadsDb" -}}
+{{- $values := dict -}}
+{{- $enabled := true -}}
+{{- if eq .role "full_coverage_ro" -}}
+{{- $values = .root.Values.fullCoverageConsumer -}}
+{{- else if eq .role "ldbws_ro" -}}
+{{- $values = .root.Values.pollers.ldbws -}}
+{{- $enabled = $values.enabled -}}
+{{- else if eq .role "trust_consumer" -}}
+{{- $values = .root.Values.trustConsumer -}}
+{{- end -}}
+{{- $key := include "distant-signal.internalReadsValuesKey" .role -}}
+{{- $source := toString (dig "internalReads" "source" "http" $values) -}}
+{{- if not (has $source (list "http" "db")) -}}
+{{- fail (printf "%s.internalReads.source must be http or db, not %q." $key $source) -}}
+{{- end -}}
+{{- if and $enabled (eq $source "db") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+A reader's Postgres pool (<component>.internalReads.database.maxConnections)
+under internalReads.source db, else 0. Takes (dict "root" $ "role" ...).
+*/}}
+{{- define "distant-signal.internalReadsPool" -}}
+{{- if include "distant-signal.internalReadsDb" . -}}
+{{- $values := .root.Values.fullCoverageConsumer -}}
+{{- if eq .role "ldbws_ro" -}}{{- $values = .root.Values.pollers.ldbws -}}{{- end -}}
+{{- if eq .role "trust_consumer" -}}{{- $values = .root.Values.trustConsumer -}}{{- end -}}
+{{- int $values.internalReads.database.maxConnections -}}
+{{- else -}}
+0
+{{- end -}}
+{{- end }}
+
+{{/*
+Every reader's pool under internalReads.source db, summed (the api's INF-7
+budget check). Takes root.
+*/}}
+{{- define "distant-signal.internalReadsPools" -}}
+{{- $root := . -}}
+{{- $total := 0 -}}
+{{- range $role := list "full_coverage_ro" "ldbws_ro" "trust_consumer" -}}
+{{- $total = add $total (include "distant-signal.internalReadsPool" (dict "root" $root "role" $role)) -}}
+{{- end -}}
+{{- $total -}}
+{{- end }}
+
+{{/*
+A reader's container env under internalReads.source db: the *_SOURCE
+switches (`sources`, a list of env names), DATABASE_URL as the reader's own
+role when postgresql.roles.perService.<role>.connect (else the app role),
+its pool and, with `corpus` (a reader of STANOX/CRS), the api's CORPUS
+fallback, so those reads return what GET /private/stanox-crs does. Nothing
+under http. Takes (dict "root" $ "role" ... "sources" (list ...) "corpus"
+bool).
+*/}}
+{{- define "distant-signal.internalReadsEnv" -}}
+{{- if include "distant-signal.internalReadsDb" (dict "root" .root "role" .role) }}
+{{- $root := .root }}
+# <component>.internalReads.source: db (ingest architecture plan 4.7): read
+# the reference data from Postgres directly instead of the api's /private
+# GETs.
+{{- range .sources }}
+- name: {{ . }}
+  value: "db"
+{{- end }}
+{{- $service := "" }}
+{{- if and (hasKey $root.Values.postgresql.roles.perService .role) (ne .role "trust_consumer") }}
+{{- $service = .role }}
+{{- end }}
+{{ include "distant-signal.databaseEnvFor" (dict "root" $root "service" $service) }}
+- name: DATABASE_MAX_CONNECTIONS
+  value: {{ include "distant-signal.internalReadsPool" (dict "root" $root "role" .role) | quote }}
+{{- if .corpus }}
+- name: CORPUS_FALLBACK_ENABLED
+  value: {{ $root.Values.api.corpusFallback.enabled | toString | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 The role name from files/db-grants.yaml. Takes (dict "root" $ "service" ...).
 */}}
 {{- define "distant-signal.perServiceRoleName" -}}
@@ -1212,6 +1333,10 @@ aggregator's archive pool, the ingest-writer's ingestWriter.database.maxConnecti
 {{- int $root.Values.scheduleFeed.ingest.database.maxConnections -}}
 {{- else if eq .service "schedule_reference" -}}
 {{- int $root.Values.scheduleFeed.reference.ingest.database.maxConnections -}}
+{{- else if has .service (list "full_coverage_ro" "ldbws_ro") -}}
+{{- /* A phase 4 reader: <component>.internalReads.database. */ -}}
+{{- $values := ternary $root.Values.pollers.ldbws $root.Values.fullCoverageConsumer (eq .service "ldbws_ro") -}}
+{{- int $values.internalReads.database.maxConnections -}}
 {{- else if hasKey $root.Values.pollers .service -}}
 {{- /* A poller that writes directly (phase 2): pollers.<name>.ingest.database. */ -}}
 {{- int (get $root.Values.pollers .service).ingest.database.maxConnections -}}
