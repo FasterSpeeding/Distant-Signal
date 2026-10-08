@@ -4185,6 +4185,13 @@ scheduleFeed:
       digest: ""
       pullPolicy: IfNotPresent
     pollIntervalSecs: 1800
+    # -- How many days beyond today each delivery publishes the per-date
+    # timetable products for (`SCHEDULE_FORWARD_PUBLISH_DAYS`): train search,
+    # `/Train/by-uid` stops, service modes and `/Trips/plan` reach this far
+    # ahead. 7-60. Each day costs ~190 MB of Postgres (table and indexes)
+    # and ~30 s of publish cycle at production sizes; dates further out
+    # carry fewer of the CIF's late (STP) changes.
+    forwardPublishDays: 28
     ingest:
       # -- Where the products go (`INGEST_SINK`; ingest architecture plan
       # 2a): `http`, the api's `/private` ingest routes (today's path), or

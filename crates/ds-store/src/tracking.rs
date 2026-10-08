@@ -16,10 +16,11 @@ use chrono::{DateTime, Utc};
 use common::{TrackedTrainRef, TrainMovementEventMessage};
 use sqlx::{Connection, PgConnection, PgPool};
 
-/// How far ahead a pin's `service_date` may be (API-6): `schedule-reference`
-/// publishes today plus 7 days (`DESTINATION_DEPARTURES_FORWARD_DAYS`),
-/// so nothing later can schedule-match. The departure instant gets one
-/// more day for a service that runs past midnight.
+/// How far ahead a pin's `service_date` may be (API-6). `schedule-reference`
+/// publishes at least this many days ahead -- its
+/// `SCHEDULE_FORWARD_PUBLISH_DAYS` (28 by default) refuses anything lower
+/// -- so a pin inside this bound can always schedule-match. The departure
+/// instant gets one more day for a service that runs past midnight.
 pub const PIN_MAX_DAYS_AHEAD: i64 = 7;
 
 /// Row shape for `list_active_tracked_trains`'s query -- identical fields
