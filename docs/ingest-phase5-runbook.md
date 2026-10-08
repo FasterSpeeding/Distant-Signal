@@ -700,6 +700,27 @@ The diff against `db-grants.yaml` is in §4.1. Code and chart:
   [S, {privileges: U, columns: […]}]`). Add a unit test in
   `scripts/tests/test_gen_db_grants.py`, and a per-role DB check that the
   enricher can update its columns and nothing else;
+
+  **Prepared (2026-10-08).** The list form already existed: the batch 51
+  security work (M1/L3) added it to `gen-db-grants.py`, `ds-store`'s
+  `build.rs` and the schema gate (`has_column_privilege`), with unit tests.
+  `db-grants.yaml` now states the enricher's target on `incidents` in it:
+  `enricher: [S, {privileges: U, columns: [source_text_hash,
+  extracted_category, extracted_periods, extraction_model_version,
+  extracted_at]}]`, the columns of its only two non-test `UPDATE`s
+  (`write_extraction` and `carry_forward_extraction` in
+  `crates/enricher/src/queries.rs`). The enricher stays `observed`, so
+  `postgres-grants.sql` renders nothing new and it keeps app's table-wide
+  `UPDATE`; its schema gate now checks the five column privileges, which
+  app's grant satisfies. `test_the_enricher_targets_column_update_on_incidents`
+  and `schema::tests::privileges_follow_db_grants` pin the shape. The yaml
+  must stay one line per table: `build.rs` reads one flow mapping per line.
+  **Before narrowing the enricher:** its DB tests write fixtures through its
+  own pool (`UPDATE incidents SET summary/description/first_seen_at` in
+  `queries.rs` and `main.rs` tests, and the `INSERT … ON CONFLICT DO UPDATE`
+  fixtures), which the narrowed role cannot. Move those fixture writes to
+  `MIGRATION_DATABASE_URL` (as poller-incidents' tests do) in 5.5, or the
+  per-service CI step fails;
 - `scripts/db-grants.sql.tpl` and `files/postgres-roles.sql`: stop
   creating `distant_signal_app` and its membership grants; revoke
   membership from every role; then `REASSIGN OWNED`/`DROP OWNED BY
