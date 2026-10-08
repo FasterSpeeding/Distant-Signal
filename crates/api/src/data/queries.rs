@@ -1886,15 +1886,21 @@ pub async fn latest_station_samples_for_crs_batch(
 /// directly above (same table family, same `routes::station_stats`
 /// caller passing an un-normalized path segment) -- kept consistent
 /// rather than letting this sibling drift back into the same raw-`=` bug.
+///
+/// `resolved_at` is the derived age (ingest architecture plan 3a.9,
+/// `ds_store::samples::STATION_FULL_COVERAGE_RESOLVED_AT_SQL`): no older
+/// than the feed's observed time, since the ingest-writer may skip a row
+/// whose stats are unchanged.
 pub async fn latest_station_full_coverage_samples(
     pool: &PgPool,
     crs: &str,
 ) -> Result<Vec<StationFullCoverageSample>> {
     use sqlx::Row;
-    let rows = sqlx::query(
-        "SELECT crs, operator, resolved_at, stats FROM station_full_coverage_samples \
+    let rows = sqlx::query(&format!(
+        "SELECT crs, operator, {} AS resolved_at, stats FROM station_full_coverage_samples \
          WHERE crs = $1::bpchar",
-    )
+        ds_store::samples::STATION_FULL_COVERAGE_RESOLVED_AT_SQL
+    ))
     .bind(normalize_code(crs))
     .fetch_all(pool)
     .await?;
@@ -7386,6 +7392,66 @@ mod db_review_guard_and_normalisation_tests {
             .await
             .unwrap();
         sqlx::query("DELETE FROM station_full_coverage_samples WHERE crs = 'ZQB'")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// Plan 3a.9 (readers first): a full-coverage station row the writer
+    /// stopped bumping (changed rows only) reads as fresh as its feed.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                db_review_guard_and_normalisation_tests -- --ignored --test-threads=1`"]
+    async fn station_full_coverage_readers_derive_resolved_at_from_the_feed() {
+        let pool = test_pool().await;
+        let old = chrono::Utc::now() - chrono::Duration::hours(2);
+        let sample = StationFullCoverageSample {
+            crs: "ZQH".to_string(),
+            operator: "ZZ".to_string(),
+            resolved_at: old,
+            stats: common::SampleStats {
+                total: 3,
+                delayed: 0,
+                cancelled: 0,
+                skipped: 0,
+                avg_delay_minutes: 0.0,
+            },
+        };
+        upsert_station_full_coverage_samples(&pool, &[sample])
+            .await
+            .unwrap();
+        let feed =
+            chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros()).unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        ds_store::freshness::record_ingest(
+            &mut conn,
+            ds_store::samples::sources::STATION_FULL_COVERAGE_SAMPLES,
+            Some(feed),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        let rows = latest_station_full_coverage_samples(&pool, "zqh")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].resolved_at >= feed, "{}", rows[0].resolved_at);
+        let fetched = last_station_full_coverage_samples_fetch(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(fetched >= feed, "{fetched}");
+        // The row's own time is untouched; only the reads derive.
+        let own: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+            "SELECT resolved_at FROM station_full_coverage_samples WHERE crs = 'ZQH'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(own.timestamp_micros(), old.timestamp_micros());
+
+        sqlx::query("DELETE FROM station_full_coverage_samples WHERE crs = 'ZQH'")
             .execute(&pool)
             .await
             .unwrap();
