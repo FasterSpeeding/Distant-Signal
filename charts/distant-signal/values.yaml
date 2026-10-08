@@ -3428,6 +3428,22 @@ scheduleFeed:
     # PVC and the ingest/reference containers stay. scheduleFeed.enabled
     # with neither source enabled fails the render.
     enabled: true
+    # -- Run SFTPGo in its own Deployment (`<fullname>-schedulefeed-sftp`,
+    # component `schedulefeed-sftp`) instead of as the `sftp` container of
+    # the schedulefeed pod, so app deploys (which recreate the
+    # ingest/reference pod) never restart it: DTD's daily push at about
+    # 20:00-20:06 UTC must not meet a restarting listener. Same container,
+    # env, host keys, account and PVC; the SFTP Service and NetworkPolicy
+    # follow the new pod. Assumes a single node (both pods mount one
+    # ReadWriteOnce PVC; see schedulefeed-sftp-deployment.yaml). Switching
+    # either way recreates both pods once and leaves the PVC data alone;
+    # `false` renders the previous one-pod layout exactly.
+    separateDeployment: true
+    # -- Annotations for the separate SFTP pod only (separateDeployment).
+    # scheduleFeed.podAnnotations stays on the ingest/reference pod, so an
+    # annotation that changes per release there does not restart SFTPGo.
+    # Unused with separateDeployment false.
+    podAnnotations: {}
     image:
       repository: drakkan/sftpgo
       # -- MUST be a real drakkan/sftpgo tag, NOT left empty: unlike every
