@@ -4299,6 +4299,23 @@ metrics:
       enabled: true
       for: 5m
       severity: critical
+    # The train-event outbox (ingest plan 3b.3; trustConsumer.ingest.sink
+    # db). DistantSignalTrainEventOutboxRejected (warning): the writer's
+    # loop refused a deferred event for a data error within
+    # `rejected.window`. DistantSignalTrainEventOutboxStuck (critical): the
+    # oldest pending row is older than `stuck.maxAgeSeconds` for
+    # `stuck.for` (the loop ticks every 5 s), so subscriptions stop
+    # resolving. Render only with ingestWriter.enabled. Runbook:
+    # docs/alerts.md.
+    trainEventOutbox:
+      enabled: true
+      rejected:
+        window: 1h
+        severity: warning
+      stuck:
+        maxAgeSeconds: 120
+        for: 1m
+        severity: critical
     # DistantSignalApiDatabaseDown (critical): api's own `SELECT 1` probe
     # through its request pool (distant_signal_api_db_up, every 15s) has
     # failed on some replica for `for`. Covers what pg_up cannot see: a

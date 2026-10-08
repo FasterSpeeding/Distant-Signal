@@ -47,6 +47,15 @@ use super::{TrainEventsBatchOutcome, upsert_train_event_on, upsert_train_events_
 /// (`applied`) or refused for a data error (`rejected`, left in the table).
 pub const OUTBOX_METRIC: &str = "store_train_event_outbox_total";
 
+/// `train_event_outbox_oldest_pending_timestamp_seconds`: the
+/// `created_at` (Unix seconds) of the oldest row not yet applied or
+/// rejected, 0 when there is none; set after each successful
+/// [`apply_train_event_outbox`]. A timestamp rather than an age, so a loop
+/// that stops ticking (the value is not refreshed) still shows the row
+/// getting older: `DistantSignalTrainEventOutboxStuck` alerts on
+/// `time() - x` where `x > 0`.
+pub const OLDEST_PENDING_METRIC: &str = "train_event_outbox_oldest_pending_timestamp_seconds";
+
 /// Rows one [`apply_train_event_outbox`] call applies at most.
 pub const APPLY_BATCH: i64 = 500;
 
@@ -248,6 +257,13 @@ pub async fn apply_train_event_outbox(pool: &PgPool) -> anyhow::Result<OutboxTic
         .increment(tick.applied);
     metrics::counter!(common::metrics::metric_name(OUTBOX_METRIC), "outcome" => "rejected")
         .increment(tick.rejected.len() as u64);
+    let oldest: Option<f64> = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM min(created_at))::float8 FROM train_event_outbox \
+         WHERE rejected_at IS NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+    metrics::gauge!(common::metrics::metric_name(OLDEST_PENDING_METRIC)).set(oldest.unwrap_or(0.0));
     Ok(tick)
 }
 

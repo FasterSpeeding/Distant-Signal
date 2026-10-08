@@ -559,6 +559,48 @@ sweeps catch up when it is back.
 
 Design: [ingest architecture](superpowers/specs/2026-10-06-ingest-architecture-design.md#10-the-ingest-writer).
 
+### DistantSignalTrainEventOutboxRejected
+
+With `trustConsumer.ingest.sink: db`, trust-consumer cannot write
+`train_subscriptions`: a resolution, cancellation or reinstatement (and the
+later events of the same subscription) waits in `train_event_outbox` for the
+ingest-writer's `train_event_outbox` loop (ingest plan 3b.3). The loop
+refused one for a data error (SQLSTATE class 22/23) within
+`trainEventOutbox.rejected.window`
+(`distant_signal_store_train_event_outbox_total{outcome="rejected"}`). The
+row stays, with `rejected_at` and `rejection`; that subscription's change did
+not land, and later events of it go ahead.
+
+1. `SELECT id, tracked_train_id, dedup_key, rejected_at, rejection, event
+   FROM train_event_outbox WHERE rejected_at IS NOT NULL ORDER BY id;` and
+   the writer's log (`train-event outbox row refused`).
+2. Fix the cause (usually a migration or a constraint the event breaks),
+   then re-queue the row: `UPDATE train_event_outbox SET rejected_at = NULL,
+   rejection = NULL WHERE id = ...;` (as the writer or the owner). The next
+   tick re-applies it; every write is idempotent.
+3. A row that can never apply: delete it, and check the subscription by
+   hand (`train_subscriptions.resolution_status`, `trains_id`).
+
+### DistantSignalTrainEventOutboxStuck
+
+The oldest pending `train_event_outbox` row is older than
+`trainEventOutbox.stuck.maxAgeSeconds` (120 s) for `stuck.for`
+(`time() - distant_signal_train_event_outbox_oldest_pending_timestamp_seconds`,
+which the writer sets each tick; 0 when empty). The loop runs every 5 s, so
+the loop is not applying rows: subscriptions stop resolving, cancelling and
+reopening, and the queued trains' movements do not land. Critical.
+
+1. [DistantSignalIngestWriterDown](#distantsignalingestwriterdown): the writer
+   must be up with `ingestWriter.loops.enabled`.
+2. The writer's log for `train-event outbox apply failed`: a transient error
+   (Postgres, a lock timeout) rolls the tick back and retries. A
+   `permission denied` (42501) means the writer role lacks SELECT, UPDATE
+   or DELETE on `train_event_outbox` (`files/db-grants.yaml`, the role setup
+   Job).
+3. If the writer cannot be fixed quickly, set `trustConsumer.ingest.sink:
+   http`: the api then applies everything inline again; the rows already
+   queued are applied once the loop runs.
+
 ## users
 
 ### DistantSignalUserSignupSpike

@@ -62,7 +62,8 @@ so that clause fired on every rollout.
 {{- $healthOn := or $postgresDownOn $apiDbDownOn $schemaGateOn $consumerApiOn $cyclesOn $api5xxOn $imagePullOn }}
 {{- $tokenExchangeOn := and ($rule.enricherTokenExchange).enabled (include "distant-signal.enricherWif" .) }}
 {{- $writerDownOn := and ($rule.ingestWriterDown).enabled .Values.ingestWriter.enabled }}
-{{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn $healthOn $tokenExchangeOn $writerDownOn }}
+{{- $outboxOn := and ($rule.trainEventOutbox).enabled .Values.ingestWriter.enabled }}
+{{- $anyOn = or $anyOn $notifierDroppedOn $archiveAlertOn $signupSpikeOn $archiveExpiryOn $healthOn $tokenExchangeOn $writerDownOn $outboxOn }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -899,6 +900,43 @@ spec:
             summary: "the ingest-writer is down"
             description: "Not scraped, or no available replica, for {{ .for }}: the train-domain sweeps it owns are not running."
             runbook_url: {{ printf "%s#distantsignalingestwriterdown" $runbook | quote }}
+    {{- end }}
+    {{- end }}
+    {{- if $outboxOn }}
+    {{- with $rule.trainEventOutbox }}
+    - name: distant-signal.train-event-outbox
+      rules:
+        {{- /*
+        Ingest plan 3b.3: under trustConsumer.ingest.sink db, resolutions,
+        cancellations and reinstatements (and the events queued behind
+        them) wait in train_event_outbox for the writer's loop (5 s).
+        Both series come from the writer; absent series never fire.
+        */}}
+        - alert: DistantSignalTrainEventOutboxRejected
+          expr: |
+            sum by (namespace) (increase(distant_signal_store_train_event_outbox_total{namespace="{{ $ns }}", outcome="rejected"}[{{ .rejected.window }}])) > 0
+          labels:
+            severity: {{ .rejected.severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "a deferred train event was refused for a data error"
+            description: "{{ "{{ $value | humanize }}" }} in {{ .rejected.window }}, left in train_event_outbox with rejected_at: that subscription's change did not land."
+            runbook_url: {{ printf "%s#distantsignaltraineventoutboxrejected" $runbook | quote }}
+        - alert: DistantSignalTrainEventOutboxStuck
+          expr: |
+            max by (namespace) ((time() - distant_signal_train_event_outbox_oldest_pending_timestamp_seconds{namespace="{{ $ns }}"}) and (distant_signal_train_event_outbox_oldest_pending_timestamp_seconds{namespace="{{ $ns }}"} > 0)) > {{ .stuck.maxAgeSeconds }}
+          for: {{ .stuck.for }}
+          labels:
+            severity: {{ .stuck.severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "train_event_outbox has a row waiting {{ "{{ $value | humanizeDuration }}" }}"
+            description: "Over {{ .stuck.maxAgeSeconds }}s: subscriptions are not resolving, cancelling or reopening, and their trains' movements wait behind them."
+            runbook_url: {{ printf "%s#distantsignaltraineventoutboxstuck" $runbook | quote }}
     {{- end }}
     {{- end }}
     {{- if $signupSpikeOn }}

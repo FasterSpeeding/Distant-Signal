@@ -1537,6 +1537,7 @@ and [docs/postgres-pitr.md](../../docs/postgres-pitr.md).
 | `postgresql.pgbackrest.backup.resources` | requests `20m`/`32Mi`, limit `128Mi` | CronJob pod resources. The work happens in the Postgres container. |
 | `postgresql.pgbackrest.backup.podSecurityContext` | `{}` | Merged over the CronJob pods' securityContext (non-root uid 65532 by default). |
 | `metrics.prometheusRule.ingestWriterDown` | see `values.yaml` | `DistantSignalIngestWriterDown`: `enabled`, `for` (5m), `severity` (critical). Renders only with `ingestWriter.enabled`. |
+| `metrics.prometheusRule.trainEventOutbox` | see `values.yaml` | `DistantSignalTrainEventOutboxRejected`: `rejected.window` (1h), `rejected.severity` (warning); `DistantSignalTrainEventOutboxStuck`: `stuck.maxAgeSeconds` (120), `stuck.for` (1m), `stuck.severity` (critical); and `enabled`. Render only with `ingestWriter.enabled`. |
 | `metrics.prometheusRule.postgresDown` | see `values.yaml` | `DistantSignalPostgresDown`: `enabled`, `for` (3m), `severity` (critical) and `pgUpSelector`, extra label matchers for postgres_exporter's `pg_up` (see [Alerts](#alerts)). |
 | `metrics.prometheusRule.statefulImagePull` | see `values.yaml` | `DistantSignalStatefulImagePullFailing`: `enabled`, `for` (5m), `postgresSeverity` and `redisSeverity` (both critical). One rule per bundled component (`postgresql.enabled` / `redis.enabled`). |
 | `metrics.prometheusRule.apiDatabaseDown` | see `values.yaml` | `DistantSignalApiDatabaseDown`: `enabled`, `for` (2m) and `severity` (critical). |
