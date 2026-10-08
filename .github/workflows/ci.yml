@@ -133,8 +133,9 @@ jobs:
 
   # cargo-deny with deny.toml: licences, bans (wildcards; duplicate versions
   # are warnings), sources (crates.io only) and advisories (RustSec, plus
-  # yanked crates). Advisories overlap dependency-scan.yml's OSV scan on
-  # purpose -- see deny.toml. The binary comes from taiki-e/install-action,
+  # yanked crates). bans/licenses/sources and the advisory-DB fetch block;
+  # the advisories check only warns (see its step). Advisories overlap
+  # dependency-scan.yml's OSV scan on purpose -- see deny.toml. The binary comes from taiki-e/install-action,
   # which verifies the release checksum; the version is pinned exactly.
   cargo-deny:
     name: cargo deny check

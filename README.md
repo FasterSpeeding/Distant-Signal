@@ -64,6 +64,22 @@ shellcheck and shfmt over every `*.sh`, ruff and mypy over `scripts/`,
 actionlint over the workflows, hadolint over the Dockerfiles, and
 `scripts/lint-containers.py`.
 
+## Dependency and security scans
+
+What fails CI and what only warns:
+
+- `dependency-scan.yml` (OSV-Scanner over `Cargo.lock`,
+  `frontend/package-lock.json` and `uv.lock`) **blocks** on a finding with
+  CVSS >= 9.0 that has a fixed version, and on a scan that produced no valid
+  JSON. Every other HIGH/CRITICAL (CVSS >= 7.0) finding **warns**: a
+  per-finding annotation and a neutral "security findings (non-blocking)"
+  check. The daily scheduled run never blocks on findings; it opens or
+  updates a `dependency-vulnerability` issue instead. Time-boxed exceptions
+  live in `frontend/osv-scanner.toml`.
+- `ci.yml`'s `cargo-deny` job **blocks** on `cargo deny check bans licenses
+  sources` and on a failed advisory-DB fetch. `cargo deny check advisories`
+  (RustSec and yanked crates) only **warns**.
+
 ## How segments work
 
 Each station on a line belongs to a named `segment`. When the same segment

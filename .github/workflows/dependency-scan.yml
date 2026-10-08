@@ -67,12 +67,14 @@ name: Dependency vulnerability scan
 # - push (branches: [main] only -- deliberately narrower than ci.yml's
 #   [main, master, dev], scoped to just what this workflow's own ask needs;
 #   widen to match ci.yml if a reviewer prefers full consistency): same scan,
-#   same threshold, still fails the job -- framed as a loud alert since
+#   same blocking rule (critical + fixable, or an inconclusive scan), still
+#   fails the job -- framed as a loud alert since
 #   nothing can un-merge what already landed, catching a vulnerability
 #   disclosed between PR approval and merge, or a direct push that bypassed
 #   review.
 # - schedule (daily, see the cron comment below): the identical scan against
-#   the current tip of main, but NEVER fails the job -- a cron job failing
+#   the current tip of main, but never fails the job on findings (only an
+#   inconclusive scan, i.e. no valid scanner JSON, fails it) -- a cron job failing
 #   has no PR to block and no obvious owner watching it, so instead a second
 #   `report-findings` job (gated `if: always()`, mirroring
 #   validate-line-catalogue.yml's own `report-findings` job almost exactly,
@@ -172,7 +174,12 @@ jobs:
           # GitHub shows at most 10 warning/10 error annotations per step;
           # the full list stays in the log and the artifact.
           while IFS=$'\t' read -r level file text; do
-            echo "::${level} file=${file},title=$([[ ${level} == error ]] && echo 'Blocking dependency vulnerability' || echo 'Dependency vulnerability (non-blocking)')::${text}"
+            if [[ ${level} == error ]]; then
+              title='Blocking dependency vulnerability'
+            else
+              title='Dependency vulnerability (non-blocking)'
+            fi
+            echo "::${level} file=${file},title=${title}::${text}"
           done < findings.tsv
 
           {
