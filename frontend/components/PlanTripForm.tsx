@@ -9,7 +9,8 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { groupLabels, useStationGroups, withGroupSuggestions } from '@/lib/stationGroups';
 import { isGroupCode, normalizeLocationCode } from '@/lib/stationLabel';
-import type { Suggestion } from '@/lib/types';
+import type { Suggestion, TrainSearchDates } from '@/lib/types';
+import { searchDateBounds } from '@/lib/searchDates';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 import { PlanTripAdvancedOptions, advancedOptionErrors } from './PlanTripAdvancedOptions';
@@ -138,6 +139,7 @@ export function PlanTripForm({
   searching = false,
   initialOriginCrs = '',
   initial = {},
+  searchDates,
 }: {
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
@@ -146,7 +148,14 @@ export function PlanTripForm({
   /** A restored search (`/plan`'s own query string, `lib/tripPlanUrl.ts`);
    * only read on mount. Its `originCrs` wins over `initialOriginCrs`. */
   initial?: PlanFormInitial | undefined;
+  /** `/plan` only: `GET /public/trains/search/dates`, read by the page on
+   * the server. Its `to` is the date picker's last day, as on `/trains`;
+   * `null` (the read failed) falls back to a week ahead
+   * (`lib/searchDates.ts`). Absent, as on `/journeys/new`'s planner, which
+   * doesn't read the range, the picker has no upper bound. */
+  searchDates?: TrainSearchDates | null | undefined;
 }) {
+  const maxDate = searchDates === undefined ? undefined : searchDateBounds(searchDates, londonToday()).maxDate;
   const [originCrs, setOriginCrs] = useState(initial.originCrs ?? initialOriginCrs);
   const [destinationCrs, setDestinationCrs] = useState(initial.destinationCrs ?? '');
   const [waypoints, setWaypoints] = useState<string[]>(initial.waypointCrs ?? []);
@@ -174,8 +183,11 @@ export function PlanTripForm({
   // timezone anyway).
   // A restored date in the past is dropped: the picker can't show it
   // (`minDate`), and a shared link from last week means "this trip", today.
+  // So is one past `maxDate`, which the picker can't show either.
   const [date, setDate] = useState<string | null>(() =>
-    initial.date && initial.date >= londonToday() ? initial.date : nowInLondon().format('YYYY-MM-DD'),
+    initial.date && initial.date >= londonToday() && (maxDate === undefined || initial.date <= maxDate)
+      ? initial.date
+      : nowInLondon().format('YYYY-MM-DD'),
   );
   // Defaults to "now" (`'HH:MM'`, the same value contract `TimeFilterInput`'s
   // own `onChange` and every other `TimeInput` field in this codebase
@@ -341,7 +353,13 @@ export function PlanTripForm({
       {/* London's today, not `new Date()` (the browser's): a visitor ahead
           of UK time near midnight could otherwise not pick London's today,
           the very day `date` defaults to. */}
-      <DateInput label="Date" value={date} onChange={setDate} minDate={londonToday()} />
+      <DateInput
+        label="Date"
+        value={date}
+        onChange={setDate}
+        minDate={londonToday()}
+        {...(maxDate !== undefined && { maxDate })}
+      />
       <TimeInput
         label="Depart after (optional)"
         value={departAfter}

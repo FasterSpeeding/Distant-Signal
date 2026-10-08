@@ -9,7 +9,7 @@ import { TrackTrainForm } from './TrackTrainForm';
 import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { routeLabel } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
-import type { CreateJourneyResponse, JourneyDetail } from '@/lib/types';
+import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 
 /** The `/journeys/new` page's own interactive body -- see that page's doc
@@ -59,11 +59,14 @@ export function JourneyCreationFlow({
   planOnly = false,
   planOrigin,
   planQuery,
+  planSearchDates,
 }: {
   planOnly?: boolean;
   planOrigin?: string | undefined;
   /** `/plan` only: the search its URL restores (`lib/tripPlanUrl.ts`). */
   planQuery?: PlanFormInitial | undefined;
+  /** `/plan` only: the planner's date range (`GET /public/trains/search/dates`). */
+  planSearchDates?: TrainSearchDates | null | undefined;
 } = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
@@ -101,7 +104,13 @@ export function JourneyCreationFlow({
 
   if (journeyId === null && planOnly) {
     return (
-      <PlanTripFlow onCreated={handleLegOneCreated} initialOriginCrs={planOrigin} initialQuery={planQuery} syncUrl />
+      <PlanTripFlow
+        onCreated={handleLegOneCreated}
+        initialOriginCrs={planOrigin}
+        initialQuery={planQuery}
+        searchDates={planSearchDates}
+        syncUrl
+      />
     );
   }
 

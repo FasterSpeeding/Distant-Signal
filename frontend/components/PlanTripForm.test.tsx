@@ -136,7 +136,7 @@ describe('PlanTripForm', () => {
   // The date picker's minDate was `new Date()`, the browser's local day. A
   // visitor ahead of UK time near midnight is already on tomorrow, so
   // London's today -- the very day `date` defaults to -- was disabled.
-  describe("the date picker's earliest day is London's today, not the browser's", () => {
+  describe("the date picker's range: from London's today (not the browser's) to the search range's last day", () => {
     const originalTz = process.env.TZ;
     beforeEach(() => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -168,6 +168,48 @@ describe('PlanTripForm', () => {
       fireEvent.focus(screen.getByLabelText('Date'));
       expect(await dayButton('5 September 2026')).not.toBeDisabled();
       expect(await dayButton('4 September 2026')).toBeDisabled();
+    });
+
+    // `/plan`'s latest day is the timetable search's `to`
+    // (`GET /public/trains/search/dates`), as on `/trains`.
+    it("ends the picker at the search range's last day", async () => {
+      vi.setSystemTime(new Date('2026-09-05T12:00:00.000Z'));
+      renderWithMantine(
+        <PlanTripForm
+          onSubmit={vi.fn()}
+          searchDates={{
+            from: '2026-08-29',
+            to: '2026-09-20',
+            publishedFrom: '2026-09-04',
+            publishedTo: '2026-09-20',
+          }}
+        />,
+      );
+      fireEvent.focus(screen.getByLabelText('Date'));
+      expect(await dayButton('20 September 2026')).not.toBeDisabled();
+      expect(await dayButton('21 September 2026')).toBeDisabled();
+    });
+
+    it('falls back to a week ahead when the range could not be read', async () => {
+      vi.setSystemTime(new Date('2026-09-05T12:00:00.000Z'));
+      renderWithMantine(<PlanTripForm onSubmit={vi.fn()} searchDates={null} />);
+      fireEvent.focus(screen.getByLabelText('Date'));
+      expect(await dayButton('12 September 2026')).not.toBeDisabled();
+      expect(await dayButton('13 September 2026')).toBeDisabled();
+    });
+
+    it('drops a restored date past the last day', () => {
+      vi.setSystemTime(new Date('2026-09-05T12:00:00.000Z'));
+      const onSubmit = vi.fn();
+      renderWithMantine(
+        <PlanTripForm
+          onSubmit={onSubmit}
+          searchDates={null}
+          initial={{ originCrs: 'EUS', destinationCrs: 'MKC', date: '2026-09-13' }}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ date: '2026-09-05' }));
     });
 
     it("does not offer London's yesterday to a visitor behind UK time", async () => {

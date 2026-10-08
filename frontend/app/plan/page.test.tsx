@@ -13,6 +13,18 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams('origin=EUS'),
 }));
 
+// The date picker's range is read on the server; it fails by default (the
+// picker falls back to a week ahead), and every other export stays real.
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+  return {
+    ...actual,
+    getTrainSearchDates: vi.fn(async () => {
+      throw new Error('not stubbed');
+    }),
+  };
+});
+
 // Same reasoning as `PlanTripFlow.test.tsx`: the station autocompletes'
 // debounced lookups must not eat this file's `fetch` mocks.
 vi.mock('@/lib/suggestions', () => ({

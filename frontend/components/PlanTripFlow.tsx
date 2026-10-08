@@ -21,7 +21,7 @@ import { groupLabels, useStationGroups } from '@/lib/stationGroups';
 import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
-import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
+import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
 interface SegmentSelection {
   itinerary: TripPlanItinerary | null;
@@ -54,6 +54,7 @@ export function PlanTripFlow({
   initialOriginCrs,
   initialQuery,
   syncUrl = false,
+  searchDates,
 }: {
   onCreated: (result: CreateJourneyResponse) => void;
   /** Pre-fills the From field (`/plan?from=CRS`). */
@@ -65,6 +66,8 @@ export function PlanTripFlow({
    * reopens the same form. Off on `/journeys/new`, whose query means
    * something else. */
   syncUrl?: boolean;
+  /** `/plan` only: the date picker's range -- see `PlanTripForm`. */
+  searchDates?: TrainSearchDates | null | undefined;
 }) {
   const [plan, setPlan] = useState<TripPlanResponse | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -350,6 +353,7 @@ export function PlanTripFlow({
         searching={searching}
         initialOriginCrs={initialOriginCrs}
         initial={initialQuery}
+        searchDates={searchDates}
       />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
