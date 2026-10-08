@@ -503,11 +503,11 @@ fn bench_group_vias(connections: &[Connection], count: usize, members: u64) -> t
             .next()
             .and_then(|n| n.parse::<u64>().ok())
             .unwrap_or(1);
-        let passes = line.is_multiple_of(7);
-        if !passes && !touching.contains(c.uid.as_str()) {
+        let runs_through = line.is_multiple_of(7);
+        if !runs_through && !touching.contains(c.uid.as_str()) {
             continue;
         }
-        let passed = if passes {
+        let passed = if runs_through {
             targets
                 .iter()
                 .map(|group| group[(line % members) as usize].clone())
