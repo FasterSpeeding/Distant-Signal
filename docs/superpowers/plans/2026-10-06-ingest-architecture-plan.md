@@ -797,6 +797,62 @@ when they are enabled.
 
 Entry: phase 1 done.
 
+**Status (2026-10-08): 4.1–4.7 built, every switch off**
+(`fullCoverageConsumer.internalReads.source`, `trustConsumer.internalReads.source`,
+`pollers.ldbws.internalReads.source`: all `http`; the default render is
+unchanged). Differences from the table:
+
+- 4.1: migration `20261009144000_ingest_read_views.sql`. The custom-line
+  view is `id, stations` only (no name: the selection needs none).
+  `full_coverage_ro` and `ldbws_ro` are `narrow` from creation (they were
+  `planned`; never `app` members). `full_coverage_ro` and `trust_consumer`
+  also get SELECT on `tiploc_crs` and `corpus_stanox_crs`, which
+  `list_stanox_crs` reads with the api's CORPUS fallback on (as 3b's
+  `trust_backlog`).
+- 4.2: the pure selection moved from the api's `data::samples` to
+  `ds_store::reads::sample_stations` (the api re-exports it, so the route and
+  the poller run one function); `select_sample_stations_from` adds the
+  catalogue-plus-views read. `population_version_tag` is the api's `ETag`
+  text, so a held population reads the same from either source. DB tests
+  run each view as a role holding SELECT on the view alone (and refused the
+  table behind it); they are `#[sqlx::test]`, so the CI app-role and
+  per-service steps skip `reads::db_tests`.
+- 4.3: `PopulationSource` is a trait (`HttpSource`, `DbSource`) behind the
+  unchanged cycle; a failed version query fails every fetch of the cycle,
+  so the abort after three still applies. Each cycle logs a population
+  checksum with its source (the exit's comparison). The switches are
+  `POPULATION_SOURCE` and `STANOX_CRS_SOURCE`; the chart sets both from
+  one `internalReads.source`.
+- 4.4: trust-consumer's reads connect as the **app role** in the chart:
+  the `trust_consumer` role is created by 3b. Merge points with 3b
+  (`worktree-agent-a9fb554b7aa6c8323`): one `DATABASE_URL` and one pool
+  for `INGEST_SINK=db` or a `db` source (3b's `Config::database_url` vs this
+  branch's `InternalReadArgs::database_url`); in the chart, one
+  `DATABASE_URL` block when either is `db`, `distant-signal.internalReadsEnv`
+  passing `trust_consumer` as the service (it excludes it here), and 3b's
+  `perServiceConnects` check for `trust_consumer` accepting reads as well as
+  the sink.
+- 4.5: `fetch_sample_stations` keeps its signature (the DB state rides in
+  the config's `#[arg(skip)]` field), so the hold-samples branch and 3a.7
+  merge around it.
+- 4.6: `common::ingest::CursorSource` with a `LastFetched` trait;
+  `poller_loop::run_poll_loop_with_source`. `run_poll_loop` builds
+  `CursorSource::Http`, so no HTTP poller's call site changed.
+  poller-stations reads its sink's `cursor()`; poller-incidents' db sink
+  moved from `run_poll_loop_from_cursor` (removed: read once, no wait) to
+  the shared loop with `CursorSource::Db`, so it now waits for the database
+  as stations does. `ingest_stream::stream_cursor` builds the `Stream`
+  variant for 3a.7 and 3c.
+- 4.7: the readers' pools count in INF-7 and, unless on their own role, in
+  the app role's limit. The per-role suites for the two new roles are the
+  ds-store `reads::db_tests` role checks; `test-postgres-roles.py` itself was
+  not run (batch integration).
+
+Rollout per reader: the release with the views (expand) and the roles
+(`perService.enabled` creates them), then `internalReads.source: db` with
+`perService.<role>.connect`, one reader per release; full-coverage-consumer
+first (watch the logged checksums against a day of `http`).
+
 | # | Task | Files | Tests |
 |---|---|---|---|
 | 4.1 | Expand migration: the views `ingest_active_tracked_trains` (today's `list_active_tracked_trains` SELECT, no user columns), `ingest_sample_station_pins` (pin counts per line), `ingest_custom_line_stations` (custom line id plus station list, no owner); classify them in `db-grants.yaml` | migrations, `db-grants.yaml` | DB: the views' column lists contain no `user_id`/`owner`; results equal the api's functions |
