@@ -1012,6 +1012,12 @@ export function TrackTrainForm({
         setFieldError('Latest arrival must be after earliest arrival.');
         return;
       }
+      // The picker's `maxDate` stops a far pick; this catches a prefilled
+      // one (`?date=`) before the round trip.
+      if (windowServiceDate !== null && windowServiceDate > lastPinDate()) {
+        setFieldError(pinTooFarMessage);
+        return;
+      }
       setFieldError(null);
       if (groups.length > 0) {
         setDestinationPromptOpened(true);
@@ -1424,6 +1430,9 @@ export function TrackTrainForm({
               // accessibility suite's `/track, departure picker populated`
               // and route-sweep cases once this field had a value to clear.
               clearButtonProps={{ 'aria-label': 'Clear the date' }}
+              // The same horizon as a pin: the backend refuses a window
+              // leg dated past `PIN_MAX_DAYS_AHEAD` with `pinTooFarMessage`.
+              maxDate={lastPinDate()}
             />
             {/* Review §2.2/I17: all four fields below say "(optional)" in
               their own label, which is individually true but collectively

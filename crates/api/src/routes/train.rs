@@ -619,6 +619,41 @@ fn build_delay_repay_response(
     }
 }
 
+/// 400 with the pin's copy when `service_date` is past the tracking
+/// horizon ([`train_tracking::beyond_tracking_horizon`]). Every route that
+/// creates a subscription or a journey leg calls this on its date.
+pub(crate) fn enforce_tracking_horizon(
+    service_date: NaiveDate,
+) -> Result<(), (StatusCode, String)> {
+    if train_tracking::beyond_tracking_horizon(service_date, super::london_today()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            train_tracking::too_far_ahead_message(),
+        ));
+    }
+    Ok(())
+}
+
+/// [`enforce_pin_cap`] unless `user_id` already tracks `(train_uid,
+/// service_date)`, in which case the request reuses that subscription
+/// (`create_subscription_for_train` is idempotent) and adds nothing to
+/// count. `train_uid` must already be normalised (trimmed, uppercase).
+pub(crate) async fn enforce_pin_cap_for_train(
+    app: &App,
+    user_id: &str,
+    train_uid: &str,
+    service_date: NaiveDate,
+) -> Result<(), (StatusCode, String)> {
+    let already_tracked =
+        train_tracking::user_tracks_train_uid(&app.database, user_id, train_uid, service_date)
+            .await
+            .map_err(internal_error("check existing subscription"))?;
+    if already_tracked {
+        return Ok(());
+    }
+    enforce_pin_cap(app, user_id).await
+}
+
 /// 400 once the user has [`train_tracking::MAX_FUTURE_PINS_PER_USER`]
 /// upcoming subscriptions (API-6).
 pub(crate) async fn enforce_pin_cap(app: &App, user_id: &str) -> Result<(), (StatusCode, String)> {
@@ -1188,15 +1223,7 @@ async fn post_track_by_uid(
     // and the same per-user cap unless this is a repeat track of a train
     // the user already has.
     let today = super::london_today();
-    if date > today + chrono::Duration::days(train_tracking::PIN_MAX_DAYS_AHEAD) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "That train is too far ahead — trains can be tracked up to {} days before they run.",
-                train_tracking::PIN_MAX_DAYS_AHEAD
-            ),
-        ));
-    }
+    enforce_tracking_horizon(date)?;
     // 2026-10-01 review: and a past window, which this route never had --
     // see `TRACK_BY_UID_MAX_DAYS_BEHIND`.
     let earliest = today - chrono::Duration::days(train_tracking::TRACK_BY_UID_MAX_DAYS_BEHIND);

@@ -74,13 +74,10 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
     // used to sit in both 300 s sweeps until its date came round (a pin
     // dated 2090 was swept for ever).
     let london_today = now.with_timezone(&chrono_tz::Europe::London).date_naive();
-    if pin.service_date > london_today + chrono::Duration::days(PIN_MAX_DAYS_AHEAD)
+    if beyond_tracking_horizon(pin.service_date, london_today)
         || pin.scheduled_departure - now > chrono::Duration::days(PIN_MAX_DAYS_AHEAD + 1)
     {
-        return Err(format!(
-            "That departure is too far ahead — trains can be tracked up to {PIN_MAX_DAYS_AHEAD} \
-             days before they run."
-        ));
+        return Err(too_far_ahead_message());
     }
     if let Some(crs) = &pin.destination_crs
         && !crate::routes::is_crs_code(crs)
@@ -111,6 +108,28 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
 
 // Moved to ds_store::tracking (ingest architecture plan 1A.9)
 pub(crate) use ds_store::tracking::PIN_MAX_DAYS_AHEAD;
+
+/// Whether `service_date` is past the tracking horizon: more than
+/// [`PIN_MAX_DAYS_AHEAD`] days after `london_today`. One rule for every way
+/// of tracking (a pin, track-by-uid, every journey leg type, a leg's train
+/// pick, a template run), so none reaches further ahead than the published
+/// timetable. Checked only when something is created; rows already past it
+/// are left alone.
+pub fn beyond_tracking_horizon(
+    service_date: chrono::NaiveDate,
+    london_today: chrono::NaiveDate,
+) -> bool {
+    service_date > london_today + chrono::Duration::days(PIN_MAX_DAYS_AHEAD)
+}
+
+/// The user-facing 400 body for [`beyond_tracking_horizon`], the pin's
+/// wording, shared by every way of tracking.
+pub fn too_far_ahead_message() -> String {
+    format!(
+        "That departure is too far ahead — trains can be tracked up to {PIN_MAX_DAYS_AHEAD} \
+         days before they run."
+    )
+}
 /// Operator names from the track form, e.g. "South Western Railway".
 const PIN_OPERATOR_MAX_CHARS: usize = 64;
 /// Darwin platforms are short ("1", "10A", "13-14").
@@ -121,12 +140,17 @@ const PIN_MAX_SKIPPED_STATIONS: usize = 64;
 /// At most this many of a user's subscriptions may be dated today or
 /// later when they add a new one (API-6). Journeys, templates and groups
 /// already had caps; tracked-train pins had none, and every pending pin
-/// costs both 300 s sweeps a match attempt. Checked at the three user-facing
-/// ways to add one (`POST /Train/track`, `POST /Train/track-by-uid` for a
-/// train the user doesn't already track, and a pin-mode journey), count
-/// then insert with the same accepted small race as the other caps.
-/// Template materialisation and known-train journey legs are bounded by the
-/// journey and template caps instead, but their rows still count here.
+/// costs both 300 s sweeps a match attempt. Checked at every
+/// user-facing way to add one (`POST /Train/track`, track-by-uid, every
+/// `POST /Journeys` and `POST /Journeys/{id}/legs` leg type, a leg's train
+/// pick, and a template's "Run now"), skipped only where the request would
+/// reuse a subscription the user already has; count then insert with the
+/// same accepted small race as the other caps. A `window` leg holds no
+/// subscription until a train is picked, but is checked too, since that
+/// pick (by hand or by the notifier's auto-commit sweep) makes one. The
+/// notifier's own scheduled template runs and auto-commits are not
+/// checked: they act on legs the user already made. Only creation is
+/// checked; a user already over the cap keeps every existing row.
 pub const MAX_FUTURE_PINS_PER_USER: i64 = 100;
 
 /// The count [`MAX_FUTURE_PINS_PER_USER`] is checked against.

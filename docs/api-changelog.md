@@ -3,6 +3,34 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-08: the same tracking limits for every leg type
+
+The 28-day horizon and the cap of 100 upcoming tracked trains used to
+apply only to pins and track-by-uid. They now apply to every way of
+tracking. No request or response shape changes; the new refusals are
+`400` (`text/plain`) with the pins' own wording.
+
+- Horizon (a `serviceDate` after today+28, London):
+  `That departure is too far ahead — trains can be tracked up to 28 days
+  before they run.` Now checked for `knownTrain` and `window` legs on
+  `POST /Journeys` and `POST /Journeys/{id}/legs`, the picked train on
+  `POST /Journeys/{id}/legs/{legId}/train`, and the date on
+  `POST /JourneyTemplates/{id}/materialize`. `POST
+  /Train/by-uid/{uid}/{date}/track` now uses this wording too (it said
+  "That train is too far ahead").
+- Cap (100 or more subscriptions dated today or later):
+  `You're already tracking 100 upcoming trains, which is the maximum.
+  Remove some to make room.` Now checked on the same routes. A
+  `knownTrain` leg or a train pick for a train the user already tracks
+  reuses that subscription and is still allowed at the cap. A `window`
+  leg (and a template run, whose legs are window legs) is checked even
+  though it holds no subscription until its train is picked.
+- Only creation is checked. Existing journeys, legs and subscriptions
+  past either limit are untouched, and the notifier's scheduled template
+  runs and auto-commits are not checked.
+- Group shares are unaffected: sharing links an existing subscription or
+  journey and creates neither.
+
 ## 2026-10-08: `provisional` for far-ahead service dates
 
 Additive only: two new top-level keys on three responses, and one on

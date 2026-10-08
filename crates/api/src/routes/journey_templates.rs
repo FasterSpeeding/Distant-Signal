@@ -484,6 +484,10 @@ async fn post_materialize_journey_template(
     Path(template_id): Path<i64>,
     Json(body): Json<MaterializeTemplateRequest>,
 ) -> Result<Json<MaterializeTemplateResponse>, (StatusCode, String)> {
+    // The pin's 28-day horizon and per-user cap, as for a `window` leg
+    // added by hand: the minted legs are unmatched until a train is picked.
+    crate::routes::train::enforce_tracking_horizon(body.service_date)?;
+    crate::routes::train::enforce_pin_cap(&app, &user.id).await?;
     let result = journey_templates::materialize_template(
         &app.database,
         template_id,

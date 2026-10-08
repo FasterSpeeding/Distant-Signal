@@ -753,6 +753,16 @@ async fn post_journey(
             // the same way `origin_crs`/`destination_crs` just below
             // already are.
             let train_uid = train_uid.trim().to_ascii_uppercase();
+            // The pin's 28-day horizon and per-user cap, which this leg type
+            // used to skip; checked before the `trains` row is minted.
+            crate::routes::train::enforce_tracking_horizon(service_date)?;
+            crate::routes::train::enforce_pin_cap_for_train(
+                &app,
+                &user.id,
+                &train_uid,
+                service_date,
+            )
+            .await?;
 
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
@@ -813,6 +823,10 @@ async fn post_journey(
                 &arrive_window,
             )
             .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            // The pin's 28-day horizon and per-user cap: the leg holds no
+            // subscription yet, but picking its train makes one.
+            crate::routes::train::enforce_tracking_horizon(service_date)?;
+            crate::routes::train::enforce_pin_cap(&app, &user.id).await?;
 
             let (journey_id, leg_id) = journeys::create_journey_with_window_leg(
                 &app.database,
@@ -871,6 +885,16 @@ async fn post_journey_leg(
             // lowercase uid before it can mint an unattributable `trains`
             // row.
             let train_uid = train_uid.trim().to_ascii_uppercase();
+            // The pin's 28-day horizon and per-user cap, which this leg type
+            // used to skip; checked before the `trains` row is minted.
+            crate::routes::train::enforce_tracking_horizon(service_date)?;
+            crate::routes::train::enforce_pin_cap_for_train(
+                &app,
+                &user.id,
+                &train_uid,
+                service_date,
+            )
+            .await?;
 
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
@@ -930,6 +954,10 @@ async fn post_journey_leg(
                 &arrive_window,
             )
             .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+            // The pin's 28-day horizon and per-user cap: the leg holds no
+            // subscription yet, but picking its train makes one.
+            crate::routes::train::enforce_tracking_horizon(service_date)?;
+            crate::routes::train::enforce_pin_cap(&app, &user.id).await?;
 
             let added = journeys::add_window_leg_to_journey(
                 &app.database,
@@ -1780,6 +1808,11 @@ async fn post_leg_train(
     // normalizes a hand-typed lowercase uid before it can mint an
     // unattributable `trains` row.
     let train_uid = body.train_uid.trim().to_ascii_uppercase();
+    // The pin's 28-day horizon and per-user cap on the train picked (a
+    // re-pick of a train the user already tracks reuses its subscription).
+    crate::routes::train::enforce_tracking_horizon(body.service_date)?;
+    crate::routes::train::enforce_pin_cap_for_train(&app, &user.id, &train_uid, body.service_date)
+        .await?;
 
     let trains_id =
         crate::data::trains::find_or_create_train(&app.database, &train_uid, body.service_date)
@@ -2687,6 +2720,15 @@ mod db_tests {
         let service_date =
             chrono::NaiveDate::from_ymd_opt(2099, 4, 17).expect("valid fixture date");
         let _day = fixture_day_cleanup(&pool, service_date).await;
+        // The tracking horizon (28 days) is relative to London's today, so
+        // pin today to the day before the synthetic date: the window leg
+        // and its picks below are then inside it.
+        let _now = crate::routes::pin_london_now_for_tests(
+            (service_date - chrono::Duration::days(1))
+                .and_hms_opt(12, 0, 0)
+                .expect("valid time")
+                .and_utc(),
+        );
 
         // Two real WAT -> RDG candidates within the leg's own persisted
         // window (08:00-11:00): CTCHG1 (the first pick) and
@@ -2879,6 +2921,15 @@ mod db_tests {
         let service_date =
             chrono::NaiveDate::from_ymd_opt(2099, 5, 21).expect("valid fixture date");
         let _day = fixture_day_cleanup(&pool, service_date).await;
+        // The tracking horizon (28 days) is relative to London's today, so
+        // pin today to the day before the synthetic date: the window leg
+        // and its picks below are then inside it.
+        let _now = crate::routes::pin_london_now_for_tests(
+            (service_date - chrono::Duration::days(1))
+                .and_hms_opt(12, 0, 0)
+                .expect("valid time")
+                .and_utc(),
+        );
 
         fn candidate_rows(
             train_uid: &str,
@@ -4575,6 +4626,240 @@ mod db_tests {
         cleanup_user(&pool, user).await;
         sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
             .bind(uids.to_vec())
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// 2026-10-08: `knownTrain` and `window` legs, on both `POST /Journeys`
+    /// and `POST /Journeys/{id}/legs`, and a leg's train pick, get the
+    /// pin's 28-day horizon and its copy. Nothing is minted for a refusal.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                journey_legs_past_the_tracking_horizon_are_refused -- --ignored --test-threads=1`"]
+    async fn journey_legs_past_the_tracking_horizon_are_refused() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-LEG-HORIZON";
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let today = crate::routes::london_today();
+        let last = today + chrono::Duration::days(crate::data::train_tracking::PIN_MAX_DAYS_AHEAD);
+        let too_far = last + chrono::Duration::days(1);
+        let message = crate::data::train_tracking::too_far_ahead_message();
+        let uid = "LIMHZ1";
+        sqlx::query("DELETE FROM trains WHERE train_uid = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("clear fixture trains rows");
+
+        let known_train = |date: chrono::NaiveDate| serde_json::json!({ "mode": "knownTrain", "trainUid": uid, "serviceDate": date });
+        let window = |date: chrono::NaiveDate| {
+            serde_json::json!({
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": date,
+                "departWindow": { "after": "08:00:00", "before": "11:00:00" }
+            })
+        };
+
+        for leg in [known_train(too_far), window(too_far)] {
+            let (status, body) = post_json(
+                router.clone(),
+                "/Journeys".to_string(),
+                Some(&token),
+                serde_json::json!({ "leg": leg }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{leg}: {body:?}");
+            assert_eq!(body, Value::String(message.clone()), "{leg}");
+        }
+
+        // The last day is still fine; it gives the journey to add legs to.
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": window(last) }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "window leg on the last day: {created:?}"
+        );
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+
+        for leg in [known_train(too_far), window(too_far)] {
+            let (status, body) = post_json(
+                router.clone(),
+                format!("/Journeys/{journey_id}/legs"),
+                Some(&token),
+                leg.clone(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "added {leg}: {body:?}");
+            assert_eq!(body, Value::String(message.clone()), "added {leg}");
+        }
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": uid, "serviceDate": too_far }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "train pick: {body:?}");
+        assert_eq!(body, Value::String(message.clone()));
+
+        let legs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM journey_legs jl JOIN journeys j ON j.id = jl.journey_id \
+             WHERE j.user_id = $1",
+        )
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .expect("count legs");
+        assert_eq!(legs, 1, "only the last-day window leg exists");
+        let minted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trains WHERE train_uid = $1")
+            .bind(uid)
+            .fetch_one(&pool)
+            .await
+            .expect("count trains rows");
+        assert_eq!(minted, 0, "a refused leg must not mint a trains row");
+
+        cleanup_user(&pool, user).await;
+    }
+
+    /// 2026-10-08: the pin's per-user cap on upcoming subscriptions applies
+    /// to every leg type and a leg's train pick, not only pin-mode legs. A
+    /// `knownTrain` leg for a train the user already tracks reuses that
+    /// subscription, so it is still allowed at the cap.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                the_upcoming_pin_cap_applies_across_leg_types -- --ignored --test-threads=1`"]
+    async fn the_upcoming_pin_cap_applies_across_leg_types() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-LEG-CAP";
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let today = crate::routes::london_today();
+        let tracked_uid = "LIMCP1";
+        let new_uid = "LIMCP2";
+        sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+            .bind(vec![tracked_uid, new_uid])
+            .execute(&pool)
+            .await
+            .expect("clear fixture trains rows");
+
+        // A journey (one window leg) and one tracked train, before the cap.
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": {
+                "mode": "window",
+                "originCrs": "WAT",
+                "destinationCrs": "RDG",
+                "serviceDate": today,
+                "departWindow": { "after": "08:00:00", "before": "11:00:00" }
+            } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+        let (status, body) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": {
+                "mode": "knownTrain", "trainUid": tracked_uid, "serviceDate": today
+            } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+
+        // Plain pins up to the cap.
+        sqlx::query(
+            "INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             SELECT $1, $2, 'WAT', NOW() + INTERVAL '1 hour' FROM generate_series(1, $3)",
+        )
+        .bind(user)
+        .bind(today)
+        .bind((crate::data::train_tracking::MAX_FUTURE_PINS_PER_USER - 1) as i32)
+        .execute(&pool)
+        .await
+        .expect("seed pins up to the cap");
+        let cap_message = crate::data::train_tracking::pin_cap_message();
+
+        let new_known_train =
+            serde_json::json!({ "mode": "knownTrain", "trainUid": new_uid, "serviceDate": today });
+        let new_window = serde_json::json!({
+            "mode": "window",
+            "originCrs": "WAT",
+            "destinationCrs": "RDG",
+            "serviceDate": today,
+            "arriveWindow": { "after": null, "before": "18:00:00" }
+        });
+        for leg in [&new_known_train, &new_window] {
+            let (status, body) = post_json(
+                router.clone(),
+                "/Journeys".to_string(),
+                Some(&token),
+                serde_json::json!({ "leg": leg }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{leg}: {body:?}");
+            assert_eq!(body, Value::String(cap_message.clone()), "{leg}");
+            let (status, body) = post_json(
+                router.clone(),
+                format!("/Journeys/{journey_id}/legs"),
+                Some(&token),
+                leg.clone(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "added {leg}: {body:?}");
+            assert_eq!(body, Value::String(cap_message.clone()), "added {leg}");
+        }
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": new_uid, "serviceDate": today }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "train pick: {body:?}");
+        assert_eq!(body, Value::String(cap_message.clone()));
+
+        // A train the user already tracks adds no subscription.
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": tracked_uid, "serviceDate": today }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "pick of an already-tracked train: {body:?}"
+        );
+
+        let minted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trains WHERE train_uid = $1")
+            .bind(new_uid)
+            .fetch_one(&pool)
+            .await
+            .expect("count trains rows");
+        assert_eq!(minted, 0, "a refused leg must not mint a trains row");
+
+        cleanup_user(&pool, user).await;
+        sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+            .bind(vec![tracked_uid, new_uid])
             .execute(&pool)
             .await
             .ok();
