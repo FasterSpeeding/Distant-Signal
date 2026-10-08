@@ -65,9 +65,9 @@ the new `stopsAt*` fields when it sets `stops_at`.
 
 - `date` is now accepted when it is within 7 days of today (as before) OR
   within the range of service dates DS holds timetable rows for. DS
-  publishes today plus 7 days ahead and keeps 8 days back, so in practice
-  the range is today−8 to today+7. It widens on its own if the publish
-  window or retention grows. Querying a far date costs the same as
+  publishes today plus 28 days ahead (`SCHEDULE_FORWARD_PUBLISH_DAYS`) and
+  keeps 8 days back, so in practice the range is today−8 to today+28. It
+  follows the publish window and retention on its own. Querying a far date costs the same as
   querying today.
 - A date outside both is a `400` (`text/plain`) naming both ranges:
   `date must be between 2026-09-30 and 2026-10-15: schedule data is
