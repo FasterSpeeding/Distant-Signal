@@ -53,7 +53,7 @@
 --      the owner role (which may not create it) finds it on a new cluster.
 --   7. The application database: no CONNECT or TEMPORARY for PUBLIC, so
 --      only roles granted CONNECT (the five here, and each per-service role
---      in postgres-grants.sql) may log in to it, and none may create
+--      in the per-service grants script) may log in to it, and none may create
 --      temporary tables (no service does); no EXECUTE for PUBLIC on the
 --      functions the owner creates later (security review L5).
 --
@@ -362,7 +362,7 @@ DECLARE
     r record;
 BEGIN
     -- 7. Only the roles granted CONNECT below (and each per-service role,
-    -- postgres-grants.sql) may connect; nobody gets TEMPORARY. The backup
+    -- the per-service grants script) may connect; nobody gets TEMPORARY. The backup
     -- role too, in case backup_database is this database. Superusers are
     -- not affected.
     EXECUTE format('REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC',
@@ -399,7 +399,7 @@ BEGIN
                    'GRANT EXECUTE ON ROUTINES TO %I', owner_role, app);
     -- 7. A function the owner creates is not executable by PUBLIC (the
     -- Postgres default): only by the roles granted it (app above, a
-    -- per-service role through postgres-grants.sql). A SECURITY DEFINER
+    -- per-service role through the per-service grants script). A SECURITY DEFINER
     -- one runs with the owner's rights.
     EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I '
                    'REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC', owner_role);
