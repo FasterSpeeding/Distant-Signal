@@ -22,7 +22,10 @@
 #     and the readers (trust-consumer, full-coverage-consumer, poller-ldbws)
 #     read Postgres directly (`*_SOURCE=db`);
 #   - the api runs no background loops (API_BACKGROUND_LOOPS=false, the
-#     writer owns them, as in production) and answers /private/* with a
+#     writer owns them, as in production); an `api-maintenance` service runs
+#     the api image's `maintenance` pass (expired sessions, dead links,
+#     personal-data retention) once an hour, standing in for production's
+#     hourly api-maintenance CronJob; and the api answers /private/* with a
 #     counted 404 (API_PRIVATE_ROUTES=false, the phase 5 soak setting), so a
 #     local caller still on /private shows up in its log and in
 #     distant_signal_api_private_route_retired_total.
@@ -37,10 +40,6 @@
 # docker-compose.yml's INTERNAL_OAUTH_* (and each API_*_URL) stay as they
 # are. Nothing uses them in this mode: no token is ever fetched, so
 # placeholders are fine. They go with the HTTP paths in phase 5 step 5.3.
-#
-# Session cleanup and the retention sweeps run in production from the hourly
-# api-maintenance CronJob, which compose does not have. Run a pass by hand:
-#   docker compose exec api maintenance
 
 x-direct-database-url: &direct-database-url postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
 
@@ -49,6 +48,39 @@ services:
     environment:
       API_BACKGROUND_LOOPS: "false"
       API_PRIVATE_ROUTES: "false"
+
+  # Production's hourly api-maintenance CronJob
+  # (templates/api-maintenance-cronjob.yaml), as a loop: one `maintenance`
+  # pass at start, then one an hour. A failed pass is logged and retried an
+  # hour later, as the CronJob would. Same image as the api (the build is
+  # cached), same retention variables and defaults.
+  api-maintenance:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      args:
+        CARGO_PROFILE: ${DIRECT_CARGO_PROFILE:-release}
+    restart: unless-stopped
+    depends_on:
+      # The api migrates at startup locally.
+      api:
+        condition: service_healthy
+    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
+    command:
+      - |
+        while :; do
+          /usr/local/bin/maintenance || echo "maintenance pass failed; next try in an hour" >&2
+          sleep "$${MAINTENANCE_INTERVAL_SECS}"
+        done
+    environment:
+      # crates/api/src/bin/maintenance.rs
+      DATABASE_URL: *direct-database-url
+      MAINTENANCE_INTERVAL_SECS: ${MAINTENANCE_INTERVAL_SECS:-3600}
+      PAST_TRAVEL_RETENTION_DAYS: ${PAST_TRAVEL_RETENTION_DAYS:-548}
+      STALE_PUSH_SUBSCRIPTION_DAYS: ${STALE_PUSH_SUBSCRIPTION_DAYS:-365}
+      INACTIVE_ACCOUNT_RETENTION_DAYS: ${INACTIVE_ACCOUNT_RETENTION_DAYS:-0}
+      RUST_LOG: ${RUST_LOG:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
 
   ingest-writer:
     build:

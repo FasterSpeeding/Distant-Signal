@@ -514,7 +514,9 @@ in `local.env` or `dev.env` (both `*.env.example` files and the README's
 streams on `apply`), puts every producer on production's `db`/`stream` sink
 and every reader on `*_SOURCE=db` against the local `postgres` and `redis`
 (as the superuser and Redis's default user), and sets the api's
-`API_BACKGROUND_LOOPS=false` and `API_PRIVATE_ROUTES=false`. The producers'
+`API_BACKGROUND_LOOPS=false` and `API_PRIVATE_ROUTES=false`, with an
+`api-maintenance` service running the `maintenance` pass hourly in place of
+production's CronJob. The producers'
 `API_*_URL` and `INTERNAL_OAUTH_*` stay in `docker-compose.yml`, unused: the
 binaries still require the OAuth variables until 5.3. The default compose
 path is unchanged. 5.3b then folds the overlay into `docker-compose.yml`
