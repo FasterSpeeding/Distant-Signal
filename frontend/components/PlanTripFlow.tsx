@@ -20,6 +20,7 @@ import { getStationNames } from '@/lib/suggestions';
 import { groupLabels, useStationGroups } from '@/lib/stationGroups';
 import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
+import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 
 interface SegmentSelection {
@@ -368,6 +369,7 @@ export function PlanTripFlow({
           </List>
         </Alert>
       )}
+      {plan && <ProvisionalTimetableNote provisional={plan.provisional} />}
       {plan?.segments.map((segment, segmentIndex) => {
         // Computed once per segment -- reused for both the heading and
         // the "no route found" alert below, so the two can never drift

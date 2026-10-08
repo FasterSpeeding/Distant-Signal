@@ -887,7 +887,7 @@ export interface TrainJourneyState extends ServiceModeFields {
  * `BIGSERIAL` space that also starts at 1, so the two collide freely. That
  * is exactly the bug this field's old name (`id`) caused on
  * `app/train/[uid]/[date]/page.tsx`. */
-export interface PublicTrainState extends ServiceModeFields {
+export interface PublicTrainState extends ServiceModeFields, TimetableCertaintyFields {
   trainsId: number;
   trainUid: string;
   serviceDate: string; // "YYYY-MM-DD"
@@ -1273,8 +1273,20 @@ export interface TripPlanNoResultReason {
   message: string;
 }
 
+/** Response-level timetable certainty (2026-10-08), on
+ * `/public/trains/search`, `GET /Train/by-uid/{uid}/{date}` and
+ * `GET /Trips/plan`: `provisional` is `true` when the response's one
+ * service date is `provisionalFrom` or later, i.e. far enough ahead that
+ * late STP changes (engineering works and the like) may still alter it.
+ * Both optional: absent from an older backend, which reads as firm. */
+export interface TimetableCertaintyFields {
+  provisional?: boolean;
+  /** The first provisional service date, `"YYYY-MM-DD"`. */
+  provisionalFrom?: string;
+}
+
 /** `GET /Trips/plan`'s full response. */
-export interface TripPlanResponse {
+export interface TripPlanResponse extends TimetableCertaintyFields {
   results: 'fastest' | 'options';
   segments: TripPlanSegment[];
   /** The arrive-by deadline, `null` for a depart-after request. */
@@ -2300,9 +2312,33 @@ export interface TrainSearchResult extends ServiceModeFields {
    * none; absent from an older backend. Either way the row reads
    * "Scheduled". */
   live?: LineTrainSummaryLive | null;
+  /** Only when the search set `stops_at`: the public arrival (`HH:MM`) at
+   * the earliest call at `stops_at` the filter accepted, `null` when
+   * unknown. Absent without `stops_at` and from an older backend. */
+  stopsAtArrival?: string | null;
+  /** Days after the searched date `stopsAtArrival` falls on; `null` with it. */
+  stopsAtArrivalDayOffset?: number | null;
+  /** The working-timetable arrival at that call (what
+   * `arrival_from`/`arrival_to` compare), `HH:MM`, and its day offset. */
+  stopsAtWorkingArrival?: string | null;
+  stopsAtWorkingArrivalDayOffset?: number | null;
 }
 
-export interface TrainSearchPage {
+export interface TrainSearchPage extends TimetableCertaintyFields {
   results: TrainSearchResult[];
   nextCursor: string | null;
+}
+
+/** `GET /public/trains/search/dates` (`crates/api/src/routes/trains.rs`'s
+ * `get_trains_search_dates`): the `date` range the search accepts
+ * (`from`/`to`, inclusive) and the range the timetable holds rows for
+ * (`publishedFrom`/`publishedTo`, `null` when it holds none). All
+ * `"YYYY-MM-DD"`. `provisionalFrom` is the first provisional date (see
+ * `TimetableCertaintyFields`); optional, absent from an older backend. */
+export interface TrainSearchDates {
+  from: string;
+  to: string;
+  publishedFrom: string | null;
+  publishedTo: string | null;
+  provisionalFrom?: string;
 }

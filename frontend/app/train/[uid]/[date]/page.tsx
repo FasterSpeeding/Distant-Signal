@@ -13,6 +13,7 @@ import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import { isTimetableOnly, serviceModeLabel, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
 import { ServiceModeIcon } from '@/components/ServiceModeIcon';
+import { ProvisionalTimetableNote } from '@/components/ProvisionalTimetableNote';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
 
@@ -357,6 +358,9 @@ export default async function TrackedTrainByUidPage({ params }: { params: Promis
           on that prop (Task 3.6.9). `by-id`'s own `<h1>` reads "Tracking
           Train {trackingId}" instead (a different identifier), so it
           omits this prop and keeps its own "Train {trainUid}" line. */}
+      {/* Far-ahead service dates only (`provisional`, see
+          `ProvisionalTimetableNote`): late timetable changes may still land. */}
+      <ProvisionalTimetableNote provisional={train.provisional} />
       <TrainJourneyPanel state={journeyState} suppressTrainUidHeading />
       <Group gap={4}>
         <LastUpdated timestamp={renderedAt} />

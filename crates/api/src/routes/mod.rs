@@ -26,6 +26,7 @@ pub mod notifications;
 pub mod operator_history;
 pub mod operators;
 pub mod preferences;
+pub mod provisional;
 pub mod reference;
 pub mod samples;
 pub mod schedule_rows;

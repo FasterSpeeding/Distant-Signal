@@ -140,6 +140,22 @@ describe('TrackedTrainByUidPage success path', () => {
     expect(screen.queryByRole('button', { name: /rename/i })).not.toBeInTheDocument();
   });
 
+  it('says the timetable may change for a provisional (far-ahead) service date', async () => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState({ provisional: true, provisionalFrom: '2026-10-16' }),
+    );
+    await renderPage();
+    expect(screen.getByText('Timetable may change')).toBeInTheDocument();
+  });
+
+  it.each([false, undefined])('shows no timetable note when provisional is %s', async (provisional) => {
+    vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
+      publicTrainState(provisional === undefined ? {} : { provisional }),
+    );
+    await renderPage();
+    expect(screen.queryByText('Timetable may change')).not.toBeInTheDocument();
+  });
+
   it('renders the shared train journey from the public response', async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
     await renderPage();

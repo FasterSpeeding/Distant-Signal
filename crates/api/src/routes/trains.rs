@@ -85,10 +85,12 @@
 //! question the paragraph above says has no filter. See
 //! `queries::search_schedule_calling_point_departures`'s own doc comment.
 //! `date` (`"YYYY-MM-DD"`, optional) selects which `service_date` this
-//! search runs against, defaulting to today -- but only within a bounded
-//! window (`SEARCH_WINDOW_BACKWARD_DAYS`/`SEARCH_WINDOW_FORWARD_DAYS`
-//! below), not the whole published timetable: a date outside that window
-//! is a `400`. See
+//! search runs against, defaulting to today. It is accepted within the
+//! static window around today (`SEARCH_WINDOW_BACKWARD_DAYS`/
+//! `SEARCH_WINDOW_FORWARD_DAYS` below) or anywhere inside the published
+//! timetable's own `service_date` range (2026-10-08, see
+//! `searchable_range`); anything else is a `400` naming both ranges.
+//! `GET /public/trains/search/dates` reports the same range. See
 //! docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
 //!
 //! **This route owns the `now`-forward DEFAULT**, which is the whole point
@@ -146,16 +148,19 @@ pub(crate) const DEFAULT_SEARCH_LIMIT: i64 = 50;
 /// clamping or ignoring.
 pub(crate) const MAX_SEARCH_LIMIT: i64 = 200;
 
-/// Forward search window, in days: the furthest future `date` this route
-/// will accept. Must be kept in sync by hand with `schedule-reference`'s
-/// own forward-publish loop
-/// (`crates/schedule-reference/src/main.rs::DESTINATION_DEPARTURES_FORWARD_DAYS`)
-/// -- there is no shared constant across the crate boundary, matching this
-/// codebase's existing per-crate-constant convention. See
+/// Forward static search window, in days: a future `date` this route
+/// always accepts, published or not (a later one is accepted only when the
+/// timetable holds rows that far out -- see `searchable_range`). This is
+/// the floor of `schedule-reference`'s forward-publish window
+/// (`SCHEDULE_FORWARD_PUBLISH_DAYS`, `crates/schedule-reference/src/config.rs`,
+/// 7-60, default 28), not a copy of it: the published range read by
+/// `searchable_range` carries the rest, so raising that setting needs no
+/// change here. See
 /// docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md §1.2.
 const SEARCH_WINDOW_FORWARD_DAYS: i64 = 7;
 
-/// Backward search window, in days. Must not exceed
+/// Backward static search window, in days (an earlier date is accepted
+/// only while the timetable still holds it). Must not exceed
 /// `Config::schedule_destination_departures_retention_days`
 /// (`crates/aggregator/src/config.rs`, currently 8, one more than this
 /// value) or a date this route claims to support could 404 anyway because
@@ -189,10 +194,11 @@ struct TrainSearchParams {
     /// everything else -- see this file's own module doc comment on
     /// timezone handling and git history `baa4e75`/`8250a9a`). Must be
     /// within `SEARCH_WINDOW_BACKWARD_DAYS` days ago and
-    /// `SEARCH_WINDOW_FORWARD_DAYS` days from today, inclusive, or this
-    /// 400s -- a date outside the supported window is a request this
-    /// deployment has already decided it can never answer, not a "nothing
-    /// found" case, so it is NOT a 404.
+    /// `SEARCH_WINDOW_FORWARD_DAYS` days from today, inclusive, or within
+    /// the published timetable's `service_date` range (see
+    /// `searchable_range`), or this 400s -- a date outside both is a
+    /// request this deployment cannot answer, not a "nothing found" case,
+    /// so it is NOT a 404.
     date: Option<String>,
     /// Optional. Filters to schedules whose TRUE origin (their first
     /// calling point) is this CRS -- NOT "any calling point along the
@@ -260,6 +266,10 @@ struct TrainSearchParams {
 pub fn router() -> Router {
     Router::new()
         .route("/trains/search", axum::routing::get(get_trains_search))
+        .route(
+            "/trains/search/dates",
+            axum::routing::get(get_trains_search_dates),
+        )
         .route("/trains/resolve", axum::routing::get(get_trains_resolve))
 }
 
@@ -429,24 +439,121 @@ fn normalize_date(
     raw: &str,
     today: chrono::NaiveDate,
 ) -> Result<chrono::NaiveDate, (StatusCode, String)> {
-    let parsed = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").map_err(|_| {
+    let parsed = parse_date(raw)?;
+    if !static_window(today).contains(&parsed) {
+        return Err((StatusCode::BAD_REQUEST, static_window_message()));
+    }
+    Ok(parsed)
+}
+
+/// Parses a caller-supplied `"YYYY-MM-DD"`, with no window check.
+fn parse_date(raw: &str) -> Result<chrono::NaiveDate, (StatusCode, String)> {
+    chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d").map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
             "date must be YYYY-MM-DD".to_string(),
         )
-    })?;
-    let earliest = today - chrono::Duration::days(SEARCH_WINDOW_BACKWARD_DAYS);
-    let latest = today + chrono::Duration::days(SEARCH_WINDOW_FORWARD_DAYS);
-    if parsed < earliest || parsed > latest {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "date must be within {SEARCH_WINDOW_BACKWARD_DAYS} days ago and \
-                 {SEARCH_WINDOW_FORWARD_DAYS} days from today"
-            ),
-        ));
+    })
+}
+
+/// `today - SEARCH_WINDOW_BACKWARD_DAYS ..= today + SEARCH_WINDOW_FORWARD_DAYS`.
+fn static_window(today: chrono::NaiveDate) -> std::ops::RangeInclusive<chrono::NaiveDate> {
+    (today - chrono::Duration::days(SEARCH_WINDOW_BACKWARD_DAYS))
+        ..=(today + chrono::Duration::days(SEARCH_WINDOW_FORWARD_DAYS))
+}
+
+fn static_window_message() -> String {
+    format!(
+        "date must be within {SEARCH_WINDOW_BACKWARD_DAYS} days ago and \
+         {SEARCH_WINDOW_FORWARD_DAYS} days from today"
+    )
+}
+
+/// The dates `GET /public/trains/search` accepts: the static window
+/// around `today` (unchanged since it shipped, so a date inside it still
+/// answers `200` or `404` exactly as before) widened to cover every
+/// `service_date` the timetable actually holds (`published`, from
+/// `queries::schedule_destination_departures_date_range`). The second part
+/// is what lets a client reach a date as far ahead as `schedule-reference`
+/// publishes, or as far back as the aggregator keeps, without this crate
+/// copying either setting.
+fn searchable_range(
+    today: chrono::NaiveDate,
+    published: Option<(chrono::NaiveDate, chrono::NaiveDate)>,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let window = static_window(today);
+    match published {
+        Some((earliest, latest)) => ((*window.start()).min(earliest), (*window.end()).max(latest)),
+        None => (*window.start(), *window.end()),
     }
-    Ok(parsed)
+}
+
+/// Window-bounds a parsed search `date`. Inside the static window it is
+/// accepted with no query; outside it, only when it falls within the
+/// published timetable (see `searchable_range`). The `400` names the
+/// searchable range and the published one, so a client can correct the
+/// date without a second call.
+async fn check_search_date(
+    app: &App,
+    date: chrono::NaiveDate,
+    today: chrono::NaiveDate,
+) -> Result<(), (StatusCode, String)> {
+    if static_window(today).contains(&date) {
+        return Ok(());
+    }
+    let published = queries::schedule_destination_departures_date_range(&app.database)
+        .await
+        .map_err(internal_error)?;
+    let (from, to) = searchable_range(today, published);
+    if (from..=to).contains(&date) {
+        return Ok(());
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        out_of_range_message(from, to, published),
+    ))
+}
+
+fn out_of_range_message(
+    from: chrono::NaiveDate,
+    to: chrono::NaiveDate,
+    published: Option<(chrono::NaiveDate, chrono::NaiveDate)>,
+) -> String {
+    match published {
+        Some((earliest, latest)) => format!(
+            "date must be between {from} and {to}: schedule data is published for \
+             {earliest} to {latest}"
+        ),
+        None => format!("{}: no schedule data is published", static_window_message()),
+    }
+}
+
+/// `GET /public/trains/search/dates` -- the `date` range
+/// `GET /public/trains/search` accepts, for a client to check before it
+/// searches.
+///
+/// `200 {"from", "to", "publishedFrom", "publishedTo", "provisionalFrom"}`:
+/// `from`/`to` (`"YYYY-MM-DD"`, inclusive) bound what the search accepts (a
+/// date outside is a `400`); `publishedFrom`/`publishedTo` bound the dates
+/// the timetable holds rows for (`null` when it holds none). A date inside
+/// `from..=to` with no rows of its own is a `404` from the search.
+/// `provisionalFrom` (2026-10-08) is the first date whose timetable is
+/// provisional (see `routes::provisional`); it may lie past `to`.
+async fn get_trains_search_dates(
+    State(app): State<App>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let today = super::london_today();
+    let published = queries::schedule_destination_departures_date_range(&app.database)
+        .await
+        .map_err(internal_error)?;
+    let (from, to) = searchable_range(today, published);
+    Ok(Json(json!({
+        "from": from,
+        "to": to,
+        "publishedFrom": published.map(|(earliest, _)| earliest),
+        "publishedTo": published.map(|(_, latest)| latest),
+        "provisionalFrom": crate::routes::provisional::provisional_from(today),
+    })))
 }
 
 /// Validates and uppercases a CRS code.
@@ -603,7 +710,11 @@ async fn get_trains_search(
     let now = london_now.time();
 
     let service_date = match params.date.as_deref().filter(|s| !s.trim().is_empty()) {
-        Some(raw) => normalize_date(raw, today)?,
+        Some(raw) => {
+            let date = parse_date(raw)?;
+            check_search_date(&app, date, today).await?;
+            date
+        }
         None => today,
     };
 
@@ -693,6 +804,9 @@ async fn get_trains_search(
                     "dayOffset".to_string(),
                     Value::from(row.get("day_offset").and_then(Value::as_u64).unwrap_or(0)),
                 );
+                if stops_at.is_some() {
+                    insert_stops_at_arrival(object, row);
+                }
             }
             rendered
         })
@@ -701,10 +815,53 @@ async fn get_trains_search(
     crate::routes::schedule_rows::attach_live(&app.database, service_date, &mut results).await;
     crate::data::schedule_services::annotate_uid_rows(&app.database, service_date, &mut results)
         .await;
-    Ok(Json(json!({
+    let mut body = json!({
         "results": results,
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
-    })))
+    });
+    // Additive (2026-10-08): whether `service_date`'s timetable is still
+    // provisional -- once per response, since every row shares the date.
+    if let Some(object) = body.as_object_mut() {
+        crate::routes::provisional::TimetableCertainty::for_date(service_date, today)
+            .insert_into(object);
+    }
+    Ok(Json(body))
+}
+
+/// The four `stopsAt*` fields of a search row, present only when the
+/// search set `stops_at`: the arrival at the call `stops_at` matched on
+/// (the earliest one the filter accepts -- see
+/// `queries::search_schedule_calling_point_departures`).
+///
+/// * `stopsAtArrival`: the public (GBTT) arrival, `"HH:MM"`.
+/// * `stopsAtArrivalDayOffset`: days after the service date (the searched
+///   `date`) that `stopsAtArrival` falls on.
+/// * `stopsAtWorkingArrival`/`stopsAtWorkingArrivalDayOffset`: the same for
+///   the working (WTT) arrival, the time `arrival_from`/`arrival_to`
+///   compare.
+///
+/// A time and its offset are `null` together when the call has no such
+/// time stored (a public time before the schedule's next publish).
+fn insert_stops_at_arrival(object: &mut serde_json::Map<String, Value>, row: &Value) {
+    let hh_mm = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .map_or(Value::Null, |s| Value::String(s.chars().take(5).collect()))
+    };
+    let offset = |key: &str| row.get(key).cloned().unwrap_or(Value::Null);
+    object.insert("stopsAtArrival".to_string(), hh_mm("stops_at_arrival"));
+    object.insert(
+        "stopsAtArrivalDayOffset".to_string(),
+        offset("stops_at_arrival_day_offset"),
+    );
+    object.insert(
+        "stopsAtWorkingArrival".to_string(),
+        hh_mm("stops_at_working_arrival"),
+    );
+    object.insert(
+        "stopsAtWorkingArrivalDayOffset".to_string(),
+        offset("stops_at_working_arrival_day_offset"),
+    );
 }
 
 #[expect(
@@ -851,9 +1008,11 @@ mod db_tests {
             .await
             .expect("connect to postgres");
         let today = crate::routes::london_today();
+        // Out to today+40: the published-range tests seed a date beyond
+        // the static window (`FAR_DAYS`).
         let (first, last) = (
             today - chrono::Duration::days(8),
-            today + chrono::Duration::days(8),
+            today + chrono::Duration::days(40),
         );
         crate::test_support::assert_synthetic_date(first);
         let cleanup = crate::test_support::FixtureCleanup::new(
@@ -2074,6 +2233,443 @@ mod db_tests {
             body.contains(&target.format("%Y-%m-%d").to_string()),
             "the 404 should name the actually-requested date, not always say 'today': {body}"
         );
+    }
+
+    // --- dates beyond the static window ---------------------------------------
+
+    /// How far past today the published-range tests seed: well beyond
+    /// `SEARCH_WINDOW_FORWARD_DAYS`, inside `connect`'s cleanup range.
+    const FAR_DAYS: i64 = 30;
+
+    async fn seed_one_departure(pool: &PgPool, date: chrono::NaiveDate, uid: &str) {
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs) \
+             VALUES ($1, 'WAT', '09:00', $2, 'ZRB')",
+        )
+        .bind(date)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .expect("seed a far-date fixture row");
+    }
+
+    /// The published range as the route sees it, so the expected text does
+    /// not depend on what else the shared database holds.
+    async fn published_range(pool: &PgPool) -> (chrono::NaiveDate, chrono::NaiveDate) {
+        queries::schedule_destination_departures_date_range(pool)
+            .await
+            .expect("date range")
+            .expect("a published range")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_accepts_a_published_date_beyond_the_static_window() {
+        let (pool, _guards) = connect().await;
+        let far = crate::routes::london_today() + chrono::Duration::days(FAR_DAYS);
+        delete_days(&pool, &[far]).await;
+        seed_one_departure(&pool, far, "C60001").await;
+
+        let (status, body) = get(&pool, &format!("/trains/search?station=ZRB&date={far}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = results(&body);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["uid"], "C60001");
+
+        // The discovery route reports the same range.
+        let (status, body) = get(&pool, "/trains/search/dates").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        let (earliest, latest) = published_range(&pool).await;
+        assert_eq!(latest, far);
+        assert_eq!(json["to"], far.to_string());
+        assert_eq!(json["publishedTo"], far.to_string());
+        assert_eq!(json["publishedFrom"], earliest.to_string());
+
+        delete_days(&pool, &[far]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_date_outside_the_published_range_is_a_400_naming_it() {
+        let (pool, _guards) = connect().await;
+        let today = crate::routes::london_today();
+        let far = today + chrono::Duration::days(FAR_DAYS);
+        delete_days(&pool, &[far]).await;
+        seed_one_departure(&pool, far, "C60002").await;
+        let (earliest, latest) = published_range(&pool).await;
+        assert_eq!(latest, far);
+        let from = earliest.min(today - chrono::Duration::days(SEARCH_WINDOW_BACKWARD_DAYS));
+
+        let beyond = far + chrono::Duration::days(1);
+        let (status, body) = get(&pool, &format!("/trains/search?station=ZRB&date={beyond}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            format!(
+                "date must be between {from} and {far}: schedule data is published for \
+                 {earliest} to {far}"
+            )
+        );
+
+        // A date inside the static window is still accepted (and 404s when
+        // it has no rows), whatever the published range.
+        let (status, _) = get(
+            &pool,
+            &format!(
+                "/trains/search?station=ZRB&date={}",
+                today + chrono::Duration::days(SEARCH_WINDOW_FORWARD_DAYS)
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        delete_days(&pool, &[far]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_marks_a_date_past_the_provisional_horizon_provisional() {
+        let (pool, _guards) = connect().await;
+        let today = crate::routes::london_today();
+        let horizon = crate::routes::provisional::DEFAULT_PROVISIONAL_AFTER_DAYS;
+        let firm = today + chrono::Duration::days(horizon);
+        let provisional = firm + chrono::Duration::days(1);
+        let far = today + chrono::Duration::days(FAR_DAYS);
+        delete_days(&pool, &[firm, provisional, far]).await;
+        seed_one_departure(&pool, firm, "C60011").await;
+        seed_one_departure(&pool, provisional, "C60012").await;
+        seed_one_departure(&pool, far, "C60013").await;
+
+        for (date, expected) in [(firm, false), (provisional, true), (far, true)] {
+            let (status, body) =
+                get(&pool, &format!("/trains/search?station=ZRB&date={date}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let json: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(json["provisional"], expected, "{date}: {json}");
+            assert_eq!(json["provisionalFrom"], provisional.to_string(), "{json}");
+            assert_eq!(json["results"].as_array().map(Vec::len), Some(1), "{json}");
+        }
+
+        let (status, body) = get(&pool, "/trains/search/dates").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["provisionalFrom"], provisional.to_string(), "{json}");
+
+        delete_days(&pool, &[firm, provisional, far]).await;
+    }
+
+    #[test]
+    fn searchable_range_widens_the_static_window_to_the_published_one() {
+        let today = chrono::NaiveDate::from_ymd_opt(2099, 8, 14).unwrap();
+        let day = |n: i64| today + chrono::Duration::days(n);
+        assert_eq!(searchable_range(today, None), (day(-7), day(7)));
+        assert_eq!(
+            searchable_range(today, Some((day(-8), day(60)))),
+            (day(-8), day(60))
+        );
+        // A published range inside the window never narrows it.
+        assert_eq!(
+            searchable_range(today, Some((day(-1), day(3)))),
+            (day(-7), day(7))
+        );
+        assert_eq!(
+            out_of_range_message(day(-7), day(7), None),
+            "date must be within 7 days ago and 7 days from today: no schedule data is published"
+        );
+    }
+
+    // --- stopsAt* arrival fields ----------------------------------------------
+
+    /// One `schedule_destination_departures` row with every column the
+    /// `stopsAt*` fields read.
+    struct Call {
+        date: chrono::NaiveDate,
+        uid: &'static str,
+        crs: &'static str,
+        scheduled: chrono::NaiveTime,
+        day_offset: i16,
+        arrival: Option<chrono::NaiveTime>,
+        public_arrival: Option<chrono::NaiveTime>,
+        destination_crs: &'static str,
+        destination_arrival: chrono::NaiveTime,
+        destination_arrival_day_offset: i16,
+        public_destination_arrival: chrono::NaiveTime,
+    }
+
+    async fn insert_call(pool: &PgPool, call: &Call) {
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                 day_offset, calling_point_arrival, public_calling_point_arrival, \
+                 destination_arrival, destination_arrival_day_offset, public_destination_arrival) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(call.date)
+        .bind(call.destination_crs)
+        .bind(call.scheduled)
+        .bind(call.uid)
+        .bind(call.crs)
+        .bind(call.day_offset)
+        .bind(call.arrival)
+        .bind(call.public_arrival)
+        .bind(call.destination_arrival)
+        .bind(call.destination_arrival_day_offset)
+        .bind(call.public_destination_arrival)
+        .execute(pool)
+        .await
+        .expect("seed a stopsAt fixture call");
+    }
+
+    fn t(h: u32, m: u32, s: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, s).unwrap()
+    }
+
+    /// Seeds tomorrow (no `now` floor) with four trains out of `ZQA`, each
+    /// call given as `(crs, departure, day offset, working arrival, public
+    /// arrival)`:
+    ///
+    /// * `T54001`: `ZQB` intermediate, then terminates at `ZQD`.
+    /// * `T54002`: leaves `ZQA` at 23:50 and reaches `ZQB` after midnight.
+    /// * `T54003`: arrives `ZQC` before midnight (23:58 working, 23:59
+    ///   public) and departs after it; arrives `ZQE` at 23:59:30 working,
+    ///   rounded to a 00:00 public arrival the next day.
+    /// * `T54004`: calls at `ZQB` twice, at 10:10 and 10:40.
+    async fn seed_stops_at_arrivals(pool: &PgPool) -> chrono::NaiveDate {
+        let date = crate::routes::london_today() + chrono::Duration::days(1);
+        delete_days(pool, &[date]).await;
+        type Stop = (
+            &'static str,
+            chrono::NaiveTime,
+            i16,
+            Option<chrono::NaiveTime>,
+            Option<chrono::NaiveTime>,
+        );
+        let trains: [(
+            &str,
+            &str,
+            chrono::NaiveTime,
+            i16,
+            chrono::NaiveTime,
+            Vec<Stop>,
+        ); 4] = [
+            (
+                "T54001",
+                "ZQD",
+                t(10, 30, 0),
+                0,
+                t(10, 31, 0),
+                vec![
+                    ("ZQA", t(10, 0, 0), 0, None, None),
+                    (
+                        "ZQB",
+                        t(10, 12, 0),
+                        0,
+                        Some(t(10, 10, 30)),
+                        Some(t(10, 11, 0)),
+                    ),
+                ],
+            ),
+            (
+                "T54002",
+                "ZQD",
+                t(0, 50, 0),
+                1,
+                t(0, 50, 0),
+                vec![
+                    ("ZQA", t(23, 50, 0), 0, None, None),
+                    ("ZQB", t(0, 20, 0), 1, Some(t(0, 18, 0)), Some(t(0, 19, 0))),
+                ],
+            ),
+            (
+                "T54003",
+                "ZQD",
+                t(1, 0, 0),
+                1,
+                t(1, 0, 0),
+                vec![
+                    ("ZQA", t(23, 40, 0), 0, None, None),
+                    ("ZQC", t(0, 1, 0), 1, Some(t(23, 58, 0)), Some(t(23, 59, 0))),
+                    ("ZQE", t(0, 2, 0), 1, Some(t(23, 59, 30)), Some(t(0, 0, 0))),
+                ],
+            ),
+            (
+                "T54004",
+                "ZQD",
+                t(11, 0, 0),
+                0,
+                t(11, 0, 0),
+                vec![
+                    ("ZQA", t(9, 50, 0), 0, None, None),
+                    (
+                        "ZQB",
+                        t(10, 11, 0),
+                        0,
+                        Some(t(10, 10, 0)),
+                        Some(t(10, 10, 0)),
+                    ),
+                    (
+                        "ZQX",
+                        t(10, 25, 0),
+                        0,
+                        Some(t(10, 24, 0)),
+                        Some(t(10, 24, 0)),
+                    ),
+                    (
+                        "ZQB",
+                        t(10, 41, 0),
+                        0,
+                        Some(t(10, 40, 0)),
+                        Some(t(10, 40, 0)),
+                    ),
+                ],
+            ),
+        ];
+        for (uid, destination_crs, destination_arrival, destination_offset, public_dest, stops) in
+            trains
+        {
+            for (crs, scheduled, day_offset, arrival, public_arrival) in stops {
+                insert_call(
+                    pool,
+                    &Call {
+                        date,
+                        uid,
+                        crs,
+                        scheduled,
+                        day_offset,
+                        arrival,
+                        public_arrival,
+                        destination_crs,
+                        destination_arrival,
+                        destination_arrival_day_offset: destination_offset,
+                        public_destination_arrival: public_dest,
+                    },
+                )
+                .await;
+            }
+        }
+        date
+    }
+
+    async fn stops_at_rows(pool: &PgPool, query: &str) -> Vec<Value> {
+        let (status, body) = get(pool, &format!("/trains/search?station=ZQA&{query}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        results(&body)
+    }
+
+    fn row<'a>(rows: &'a [Value], uid: &str) -> &'a Value {
+        rows.iter()
+            .find(|r| r["uid"] == uid)
+            .unwrap_or_else(|| panic!("no {uid} row in {rows:?}"))
+    }
+
+    fn stops_at_fields(row: &Value) -> Value {
+        serde_json::json!({
+            "stopsAtArrival": row["stopsAtArrival"],
+            "stopsAtArrivalDayOffset": row["stopsAtArrivalDayOffset"],
+            "stopsAtWorkingArrival": row["stopsAtWorkingArrival"],
+            "stopsAtWorkingArrivalDayOffset": row["stopsAtWorkingArrivalDayOffset"],
+        })
+    }
+
+    fn arrival(public: &str, public_offset: i64, working: &str, working_offset: i64) -> Value {
+        serde_json::json!({
+            "stopsAtArrival": public,
+            "stopsAtArrivalDayOffset": public_offset,
+            "stopsAtWorkingArrival": working,
+            "stopsAtWorkingArrivalDayOffset": working_offset,
+        })
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_stops_at_rows_carry_the_arrival_at_that_stop() {
+        let (pool, _guards) = connect().await;
+        let date = seed_stops_at_arrivals(&pool).await;
+
+        // An intermediate stop, not the destination: its own arrival, not
+        // `destinationArrival`'s.
+        let rows = stops_at_rows(&pool, &format!("date={date}&stops_at=ZQB")).await;
+        let uids: Vec<&str> = rows.iter().map(|r| r["uid"].as_str().unwrap()).collect();
+        assert_eq!(uids, ["T54004", "T54001", "T54002"]);
+        let t54001 = row(&rows, "T54001");
+        assert_eq!(stops_at_fields(t54001), arrival("10:11", 0, "10:10", 0));
+        assert_eq!(t54001["destinationArrival"], "10:30");
+
+        // After midnight: the next day.
+        assert_eq!(
+            stops_at_fields(row(&rows, "T54002")),
+            arrival("00:19", 1, "00:18", 1)
+        );
+
+        // Calls twice: the earliest call the filter accepts...
+        assert_eq!(
+            stops_at_fields(row(&rows, "T54004")),
+            arrival("10:10", 0, "10:10", 0)
+        );
+        // ...which an arrival bound moves to the later call.
+        let rows = stops_at_rows(
+            &pool,
+            &format!("date={date}&stops_at=ZQB&arrival_from=10:30"),
+        )
+        .await;
+        let uids: Vec<&str> = rows.iter().map(|r| r["uid"].as_str().unwrap()).collect();
+        assert_eq!(uids, ["T54004"]);
+        assert_eq!(stops_at_fields(&rows[0]), arrival("10:40", 0, "10:40", 0));
+
+        // The true terminus: its destination arrival.
+        let rows = stops_at_rows(&pool, &format!("date={date}&stops_at=ZQD")).await;
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            stops_at_fields(row(&rows, "T54001")),
+            arrival("10:31", 0, "10:30", 0)
+        );
+        assert_eq!(
+            stops_at_fields(row(&rows, "T54002")),
+            arrival("00:50", 1, "00:50", 1)
+        );
+
+        // Arrived before midnight, departed after it: the arrival is dated
+        // the day before its departure.
+        let rows = stops_at_rows(&pool, &format!("date={date}&stops_at=ZQC")).await;
+        assert_eq!(
+            stops_at_fields(row(&rows, "T54003")),
+            arrival("23:59", 0, "23:58", 0)
+        );
+        // A 23:59H working arrival rounded to a 00:00 public one: the public
+        // time is the next day.
+        let rows = stops_at_rows(&pool, &format!("date={date}&stops_at=ZQE")).await;
+        assert_eq!(
+            stops_at_fields(row(&rows, "T54003")),
+            arrival("00:00", 1, "23:59", 0)
+        );
+
+        delete_days(&pool, &[date]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_without_stops_at_has_no_stops_at_fields() {
+        let (pool, _guards) = connect().await;
+        let date = seed_stops_at_arrivals(&pool).await;
+
+        let rows = stops_at_rows(&pool, &format!("date={date}")).await;
+        assert_eq!(rows.len(), 4);
+        for row in &rows {
+            let object = row.as_object().unwrap();
+            assert!(
+                object.keys().all(|key| !key.starts_with("stopsAt")),
+                "{row}"
+            );
+        }
+
+        delete_days(&pool, &[date]).await;
     }
 
     // --- GET /trains/resolve --------------------------------------------------
