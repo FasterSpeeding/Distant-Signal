@@ -3011,6 +3011,16 @@ fullCoverageConsumer:
   # knob (see that block's comment).
   replicaCount: 1
   # (movementFeed was removed in Deploy C; see trustConsumer.)
+  # Ingest architecture plan 3a.8: where each stats write goes.
+  ingest:
+    # -- `http` (today): POST the three outputs to the api. `http+shadow`:
+    # the same POSTs, plus a copy of what the api accepted XADDed to
+    # `ds:ingest:full-coverage` for `ingestWriter.streams.full-coverage:
+    # shadow`. `stream`: XADD only (with `ingestWriter.streams.full-coverage:
+    # apply`, in the same values change). Uses this consumer's existing
+    # Redis connection and user (`redis.acl.clients.fullCoverageConsumer`,
+    # whose ACL already allows the stream). Rollback: `http`.
+    sink: http
   redisAutoclaimMinIdleSecs: 30
   redisGapCheckSecs: 60
   # -- Windowed full-coverage stats

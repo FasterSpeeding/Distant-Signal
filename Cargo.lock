@@ -1569,6 +1569,7 @@ dependencies = [
  "common",
  "dotenvy",
  "health-http",
+ "ingest-stream",
  "metrics",
  "movement-feed",
  "redis",

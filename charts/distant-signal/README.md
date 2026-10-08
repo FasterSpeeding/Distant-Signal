@@ -2159,6 +2159,7 @@ its own.
 | `fullCoverageConsumer.progressStallSecs` | `900` | `/livez` answers 503 once no consume-loop iteration has completed for this many seconds. |
 | `fullCoverageConsumer.metricsPort` | `9093` | Prometheus `/metrics` port. |
 | `fullCoverageConsumer.replicaCount` | `1` | Replicas. |
+| `fullCoverageConsumer.ingest.sink` | `http` | Ingest plan 3a.8: `http` POSTs the three outputs to the api; `http+shadow` also XADDs what the api accepted to `ds:ingest:full-coverage` (for `ingestWriter.streams.full-coverage: shadow`); `stream` XADDs only, and needs `ingestWriter.enabled` with `ingestWriter.streams.full-coverage: apply` (the render fails otherwise; flip both together). Renders `INGEST_SINK` only when not `http`; uses the consumer's existing Redis user. Rollback: `http`. |
 | `fullCoverageConsumer.redisAutoclaimMinIdleSecs` | `30` | See `trustConsumer.redisAutoclaimMinIdleSecs`. |
 | `fullCoverageConsumer.redisGapCheckSecs` | `60` | See `trustConsumer.redisGapCheckSecs`. |
 | `fullCoverageConsumer.windowedStats.enabled` | `false` | Windowed full-coverage stats (`docs/superpowers/specs/2026-09-27-full-coverage-windowed-stats-design.md`). Off: only the whole-day rows are written. Turn on only after api and schedule-reference support it; `aggregator.fullCoverageWindow.mode` is a separate switch. |

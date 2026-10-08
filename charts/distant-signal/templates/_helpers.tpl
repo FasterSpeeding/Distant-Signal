@@ -1163,6 +1163,25 @@ true
 {{- end }}
 
 {{/*
+fullCoverageConsumer.ingest.sink (ingest architecture plan 3a.8): the value
+for INGEST_SINK when it is http+shadow or stream, empty for http (nothing
+renders). Fails on any other value, and on stream without
+ingestWriter.streams.full-coverage: apply. Takes root.
+*/}}
+{{- define "distant-signal.fullCoverageConsumerIngestSink" -}}
+{{- $sink := toString (dig "ingest" "sink" "http" .Values.fullCoverageConsumer) -}}
+{{- if not (has $sink (list "http" "http+shadow" "stream")) -}}
+{{- fail (printf "fullCoverageConsumer.ingest.sink must be http, http+shadow or stream, not %q." $sink) -}}
+{{- end -}}
+{{- if and (eq $sink "stream") (not (and .Values.ingestWriter.enabled (eq (toString (get .Values.ingestWriter.streams "full-coverage")) "apply"))) -}}
+{{- fail "fullCoverageConsumer.ingest.sink=stream needs ingestWriter.enabled and ingestWriter.streams.full-coverage: apply (flip both in the same values change, spec §13.1): with no writer applying the stream, nothing would reach the database." -}}
+{{- end -}}
+{{- if ne $sink "http" -}}
+{{- $sink -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 The Postgres pools of the pollers that write directly (pollers.<name>.ingest.sink:
 db) and do not connect as their own per-service role, summed: they count
 against the app role. Takes root.
