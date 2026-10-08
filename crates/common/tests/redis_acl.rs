@@ -645,12 +645,22 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
             vec!["XRANGE", &d, "-", "+", "COUNT", "10"],
             vec!["XADD", &d, "MAXLEN", "~", "10000", "*", "error", "x"],
             vec!["XTRIM", &d, "MINID", "~", "0"],
-            vec!["XDEL", &d, "0-1"],
+            vec!["XLEN", &d],
             vec!["MEMORY", "USAGE", &s],
+            vec!["MEMORY", "USAGE", &d],
         ] {
             allowed(user, &mut c, &args);
         }
+        // Security review L7: it cannot forge, trim or delete the
+        // producers' entries, nor delete dead letters.
         for args in [
+            vec!["XADD", s.as_str(), "*", "v", "1"],
+            vec!["XTRIM", s.as_str(), "MAXLEN", "0"],
+            vec!["XDEL", s.as_str(), "0-1"],
+            vec!["XRANGE", s.as_str(), "-", "+"],
+            vec!["XDEL", d.as_str(), "0-1"],
+            vec!["XGROUP", "DESTROY", s.as_str(), "ingest-writer"],
+            vec!["XGROUP", "CREATE", d.as_str(), "g", "0"],
             vec!["XADD", stream.as_str(), "*", "v", "1"],
             vec![
                 "XREADGROUP",

@@ -74,6 +74,12 @@ poller-tocs final ~ds:ingest:reference +xadd +xrevrange +ping +hello +auth +clie
 poller-irish-rail-gtfs final ~ds:ingest:ioi-gtfs +xadd +xrevrange +ping +hello +auth +client|setname +client|setinfo +client|id
 poller-irish-rail-live final ~ds:ingest:ioi-live +xadd +xrevrange +ping +hello +auth +client|setname +client|setinfo +client|id
 poller-nir-stations final ~ds:ingest:ioi-nir +xadd +xrevrange +ping +hello +auth +client|setname +client|setinfo +client|id
-ingest-writer final ~ds:ingest:* ~ds:dlq:* +xreadgroup +xack +xautoclaim +xclaim +xpending +xgroup|create +xgroup|delconsumer +xinfo|stream +xinfo|groups +xinfo|consumers +xlen +xrange +xadd +xtrim +xdel +memory|usage +ping +hello +auth +client|setname +client|setinfo +client|id
+# ingest-writer (crates/ingest-stream/src/consumer.rs,
+# crates/ingest-writer/src/stream.rs): its consumer group and gauges on
+# ds:ingest:*, but never XADD, XTRIM or XDEL there, so it cannot forge or
+# drop the producers' entries (security review L7); XADD, the MINID XTRIM,
+# and the gauges' XLEN, XRANGE and MEMORY USAGE on ds:dlq:* only. (XGROUP
+# and XREADGROUP write the group's state, so the source streams stay `~`.)
+ingest-writer final ~ds:ingest:* +xreadgroup +xack +xautoclaim +xclaim +xpending +xgroup|create +xgroup|delconsumer +xinfo|stream +xinfo|groups +xinfo|consumers +xlen +memory|usage +ping +hello +auth +client|setname +client|setinfo +client|id (~ds:dlq:* +xadd +xtrim +xlen +xrange +memory|usage)
 
 ds-admin admin

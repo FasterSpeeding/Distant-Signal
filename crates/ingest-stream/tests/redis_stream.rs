@@ -890,7 +890,9 @@ async fn shutdown_while_down_gives_up_after_the_grace_period() {
 
 const TEMPLATE: &str = "../../charts/distant-signal/files/redis-users.acl.tpl";
 
-/// The template's rules for `user`, with `prefix` before every key pattern.
+/// The template's rules for `user`, with `prefix` before every key pattern,
+/// as ACL SETUSER arguments (a parenthesised selector is one argument, as
+/// in `crates/common/tests/redis_acl.rs`).
 fn acl_rules(user: &str, prefix: &str) -> Vec<String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TEMPLATE);
     let text = std::fs::read_to_string(&path).unwrap();
@@ -898,18 +900,26 @@ fn acl_rules(user: &str, prefix: &str) -> Vec<String> {
         .lines()
         .find(|l| l.split_whitespace().next() == Some(user))
         .unwrap_or_else(|| panic!("{user} not in {}", path.display()));
-    let mut parts = line.split_whitespace().skip(2);
     let mut rules = Vec::new();
-    for token in parts.by_ref() {
-        assert!(
-            !token.starts_with('('),
-            "selectors are not handled here: {line}"
-        );
-        rules.push(match token.find('~') {
+    let mut selector: Option<String> = None;
+    for token in line.split_whitespace().skip(2) {
+        let token = match token.find('~') {
             Some(at) => format!("{}{prefix}{}", &token[..=at], &token[at + 1..]),
             None => token.to_owned(),
-        });
+        };
+        match selector.as_mut() {
+            Some(open) => {
+                open.push(' ');
+                open.push_str(&token);
+                if token.ends_with(')') {
+                    rules.push(selector.take().unwrap());
+                }
+            }
+            None if token.starts_with('(') && !token.ends_with(')') => selector = Some(token),
+            None => rules.push(token),
+        }
     }
+    assert!(selector.is_none(), "unclosed selector in {line}");
     rules
 }
 
