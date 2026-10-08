@@ -150,19 +150,6 @@ arrival at that station. Without `stops_at` the keys are absent.
   "stopsAtArrivalDayOffset": 1, "stopsAtWorkingArrival": "00:14",
   "stopsAtWorkingArrivalDayOffset": 1, ...}`
 
-## 2026-10-08: `GET /public/ready` and graceful shutdown
-
-- New `GET /public/ready`, the readiness probe: `200 {"status":"ready"}`,
-  or `503 {"status":"draining"}` while the pod is shutting down. Only with
-  `API_READINESS_CHECKS_DB=true` (default false; meant for 2+ replicas) it
-  also answers `503 {"status":"database_unreachable"}` when the database
-  did not answer `SELECT 1` within 2 s (checked at most every 5 s).
-  `Cache-Control: no-store`. `GET /public/health` is unchanged (liveness).
-- On shutdown the api finishes in-flight requests (up to
-  `API_SHUTDOWN_DRAIN_SECS`, default 20 s) instead of resetting them. A
-  keep-alive connection is closed after its current response, so a client
-  must reconnect for its next request, as on any closed connection.
-
 ## 2026-10-08: track trains four weeks ahead
 
 The tracking horizon follows the timetable window below: a train can now
@@ -184,7 +171,8 @@ shape changes.
   longer window it covers more days ahead.
 - Unchanged: `GET /public/trains/resolve` keeps its 7-day window (it
   resolves live departure-board rows, which never reach that far), and
-  `GET /public/trains/search` keeps its own window (see below).
+  `GET /public/trains/search` keeps its own window (see its entry
+  above).
 - `SCHEDULE_FORWARD_PUBLISH_DAYS` now accepts 28-60 (was 7-60): it can no
   longer be set below the tracking horizon.
 
@@ -200,8 +188,8 @@ for lack of data now answer.
 - `GET /Train/by-uid/{uid}/{date}`: a train's scheduled stops and its
   bus/ferry mode are available up to today+28.
 - `GET /public/trains/search`: the rows exist up to today+28. The route
-  itself still accepts only dates within 7 days of today until the
-  "any published date" change to `date` lands; from then on its range
+  itself accepted only dates within 7 days of today until the
+  "any published date" change to `date` above; with it, its range
   (and `GET /public/trains/search/dates`'s `publishedTo`) reaches
   today+28 with nothing else to change.
 - Tracking a train (`/Train/by-uid/{uid}/{date}/track`, pins) now
@@ -215,6 +203,19 @@ for lack of data now answer.
 - The window is a deployment setting (`SCHEDULE_FORWARD_PUBLISH_DAYS`,
   28-60 since the tracking change above, default 28). Dates past today+7 appear after the first delivery
   following the deploy (deliveries land around 20:00 UTC).
+
+## 2026-10-08: `GET /public/ready` and graceful shutdown
+
+- New `GET /public/ready`, the readiness probe: `200 {"status":"ready"}`,
+  or `503 {"status":"draining"}` while the pod is shutting down. Only with
+  `API_READINESS_CHECKS_DB=true` (default false; meant for 2+ replicas) it
+  also answers `503 {"status":"database_unreachable"}` when the database
+  did not answer `SELECT 1` within 2 s (checked at most every 5 s).
+  `Cache-Control: no-store`. `GET /public/health` is unchanged (liveness).
+- On shutdown the api finishes in-flight requests (up to
+  `API_SHUTDOWN_DRAIN_SECS`, default 20 s) instead of resetting them. A
+  keep-alive connection is closed after its current response, so a client
+  must reconnect for its next request, as on any closed connection.
 
 ## 2026-10-07: live status and origin names on the schedule lists
 
