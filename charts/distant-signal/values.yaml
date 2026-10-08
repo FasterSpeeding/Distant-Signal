@@ -2348,6 +2348,15 @@ notifier:
   # cursor's real last_processed_id -- see config.rs's own
   # cursor_grace_seconds doc.
   cursorGraceSeconds: 120
+  # -- Line-status history rows whose `computed_at` is older than this many
+  # seconds are skipped instead of pushed: the cursor moves past them, they
+  # stay the "previous" status of their line's next row, and each counts in
+  # `notifier_line_history_skipped_total{reason="stale"}` (ingest plan 3c.4,
+  # decision D13). Once `ingestWriter.streams.tfl` is `apply`, a TfL backlog
+  # applied late arrives stamped with its fetch time, so this keeps it from
+  # pushing disruptions that may be over. Deploy it before that flip. `0`
+  # turns the skip off (every row is pushed, the old behaviour).
+  lineHistoryMaxAgeSeconds: 900
   # -- Task 17/18: cadence for the forwarding-queue poll, deliberately
   # faster than pollIntervalSecs above -- see config.rs's own comment on
   # why this is a judgment call, not a researched figure.
