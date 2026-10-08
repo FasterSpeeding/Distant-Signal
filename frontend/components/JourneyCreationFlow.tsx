@@ -65,7 +65,8 @@ export function JourneyCreationFlow({
   planOrigin?: string | undefined;
   /** `/plan` only: the search its URL restores (`lib/tripPlanUrl.ts`). */
   planQuery?: PlanFormInitial | undefined;
-  /** `/plan` only: the planner's date range (`GET /public/trains/search/dates`). */
+  /** The planner's date range (`GET /public/trains/search/dates`), read by
+   * the page on the server -- both `/plan` and `/journeys/new` pass it. */
   planSearchDates?: TrainSearchDates | null | undefined;
 } = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
@@ -146,7 +147,7 @@ export function JourneyCreationFlow({
         {entryMode === 'known' ? (
           <TrackTrainForm onCreated={handleLegOneCreated} />
         ) : (
-          <PlanTripFlow onCreated={handleLegOneCreated} />
+          <PlanTripFlow onCreated={handleLegOneCreated} searchDates={planSearchDates} />
         )}
       </Stack>
     );
