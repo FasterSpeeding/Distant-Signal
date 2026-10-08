@@ -1002,7 +1002,7 @@ previous delivery. The ingest container's error log names the reason.
 ### DistantSignalCorpusStale
 
 The newest loaded Network Rail CORPUS extract was delivered over
-`corpusStaleAfterDays` ago (`api_corpus_last_delivered_at_seconds`). CORPUS is
+`corpusStaleAfterDays` ago (`api_corpus_last_delivered_at_seconds`, or `store_…` after the phase 5 rename). CORPUS is
 published monthly. Either RDM stopped pushing it (check the SFTP corpus
 folder) or schedule-ingest cannot load it (check
 [DistantSignalCorpusRejected](#distantsignalcorpusrejected) and the ingest
@@ -1220,7 +1220,7 @@ the alert clears once api stops listing it or LDBWS accepts it.
 Over the last window (2h, 24 polls), api applied its "Ended (no longer
 listed)" inference to no incidents snapshot, and skipped at least one as
 `incomplete`, `empty` or a `shrink`
-(`api_incident_removal_inference_total{outcome}`; `too_soon` and
+(`api_incident_removal_inference_total{outcome}`, or `store_…` after the phase 5 rename; `too_soon` and
 `no_baseline` skips are benign and not counted). While this lasts,
 an incident that leaves the Knowledgebase feed without RDM clearing it stays
 "active" on the archive and in line status, the bug the inference exists to

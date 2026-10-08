@@ -583,6 +583,35 @@ The next release drops the `api` alternative. The alert-rules tests
 (`scripts/alert-rules-tests/`) cover both names during the transition and
 only `store_` afterwards.
 
+**Prepared (2026-10-08): the rules already match both prefixes**, so the
+rename itself is a code-only change in `ds-store`. The full inventory of
+`api_`-prefixed names `ds-store` emits (after `common::metrics::metric_name`,
+each is `distant_signal_<name>`), and what reads each one:
+
+| Metric (`ds-store` source) | Emitted from | Read by (`templates/prometheusrule.yaml`) |
+|---|---|---|
+| `api_corpus_last_delivered_at_seconds` (`corpus.rs`, `LAST_DELIVERY_METRIC`) | api; schedule-ingest under `db` | `DistantSignalCorpusStale`: `max` over `(api\|store)` |
+| `api_corpus_comparison_tiplocs`, `api_corpus_comparison_stanoxes` (`corpus/comparison.rs`) | api's `corpus_compare` | no rule |
+| `api_incident_removal_inference_total{outcome}` (`incidents/removal.rs`, `INFERENCE_METRIC`) | api; poller-incidents under `db` | recording rule `distant_signal:incident_removal_inference:increase` (and so `DistantSignalIncidentRemovalStalled`) and `DistantSignalIncidentSnapshotsMissing`: `sum` over `(api\|store)` |
+| `api_incidents_marked_removed_total` (`incidents/removal.rs`, `MARKED_REMOVED_METRIC`) | api; poller-incidents under `db` | no rule |
+| `api_incidents_without_resolved_place` (`incidents/mod.rs`) | api; poller-incidents under `db` | no rule |
+| `api_trust_event_backlog_rejected_rows_total`, `api_trust_event_backlog_shared_movement_errors_total` (`backlog.rs`) | api; trust-backlog-consumer under `db` | no rule |
+| `api_trust_event_backlog_uid_inferred_total` (`backlog.rs`, `UID_INFERRED_METRIC`) | api; trust-backlog-consumer under `db` | no rule |
+| `api_train_reasons_rejected_rows_total` (`backlog/reasons.rs`) | api; trust-backlog-consumer under `db` | no rule |
+| `api_schedule_publish_staged_mismatch_total{product}` (`schedule/publish.rs`) | api only: schedule-reference under `db` already counts `store_schedule_publish_staged_mismatch_total` (2a.5) | `DistantSignalSchedulePublishStagedMismatch`: `sum` over `(api\|store)` (since 2a.5) |
+| `api_schedule_publish_rows_total{product,outcome}` (`schedule/publish.rs`) | api only: schedule-reference under `db` already counts `store_schedule_publish_rows_total` | no rule |
+
+The rename therefore touches the constants and literals in that column,
+their tests' expected strings, the api's own registrations of the same names
+(`data::queries::register_schedule_publish_metrics`,
+`data::incident_removal::register_metrics`,
+`data::trust_event_backlog::register_uid_inference_metrics`, all deleted by
+5.2 anyway), and `docs/alerts.md`'s mentions (`DistantSignalCorpusStale`,
+`…SchedulePublishStagedMismatch`, `…IncidentRemovalStalled`,
+`…IncidentSnapshotsMissing`). `scripts/alert-rules-tests/store-prefix.yaml`
+already exercises the three newly dual-prefixed rules with `store_` series
+alone. The repo has no Grafana dashboards; any panel lives in Ranma-Config.
+
 **Ranma:**
 
 - with `redis.acl` on: drop `api-password` from the
