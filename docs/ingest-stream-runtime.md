@@ -99,7 +99,7 @@ What a poller or consumer with `INGEST_SINK` uses:
 | poller-ldbws (`pollers.ldbws.ingest.sink`) | `ds:ingest:station-samples` | one snapshot; waits for the XADD up to the POST retry budget, then fails the cycle (transient) with the snapshot held | the stream's newest `produced_at` |
 | full-coverage-consumer (`fullCoverageConsumer.ingest.sink`) | `ds:ingest:full-coverage` | one snapshot of its three outputs; never waits | (none: it is not a poller) |
 | poller-tfl, poller-tocs (`pollers.<name>.ingest.sink`) | `ds:ingest:tfl`, `ds:ingest:reference` | one snapshot; never waits | the newest `produced_at` of its schema |
-| the island-of-Ireland pollers (stream only) | `ds:ingest:island-of-ireland` | one snapshot per schema; never waits | the newest `produced_at` of its schema |
+| the island-of-Ireland pollers (stream only) | `ds:ingest:ioi-gtfs`, `ds:ingest:ioi-nir`, `ds:ingest:ioi-live` (one per poller) | one snapshot per schema; never waits | the newest `produced_at` of its schema |
 
 ### The rollout (plan 3a; spec §13.1)
 
@@ -217,8 +217,9 @@ the total is over 512 MB. A unit test runs it on the spec table:
 | `ds:ingest:full-coverage` | 360 | 2 h | 2 × 37.9 MB |
 | `ds:ingest:tfl` | 288 | 24 h | 2 × 1.0 MB |
 | `ds:ingest:reference` (tocs) | 30 | 30 days | 2 × 0.5 MB |
-| `ds:ingest:island-of-ireland` (disabled) | 2000 | about 6 days | 2 × 35.5 MB |
-| **Total** | | | **about 285 MB** of 512 MiB (alert at 75%, 384 MiB) |
+| `ds:ingest:ioi-gtfs`, `ds:ingest:ioi-nir` (disabled) | 500 each | about 10 days | 2 × 10.1 MB each |
+| `ds:ingest:ioi-live` (disabled) | 1000 | about 3.5 days | 2 × 18.6 MB |
+| **Total** | | | **about 292 MB** of 512 MiB (alert at 75%, 384 MiB) |
 
 ## Metrics
 

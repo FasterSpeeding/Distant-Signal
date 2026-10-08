@@ -1077,7 +1077,7 @@ async fn snapshot_streams_publish_under_the_pollers_acl_users() {
     for (user, domain, schema) in [
         ("poller-tfl", "tfl", "tfl-line-status"),
         ("poller-tocs", "reference", "tocs"),
-        ("poller-nir-stations", "island-of-ireland", "ioi-stations"),
+        ("poller-nir-stations", "ioi-nir", "ioi-stations"),
     ] {
         let stream = scope.stream(domain);
         let url = scope.acl_user(user);
@@ -1103,20 +1103,21 @@ async fn snapshot_streams_publish_under_the_pollers_acl_users() {
         assert!(sink.shutdown(Duration::from_secs(2)).await);
     }
 
-    // The shared island-of-Ireland stream: another poller's newer entries
-    // (more than a page of them) do not count as this schema's cursor.
+    // A stream carrying two schemas (poller-irish-rail-gtfs' stations and
+    // lines): the other schema's newer entries (more than a page of them)
+    // do not count as this schema's cursor.
     let mut scope = Scope::new();
-    let stream = scope.stream("island-of-ireland");
+    let stream = scope.stream("ioi-gtfs");
     let stations_at = chrono::DateTime::from_timestamp_millis(
         (Utc::now() - chrono::TimeDelta::hours(1)).timestamp_millis(),
     )
     .unwrap();
-    let url = scope.acl_user("poller-irish-rail-live");
+    let url = scope.acl_user("poller-irish-rail-gtfs");
     let samples = SnapshotStream::spawn(
         redis::Client::open(url.as_str()).unwrap(),
         &stream,
-        SchemaId::new("ioi-station-samples", 1).unwrap(),
-        "poller-irish-rail-live",
+        SchemaId::new("ioi-lines", 1).unwrap(),
+        "poller-irish-rail-gtfs",
         100,
     );
     let stations = SnapshotStream::spawn(

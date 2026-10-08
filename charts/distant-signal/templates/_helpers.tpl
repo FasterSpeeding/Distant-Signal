@@ -1459,7 +1459,15 @@ other than off/shadow/apply. Takes root.
 {{- if not (has (toString $mode) (list "off" "shadow" "apply")) -}}
 {{- fail (printf "ingestWriter.streams.%s must be off, shadow or apply, not %q." $name (toString $mode)) -}}
 {{- end -}}
+{{- if eq $name "island-of-ireland" -}}
+{{- /* Removed (security review H1): one stream per poller now. An old
+     values file's "off" is dropped, as the writer no longer knows it. */ -}}
+{{- if ne (toString $mode) "off" -}}
+{{- fail "ingestWriter.streams.island-of-ireland was split into one stream per poller (security review H1, 2026-10-08): set ingestWriter.streams.ioi-gtfs, ioi-nir and/or ioi-live instead, and leave island-of-ireland \"off\" or remove it." -}}
+{{- end -}}
+{{- else -}}
 {{- $items = append $items (printf "%s:%s" $name (toString $mode)) -}}
+{{- end -}}
 {{- end -}}
 {{- join "," $items -}}
 {{- end }}

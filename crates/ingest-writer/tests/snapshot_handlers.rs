@@ -29,7 +29,7 @@ use common::{
 };
 use ingest_stream::{Envelope, Handled, Handler, HandlerError, SchemaId, StreamEntry};
 use ingest_writer::handlers::registry;
-use ingest_writer::stream::{Mode, WriterHandler};
+use ingest_writer::stream::{Mode, StreamSpec, WriterHandler};
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -64,8 +64,11 @@ impl Db {
         }
     }
 
-    fn handler(&self) -> WriterHandler {
-        WriterHandler::new(self.pool.clone(), Arc::new(registry()), Mode::Apply)
+    /// The writer's handler for `entry`'s own stream (security review H1:
+    /// each stream applies only its own schemas).
+    fn handler(&self, entry: &StreamEntry) -> WriterHandler {
+        let spec = StreamSpec::by_stream(&entry.stream).expect("a writer stream");
+        WriterHandler::new(self.pool.clone(), Arc::new(registry()), spec, Mode::Apply)
     }
 
     fn entry<T: Serialize + ?Sized>(
@@ -82,7 +85,7 @@ impl Db {
             envelope: Envelope::new(
                 SchemaId::new(schema, 1).unwrap(),
                 "test/pod",
-                format!("test-3a6-{}:{key}", self.run),
+                format!("{schema}:test-3a6-{}:{key}", self.run),
                 produced_at,
                 payload,
             )
@@ -91,7 +94,7 @@ impl Db {
     }
 
     async fn apply(&self, entry: &StreamEntry) -> Result<Handled, HandlerError> {
-        self.handler().handle(entry).await
+        self.handler(entry).handle(entry).await
     }
 
     async fn freshness(&self, source: &str) -> Option<DateTime<Utc>> {
@@ -114,7 +117,7 @@ impl Db {
     /// Best effort: the writer role has no DELETE.
     async fn cleanup(&self, sql: &str, bind: &str) {
         let _ = sqlx::query(sql).bind(bind).execute(&self.pool).await;
-        let _ = sqlx::query("DELETE FROM ingest_dedup WHERE key LIKE $1 || '%'")
+        let _ = sqlx::query("DELETE FROM ingest_dedup WHERE key LIKE '%:' || $1 || '%'")
             .bind(format!("test-3a6-{}:", self.run))
             .execute(&self.pool)
             .await;
@@ -638,6 +641,7 @@ impl Db {
         WriterHandler::new(
             self.pool.clone(),
             Arc::new(ingest_writer::handlers::registry_with(options)),
+            StreamSpec::by_stream(&entry.stream).expect("a writer stream"),
             Mode::Apply,
         )
         .handle(entry)

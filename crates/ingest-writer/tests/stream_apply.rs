@@ -23,7 +23,7 @@ use ingest_stream::{
 };
 use ingest_writer::handlers::{Applied, BoxFuture, Registry, SchemaHandler, apply_rows, decode};
 use ingest_writer::observed::{Observed, guard};
-use ingest_writer::stream::{Mode, WriterHandler};
+use ingest_writer::stream::{Mode, StreamSpec, WriterHandler};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
 
@@ -121,6 +121,13 @@ fn snapshot_schema() -> SchemaId {
     SchemaId::new("writer-test-snapshot", 1).unwrap()
 }
 
+/// The test stream: it carries the two test schemas and nothing else.
+const TEST_STREAM: StreamSpec = StreamSpec {
+    name: "writer-test",
+    stream: "ds:ingest:writer-test",
+    schemas: &["writer-test-rows", "writer-test-snapshot"],
+};
+
 fn registry() -> Arc<Registry> {
     let mut registry = Registry::new();
     registry.register(&rows_schema(), AppendRows).unwrap();
@@ -172,10 +179,13 @@ impl Db {
         }
     }
 
+    /// The dedup key of the `writer-test-rows` entry named `name`.
     fn key(&self, name: &str) -> String {
-        format!("{}{name}", self.prefix)
+        format!("{}:{}{name}", rows_schema().name(), self.prefix)
     }
 
+    /// An entry of `schema` on [`TEST_STREAM`], keyed `<schema name>:...`
+    /// as every producer keys its entries (security review H1).
     fn entry<T: Serialize>(
         &self,
         schema: SchemaId,
@@ -183,11 +193,11 @@ impl Db {
         produced_at: DateTime<Utc>,
         payload: &T,
     ) -> StreamEntry {
+        let key = format!("{}:{}{key}", schema.name(), self.prefix);
         StreamEntry {
-            stream: "ds:ingest:writer-test".to_owned(),
+            stream: TEST_STREAM.stream.to_owned(),
             id: "1-0".to_owned(),
-            envelope: Envelope::new(schema, "test/pod", self.key(key), produced_at, payload)
-                .unwrap(),
+            envelope: Envelope::new(schema, "test/pod", key, produced_at, payload).unwrap(),
         }
     }
 
@@ -207,15 +217,17 @@ impl Db {
     }
 
     async fn dedup_keys(&self) -> Vec<String> {
-        sqlx::query_scalar("SELECT key FROM ingest_dedup WHERE key LIKE $1 || '%' ORDER BY key")
-            .bind(&self.prefix)
-            .fetch_all(&self.pool)
-            .await
-            .unwrap()
+        sqlx::query_scalar(
+            "SELECT key FROM ingest_dedup WHERE key LIKE '%:' || $1 || '%' ORDER BY key",
+        )
+        .bind(&self.prefix)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
     }
 
     async fn cleanup(&self) {
-        sqlx::query("DELETE FROM ingest_dedup WHERE key LIKE $1 || '%'")
+        sqlx::query("DELETE FROM ingest_dedup WHERE key LIKE '%:' || $1 || '%'")
             .bind(&self.prefix)
             .execute(&self.pool)
             .await
@@ -223,7 +235,7 @@ impl Db {
     }
 
     fn handler(&self, mode: Mode) -> WriterHandler {
-        WriterHandler::new(self.pool.clone(), registry(), mode)
+        WriterHandler::new(self.pool.clone(), registry(), TEST_STREAM, mode)
     }
 }
 

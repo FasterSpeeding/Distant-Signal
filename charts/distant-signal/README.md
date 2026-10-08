@@ -1244,9 +1244,10 @@ subscription key from `TFL_APP_KEY` rather than `RDM_API_KEY`.
 The three island-of-Ireland pollers (`pollerIrishRailGtfs`,
 `pollerIrishRailLive`, `pollerNirStations`) are separate top-level values,
 also off by default, with working public default URLs; see their comments
-in `values.yaml`. Since ingest plan 3c.2 (decision D8) they write only to
-the `ds:ingest:island-of-ireland` Redis stream, which the ingest-writer
-applies (`ingestWriter.streams.island-of-ireland: apply`); they no longer
+in `values.yaml`. Since ingest plan 3c.2 (decision D8) each writes only to
+its own Redis stream (`ds:ingest:ioi-gtfs`, `ds:ingest:ioi-live`,
+`ds:ingest:ioi-nir`), which the ingest-writer applies
+(`ingestWriter.streams.ioi-gtfs` / `ioi-live` / `ioi-nir: apply`); they no longer
 call the api, so they need no OAuth credential or api-side group.
 
 Enabling a poller without setting its `baseUrl` **aborts the render** with an
@@ -1807,7 +1808,9 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `ingestWriter.streams.full-coverage` | `off` | Mode of `ds:ingest:full-coverage`, as `station-samples` (handlers: plan 3a.6). |
 | `ingestWriter.streams.tfl` | `off` | Mode of `ds:ingest:tfl`, as `station-samples` (handlers: plan 3c). |
 | `ingestWriter.streams.reference` | `off` | Mode of `ds:ingest:reference` (tocs), as `station-samples` (handlers: plan 3c). |
-| `ingestWriter.streams.island-of-ireland` | `off` | Mode of `ds:ingest:island-of-ireland`, as `station-samples` (handlers: plan 3c). |
+| `ingestWriter.streams.ioi-gtfs` | `off` | Mode of `ds:ingest:ioi-gtfs` (`pollerIrishRailGtfs`: `ioi-stations`, `ioi-lines`), as `station-samples` (handlers: plan 3c). One stream per island-of-Ireland poller (security review H1): the writer applies only the schemas each stream carries. The old shared `island-of-ireland` key fails the render unless `off`. |
+| `ingestWriter.streams.ioi-nir` | `off` | Mode of `ds:ingest:ioi-nir` (`pollerNirStations`: `ioi-stations`, `ioi-lines`), as `ioi-gtfs`. |
+| `ingestWriter.streams.ioi-live` | `off` | Mode of `ds:ingest:ioi-live` (`pollerIrishRailLive`: `ioi-station-samples`), as `ioi-gtfs`. |
 | `ingestWriter.changedRowsOnly` | `false` | Changed rows only (`INGEST_WRITER_CHANGED_ROWS_ONLY`, plan 3a.9): `station_full_coverage_samples` rows whose stats are unchanged are not rewritten, and readers derive their age from the feed's observed time. The other snapshot tables keep their per-row time. Turn on only after the api with the derived readers is deployed and `streams.full-coverage` has soaked on `apply`. |
 | `ingestWriter.database.maxConnections` | `6` | Its Postgres pool; counted, plus its one loop-lock session, in the connection budgets. |
 | `ingestWriter.progressStallSecs` | `900` | `/livez` stall window (`PROGRESS_STALL_SECS`). |
@@ -1982,7 +1985,7 @@ used for and why persistence defaults on.
 | `redis.acl.clients.pollerIncidents` | `false` | poller-incidents' DB sink (`pollers.incidents.ingest.sink: db`), as user `poller-incidents`. |
 | `redis.acl.clients.pollerLdbws` | `false` | poller-ldbws' stream sinks (`pollers.ldbws.ingest.sink: http+shadow` or `stream`), as user `poller-ldbws` (`~ds:ingest:station-samples +xadd +xrevrange`). |
 | `redis.acl.clients.pollerTfl` / `.pollerTocs` | `false` | poller-tfl's and poller-tocs's stream sinks (`pollers.<name>.ingest.sink: http+shadow` or `stream`, ingest plan 3c.2), as users `poller-tfl` and `poller-tocs`. |
-| `redis.acl.clients.pollerIrishRailGtfs` / `.pollerIrishRailLive` / `.pollerNirStations` | `false` | The island-of-Ireland pollers (their only sink is `ds:ingest:island-of-ireland`, D8), as users `poller-irish-rail-gtfs`, `poller-irish-rail-live` and `poller-nir-stations`. |
+| `redis.acl.clients.pollerIrishRailGtfs` / `.pollerIrishRailLive` / `.pollerNirStations` | `false` | The island-of-Ireland pollers (each one's only sink is its own `ds:ingest:ioi-gtfs`, `ds:ingest:ioi-live` or `ds:ingest:ioi-nir`, D8), as users `poller-irish-rail-gtfs`, `poller-irish-rail-live` and `poller-nir-stations`. |
 | `redis.image.repository` | `redis` | Redis image repository (upstream image; this repo builds no Redis image). |
 | `redis.image.tag` | `7.4.11@sha256:…` | Redis 7.4, digest-pinned in the tag. |
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
@@ -2444,7 +2447,7 @@ Irish Rail GTFS zip. Off by default; no API key needed.
 
 | Key | Default | Description |
 |---|---|---|
-| `pollerIrishRailGtfs.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:island-of-ireland` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailGtfs`; no api route or OAuth), so turn on `ingestWriter.streams.island-of-ireland: apply` with it. |
+| `pollerIrishRailGtfs.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-gtfs` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailGtfs`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-gtfs: apply` with it. |
 | `pollerIrishRailGtfs.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-irish-rail-gtfs` | Image repository. |
 | `pollerIrishRailGtfs.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `pollerIrishRailGtfs.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
@@ -2469,7 +2472,7 @@ default; no API key needed.
 
 | Key | Default | Description |
 |---|---|---|
-| `pollerIrishRailLive.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:island-of-ireland` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailLive`; no api route or OAuth), so turn on `ingestWriter.streams.island-of-ireland: apply` with it. |
+| `pollerIrishRailLive.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-live` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailLive`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-live: apply` with it. |
 | `pollerIrishRailLive.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-irish-rail-live` | Image repository. |
 | `pollerIrishRailLive.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `pollerIrishRailLive.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
@@ -2495,7 +2498,7 @@ Off by default; no API key needed.
 
 | Key | Default | Description |
 |---|---|---|
-| `pollerNirStations.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:island-of-ireland` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerNirStations`; no api route or OAuth), so turn on `ingestWriter.streams.island-of-ireland: apply` with it. |
+| `pollerNirStations.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-nir` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerNirStations`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-nir: apply` with it. |
 | `pollerNirStations.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-nir-stations` | Image repository. |
 | `pollerNirStations.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `pollerNirStations.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |

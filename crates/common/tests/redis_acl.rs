@@ -565,20 +565,22 @@ fn every_user_can_run_its_clients_commands_and_nothing_else() {
         ("poller-ldbws", "ds:ingest:station-samples", "ds:ingest:tfl"),
         ("poller-tfl", "ds:ingest:tfl", "ds:ingest:station-samples"),
         ("poller-tocs", "ds:ingest:reference", "ds:ingest:tfl"),
+        // One stream per island-of-Ireland poller (security review H1):
+        // none may write another's.
         (
             "poller-irish-rail-gtfs",
-            "ds:ingest:island-of-ireland",
-            "ds:ingest:tfl",
+            "ds:ingest:ioi-gtfs",
+            "ds:ingest:ioi-nir",
         ),
         (
             "poller-irish-rail-live",
-            "ds:ingest:island-of-ireland",
-            "ds:ingest:tfl",
+            "ds:ingest:ioi-live",
+            "ds:ingest:ioi-gtfs",
         ),
         (
             "poller-nir-stations",
-            "ds:ingest:island-of-ireland",
-            "ds:ingest:tfl",
+            "ds:ingest:ioi-nir",
+            "ds:ingest:ioi-live",
         ),
     ] {
         let own = h.key(own);
