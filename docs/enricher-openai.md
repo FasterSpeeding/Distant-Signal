@@ -9,7 +9,9 @@ self-hosted model. Nothing in the chart or the service defaults to OpenAI,
 and [keyless auth](#keyless-auth-workload-identity-federation) is off by
 default too.
 Switch only after the [evaluation checklist](#before-switching-production)
-passes.
+passes. The Claude API is the other hosted option
+(`enricher.llm.provider: anthropic`): see
+[enricher-anthropic.md](enricher-anthropic.md).
 
 OpenAI documentation this page relies on (read 2026-10):
 
@@ -579,9 +581,11 @@ estimated from Prometheus without an OpenAI admin key:
 - `distant_signal_enricher_llm_tokens_total{call, kind}`: `call` is
   `primary`, `resolution_adversarial` or `severity_adversarial` (the same
   labels as `enricher_llm_call_total`); `kind` is `prompt`, `completion`,
-  `reasoning` or `cached`. Every 2xx response that carries `usage` counts,
+  `reasoning`, `cached` or `cache_write` (the last only from the Claude API,
+  see [enricher-anthropic.md](enricher-anthropic.md#metrics-and-cost); it
+  stays 0 for OpenAI). Every 2xx response that carries `usage` counts,
   refusals and empty or unparseable content included, because OpenAI bills
-  them. All 12 series start at 0.
+  them. All 15 series start at 0.
 - `distant_signal_enricher_llm_model_info{model, base_url_host}` is always
   1 and names the model and endpoint host the counts belong to.
 
