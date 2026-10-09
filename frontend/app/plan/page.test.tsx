@@ -150,7 +150,7 @@ describe('PlanPage (/plan)', () => {
   });
 
   it('exports metadata matching its heading, without any per-visitor value', () => {
-    expect(metadata.title).toBe('Plan a journey — Distant Signal');
-    expect(String(metadata.description)).toContain('No account needed to plan');
+    expect(metadata.title).toBe('Plan a journey');
+    expect(String(metadata.description)).toContain('track the one you pick');
   });
 });

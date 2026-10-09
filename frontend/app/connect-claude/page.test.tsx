@@ -101,7 +101,7 @@ describe('/connect-claude', () => {
     expect(clone.textContent).toMatch(/—/);
   });
   it('names the tab after the page, not just the site', () => {
-    expect(metadata.title).toBe('Connect Claude — Distant Signal');
+    expect(metadata.title).toBe('Connect Claude');
   });
 
   it('has one h1, and puts the steps in a "How to connect" section headed by an h2', () => {

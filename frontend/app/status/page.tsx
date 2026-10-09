@@ -20,6 +20,7 @@ import { TextLink } from '@/components/TextLink';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { LastUpdated } from '@/components/LastUpdated';
 import type { LineStatusReport } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // Same rationale as every other dynamic route in this app (see
 // app/lines/page.tsx's own comment): without this, `next build` treats the
@@ -28,16 +29,10 @@ import type { LineStatusReport } from '@/lib/types';
 // runtime.
 export const revalidate = 0;
 
-const METADATA_TITLE = 'Status — Distant Signal';
-const METADATA_DESCRIPTION =
-  'A live, network-wide snapshot of every National Rail and TfL line this app tracks: how many are running a Good Service versus facing disruption or a planned closure right now, which lines need attention most, and how that breaks down by mode and by country.';
+const METADATA_TITLE = 'Status';
+const METADATA_DESCRIPTION = 'Live status of every National Rail and TfL line: how many have problems, and which ones.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 const COUNTRY_LABELS: Record<Country, string> = {
   Gb: 'GB',

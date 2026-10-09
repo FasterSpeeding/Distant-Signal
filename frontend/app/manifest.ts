@@ -1,17 +1,22 @@
 import type { MetadataRoute } from 'next';
+import { SITE_DESCRIPTION, SITE_NAME } from '@/lib/pageMetadata';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Distant Signal',
-    short_name: 'Distant Signal',
-    description: 'A personal UK rail companion: live line status, train tracking, and ticket/Delay-Repay support.',
+    name: SITE_NAME,
+    // Fits under a home-screen icon without truncating.
+    short_name: 'DS Rail',
+    description: SITE_DESCRIPTION,
     start_url: '/',
     display: 'standalone',
     background_color: '#ffffff',
-    theme_color: '#be4bdb',
+    // The light scheme's viewport themeColor (app/layout.tsx). A manifest
+    // holds one colour; the viewport meta tags carry the dark one.
+    theme_color: '#ffffff',
     icons: [
       { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
       { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+      { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
   };
 }

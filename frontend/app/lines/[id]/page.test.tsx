@@ -727,10 +727,10 @@ describe('generateMetadata', () => {
       },
     ]);
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
-    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.title).toBe('My Commute');
     expect(metadata.description).toBe('My Commute: Severe Delays — Signal failure at Woking');
-    expect(metadata.openGraph?.title).toBe('My Commute — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+    expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
   it('describes a line with no reason text (Good Service)', async () => {
@@ -763,9 +763,9 @@ describe('generateMetadata', () => {
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
 
     expect(notFound).not.toHaveBeenCalled();
-    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.title).toBe('My Commute');
     expect(metadata.description).toBe('My Commute: no status computed yet');
-    expect(metadata.openGraph?.title).toBe('My Commute — Distant Signal');
+    expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
   });
 
   // Same failing-closed rule as the page's: a `getCustomLine` that blew up
@@ -782,7 +782,7 @@ describe('generateMetadata', () => {
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
 
     expect(notFound).not.toHaveBeenCalled();
-    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.title).toBe('My Commute');
   });
 
   // The page component lets this same fetch throw, and the two halves of

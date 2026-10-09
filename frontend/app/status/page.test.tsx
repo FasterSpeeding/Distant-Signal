@@ -190,11 +190,11 @@ describe('NetworkStatusPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading', () => {
-    expect(metadata.title).toBe('Status — Distant Signal');
+    expect(metadata.title).toBe('Status');
   });
 
   it('mirrors title/description into openGraph and twitter', () => {
-    expect(metadata.openGraph).toMatchObject({ title: metadata.title, type: 'website' });
-    expect(metadata.twitter).toMatchObject({ card: 'summary', title: metadata.title });
+    expect(metadata.openGraph).toMatchObject({ title: 'Status · Distant Signal', type: 'website' });
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image', title: 'Status · Distant Signal' });
   });
 });

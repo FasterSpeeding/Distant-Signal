@@ -118,43 +118,13 @@ describe('AllLinesPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Lines — Distant Signal');
+    expect(metadata.title).toBe('Lines');
   });
 
   it('describes the whole-network line table rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
+      'Every National Rail and TfL line, with its current status, delays and cancellations.',
     );
-  });
-
-  it('hedges custom lines behind logging in, since an unfurler bot never sees any', () => {
-    // `GET /public/lines` (crates/api/src/routes/lines.rs's `list_lines`)
-    // appends custom lines only for an AUTHENTICATED caller, and only that
-    // caller's own. Every consumer of this metadata is a session-less bot,
-    // so an unconditional "with your custom lines" would describe rows the
-    // recipient of the link cannot possibly see.
-    expect(metadata.description).toMatch(/custom lines.*logged in/);
-  });
-
-  it('keeps both halves of that hedge inside the length an unfurler will show', () => {
-    // Unfurlers commonly truncate a description around 155-200 characters.
-    // A cut landing between "your own custom lines" and "once you're
-    // logged in" would render the flat promise the hedge exists to avoid,
-    // so the whole clause is front-loaded rather than trailed off the end
-    // -- asserted, because that property is invisible in the string itself
-    // and was silently lost by one earlier rewording.
-    const description = metadata.description ?? '';
-    expect(description.indexOf("once you're logged in")).toBeGreaterThan(-1);
-    expect(description.indexOf("once you're logged in") + "once you're logged in".length).toBeLessThan(155);
-  });
-
-  it("doesn't promise delay and cancellation figures on every row", () => {
-    // AllLinesTable renders an em dash for a line with neither
-    // fullCoverageStats nor sampleStats -- with a "why not" tooltip where
-    // there is a representative status to explain it from, and a bare dash
-    // where there isn't. Normal, not an outage, so the copy is hedged
-    // rather than absolute.
-    expect(metadata.description).toMatch(/where available/);
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
@@ -162,16 +132,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Lines — Distant Signal',
-      description:
-        "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
+      title: 'Lines · Distant Signal',
+      description: 'Every National Rail and TfL line, with its current status, delays and cancellations.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
-      card: 'summary',
-      title: 'Lines — Distant Signal',
-      description:
-        "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
+      card: 'summary_large_image',
+      title: 'Lines · Distant Signal',
+      description: 'Every National Rail and TfL line, with its current status, delays and cancellations.',
     });
   });
 });

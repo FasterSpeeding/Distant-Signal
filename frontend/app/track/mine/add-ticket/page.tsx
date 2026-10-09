@@ -4,6 +4,7 @@ import { AutoOpenLoginPrompt } from '../AutoOpenLoginPrompt';
 import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { TicketEntryForm } from '@/components/TicketEntryForm';
+import type { Metadata } from 'next';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
 // route has no dynamic segment, and it fetches getSession() server-side
@@ -11,6 +12,8 @@ import { TicketEntryForm } from '@/components/TicketEntryForm';
 // generation and tries to prerender it during `next build`, which fails
 // since the `api` service only exists on the compose network at runtime.
 export const revalidate = 0;
+
+export const metadata: Metadata = { title: 'Add a ticket', robots: { index: false } };
 
 /** `/track/mine/add-ticket` -- the standalone ("no tracked train yet")
  * case of `TicketEntryForm`, moved off the bottom of `/track/mine` onto

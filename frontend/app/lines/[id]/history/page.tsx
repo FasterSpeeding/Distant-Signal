@@ -23,6 +23,8 @@ import { GranularityControl } from './GranularityControl';
 import { HistoryRangePicker } from './HistoryRangePicker';
 import { TrendsResults } from './TrendsResults';
 import { CoverageTrendsResults } from './CoverageTrendsResults';
+import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 const log = createLogger('app/lines/history');
 
@@ -81,6 +83,11 @@ async function resolveRetention(): Promise<{
     });
     return { historyRetentionDays: null, dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 };
   }
+}
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const name = await resolveLineName((await params).id);
+  return pageMetadata(`${name} history`, `Delays, cancellations and status changes on ${name} over time.`);
 }
 
 export default async function LineHistoryPage({

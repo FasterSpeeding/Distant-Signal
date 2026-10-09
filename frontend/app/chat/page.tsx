@@ -5,6 +5,8 @@ import { LoginLink } from '@/components/LoginLink';
 import { ChatPanel } from '@/components/ChatPanel';
 import { AddMcpServerLinks } from '@/components/AddMcpServerLinks';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
+import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // Same reasoning as app/page.tsx's own `revalidate = 0` (and
 // track/mine/page.tsx's identical comment): no dynamic segment, so without
@@ -26,6 +28,11 @@ export const revalidate = 0;
  * with `CHATBOT_ACCESS=authenticated` every logged-in user is `allowed`. */
 /** Says plainly what answers here: an AI model, on the visitor's own key. */
 const CHAT_SUBLINE = 'Uses Claude with your own API key';
+
+export const metadata: Metadata = pageMetadata(
+  'Ask about trains',
+  'Ask about UK trains, departures and disruption in plain English. Uses Claude with your own API key.',
+);
 
 export default async function ChatPage() {
   const access = await getChatbotAccess();

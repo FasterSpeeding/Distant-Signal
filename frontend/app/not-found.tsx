@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import { TextLink } from '@/components/TextLink';
 
 export const metadata: Metadata = {
-  title: 'Page not found — Distant Signal',
+  title: 'Page not found',
   robots: { index: false },
 };
 

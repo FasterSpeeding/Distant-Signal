@@ -16,6 +16,7 @@ import { ServiceModeIcon } from '@/components/ServiceModeIcon';
 import { ProvisionalTimetableNote } from '@/components/ProvisionalTimetableNote';
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -187,18 +188,10 @@ export async function generateMetadata({
 
   const origin = train.originName ?? train.originCrs;
   const destination = train.destinationName ?? train.destinationCrs;
-  const title =
-    origin && destination
-      ? `${origin} to ${destination} — Distant Signal`
-      : `${serviceHeading(train)} ${uid} — Distant Signal`;
+  const title = origin && destination ? `${origin} to ${destination}` : `${serviceHeading(train)} ${uid}`;
   const description = trainStatusSummary(toJourneyState(train));
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 /** `/train/[uid]/[date]` -- the PUBLIC page for a real-world train,

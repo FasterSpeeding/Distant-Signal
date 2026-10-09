@@ -8,6 +8,9 @@ import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControl
 import { LastUpdated } from '@/components/LastUpdated';
 import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = { title: 'Tracked train', robots: { index: false } };
 
 export default async function TrackedTrainByIdPage({ params }: { params: Promise<{ trackingId: string }> }) {
   const { trackingId } = await params;

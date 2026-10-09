@@ -7,8 +7,11 @@ import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { RouteText } from '@/components/RouteArrow';
 import type { JourneyTemplateListItem } from '@/lib/types';
+import type { Metadata } from 'next';
 
 export const revalidate = 0;
+
+export const metadata: Metadata = { title: 'Your journey templates', robots: { index: false } };
 
 /** `/journeys/templates` -- the templates list, per
  * docs/superpowers/specs/2026-09-22-reusable-repeating-journeys-design.md

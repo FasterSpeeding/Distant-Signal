@@ -5,6 +5,7 @@ import { InfoIcon } from '@/components/InfoIcon';
 import { TextLink } from '@/components/TextLink';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // Read the environment per request, never at build time: the connector URL
 // comes from the runtime env (see connectorUrl() below), and the image
@@ -13,15 +14,10 @@ export const dynamic = 'force-dynamic';
 
 // Same metadata shape as app/account/page.tsx: the root layout's bare
 // "Distant Signal" title otherwise names every tab this page is open in.
-const METADATA_TITLE = 'Connect Claude — Distant Signal';
+const METADATA_TITLE = 'Connect Claude';
 const METADATA_DESCRIPTION =
-  'Connect your own Claude.ai or Claude Desktop account to Distant Signal to ask about UK train departures, arrivals and journeys.';
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+  'Connect your Claude account to Distant Signal to ask about UK trains, departures and journeys.';
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 /** The connector URL: the MCP endpoint, `{railMcp.publicUrl}/mcp`, built
  * by the same `mcpEndpointUrl` as /chat and ChatPanel. Not the bare

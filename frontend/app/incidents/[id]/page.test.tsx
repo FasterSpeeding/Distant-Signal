@@ -285,10 +285,10 @@ describe('generateMetadata', () => {
   it('titles the page with the incident summary and describes the affected lines', async () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
-    expect(metadata.title).toBe('Signal failure at Woking — Distant Signal');
+    expect(metadata.title).toBe('Signal failure at Woking');
     expect(metadata.description).toBe('Real-Time incident affecting South Western Main Line.');
-    expect(metadata.openGraph?.title).toBe('Signal failure at Woking — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+    expect(metadata.openGraph?.title).toBe('Signal failure at Woking · Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
   it('labels a planned-work incident distinctly from a real-time one', async () => {

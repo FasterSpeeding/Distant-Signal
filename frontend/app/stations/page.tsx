@@ -2,6 +2,7 @@ import { Group, Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { StationSearchForm } from './StationSearchForm';
 import { TextLink } from '@/components/TextLink';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -30,16 +31,10 @@ import { TextLink } from '@/components/TextLink';
  * stats" rather than "punctuality", because that section is an LDBWS
  * SAMPLE (headed "Sample stats by operator", and a station can be outside
  * the sampling entirely), not a punctuality record. */
-const METADATA_TITLE = 'Stations — Distant Signal';
-const METADATA_DESCRIPTION =
-  'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.';
+const METADATA_TITLE = 'Stations';
+const METADATA_DESCRIPTION = 'Look up a UK station for disruptions, departures, delays and accessibility.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 /** review §3.5.13: the plan's own cheapest option for a page that was
  * otherwise empty below the search form -- a handful of major termini as

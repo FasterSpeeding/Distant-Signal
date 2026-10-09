@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import { TextLink } from '@/components/TextLink';
 
 export const metadata: Metadata = {
-  title: 'Connect Claude — Distant Signal',
+  title: 'Connect Claude',
   robots: { index: false },
 };
 

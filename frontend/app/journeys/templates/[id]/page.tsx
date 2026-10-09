@@ -6,8 +6,11 @@ import { EditJourneyTemplateForm } from '@/components/EditJourneyTemplateForm';
 import { LoginLink } from '@/components/LoginLink';
 import { RunTemplateNowButton } from '@/components/RunTemplateNowButton';
 import { TextLink } from '@/components/TextLink';
+import type { Metadata } from 'next';
 
 export const revalidate = 0;
+
+export const metadata: Metadata = { title: 'Journey template', robots: { index: false } };
 
 /** `/journeys/templates/[id]` -- detail/edit view, §6 item 3. Templates
  * have no group-shared read path in Phase B (unlike `/journeys/[id]`,

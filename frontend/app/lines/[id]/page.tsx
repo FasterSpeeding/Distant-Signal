@@ -23,6 +23,7 @@ import type { CustomLineDetail, LineDefinitionSummary, LineGroupRef, LineStatusR
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 import { LineTrainsResults } from './LineTrainsResults';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 /** `Suspense` fallback for both "Recent trends" boundaries below (review
  * §2.11). Sized to the *empty* state both `HalfHourlyTrendsResults` and
@@ -228,29 +229,19 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     if (name === undefined) {
       notFound();
     }
-    const title = `${name} — Distant Signal`;
+    const title = name;
     const description = `${name}: ${NO_STATUS_SUMMARY}`;
-    return {
-      title,
-      description,
-      openGraph: { title, description, type: 'website' },
-      twitter: { card: 'summary', title, description },
-    };
+    return pageMetadata(title, description);
   }
 
   const report = statusResult.report;
   const worst = worstStatus(report);
-  const title = `${report.name} — Distant Signal`;
+  const title = report.name;
   const description = worst.reason
     ? `${report.name}: ${severityLabel(worst.statusSeverity)} — ${worst.reason}`
     : `${report.name}: ${severityLabel(worst.statusSeverity)}`;
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 export default async function LineDetailPage({

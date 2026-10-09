@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import { TextLink } from '@/components/TextLink';
 
 export const metadata: Metadata = {
-  title: 'Account deleted — Distant Signal',
+  title: 'Account deleted',
   robots: { index: false },
 };
 

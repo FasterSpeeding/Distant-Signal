@@ -487,9 +487,12 @@ describe('generateMetadata', () => {
       publicTrainState({ originName: 'London Waterloo', destinationName: 'Woking' }),
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.title).toBe('London Waterloo to Woking — Distant Signal');
-    expect(metadata.openGraph?.title).toBe('London Waterloo to Woking — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary', title: 'London Waterloo to Woking — Distant Signal' });
+    expect(metadata.title).toBe('London Waterloo to Woking');
+    expect(metadata.openGraph?.title).toBe('London Waterloo to Woking · Distant Signal');
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary_large_image',
+      title: 'London Waterloo to Woking · Distant Signal',
+    });
   });
 
   it('falls back to a bare train uid title when origin/destination are unknown', async () => {
@@ -497,7 +500,7 @@ describe('generateMetadata', () => {
       publicTrainState({ originCrs: null, originName: null, destinationCrs: null, destinationName: null }),
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.title).toBe('Train W12345 — Distant Signal');
+    expect(metadata.title).toBe('Train W12345');
   });
 
   it('describes an en-route train with its last reported location and delay', async () => {

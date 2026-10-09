@@ -139,27 +139,25 @@ describe('OperatorsPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Operators — Distant Signal');
+    expect(metadata.title).toBe('Operators');
   });
 
   it('describes the operator list rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Every train operator this app tracks — National Rail TOCs and TfL — with its current worst status and aggregate delay/cancellation figures at a glance.',
+      "Every train operator, with its worst line status and today's delays and cancellations.",
     );
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
     expect(metadata.openGraph).toMatchObject({
-      title: 'Operators — Distant Signal',
-      description:
-        'Every train operator this app tracks — National Rail TOCs and TfL — with its current worst status and aggregate delay/cancellation figures at a glance.',
+      title: 'Operators · Distant Signal',
+      description: "Every train operator, with its worst line status and today's delays and cancellations.",
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
-      card: 'summary',
-      title: 'Operators — Distant Signal',
-      description:
-        'Every train operator this app tracks — National Rail TOCs and TfL — with its current worst status and aggregate delay/cancellation figures at a glance.',
+      card: 'summary_large_image',
+      title: 'Operators · Distant Signal',
+      description: "Every train operator, with its worst line status and today's delays and cancellations.",
     });
   });
 });

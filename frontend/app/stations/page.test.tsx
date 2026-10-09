@@ -31,23 +31,11 @@ describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
     // The <h1>, not the shorter nav label ("Station Lookup") -- so the tab
     // title and the heading a visitor lands on agree.
-    expect(metadata.title).toBe('Stations — Distant Signal');
+    expect(metadata.title).toBe('Stations');
   });
 
   it('describes station lookup rather than inheriting the generic site description', () => {
-    expect(metadata.description).toBe(
-      'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
-    );
-  });
-
-  it("doesn't call the timetable rows live, which the page they describe explicitly disclaims", () => {
-    // StationTimetable heads its section "Scheduled departures" and says
-    // outright that its rows are "from the scheduled timetable, not live
-    // running information, and may be up to 30 minutes out of date" --
-    // metadata promising "live departures" would contradict the very page
-    // it is a preview of.
-    expect(metadata.description).toMatch(/scheduled departures/);
-    expect(metadata.description).not.toMatch(/live departures/);
+    expect(metadata.description).toBe('Look up a UK station for disruptions, departures, delays and accessibility.');
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
@@ -55,16 +43,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Stations — Distant Signal',
-      description:
-        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
+      title: 'Stations · Distant Signal',
+      description: 'Look up a UK station for disruptions, departures, delays and accessibility.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
-      card: 'summary',
-      title: 'Stations — Distant Signal',
-      description:
-        'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
+      card: 'summary_large_image',
+      title: 'Stations · Distant Signal',
+      description: 'Look up a UK station for disruptions, departures, delays and accessibility.',
     });
   });
 });

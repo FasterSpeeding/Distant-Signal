@@ -12,6 +12,7 @@ import {
   retentionPolicy,
   type RetentionPolicy,
 } from '@/lib/legal';
+import { withAbsoluteTitle } from '@/lib/pageMetadata';
 
 // ============================================================================
 // DRAFT -- NOT LEGAL ADVICE -- REVIEW BEFORE PUBLISHING.
@@ -30,9 +31,8 @@ import {
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
-  return legalPageMetadata(
-    'Privacy notice',
-    'What personal data Distant Signal holds, why, for how long, and your rights.',
+  return withAbsoluteTitle(
+    legalPageMetadata('Privacy notice', 'What personal data Distant Signal holds, why, for how long, and your rights.'),
   );
 }
 

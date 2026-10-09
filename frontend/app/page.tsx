@@ -33,6 +33,7 @@ import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/share
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
+import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
 // dynamic routes for the same `revalidate = 0` rationale: without it,
@@ -80,15 +81,15 @@ export const revalidate = 0;
  * places for the `<title>` and the unfurled card to drift apart. The same
  * pair of consts, with the same names, is how `/incidents`, `/trains` and
  * `/stations` spell theirs. */
-const METADATA_TITLE = 'Distant Signal';
+const METADATA_TITLE = SITE_NAME;
 const METADATA_DESCRIPTION =
-  "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines, stations and operators you care about, and track your trains, once you're logged in.";
+  'Live UK rail status: which lines have problems right now. Log in to pin lines and stations and track trains.';
 
 export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
+  ...pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION),
+  // The site name is this page's name: no "Distant Signal · Distant Signal".
+  title: { absolute: METADATA_TITLE },
+  ...previewCards(METADATA_TITLE, METADATA_DESCRIPTION),
 };
 
 // The exact shape getPreferences() already returns for a 401, named so the

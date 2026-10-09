@@ -1,5 +1,6 @@
 import { Center, Stack, Title } from '@mantine/core';
 import { CustomLineForm } from '../CustomLineForm';
+import type { Metadata } from 'next';
 
 // No `export const revalidate = 0` -- unlike `/lines/page.tsx` (which
 // fetches four things server-side and needs it to avoid `next build`
@@ -8,6 +9,8 @@ import { CustomLineForm } from '../CustomLineForm';
 // comment), this page fetches nothing server-side. Matches
 // `app/track/page.tsx`'s existing shape: a static route with no dynamic
 // segment and no server-side data fetch needs nothing here.
+export const metadata: Metadata = { title: 'New custom line', robots: { index: false } };
+
 export default function NewCustomLinePage() {
   return (
     // `Center` plus a `maw` matching CustomLineForm's own `maw={480}`

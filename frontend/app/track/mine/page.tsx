@@ -24,6 +24,7 @@ import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
 import { journeyListItemStatusGroup } from '@/lib/journeyStatus';
 import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
+import type { Metadata } from 'next';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
 // route has no dynamic segment, so without this Next.js treats it as
@@ -31,6 +32,8 @@ import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, 
 // build`, which fails since the `api` service only exists on the compose
 // network at runtime.
 export const revalidate = 0;
+
+export const metadata: Metadata = { title: 'My trains & tickets', robots: { index: false } };
 
 /** `/track/mine` -- a logged-in user's own tracked trains AND tickets, one
  * merged page (Part B of the upload-first ticket-tracking plan). Was two

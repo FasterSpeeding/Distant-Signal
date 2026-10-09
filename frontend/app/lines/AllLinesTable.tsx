@@ -41,6 +41,7 @@ import {
 } from '@/lib/sampleStats';
 import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
+import { fullTitle } from '@/lib/pageMetadata';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 interface SortState {
@@ -228,7 +229,7 @@ export function AllLinesTable({
   useEffect(() => {
     unfilteredTitleRef.current ??= document.title;
     document.title = statusGroupFilter
-      ? `Lines: ${SEVERITY_GROUP_LABELS[statusGroupFilter]} — Distant Signal`
+      ? fullTitle(`Lines: ${SEVERITY_GROUP_LABELS[statusGroupFilter]}`)
       : unfilteredTitleRef.current;
   }, [statusGroupFilter]);
 

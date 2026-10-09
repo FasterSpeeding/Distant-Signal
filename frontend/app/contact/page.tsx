@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { ContactEmail, LegalPage, LegalSection, requireLegalPages } from '@/components/LegalPage';
 import { TextLink } from '@/components/TextLink';
 import { ACCOUNT_ROUTE, LEGAL_CONFIG, legalPageMetadata } from '@/lib/legal';
+import { withAbsoluteTitle } from '@/lib/pageMetadata';
 
 // ============================================================================
 // DRAFT -- REVIEW BEFORE PUBLISHING. The operator contact point (LEG-2) and
@@ -14,7 +15,9 @@ import { ACCOUNT_ROUTE, LEGAL_CONFIG, legalPageMetadata } from '@/lib/legal';
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
-  return legalPageMetadata('Contact', 'How to contact Distant Signal, report content or make a privacy request.');
+  return withAbsoluteTitle(
+    legalPageMetadata('Contact', 'How to contact Distant Signal, report content or make a privacy request.'),
+  );
 }
 
 export default function ContactPage() {

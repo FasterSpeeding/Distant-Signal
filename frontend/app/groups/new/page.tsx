@@ -1,5 +1,6 @@
 import { Stack, Text, Title } from '@mantine/core';
 import { CreateGroupForm } from '@/components/CreateGroupForm';
+import type { Metadata } from 'next';
 
 // Review §3.2.6: this page said nothing about what happens after "Create
 // group" -- CreateGroupForm.tsx's own doc comment explains that it
@@ -11,6 +12,8 @@ import { CreateGroupForm } from '@/components/CreateGroupForm';
 // content width reads as unfinished, the same "line length" reasoning
 // Task 1.1's own note gives for leaving this as a separate Groups-specific
 // typography decision.
+export const metadata: Metadata = { title: 'Create a group', robots: { index: false } };
+
 export default function NewGroupPage() {
   return (
     <Stack p="lg" gap="md" maw={480}>

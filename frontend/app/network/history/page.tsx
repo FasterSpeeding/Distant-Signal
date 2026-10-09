@@ -8,6 +8,8 @@ import { availableGranularities, granularityShortfallDays, resolveGranularity, r
 import { GranularityControl } from '@/app/lines/[id]/history/GranularityControl';
 import { HistoryRangePicker } from '@/app/lines/[id]/history/HistoryRangePicker';
 import { NetworkTrendsResults } from './NetworkTrendsResults';
+import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 const log = createLogger('app/network/history');
 
@@ -28,6 +30,11 @@ async function resolveRetention(): Promise<{
     return { dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 };
   }
 }
+
+export const metadata: Metadata = pageMetadata(
+  'Network history',
+  'Delays and cancellations across every National Rail line, day by day.',
+);
 
 export default async function NetworkHistoryPage({
   searchParams,

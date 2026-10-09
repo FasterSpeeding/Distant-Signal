@@ -836,12 +836,12 @@ describe('status-group filter', () => {
   });
 
   it('reflects the filter in the browser tab title, and restores the original title when cleared', () => {
-    document.title = 'Lines — Distant Signal';
+    document.title = 'Lines · Distant Signal';
     renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
-    expect(document.title).toBe('Lines: Severe Disruption — Distant Signal');
+    expect(document.title).toBe('Lines: Severe Disruption · Distant Signal');
     fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
-    expect(document.title).toBe('Lines — Distant Signal');
+    expect(document.title).toBe('Lines · Distant Signal');
   });
 
   it('shows a quantified count and a "Show all lines" way out for a filtered view (regression: 2026-09-22 UX review §3.3, no count and no way back)', () => {

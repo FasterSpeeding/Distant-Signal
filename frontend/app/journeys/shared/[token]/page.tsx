@@ -7,6 +7,7 @@ import { getSiteOrigin } from '@/lib/siteOrigin';
 import { formatDate } from '@/lib/dateFormat';
 import { worstLegStatus, type LegStatusGroup } from '@/lib/journeyStatus';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
@@ -139,18 +140,12 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
   const lastLeg = journey.legs.at(-1) ?? firstLeg;
   const origin = firstLeg?.originName ?? firstLeg?.originCrs ?? null;
   const destination = lastLeg?.destinationName ?? lastLeg?.destinationCrs ?? null;
-  const title =
-    origin && destination ? `${origin} to ${destination} — Distant Signal` : 'Shared journey — Distant Signal';
+  const title = origin && destination ? `${origin} to ${destination}` : 'Shared journey';
   const description = firstLeg
     ? `A journey on ${formatDate(firstLeg.serviceDate)}, ${journeyStatusPhrase(journey.legs)}.`
     : 'A shared journey on Distant Signal.';
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 export default async function SharedJourneyPage({ params }: { params: Promise<{ token: string }> }) {

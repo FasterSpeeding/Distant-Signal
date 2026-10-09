@@ -93,13 +93,11 @@ describe('IncidentsPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Incidents — Distant Signal');
+    expect(metadata.title).toBe('Incidents');
   });
 
   it('describes the cross-network archive search rather than inheriting the generic site description', () => {
-    expect(metadata.description).toBe(
-      'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
-    );
+    expect(metadata.description).toBe('Search National Rail incident messages by operator, line and date.');
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
@@ -112,16 +110,14 @@ describe('metadata', () => {
     // the same two consts the subject does, so a self-comparison would be
     // structurally incapable of failing.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Incidents — Distant Signal',
-      description:
-        'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+      title: 'Incidents · Distant Signal',
+      description: 'Search National Rail incident messages by operator, line and date.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
-      card: 'summary',
-      title: 'Incidents — Distant Signal',
-      description:
-        'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.',
+      card: 'summary_large_image',
+      title: 'Incidents · Distant Signal',
+      description: 'Search National Rail incident messages by operator, line and date.',
     });
   });
 });

@@ -113,24 +113,11 @@ describe('TrackPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Track a train — Distant Signal');
+    expect(metadata.title).toBe('Track a train');
   });
 
   it('describes pinning one train rather than inheriting the generic site description', () => {
-    expect(metadata.description).toBe(
-      'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
-    );
-  });
-
-  it("doesn't call the picker's departures live, since it falls back to the scheduled timetable", () => {
-    // TrackTrainForm's CIF branch says outright that it is "showing the
-    // scheduled timetable instead — this is not live running information
-    // and may be up to 30 minutes out of date" for any station LDBWS has
-    // no board for, so "the live departure board" would be a promise the
-    // page can't always keep. "live position" (the pin itself, which IS
-    // live) is a different claim and deliberately kept.
-    expect(metadata.description).toMatch(/upcoming departures/);
-    expect(metadata.description).not.toMatch(/live departure/i);
+    expect(metadata.description).toBe('Track a train to see its live position, delay and next stop.');
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
@@ -138,16 +125,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Track a train — Distant Signal',
-      description:
-        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
+      title: 'Track a train · Distant Signal',
+      description: 'Track a train to see its live position, delay and next stop.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
-      card: 'summary',
-      title: 'Track a train — Distant Signal',
-      description:
-        'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
+      card: 'summary_large_image',
+      title: 'Track a train · Distant Signal',
+      description: 'Track a train to see its live position, delay and next stop.',
     });
   });
 

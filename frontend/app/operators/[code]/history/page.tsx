@@ -8,6 +8,8 @@ import { availableGranularities, granularityShortfallDays, resolveGranularity, r
 import { GranularityControl } from '@/app/lines/[id]/history/GranularityControl';
 import { HistoryRangePicker } from '@/app/lines/[id]/history/HistoryRangePicker';
 import { OperatorTrendsResults } from './OperatorTrendsResults';
+import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 const log = createLogger('app/operators/history');
 
@@ -67,6 +69,11 @@ async function resolveRetention(): Promise<{
     log.warn('Could not resolve retention ceilings; offering only Daily.', { error: err });
     return { dailyStatsRetentionDays: 0, halfHourlyStatsRetentionHours: 0 };
   }
+}
+
+export async function generateMetadata({ params }: { params: Promise<{ code: string }> }): Promise<Metadata> {
+  const name = await resolveOperatorName((await params).code);
+  return pageMetadata(`${name} history`, `Delays and cancellations across ${name}'s lines over time.`);
 }
 
 export default async function OperatorHistoryPage({

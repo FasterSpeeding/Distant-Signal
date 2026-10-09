@@ -7,6 +7,7 @@ import { isSeverityGroup } from '@/lib/severity';
 import type { Preferences } from '@/lib/types';
 import { TextLink } from '@/components/TextLink';
 import { AllLinesTable } from './AllLinesTable';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
@@ -66,16 +67,10 @@ export const revalidate = 0;
  * below two distinct countries and today every reachable row is GB (see
  * `AllLinesTable`'s `countryOptions`), so describing it would promise a
  * control nobody currently sees. */
-const METADATA_TITLE = 'Lines — Distant Signal';
-const METADATA_DESCRIPTION =
-  "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.";
+const METADATA_TITLE = 'Lines';
+const METADATA_DESCRIPTION = 'Every National Rail and TfL line, with its current status, delays and cancellations.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 // The exact shape getPreferences() already returns for a 401, named so the
 // fallback below is typed as `Preferences` rather than inferred with

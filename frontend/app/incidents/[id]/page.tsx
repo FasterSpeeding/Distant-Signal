@@ -12,6 +12,7 @@ import { formatDateTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import { operatorLabel, tocNameLookup } from '@/lib/displayLabels';
 import { stationLabel } from '@/lib/stationLabel';
 import type { IncidentDetail, IncidentHistoryEntry, ValidityPeriod } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // Same rationale as every dynamic `[param]` route in this app: without
 // this, `next build` may try to prerender against a database that only
@@ -64,7 +65,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     throw err;
   }
 
-  const title = `${incident.summary} — Distant Signal`;
+  const title = incident.summary;
   const kind = incident.isPlanned ? 'Planned work' : 'Real-Time';
   const affectedLines = incident.currentlyAffectsLines.map((line) => line.name);
   const description =
@@ -72,12 +73,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
       ? `${kind} incident affecting ${affectedLines.join(', ')}.`
       : `${kind} incident: ${incident.summary}.`;
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 export default async function IncidentDetailPage({ params }: { params: Promise<{ id: string }> }) {
