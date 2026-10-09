@@ -1020,6 +1020,15 @@ image; the api binaries stay, deprecated), Q3's enricher column target in
 `docker-compose.direct.yml`. The runbook marks each part **Built** or
 **Prepared**.
 
+**2026-10-09 (spec D16): release A is built and held.** One chart release
+makes every producer's new sink the default (runbook §0), replacing the
+per-producer flips and the 3-day shadows; 3–5 days to settle; then
+release B, this phase, deletes `/private`, the HTTP sinks and the old
+ingest roles together. Release A ships after the Redis ACL rollout's
+step 4 plus 24 h of a clean `ACL LOG`. It also moves the phase 4
+internal reads (`internalReads.source: db`), so no caller of `/private`
+is left for release B.
+
 **Runbook: [docs/ingest-phase5-runbook.md](../../ingest-phase5-runbook.md)**
 (2026-10-08). It holds:
 
