@@ -352,7 +352,7 @@ impl TokenUsage {
 /// price + completion x output price; never add `reasoning` on top.
 ///
 /// The Claude API adds `cache_write`, also a subset of `prompt` (billed at
-/// the cache-write premium): spend = (prompt - cached - cache_write) x
+/// the cache-write premium): spend = (prompt - cached - `cache_write`) x
 /// input + cached x cache-read + `cache_write` x cache-write + completion x
 /// output (docs/enricher-anthropic.md, "Metrics and cost"). Message Batches
 /// results are counted in [`BATCH_TOKENS_METRIC`] instead, because they are

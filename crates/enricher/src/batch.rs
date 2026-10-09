@@ -587,7 +587,7 @@ async fn submit_primary(enricher: &Enricher, prepared: &[Prepared]) -> anyhow::R
     .await
     {
         // Unrecorded, nobody would read it: cancel it (best effort).
-        let _ = enricher.llm.cancel_message_batch(&batch.id).await;
+        cancel_quietly(enricher, &batch.id).await;
         record_batch_event(Stage::Primary, "submit_failed");
         return Err(err);
     }
@@ -615,16 +615,23 @@ pub(crate) async fn poll_loop(enricher: Arc<Enricher>, settings: BatchSettings) 
                 let count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
                 metrics::gauge!(common::metrics::metric_name(IN_FLIGHT_METRIC))
                     .set(f64::from(count));
-                for row in rows {
-                    let (batch_id, stage) = (row.batch_id.clone(), row.stage);
+                for row in &rows {
                     if let Err(err) = poll_batch(&enricher, settings.max_items, row).await {
-                        record_batch_event(stage, "poll_failed");
-                        tracing::warn!(error = ?err, batch_id, "polling a Message Batch failed; retrying next tick");
+                        record_batch_event(row.stage, "poll_failed");
+                        tracing::warn!(error = ?err, batch_id = row.batch_id, "polling a Message Batch failed; retrying next tick");
                     }
                 }
             }
             Err(err) => tracing::error!(error = ?err, "could not read in-flight batches"),
         }
+    }
+}
+
+/// Cancels a batch whose results nobody will read; a failure is only
+/// logged (the batch then runs to its end, billed but unread).
+async fn cancel_quietly(enricher: &Enricher, batch_id: &str) {
+    if let Err(err) = enricher.llm.cancel_message_batch(batch_id).await {
+        tracing::warn!(error = %err, batch_id, "could not cancel a Message Batch");
     }
 }
 
@@ -640,15 +647,15 @@ async fn abandon(enricher: &Enricher, row: &BatchRow, reason: &str) -> anyhow::R
     Ok(())
 }
 
-async fn poll_batch(enricher: &Enricher, max_items: usize, row: BatchRow) -> anyhow::Result<()> {
+async fn poll_batch(enricher: &Enricher, max_items: usize, row: &BatchRow) -> anyhow::Result<()> {
     if row.model_version != enricher.model_version {
-        let _ = enricher.llm.cancel_message_batch(&row.batch_id).await;
-        return abandon(enricher, &row, "submitted under another model version").await;
+        cancel_quietly(enricher, &row.batch_id).await;
+        return abandon(enricher, row, "submitted under another model version").await;
     }
     let batch = match enricher.llm.get_message_batch(&row.batch_id).await {
         Ok(batch) => batch,
         Err(LlmCallError::Status { status: 404 }) => {
-            return abandon(enricher, &row, "the API no longer knows the batch").await;
+            return abandon(enricher, row, "the API no longer knows the batch").await;
         }
         Err(err) => return Err(err.into()),
     };
@@ -659,7 +666,7 @@ async fn poll_batch(enricher: &Enricher, max_items: usize, row: BatchRow) -> any
         Some(url) => match enricher.llm.message_batch_results(url).await {
             Ok(outcomes) => outcomes,
             Err(LlmCallError::Status { status: 404 }) => {
-                return abandon(enricher, &row, "its results are gone (over 29 days old)").await;
+                return abandon(enricher, row, "its results are gone (over 29 days old)").await;
             }
             Err(err) => return Err(err.into()),
         },
@@ -686,7 +693,7 @@ async fn poll_batch(enricher: &Enricher, max_items: usize, row: BatchRow) -> any
 async fn finish_primary_stage(
     enricher: &Enricher,
     max_items: usize,
-    row: BatchRow,
+    row: &BatchRow,
     outcomes: HashMap<String, BatchOutcome>,
 ) -> anyhow::Result<()> {
     let plan = plan_primary(row.items.clone(), outcomes);
@@ -710,7 +717,7 @@ async fn finish_primary_stage(
             Err(err) => {
                 record_batch_event(Stage::Adversarial, "submit_failed");
                 for (batch_id, _) in &submitted {
-                    let _ = enricher.llm.cancel_message_batch(batch_id).await;
+                    cancel_quietly(enricher, batch_id).await;
                 }
                 return Err(err.into());
             }
@@ -747,7 +754,7 @@ async fn finish_primary_stage(
 /// passes all succeeded, then deletes the row.
 async fn finish_adversarial_stage(
     enricher: &Enricher,
-    row: BatchRow,
+    row: &BatchRow,
     outcomes: HashMap<String, BatchOutcome>,
 ) -> anyhow::Result<()> {
     let plan = plan_adversarial(row.items.clone(), outcomes);

@@ -848,16 +848,16 @@ async fn process_incident(enricher: &Enricher, incident_id: &str) -> bool {
 ///
 /// Decision 3 of docs/superpowers/specs/2026-09-01-enricher-period-cap-remediation-design.md:
 /// a truncated primary extraction is NOT an error -- it already
-/// succeeded, and the pipeline below continues completely unaware
-/// anything unusual happened (extract_adversarial/
-/// extract_severity_adversarial/combine::combine_periods/
-/// write_extraction all just see an already-in-bounds `periods` list).
+/// succeeded, and the pipeline continues completely unaware anything
+/// unusual happened (`extract_adversarial`,
+/// `extract_severity_adversarial`, `combine::combine_periods` and
+/// `write_extraction` all just see an already-in-bounds `periods` list).
 /// This is purely operator-facing visibility: a counter for an alert
 /// rule to fire on, and a human-readable log line alongside it -- the
-/// same split MismatchTracker already uses (gauge for the alertable
-/// signal there, tracing::error! for the human-readable why), except a
+/// same split `MismatchTracker` already uses (gauge for the alertable
+/// signal there, `tracing::error!` for the human-readable why), except a
 /// counter (not a gauge, no "currently outstanding" set to track) and
-/// tracing::warn! (not tracing::error!, since this run still succeeds
+/// `tracing::warn!` (not `tracing::error!`, since this run still succeeds
 /// and writes normally, unlike a persistent combine mismatch).
 fn note_truncation(incident_id: &str, primary: &llm::PrimaryExtraction) {
     if primary.dropped_period_count > 0 {
