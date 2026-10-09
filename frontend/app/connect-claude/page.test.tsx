@@ -62,7 +62,7 @@ describe('/connect-claude', () => {
   it('falls back to a placeholder when NEXT_PUBLIC_RAILMCP_PUBLIC_URL is unset (railMcp not enabled on this deployment)', () => {
     vi.unstubAllEnvs();
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByText('(not configured on this deployment)')).toBeInTheDocument();
+    expect(screen.getByText('(not available on this site)')).toBeInTheDocument();
   });
 
   // Review §3.1.6.

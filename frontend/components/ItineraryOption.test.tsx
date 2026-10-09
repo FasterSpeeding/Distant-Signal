@@ -137,7 +137,7 @@ describe('ItineraryOption', () => {
       />,
     );
     expect(
-      screen.getByText(byVisibleText('Walk/transfer (TUBE) EUS — London Euston → KGX — London Kings Cross, 5 min')),
+      screen.getByText(byVisibleText('Tube EUS — London Euston → KGX — London Kings Cross, 5 min')),
     ).toBeInTheDocument();
   });
 

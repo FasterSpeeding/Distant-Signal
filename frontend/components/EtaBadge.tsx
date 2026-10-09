@@ -73,8 +73,8 @@ export function EtaBadge({
   const label = etaSource === 'darwin-estimated' ? 'Live departure board' : 'Estimate (Network Rail)';
   const tooltip =
     etaSource === 'darwin-estimated'
-      ? 'Estimated from a live Darwin/National Rail Enquiries departure board sample at the origin station'
-      : "Estimated by Network Rail's TRUST movement feed, propagated forward from the train's last reported delay";
+      ? 'From the National Rail live board at the origin station'
+      : "From Network Rail train reports, carried forward from the train's last reported delay";
 
   return (
     <Group gap={6} wrap="nowrap">

@@ -1028,7 +1028,7 @@ export function TrackTrainForm({
     if (!originValid || scheduledDeparture === null) {
       setFieldError(
         !originValid
-          ? 'Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.'
+          ? 'Pick an origin station from the suggestions, or enter its 3-letter code.'
           : 'Pick a scheduled departure before tracking.',
       );
       return;
@@ -1326,7 +1326,7 @@ export function TrackTrainForm({
             loading: originSuggestionsLoading,
             noMatchMessage: 'No matching stations',
           })}
-          error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
+          error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
           // NOT the native `required` attribute (Task 3.6.14): an empty
           // origin is now validated by `handleSubmit` itself, which sets
           // `fieldError` and returns before ever calling `submitTrack` --
@@ -1396,7 +1396,7 @@ export function TrackTrainForm({
                 loading: destinationSuggestionsLoading,
                 noMatchMessage: 'No matching stations',
               })}
-              error={destinationCrs.length > 0 && !destinationValid ? 'Must be a 3-letter CRS code' : null}
+              error={destinationCrs.length > 0 && !destinationValid ? 'Must be a 3-letter station code' : null}
               // NOT the native `required` attribute -- same reasoning as the
               // Origin field's own comment above: a native `required` field
               // would let the browser's own constraint validation intercept

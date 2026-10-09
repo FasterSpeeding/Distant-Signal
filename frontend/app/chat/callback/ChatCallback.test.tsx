@@ -255,7 +255,7 @@ describe('ChatCallback', () => {
       window.history.pushState({}, '', '/chat/callback?code=abc123&state=x');
       renderWithMantine(ChatCallbackPage());
       expect(await screen.findByRole('heading', { name: "Couldn't connect" })).toBeInTheDocument();
-      expect(screen.getByText(/not configured/i)).toBeInTheDocument();
+      expect(screen.getByText(/isn.t available on this site/i)).toBeInTheDocument();
       expect(mockAuth).not.toHaveBeenCalled();
     });
   });

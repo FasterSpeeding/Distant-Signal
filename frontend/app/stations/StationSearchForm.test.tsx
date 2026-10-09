@@ -48,7 +48,7 @@ describe('StationSearchForm', () => {
 
   it('selecting a suggestion sets the field to just the CRS code, not "code — name"', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'wok' } });
@@ -70,7 +70,7 @@ describe('StationSearchForm', () => {
 
   it('shows the matching option in the dropdown when searching by station name, not just by code', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
     fireEvent.focus(input);
     // Typing the full station name -- rather than the CRS code -- must
@@ -102,7 +102,7 @@ describe('StationSearchForm', () => {
       vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
     );
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'zzzzzz' } });
@@ -119,7 +119,7 @@ describe('StationSearchForm', () => {
   // user had typed anything at all.
   it('does not show the "no matches" placeholder on focus of a blank, untouched field', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
     fireEvent.focus(input);
 
@@ -131,7 +131,7 @@ describe('StationSearchForm', () => {
   // empty) value throughout the debounce and the fetch.
   it('does not show the "no matches" placeholder while a search is still in flight', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'zzzzzz' } });
@@ -146,7 +146,7 @@ describe('StationSearchForm', () => {
 
   it('clicking Look up after typing a station name (without picking the dropdown option) resolves to its CRS code', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'Woking' } });
@@ -168,7 +168,7 @@ describe('StationSearchForm', () => {
 
   it('shows a user-facing pending state and disables the button while navigation is in flight', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Station name or CRS code' });
+    const input = screen.getByRole('combobox', { name: 'Station name or code' });
     fireEvent.change(input, { target: { value: 'WOK' } });
 
     expect(screen.getByRole('button', { name: 'Look up' })).toBeEnabled();

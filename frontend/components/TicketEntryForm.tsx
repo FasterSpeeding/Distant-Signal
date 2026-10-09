@@ -350,8 +350,8 @@ export function TicketEntryForm({
       <Alert color="green" title="Ticket saved">
         <Stack gap="sm">
           <Text size="sm">
-            This ticket isn&apos;t attached to a tracked train yet — extraction can&apos;t tell us exactly which service
-            you mean. Find or create the tracked train it&apos;s for, and it&apos;ll be attached automatically.
+            We can&apos;t tell which train this ticket is for. Find or track that train and the ticket is attached to
+            it.
           </Text>
           <Group>
             <TextLink href={`/track?${trackParams.toString()}`} underline="always">
@@ -497,9 +497,9 @@ export function TicketEntryForm({
                 loading: originSuggestionsLoading,
                 noMatchMessage: 'No matching stations',
               })}
-              error={!originValid ? 'Must be a 3-letter CRS code' : null}
+              error={!originValid ? 'Must be a 3-letter station code' : null}
               description={
-                autoFilled.has('originCrs') ? 'Auto-filled — please check this is a real 3-letter CRS code' : undefined
+                autoFilled.has('originCrs') ? 'Filled in from your ticket. Check it is a real station code.' : undefined
               }
             />
             <Autocomplete
@@ -515,10 +515,10 @@ export function TicketEntryForm({
                 loading: destinationSuggestionsLoading,
                 noMatchMessage: 'No matching stations',
               })}
-              error={!destinationValid ? 'Must be a 3-letter CRS code' : null}
+              error={!destinationValid ? 'Must be a 3-letter station code' : null}
               description={
                 autoFilled.has('destinationCrs')
-                  ? 'Auto-filled — please check this is a real 3-letter CRS code'
+                  ? 'Filled in from your ticket. Check it is a real station code.'
                   : undefined
               }
             />

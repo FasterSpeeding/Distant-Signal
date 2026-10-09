@@ -465,7 +465,7 @@ describe('TicketEntryForm', () => {
     // "Edinburgh" (the preview's destinationCrs) is equally not a 3-letter
     // code, so both fields render this exact description -- getByText would
     // fail on the ambiguous match, hence getAllByText/length 2 here.
-    expect(screen.getAllByText('Auto-filled — please check this is a real 3-letter CRS code')).toHaveLength(2);
+    expect(screen.getAllByText('Filled in from your ticket. Check it is a real station code.')).toHaveLength(2);
     expect(screen.getByRole('combobox', { name: 'Origin station (optional)' })).not.toBeDisabled();
   });
 

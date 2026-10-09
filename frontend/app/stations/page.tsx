@@ -60,7 +60,7 @@ export default function StationSearchPage() {
   return (
     <Stack p="lg" gap="md">
       <Title order={1}>Stations</Title>
-      <Text c="dimmed">Search by station name or CRS code to see disruptions affecting lines through it.</Text>
+      <Text c="dimmed">Search by station name or code for disruption, departures and accessibility.</Text>
       <StationSearchForm />
       <Stack gap="xs">
         <Text size="sm" fw={500}>

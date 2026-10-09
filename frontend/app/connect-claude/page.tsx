@@ -30,7 +30,7 @@ export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPT
  * enabled; this page still renders then, with a placeholder. */
 function connectorUrl(): string {
   const publicUrl = runtimeRailMcpPublicUrl();
-  return publicUrl ? mcpEndpointUrl(publicUrl) : '(not configured on this deployment)';
+  return publicUrl ? mcpEndpointUrl(publicUrl) : '(not available on this site)';
 }
 
 /** Two overlapping rectangles -- the conventional "copy" glyph, in the

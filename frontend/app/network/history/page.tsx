@@ -85,10 +85,9 @@ export default async function NetworkHistoryPage({
       />
       {granularityShortfall !== null && (
         <Alert color="yellow" variant="light" title="Some of this range isn't available at this granularity">
-          This server only keeps {retentionDaysForGranularity} {retentionDaysForGranularity === 1 ? 'day' : 'days'} of
-          data at this granularity. The oldest {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of
-          the range you picked has already been removed — if this range looks empty or short, that may be why, not
-          because nothing happened.
+          We keep {retentionDaysForGranularity} {retentionDaysForGranularity === 1 ? 'day' : 'days'} of data at this
+          detail, so the first {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of this range may
+          look empty.
         </Alert>
       )}
       <Suspense

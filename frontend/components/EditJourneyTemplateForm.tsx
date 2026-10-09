@@ -295,12 +295,12 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
           </Group>
           <Group grow>
             <TextInput
-              label="Origin CRS"
+              label="From (station code)"
               value={leg.originCrs}
               onChange={(event) => updateLeg(leg.key, { originCrs: event.currentTarget.value })}
             />
             <TextInput
-              label="Destination CRS"
+              label="To (station code)"
               value={leg.destinationCrs}
               onChange={(event) => updateLeg(leg.key, { destinationCrs: event.currentTarget.value })}
             />

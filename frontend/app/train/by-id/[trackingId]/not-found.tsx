@@ -9,7 +9,7 @@ export default function TrackedTrainByIdNotFound() {
       <Title order={1} size="h2">
         Tracked train not found
       </Title>
-      <Text c="dimmed">No tracking pin matches that id.</Text>
+      <Text c="dimmed">This tracked train doesn&apos;t exist, or it&apos;s been removed.</Text>
       <TextLink href="/track" underline="always">
         Track a train
       </TextLink>

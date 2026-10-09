@@ -168,8 +168,7 @@ function resolveLineOperators(
  * wrong one for a line it has never looked at. */
 const NO_STATUS_BADGE = 'No status yet';
 const NO_STATUS_SUMMARY = 'no status computed yet';
-const NO_STATUS_BODY =
-  'No status has been computed for this line yet. It appears here once the aggregator has run a cycle covering it.';
+const NO_STATUS_BODY = 'No status for this line yet. It appears within a few minutes.';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata for a shared line link.
  * Fetches the same `getLineStatus([id], true)` call (via the same

@@ -105,7 +105,7 @@ export default function CookiesPage() {
         <StorageList items={COOKIES} />
       </LegalSection>
 
-      <LegalSection title="Browser storage (localStorage)">
+      <LegalSection title="Saved in this browser">
         <StorageList items={LOCAL_STORAGE} />
       </LegalSection>
 

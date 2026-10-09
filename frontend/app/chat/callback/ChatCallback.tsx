@@ -126,7 +126,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
   const [state, setState] = useState<CallbackState>(() =>
     serverUrl
       ? { kind: 'connecting' }
-      : { kind: 'error', message: 'The rail data service is not configured on this deployment.' },
+      : { kind: 'error', message: "The rail data service isn't available on this site." },
   );
 
   // FE-9: the one-time exchange for this mount. `consumeAndVerifyState` is

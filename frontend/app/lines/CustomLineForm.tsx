@@ -202,7 +202,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       />
       <Group align="end">
         <Autocomplete
-          label="Add station (CRS code)"
+          label="Add station"
           placeholder="e.g. Woking or WOK"
           value={stationInput}
           onChange={setStationInput}
@@ -306,7 +306,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
             onChange={setHeadcodePrefixes}
           />
           <TagsInput
-            label="Destination CRS filter"
+            label="Only trains to these stations"
             placeholder="e.g. AON"
             value={destinationCrsFilter}
             onChange={setDestinationCrsFilter}

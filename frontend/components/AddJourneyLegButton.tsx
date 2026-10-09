@@ -241,18 +241,18 @@ export function AddJourneyLegButton({
           {mode === 'window' && (
             <>
               <TextInput
-                label="Origin CRS"
+                label="From (station code)"
                 placeholder="e.g. WOK"
                 value={originCrs}
                 onChange={(event) => setOriginCrs(event.currentTarget.value)}
-                error={originCrs.length > 0 && !originCrsValid ? 'Must be a 3-letter CRS code' : null}
+                error={originCrs.length > 0 && !originCrsValid ? 'Must be a 3-letter station code' : null}
               />
               <TextInput
-                label="Destination CRS"
+                label="To (station code)"
                 placeholder="e.g. WAT"
                 value={destinationCrs}
                 onChange={(event) => setDestinationCrs(event.currentTarget.value)}
-                error={destinationCrs.length > 0 && !destinationCrsValid ? 'Must be a 3-letter CRS code' : null}
+                error={destinationCrs.length > 0 && !destinationCrsValid ? 'Must be a 3-letter station code' : null}
               />
               {/* Review §2.2/I17: same fix as `TrackTrainForm`'s own window
                   fields -- states the at-least-one-of-four rule up front

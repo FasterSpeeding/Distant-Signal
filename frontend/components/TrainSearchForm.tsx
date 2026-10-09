@@ -613,7 +613,7 @@ export function TrainSearchForm({
           loading: stationSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
-        error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter CRS code' : null}
+        error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter station code' : null}
         required
       />
       {/* `clearButtonProps`: Mantine's `clearable` clear button ships with
@@ -642,7 +642,7 @@ export function TrainSearchForm({
           loading: originSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
-        error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
+        error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
       />
       <Autocomplete
         label="Stops at (optional)"
@@ -655,7 +655,7 @@ export function TrainSearchForm({
           loading: stopsAtSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
-        error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter CRS code' : null}
+        error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter station code' : null}
       />
       {/* All four time filters are `TimeFilterInput` -- a native
        * `<input type="time">` with a clock button that opens the platform

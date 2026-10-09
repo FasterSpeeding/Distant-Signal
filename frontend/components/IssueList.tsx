@@ -52,9 +52,9 @@ const BUCKET_SORT_RANK: Record<IssueBucket, number> = { active: 0, upcoming: 1, 
 const FILTER_DISCLOSURE_MAX_ISSUES = 3;
 
 const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
-  knowledgebase: 'Knowledgebase',
-  'ldbws-inferred': 'LDBWS-inferred',
-  'trust-inferred': 'Trust-inferred',
+  knowledgebase: 'National Rail incidents',
+  'ldbws-inferred': 'National Rail live board',
+  'trust-inferred': 'Network Rail train reports',
   planned: 'Planned',
   tfl: 'TfL',
 };

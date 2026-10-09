@@ -90,7 +90,7 @@ function WaypointField({
       style={{ flex: 1 }}
       label={first ? 'Call at (optional, in order)' : undefined}
       description={parts.length > 0 ? parts.join(' ') : undefined}
-      placeholder="Station name or CRS code"
+      placeholder="Station name or code"
       value={value}
       onChange={onChange}
       {...suggestionAutocompleteProps(suggestions, {
@@ -299,7 +299,7 @@ export function PlanTripForm({
     <Stack gap="md">
       <Autocomplete
         label="From"
-        placeholder="Station name or CRS code"
+        placeholder="Station name or code"
         value={originCrs}
         onChange={setOriginCrs}
         // Mirrors `TrackTrainForm.tsx`'s own Origin `Autocomplete`: the
@@ -318,7 +318,7 @@ export function PlanTripForm({
       />
       <Autocomplete
         label="To"
-        placeholder="Station name or CRS code"
+        placeholder="Station name or code"
         value={destinationCrs}
         onChange={setDestinationCrs}
         {...suggestionAutocompleteProps(destinationSuggestions, {

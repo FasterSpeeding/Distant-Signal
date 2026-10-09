@@ -54,7 +54,7 @@ describe('CustomLineForm', () => {
 
   it('selecting a station suggestion sets the Add station field to just the CRS code', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'wok' } });
@@ -73,7 +73,7 @@ describe('CustomLineForm', () => {
   // the CRS code the suggestion carries, not the raw typed text.
   it('typing a station name and selecting a suggestion adds the resolved CRS code as a pill', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'Woking' } });
@@ -105,7 +105,7 @@ describe('CustomLineForm', () => {
       vi.fn(async () => new Response('[]', { status: 200 })),
     );
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'zzzzzz' } });
@@ -140,7 +140,7 @@ describe('CustomLineForm', () => {
     // already holds the answer from the suggestions fetch, so this is a
     // pure-frontend fix with no backend dependency.
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'Woking' } });
@@ -163,7 +163,7 @@ describe('CustomLineForm', () => {
   // text as a last resort.
   it('clicking Add after typing a station name (without picking the dropdown option) resolves to its CRS code', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'Woking' } });
@@ -179,7 +179,7 @@ describe('CustomLineForm', () => {
 
   it('typing a raw CRS code directly still works, without any dropdown suggestion selected', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.change(input, { target: { value: 'wok' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -194,7 +194,7 @@ describe('CustomLineForm', () => {
   // than its raw code.
   it('does not add a duplicate station resolved from a station name', async () => {
     renderWithProvider({ existingLine });
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'Woking' } });
@@ -214,7 +214,7 @@ describe('CustomLineForm', () => {
   // doesn't bypass the length gate.
   it('does not add a station when the resolved text is not a valid 3-letter code', async () => {
     renderWithProvider();
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
 
     fireEvent.change(input, { target: { value: 'Nonexistent Station' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -324,7 +324,7 @@ describe('CustomLineForm', () => {
     // `exact: false`: Task 3.4.4's `withAsterisk` makes the label's own
     // text "Name *", not a bare "Name".
     fireEvent.change(screen.getByLabelText('Name', { exact: false }), { target: { value: 'My Commute' } });
-    const stationInput = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const stationInput = screen.getByRole('combobox', { name: 'Add station' });
     fireEvent.change(stationInput, { target: { value: 'WOK' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     fireEvent.change(stationInput, { target: { value: 'CLJ' } });
@@ -383,7 +383,7 @@ describe('CustomLineForm', () => {
     renderWithProvider();
     expect(screen.getByText('No stations yet — add at least two, in travel order.')).toBeInTheDocument();
 
-    const input = screen.getByRole('combobox', { name: 'Add station (CRS code)' });
+    const input = screen.getByRole('combobox', { name: 'Add station' });
     fireEvent.change(input, { target: { value: 'wok' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 

@@ -241,8 +241,8 @@ export default async function MyTrackedTrainsPage() {
             <Stack gap="md">
               <SectionTitle>Tickets not yet attached to a train</SectionTitle>
               <Text size="sm" c="dimmed">
-                Extraction can&apos;t tell us exactly which service one of these tickets is for. Attach it to one of
-                your tracked trains below, or track the right one.
+                We can&apos;t tell which train one of these tickets is for. Attach it to one of your tracked trains
+                below, or track the right one.
               </Text>
               <Stack gap="lg">
                 {unattachedTickets.map((ticket, index) => (

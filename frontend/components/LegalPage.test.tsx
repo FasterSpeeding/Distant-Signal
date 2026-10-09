@@ -60,7 +60,7 @@ describe('/cookies per-item headings', () => {
     renderWithMantine(<CookiesPage />);
     const item = screen.getByRole('heading', { name: 'ds-anthropic-api-key' });
     expect(item.tagName).toBe('H3');
-    const section = screen.getByRole('heading', { name: 'Browser storage (localStorage)' });
+    const section = screen.getByRole('heading', { name: 'Saved in this browser' });
     expect(section.tagName).toBe('H2');
   });
 });

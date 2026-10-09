@@ -89,7 +89,7 @@ describe('CoverageTrendsResults', () => {
     renderWithMantine(
       await CoverageTrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
     );
-    const text = screen.getByText("Full-coverage data isn't available right now.");
+    const text = screen.getByText("Couldn't load data for every train. Try again.");
     expect(text).toBeInTheDocument();
     expect(text.closest('.mantine-Paper-root')).not.toBeNull();
   });
@@ -99,7 +99,7 @@ describe('CoverageTrendsResults', () => {
     renderWithMantine(
       await CoverageTrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
     );
-    const text = screen.getByText('Not enough full-coverage data yet for this line.');
+    const text = screen.getByText('Not enough data for every train on this line yet.');
     expect(text).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
     expect(text.closest('.mantine-Paper-root')).not.toBeNull();
@@ -147,7 +147,7 @@ describe('CoverageTrendsResults', () => {
       await CoverageTrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
     );
 
-    expect(screen.getByRole('heading', { name: 'Full coverage' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Every train' })).toBeInTheDocument();
     const charts = screen.getAllByTestId('line-chart');
     expect(charts).toHaveLength(2);
     for (const chart of charts) {

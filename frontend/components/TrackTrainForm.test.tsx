@@ -243,9 +243,7 @@ describe('TrackTrainForm', () => {
     expect(button).not.toBeDisabled();
     fireEvent.click(button);
     expect(
-      screen.getByText(
-        'Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.',
-      ),
+      screen.getByText('Pick an origin station from the suggestions, or enter its 3-letter code.'),
     ).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
   });
@@ -267,13 +265,13 @@ describe('TrackTrainForm', () => {
     const field = screen.getByRole('combobox', { name: /Origin station/ });
     fireEvent.change(field, { target: { value: 'WATERLOO' } });
     fireEvent.blur(field);
-    expect(screen.getByText('Must be a 3-letter CRS code')).toBeInTheDocument();
+    expect(screen.getByText('Must be a 3-letter station code')).toBeInTheDocument();
   });
 
   it('does not show the origin error while still typing (no blur fired)', async () => {
     renderWithMantine(<TrackTrainForm />);
     fireEvent.change(screen.getByRole('combobox', { name: /Origin station/ }), { target: { value: 'Wok' } });
-    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
     // 'Wok' is a valid CRS -- see the previous test's comment on why this
     // awaits the departures effect before the test ends.
     await waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -284,7 +282,7 @@ describe('TrackTrainForm', () => {
     const field = screen.getByRole('combobox', { name: /Origin station/ });
     fireEvent.change(field, { target: { value: 'WAT' } });
     fireEvent.blur(field);
-    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
     // See the earlier "does not show the origin error" test's comment on
     // why this awaits the departures effect before the test ends.
     await waitFor(() => expect(fetch).toHaveBeenCalled());

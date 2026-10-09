@@ -59,13 +59,13 @@ describe('PlanTripForm', () => {
     // No `{ selector: 'input' }` option -- `getByPlaceholderText`'s
     // `MatcherOptions` doesn't accept one (that's `getByText`-only; `tsc`
     // rejects it here), and every match is already an `<input>` anyway.
-    expect(screen.getAllByPlaceholderText('Station name or CRS code').length).toBeGreaterThan(0);
+    expect(screen.getAllByPlaceholderText('Station name or code').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByText('Add a stop to call at'));
-    const waypointInputs = screen.getAllByPlaceholderText('Station name or CRS code');
+    const waypointInputs = screen.getAllByPlaceholderText('Station name or code');
     // From + To + 1 waypoint = 3 inputs sharing this placeholder.
     expect(waypointInputs.length).toBe(3);
     fireEvent.click(screen.getByLabelText('Remove this waypoint'));
-    expect(screen.getAllByPlaceholderText('Station name or CRS code').length).toBe(2);
+    expect(screen.getAllByPlaceholderText('Station name or code').length).toBe(2);
   });
 
   it('calls onSubmit with a well-formed query, including entered-order waypoints', () => {
@@ -74,7 +74,7 @@ describe('PlanTripForm', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
     fireEvent.click(screen.getByText('Add a stop to call at'));
-    fireEvent.change(screen.getAllByPlaceholderText('Station name or CRS code')[2]!, { target: { value: 'YRK' } });
+    fireEvent.change(screen.getAllByPlaceholderText('Station name or code')[2]!, { target: { value: 'YRK' } });
     fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ originCrs: 'EUS', destinationCrs: 'EDB', waypointCrs: ['YRK'], results: 'fastest' }),

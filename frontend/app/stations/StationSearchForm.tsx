@@ -103,7 +103,7 @@ export function StationSearchForm() {
     <Stack gap="md">
       <Group align="end">
         <Autocomplete
-          label="Station name or CRS code"
+          label="Station name or code"
           placeholder="e.g. Woking or WOK"
           value={crs}
           onChange={setCrs}

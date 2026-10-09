@@ -50,8 +50,8 @@ export default async function ChatPage() {
             branch needs it -- the `forbidden` branch below already has
             real server-rendered content of its own, and the success
             branch is real content too. */}
-        <LoginLink underline="always">Sign in to ask about live departures, disruptions and journeys</LoginLink>
-        <AutoOpenLoginPrompt>Sign in to ask about live departures, disruptions and journeys.</AutoOpenLoginPrompt>
+        <LoginLink underline="always">Log in to ask about live departures, disruptions and journeys</LoginLink>
+        <AutoOpenLoginPrompt>Log in to ask about live departures, disruptions and journeys.</AutoOpenLoginPrompt>
       </Stack>
     );
   }
@@ -74,14 +74,13 @@ export default async function ChatPage() {
         {mcpServerUrl ? (
           <>
             <Text>
-              This embedded chat is only available to a limited allowlist right now. If your account has access to the
-              Distant Signal MCP server, you can ask your own assistant about live departures, disruptions and journeys
-              instead — see below.
+              Chat is open to a small group of accounts for now. If your account can use the Distant Signal MCP server,
+              ask your own assistant instead, as below.
             </Text>
             <AddMcpServerLinks mcpPublicUrl={mcpServerUrl} />
           </>
         ) : (
-          <Text>This embedded chat is only available to a limited allowlist right now.</Text>
+          <Text>Chat is open to a small group of accounts for now.</Text>
         )}
       </Stack>
     );
@@ -91,7 +90,7 @@ export default async function ChatPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Ask about trains</Title>
-        <Text c="dimmed">Chat is not configured on this deployment.</Text>
+        <Text c="dimmed">Chat isn&apos;t available on this site.</Text>
       </Stack>
     );
   }

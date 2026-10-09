@@ -60,3 +60,18 @@ export function operatorLabel(code: string, lookup: ReadonlyMap<string, string>)
   const name = lookup.get(code);
   return name ? `${name} (${code})` : code;
 }
+
+const TRANSFER_MODE_LABELS: Record<string, string> = {
+  WALK: 'Walk',
+  TUBE: 'Tube',
+  METRO: 'Metro',
+  BUS: 'Bus',
+  FERRY: 'Ferry',
+  TRANSFER: 'Change',
+};
+
+/** A trip planner transfer leg's mode (the fixed-link feed's WALK, TUBE,
+ * ...) as words, never the raw code. */
+export function transferModeLabel(mode: string): string {
+  return TRANSFER_MODE_LABELS[mode.toUpperCase()] ?? 'Change';
+}
