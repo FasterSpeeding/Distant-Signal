@@ -22,8 +22,8 @@
 #   rate_limit_retries    LLM_RATE_LIMIT_RETRIES
 #   rate_limit_retry_secs LLM_RATE_LIMIT_RETRY_SECS
 #   gateway_retries       LLM_GATEWAY_RETRIES
-#   auth                  LLM_AUTH: "api-key" (default), "openai-wif-authentik"
-#                         or "openai-wif-kubernetes"
+#   auth                  LLM_AUTH: "api-key" (default), "openai-wif-authentik",
+#                         "openai-wif-kubernetes" or "anthropic-wif-authentik"
 #   prompt_cache          LLM_PROMPT_CACHE (anthropic): "1h" (default), "5m", "off"
 #   thinking              LLM_THINKING (anthropic), e.g. "disabled"
 #   anthropic_version     LLM_ANTHROPIC_VERSION (anthropic)
@@ -47,6 +47,11 @@
 #   authentik_token_url = "https://sso.example.com/application/o/token/"
 #   authentik_client_id = "<client-id>"
 #   authentik_scope = "profile"
+#
+# For "anthropic-wif-authentik" (docs/enricher-anthropic.md, "Keyless
+# auth"): federation_rule_id, organization_id, anthropic_service_account_id,
+# workspace_id (optional), plus the authentik_* keys of the Claude
+# Authentik provider.
 #
 # environment is free text, but fill it in: perf numbers are meaningless
 # without knowing the hardware/host they came from.
