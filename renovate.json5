@@ -185,8 +185,8 @@
     },
     {
       // The Rust toolchain is the MSRV (Cargo.toml's rust-version = "1.88"):
-      // every Dockerfile builds on rust:1.88-bookworm and every CI job pins
-      // dtolnay/rust-toolchain's 1.88.0 ref, including the msrv job. A
+      // every Dockerfile builds on rust:1.88-bookworm and every CI job passes
+      // `toolchain: 1.88.0` to dtolnay/rust-toolchain, including the msrv job. A
       // version bump here would quietly move them off the MSRV, so only
       // digest bumps are allowed. Move all of them, and rust-version,
       // together and on purpose.
@@ -196,7 +196,11 @@
       "enabled": false,
     },
     {
-      // Same reason, for the workflows' dtolnay/rust-toolchain@<sha> # 1.88.0.
+      // The workflows pin dtolnay/rust-toolchain@<sha> # v1 and pass the
+      // toolchain as `with: toolchain: 1.88.0`. Upstream's 1.88.0 ref is a
+      // branch, not a tag, so a `# 1.88.0` comment broke Renovate's digest
+      // lookup; the v1 tag resolves. Only digest bumps of v1 go through; a
+      // v2 move is a deliberate change.
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["dtolnay/rust-toolchain"],
       "matchUpdateTypes": ["major", "minor", "patch"],
