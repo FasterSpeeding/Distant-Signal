@@ -72,10 +72,10 @@ later-injected `:root` block on specificity.
 | --- | --- | --- |
 | green | Good service, on time, arrived, **success** | Severity `good`; "On time"; "Arrived"; every success Alert ("Saved.", "Ticket saved", "Added to …") |
 | gray | Informational, neutral, unknown | Severity `informational`; unchanged platform; "Awaiting first report"; provenance badges; "Affected line"/"Affected station" tags; the trip planner's "N changes" |
-| blue | **A planned or changed arrangement — not a fault** | Severity `planned` (Planned Closure, Part Closure); incident "Planned Work"; a changed platform |
+| blue | **A planned or changed arrangement — not a fault** | Severity `planned` (Planned Closure, Part Closure); incident "Planned work"; a changed platform |
 | yellow | Minor disruption, caution, partial data | Severity `mild`; journey leg "Delayed"; "Some of this range isn't available" |
-| orange | Running late, skipped stop, draft | "12m late"; "Not stopping at your station"; "Real-Time" incidents; draft legal page |
-| teal | Early, or a live Darwin source | "3m early"; ETA "Live departure board" |
+| orange | Running late, skipped stop, draft | "12 min late"; "Not stopping at your station"; draft legal page |
+| teal | Early, or a live board source | "3 min early"; ETA "Live departure board" |
 | red | Severe, cancelled, errors, destructive actions | Severity `severe`; cancelled trains and platforms; every error Alert; delete buttons |
 | grape | Brand, primary action, links, product notices, **"you need to act"** | Buttons, links, focus; informational Alerts (Delay Repay estimate, API-key note, "Creating a line needs an account"); "Needs a train picked" and the open-leg card |
 
@@ -104,12 +104,13 @@ list-row titles 500.
 
 - Heading level and visual size are set separately. Pick the level for the
   outline; the size follows from it (see [Heading rules](#heading-rules)).
-- Badges keep Mantine's uppercase only for short fixed labels, chiefly the
-  severity `StatusBadge`. Any badge whose label is a phrase or carries units
-  gets `tt="none"`: "12m late", "Not stopping at your station",
-  "Platform 6 (changed from 4)", "Live departure board", "Pending match".
-  There is deliberately no theme-level Badge default (`lib/theme.ts`
-  explains why): the case is chosen per label.
+- Badges keep Mantine's uppercase only for the severity `StatusBadge`.
+  Every other badge gets `tt="none"`: "12 min late", "Not stopping at your
+  station", "Planned work", "AI summary". There is deliberately no
+  theme-level Badge default (`lib/theme.ts` explains why).
+- At most three badges in a row. Lines, operators and stations an item
+  affects are dimmed text, operators by name, not pills. Don't badge what
+  the severity already says (no "Real-time" badge).
 
 ## Spacing, radius and elevation
 
@@ -119,7 +120,8 @@ list-row titles 500.
 - Radius: xs 2 · sm 4 · md 8 (default) · lg 16 · xl 32 px. Cards, buttons,
   inputs and alerts are 8px; badges are pills. Nothing overrides radius.
 - Elevation: borders do the work. `shadow="sm"` only on clickable cards
-  (`LineStatusCard`) *(convention)*. Mantine drops shadows in dark mode.
+  (`LineStatusCard`, the linked /status tiles). No coloured left-border
+  accents. Mantine drops shadows in dark mode.
 
 ## Layout and page templates
 
@@ -220,7 +222,9 @@ list-row titles 500.
   text; copy it exactly, including "NationalRail" as one word.
 - **Pride mode** (`PrideToggle.tsx`): decorative, off by default. Each
   flag's stripes are one `--ds-pride-<flag>` variable in `globals.css`,
-  read by the page bar, nav bar, site title and the toggle's swatch.
+  read by the page bar, nav bar and site title. The nav mounts
+  `PrideModeApplier`, which applies the saved mode with no control; the
+  toggle moves to the preferences page (wave 2).
 
 ## States
 
@@ -231,7 +235,7 @@ list-row titles 500.
 | Error (page) | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest | "This page couldn't be loaded…" |
 | Error (inline) | Red Alert, title names the failed action | "Couldn't save this ticket" |
 | Not found | h1 at h2 size, cause, three always-underlined way-out links | "There's no page at this address…" |
-| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4m ago." | "Reconnecting…" |
+| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4 min ago." | "Reconnecting…" |
 | Cancelled | Red badge "Cancelled", red Alert on the train page, struck-through platform | "Cancelled: the train no longer calls at this platform" |
 | Unknown | Omit the element or say so plainly; never fabricate | "No status yet" · "(no arrival report received)" |
 
@@ -251,10 +255,12 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   Say "Times in UK local time" where it matters.
 - Only instants personal to the viewer (`LocalDateTime`) use the browser
   zone, after mount.
-- Relative time: "just now", "4m ago", "3h ago", "2d ago"
-  (`lib/relativeTime.ts`), with the exact time in a tooltip.
-- Delays: light badges, sentence case, "*n*m late" / "*n*m early" / "On
-  time". Journey rollups rank good < awaiting < delayed < unmatched <
+- Relative time: "just now", "4 min ago", "3 hr ago", "2 days ago"
+  (`lib/relativeTime.ts`), with the exact time in a tooltip. A page with
+  many cards states "Updated" once, not per card.
+- Delays: light badges, sentence case, "*n* min late" / "*n* min early" /
+  "On time". A line that runs no trains says "No trains running", not
+  zero figures. Journey rollups rank good < awaiting < delayed < unmatched <
   skipped < cancelled.
 - Severity labels are TfL's own Title Case names; unknown codes read
   "Unknown" in gray (`lib/severity.ts`).
@@ -279,21 +285,121 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 - Motion only under `prefers-reduced-motion: no-preference`.
 - Small icons get a 24px hit area (`.iconHitArea24`). Tooltips open on
   hover, focus and touch.
+- A toggle has a fixed accessible name and states its value separately
+  (the theme toggle: name "Colour theme", description "Light. Switches to
+  dark.").
+- Sort indicators are SVG chevrons, `aria-hidden`, with `aria-sort` on
+  the header; no ▲▼↕ glyphs.
+- Email addresses render through `EmailLink`, which server-renders no
+  address so Cloudflare's Email Obfuscation leaves it alone.
 - Checked by `e2e/accessibility.spec.ts`.
 
 ## Writing
 
-- Plain, direct, second person. Say what happened and what to do next.
-- Failures start with "Couldn't". No apologies.
-- Headings use sentence case. Nav labels are short nouns; some are Title
-  Case *(convention)*.
-- Use rail terms people know ("platform", "calling point", "Delay Repay").
-  UK spelling.
+Copy rules are checked in CI: ESLint's `no-restricted-syntax` copy rules
+(`frontend/eslint.config.mjs`) and `scripts/check-copy.py` (banned
+phrases, Title Case headings, meta descriptions, pages without metadata).
+
+### Who we write for
+
+Commuters first, with the detail on hand. Plain language everywhere.
+Enthusiast detail (headcode, UID, sample counts, data sources) stays
+available but labelled and secondary: small dimmed text, a tooltip or a
+"How this is calculated" disclosure, never the headline.
+
+- A train is named by its departure time from its origin and its route:
+  "08:42 Woking to London Waterloo" (`lib/trainName.ts`). The headcode and
+  UID go underneath in small text, labelled: "Headcode 1S00 · UID W12345".
+- Never lead with an internal identifier ("Train W12345", "Tracking Train
+  42").
+
+### Tone
+
+Terse and factual, like a departure board. Say what is true and what to
+do next. No chatter, no apologies, no exclamation marks, no marketing
+words, no paired em-dash asides ("— like this —"): make it two sentences.
+Second person ("your trains"), and "we" or "Distant Signal" for the site,
+never "this app".
+
+- Sentence case for every heading, nav label, button, badge and page
+  title. The only Title Case is an official status name: "Good Service",
+  "Minor Delays", "Part Suspended" (`lib/severity.ts`).
+- A page's h1 is its nav label: Status, Lines, Stations, Trains,
+  Incidents.
+- Helper text is one line. If the detail matters, put it behind a "How
+  this is calculated" disclosure.
+- Meta descriptions: one plain sentence, 20 words or fewer, at most 160
+  characters (`lib/pageMetadata.ts`).
+
+### Failures
+
+Every failure reads "Couldn't <verb> <noun>." plus what to do next, built
+by `describeFailure(verb, noun, status)` in `lib/failure.ts`:
+
+| Case | Copy |
+| --- | --- |
+| Default, 5xx, network | "Couldn't load this train. Try again." |
+| 401 | "Couldn't save this ticket. Log in and try again." |
+| 403 | "Couldn't delete this group. You don't have access." |
+| 404 | "Couldn't load this journey. It may have been removed." |
+| 409 | "Couldn't rename this train. It changed in the meantime. Reload and try again." |
+
+Never show a raw response body, a status code, `error.message`,
+"Something went wrong", "Request failed" or "Please try again". The one
+exception: a 400/403/409/422 whose body is one of the API's own sentences
+(`failureFromResponse`), shown as a sentence.
+
+### Terminology
+
+| Say | Meaning | Don't say |
+| --- | --- | --- |
+| train | What a commuter catches; named by time and route | service (in headings), Train {UID} |
+| service | A timetabled run, in explanations only ("a timetabled service") | schedule, CIF row |
+| headcode | The 4-character signalling ID ("1S00"), secondary text only | identity, train ID |
+| UID | The timetable's 6-character ID ("W12345"), secondary text only | id, uid |
+| operator | A train company, by name ("South Western Railway") | TOC, operator code alone |
+| track | Follow a train or journey live | pin a train |
+| pin | Keep a line, station or operator on your home page | track a line |
+| log in / log out | Account access | sign in, sign-in |
+| Delay Repay | The compensation scheme, two words, capitalised | Delay-Repay, delay repay |
+| platform | Where the train calls | track, stand |
+| calling point | A station a train stops at | stop (in tables), TIPLOC |
+| station code | The 3-letter code ("WOK") | CRS, CRS code |
+| ID | An identifier, capitalised | id, Id |
+| AI summary | The one label on AI-shaped content | AI, AI-generated |
+| saved in this browser | Local storage | localStorage |
+| National Rail live board / Network Rail train reports | Data sources | Darwin, LDBWS, TRUST, Knowledgebase |
+
+### Units and dates
+
+| Thing | Format | Example |
+| --- | --- | --- |
+| Minutes | number, space, "min" | "4 min late", "Avg delay 2.5 min" |
+| Relative time | `lib/relativeTime.ts` | "just now", "4 min ago", "3 hr ago", "2 days ago" |
+| Clock time | 24-hour, UK time | "08:42" |
+| Date | `lib/dateFormat.ts`, D MMM YYYY | "9 Oct 2026" |
+| Date pickers | `valueFormat="D MMM YYYY"` on every `DatePickerInput` | "9 Oct 2026" |
+| 24-hour hint | Once per form, on its first time field (`clockHint`) | "24-hour clock, e.g. 19:00." |
+
+### Banned phrases
+
+On screen, never: "--", "Something went wrong", "Please try again",
+"Could not", "Request failed", "this app", "ingest", "aggregator",
+"full coverage", "TOC", "deployment", "allowlist", "localStorage",
+"tracking pin", "propagated", "extraction", "seamless", "effortless",
+"powerful", "revolutionary", "supercharge", "unlock", "game-changer",
+"cutting-edge", "best-in-class", "delightful", "magic".
+`scripts/check-copy.py` holds the list.
+
+### Other rules
+
+- Use rail terms people know ("platform", "calling point", "Delay
+  Repay"). UK spelling.
 - Be honest about uncertainty: "(no arrival report received)", "Estimate
   (Network Rail)".
 - Credits use each licence's exact wording; the site calls itself "an
   independent, unofficial service" and uses no provider logos.
-- Em dash "—", never "--"; ellipsis "…".
+- Em dash "—" in data (route labels), never "--"; ellipsis "…".
 - No engineering vocabulary on screen: no raw enum values, field names,
   bare codes, ISO dates or `error.message`. Map through
   `lib/displayLabels.ts` and `lib/stationLabel.ts`.
@@ -301,6 +407,10 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 
 ## Do and don't
 
+- **Do** `describeFailure()` for every failure. **Don't** show a response
+  body, a status code or `error.message`.
+- **Do** `pageMetadata(title, description)` for a page's metadata.
+  **Don't** append " — Distant Signal" by hand; the root template does.
 - **Do** `<Text c="dimmed" size="xs">` for secondary text. **Don't**
   `c="gray.6"` or a hex grey: gray 6 is 3.32:1 on white.
 - **Do** use `TextLink` for every text link. **Don't** hand-roll anchors.
@@ -338,6 +448,11 @@ Resolved on the style-guide consistency branch (29 Sep 2026):
 - Credit and contact links go through `TextLink`.
 - 760px is `READING_PAGE_WIDTH`, defined once.
 - Pride flag gradients are defined once in `globals.css`.
+
+Wave 1 site polish (9 Oct 2026): sentence case and h1s matching nav
+labels; a title template and short meta descriptions; `describeFailure`;
+the plain-language terminology above; trains named by time and route;
+minimal badges; "4 min ago"; the CI copy guardrails.
 
 Handled on other branches at the same time: `ScheduleRow` delay format and
 contrast, unlabelled loading skeletons, cookies/privacy heading levels, and
