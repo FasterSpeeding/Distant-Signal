@@ -1558,7 +1558,8 @@ CI check exists.
 ### 13.1 Switches
 
 Every move is switchable per producer until proven. All of them default to
-today's behaviour.
+today's behaviour (until release A, D16, which makes the producers' new
+sinks the defaults; `http` stays the rollback until phase 5).
 
 | Switch (env / chart value) | Values | Component |
 |---|---|---|
@@ -1864,6 +1865,12 @@ not user decisions):**
 | I1 | The runtime is the DB-free crate `crates/ingest-stream`, not `common::ingest_stream` | `common` is built by every binary including the api; only the stream producers and the writer need redis, flate2 and the runtime. Its own test binary and CI step; no churn in `common` while `ds-store` is extracted in parallel |
 | I2 | Metric names are `ingest_stream_*` (§14.1), the same family on both sides | The user's name for the producer counter (`ingest_stream_produce_total`); one prefix for the runtime's series, whichever binary emits them |
 | I3 | A dead-letter stream's cap is its source stream's `MAXLEN`, not 10000 | 10000 station-sample entries could reach 800 MB; at the source cap the worst case is one outage window and fits D5 |
+
+### Decisions (2026-10-09)
+
+| # | Decision | Answers | Where it lands |
+|---|---|---|---|
+| D16 | **One cutover release instead of per-producer flips.** Release A makes every producer's new sink (the targets in §9 and §7.1: `db` for stations, incidents, the TRUST backlog, trust-consumer, schedule-ingest and schedule-reference; `stream` for ldbws, tfl, tocs and full coverage, with the writer's four streams on `apply`) the chart default, with the producers' `perService.<role>.connect` and the writer's on. The per-stream 3-day shadow is dropped. 3–5 days to settle, rollback `sink: http` per producer; then release B (phase 5) deletes `/private`, the HTTP sinks and the old ingest roles together. Release A ships after the Redis ACL rollout's step 4 and 24 h of a clean `ACL LOG` | supersedes §13.1's "all default to today's behaviour" and the one-flip-per-release order of §13.2 | `docs/ingest-phase5-runbook.md` §0; the chart's defaults and `templates/zz-ingest-sink-preflight.yaml` |
 
 Questions not listed stay open, with the defaults below.
 
