@@ -17,6 +17,7 @@ import { ProvisionalTimetableNote } from '@/components/ProvisionalTimetableNote'
 import type { PublicTrainState, TrainJourneyState, TrackedTrainListItem } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { trainIdentifiers, trainName } from '@/lib/trainName';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -77,6 +78,21 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
 
 /** "Train" for a train (or an older backend), else the mode's own label:
  * "Rail replacement bus", "Bus service", "Ferry". */
+/** "08:42 Woking to London Waterloo" for the public train page and its
+ * title, or null without both ends of the route. */
+export function publicTrainName(
+  train: Pick<
+    PublicTrainState,
+    'scheduledDeparture' | 'originName' | 'originCrs' | 'destinationName' | 'destinationCrs'
+  >,
+): string | null {
+  return trainName({
+    departure: train.scheduledDeparture,
+    origin: train.originName ?? train.originCrs,
+    destination: train.destinationName ?? train.destinationCrs,
+  });
+}
+
 export function serviceHeading(train: Pick<PublicTrainState, 'serviceMode'>): string {
   return serviceModeLabel(train.serviceMode) ?? 'Train';
 }
@@ -118,11 +134,11 @@ export function trainStatusSummary(state: TrainJourneyState): string {
   // resolutionStatus === 'resolved' from here on -- same invariant
   // StatusMessage's own equivalent branch relies on.
   if (state.status === 'awaiting_activation' || state.status === null) {
-    return `Matched to train ${state.trainUid} — waiting for its first movement report.`;
+    return 'Matched to a timetabled train. Waiting for its first movement report.';
   }
 
   if (state.status === 'cancelled') {
-    return `Train ${state.trainUid}: this service was cancelled.`;
+    return 'This train was cancelled.';
   }
 
   if (state.status === 'completed') {
@@ -186,9 +202,7 @@ export async function generateMetadata({
     throw err;
   }
 
-  const origin = train.originName ?? train.originCrs;
-  const destination = train.destinationName ?? train.destinationCrs;
-  const title = origin && destination ? `${origin} to ${destination}` : `${serviceHeading(train)} ${uid}`;
+  const title = publicTrainName(train) ?? `${serviceHeading(train)} ${uid}`;
   const description = trainStatusSummary(toJourneyState(train));
 
   return pageMetadata(title, description);
@@ -306,9 +320,17 @@ export default async function TrackedTrainByUidPage({ params }: { params: Promis
       <Group justify="space-between">
         <Group gap="xs" wrap="nowrap">
           {train.serviceMode && train.serviceMode !== 'train' && <ServiceModeIcon mode={train.serviceMode} size={28} />}
-          <Title order={1}>
-            {serviceHeading(train)} {uid}
-          </Title>
+          <Stack gap={2}>
+            <Title order={1}>{publicTrainName(train) ?? `${serviceHeading(train)} ${uid}`}</Title>
+            <Text size="sm" c="dimmed">
+              {[
+                train.serviceMode && train.serviceMode !== 'train' ? serviceHeading(train) : null,
+                trainIdentifiers({ headcode: train.identity ?? train.headcode, uid }),
+              ]
+                .filter((part): part is string => part !== null)
+                .join(' · ')}
+            </Text>
+          </Stack>
         </Group>
         <Group gap="sm">
           {match ? (

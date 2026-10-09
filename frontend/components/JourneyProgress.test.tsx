@@ -96,7 +96,7 @@ describe('JourneyProgress', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(screen.getByRole('group', { name: /Journey progress: matched to train/ })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: /Journey progress: matched to a timetabled train/ })).toBeInTheDocument();
   });
 
   it('marks the highest-index stop with a confirmed actualArrival/actualDeparture as the marker', () => {
@@ -1124,10 +1124,12 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(screen.getByText('Matched to train C21373 — waiting for its first movement report.')).toBeInTheDocument();
+    expect(
+      screen.getByText('Matched to a timetabled train. Waiting for its first movement report.'),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('group', {
-        name: 'Journey progress: matched to train C21373, waiting for first movement report',
+        name: 'Journey progress: matched to a timetabled train, waiting for its first movement report',
       }),
     ).toBeInTheDocument();
   });

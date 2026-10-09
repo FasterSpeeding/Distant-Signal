@@ -90,7 +90,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByText(/Matched to a scheduled service — Train C88888 to Crewe/)).toBeInTheDocument();
+    expect(screen.getByText(/Matched to the timetabled service to Crewe/)).toBeInTheDocument();
     expect(screen.getByText('As scheduled')).toBeInTheDocument();
     expect(screen.getByText(/Waiting for Network Rail's live tracking to begin/)).toBeInTheDocument();
   });
@@ -105,10 +105,10 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByText(/Train C88888 to CRE/)).toBeInTheDocument();
+    expect(screen.getByText(/Matched to the timetabled service to CRE/)).toBeInTheDocument();
 
     renderWithMantine(<TrainJourney state={baseState({ resolutionStatus: 'schedule_matched', trainUid: 'C88888' })} />);
-    expect(screen.getAllByText(/Train C88888/).length).toBeGreaterThan(0);
+    expect(screen.getByText('Matched to a timetabled service')).toBeInTheDocument();
   });
 
   it('unresolved: shows a terminal, non-retrying message', () => {
@@ -123,7 +123,7 @@ describe('TrainJourney', () => {
         state={baseState({ resolutionStatus: 'resolved', trainUid: 'C21373', status: 'awaiting_activation' })}
       />,
     );
-    expect(screen.getByText('Matched to train C21373')).toBeInTheDocument();
+    expect(screen.getByText('Matched to a timetabled train')).toBeInTheDocument();
     expect(screen.getByText('Waiting for its first movement report.')).toBeInTheDocument();
   });
 
@@ -854,7 +854,7 @@ describe('TrainJourney suppressTrainUidHeading', () => {
       />,
     );
     expect(screen.getByText('This service was cancelled.')).toBeInTheDocument();
-    expect(screen.queryByText('Train C21373')).not.toBeInTheDocument();
+    expect(screen.queryByText('UID C21373')).not.toBeInTheDocument();
   });
 
   it('completed: omits the "Train X" line when suppressTrainUidHeading is set, but keeps the "Arrived" banner', () => {
@@ -870,7 +870,7 @@ describe('TrainJourney suppressTrainUidHeading', () => {
       />,
     );
     expect(screen.getByText(/has arrived at WOK/)).toBeInTheDocument();
-    expect(screen.queryByText('Train C21373')).not.toBeInTheDocument();
+    expect(screen.queryByText('UID C21373')).not.toBeInTheDocument();
   });
 
   it('en_route: omits the "Train X" line when suppressTrainUidHeading is set, but keeps the pin summary', () => {
@@ -881,14 +881,14 @@ describe('TrainJourney suppressTrainUidHeading', () => {
       />,
     );
     expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
-    expect(screen.queryByText('Train C21373')).not.toBeInTheDocument();
+    expect(screen.queryByText('UID C21373')).not.toBeInTheDocument();
   });
 
   it('defaults to showing the line when the prop is omitted (by-id page behavior unchanged)', () => {
     renderWithMantine(
       <TrainJourney state={baseState({ resolutionStatus: 'resolved', trainUid: 'C21373', status: 'en_route' })} />,
     );
-    expect(screen.getByText('Train C21373')).toBeInTheDocument();
+    expect(screen.getByText('UID C21373')).toBeInTheDocument();
   });
 });
 
@@ -899,9 +899,9 @@ describe('TrainJourney: buses and ferries (timetable-only)', () => {
   ];
 
   it.each([
-    ['replacementBus', 'Rail replacement bus', 'Bus C30818'],
-    ['bus', 'Bus service', 'Bus C30818'],
-    ['ferry', 'Ferry', 'Ferry C30818'],
+    ['replacementBus', 'Rail replacement bus', 'Bus · UID C30818'],
+    ['bus', 'Bus service', 'Bus · UID C30818'],
+    ['ferry', 'Ferry', 'Ferry · UID C30818'],
   ] as const)('%s: labels the mode and says it is timetabled only', (mode, label, heading) => {
     renderWithMantine(
       <TrainJourney
