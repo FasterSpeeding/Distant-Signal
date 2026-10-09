@@ -8,7 +8,6 @@ import { DISPLAYED_MODES_PARAM, type Country } from '@/lib/modes';
 import { buildNetworkStatusOverview } from '@/lib/networkStatusOverview';
 import {
   isGoodSeverity,
-  SEVERITY_GROUP_COLORS,
   SEVERITY_GROUP_LABELS,
   SEVERITY_GROUPS_BY_RANK,
   severityColor,
@@ -94,7 +93,9 @@ export default async function NetworkStatusPage() {
         {overview.lastUpdated && <LastUpdated timestamp={overview.lastUpdated} />}
       </Stack>
 
-      <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} spacing="md">
+      {/* Five tiles: on two columns the last one spans the row
+          (globals.css, [data-counter-tiles]) rather than sitting alone. */}
+      <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} spacing="md" data-counter-tiles>
         {SEVERITY_GROUPS_WORST_FIRST.map((group) => (
           <SeverityCounterTile key={group} group={group} count={overview.counts[group]} />
         ))}
@@ -157,10 +158,10 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
   // per §2.1's own recommendation).
   if (count === 0) {
     return (
-      <Card withBorder shadow="sm" padding="lg" data-group-card>
+      <Card withBorder padding="lg" data-group-card>
         <Stack gap={4} align="center">
           <Text size="xl" fw={700} c="dimmed">
-            none
+            0
           </Text>
           <Text size="sm" c="dimmed" ta="center">
             {label}
@@ -177,16 +178,7 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
       data-group-card-link
       aria-label={`${count} line${count === 1 ? '' : 's'} with ${label} — view in Lines`}
     >
-      <Card
-        withBorder
-        shadow="sm"
-        padding="lg"
-        data-group-card
-        style={{
-          borderLeftWidth: 4,
-          borderLeftColor: `var(--mantine-color-${SEVERITY_GROUP_COLORS[group]}-6)`,
-        }}
-      >
+      <Card withBorder shadow="sm" padding="lg" data-group-card>
         <Stack gap={4} align="center">
           <Text size="xl" fw={700}>
             {count}
@@ -229,7 +221,7 @@ function WorstLinesSection({ worstFirst }: { worstFirst: LineStatusReport[] }) {
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
           {worstFirst.map((report) => (
-            <LineStatusCard key={report.id} report={report} />
+            <LineStatusCard key={report.id} report={report} showUpdated={false} />
           ))}
         </SimpleGrid>
       )}

@@ -1712,3 +1712,11 @@ a[data-text-link-tone='inherit'] {
     justify-content: flex-end;
   }
 }
+
+/* /status counter tiles: five tiles on the two-column phone grid would
+   leave the last one alone on its row, so it spans the row instead. */
+@media (max-width: $mantine-breakpoint-sm) {
+  [data-counter-tiles] > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
