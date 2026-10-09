@@ -384,6 +384,12 @@ pub(crate) fn schedule_departure_json(
 /// `TrainSearchForm.tsx`'s results table rendered
 /// `originCrs ?? '?' → stationCrs → destinationCrs ?? '?'` -- bare CRS
 /// codes only -- as a direct consequence.
+///
+/// **`identity` is the CIF Train Identity** (the `BS` record's headcode,
+/// e.g. `"1S00"`; `d`'s `headcode`, `schedule_query::records::BasicSchedule::headcode`),
+/// a string or an explicit `null`: `null` for a blank one, or for a row
+/// published before `schedule_destination_departures.headcode` existed
+/// (filled at that day's next publish). Added 2026-10-09.
 pub(crate) fn calling_point_departure_json(
     d: &Value,
     station_crs: &str,
@@ -432,6 +438,7 @@ pub(crate) fn calling_point_departure_json(
         "publicDeparture": hh_mm(d, "public_departure"),
         "publicDestinationArrival": hh_mm(d, "public_destination_arrival"),
         "operator": d.get("operator_atoc").cloned().unwrap_or(Value::Null),
+        "identity": d.get("headcode").filter(|v| v.is_string()).cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -1375,6 +1382,34 @@ mod tests {
         });
         let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
         assert_eq!(json["operator"], "SW");
+    }
+
+    #[test]
+    fn calling_point_departure_json_renders_the_headcode_as_identity() {
+        let row = serde_json::json!({
+            "uid": "C10001",
+            "destination_crs": "WAT",
+            "true_origin_crs": "PAD",
+            "scheduled": "08:22:00",
+            "headcode": "1S00",
+        });
+        let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
+        assert_eq!(json["identity"], "1S00");
+    }
+
+    #[test]
+    fn calling_point_departure_json_renders_a_null_or_missing_headcode_as_json_null_identity() {
+        for row in [
+            serde_json::json!({"uid": "C10002", "scheduled": "10:05:00", "headcode": null}),
+            serde_json::json!({"uid": "C10002", "scheduled": "10:05:00"}),
+        ] {
+            let json = calling_point_departure_json(&row, "RDG", &HashMap::new());
+            assert!(json["identity"].is_null(), "{json:?}");
+            assert!(
+                json.get("identity").is_some(),
+                "must be explicit null, not omitted"
+            );
+        }
     }
 
     #[test]

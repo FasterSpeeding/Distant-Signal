@@ -3,6 +3,28 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-09: `identity` (the train's headcode) on train search rows
+
+Additive only: one new key on every row. Nothing else changes.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `identity` | string or `null` | The CIF Train Identity, i.e. the timetabled headcode (`BS` record, columns 33-36), e.g. `"1S00"`. |
+
+- Where: each `results[]` row of `GET /public/trains/search`, and each
+  candidate of `GET /Journeys/{journeyId}/legs/{legId}/candidates` (the
+  same row renderer).
+- Always present. `null` when the schedule's Train Identity is blank, or
+  for a row published before DS stored it (filled at that service date's
+  next publish). It is never omitted.
+- It is the timetabled identity of the schedule that won for the service
+  date. A live train can run under a different headcode, so do not use it
+  to match TRUST/TD reports; use `uid` and the service date.
+- Example: `{"uid": "C40001", "scheduled": "08:22", ..., "operator": "GW",
+  "identity": "1A23", ...}`.
+
+A client should treat a missing `identity` (an older DS) as `null`.
+
 ## 2026-10-08: the same tracking limits for every leg type
 
 The 28-day horizon and the cap of 100 upcoming tracked trains used to

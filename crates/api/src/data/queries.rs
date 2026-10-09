@@ -1229,6 +1229,9 @@ pub async fn search_schedule_calling_point_departures(
         destination_arrival: Option<chrono::NaiveTime>,
         destination_arrival_day_offset: i16,
         operator_atoc: Option<String>,
+        /// The CIF Train Identity (`BS` headcode, e.g. `"1S00"`); NULL for
+        /// a blank one and for rows published before the column.
+        headcode: Option<String>,
         public_departure: Option<chrono::NaiveTime>,
         public_destination_arrival: Option<chrono::NaiveTime>,
         day_offset: i16,
@@ -1269,7 +1272,7 @@ pub async fn search_schedule_calling_point_departures(
                    stop.public_calling_point_arrival AS stop_public_arrival
             FROM (
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
-                   main.public_departure, main.public_destination_arrival, main.day_offset
+                   main.headcode, main.public_departure, main.public_destination_arrival, main.day_offset
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
@@ -1400,6 +1403,7 @@ pub async fn search_schedule_calling_point_departures(
                 "destination_arrival": row.destination_arrival.map(hms),
                 "destination_arrival_day_offset": row.destination_arrival_day_offset,
                 "operator_atoc": row.operator_atoc,
+                "headcode": row.headcode,
                 "public_departure": row.public_departure.map(hms),
                 "public_destination_arrival": row.public_destination_arrival.map(hms),
             });
@@ -1602,6 +1606,7 @@ pub async fn search_journey_leg_candidates(
         Option<chrono::NaiveTime>,
         Option<chrono::NaiveTime>,
         Option<chrono::NaiveTime>,
+        Option<String>,
     )> = sqlx::query_as(
         r"
             SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
@@ -1665,7 +1670,10 @@ pub async fn search_journey_leg_candidates(
                                 AND (stop.day_offset, stop.scheduled) > (main.day_offset, main.scheduled)
                               ORDER BY stop.day_offset, stop.scheduled
                               LIMIT 1)
-                   END AS leg_public_destination_arrival
+                   END AS leg_public_destination_arrival,
+                   -- The CIF Train Identity, as `/public/trains/search`
+                   -- rows carry it (`identity`).
+                   main.headcode
             FROM schedule_destination_departures main
             WHERE main.service_date = $1
               AND main.origin_crs = $2
@@ -1754,7 +1762,7 @@ pub async fn search_journey_leg_candidates(
     let next_cursor = if has_more {
         page_rows
             .last()
-            .map(|(train_uid, _, _, scheduled, _, _, _, _, _, _, _, _)| {
+            .map(|(train_uid, _, _, scheduled, _, _, _, _, _, _, _, _, _)| {
                 CallingPointDepartureCursor {
                     scheduled: *scheduled,
                     train_uid: train_uid.clone(),
@@ -1780,6 +1788,7 @@ pub async fn search_journey_leg_candidates(
                 public_departure,
                 public_destination_arrival,
                 leg_public_destination_arrival,
+                headcode,
             )| {
                 serde_json::json!({
                     "uid": train_uid,
@@ -1808,6 +1817,7 @@ pub async fn search_journey_leg_candidates(
                     "public_departure": public_departure.map(|t| t.format("%H:%M:%S").to_string()),
                     "public_destination_arrival": public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
                     "leg_public_destination_arrival": leg_public_destination_arrival.map(|t| t.format("%H:%M:%S").to_string()),
+                    "headcode": headcode,
                 })
             },
         )
@@ -5056,15 +5066,19 @@ mod schedule_destination_departures_query_tests {
         service_date: chrono::NaiveDate,
     ) -> Vec<ScheduleDestinationDeparturesRow> {
         vec![
-            row(
-                service_date,
-                "WAT",
-                time(8, 22),
-                "C40001",
-                "RDG",
-                Some("PAD"),
-                None,
-            ),
+            ScheduleDestinationDeparturesRow {
+                // The one fixture row with a CIF Train Identity.
+                headcode: Some("1A23".to_string()),
+                ..row(
+                    service_date,
+                    "WAT",
+                    time(8, 22),
+                    "C40001",
+                    "RDG",
+                    Some("PAD"),
+                    None,
+                )
+            },
             row(
                 service_date,
                 "WAT",
@@ -5155,6 +5169,7 @@ mod schedule_destination_departures_query_tests {
                 "destination_arrival": null,
                 "destination_arrival_day_offset": 0,
                 "operator_atoc": null,
+                "headcode": "1A23",
                 "public_departure": null,
                 "public_destination_arrival": null,
                 "day_offset": 0,
@@ -5162,6 +5177,9 @@ mod schedule_destination_departures_query_tests {
             "element shape is exactly what render::calling_point_departure_json reads"
         );
         assert_eq!(page.departures[1]["uid"], "C40002");
+        // No Train Identity: an explicit null, not a missing key.
+        assert!(page.departures[1]["headcode"].is_null());
+        assert!(page.departures[1].get("headcode").is_some());
         assert_eq!(page.departures[2]["uid"], "C40003");
 
         delete_day(&pool, date).await;
