@@ -209,6 +209,7 @@ pub(crate) fn messages_body(
     model: &str,
     settings: &AnthropicSettings,
     policy: &ProviderPolicy,
+    sampling: super::Sampling,
     system_prompt: &str,
     user_content: &str,
     schema: &Value,
@@ -232,6 +233,14 @@ pub(crate) fn messages_body(
     });
     if let Some(thinking) = &settings.thinking {
         body["thinking"] = serde_json::json!({ "type": thinking });
+    }
+    // Only when a profile sets them (none of the built-in Claude profiles
+    // does; `profile::resolve` refuses them for models that reject them).
+    if let Some(temperature) = sampling.temperature {
+        body["temperature"] = serde_json::json!(temperature);
+    }
+    if let Some(top_p) = sampling.top_p {
+        body["top_p"] = serde_json::json!(top_p);
     }
     body
 }
@@ -494,7 +503,8 @@ impl LlmClient {
             &self.model,
             settings,
             &self.policy,
-            spec.system_prompt,
+            self.sampling,
+            &spec.system_prompt,
             &spec.user_content,
             &spec.schema,
         ))

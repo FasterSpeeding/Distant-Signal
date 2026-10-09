@@ -27,6 +27,16 @@
 #   prompt_cache          LLM_PROMPT_CACHE (anthropic): "1h" (default), "5m", "off"
 #   thinking              LLM_THINKING (anthropic), e.g. "disabled"
 #   anthropic_version     LLM_ANTHROPIC_VERSION (anthropic)
+#   profile               LLM_PROFILE: a built-in profile by name (default:
+#                         picked by provider and model, as the service does)
+#   temperature, top_p    LLM_TEMPERATURE / LLM_TOP_P: a number or "omit"
+#                         (default: the profile's; OpenAI-compatible 0, Claude none)
+#   prompts_dir           LLM_PROMPTS_DIR: prompt overrides, <profile>.<call>.txt
+#                         or <call>.txt (call: primary, adversarial,
+#                         severity_adversarial); relative to the workspace root
+#
+# A target is resolved exactly like the service (src/profile.rs), so a
+# setting a model is known to reject fails before any call.
 #
 # For "anthropic", reasoning_effort is sent as output_config.effort and
 # max_tokens defaults to 16000 (the Messages API requires it).

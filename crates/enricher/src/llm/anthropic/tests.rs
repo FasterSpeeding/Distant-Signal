@@ -381,7 +381,7 @@ async fn cache_usage_fields_feed_the_token_counter() {
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
     let _guard = metrics::set_default_local_recorder(&recorder);
-    crate::llm::register_usage_metrics("claude-haiku-5-5", DEFAULT_BASE_URL);
+    crate::llm::register_usage_metrics("claude-haiku-5-5", DEFAULT_BASE_URL, "claude-default");
 
     let server = MockServer::start().await;
     let write = serde_json::json!({
@@ -624,6 +624,7 @@ async fn message_batch_lifecycle() {
             custom_id: format!("p-{i}"),
             params: client
                 .batch_params(&crate::llm::primary_spec(
+                    client.prompts(),
                     "s",
                     &format!("d{i}"),
                     reference_date(),
@@ -755,4 +756,97 @@ async fn a_federated_token_is_a_bearer_with_no_api_key() {
         .collect();
     assert_eq!(messages.len(), 1);
     assert!(messages[0].headers.get("x-api-key").is_none());
+}
+
+/// Profiles on the wire: the resolved sampling is sent or omitted per
+/// provider and profile, and an overridden prompt is the one sent.
+#[tokio::test]
+async fn profiles_decide_sampling_and_prompts_on_the_wire() {
+    use crate::llm::ProviderKind;
+    use crate::profile::{Overrides, PromptSet, Setting, resolve};
+    let server = MockServer::start().await;
+    mount_success(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{ "message": { "content": primary_text() }, "finish_reason": "stop" }]
+        })))
+        .mount(&server)
+        .await;
+    let openai = |generation: &crate::profile::Generation| {
+        LlmClient::new(
+            server.uri(),
+            None,
+            "local".into(),
+            std::time::Duration::from_secs(5),
+        )
+        .with_generation(generation)
+    };
+    // The OpenAI default profile: temperature 0, as before profiles.
+    let default = resolve(ProviderKind::Openai, "local", None, Overrides::default()).unwrap();
+    openai(&default.generation)
+        .extract_primary("s", "d", reference_date())
+        .await
+        .unwrap();
+    // `omit`, and a top_p.
+    let omitted = resolve(
+        ProviderKind::Openai,
+        "local",
+        None,
+        Overrides {
+            temperature: Some(Setting::Omit),
+            top_p: Some(Setting::Set(0.5)),
+            ..Overrides::default()
+        },
+    )
+    .unwrap();
+    openai(&omitted.generation)
+        .extract_primary("s", "d", reference_date())
+        .await
+        .unwrap();
+    // Claude: none by default; Haiku 4.5 accepts a temperature.
+    let claude = resolve(
+        ProviderKind::Anthropic,
+        "claude-haiku-5-5",
+        None,
+        Overrides::default(),
+    )
+    .unwrap();
+    client(&server, AnthropicSettings::default())
+        .with_generation(&claude.generation)
+        .extract_primary("s", "d", reference_date())
+        .await
+        .unwrap();
+    let older = resolve(
+        ProviderKind::Anthropic,
+        "claude-haiku-4-5",
+        None,
+        Overrides {
+            temperature: Some(Setting::Set(0.0)),
+            ..Overrides::default()
+        },
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("claude-default.primary.txt"),
+        "Custom primary prompt.",
+    )
+    .unwrap();
+    client(&server, AnthropicSettings::default())
+        .with_generation(&older.generation)
+        .with_prompts(PromptSet::load(Some(dir.path()), older.profile).unwrap())
+        .extract_primary("s", "d", reference_date())
+        .await
+        .unwrap();
+
+    let bodies = sent_bodies(&server).await;
+    assert_eq!(bodies[0]["temperature"], 0.0);
+    assert!(bodies[0].get("top_p").is_none());
+    assert!(bodies[1].get("temperature").is_none());
+    assert_eq!(bodies[1]["top_p"], 0.5);
+    assert!(bodies[2].get("temperature").is_none());
+    assert!(bodies[2].get("top_p").is_none());
+    assert_eq!(bodies[3]["temperature"], 0.0);
+    assert_eq!(bodies[3]["system"][0]["text"], "Custom primary prompt.");
 }

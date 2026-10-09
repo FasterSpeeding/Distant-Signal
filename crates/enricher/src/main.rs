@@ -12,6 +12,7 @@ mod config;
 #[cfg(test)]
 mod eval;
 mod llm;
+mod profile;
 mod queries;
 #[cfg(test)]
 mod replay_eval;
@@ -57,6 +58,21 @@ async fn run() -> anyhow::Result<()> {
     // and model) and every cross-setting check.
     let resolved = config.resolved_llm()?;
     let batch_settings = config.batch.settings();
+    // The profile (`profile.rs`): generation settings for this provider and
+    // model, env overrides on top, a known-rejected sampling parameter
+    // refused here; then its prompts.
+    let active = profile::resolve(
+        resolved.provider,
+        &resolved.model,
+        config.generation.llm_profile.as_deref(),
+        config::profile_overrides(
+            &config.generation,
+            &config.provider,
+            config.anthropic.llm_thinking.as_deref(),
+        )?,
+    )?;
+    let prompts =
+        profile::PromptSet::load(config.generation.llm_prompts_dir.as_deref(), active.profile)?;
     if config.metrics_enabled {
         let buckets = llm_duration_buckets(config.llm_request_timeout_secs);
         common::metrics::install_with_buckets(
@@ -65,7 +81,7 @@ async fn run() -> anyhow::Result<()> {
         )?;
         // Token counters at 0 and the model info series, for the
         // cost-estimate query (docs/enricher-openai.md, "Cost").
-        llm::register_usage_metrics(&resolved.model, &resolved.base_url);
+        llm::register_usage_metrics(&resolved.model, &resolved.base_url, active.profile);
         if batch_settings.is_some() {
             batch::register_metrics();
         }
@@ -74,9 +90,28 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(
         provider = ?resolved.provider,
         model = %resolved.model,
+        profile = active.profile,
+        generation = ?active.generation,
+        prompt_version = %prompts.version,
+        prompt_sources = ?prompts.sources,
         sweep_mode = ?config.batch.llm_sweep_mode,
         "LLM provider configured"
     );
+    // Caching silently does nothing below the model's minimum prefix.
+    if resolved.provider == llm::ProviderKind::Anthropic
+        && config.anthropic.llm_prompt_cache != llm::anthropic::PromptCache::Off
+        && let Some(minimum) = profile::cache_minimum(&resolved.model)
+    {
+        let tokens = prompts.primary.chars().count() / 4;
+        if u32::try_from(tokens).unwrap_or(u32::MAX) < minimum {
+            tracing::warn!(
+                model = %resolved.model,
+                minimum,
+                prompt_tokens = tokens,
+                "the primary system prompt is below the model's cache minimum; prompt caching won't apply"
+            );
+        }
+    }
 
     // The LLM credential, validated before anything else connects: a
     // workload identity mode with a missing ID or an unmounted token file
@@ -170,10 +205,17 @@ async fn run() -> anyhow::Result<()> {
     if resolved.provider == llm::ProviderKind::Anthropic {
         llm = llm.with_anthropic(config.anthropic.settings());
     }
+    // The profile's settings and prompts, last (they override the above).
+    let llm = llm
+        .with_generation(&active.generation)
+        .with_prompts(prompts);
+    // `<model>@periods-v2`, plus the prompt version when the prompts are
+    // overridden (a prompt change re-extracts).
+    let model_version = profile::model_version(&resolved.model, llm.prompts());
     let enricher = Arc::new(Enricher {
         pool,
         llm,
-        model_version: format!("{}@periods-v2", resolved.model),
+        model_version,
         mismatch_tracker: MismatchTracker::default(),
         retry_backoff: RetryBackoff::default(),
         in_flight: InFlight::default(),

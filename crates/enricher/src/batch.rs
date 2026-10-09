@@ -580,7 +580,12 @@ async fn submit_primary(enricher: &Enricher, prepared: &[Prepared]) -> anyhow::R
     let requests = items
         .iter()
         .map(|item| {
-            let spec = llm::primary_spec(&item.summary, &item.description, item.reference_date);
+            let spec = llm::primary_spec(
+                enricher.llm.prompts(),
+                &item.summary,
+                &item.description,
+                item.reference_date,
+            );
             Ok(BatchRequest {
                 custom_id: custom_id(LlmCall::Primary, item.index),
                 params: enricher.llm.batch_params(&spec)?,
@@ -723,8 +728,18 @@ async fn finish_primary_stage(
         for item in chunk {
             let primary = llm::parse_primary(item.primary_content.as_deref().unwrap_or_default())?;
             for spec in [
-                llm::adversarial_spec(&item.summary, &item.description, &primary.periods)?,
-                llm::severity_adversarial_spec(&item.summary, &item.description, &primary.periods)?,
+                llm::adversarial_spec(
+                    enricher.llm.prompts(),
+                    &item.summary,
+                    &item.description,
+                    &primary.periods,
+                )?,
+                llm::severity_adversarial_spec(
+                    enricher.llm.prompts(),
+                    &item.summary,
+                    &item.description,
+                    &primary.periods,
+                )?,
             ] {
                 requests.push(BatchRequest {
                     custom_id: custom_id(spec.call, item.index),

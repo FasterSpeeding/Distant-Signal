@@ -74,6 +74,12 @@ pub(crate) struct Config {
     #[command(flatten)]
     pub batch: BatchConfig,
 
+    /// `LLM_PROFILE`, `LLM_TEMPERATURE`, `LLM_TOP_P`, `LLM_PROMPTS_DIR`
+    /// (`profile.rs`). All unset by default: the built-in profile for the
+    /// provider and model, with today's settings and prompts.
+    #[command(flatten)]
+    pub generation: GenerationConfig,
+
     /// Per-request timeout for a single LLM call (`LLM_REQUEST_TIMEOUT_SECS`).
     /// One incident makes three sequential calls (primary,
     /// resolution-adversarial, severity-adversarial -- see `llm.rs`), each
@@ -368,6 +374,54 @@ pub(crate) struct ProviderPolicyConfig {
     /// retry backoff -- see `LlmClient::is_provider_transient`.
     #[arg(long, env, default_value_t = 0)]
     pub llm_gateway_retries: u32,
+}
+
+/// The profile layer's own knobs (`profile.rs`). `LLM_MAX_TOKENS`,
+/// `LLM_REASONING_EFFORT` and `LLM_THINKING` are overrides of the profile
+/// too; they stay where they were.
+#[derive(Debug, Clone, Parser)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "clap derives each env var from the field name, so the prefix is part of the interface"
+)]
+pub(crate) struct GenerationConfig {
+    /// `LLM_PROFILE`: a built-in profile by name; unset picks it by provider
+    /// and model.
+    #[arg(long, env)]
+    pub llm_profile: Option<String>,
+    /// `LLM_TEMPERATURE`: a number, or `omit` to send none; unset keeps the
+    /// profile's (0 for OpenAI-compatible endpoints, none for Claude).
+    #[arg(long, env)]
+    pub llm_temperature: Option<String>,
+    /// `LLM_TOP_P`: a number, or `omit`; unset keeps the profile's (none).
+    #[arg(long, env)]
+    pub llm_top_p: Option<String>,
+    /// `LLM_PROMPTS_DIR`: a directory of prompt overrides
+    /// (`<profile>.<call>.txt` or `<call>.txt`); unset uses the built-in
+    /// prompts.
+    #[arg(long, env)]
+    pub llm_prompts_dir: Option<PathBuf>,
+}
+
+/// The profile overrides from the service's env: `LLM_TEMPERATURE`,
+/// `LLM_TOP_P`, `LLM_MAX_TOKENS`, `LLM_REASONING_EFFORT` (`omit` drops the
+/// profile's) and `LLM_THINKING` (likewise).
+pub(crate) fn profile_overrides(
+    generation: &GenerationConfig,
+    policy: &ProviderPolicyConfig,
+    thinking: Option<&str>,
+) -> anyhow::Result<crate::profile::Overrides> {
+    use crate::profile::{Overrides, Setting, parse_setting};
+    Ok(Overrides {
+        temperature: parse_setting("LLM_TEMPERATURE", generation.llm_temperature.as_deref())?,
+        top_p: parse_setting("LLM_TOP_P", generation.llm_top_p.as_deref())?,
+        max_tokens: policy.llm_max_tokens.map(Setting::Set),
+        reasoning_effort: parse_setting(
+            "LLM_REASONING_EFFORT",
+            policy.llm_reasoning_effort.as_deref(),
+        )?,
+        thinking: parse_setting("LLM_THINKING", thinking)?,
+    })
 }
 
 impl ProviderPolicyConfig {

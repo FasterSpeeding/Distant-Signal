@@ -238,14 +238,39 @@ pub(crate) enum Provider {
 /// as a Message Batch request (`LlmClient::batch_params`).
 pub(crate) struct CallSpec {
     pub call: LlmCall,
-    system_prompt: &'static str,
+    system_prompt: String,
     user_content: String,
     schema_name: &'static str,
     schema: serde_json::Value,
 }
 
+/// The sampling parameters sent with every call (from the active
+/// profile, `profile.rs`); `None` is not sent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Sampling {
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+}
+
+impl Sampling {
+    /// What `LlmClient::new` sends: `temperature: 0`, as before profiles.
+    pub(crate) const OPENAI_DEFAULT: Self = Self {
+        temperature: Some(0.0),
+        top_p: None,
+    };
+    /// What `LlmClient::with_anthropic` sends: nothing.
+    pub(crate) const NONE: Self = Self {
+        temperature: None,
+        top_p: None,
+    };
+}
+
 pub(crate) struct LlmClient {
     base_url: String,
+    /// `temperature`/`top_p` (`profile.rs`).
+    sampling: Sampling,
+    /// The three system prompts (`profile::PromptSet`).
+    prompts: std::sync::Arc<crate::profile::PromptSet>,
     /// `LLM_PROVIDER` (default `openai`).
     provider: Provider,
     /// The endpoint's credential (see `auth.rs`): none, `LLM_API_KEY`, or a
@@ -404,11 +429,12 @@ impl LlmCall {
 /// Registers every `{call, kind}` series of [`TOKENS_METRIC`] at 0 and sets
 /// [`MODEL_INFO_METRIC`] for this process's model and endpoint host. Called
 /// once at startup, after the recorder is installed.
-pub(crate) fn register_usage_metrics(model: &str, base_url: &str) {
+pub(crate) fn register_usage_metrics(model: &str, base_url: &str, profile: &str) {
     register_token_series(TOKENS_METRIC);
     metrics::gauge!(
         common::metrics::metric_name(MODEL_INFO_METRIC),
         "model" => model.to_string(),
+        "profile" => profile.to_string(),
         "base_url_host" => base_url_host(base_url)
     )
     .set(1.0);
@@ -796,7 +822,12 @@ struct ChatCompletionRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage>,
     response_format: ResponseFormat,
-    temperature: f32,
+    /// The profile's `temperature` (0 by default); omitted when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    /// Omitted when `None` (the default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
     /// Omitted from the wire when `None` (the default policy).
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
@@ -1214,16 +1245,26 @@ const SEVERITY_ADVERSARIAL_PROMPT: &str = "You are reviewing a UK National Rail 
 /// (The user-content wrappers in the `*_raw` methods aren't covered.)
 #[cfg(test)]
 pub(crate) fn prompt_fingerprint() -> String {
+    prompt_fingerprint_of(&crate::profile::PromptSet::builtin())
+}
+
+/// [`prompt_fingerprint`] of a given prompt set (a profile's overrides).
+#[cfg(test)]
+pub(crate) fn prompt_fingerprint_of(prompts: &crate::profile::PromptSet) -> String {
     let mut text = String::new();
     for (prompt, schema_name, schema) in [
-        (PRIMARY_PROMPT, PRIMARY_SCHEMA_NAME, primary_schema()),
         (
-            ADVERSARIAL_PROMPT,
+            prompts.primary.as_str(),
+            PRIMARY_SCHEMA_NAME,
+            primary_schema(),
+        ),
+        (
+            prompts.adversarial.as_str(),
             ADVERSARIAL_SCHEMA_NAME,
             adversarial_schema(),
         ),
         (
-            SEVERITY_ADVERSARIAL_PROMPT,
+            prompts.severity_adversarial.as_str(),
             SEVERITY_ADVERSARIAL_SCHEMA_NAME,
             severity_adversarial_schema(),
         ),
@@ -1275,6 +1316,8 @@ impl LlmClient {
             .expect("reqwest client with a timeout must build");
         Self {
             base_url,
+            sampling: Sampling::OPENAI_DEFAULT,
+            prompts: std::sync::Arc::new(crate::profile::PromptSet::builtin()),
             provider: Provider::OpenAi,
             auth: crate::auth::LlmAuth::from_api_key(api_key),
             model,
@@ -1293,9 +1336,42 @@ impl LlmClient {
 
     /// Speaks the Claude API (`LLM_PROVIDER=anthropic`) instead of Chat
     /// Completions. `base_url` is then e.g. `https://api.anthropic.com/v1`.
+    /// Also drops the default `temperature: 0` (the current Claude models
+    /// reject it); a profile can set sampling again with
+    /// [`Self::with_generation`].
     pub(crate) fn with_anthropic(mut self, settings: anthropic::AnthropicSettings) -> Self {
         self.provider = Provider::Anthropic(settings);
+        self.sampling = Sampling::NONE;
         self
+    }
+
+    /// Applies a resolved profile (`profile::resolve`): sampling,
+    /// `max_tokens`, reasoning effort and (Claude) thinking. Call after
+    /// [`Self::with_provider_policy`] and [`Self::with_anthropic`].
+    pub(crate) fn with_generation(mut self, generation: &crate::profile::Generation) -> Self {
+        self.sampling = Sampling {
+            temperature: generation.temperature,
+            top_p: generation.top_p,
+        };
+        self.policy.max_tokens = generation.max_tokens;
+        self.policy
+            .reasoning_effort
+            .clone_from(&generation.reasoning_effort);
+        if let Provider::Anthropic(settings) = &mut self.provider {
+            settings.thinking.clone_from(&generation.thinking);
+        }
+        self
+    }
+
+    /// Uses these system prompts (`profile::PromptSet::load`).
+    pub(crate) fn with_prompts(mut self, prompts: crate::profile::PromptSet) -> Self {
+        self.prompts = std::sync::Arc::new(prompts);
+        self
+    }
+
+    /// The system prompts in use.
+    pub(crate) fn prompts(&self) -> &crate::profile::PromptSet {
+        &self.prompts
     }
 
     /// Opts into a non-default [`ProviderPolicy`].
@@ -1350,7 +1426,7 @@ impl LlmClient {
                 messages: vec![
                     ChatMessage {
                         role: "system",
-                        content: spec.system_prompt.to_string(),
+                        content: spec.system_prompt,
                     },
                     ChatMessage {
                         role: "user",
@@ -1365,7 +1441,8 @@ impl LlmClient {
                         schema: spec.schema,
                     },
                 },
-                temperature: 0.0,
+                temperature: self.sampling.temperature,
+                top_p: self.sampling.top_p,
                 max_tokens: self.policy.max_tokens,
                 reasoning_effort: self.policy.reasoning_effort.as_deref(),
             }),
@@ -1376,7 +1453,8 @@ impl LlmClient {
                     &self.model,
                     settings,
                     &self.policy,
-                    spec.system_prompt,
+                    self.sampling,
+                    &spec.system_prompt,
                     &spec.user_content,
                     &spec.schema,
                 ),
@@ -1649,8 +1727,13 @@ impl LlmClient {
         description: &str,
         reference_date: DateTime<Utc>,
     ) -> RawCall {
-        self.chat_completion(primary_spec(summary, description, reference_date))
-            .await
+        self.chat_completion(primary_spec(
+            &self.prompts,
+            summary,
+            description,
+            reference_date,
+        ))
+        .await
     }
 
     /// `periods` is the primary pass's already-segmented period list
@@ -1677,7 +1760,7 @@ impl LlmClient {
         description: &str,
         periods: &[ExtractionPeriod],
     ) -> RawCall {
-        match adversarial_spec(summary, description, periods) {
+        match adversarial_spec(&self.prompts, summary, description, periods) {
             Ok(spec) => self.chat_completion(spec).await,
             Err(err) => RawCall::failed_before_sending(err),
         }
@@ -1704,7 +1787,7 @@ impl LlmClient {
         description: &str,
         periods: &[ExtractionPeriod],
     ) -> RawCall {
-        match severity_adversarial_spec(summary, description, periods) {
+        match severity_adversarial_spec(&self.prompts, summary, description, periods) {
             Ok(spec) => self.chat_completion(spec).await,
             Err(err) => RawCall::failed_before_sending(err),
         }
@@ -1725,13 +1808,14 @@ impl RawCall {
 
 /// The primary pass's request (see [`LlmClient::primary_raw`]).
 pub(crate) fn primary_spec(
+    prompts: &crate::profile::PromptSet,
     summary: &str,
     description: &str,
     reference_date: DateTime<Utc>,
 ) -> CallSpec {
     CallSpec {
         call: LlmCall::Primary,
-        system_prompt: PRIMARY_PROMPT,
+        system_prompt: prompts.primary.clone(),
         user_content: format!(
             "This incident was first reported around {}. Resolve any year-less date in the text below \
              relative to that reference date.\nSummary: {summary}\nDescription: {description}",
@@ -1745,13 +1829,14 @@ pub(crate) fn primary_spec(
 /// The resolution-adversarial pass's request (see
 /// [`LlmClient::adversarial_raw`]).
 pub(crate) fn adversarial_spec(
+    prompts: &crate::profile::PromptSet,
     summary: &str,
     description: &str,
     periods: &[ExtractionPeriod],
 ) -> anyhow::Result<CallSpec> {
     Ok(CallSpec {
         call: LlmCall::ResolutionAdversarial,
-        system_prompt: ADVERSARIAL_PROMPT,
+        system_prompt: prompts.adversarial.clone(),
         user_content: build_period_user_content(summary, description, periods)?,
         schema_name: ADVERSARIAL_SCHEMA_NAME,
         schema: adversarial_schema(),
@@ -1761,17 +1846,28 @@ pub(crate) fn adversarial_spec(
 /// The severity-adversarial pass's request (see
 /// [`LlmClient::severity_adversarial_raw`]).
 pub(crate) fn severity_adversarial_spec(
+    prompts: &crate::profile::PromptSet,
     summary: &str,
     description: &str,
     periods: &[ExtractionPeriod],
 ) -> anyhow::Result<CallSpec> {
     Ok(CallSpec {
         call: LlmCall::SeverityAdversarial,
-        system_prompt: SEVERITY_ADVERSARIAL_PROMPT,
+        system_prompt: prompts.severity_adversarial.clone(),
         user_content: build_period_user_content(summary, description, periods)?,
         schema_name: SEVERITY_ADVERSARIAL_SCHEMA_NAME,
         schema: severity_adversarial_schema(),
     })
+}
+
+/// The three built-in system prompts: primary, resolution-adversarial,
+/// severity-adversarial (`profile::PromptSet::builtin`).
+pub(crate) fn builtin_prompts() -> [&'static str; 3] {
+    [
+        PRIMARY_PROMPT,
+        ADVERSARIAL_PROMPT,
+        SEVERITY_ADVERSARIAL_PROMPT,
+    ]
 }
 
 /// Parses (and post-processes) the primary pass's raw `content`: the
@@ -1926,19 +2022,39 @@ pub(crate) fn live_client_from_env() -> LlmClient {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(180);
-    let policy = crate::config::ProviderPolicyConfig::parse_from(["live-eval"]).policy();
+    let policy_config = crate::config::ProviderPolicyConfig::parse_from(["live-eval"]);
+    let anthropic = crate::config::AnthropicConfig::parse_from(["live-eval"]);
+    let generation = crate::config::GenerationConfig::parse_from(["live-eval"]);
+    // The same profile resolution and prompts as the service.
+    let active = crate::profile::resolve(
+        provider,
+        &model,
+        generation.llm_profile.as_deref(),
+        crate::config::profile_overrides(
+            &generation,
+            &policy_config,
+            anthropic.llm_thinking.as_deref(),
+        )
+        .expect("LLM_TEMPERATURE/LLM_TOP_P must be numbers or `omit`"),
+    )
+    .expect("the LLM profile must resolve");
+    let prompts =
+        crate::profile::PromptSet::load(generation.llm_prompts_dir.as_deref(), active.profile)
+            .expect("LLM_PROMPTS_DIR must be readable");
     let client = LlmClient::new(
         base_url,
         api_key,
         model,
         std::time::Duration::from_secs(timeout_secs),
     )
-    .with_provider_policy(policy);
-    match provider {
+    .with_provider_policy(policy_config.policy());
+    let client = match provider {
         ProviderKind::Openai => client,
-        ProviderKind::Anthropic => client
-            .with_anthropic(crate::config::AnthropicConfig::parse_from(["live-eval"]).settings()),
-    }
+        ProviderKind::Anthropic => client.with_anthropic(anthropic.settings()),
+    };
+    client
+        .with_generation(&active.generation)
+        .with_prompts(prompts)
 }
 
 #[cfg(test)]
@@ -4062,7 +4178,11 @@ mod tests {
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         let _guard = metrics::set_default_local_recorder(&recorder);
-        register_usage_metrics("gpt-6-luna", "https://user:pw@api.openai.com/v1");
+        register_usage_metrics(
+            "gpt-6-luna",
+            "https://user:pw@api.openai.com/v1",
+            "openai-gpt-6-luna",
+        );
         let rendered = handle.render();
         for call in LlmCall::ALL {
             for kind in TOKEN_KINDS {
@@ -4071,7 +4191,7 @@ mod tests {
         }
         assert!(
             rendered.contains(
-                "distant_signal_enricher_llm_model_info{model=\"gpt-6-luna\",base_url_host=\"api.openai.com\"} 1"
+                "distant_signal_enricher_llm_model_info{model=\"gpt-6-luna\",profile=\"openai-gpt-6-luna\",base_url_host=\"api.openai.com\"} 1"
             ),
             "{rendered}"
         );
@@ -4765,7 +4885,7 @@ mod tests {
         let raw = client
             .chat_completion(CallSpec {
                 call: LlmCall::Primary,
-                system_prompt: PRIMARY_PROMPT,
+                system_prompt: client.prompts().primary.clone(),
                 user_content,
                 schema_name: PRIMARY_SCHEMA_NAME,
                 schema: primary_schema(),

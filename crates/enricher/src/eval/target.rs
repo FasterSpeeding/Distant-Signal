@@ -91,6 +91,20 @@ pub(crate) struct Target {
     /// `LLM_ANTHROPIC_VERSION` (`anthropic` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic_version: Option<String>,
+    /// `LLM_PROFILE`: a built-in profile by name; unset picks it by
+    /// provider and model, as the service does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// `LLM_TEMPERATURE`: a number or `"omit"`; unset keeps the profile's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<String>,
+    /// `LLM_TOP_P`: a number or `"omit"`; unset keeps the profile's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<String>,
+    /// `LLM_PROMPTS_DIR`: prompt overrides (`<profile>.<call>.txt` or
+    /// `<call>.txt`), resolved like the targets file's other paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompts_dir: Option<std::path::PathBuf>,
 }
 
 /// `[targets.workload_identity]`: the service's WIF env vars, by the same
@@ -287,6 +301,9 @@ impl Target {
             .auth_config()
             .auth(api_key.as_ref())
             .map_err(|err| anyhow::anyhow!("target {:?}: {err}", self.name))?;
+        let (active, prompts) = self
+            .profile_and_prompts(&resolved.model)
+            .map_err(|err| anyhow::anyhow!("target {:?}: {err}", self.name))?;
         let client = LlmClient::new(
             resolved.base_url,
             None,
@@ -295,10 +312,37 @@ impl Target {
         )
         .with_auth(auth)
         .with_provider_policy(self.policy());
-        Ok(match self.provider {
+        let client = match self.provider {
             ProviderKind::Openai => client,
             ProviderKind::Anthropic => client.with_anthropic(self.anthropic_settings()),
-        })
+        };
+        Ok(client
+            .with_generation(&active.generation)
+            .with_prompts(prompts))
+    }
+
+    /// The target's profile (the service's resolution, with this target's
+    /// settings as the overrides) and its prompts.
+    pub(crate) fn profile_and_prompts(
+        &self,
+        model: &str,
+    ) -> anyhow::Result<(crate::profile::Resolved, crate::profile::PromptSet)> {
+        use crate::profile::{Overrides, Setting, parse_setting};
+        let overrides = Overrides {
+            temperature: parse_setting("temperature", self.temperature.as_deref())?,
+            top_p: parse_setting("top_p", self.top_p.as_deref())?,
+            max_tokens: self.max_tokens.map(Setting::Set),
+            reasoning_effort: parse_setting("reasoning_effort", self.reasoning_effort.as_deref())?,
+            thinking: parse_setting("thinking", self.thinking.as_deref())?,
+        };
+        let active =
+            crate::profile::resolve(self.provider, model, self.profile.as_deref(), overrides)?;
+        let dir = self
+            .prompts_dir
+            .as_deref()
+            .map(|p| crate::eval::resolve(&p.to_string_lossy()));
+        let prompts = crate::profile::PromptSet::load(dir.as_deref(), active.profile)?;
+        Ok((active, prompts))
     }
 
     /// Safe in a file name.
@@ -373,6 +417,7 @@ pub(crate) fn load_targets() -> anyhow::Result<Vec<Target>> {
     let policy = ProviderPolicyConfig::parse_from(["eval"]);
     let auth = LlmAuthConfig::parse_from(["eval"]);
     let anthropic = AnthropicConfig::parse_from(["eval"]);
+    let generation = crate::config::GenerationConfig::parse_from(["eval"]);
     let provider = ProviderKind::from_env()?;
     // `anthropic` has defaults for both, like the service.
     let (base_url, model) = match provider {
@@ -417,6 +462,10 @@ pub(crate) fn load_targets() -> anyhow::Result<Vec<Target>> {
         prompt_cache: Some(anthropic.llm_prompt_cache),
         thinking: anthropic.llm_thinking,
         anthropic_version: Some(anthropic.llm_anthropic_version),
+        profile: generation.llm_profile,
+        temperature: generation.llm_temperature,
+        top_p: generation.llm_top_p,
+        prompts_dir: generation.llm_prompts_dir,
     }])
 }
 
@@ -587,6 +636,35 @@ mod tests {
         let typo =
             "[[targets]]\nname = \"c\"\nprovider = \"claude\"\nbase_url = \"u\"\nmodel = \"m\"\n";
         assert!(parse_targets(typo, None).is_err());
+    }
+
+    /// A target picks its profile like the service, and its own settings
+    /// override it; a known-rejected setting is refused before any call.
+    #[test]
+    fn targets_resolve_profiles_like_the_service() {
+        let parse = |extra: &str| {
+            parse_targets(
+                &format!(
+                    "[[targets]]\nname = \"t\"\nbase_url = \"http://l/v1\"\nmodel = \"m\"\n{extra}"
+                ),
+                None,
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let (active, prompts) = parse("").profile_and_prompts("m").unwrap();
+        assert_eq!(active.profile, "openai-default");
+        assert_eq!(active.generation.temperature, Some(0.0));
+        assert!(prompts.is_builtin());
+        let (active, _) = parse("temperature = \"omit\"\ntop_p = \"0.8\"\n")
+            .profile_and_prompts("m")
+            .unwrap();
+        assert_eq!(active.generation.temperature, None);
+        assert_eq!(active.generation.top_p, Some(0.8));
+        let claude = parse("provider = \"anthropic\"\ntemperature = \"0.2\"\n");
+        assert!(claude.profile_and_prompts("claude-sonnet-5-5").is_err());
+        let named = parse("profile = \"nope\"\n");
+        assert!(named.profile_and_prompts("m").is_err());
     }
 
     #[test]
