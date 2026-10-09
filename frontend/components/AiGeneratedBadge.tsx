@@ -27,13 +27,16 @@ export const CHAT_AI_NOTE =
  * it is also in visually hidden text right after the badge, which screen
  * readers read in order (including as part of an enclosing button's name),
  * and the badge points at it with `aria-describedby`. */
-export function AiGeneratedBadge({ note, label = 'AI' }: { note: string; label?: string }) {
+/** The one label every AI marker uses. */
+export const AI_BADGE_LABEL = 'AI summary';
+
+export function AiGeneratedBadge({ note }: { note: string }) {
   const noteId = useId();
   return (
     <>
-      <Tooltip label={note} multiline w={280} events={{ hover: true, focus: false, touch: true }}>
-        <Badge data-ai-badge variant="outline" color="gray" size="sm" aria-describedby={noteId}>
-          {label}
+      <Tooltip label={note} multiline w={280} events={{ hover: true, focus: true, touch: true }}>
+        <Badge data-ai-badge variant="outline" color="gray" size="sm" tt="none" aria-describedby={noteId}>
+          {AI_BADGE_LABEL}
         </Badge>
       </Tooltip>
       <VisuallyHidden id={noteId}>{note}</VisuallyHidden>

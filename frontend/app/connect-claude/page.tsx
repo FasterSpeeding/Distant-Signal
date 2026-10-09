@@ -57,9 +57,8 @@ export default function ConnectClaudePage() {
     <Stack p="lg" gap="md" maw={640}>
       <Title order={1}>Connect Claude to Distant Signal</Title>
       <Text>
-        Distant Signal exposes an MCP server so you can ask Claude directly about UK train departures, arrivals, and
-        delay-aware journey planning — inside Claude&apos;s own app, using your own Claude account. This does not use
-        any of Distant Signal&apos;s own conversation features; Claude handles the whole conversation itself.
+        Ask Claude about UK trains, departures and journeys from inside the Claude app, using your own Claude account.
+        Claude looks the answers up in Distant Signal.
       </Text>
       {/* `grape` + `IconInfoCircle`-equivalent, not Mantine's default blue
           -- review §3.1.6: the grape-theme spec reserves blue for `planned`
@@ -70,8 +69,7 @@ export default function ConnectClaudePage() {
           -- `@tabler/icons-react` isn't a project dependency), the same
           one `ChatPanel.tsx`'s own blue-background fix below reaches for. */}
       <Alert color="grape" variant="light" icon={<InfoIcon />}>
-        Connecting requires a Pro, Max, Team, or Enterprise Claude plan for full support (a free Claude.ai account gets
-        one custom connector).
+        Works best on a Pro, Max, Team or Enterprise Claude plan. A free plan allows one custom connector.
       </Alert>
       {/* A bordered, headed section, the same shape as /account's cards,
           so the steps read as the page's one task rather than as more
@@ -107,16 +105,14 @@ export default function ConnectClaudePage() {
               <CopyConnectorUrl url={url} />
             </ListItem>
             <ListItem>
-              Connect it when Claude asks. Claude sends you to the sign-in page, where you log in with your Distant
-              Signal account — there is no separate confirmation step — and then finishes the connection itself.
+              Choose Connect. Log in with your Distant Signal account when asked, and Claude finishes the connection.
             </ListItem>
           </List>
         </Stack>
       </Card>
       <Text size="sm" c="dimmed">
-        Conversations happen entirely inside Claude&apos;s own interface, billed to your own Claude plan — Distant
-        Signal never sees the conversation itself, only the specific train/line/journey lookups Claude asks it to run on
-        your behalf.
+        Conversations stay in Claude, on your Claude plan. Distant Signal sees only the train, line and journey lookups
+        Claude makes.
       </Text>
       {/* The other assistants' steps live in one place, /chat's "Use
           Distant Signal in your own assistant" section, rather than being
@@ -126,7 +122,7 @@ export default function ConnectClaudePage() {
         <TextLink href="/chat" underline="always" inline size="sm">
           the setup steps on the chat page
         </TextLink>{' '}
-        (you’ll need to sign in).
+        (you’ll need to log in).
       </Text>
     </Stack>
   );

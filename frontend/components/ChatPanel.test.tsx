@@ -255,7 +255,7 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     await screen.findByText(/next train is at 10:15/i);
-    const badges = screen.getAllByText('AI-generated');
+    const badges = screen.getAllByText('AI summary');
     expect(badges).toHaveLength(1);
     expect(badges[0]!.closest('[data-ai-badge]')).toHaveAccessibleDescription(CHAT_AI_NOTE);
     const userBubble = screen.getByText('when is the next train').closest('.mantine-Card-root')!;

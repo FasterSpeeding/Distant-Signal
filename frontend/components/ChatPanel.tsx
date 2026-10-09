@@ -517,7 +517,7 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
       <Card withBorder padding="sm" radius="md" maw="80%" {...(isUser && { bg: 'grape.0' })}>
         {!isUser && (
           <Group gap={4} mb={4}>
-            <AiGeneratedBadge label="AI-generated" note={CHAT_AI_NOTE} />
+            <AiGeneratedBadge note={CHAT_AI_NOTE} />
           </Group>
         )}
         <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content || (isUser ? '' : '…')}</Text>

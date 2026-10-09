@@ -6,12 +6,12 @@ import { AiGeneratedBadge, CHAT_AI_NOTE, ENRICHED_INCIDENT_NOTE, isEnricherInflu
 describe('AiGeneratedBadge', () => {
   it('shows a short visible label', () => {
     renderWithMantine(<AiGeneratedBadge note={ENRICHED_INCIDENT_NOTE} />);
-    expect(screen.getByText('AI')).toBeInTheDocument();
+    expect(screen.getByText('AI summary')).toBeInTheDocument();
   });
 
   it('describes the badge with its "may be inaccurate" note for assistive technology', () => {
-    renderWithMantine(<AiGeneratedBadge note={CHAT_AI_NOTE} label="AI-generated" />);
-    const badge = screen.getByText('AI-generated').closest('[data-ai-badge]')!;
+    renderWithMantine(<AiGeneratedBadge note={CHAT_AI_NOTE} />);
+    const badge = screen.getByText('AI summary').closest('[data-ai-badge]')!;
     expect(badge).toHaveAccessibleDescription(CHAT_AI_NOTE);
     expect(CHAT_AI_NOTE).toMatch(/may be inaccurate/);
   });
@@ -23,7 +23,7 @@ describe('AiGeneratedBadge', () => {
 
   it('is not focusable, so it can sit inside buttons and links', () => {
     renderWithMantine(<AiGeneratedBadge note={ENRICHED_INCIDENT_NOTE} />);
-    const badge = screen.getByText('AI').closest('[data-ai-badge]')!;
+    const badge = screen.getByText('AI summary').closest('[data-ai-badge]')!;
     expect(badge).not.toHaveAttribute('tabindex');
     expect(badge.tagName).not.toBe('BUTTON');
   });

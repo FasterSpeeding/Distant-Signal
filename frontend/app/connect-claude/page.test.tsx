@@ -40,7 +40,7 @@ describe('/connect-claude', () => {
 
   it('describes the sign-in step without the retired confirmation screen', () => {
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByText(/sends you to the sign-in page/)).toBeInTheDocument();
+    expect(screen.getByText(/Log in with your Distant Signal account when asked/)).toBeInTheDocument();
     expect(screen.queryByText(/confirm the connection/)).not.toBeInTheDocument();
   });
 
@@ -89,7 +89,7 @@ describe('/connect-claude', () => {
     expect(screen.queryByText(/^Click \+/)).not.toBeInTheDocument();
   });
 
-  it('uses an em dash rather than a literal "--" in its copy', () => {
+  it('has no literal "--" in its copy', () => {
     const { container } = renderWithMantine(ConnectClaudePage());
     // MantineProvider injects its own `<style>` tags full of `--mantine-*`
     // CSS custom properties into the container -- strip those before
@@ -98,7 +98,6 @@ describe('/connect-claude', () => {
     const clone = container.cloneNode(true) as HTMLElement;
     clone.querySelectorAll('style').forEach((el) => el.remove());
     expect(clone.textContent).not.toMatch(/--/);
-    expect(clone.textContent).toMatch(/—/);
   });
   it('names the tab after the page, not just the site', () => {
     expect(metadata.title).toBe('Connect Claude');
