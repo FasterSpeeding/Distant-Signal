@@ -762,10 +762,6 @@ async fn preflight(enricher: &Enricher, incident_id: &str) -> Preflight {
 ///
 /// Callers go through `Enricher::process_exclusive`, never straight here,
 /// so two loops never run this for the same incident at once.
-#[expect(
-    clippy::too_many_lines,
-    reason = "long but linear; splitting it would scatter its shared state across helpers"
-)]
 async fn process_incident(enricher: &Enricher, incident_id: &str) -> bool {
     let prepared = match preflight(enricher, incident_id).await {
         Preflight::Done(ack) => return ack,
@@ -881,10 +877,6 @@ fn note_truncation(incident_id: &str, primary: &llm::PrimaryExtraction) {
 /// Combines the three passes' results and writes them: the end of
 /// `process_incident`, shared with the batch path (`batch.rs`). Returns
 /// whether to ack, as `process_incident` does.
-#[expect(
-    clippy::too_many_lines,
-    reason = "long but linear; splitting it would scatter its shared state across helpers"
-)]
 async fn finish_extraction(
     enricher: &Enricher,
     prepared: &Prepared,
@@ -895,8 +887,6 @@ async fn finish_extraction(
     let Enricher {
         pool,
         model_version,
-        mismatch_tracker,
-        retry_backoff,
         ..
     } = enricher;
     let model_version = model_version.as_str();
@@ -910,41 +900,15 @@ async fn finish_extraction(
         ..
     } = prepared;
     let incident_id = incident_id.as_str();
-    let periods = match combine::combine_periods(
-        &primary.periods,
-        &resolution_adversarial,
-        &severity_adversarial,
-    ) {
-        Ok(periods) => {
-            mismatch_tracker.record_success(incident_id);
-            // The extraction pipeline itself (all three LLM calls plus
-            // combination) demonstrably worked against this exact text --
-            // clear any backoff now rather than waiting for the write below
-            // to also succeed, since a subsequent write failure (DB error,
-            // or the stale-text race handled below) is not a reason to keep
-            // treating this text as one that fails extraction.
-            retry_backoff.record_success(incident_id);
-            periods
-        }
-        Err(err) => {
-            let consecutive = mismatch_tracker.record_failure(incident_id);
-            retry_backoff.record_failure(incident_id, &text_hash);
-            if consecutive > 1 {
-                // Distinguishable from the generic error path below on
-                // purpose -- design §7 item 3 wants this recognizable as
-                // "this one incident has been silently failing for a while"
-                // rather than folded into ordinary transient-failure noise.
-                tracing::error!(
-                    incident_id,
-                    consecutive_failures = consecutive,
-                    error = %err,
-                    "persistent length mismatch, likely needs prompt tuning"
-                );
-            } else {
-                tracing::error!(error = %err, incident_id, "period combination failed (length or ordinal-alignment mismatch)");
-            }
-            return false;
-        }
+    let Some(periods) = combine_or_record(
+        enricher,
+        incident_id,
+        text_hash,
+        primary,
+        resolution_adversarial,
+        severity_adversarial,
+    ) else {
+        return false;
     };
 
     // Compared before the write (cheap, pure, panic-free) but only
@@ -1027,6 +991,60 @@ async fn finish_extraction(
         );
     }
     true
+}
+
+/// Combines the primary periods with the two verdict lists, recording the
+/// outcome in the mismatch tracker and the per-text backoff. `None` (logged)
+/// on a length or ordinal-alignment mismatch.
+fn combine_or_record(
+    enricher: &Enricher,
+    incident_id: &str,
+    text_hash: &str,
+    primary: &llm::PrimaryExtraction,
+    resolution_adversarial: &[llm::AdversarialPeriodVerdict],
+    severity_adversarial: &[llm::SeverityAdversarialPeriodVerdict],
+) -> Option<Vec<llm::ExtractionPeriod>> {
+    let Enricher {
+        mismatch_tracker,
+        retry_backoff,
+        ..
+    } = enricher;
+    match combine::combine_periods(
+        &primary.periods,
+        resolution_adversarial,
+        severity_adversarial,
+    ) {
+        Ok(periods) => {
+            mismatch_tracker.record_success(incident_id);
+            // The extraction pipeline itself (all three LLM calls plus
+            // combination) demonstrably worked against this exact text --
+            // clear any backoff now rather than waiting for the write below
+            // to also succeed, since a subsequent write failure (DB error,
+            // or the stale-text race handled below) is not a reason to keep
+            // treating this text as one that fails extraction.
+            retry_backoff.record_success(incident_id);
+            Some(periods)
+        }
+        Err(err) => {
+            let consecutive = mismatch_tracker.record_failure(incident_id);
+            retry_backoff.record_failure(incident_id, text_hash);
+            if consecutive > 1 {
+                // Distinguishable from the generic error path below on
+                // purpose -- design §7 item 3 wants this recognizable as
+                // "this one incident has been silently failing for a while"
+                // rather than folded into ordinary transient-failure noise.
+                tracing::error!(
+                    incident_id,
+                    consecutive_failures = consecutive,
+                    error = %err,
+                    "persistent length mismatch, likely needs prompt tuning"
+                );
+            } else {
+                tracing::error!(error = %err, incident_id, "period combination failed (length or ordinal-alignment mismatch)");
+            }
+            None
+        }
+    }
 }
 
 /// Attempts at the final `write_extraction` UPDATE (DB2-30).
