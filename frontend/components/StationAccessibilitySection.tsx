@@ -31,6 +31,7 @@ import {
 } from '@/lib/stationAccessibility';
 import type { StationAccessibilityData } from '@/lib/types';
 import { TextLink } from './TextLink';
+import { EmailLink } from './EmailLink';
 
 export interface StationAccessibilitySectionProps {
   result: { coverage: 'unavailable' } | { coverage: 'empty' } | { coverage: 'present'; data: StationAccessibilityData };
@@ -451,6 +452,9 @@ function AccessibilityNodeView({
     }
 
     case 'link': {
+      if (node.href.startsWith('mailto:')) {
+        return <EmailLink address={node.href.slice('mailto:'.length)} />;
+      }
       // review §3.5.9: an anchor whose visible text is just its own href
       // ("https://www.nationalrail.co.uk/...") reads as noise, not a
       // destination -- swap in the host, keep the full URL reachable via
