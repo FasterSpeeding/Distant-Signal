@@ -1025,8 +1025,9 @@ makes every producer's new sink the default (runbook §0), replacing the
 per-producer flips and the 3-day shadows; 3–5 days to settle; then
 release B, this phase, deletes `/private`, the HTTP sinks and the old
 ingest roles together. Release A ships after the Redis ACL rollout's
-step 4 plus 24 h of a clean `ACL LOG`. It leaves the phase 4 internal
-reads on `http`, which release B needs moved first.
+step 4 plus 24 h of a clean `ACL LOG`. It also moves the phase 4
+internal reads (`internalReads.source: db`), so no caller of `/private`
+is left for release B.
 
 **Runbook: [docs/ingest-phase5-runbook.md](../../ingest-phase5-runbook.md)**
 (2026-10-08). It holds:

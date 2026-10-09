@@ -79,9 +79,12 @@ below). Agents only build it; the user or Ranma deploys it.
 | poller-tocs | `pollers.tocs.ingest.sink` | `http` | `stream` | `ds:ingest:reference` (D8) |
 | full-coverage-consumer | `fullCoverageConsumer.ingest.sink` | `http` | `stream` | `ds:ingest:full-coverage` |
 | ingest-writer | `ingestWriter.streams.<station-samples\|full-coverage\|tfl\|reference>` | `off` | `apply` | the writer applies the four streams |
-| ingest-writer | `postgresql.roles.perService.writer.connect` | `false` | `true` | `distant_signal_writer` instead of `distant_signal_app` (M4: `tfl: apply` needs it) |
+| ingest-writer | `postgresql.roles.perService.writer.connect` | `false` | `true` | `distant_signal_writer` instead of `distant_signal_app` (M4: `tfl: apply` needs it; approved 2026-10-09) |
+| full-coverage-consumer (reads) | `fullCoverageConsumer.internalReads.source` | `http` | `db` | `distant_signal_full_coverage_ro` (populations, STANOX/CRS) |
+| trust-consumer (reads) | `trustConsumer.internalReads.source` | `http` | `db` | `distant_signal_trust_consumer`, the sink's role and pool (plan 4.4) |
+| poller-ldbws (reads) | `pollers.ldbws.internalReads.source` | `http` | `db` | `distant_signal_ldbws_ro` (the sample-station views) |
 
-`postgresql.roles.perService.<stations|incidents|trust_backlog|trust_consumer|schedule_ingest|schedule_reference>.connect`
+`postgresql.roles.perService.<stations|incidents|trust_backlog|trust_consumer|schedule_ingest|schedule_reference|full_coverage_ro|ldbws_ro>.connect`
 also default to `true`. A `connect` whose component does not use the role
 (disabled, or back on `http`) is now a no-op instead of a render failure,
 so neither a rollback nor a deployer without that producer needs to touch
@@ -99,14 +102,11 @@ ingest-writer). On the chart before release A, step 4 of
 `pollerIrishRailLive` and `pollerNirStations` set to `true` although those
 pollers have no pods; setting them is harmless.
 
-**Not in release A: the internal reads.** `fullCoverageConsumer`,
-`trustConsumer` and `pollers.ldbws` keep `internalReads.source: http`
-(phase 4), so `GET /private/schedule-line-population`, `/tracked-trains`,
-`/sample-stations` and `/stanox-crs` keep their traffic (§1.2: about 1.4M
-requests a week, almost all `/schedule-line-population`). Release B cannot
-delete `/private` until those readers are on `db` too
-(`postgresql.roles.perService.<full_coverage_ro|ldbws_ro>.connect` plus
-`trust_consumer`'s, which release A already turns on).
+**The internal reads are in release A too** (approved 2026-10-09): the
+phase 4 readers' `internalReads.source: db` takes the last `/private` GETs
+(`/schedule-line-population`, `/tracked-trains`, `/sample-stations`,
+`/stanox-crs`; §1.2, about 1.4M requests a week) off the api, so after
+release A no producer or reader calls `/private`.
 
 ### 0.2 Prerequisites in production
 
@@ -131,7 +131,9 @@ hold:
    `CLIENT LIST` shows no `user=default`.
 3. **Postgres** (in place on 2026-10-09): `postgresql.roles.enabled`,
    `setupJob.enabled`, `perService.enabled`, an `existingSecret` for every
-   per-service role, and `max_connections: 200`. With release A's connects
+   per-service role (writer, schedule_ingest, schedule_reference,
+   stations, incidents, trust_backlog, trust_consumer, full_coverage_ro
+   and ldbws_ro included), and `max_connections: 200`. With release A's connects
    the role limits render within the budget (spec §6.6).
 4. **The ingest-writer with its loops** (in place since 1B): stations'
    `db` sink needs the CORPUS crosswalk loop, trust-consumer's needs the
@@ -176,7 +178,17 @@ scheduleFeed:
   # reference stays on db: it has been there since 2026-10-08.
 ```
 
-Take any subset. Notes, checked against the chart's guards:
+Per reader, its own `internalReads.source: http`, independent of its sink:
+
+```yaml
+fullCoverageConsumer: {internalReads: {source: http}}
+trustConsumer:        {internalReads: {source: http}}
+pollers:
+  ldbws:              {internalReads: {source: http}}
+```
+
+Take any subset. trust-consumer keeps `distant_signal_trust_consumer`
+while either its sink or its reads are on `db`. Notes, checked against the chart's guards:
 
 - **The writer's streams may stay on `apply`** after their producer goes
   back to `http` (spec §13.1): the guards allow it and the writer just
@@ -199,15 +211,17 @@ Take any subset. Notes, checked against the chart's guards:
   true`, the default), the producers' OAuth Secret keys and their
   Authentik accounts, so none of those may go before release B.
 
-`charts/distant-signal/ci/http-sinks.yaml` is this rollback for CI, plus
-the reference sink and the writer's role.
+`charts/distant-signal/ci/http-sinks.yaml` is this rollback (sinks and
+reads) for CI, plus the reference sink and the writer's role.
 
 ### 0.4 What to watch during the settle (3–5 days)
 
 Read-only, through Grafana or the kube API proxy.
 
-- **`/private` request rate falls to 0** for every ingest route; only the
-  internal-read GETs of §0.1 remain:
+- **`/private` request rate falls to 0, including the GET reads**
+  (`/schedule-line-population`, `/tracked-trains`, `/sample-stations`,
+  `/stanox-crs`, and the startup-cursor GETs of `/station-samples`,
+  `/tfl-line-status`, `/incidents`, `/stations` and `/tocs`):
   ```promql
   sum by (exported_endpoint, method) (
     rate(distant_signal_http_requests_total{namespace="distant-signal",
@@ -244,6 +258,10 @@ Read-only, through Grafana or the kube API proxy.
   `DistantSignalTrainEventOutboxStuck` and `…OutboxRejected` stay silent.
   The movement lag alerts (`DistantSignalMovementLag*`) stay silent: the
   TRUST consumers now ACK after their own commit.
+- **The readers' data stays current**: `DistantSignalFullCoverageWindowFeedStale`
+  silent, full coverage still reporting every enabled line, trust-consumer
+  still matching tracked trains, and poller-ldbws sampling the same
+  station count as before.
 - **Postgres connections**, per role, well inside each `CONNECTION
   LIMIT` and the 200 total:
   ```sql
@@ -252,11 +270,11 @@ Read-only, through Grafana or the kube API proxy.
   ```
   Each producer appears under its own role (`distant_signal_stations`,
   `…_incidents`, `…_trust_backlog`, `…_trust_consumer`,
-  `…_schedule_ingest`, `…_writer`), and `distant_signal_app` drops by the
-  writer's 6–7.
+  `…_schedule_ingest`, `…_writer`, `…_full_coverage_ro`, `…_ldbws_ro`),
+  and `distant_signal_app` drops by the writer's 6–7.
 
 Settle ends, and release B can be planned, when 3–5 days pass with all of
-the above clean and every ingest route at 0.
+the above clean and every `/private` route, GETs included, at 0.
 
 ## 1. Entry criteria and the `/private` inventory
 
