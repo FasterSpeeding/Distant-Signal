@@ -63,8 +63,8 @@ export function cancelledPercent(stats: SampleStats | undefined): number | null 
  * Decision 2) -> sample available -> TfL (structural) -> sample
  * available/absent hedges. MUST check `dataQuality` before
  * `sampleAvailability` — a TfL-quality status's `sampleAvailability` is
- * `'no-coverage'` by construction (it never went through the aggregator or
- * DLR pilot), not a meaningful live-pipeline-gap signal. See this app's
+ * `'no-coverage'` by construction (it never went through the aggregator),
+ * not a meaningful live-pipeline-gap signal. See this app's
  * plan/spec docs for
  * docs/superpowers/specs/2026-09-01-line-status-sample-coverage-design.md's
  * Decision 1/4 and

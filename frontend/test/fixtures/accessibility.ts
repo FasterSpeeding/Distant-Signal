@@ -26,9 +26,8 @@ const FIXTURE_DIR = path.join(__dirname, 'accessibility');
  * de-duplication references (`"$2b"`, `"$35"`, ...) during the initial 2026-09-16
  * capture from a rendered page. These were corrected on 2026-09-17 to their real
  * values by fetching from the production API (`GET /public/stations/{crs}/accessibility`)
- * which returns de-referenced JSON directly. Committed here for the same
- * reason `crates/poller-tfl/tests/fixtures/` holds real API captures: a
- * test asserting "the real feed renders through Pattern B" is only worth
+ * which returns de-referenced JSON directly. Committed as real API captures
+ * because a test asserting "the real feed renders through Pattern B" is only worth
  * anything if the real feed is what it is given. */
 export const ACCESSIBILITY_FIXTURE_CRS: string[] = readdirSync(FIXTURE_DIR)
   .filter((file) => file.endsWith('.json'))
