@@ -28,7 +28,7 @@ const SAMPLE_COUNT_CLAUSE = /\d+ of \d+ sampled services/g;
  * crates/aggregator/src/queries.rs, which strip the same two things before
  * the aggregator decides whether to write a new history row at all.
  *
- * Deliberately does NOT touch the `"(most cited: ...)"` suffix
+ * Deliberately does NOT touch the `"Main cause: ..."` sentence
  * `infer_from_samples` separately appends: unlike the raw counts, the
  * most-cited free-text delay/cancel reason is real information about *why*
  * services are disrupted. If it genuinely changes (e.g. "Signal failure" to

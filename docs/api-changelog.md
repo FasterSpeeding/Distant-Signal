@@ -3,6 +3,21 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-09: plainer line-status `reason` text
+
+No shape changes. The aggregator's free-text `reason` on line statuses
+(`/public/status` and the line endpoints) reads differently:
+
+- The `(most cited: X)` suffix on sample-inferred reasons is now a
+  sentence, `Main cause: X.`
+- The `(shared trunk — also affects other lines)` suffix is now `Also
+  affects other lines on this route.`
+- An extraction escalation no longer appends `reported more severe than
+  automatically classified: …`. The severity still rises; only the text
+  is gone.
+
+Line-status history already stored keeps the old wording.
+
 ## 2026-10-08: the same tracking limits for every leg type
 
 The 28-day horizon and the cap of 100 upcoming tracked trains used to
