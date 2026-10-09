@@ -144,7 +144,7 @@ export function AddMcpServerLinks({
         {accessRestricted && (
           <Text size="sm" c="dimmed">
             Only accounts that have been given access to the Distant Signal MCP server can connect. If yours hasn’t,
-            sign-in will be refused.
+            logging in will be refused.
           </Text>
         )}
 
@@ -163,7 +163,7 @@ export function AddMcpServerLinks({
             </Button>
           </Group>
           <Text size="xs" c="dimmed">
-            Opens the app if it’s installed. It asks you to confirm, then to sign in when you first use it.
+            Opens the app if it’s installed. It asks you to confirm, then to log in when you first use it.
           </Text>
         </Stack>
 
@@ -174,17 +174,17 @@ export function AddMcpServerLinks({
           <CopyField
             label="Claude Code command"
             value={claudeCodeCommand(endpoint)}
-            description="Then run /mcp in Claude Code to sign in."
+            description="Then run /mcp in Claude Code to log in."
           />
           <CopyField
             label="Codex CLI command"
             value={codexCommand(endpoint)}
-            description="Then run codex mcp login distant-signal to sign in."
+            description="Then run codex mcp login distant-signal to log in."
           />
           <CopyField
             label="Gemini CLI command"
             value={geminiCommand(endpoint)}
-            description="Then run /mcp auth distant-signal in Gemini CLI to sign in."
+            description="Then run /mcp auth distant-signal in Gemini CLI to log in."
           />
         </Stack>
 
@@ -201,7 +201,7 @@ export function AddMcpServerLinks({
               .
             </ListItem>
             <ListItem>Choose + then Add custom connector.</ListItem>
-            <ListItem>Paste the MCP server URL above, choose Add, then Connect and sign in.</ListItem>
+            <ListItem>Paste the MCP server URL above, choose Add, then Connect and log in.</ListItem>
           </List>
           <Text size="xs" c="dimmed">
             A free Claude plan allows one custom connector.{' '}
@@ -232,11 +232,11 @@ export function AddMcpServerLinks({
         <details>
           <summary>
             <Text span size="xs" c="dimmed">
-              Sign-in fails with “unregistered redirect_uri”?
+              Logging in fails with “unregistered redirect_uri”?
             </Text>
           </summary>
           <Text size="xs" c="dimmed" mt={4}>
-            Your assistant signed in from a different local address than the one it registered with (localhost instead
+            Your assistant logged in from a different local address than the one it registered with (localhost instead
             of 127.0.0.1, or the other way round). Remove Distant Signal from the assistant, add it again, then sign in.
           </Text>
         </details>

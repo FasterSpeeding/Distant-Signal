@@ -2,6 +2,7 @@ import { Alert, Stack, Text } from '@mantine/core';
 import { TextLink } from './TextLink';
 import { isTimetableOnly, serviceModeLabel } from '@/lib/serviceMode';
 import type { DelayRepayEstimate as Estimate, DelayRepayEstimateResponse } from '@/lib/types';
+import { formatDate } from '@/lib/dateFormat';
 
 /** Renders one ticket's Delay Repay estimate, per
  * docs/superpowers/specs/2026-08-29-journey-ticket-tracking-frontend-design.md
@@ -42,22 +43,17 @@ import type { DelayRepayEstimate as Estimate, DelayRepayEstimateResponse } from 
  * against their sources -- `RULES_CHECKED_ON` in
  * `crates/api/src/data/delay_repay_rules.rs`, served as `rulesCheckedOn`.
  * The fallback for an older backend that doesn't send it. */
-export const DELAY_REPAY_RULES_CHECKED_ON = '7 October 2026';
+export const DELAY_REPAY_RULES_CHECKED_ON = '7 Oct 2026';
 
 /** Shown for a bus or ferry when the backend sends no `unmeasurableReason`
  * of its own. */
 const TIMETABLE_ONLY_DELAY_REPAY_FALLBACK =
   "buses and ferries aren't tracked live, so we can't measure a delay on this leg. If it ran late, claim with the operator using the times you recorded.";
 
-/** `2026-10-07` as `7 October 2026`; anything else verbatim. */
+/** `2026-10-07` as `7 Oct 2026` (lib/dateFormat.ts); anything else verbatim. */
 function formatCheckedOn(value: string | undefined): string {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return value ?? DELAY_REPAY_RULES_CHECKED_ON;
-  return new Date(`${value}T00:00:00Z`).toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
+  return formatDate(`${value}T12:00:00Z`);
 }
 
 export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateResponse }) {

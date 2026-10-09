@@ -689,6 +689,7 @@ export function IncidentSearchForm({
           {preset === null && (
             <Group align="end">
               <DatePickerInput
+                valueFormat="D MMM YYYY"
                 label="From (optional)"
                 placeholder="Any"
                 value={fromDate}
@@ -697,6 +698,7 @@ export function IncidentSearchForm({
                 clearButtonProps={{ 'aria-label': 'Clear the from date', className: 'iconHitArea24' }}
               />
               <DatePickerInput
+                valueFormat="D MMM YYYY"
                 label="To (optional)"
                 placeholder="Any"
                 value={toDate}

@@ -121,7 +121,7 @@ describe('ChatCallback', () => {
       localStorage.setItem('ds-mcp-oauth:client-information', JSON.stringify({ client_id: 'dead' }));
       renderAtWithValidState('?code=abc123');
       const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
-      expect(screen.getByText(/reconnect to sign in again with a fresh connection/i)).toBeInTheDocument();
+      expect(screen.getByText(/reconnect to log in again/i)).toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'Back to chat' })).toHaveAttribute('href', '/chat');
 
       mockAuth.mockReturnValueOnce(new Promise(() => {}));

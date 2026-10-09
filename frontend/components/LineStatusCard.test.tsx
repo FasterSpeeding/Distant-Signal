@@ -103,7 +103,7 @@ describe('LineStatusCard', () => {
 
   it('renders a last-updated indicator', () => {
     renderWithMantine(<LineStatusCard report={report} />);
-    expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
+    expect(screen.getByText(/Updated (just now|\d+ (min|hr|days?) ago)/)).toBeInTheDocument();
   });
 
   it('leaves the "Updated" line to the page with showUpdated={false}', () => {

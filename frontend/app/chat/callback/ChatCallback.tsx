@@ -225,7 +225,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
         <Alert color="red" icon={<ErrorIcon />} role="alert">
           <Stack gap="sm">
             <Text>We couldn&apos;t finish connecting to the rail data service.</Text>
-            {serverUrl && <Text>Reconnect to sign in again with a fresh connection.</Text>}
+            {serverUrl && <Text>Reconnect to log in again.</Text>}
             {reconnectError && <Text size="sm">{reconnectError}</Text>}
             {/* `<Link>` wrapping a plain `Button`, not Mantine's
                 `component={Link}` polymorphic prop -- the same pattern
@@ -261,7 +261,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
       <Title order={1}>{state.kind === 'success' ? 'Connected, taking you to chat…' : 'Connecting…'}</Title>
       <Group gap="sm">
         {state.kind === 'connecting' && <Loader size="sm" />}
-        <Text c="dimmed">Finishing sign-in to the rail data service.</Text>
+        <Text c="dimmed">Finishing logging in to the rail data service.</Text>
       </Group>
     </Stack>
   );

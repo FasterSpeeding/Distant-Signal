@@ -102,13 +102,13 @@ describe('offline.html last-connected line', () => {
     localStorage.clear();
   });
 
-  it('says "4m ago", like the app\'s relative times, with the exact UK time in the tooltip', () => {
+  it('says "4 min ago", like the app\'s relative times, with the exact UK time in the tooltip', () => {
     localStorage.setItem('lastSuccessfulLoadAt', '2026-09-29T08:40:00Z');
     // eslint-disable-next-line @typescript-eslint/no-implied-eval -- runs offline.html's own inline script, the code under test
     new Function(lastScript())();
     const message = document.getElementById('offline-message')!;
     expect(message.textContent).toBe(
-      'Distant Signal needs a connection to show current line status. Last connected 4m ago.',
+      'Distant Signal needs a connection to show current line status. Last connected 4 min ago.',
     );
     expect(message.title).toBe('Last connected 29 Sept 2026, 09:40 (UK time)');
   });
@@ -117,7 +117,7 @@ describe('offline.html last-connected line', () => {
     localStorage.setItem('lastSuccessfulLoadAt', '2026-09-29T05:40:00Z');
     // eslint-disable-next-line @typescript-eslint/no-implied-eval -- runs offline.html's own inline script, the code under test
     new Function(lastScript())();
-    expect(document.getElementById('offline-message')!.textContent).toContain('Last connected 3h ago.');
+    expect(document.getElementById('offline-message')!.textContent).toContain('Last connected 3 hr ago.');
   });
 
   it('leaves the base message alone when nothing was ever loaded', () => {

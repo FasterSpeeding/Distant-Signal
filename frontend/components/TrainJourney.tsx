@@ -232,8 +232,8 @@ function StatusMessage({
         </Text>
         {pinSummary}
         <Text size="sm" c="dimmed">
-          Network Rail never reported a matching service for this pin. This won&apos;t resolve on its own — try tracking
-          the train again if it was a genuine mistake.
+          Network Rail never reported a matching service for this train. This won&apos;t resolve on its own — try
+          tracking the train again if it was a genuine mistake.
         </Text>
       </Stack>
     );

@@ -1311,7 +1311,7 @@ export function TrackTrainForm({
         <Text c="dimmed">
           {mode === 'window'
             ? "Not sure which train yet? Tell us roughly when you're travelling — Origin, Destination and at least one of the times below — and we'll show you the matches to choose from. You can change your pick later."
-            : 'Pin a specific train to see its live position, delay and next calling point as Network Rail reports it.'}
+            : 'Track a specific train to see its live position, delay and next stop.'}
         </Text>
       )}
       <Stack gap="md" component="form" onSubmit={handleSubmit} maw={640}>
@@ -1408,6 +1408,7 @@ export function TrackTrainForm({
               // validation.
             />
             <DatePickerInput
+              valueFormat="D MMM YYYY"
               label="Date"
               // Review §2.2/M13: `windowServiceDate` is seeded with today's
               // real date above (not `null`), so this now shows an actual

@@ -11,19 +11,19 @@ describe('relativeTime', () => {
   it('returns whole minutes under an hour', () => {
     const from = new Date('2026-07-15T09:00:00Z');
     const to = new Date('2026-07-15T09:02:30Z');
-    expect(relativeTime(from, to)).toBe('2m ago');
+    expect(relativeTime(from, to)).toBe('2 min ago');
   });
 
   it('returns whole hours under a day', () => {
     const from = new Date('2026-07-15T09:00:00Z');
     const to = new Date('2026-07-15T12:00:00Z');
-    expect(relativeTime(from, to)).toBe('3h ago');
+    expect(relativeTime(from, to)).toBe('3 hr ago');
   });
 
   it('returns whole days at a day or more', () => {
     const from = new Date('2026-07-13T09:00:00Z');
     const to = new Date('2026-07-15T09:00:00Z');
-    expect(relativeTime(from, to)).toBe('2d ago');
+    expect(relativeTime(from, to)).toBe('2 days ago');
   });
 
   it('clamps a future "from" (clock skew) to "just now" instead of a negative value', () => {

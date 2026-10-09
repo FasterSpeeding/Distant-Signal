@@ -1195,7 +1195,7 @@ describe('TrackTrainForm', () => {
       // sibling needs a stand-in but this one, being asserted on its
       // rendered text rather than driven via `fireEvent.change`, does not.
       const dateButton = screen.getByLabelText('Date');
-      expect(dateButton).toHaveTextContent(nowInLondon().format('MMMM D, YYYY'));
+      expect(dateButton).toHaveTextContent(nowInLondon().format('D MMM YYYY'));
       expect(dateButton).not.toHaveTextContent('Today');
     });
 
@@ -1204,11 +1204,11 @@ describe('TrackTrainForm', () => {
     // owned by the page, so it reacts to the client-side toggle.
     it('switches the intro copy to describe window mode once selected', () => {
       renderWithMantine(<TrackTrainForm />);
-      expect(screen.getByText(/Pin a specific train to see its live position/)).toBeInTheDocument();
+      expect(screen.getByText(/Track a specific train to see its live position/)).toBeInTheDocument();
 
       switchToWindowMode();
 
-      expect(screen.queryByText(/Pin a specific train to see its live position/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Track a specific train to see its live position/)).not.toBeInTheDocument();
       expect(screen.getByText(/Not sure which train yet\?/)).toBeInTheDocument();
     });
   });

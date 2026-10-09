@@ -621,6 +621,7 @@ export function TrainSearchForm({
           soon as a date is picked. See `components/IncidentSearchForm.tsx`'s
           own note and `app/lines/AllLinesTable.tsx` for the same fix. */}
       <DatePickerInput
+        valueFormat="D MMM YYYY"
         label="Date (optional)"
         placeholder="Today"
         description={searchDateDescription(dateBounds, today)}

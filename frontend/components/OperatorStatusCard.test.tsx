@@ -61,7 +61,7 @@ describe('OperatorStatusCard', () => {
 
   it('renders a last-updated indicator', () => {
     renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
-    expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
+    expect(screen.getByText(/Updated (just now|\d+ (min|hr|days?) ago)/)).toBeInTheDocument();
   });
 
   it('renders the TfL hedge when sampleStats is undefined and code is TfL', () => {

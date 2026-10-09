@@ -18,12 +18,12 @@ describe('LastUpdated', () => {
       </MantineProvider>,
     );
     expect(html).toContain('Updated');
-    expect(html).not.toMatch(/\d+[mhd] ago|just now/);
+    expect(html).not.toMatch(/\d+ (min|hr|days?) ago|just now/);
   });
 
   it('shows a relative time once mounted', () => {
     renderWithMantine(<LastUpdated timestamp="2026-07-15T09:00:00Z" />);
-    expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
+    expect(screen.getByText(/Updated (just now|\d+ (min|hr|days?) ago)/)).toBeInTheDocument();
   });
 
   it('supports a custom label', () => {

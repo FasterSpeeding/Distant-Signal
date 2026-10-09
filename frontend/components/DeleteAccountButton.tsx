@@ -87,7 +87,7 @@ export function DeleteAccountButton() {
           </Text>
           <Text size="sm">Our database backups are encrypted, and your data can stay in them for up to 14 days.</Text>
           <Text size="sm">
-            You sign in through a separate single sign-on account (or Discord), which this does not delete. Close that
+            You log in through a separate single sign-on account (or Discord), which this does not delete. Close that
             account there if you want it gone too.
           </Text>
           <Text size="sm">You may want to download your data first. This can&apos;t be undone.</Text>
