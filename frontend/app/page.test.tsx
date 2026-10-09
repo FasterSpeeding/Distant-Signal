@@ -294,7 +294,7 @@ describe('DashboardPage', () => {
     });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your Lines' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines' })).toBeInTheDocument();
     // Load-bearing specifically for the PINNED case (Task 7): this user has
     // pinned a line, so "Right now" must stay absent even though the
     // authenticated branch can now render it for a zero-pinned-lines user.
@@ -380,7 +380,7 @@ describe('DashboardPage', () => {
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
   });
 
@@ -397,7 +397,7 @@ describe('DashboardPage', () => {
     renderWithMantine(await DashboardPage());
     const sections = screen.getAllByRole('heading', { level: 2 });
     expect(sections.map((h) => h.textContent)).toEqual(
-      expect.arrayContaining(['Right now', 'Your Stations', 'Your Operators']),
+      expect.arrayContaining(['Right now', 'Your stations', 'Your operators']),
     );
     for (const heading of sections) {
       expect(heading.style.getPropertyValue('--title-fz')).toContain('--mantine-h3-font-size');
@@ -422,7 +422,7 @@ describe('DashboardPage', () => {
       });
       vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
       renderWithMantine(await DashboardPage());
-      const heading = screen.getByRole('heading', { name: 'Your Lines', level: 1 });
+      const heading = screen.getByRole('heading', { name: 'Your lines', level: 1 });
       // Scope to everything from the heading's own row up to (but not
       // including) the next section, so this can't accidentally pass by
       // matching the "Your Stations" section's own link instead.
@@ -444,7 +444,7 @@ describe('DashboardPage', () => {
       });
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
       renderWithMantine(await DashboardPage());
-      const heading = screen.getByRole('heading', { name: 'Your Stations', level: 2 });
+      const heading = screen.getByRole('heading', { name: 'Your stations', level: 2 });
       const section = heading.closest('div')?.parentElement as HTMLElement;
       expect(within(section).getAllByRole('link', { name: 'Look up a station' })).toHaveLength(1);
     });
@@ -463,7 +463,7 @@ describe('DashboardPage', () => {
       });
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
       renderWithMantine(await DashboardPage());
-      const heading = screen.getByRole('heading', { name: 'Your Lines', level: 1 });
+      const heading = screen.getByRole('heading', { name: 'Your lines', level: 1 });
       expect(
         within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Browse all lines' }),
       ).toHaveAttribute('href', '/lines');
@@ -483,7 +483,7 @@ describe('DashboardPage', () => {
       });
       vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
       renderWithMantine(await DashboardPage());
-      const heading = screen.getByRole('heading', { name: 'Your Stations', level: 2 });
+      const heading = screen.getByRole('heading', { name: 'Your stations', level: 2 });
       expect(
         within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Look up a station' }),
       ).toHaveAttribute('href', '/stations');
@@ -512,7 +512,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
       renderWithMantine(await DashboardPage());
       const names = headingNames();
-      expect(names.indexOf('Right now')).toBeLessThan(names.indexOf('Your Lines'));
+      expect(names.indexOf('Right now')).toBeLessThan(names.indexOf('Your lines'));
       // Rendered exactly once, not doubled up at both its old and new spot.
       expect(names.filter((n) => n === 'Right now')).toHaveLength(1);
     });
@@ -533,7 +533,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
       renderWithMantine(await DashboardPage());
       const names = headingNames();
-      expect(names.indexOf('Your Stations')).toBeLessThan(names.indexOf('Right now'));
+      expect(names.indexOf('Your stations')).toBeLessThan(names.indexOf('Right now'));
       expect(names.filter((n) => n === 'Right now')).toHaveLength(1);
     });
 
@@ -560,7 +560,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
       renderWithMantine(await DashboardPage());
       const names = headingNames();
-      expect(names.indexOf('Your Operators')).toBeLessThan(names.indexOf('Right now'));
+      expect(names.indexOf('Your operators')).toBeLessThan(names.indexOf('Right now'));
       expect(names.filter((n) => n === 'Right now')).toHaveLength(1);
     });
   });
@@ -791,21 +791,21 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
   it('getMyTrackedTrains() returns null (logged out): section absent, other two sections unchanged', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     renderWithMantine(await DashboardPage());
-    expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Your Lines' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Your Stations' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your stations' })).toBeInTheDocument();
   });
 
   it('getMyTrackedTrains() returns [] (logged in, nothing tracked): section absent', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     renderWithMantine(await DashboardPage());
-    expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
   });
 
   it('populated list: section present with a "View all" link to /track/mine', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your Tracked Trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
   });
 
@@ -913,7 +913,7 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
 
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
     expect(screen.getByText(/haven't pinned any lines yet/)).toBeInTheDocument();
   });
 
@@ -928,8 +928,8 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getMyTrackedTrains).mockRejectedValue(new Error('500'));
 
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
   });
 
   it("keeps the dashboard up when a pinned station's disruption fetch fails", async () => {
@@ -944,7 +944,7 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getStopPointDisruption).mockRejectedValue(new Error('connect ECONNREFUSED'));
 
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your Stations', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your stations', level: 2 })).toBeInTheDocument();
     expect(screen.getByText('KGX')).toBeInTheDocument();
   });
 });
@@ -1150,7 +1150,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
     vi.mocked(api.getSharedGroupCustomLines).mockRejectedValue(new Error('boom'));
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your Lines' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Lines shared with you' })).not.toBeInTheDocument();
   });
 
@@ -1204,7 +1204,7 @@ describe('DashboardPage -- Your Operators section', () => {
     vi.mocked(api.getAllOperators).mockResolvedValue([operator({ code: 'VT', name: 'Avanti West Coast' })]);
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your Operators' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your operators' })).toBeInTheDocument();
     expect(screen.getByText('Avanti West Coast')).toBeInTheDocument();
   });
 
@@ -1248,7 +1248,7 @@ describe('DashboardPage -- Your Operators section', () => {
     vi.mocked(api.getAllOperators).mockResolvedValue([operator({ code: 'VT' })]);
     renderWithMantine(await DashboardPage());
 
-    const heading = screen.getByRole('heading', { name: 'Your Operators' });
+    const heading = screen.getByRole('heading', { name: 'Your operators' });
     expect(
       within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Browse all operators' }),
     ).toHaveAttribute('href', '/operators');
@@ -1396,7 +1396,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your Tracked Trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('PAD → RDG'))).toBeInTheDocument();
     expect(screen.getByText('from Family')).toBeInTheDocument();
@@ -1409,7 +1409,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your Tracked Trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('PAD → RDG'))).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
   });
@@ -1439,7 +1439,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
   });
 
   it('carries both tags inside the shared row itself, not stranded elsewhere in the section', async () => {
@@ -1698,8 +1698,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your Lines', level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Your Tracked Trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
     expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
   });
@@ -1719,7 +1719,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.queryByRole('heading', { name: 'Your Tracked Trains' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
     expect(screen.queryByText(byVisibleText('PAD → RDG'))).not.toBeInTheDocument();
     expect(screen.queryByText('from Family')).not.toBeInTheDocument();
   });

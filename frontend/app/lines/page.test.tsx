@@ -67,9 +67,9 @@ describe('AllLinesPage', () => {
 
     const newLineLink = screen.getByRole('link', { name: 'New custom line' });
     expect(newLineLink).toHaveAttribute('href', '/lines/new');
-    const incidentsLink = screen.getByRole('link', { name: 'Incident Archive' });
+    const incidentsLink = screen.getByRole('link', { name: 'Incidents' });
     expect(incidentsLink).toHaveAttribute('href', '/incidents');
-    const heading = screen.getByRole('heading', { name: 'All Lines', level: 1 });
+    const heading = screen.getByRole('heading', { name: 'Lines', level: 1 });
     // The two links share an inner Group with each other, and that inner
     // Group is itself a sibling of the heading in the same outer row --
     // same "shared parent row" assertion style CustomLineForm.test.tsx uses
@@ -98,27 +98,27 @@ describe('AllLinesPage', () => {
     // ...so the next one survives the outage instead of throwing to
     // app/error.tsx.
     await renderPage();
-    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lines', level: 1 })).toBeInTheDocument();
   });
 
   it('still renders, with nothing pinned, when getPreferences fails', async () => {
     vi.mocked(api.getPreferences).mockRejectedValue(new Error('500'));
 
     await renderPage();
-    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lines', level: 1 })).toBeInTheDocument();
   });
 
   it('still renders when the TOC reference lookup fails', async () => {
     vi.mocked(api.getAllTocs).mockRejectedValue(new Error('500'));
 
     await renderPage();
-    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lines', level: 1 })).toBeInTheDocument();
   });
 });
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('All Lines — Distant Signal');
+    expect(metadata.title).toBe('Lines — Distant Signal');
   });
 
   it('describes the whole-network line table rather than inheriting the generic site description', () => {
@@ -162,14 +162,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'All Lines — Distant Signal',
+      title: 'Lines — Distant Signal',
       description:
         "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
-      title: 'All Lines — Distant Signal',
+      title: 'Lines — Distant Signal',
       description:
         "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.",
     });
@@ -244,6 +244,6 @@ describe('statusGroup deep link', () => {
 
   it('ignores an unrecognized ?statusGroup= value rather than erroring', async () => {
     await renderPage({ statusGroup: 'not-a-real-group' });
-    expect(screen.getByRole('heading', { name: 'All Lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lines', level: 1 })).toBeInTheDocument();
   });
 });

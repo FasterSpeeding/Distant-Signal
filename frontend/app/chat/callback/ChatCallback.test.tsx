@@ -78,7 +78,7 @@ describe('ChatCallback', () => {
   it('shows a "Connected…" heading on success, distinct from the connecting/error headings', async () => {
     mockAuth.mockResolvedValue('AUTHORIZED');
     renderAtWithValidState('?code=abc123');
-    expect(await screen.findByRole('heading', { name: 'Connected, taking you to Chat…' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Connected, taking you to chat…' })).toBeInTheDocument();
   });
 
   it('shows an error and does not redirect when no code is present', async () => {
@@ -281,7 +281,7 @@ describe('ChatCallback', () => {
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/chat'));
     expect(mockAuth).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/could not be verified/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Connected, taking you to Chat…' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connected, taking you to chat…' })).toBeInTheDocument();
   });
 
   it('under StrictMode, keeps showing "Connecting…" (not an error) while the exchange is in flight', async () => {

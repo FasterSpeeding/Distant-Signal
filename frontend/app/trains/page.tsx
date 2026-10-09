@@ -29,7 +29,7 @@ import { getAllTocs, getTrainSearchDates } from '@/lib/api';
  * "another station along its route" -- it just does not additionally claim
  * the ordering, which belongs in the field's own, more detailed
  * description rather than this page-level summary. */
-const METADATA_TITLE = 'Find a Train — Distant Signal';
+const METADATA_TITLE = 'Trains — Distant Signal';
 const METADATA_DESCRIPTION =
   'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.';
 
@@ -116,7 +116,7 @@ export default async function TrainsPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Find a Train</Title>
+      <Title order={1}>Trains</Title>
       <Text c="dimmed">
         {attachTicketId !== undefined
           ? "Find the train your saved ticket is for — it'll be attached automatically once you track it."

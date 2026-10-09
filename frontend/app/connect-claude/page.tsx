@@ -128,7 +128,7 @@ export default function ConnectClaudePage() {
       <Text size="sm">
         Using a different assistant, such as ChatGPT, Cursor, VS Code, Claude Code, Codex or Gemini CLI? See{' '}
         <TextLink href="/chat" underline="always" inline size="sm">
-          the setup steps on the Chat page
+          the setup steps on the chat page
         </TextLink>{' '}
         (you’ll need to sign in).
       </Text>

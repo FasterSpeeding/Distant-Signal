@@ -37,14 +37,13 @@ describe('NetworkHistoryPage', () => {
   // Review M11/§3.5: matches the "History: {name}" pattern both
   // `/lines/[id]/history` and `/operators/[code]/history` already use,
   // rather than the one-off "Network history" this page shipped with.
-  it('titles the page "History: Network", not "Network history" (review M11)', async () => {
+  it('titles the page "Network history", matching "{name} history" on the line and operator pages', async () => {
     vi.mocked(api.getHistoryRetention).mockResolvedValue(retention);
     vi.mocked(api.getNetworkDailyStats).mockResolvedValue([]);
 
     await renderPage();
 
-    expect(screen.getByRole('heading', { name: 'History: Network', level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Network history' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Network history', level: 1 })).toBeInTheDocument();
   });
 
   // Review [OH] §3.4/I11: same "say the scope" line the operator history

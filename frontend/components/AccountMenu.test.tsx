@@ -16,7 +16,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 const destinations: NavDestination[] = [
-  { href: '/track/mine', label: 'My Trains & Tickets' },
+  { href: '/track/mine', label: 'My trains & tickets' },
   { href: '/groups', label: 'Groups' },
 ];
 

@@ -56,7 +56,7 @@ describe('TrainsPage', () => {
   // plain TextInput time fields, which have no listbox.
   it('renders the title and the search form', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
-    expect(screen.getByRole('heading', { name: 'Find a Train' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Trains' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
   });
 
@@ -193,7 +193,7 @@ describe('TrainsPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Find a Train — Distant Signal');
+    expect(metadata.title).toBe('Trains — Distant Signal');
   });
 
   it('describes network-wide scheduled-train search rather than inheriting the generic site description', () => {
@@ -224,14 +224,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Find a Train — Distant Signal',
+      title: 'Trains — Distant Signal',
       description:
         'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
-      title: 'Find a Train — Distant Signal',
+      title: 'Trains — Distant Signal',
       description:
         'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
     });

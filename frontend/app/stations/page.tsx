@@ -30,7 +30,7 @@ import { TextLink } from '@/components/TextLink';
  * stats" rather than "punctuality", because that section is an LDBWS
  * SAMPLE (headed "Sample stats by operator", and a station can be outside
  * the sampling entirely), not a punctuality record. */
-const METADATA_TITLE = 'Station Disruption Lookup — Distant Signal';
+const METADATA_TITLE = 'Stations — Distant Signal';
 const METADATA_DESCRIPTION =
   'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.';
 
@@ -64,7 +64,7 @@ const MAJOR_STATIONS: { crs: string; name: string }[] = [
 export default function StationSearchPage() {
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Station Disruption Lookup</Title>
+      <Title order={1}>Stations</Title>
       <Text c="dimmed">Search by station name or CRS code to see disruptions affecting lines through it.</Text>
       <StationSearchForm />
       <Stack gap="xs">

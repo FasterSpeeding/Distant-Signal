@@ -39,7 +39,7 @@ import { parsePlanSearchParams } from '@/lib/tripPlanUrl';
  * The rest of the query is the last search (`lib/tripPlanUrl.ts`): each
  * search writes it into the address bar, so a shared or bookmarked `/plan`
  * URL reopens the same form, Advanced options included. */
-const METADATA_TITLE = 'Plan a Journey — Distant Signal';
+const METADATA_TITLE = 'Plan a journey — Distant Signal';
 const METADATA_DESCRIPTION =
   'Find train routes between any two UK stations, with changes and optional stops on the way, and compare the options. No account needed to plan; log in to track the journey you pick.';
 
@@ -69,7 +69,7 @@ export default async function PlanPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Plan a Journey</Title>
+      <Title order={1}>Plan a journey</Title>
       <Text c="dimmed">
         Find routes between two stations, including changes and any stops you want on the way, then compare the options.
         Already know which train you&apos;re catching?{' '}

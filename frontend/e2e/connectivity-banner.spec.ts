@@ -54,6 +54,6 @@ test.describe('connectivity banner', () => {
     await goOffline(page);
     // The whole point of the feature: the banner is non-blocking and the
     // last-known content stays put rather than being replaced by an error.
-    await expect(page.getByRole('heading', { name: 'All Lines', level: 1 })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Lines', level: 1 })).toBeVisible();
   });
 });

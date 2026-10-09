@@ -61,7 +61,7 @@ export default async function NetworkHistoryPage({
           `/lines/[id]/history` and `/operators/[code]/history` already use
           -- rather than the one-off "Network history" this page shipped
           with. */}
-      <Title order={1}>History: Network</Title>
+      <Title order={1}>Network history</Title>
       {/* Review [OH] §3.4/I11: same "say the scope" line the operator
           history page carries under its own title. */}
       <Text c="dimmed" size="sm">

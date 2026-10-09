@@ -24,7 +24,7 @@ export const revalidate = 0;
  * Title matches the page's own `<h1>` below ("Incident Archive"), which is
  * also this route's nav label, so the tab title and the heading a visitor
  * lands on agree. */
-const METADATA_TITLE = 'Incident Archive — Distant Signal';
+const METADATA_TITLE = 'Incidents — Distant Signal';
 const METADATA_DESCRIPTION =
   'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.';
 
@@ -77,7 +77,7 @@ export default async function IncidentsPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Incident Archive</Title>
+      <Title order={1}>Incidents</Title>
       <Text c="dimmed">
         National Rail incident messages across the network. The last 30 days by default; choose &quot;All time&quot; for
         everything we have.

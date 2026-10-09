@@ -55,7 +55,7 @@ describe('/connect-claude', () => {
 
   it('points other assistants at the setup steps on /chat instead of repeating them', () => {
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByRole('link', { name: 'the setup steps on the Chat page' })).toHaveAttribute('href', '/chat');
+    expect(screen.getByRole('link', { name: 'the setup steps on the chat page' })).toHaveAttribute('href', '/chat');
     expect(screen.queryByText(/codex mcp add/)).not.toBeInTheDocument();
   });
 

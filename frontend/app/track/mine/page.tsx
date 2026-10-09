@@ -101,7 +101,7 @@ export default async function MyTrackedTrainsPage() {
   if (trains === null) {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>My Trains &amp; Tickets</Title>
+        <Title order={1}>My trains &amp; tickets</Title>
         {/* Server-rendered, same pattern as
             app/train/by-id/[trackingId]/page.tsx's own
             ApiUnauthorizedError branch: a link-unfurler bot or a
@@ -178,7 +178,7 @@ export default async function MyTrackedTrainsPage() {
   return (
     <Stack p="lg" gap="lg">
       <Group justify="space-between" align="baseline">
-        <Title order={1}>My Trains &amp; Tickets</Title>
+        <Title order={1}>My trains &amp; tickets</Title>
         <Group gap="md">
           <TextLink href="/track">Track a new train</TextLink>
           <TextLink href="/plan">Plan a journey</TextLink>

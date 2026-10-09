@@ -46,7 +46,7 @@ describe('NetworkStatusPage', () => {
     ]);
     renderWithMantine(await NetworkStatusPage());
 
-    const link = screen.getByRole('link', { name: '1 line with Severe Disruption — view in All Lines' });
+    const link = screen.getByRole('link', { name: '1 line with Severe Disruption — view in Lines' });
     expect(link).toHaveAttribute('href', '/lines?statusGroup=severe');
   });
 
@@ -99,7 +99,7 @@ describe('NetworkStatusPage', () => {
       report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 10 })] }),
     ]);
     renderWithMantine(await NetworkStatusPage());
-    expect(screen.getByRole('heading', { level: 1, name: 'Network Status' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Status' })).toBeInTheDocument();
     const sections = screen.getAllByRole('heading', { level: 2 });
     expect(sections.map((h) => h.textContent)).toEqual(expect.arrayContaining(['By mode', 'Lines to watch']));
     for (const heading of sections) {
@@ -190,7 +190,7 @@ describe('NetworkStatusPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading', () => {
-    expect(metadata.title).toBe('Network Status — Distant Signal');
+    expect(metadata.title).toBe('Status — Distant Signal');
   });
 
   it('mirrors title/description into openGraph and twitter', () => {

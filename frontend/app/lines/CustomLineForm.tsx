@@ -166,7 +166,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           immediately below their own `<h1>` with nothing in between. */}
       <Text size="sm" c="dimmed">
         A custom line groups any stations and operators you choose into one line you can track status for — it&apos;s
-        private to you, and appears in your own All Lines table.
+        private to you, and appears in your own lines table.
       </Text>
       {/* Task 3.4.13: create-only -- an owner reaching the edit form is
           already signed in (the route 404s a non-owner before this ever

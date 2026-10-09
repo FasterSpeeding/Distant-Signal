@@ -24,13 +24,16 @@ export const revalidate = 0;
  * available for your account' state, not a 404 -- the feature's existence
  * is not a secret"). `forbidden` only happens in the api's `group` mode;
  * with `CHATBOT_ACCESS=authenticated` every logged-in user is `allowed`. */
+/** Says plainly what answers here: an AI model, on the visitor's own key. */
+const CHAT_SUBLINE = 'Uses Claude with your own API key';
+
 export default async function ChatPage() {
   const access = await getChatbotAccess();
 
   if (access.status === 'unauthenticated') {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>Chat</Title>
+        <Title order={1}>Ask about trains</Title>
         {/* Server-rendered, same pattern as
             app/train/by-id/[trackingId]/page.tsx's own
             ApiUnauthorizedError branch: a link-unfurler bot or a
@@ -54,7 +57,7 @@ export default async function ChatPage() {
   if (access.status === 'forbidden') {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>Chat</Title>
+        <Title order={1}>Ask about trains</Title>
         <Text c="dimmed">Not available for your account yet.</Text>
         {/* Review §3.1.2: this used to be a dead end for every logged-in,
             non-allowlisted visitor. The MCP server has its own access
@@ -80,7 +83,7 @@ export default async function ChatPage() {
   if (!mcpServerUrl) {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>Chat</Title>
+        <Title order={1}>Ask about trains</Title>
         <Text c="dimmed">Chat is not configured on this deployment.</Text>
       </Stack>
     );
@@ -88,7 +91,10 @@ export default async function ChatPage() {
 
   return (
     <Stack p="lg" gap="md" h="100%">
-      <Title order={1}>Chat</Title>
+      <Stack gap={4}>
+        <Title order={1}>Ask about trains</Title>
+        <Text c="dimmed">{CHAT_SUBLINE}</Text>
+      </Stack>
       <ChatPanel mcpServerUrl={mcpServerUrl} />
       {/* The MCP server's own access rule is flipped together with this
           api's (CHATBOT_ACCESS), so the "only accounts that have been

@@ -537,7 +537,7 @@ export function IncidentSearchForm({
                 </Text>
               </Group>
               <Group gap="xs">
-                <Badge color={row.isPlanned ? 'blue' : 'orange'}>{row.isPlanned ? 'Planned Work' : 'Real-Time'}</Badge>
+                <Badge color={row.isPlanned ? 'blue' : 'orange'}>{row.isPlanned ? 'Planned work' : 'Real-Time'}</Badge>
                 <IncidentStateBadge isCleared={row.isCleared} sourceRemovedAt={row.sourceRemovedAt} />
                 {row.operators.map((code) => (
                   <Badge key={code} variant="outline" color="grape">

@@ -228,7 +228,7 @@ export function AllLinesTable({
   useEffect(() => {
     unfilteredTitleRef.current ??= document.title;
     document.title = statusGroupFilter
-      ? `${SEVERITY_GROUP_LABELS[statusGroupFilter]} on All Lines — Distant Signal`
+      ? `Lines: ${SEVERITY_GROUP_LABELS[statusGroupFilter]} — Distant Signal`
       : unfilteredTitleRef.current;
   }, [statusGroupFilter]);
 
@@ -472,11 +472,11 @@ export function AllLinesTable({
       )}
       {/* `TableScrollContainer` (same pattern, same `minWidth`, as
           `components/JourneyTimeline.tsx`): from the `sm` breakpoint up
-          this table is five columns (Name, Status, Avg Delay, Cancelled,
+          this table is five columns (Name, Status, Avg delay, Cancelled,
           Pin), and the Status column's badge deliberately doesn't truncate
           (see the `data-status-badge` comment below, Task 3.4.1), so a
           real minimum width is genuinely needed there. Below `sm` only
-          Name + Status + Pin are visible (Avg Delay/Cancelled fold into
+          Name + Status + Pin are visible (Avg delay/Cancelled fold into
           the Name cell's own sub-line instead -- see the `hiddenFrom="sm"`
           summary line below), which fits comfortably under 390px on its
           own; the same flat `420px` floor applied there anyway forced a
@@ -506,7 +506,7 @@ export function AllLinesTable({
                 the `<th>` itself: a bare cell with a click handler is not
                 focusable and cannot be triggered from the keyboard, which
                 made the whole sorting feature mouse-only. */}
-              {/* Task 3.4.7: `white-space: nowrap` so "Avg Delay ↕" (the
+              {/* Task 3.4.7: `white-space: nowrap` so "Avg delay ↕" (the
                 longest of the four labels) can't wrap its own sort glyph
                 onto a second line, orphaning it away from the label it
                 belongs to. */}
@@ -524,7 +524,7 @@ export function AllLinesTable({
               </TableTh>
               <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
                 <UnstyledButton onClick={() => toggleSort('avgDelay')} style={{ fontWeight: 'inherit' }}>
-                  Avg Delay
+                  Avg delay
                   <SortGlyph field="avgDelay" sort={sort} />
                 </UnstyledButton>
               </TableTh>

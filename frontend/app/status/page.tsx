@@ -28,7 +28,7 @@ import type { LineStatusReport } from '@/lib/types';
 // runtime.
 export const revalidate = 0;
 
-const METADATA_TITLE = 'Network Status — Distant Signal';
+const METADATA_TITLE = 'Status — Distant Signal';
 const METADATA_DESCRIPTION =
   'A live, network-wide snapshot of every National Rail and TfL line this app tracks: how many are running a Good Service versus facing disruption or a planned closure right now, which lines need attention most, and how that breaks down by mode and by country.';
 
@@ -78,7 +78,7 @@ export default async function NetworkStatusPage() {
   return (
     <Stack p="lg" gap="xl">
       <Stack gap="xs">
-        <Title order={1}>Network Status</Title>
+        <Title order={1}>Status</Title>
         <Text c="dimmed">
           {overview.totalLines} line{overview.totalLines === 1 ? '' : 's'} tracked across {modesDescription} right now.
         </Text>
@@ -180,7 +180,7 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
       href={`/lines?statusGroup=${group}`}
       style={{ textDecoration: 'none', color: 'inherit' }}
       data-group-card-link
-      aria-label={`${count} line${count === 1 ? '' : 's'} with ${label} — view in All Lines`}
+      aria-label={`${count} line${count === 1 ? '' : 's'} with ${label} — view in Lines`}
     >
       <Card
         withBorder

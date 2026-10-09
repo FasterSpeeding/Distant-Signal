@@ -78,7 +78,7 @@ export default async function JourneyDetailPage({ params }: { params: Promise<{ 
           (2026-09-22 UX review, C1). `/track/mine` now lists journeys, so
           this link has a real destination. */}
       <TextLink href="/track/mine" underline="always">
-        Back to my trains &amp; journeys
+        Back to my trains &amp; tickets
       </TextLink>
       <JourneyDetailView journey={journey} fetchedAt={fetchedAt} origin={origin} />
     </Stack>

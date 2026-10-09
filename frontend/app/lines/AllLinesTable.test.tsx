@@ -269,7 +269,7 @@ describe('AllLinesTable', () => {
     const nameHeader = screen.getByText(/^Name/);
     fireEvent.click(nameHeader); // now descending by name
 
-    const delayHeader = screen.getByText(/^Avg Delay/);
+    const delayHeader = screen.getByRole('button', { name: /^Avg delay/ });
     fireEvent.click(delayHeader);
 
     // Ascending by avg delay: wcml (5) < gwr (20) < swr (no stats, sorts last).
@@ -305,7 +305,7 @@ describe('AllLinesTable', () => {
   it('sorts rows with no data to the end regardless of direction', async () => {
     renderTable();
     const { fireEvent } = await import('@testing-library/react');
-    const delayHeader = screen.getByText(/^Avg Delay/);
+    const delayHeader = screen.getByRole('button', { name: /^Avg delay/ });
 
     fireEvent.click(delayHeader); // asc
     expect(rowNames()[2]).toBe('South Western');
@@ -490,7 +490,7 @@ describe('AllLinesTable responsive columns', () => {
     const { container } = renderMobileTable();
     const hidden = Array.from(container.querySelectorAll('.mantine-visible-from-sm'));
     const text = hidden.map((el) => el.textContent);
-    expect(text.some((t) => t.includes('Avg Delay'))).toBe(true);
+    expect(text.some((t) => t.includes('Avg delay'))).toBe(true);
     expect(text.some((t) => t.includes('Cancelled'))).toBe(true);
   });
 
@@ -836,12 +836,12 @@ describe('status-group filter', () => {
   });
 
   it('reflects the filter in the browser tab title, and restores the original title when cleared', () => {
-    document.title = 'All Lines — Distant Signal';
+    document.title = 'Lines — Distant Signal';
     renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
-    expect(document.title).toBe('Severe Disruption on All Lines — Distant Signal');
+    expect(document.title).toBe('Lines: Severe Disruption — Distant Signal');
     fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
-    expect(document.title).toBe('All Lines — Distant Signal');
+    expect(document.title).toBe('Lines — Distant Signal');
   });
 
   it('shows a quantified count and a "Show all lines" way out for a filtered view (regression: 2026-09-22 UX review §3.3, no count and no way back)', () => {

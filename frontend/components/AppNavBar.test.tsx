@@ -72,7 +72,7 @@ describe('AppNavBar', () => {
 
   it('offers "My Trains & Tickets" inline to an anonymous visitor, who has no account menu to find it in', () => {
     renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-    expect(screen.getByRole('link', { name: 'My Trains & Tickets' })).toHaveAttribute('href', '/track/mine');
+    expect(screen.getByRole('link', { name: 'My trains & tickets' })).toHaveAttribute('href', '/track/mine');
   });
 
   it('moves "My Trains & Tickets" out of the bar once there is an account menu to hold it', () => {
@@ -82,7 +82,7 @@ describe('AppNavBar', () => {
     // -- from the account menu (AccountMenu.test.tsx) and from the drawer
     // (below).
     renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} />);
-    expect(barLinkNames()).not.toContain('My Trains & Tickets');
+    expect(barLinkNames()).not.toContain('My trains & tickets');
     expect(screen.getByRole('button', { name: 'Account menu for Ada' })).toBeInTheDocument();
   });
 
@@ -116,8 +116,8 @@ describe('AppNavBar', () => {
       for (const session of [loggedOut, loggedIn]) {
         const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
         const names = barLinkNames();
-        expect(names[names.indexOf('Track a Journey') + 1]).toBe('Plan a Journey');
-        expect(screen.getByRole('link', { name: 'Plan a Journey' })).toHaveAttribute('href', '/plan');
+        expect(names[names.indexOf('Track a journey') + 1]).toBe('Plan a journey');
+        expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
         unmount();
       }
     });
@@ -127,23 +127,23 @@ describe('AppNavBar', () => {
       // PLAN_LINK_BREAKPOINT comment); jsdom has no layout, so pin the
       // class Mantine's `visibleFrom` emits rather than a width.
       renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-      const link = screen.getByRole('link', { name: 'Plan a Journey' });
+      const link = screen.getByRole('link', { name: 'Plan a journey' });
       expect(link.closest('.mantine-visible-from-lg')).not.toBeNull();
-      expect(screen.getByRole('link', { name: 'Track a Journey' }).closest('.mantine-visible-from-lg')).toBeNull();
+      expect(screen.getByRole('link', { name: 'Track a journey' }).closest('.mantine-visible-from-lg')).toBeNull();
     });
 
     it('marks itself as the current page on /plan, and nothing else', () => {
       pathname = '/plan';
       renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-      expect(screen.getByRole('link', { name: 'Plan a Journey' })).toHaveAttribute('aria-current', 'page');
-      expect(screen.getByRole('link', { name: 'Track a Journey' })).not.toHaveAttribute('aria-current');
+      expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByRole('link', { name: 'Track a journey' })).not.toHaveAttribute('aria-current');
     });
 
     it('is not marked current on /journeys/new', () => {
       pathname = '/journeys/new';
       renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-      expect(screen.getByRole('link', { name: 'Track a Journey' })).toHaveAttribute('aria-current', 'page');
-      expect(screen.getByRole('link', { name: 'Plan a Journey' })).not.toHaveAttribute('aria-current');
+      expect(screen.getByRole('link', { name: 'Track a journey' })).toHaveAttribute('aria-current', 'page');
+      expect(screen.getByRole('link', { name: 'Plan a journey' })).not.toHaveAttribute('aria-current');
     });
 
     it('is in the drawer, marked current on /plan', async () => {
@@ -177,7 +177,7 @@ describe('AppNavBar', () => {
       openDrawer();
       const drawer = await screen.findByRole('dialog');
 
-      for (const destination of [...PRIMARY_NAV_DESTINATIONS, { label: 'My Trains & Tickets', href: '/track/mine' }]) {
+      for (const destination of [...PRIMARY_NAV_DESTINATIONS, { label: 'My trains & tickets', href: '/track/mine' }]) {
         expect(within(drawer).getByRole('link', { name: destination.label })).toHaveAttribute('href', destination.href);
       }
     });

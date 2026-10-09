@@ -63,9 +63,7 @@ describe('OperatorHistoryPage', () => {
 
     await renderPage();
 
-    expect(
-      screen.getByRole('heading', { name: 'History: London North Eastern Railway', level: 1 }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'London North Eastern Railway history', level: 1 })).toBeInTheDocument();
   });
 
   // Style-guide review: the chart's Suspense fallback was a bare,
@@ -120,8 +118,6 @@ describe('OperatorHistoryPage', () => {
     expect(screen.queryByText(/^\d+ lines?$/)).not.toBeInTheDocument();
     // The page itself must still render -- a failed line-count fetch is
     // not fatal to the page.
-    expect(
-      screen.getByRole('heading', { name: 'History: London North Eastern Railway', level: 1 }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'London North Eastern Railway history', level: 1 })).toBeInTheDocument();
   });
 });

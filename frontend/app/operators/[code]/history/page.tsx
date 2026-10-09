@@ -100,7 +100,7 @@ export default async function OperatorHistoryPage({
       <TextLink href="/operators" underline="always">
         Back to operators
       </TextLink>
-      <Title order={1}>History: {name}</Title>
+      <Title order={1}>{name} history</Title>
       {/* Review [OH] §3.4/I11: says what this rollup covers right under the
           title, rather than leaving scope to be inferred from the last
           sentence of the methodology paragraph further down the page. */}

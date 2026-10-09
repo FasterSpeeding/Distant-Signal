@@ -483,7 +483,7 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <Title order={1}>Your Lines</Title>
+          <Title order={1}>Your lines</Title>
           {pinnedLineReports.length > 0 && <TextLink href="/lines">Browse all lines</TextLink>}
         </Group>
         {pinnedLineReports.length === 0 ? (
@@ -516,7 +516,7 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <SectionTitle>Your Stations</SectionTitle>
+          <SectionTitle>Your stations</SectionTitle>
           {pinnedStationEntries.length > 0 && <TextLink href="/stations">Look up a station</TextLink>}
         </Group>
         {pinnedStationEntries.length === 0 ? (
@@ -563,7 +563,7 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <SectionTitle>Your Operators</SectionTitle>
+          <SectionTitle>Your operators</SectionTitle>
           {pinnedOperatorSummaries.length > 0 && <TextLink href="/operators">Browse all operators</TextLink>}
         </Group>
         {pinnedOperatorSummaries.length === 0 ? (
@@ -632,7 +632,7 @@ export default async function DashboardPage() {
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">
           <Group justify="space-between">
-            <SectionTitle>Your Tracked Trains</SectionTitle>
+            <SectionTitle>Your tracked trains</SectionTitle>
             <TextLink href="/track/mine">View all</TextLink>
           </Group>
           <Stack gap="xs">

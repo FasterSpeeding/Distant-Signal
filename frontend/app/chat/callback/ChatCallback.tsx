@@ -258,7 +258,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>{state.kind === 'success' ? 'Connected, taking you to Chat…' : 'Connecting…'}</Title>
+      <Title order={1}>{state.kind === 'success' ? 'Connected, taking you to chat…' : 'Connecting…'}</Title>
       <Group gap="sm">
         {state.kind === 'connecting' && <Loader size="sm" />}
         <Text c="dimmed">Finishing sign-in to the rail data service.</Text>

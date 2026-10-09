@@ -29,7 +29,7 @@ describe('TrackPage', () => {
   it('renders the heading, the default subtitle and the tracking form', async () => {
     renderWithMantine(await TrackPage({ searchParams: Promise.resolve({}) }));
 
-    expect(screen.getByRole('heading', { name: 'Track a Train', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Track a train', level: 1 })).toBeInTheDocument();
     // Product decision (2026-09-24): "Search a time window" is now the
     // default mode -- most visitors don't already know a train's UID.
     expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
@@ -113,7 +113,7 @@ describe('TrackPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Track a Train — Distant Signal');
+    expect(metadata.title).toBe('Track a train — Distant Signal');
   });
 
   it('describes pinning one train rather than inheriting the generic site description', () => {
@@ -138,14 +138,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Track a Train — Distant Signal',
+      title: 'Track a train — Distant Signal',
       description:
         'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
-      title: 'Track a Train — Distant Signal',
+      title: 'Track a train — Distant Signal',
       description:
         'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.',
     });

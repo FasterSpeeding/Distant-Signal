@@ -54,7 +54,7 @@ describe('AddTicketPage', () => {
         "Save the ticket now; you can attach it to a tracked train afterwards, or we'll try to match it for you.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Back to My Trains & Tickets' })).toHaveAttribute('href', '/track/mine');
+    expect(screen.getByRole('link', { name: 'Back to my trains & tickets' })).toHaveAttribute('href', '/track/mine');
     // defaultOpen: the manual-entry fields are visible immediately, no
     // collapsed-button click required.
     expect(screen.getByRole('combobox', { name: 'Operator (optional)' })).toBeInTheDocument();

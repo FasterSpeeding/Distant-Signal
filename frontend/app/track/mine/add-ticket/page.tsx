@@ -62,7 +62,7 @@ export default async function AddTicketPage() {
       <Text size="sm" c="dimmed">
         Save the ticket now; you can attach it to a tracked train afterwards, or we&apos;ll try to match it for you.
       </Text>
-      <TextLink href="/track/mine">Back to My Trains &amp; Tickets</TextLink>
+      <TextLink href="/track/mine">Back to my trains &amp; tickets</TextLink>
       {/* defaultOpen: this page's entire reason for existing is already
           stated by the Title above, so there's no reason to make a
           visitor click a button that repeats it. */}

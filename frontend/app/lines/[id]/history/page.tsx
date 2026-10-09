@@ -132,7 +132,7 @@ export default async function LineHistoryPage({
       <TextLink href={`/lines/${id}`} underline="always">
         Back to line
       </TextLink>
-      <Title order={1}>History: {name}</Title>
+      <Title order={1}>{name} history</Title>
       <HistoryRangePicker basePath={`/lines/${id}/history`} preset={range.preset} from={range.from} to={range.to} />
       {/* Timeline (the existing per-status-change history) and Trends (the
           Task 9 daily rollup) are split into tabs since they're different

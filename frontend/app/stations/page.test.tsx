@@ -22,7 +22,7 @@ vi.stubGlobal(
 describe('StationSearchPage', () => {
   it('renders the heading and the search form', () => {
     renderWithMantine(StationSearchPage());
-    expect(screen.getByRole('heading', { name: 'Station Disruption Lookup' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Stations' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Look up' })).toBeInTheDocument();
   });
 });
@@ -31,7 +31,7 @@ describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
     // The <h1>, not the shorter nav label ("Station Lookup") -- so the tab
     // title and the heading a visitor lands on agree.
-    expect(metadata.title).toBe('Station Disruption Lookup — Distant Signal');
+    expect(metadata.title).toBe('Stations — Distant Signal');
   });
 
   it('describes station lookup rather than inheriting the generic site description', () => {
@@ -55,14 +55,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Station Disruption Lookup — Distant Signal',
+      title: 'Stations — Distant Signal',
       description:
         'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary',
-      title: 'Station Disruption Lookup — Distant Signal',
+      title: 'Stations — Distant Signal',
       description:
         'Look up any UK station by name or CRS code for the disruptions affecting lines through it, its scheduled departures, per-operator delay and cancellation stats, and its accessibility & facilities.',
     });
