@@ -103,7 +103,22 @@ describe('LineStatusCard', () => {
 
   it('renders a last-updated indicator', () => {
     renderWithMantine(<LineStatusCard report={report} />);
-    expect(screen.getByText(/Updated (just now|\d+[mhd] ago)/)).toBeInTheDocument();
+    expect(screen.getByText(/Updated (just now|\d+ (min|hr|days?) ago)/)).toBeInTheDocument();
+  });
+
+  it('leaves the "Updated" line to the page with showUpdated={false}', () => {
+    renderWithMantine(<LineStatusCard report={report} showUpdated={false} />);
+    expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
+  });
+
+  it('says "No trains running" instead of zero delay figures for a suspended line', () => {
+    const suspended: LineStatusReport = {
+      ...report,
+      lineStatuses: report.lineStatuses.map((s) => ({ ...s, statusSeverity: 2 })),
+    };
+    renderWithMantine(<LineStatusCard report={suspended} />);
+    expect(screen.getByText('No trains running')).toBeInTheDocument();
+    expect(screen.queryByText(/Avg delay/)).not.toBeInTheDocument();
   });
 
   it('renders average delay and cancelled percentage when sample stats are present', () => {

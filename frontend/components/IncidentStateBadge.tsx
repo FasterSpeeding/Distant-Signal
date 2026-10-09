@@ -28,7 +28,7 @@ export function IncidentStateBadge({
   const state = incidentState({ isCleared, sourceRemovedAt });
   if (state === 'cleared') {
     return (
-      <Badge color="gray" data-incident-state="cleared">
+      <Badge tt="none" color="gray" data-incident-state="cleared">
         Cleared
       </Badge>
     );
@@ -36,14 +36,14 @@ export function IncidentStateBadge({
   if (state === 'ended' && sourceRemovedAt) {
     const description = endedDescription(sourceRemovedAt);
     return (
-      <Badge color="gray" variant="light" data-incident-state="ended" title={description}>
+      <Badge tt="none" color="gray" variant="light" data-incident-state="ended" title={description}>
         Ended
         <VisuallyHidden>: {description}</VisuallyHidden>
       </Badge>
     );
   }
   return (
-    <Badge color="green" data-incident-state="active">
+    <Badge tt="none" color="green" data-incident-state="active">
       Active
     </Badge>
   );

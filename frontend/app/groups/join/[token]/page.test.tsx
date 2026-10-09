@@ -181,12 +181,12 @@ describe('generateMetadata', () => {
   it('titles the page with the group name and describes the member count', async () => {
     vi.mocked(getGroupJoinPreview).mockResolvedValue({ groupId: 'grp-1', groupName: 'Family', memberCount: 3 });
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
-    expect(metadata.title).toBe('Join Family — Distant Signal');
+    expect(metadata.title).toBe('Join Family');
     expect(metadata.description).toBe(
       '3 members already in Family. Follow this link to join and share tracked trains with the group.',
     );
-    expect(metadata.openGraph).toMatchObject({ title: 'Join Family — Distant Signal', type: 'website' });
-    expect(metadata.twitter).toMatchObject({ card: 'summary', title: 'Join Family — Distant Signal' });
+    expect(metadata.openGraph).toMatchObject({ title: 'Join Family · Distant Signal', type: 'website' });
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image', title: 'Join Family · Distant Signal' });
   });
 
   it('uses singular "member" for a group of one', async () => {

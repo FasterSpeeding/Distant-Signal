@@ -65,8 +65,8 @@ describe('EditJourneyTemplateForm', () => {
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
 
     expect(screen.getByLabelText('Template name')).toHaveValue('My commute');
-    expect(screen.getByLabelText('Origin CRS')).toHaveValue('KGX');
-    expect(screen.getByLabelText('Destination CRS')).toHaveValue('EDB');
+    expect(screen.getByLabelText('From (station code)')).toHaveValue('KGX');
+    expect(screen.getByLabelText('To (station code)')).toHaveValue('EDB');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('09:00');
     expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('10:00');
   });
@@ -80,7 +80,7 @@ describe('EditJourneyTemplateForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
 
     expect(screen.getByText('Leg 2')).toBeInTheDocument();
-    expect(screen.getAllByLabelText('Origin CRS')).toHaveLength(2);
+    expect(screen.getAllByLabelText('From (station code)')).toHaveLength(2);
     // Now that there's more than one leg, a remove control appears -- a
     // plain text-labeled Button, not an icon (no @tabler/icons-react in
     // this project).
@@ -91,11 +91,11 @@ describe('EditJourneyTemplateForm', () => {
   it('removes a leg client-side via the plain-text Remove button', () => {
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
-    expect(screen.getAllByLabelText('Origin CRS')).toHaveLength(2);
+    expect(screen.getAllByLabelText('From (station code)')).toHaveLength(2);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove leg 2' }));
 
-    expect(screen.getAllByLabelText('Origin CRS')).toHaveLength(1);
+    expect(screen.getAllByLabelText('From (station code)')).toHaveLength(1);
     expect(screen.queryByText('Leg 2')).not.toBeInTheDocument();
     // Back down to one leg -- the remove control disappears again.
     expect(screen.queryByRole('button', { name: 'Remove leg 1' })).not.toBeInTheDocument();
@@ -108,8 +108,8 @@ describe('EditJourneyTemplateForm', () => {
     // The newly-added second leg has no origin/destination yet.
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
 
-    const originFields = screen.getAllByLabelText('Origin CRS');
-    const destinationFields = screen.getAllByLabelText('Destination CRS');
+    const originFields = screen.getAllByLabelText('From (station code)');
+    const destinationFields = screen.getAllByLabelText('To (station code)');
     fireEvent.change(originFields[1]!, { target: { value: 'YRK' } });
     fireEvent.change(destinationFields[1]!, { target: { value: 'NCL' } });
 
@@ -223,8 +223,8 @@ describe('EditJourneyTemplateForm', () => {
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
 
-    const originFields = screen.getAllByLabelText('Origin CRS');
-    const destinationFields = screen.getAllByLabelText('Destination CRS');
+    const originFields = screen.getAllByLabelText('From (station code)');
+    const destinationFields = screen.getAllByLabelText('To (station code)');
     fireEvent.change(originFields[1]!, { target: { value: 'YRK' } });
     fireEvent.change(destinationFields[1]!, { target: { value: 'NCL' } });
 
@@ -362,7 +362,7 @@ describe('EditJourneyTemplateForm', () => {
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText('destination must differ from origin')).toBeInTheDocument();
+    expect(await screen.findByText('Destination must differ from origin.')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

@@ -98,7 +98,7 @@ describe('TrendsResults', () => {
     vi.mocked(api.getLineDailyStats).mockResolvedValue([dailyRow({ day: '2026-08-01' })]);
     renderWithMantine(await TrendsResults({ id: 'wcml', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }));
     expect(api.getLineDailyStats).toHaveBeenCalledWith('wcml', '2026-08-01', '2026-08-08');
-    expect(screen.getByText(/Each train is counted once per day/)).toBeInTheDocument();
+    expect(screen.getByText(/Each train counts once a day/)).toBeInTheDocument();
   });
 
   it('renders the empty state when there are no rows, inside a bounded container', async () => {
@@ -140,8 +140,8 @@ describe('TrendsResults', () => {
 
   it.each([
     ['halfHour', 'getLineHalfHourlyStats', halfHourlyRow, 10, 'per half hour'] as const,
-    ['hour', 'getLineHourlyStats', hourlyRow, 20, 'per hour'] as const,
-    ['sixHour', 'getLineSixHourlyStats', sixHourlyRow, 120, 'per six-hour period'] as const,
+    ['hour', 'getLineHourlyStats', hourlyRow, 20, 'an hour'] as const,
+    ['sixHour', 'getLineSixHourlyStats', sixHourlyRow, 120, 'per six hours'] as const,
   ])(
     'dispatches to the right fetch, floor, and honesty copy for the %s granularity',
     async (granularity, fnName, rowFactory, floor, copyFragment) => {
@@ -151,7 +151,7 @@ describe('TrendsResults', () => {
         await TrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z', granularity }),
       );
       expect(mockFn).toHaveBeenCalledWith('wcml', '2026-08-31T00:00:00Z', '2026-09-01T00:00:00Z');
-      expect(screen.getByText(new RegExp(`Each train is counted once ${copyFragment}`))).toBeInTheDocument();
+      expect(screen.getByText(new RegExp(`Each train counts once ${copyFragment}`))).toBeInTheDocument();
 
       const charts = screen.getAllByTestId('line-chart');
       const rateChart = charts.find((chart) => chart.dataset.series === 'delayRate,cancellationRate,skipRate');
@@ -187,8 +187,8 @@ describe('TrendsResults', () => {
     );
     const details = container.querySelector('details');
     expect(details).toBeInTheDocument();
-    expect(details?.querySelector('summary')?.textContent).toBe('How these rates are calculated');
-    expect(screen.getByText(/not a running tally/)).toBeInTheDocument();
+    expect(details?.querySelector('summary')?.textContent).toBe('How this is calculated');
+    expect(screen.getByText(/the status we saw first/)).toBeInTheDocument();
   });
 
   it('does not use "--" for a dash anywhere in the honesty copy (review §3.3)', async () => {
@@ -203,7 +203,7 @@ describe('TrendsResults', () => {
     // has nothing to do with the honesty copy.
     const details = container.querySelector('details') as HTMLElement;
     expect(details.textContent).not.toContain('--');
-    expect(screen.getByText(/Each train is counted once per day/).textContent).not.toContain('--');
+    expect(screen.getByText(/Each train counts once a day/).textContent).not.toContain('--');
   });
 
   it('renders the trains-counted bar chart for the default day granularity', async () => {

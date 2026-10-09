@@ -210,9 +210,12 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.title).toBe('London Kings Cross to York — Distant Signal');
-    expect(metadata.openGraph?.title).toBe('London Kings Cross to York — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary', title: 'London Kings Cross to York — Distant Signal' });
+    expect(metadata.title).toBe('London Kings Cross to York');
+    expect(metadata.openGraph?.title).toBe('London Kings Cross to York · Distant Signal');
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary_large_image',
+      title: 'London Kings Cross to York · Distant Signal',
+    });
   });
 
   it('falls back to CRS codes for the title when no station names are resolved', async () => {
@@ -224,7 +227,7 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.title).toBe('KGX to YRK — Distant Signal');
+    expect(metadata.title).toBe('KGX to YRK');
   });
 
   it('falls back to a generic title when the leg has no origin/destination at all (unmatched, no window)', async () => {
@@ -244,7 +247,7 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.title).toBe('Shared journey — Distant Signal');
+    expect(metadata.title).toBe('Shared journey');
   });
 
   it('describes an on-time journey with its date', async () => {

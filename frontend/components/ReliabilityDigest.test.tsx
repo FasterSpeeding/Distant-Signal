@@ -113,7 +113,7 @@ describe('ReliabilityDigest', () => {
   it('hedged-copy: carries the disclaimer forward verbatim, the aggregate-specific no-total sentence, no claim-performing language, and no outbound/claim link in the rollup', () => {
     renderWithMantine(<ReliabilityDigest trains={[train({ serviceDate: '2026-09-01' })]} tickets={[ticket()]} />);
     expect(screen.getByText(new RegExp(CARRIED_FORWARD_DISCLAIMER))).toBeInTheDocument();
-    expect(screen.getByText(/never stores ticket prices/)).toBeInTheDocument();
+    expect(screen.getByText(/don.t store ticket prices/)).toBeInTheDocument();
     expect(screen.queryByText(/claim now/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/get your refund/i)).not.toBeInTheDocument();
     // Word-boundary, not a bare /submit/i: the component's own rendered

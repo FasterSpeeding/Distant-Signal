@@ -1,6 +1,7 @@
 import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { TrackTrainForm } from '@/components/TrackTrainForm';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -39,16 +40,10 @@ import { TrackTrainForm } from '@/components/TrackTrainForm';
  * departures" rather than "the live departure board": that picker falls
  * back to the CIF-derived scheduled timetable at any station LDBWS has no
  * board for, and says so in its own copy. */
-const METADATA_TITLE = 'Track a Train — Distant Signal';
-const METADATA_DESCRIPTION =
-  'Pin a specific train — picked from the upcoming departures at its origin station, or entered by hand — to see its live position, delay and next calling point as Network Rail reports it. Not sure which train yet? Search a time window instead and pick from the matches.';
+const METADATA_TITLE = 'Track a train';
+const METADATA_DESCRIPTION = 'Track a train to see its live position, delay and next stop.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 export default async function TrackPage({
   searchParams,
@@ -129,7 +124,7 @@ export default async function TrackPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Track a Train</Title>
+      <Title order={1}>Track a train</Title>
       {/* Review §2.1/I21: the mode-aware "Pin a specific train…"/"Not sure
           which train yet?" sentence now lives inside `TrackTrainForm`
           itself, where it can react to the client-side mode toggle -- a

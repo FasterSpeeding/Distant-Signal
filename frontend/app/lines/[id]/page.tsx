@@ -23,6 +23,7 @@ import type { CustomLineDetail, LineDefinitionSummary, LineGroupRef, LineStatusR
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 import { LineTrainsResults } from './LineTrainsResults';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 /** `Suspense` fallback for both "Recent trends" boundaries below (review
  * §2.11). Sized to the *empty* state both `HalfHourlyTrendsResults` and
@@ -167,8 +168,7 @@ function resolveLineOperators(
  * wrong one for a line it has never looked at. */
 const NO_STATUS_BADGE = 'No status yet';
 const NO_STATUS_SUMMARY = 'no status computed yet';
-const NO_STATUS_BODY =
-  'No status has been computed for this line yet. It appears here once the aggregator has run a cycle covering it.';
+const NO_STATUS_BODY = 'No status for this line yet. It appears within a few minutes.';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata for a shared line link.
  * Fetches the same `getLineStatus([id], true)` call (via the same
@@ -228,29 +228,19 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     if (name === undefined) {
       notFound();
     }
-    const title = `${name} — Distant Signal`;
+    const title = name;
     const description = `${name}: ${NO_STATUS_SUMMARY}`;
-    return {
-      title,
-      description,
-      openGraph: { title, description, type: 'website' },
-      twitter: { card: 'summary', title, description },
-    };
+    return pageMetadata(title, description);
   }
 
   const report = statusResult.report;
   const worst = worstStatus(report);
-  const title = `${report.name} — Distant Signal`;
+  const title = report.name;
   const description = worst.reason
     ? `${report.name}: ${severityLabel(worst.statusSeverity)} — ${worst.reason}`
     : `${report.name}: ${severityLabel(worst.statusSeverity)}`;
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 export default async function LineDetailPage({
@@ -481,7 +471,7 @@ export default async function LineDetailPage({
           {statusResult.coverage === 'present' ? (
             <StatusBadge severity={worstStatus(statusResult.report).statusSeverity} />
           ) : (
-            <Badge color="gray" variant="light" data-status-badge>
+            <Badge tt="none" color="gray" variant="light" data-status-badge>
               {NO_STATUS_BADGE}
             </Badge>
           )}
@@ -505,7 +495,9 @@ export default async function LineDetailPage({
           {sharedWithGroups.map((group, index) => (
             <span key={group.id}>
               {index > 0 && ', '}
-              <Link href={`/groups/${group.id}`}>{group.name}</Link>
+              <TextLink href={`/groups/${group.id}`} underline="always" inline>
+                {group.name}
+              </TextLink>
             </span>
           ))}
         </Text>

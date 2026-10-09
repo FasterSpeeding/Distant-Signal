@@ -8,6 +8,8 @@ import { availableGranularities, granularityShortfallDays, resolveGranularity, r
 import { GranularityControl } from '@/app/lines/[id]/history/GranularityControl';
 import { HistoryRangePicker } from '@/app/lines/[id]/history/HistoryRangePicker';
 import { OperatorTrendsResults } from './OperatorTrendsResults';
+import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 const log = createLogger('app/operators/history');
 
@@ -69,6 +71,11 @@ async function resolveRetention(): Promise<{
   }
 }
 
+export async function generateMetadata({ params }: { params: Promise<{ code: string }> }): Promise<Metadata> {
+  const name = await resolveOperatorName((await params).code);
+  return pageMetadata(`${name} history`, `Delays and cancellations across ${name}'s lines over time.`);
+}
+
 export default async function OperatorHistoryPage({
   params,
   searchParams,
@@ -100,7 +107,7 @@ export default async function OperatorHistoryPage({
       <TextLink href="/operators" underline="always">
         Back to operators
       </TextLink>
-      <Title order={1}>History: {name}</Title>
+      <Title order={1}>{name} history</Title>
       {/* Review [OH] §3.4/I11: says what this rollup covers right under the
           title, rather than leaving scope to be inferred from the last
           sentence of the methodology paragraph further down the page. */}
@@ -120,10 +127,9 @@ export default async function OperatorHistoryPage({
       />
       {granularityShortfall !== null && (
         <Alert color="yellow" variant="light" title="Some of this range isn't available at this granularity">
-          This server only keeps {retentionDaysForGranularity} {retentionDaysForGranularity === 1 ? 'day' : 'days'} of
-          data at this granularity. The oldest {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of
-          the range you picked has already been removed — if this range looks empty or short, that may be why, not
-          because nothing happened.
+          We keep {retentionDaysForGranularity} {retentionDaysForGranularity === 1 ? 'day' : 'days'} of data at this
+          detail, so the first {granularityShortfall} {granularityShortfall === 1 ? 'day' : 'days'} of this range may
+          look empty.
         </Alert>
       )}
       <Suspense

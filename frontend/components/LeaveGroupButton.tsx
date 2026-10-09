@@ -6,6 +6,7 @@ import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Self-removal, always allowed for any member (spec §3) -- unlike
  * `RemoveMemberButton`, this targets the CURRENT user's own id, so it
@@ -61,15 +62,14 @@ export function LeaveGroupButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('leave', 'this group', response));
         }
         setLeaving(false);
         return;
       }
       router.push('/groups');
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('leave', 'this group'));
       setLeaving(false);
     }
   }
@@ -82,8 +82,7 @@ export function LeaveGroupButton({
       <Modal opened={opened} onClose={close} title="Leave this group?">
         {willDeleteGroup ? (
           <Text>
-            You&apos;re the only member of this group, so leaving will delete it for good -- every shared train and the
-            invite link will be gone.
+            You&apos;re the only member, so leaving deletes this group, its shared trains and its invite link.
           </Text>
         ) : (
           <Text>

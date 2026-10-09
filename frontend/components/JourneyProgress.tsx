@@ -324,8 +324,8 @@ function progressCopy(
     // has been confirmed at all -- the same copy StatusMessage uses for
     // awaiting_activation.
     return {
-      caption: `Matched to train ${trainUid} — waiting for its first movement report.`,
-      ariaLabel: `Journey progress: matched to train ${trainUid}, waiting for first movement report`,
+      caption: 'Matched to a timetabled train. Waiting for its first movement report.',
+      ariaLabel: 'Journey progress: matched to a timetabled train, waiting for its first movement report',
     };
   }
 

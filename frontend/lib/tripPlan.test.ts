@@ -278,7 +278,7 @@ describe('fetchTripPlan', () => {
   // honest message instead -- while the real body is still logged to the
   // console so the failure stays debuggable server-side.
   it('says "temporarily unavailable" for a 503', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -317,10 +317,13 @@ describe('fetchTripPlan', () => {
     await expect(promise).rejects.toBeInstanceOf(TripPlanError);
     await expect(promise).rejects.toMatchObject({
       status: 500,
-      message: 'Something went wrong planning this trip. Please try again.',
+      message: "Couldn't plan this trip. Try again.",
     });
     await expect(promise).rejects.not.toMatchObject({ message: expect.stringContaining('<html>') });
-    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('500'), '<html>Internal Server Error</html>');
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('fetchTripPlan'), {
+      status: 500,
+      body: '<html>Internal Server Error</html>',
+    });
   });
 });
 

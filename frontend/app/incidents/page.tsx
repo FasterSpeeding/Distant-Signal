@@ -2,6 +2,7 @@ import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { getAllLines, getAllTocs } from '@/lib/api';
 import { IncidentSearchForm } from '@/components/IncidentSearchForm';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
@@ -24,16 +25,10 @@ export const revalidate = 0;
  * Title matches the page's own `<h1>` below ("Incident Archive"), which is
  * also this route's nav label, so the tab title and the heading a visitor
  * lands on agree. */
-const METADATA_TITLE = 'Incident Archive — Distant Signal';
-const METADATA_DESCRIPTION =
-  'Search National Rail incident messages across the whole network, filtered by operator, line and date range — the last 30 days by default, or everything this app has ever ingested.';
+const METADATA_TITLE = 'Incidents';
+const METADATA_DESCRIPTION = 'Search National Rail incident messages by operator, line and date.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 /** `/incidents` -- the cross-network incident archive/search page. See
  * docs/superpowers/specs/2026-09-12-incident-archive-design.md. Thin
@@ -77,10 +72,10 @@ export default async function IncidentsPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Incident Archive</Title>
+      <Title order={1}>Incidents</Title>
       <Text c="dimmed">
-        Search National Rail incident messages across the whole network, independent of which line you were looking at.
-        Defaults to the last 30 days — use &quot;All time&quot; to see everything this app has ever ingested.
+        National Rail incident messages across the network. The last 30 days by default; choose &quot;All time&quot; for
+        everything we have.
       </Text>
       <IncidentSearchForm
         lines={lines}

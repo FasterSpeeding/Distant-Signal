@@ -6,6 +6,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** The journey-detail-page share control -- the direct analogue of
  * `AddToGroupButton.tsx` (tracked trains), one level up: starts from a
@@ -61,8 +62,7 @@ export function ShareJourneyButton({ journeyId }: { journeyId: number }) {
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('share', 'this journey', response));
         }
         setSubmitting(false);
         return;
@@ -72,7 +72,7 @@ export function ShareJourneyButton({ journeyId }: { journeyId: number }) {
       setSelected(null);
       setSubmitting(false);
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('share', 'this journey'));
       setSubmitting(false);
     }
   }

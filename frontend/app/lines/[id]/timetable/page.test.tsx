@@ -83,10 +83,7 @@ describe('LineTimetablePage', () => {
       after: null,
     });
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Timetable: South West Main Line');
-    expect(screen.getByRole('link', { name: '← Back to South West Main Line' })).toHaveAttribute(
-      'href',
-      `/lines/${ID}`,
-    );
+    expect(screen.getByRole('link', { name: 'Back to South West Main Line' })).toHaveAttribute('href', `/lines/${ID}`);
     const list = screen.getByRole('list', { name: 'Trains' });
     const links = within(list).getAllByRole('link');
     expect(links.map((a) => visibleText(a))).toEqual([
@@ -229,7 +226,7 @@ describe('LineTimetablePage', () => {
 
     vi.mocked(api.getLineTimetable).mockRejectedValue(new Error('ECONNREFUSED'));
     await render();
-    expect(screen.getByText(/This timetable isn’t available right now/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn't load this timetable/)).toBeInTheDocument();
   });
 
   it('names the line from the line list when it has no status yet', async () => {

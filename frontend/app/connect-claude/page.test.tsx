@@ -40,7 +40,7 @@ describe('/connect-claude', () => {
 
   it('describes the sign-in step without the retired confirmation screen', () => {
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByText(/sends you to the sign-in page/)).toBeInTheDocument();
+    expect(screen.getByText(/Log in with your Distant Signal account when asked/)).toBeInTheDocument();
     expect(screen.queryByText(/confirm the connection/)).not.toBeInTheDocument();
   });
 
@@ -55,14 +55,14 @@ describe('/connect-claude', () => {
 
   it('points other assistants at the setup steps on /chat instead of repeating them', () => {
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByRole('link', { name: 'the setup steps on the Chat page' })).toHaveAttribute('href', '/chat');
+    expect(screen.getByRole('link', { name: 'the setup steps on the chat page' })).toHaveAttribute('href', '/chat');
     expect(screen.queryByText(/codex mcp add/)).not.toBeInTheDocument();
   });
 
   it('falls back to a placeholder when NEXT_PUBLIC_RAILMCP_PUBLIC_URL is unset (railMcp not enabled on this deployment)', () => {
     vi.unstubAllEnvs();
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByText('(not configured on this deployment)')).toBeInTheDocument();
+    expect(screen.getByText('(not available on this site)')).toBeInTheDocument();
   });
 
   // Review §3.1.6.
@@ -89,7 +89,7 @@ describe('/connect-claude', () => {
     expect(screen.queryByText(/^Click \+/)).not.toBeInTheDocument();
   });
 
-  it('uses an em dash rather than a literal "--" in its copy', () => {
+  it('has no literal "--" in its copy', () => {
     const { container } = renderWithMantine(ConnectClaudePage());
     // MantineProvider injects its own `<style>` tags full of `--mantine-*`
     // CSS custom properties into the container -- strip those before
@@ -98,10 +98,9 @@ describe('/connect-claude', () => {
     const clone = container.cloneNode(true) as HTMLElement;
     clone.querySelectorAll('style').forEach((el) => el.remove());
     expect(clone.textContent).not.toMatch(/--/);
-    expect(clone.textContent).toMatch(/—/);
   });
   it('names the tab after the page, not just the site', () => {
-    expect(metadata.title).toBe('Connect Claude — Distant Signal');
+    expect(metadata.title).toBe('Connect Claude');
   });
 
   it('has one h1, and puts the steps in a "How to connect" section headed by an h2', () => {

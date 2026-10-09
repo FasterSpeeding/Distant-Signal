@@ -5,6 +5,8 @@ import { InfoIcon } from '@/components/InfoIcon';
 import { TextLink } from '@/components/TextLink';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
+import { pageMetadata } from '@/lib/pageMetadata';
+import { SectionTitle } from '@/components/SectionTitle';
 
 // Read the environment per request, never at build time: the connector URL
 // comes from the runtime env (see connectorUrl() below), and the image
@@ -13,15 +15,10 @@ export const dynamic = 'force-dynamic';
 
 // Same metadata shape as app/account/page.tsx: the root layout's bare
 // "Distant Signal" title otherwise names every tab this page is open in.
-const METADATA_TITLE = 'Connect Claude — Distant Signal';
+const METADATA_TITLE = 'Connect Claude';
 const METADATA_DESCRIPTION =
-  'Connect your own Claude.ai or Claude Desktop account to Distant Signal to ask about UK train departures, arrivals and journeys.';
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+  'Connect your Claude account to Distant Signal to ask about UK trains, departures and journeys.';
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 /** The connector URL: the MCP endpoint, `{railMcp.publicUrl}/mcp`, built
  * by the same `mcpEndpointUrl` as /chat and ChatPanel. Not the bare
@@ -34,7 +31,7 @@ export const metadata: Metadata = {
  * enabled; this page still renders then, with a placeholder. */
 function connectorUrl(): string {
   const publicUrl = runtimeRailMcpPublicUrl();
-  return publicUrl ? mcpEndpointUrl(publicUrl) : '(not configured on this deployment)';
+  return publicUrl ? mcpEndpointUrl(publicUrl) : '(not available on this site)';
 }
 
 /** Two overlapping rectangles -- the conventional "copy" glyph, in the
@@ -61,9 +58,8 @@ export default function ConnectClaudePage() {
     <Stack p="lg" gap="md" maw={640}>
       <Title order={1}>Connect Claude to Distant Signal</Title>
       <Text>
-        Distant Signal exposes an MCP server so you can ask Claude directly about UK train departures, arrivals, and
-        delay-aware journey planning — inside Claude&apos;s own app, using your own Claude account. This does not use
-        any of Distant Signal&apos;s own conversation features; Claude handles the whole conversation itself.
+        Ask Claude about UK trains, departures and journeys from inside the Claude app, using your own Claude account.
+        Claude looks the answers up in Distant Signal.
       </Text>
       {/* `grape` + `IconInfoCircle`-equivalent, not Mantine's default blue
           -- review §3.1.6: the grape-theme spec reserves blue for `planned`
@@ -74,17 +70,14 @@ export default function ConnectClaudePage() {
           -- `@tabler/icons-react` isn't a project dependency), the same
           one `ChatPanel.tsx`'s own blue-background fix below reaches for. */}
       <Alert color="grape" variant="light" icon={<InfoIcon />}>
-        Connecting requires a Pro, Max, Team, or Enterprise Claude plan for full support (a free Claude.ai account gets
-        one custom connector).
+        Works best on a Pro, Max, Team or Enterprise Claude plan. A free plan allows one custom connector.
       </Alert>
       {/* A bordered, headed section, the same shape as /account's cards,
           so the steps read as the page's one task rather than as more
           body copy. */}
       <Card withBorder component="section" aria-labelledby="connect-steps-heading">
         <Stack gap="sm">
-          <Title order={2} size="h3" id="connect-steps-heading">
-            How to connect
-          </Title>
+          <SectionTitle id="connect-steps-heading">How to connect</SectionTitle>
           {/* Flat `ListItem` named export, not the `List.Item` dot-notation
               compound API -- this page is a Server Component and `List` carries
               a `"use client"` directive, so a dot-notation sub-component
@@ -111,16 +104,14 @@ export default function ConnectClaudePage() {
               <CopyConnectorUrl url={url} />
             </ListItem>
             <ListItem>
-              Connect it when Claude asks. Claude sends you to the sign-in page, where you log in with your Distant
-              Signal account — there is no separate confirmation step — and then finishes the connection itself.
+              Choose Connect. Log in with your Distant Signal account when asked, and Claude finishes the connection.
             </ListItem>
           </List>
         </Stack>
       </Card>
       <Text size="sm" c="dimmed">
-        Conversations happen entirely inside Claude&apos;s own interface, billed to your own Claude plan — Distant
-        Signal never sees the conversation itself, only the specific train/line/journey lookups Claude asks it to run on
-        your behalf.
+        Conversations stay in Claude, on your Claude plan. Distant Signal sees only the train, line and journey lookups
+        Claude makes.
       </Text>
       {/* The other assistants' steps live in one place, /chat's "Use
           Distant Signal in your own assistant" section, rather than being
@@ -128,9 +119,9 @@ export default function ConnectClaudePage() {
       <Text size="sm">
         Using a different assistant, such as ChatGPT, Cursor, VS Code, Claude Code, Codex or Gemini CLI? See{' '}
         <TextLink href="/chat" underline="always" inline size="sm">
-          the setup steps on the Chat page
+          the setup steps on the chat page
         </TextLink>{' '}
-        (you’ll need to sign in).
+        (you’ll need to log in).
       </Text>
     </Stack>
   );

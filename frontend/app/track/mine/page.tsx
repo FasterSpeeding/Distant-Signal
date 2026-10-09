@@ -24,6 +24,7 @@ import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
 import { journeyListItemStatusGroup } from '@/lib/journeyStatus';
 import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
+import type { Metadata } from 'next';
 
 // See app/page.tsx's own `revalidate = 0` comment for the rationale: this
 // route has no dynamic segment, so without this Next.js treats it as
@@ -31,6 +32,8 @@ import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, 
 // build`, which fails since the `api` service only exists on the compose
 // network at runtime.
 export const revalidate = 0;
+
+export const metadata: Metadata = { title: 'My trains & tickets', robots: { index: false } };
 
 /** `/track/mine` -- a logged-in user's own tracked trains AND tickets, one
  * merged page (Part B of the upload-first ticket-tracking plan). Was two
@@ -101,7 +104,7 @@ export default async function MyTrackedTrainsPage() {
   if (trains === null) {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>My Trains &amp; Tickets</Title>
+        <Title order={1}>My trains &amp; tickets</Title>
         {/* Server-rendered, same pattern as
             app/train/by-id/[trackingId]/page.tsx's own
             ApiUnauthorizedError branch: a link-unfurler bot or a
@@ -178,7 +181,7 @@ export default async function MyTrackedTrainsPage() {
   return (
     <Stack p="lg" gap="lg">
       <Group justify="space-between" align="baseline">
-        <Title order={1}>My Trains &amp; Tickets</Title>
+        <Title order={1}>My trains &amp; tickets</Title>
         <Group gap="md">
           <TextLink href="/track">Track a new train</TextLink>
           <TextLink href="/plan">Plan a journey</TextLink>
@@ -191,8 +194,11 @@ export default async function MyTrackedTrainsPage() {
       </TextLink>
       {nothingToShow ? (
         <Text c="dimmed">
-          You haven&apos;t tracked any trains or added any tickets yet. <Link href="/track">Track a train</Link> to get
-          started.
+          You haven&apos;t tracked any trains or added any tickets yet.{' '}
+          <TextLink href="/track" underline="always" inline>
+            Track a train
+          </TextLink>{' '}
+          to get started.
         </Text>
       ) : (
         <>
@@ -238,8 +244,8 @@ export default async function MyTrackedTrainsPage() {
             <Stack gap="md">
               <SectionTitle>Tickets not yet attached to a train</SectionTitle>
               <Text size="sm" c="dimmed">
-                Extraction can&apos;t tell us exactly which service one of these tickets is for. Attach it to one of
-                your tracked trains below, or track the right one.
+                We can&apos;t tell which train one of these tickets is for. Attach it to one of your tracked trains
+                below, or track the right one.
               </Text>
               <Stack gap="lg">
                 {unattachedTickets.map((ticket, index) => (
@@ -495,7 +501,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
               don't read identically -- same helper and same wording as
               `/groups/{id}`'s shared rows (`lib/memberLabel.ts`). */}
           {groupNames.map((groupName) => (
-            <Badge key={groupName} variant="light" color="grape">
+            <Badge tt="none" key={groupName} variant="light" color="grape">
               from {groupName}
             </Badge>
           ))}

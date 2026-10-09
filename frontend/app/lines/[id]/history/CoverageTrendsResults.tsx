@@ -69,7 +69,7 @@ export async function CoverageTrendsResults({ id, from, to }: { id: string; from
   } catch {
     return (
       <Paper withBorder p="md">
-        <Text c="dimmed">Full-coverage data isn&apos;t available right now.</Text>
+        <Text c="dimmed">Couldn&apos;t load data for every train. Try again.</Text>
       </Paper>
     );
   }
@@ -77,7 +77,7 @@ export async function CoverageTrendsResults({ id, from, to }: { id: string; from
   if (stats.length === 0) {
     return (
       <Paper withBorder p="md">
-        <Text c="dimmed">Not enough full-coverage data yet for this line.</Text>
+        <Text c="dimmed">Not enough data for every train on this line yet.</Text>
       </Paper>
     );
   }
@@ -99,7 +99,7 @@ export async function CoverageTrendsResults({ id, from, to }: { id: string; from
         a sample of live departures at a handful of stations.
       </Text>
       <Title order={3} size="h6">
-        Full coverage
+        Every train
       </Title>
       <TrendsCharts points={points} granularity="day" order={4} />
     </Stack>

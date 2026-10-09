@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** The confirm page's explicit "Join" action (spec §2.3: "Confirm-before-
  * join, never silent auto-join" -- this component is that explicit
@@ -45,15 +46,14 @@ export function JoinGroupButton({ token, groupId }: { token: string; groupId: st
           router.push(`/groups/${groupId}`);
           return;
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('join', 'this group', response));
         }
         setJoining(false);
         return;
       }
       router.push(`/groups/${groupId}`);
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('join', 'this group'));
       setJoining(false);
     }
   }

@@ -24,6 +24,7 @@ import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport, Preferences, StationAccessibilityData, StationOperatorSampleStats } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 /** Three outcomes, not two. The previous version collapsed "there is no
  * such station" and "the name lookup failed" into a single `null`, so the
@@ -148,7 +149,7 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
   }
 
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
-  const title = `${heading} — Distant Signal`;
+  const title = heading;
 
   const { reports, coverage } = await fetchStationDisruptions(crs);
   let description: string;
@@ -167,12 +168,7 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
     }
   }
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 export default async function StationDisruptionPage({ params }: { params: Promise<{ crs: string }> }) {

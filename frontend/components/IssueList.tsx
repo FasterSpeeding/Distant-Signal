@@ -52,9 +52,9 @@ const BUCKET_SORT_RANK: Record<IssueBucket, number> = { active: 0, upcoming: 1, 
 const FILTER_DISCLOSURE_MAX_ISSUES = 3;
 
 const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
-  knowledgebase: 'Knowledgebase',
-  'ldbws-inferred': 'LDBWS-inferred',
-  'trust-inferred': 'Trust-inferred',
+  knowledgebase: 'National Rail incidents',
+  'ldbws-inferred': 'National Rail live board',
+  'trust-inferred': 'Network Rail train reports',
   planned: 'Planned',
   tfl: 'TfL',
 };
@@ -443,7 +443,7 @@ export function IssueList({
                     {formatValiditySummary(status, now)}
                   </Text>
                   {impactTypeLabel(status.disruption?.impactType) && (
-                    <Badge variant="light" size="sm" color="orange">
+                    <Badge tt="none" variant="light" size="sm" color="orange">
                       {impactTypeLabel(status.disruption?.impactType)}
                     </Badge>
                   )}
@@ -453,9 +453,9 @@ export function IssueList({
                     <AiGeneratedBadge note={ENRICHED_INCIDENT_SHORT_NOTE} />
                   )}
                   {(linesByStatus.get(status) ?? []).length > 1 && (
-                    <Badge variant="outline" size="sm" color="gray">
+                    <Text size="xs" c="dimmed">
                       {(linesByStatus.get(status) ?? []).length} lines
-                    </Badge>
+                    </Text>
                   )}
                   {/*
                     Explicit gray: without a `color`, Mantine falls back to
@@ -478,7 +478,7 @@ export function IssueList({
                     yet -- forward-looking scaffolding.
                   */}
                   <Tooltip label={coverageProvenanceNote(status) ?? ''} disabled={!coverageProvenanceNote(status)}>
-                    <Badge variant="outline" size="sm" color="gray">
+                    <Badge tt="none" variant="outline" size="sm" color="gray">
                       {DATA_QUALITY_LABELS[status.dataQuality]}
                     </Badge>
                   </Tooltip>

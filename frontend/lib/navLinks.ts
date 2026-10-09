@@ -40,7 +40,7 @@ export interface NavDestination {
  * none of those needs the inline "Add a leg" step this page adds, and
  * redirecting them all through here would cost every one of them their own
  * pre-fill query params for no benefit. */
-export const TRACK_JOURNEY_DESTINATION: NavDestination = { href: '/journeys/new', label: 'Track a Journey' };
+export const TRACK_JOURNEY_DESTINATION: NavDestination = { href: '/journeys/new', label: 'Track a journey' };
 
 /** `/plan` (`app/plan/page.tsx`): the trip planner on a page of its own.
  * Planning (`GET /Trips/plan`) needs no account, but before this route the
@@ -54,7 +54,7 @@ export const TRACK_JOURNEY_DESTINATION: NavDestination = { href: '/journeys/new'
  * there is room; the drawer always lists it; and the pages that start a
  * journey (home, `/journeys/new`, `/track/mine`, `/stations/[crs]`) link to
  * it, which covers the `md`-to-`lg` band. */
-export const PLAN_JOURNEY_DESTINATION: NavDestination = { href: '/plan', label: 'Plan a Journey' };
+export const PLAN_JOURNEY_DESTINATION: NavDestination = { href: '/plan', label: 'Plan a journey' };
 
 /** Whether a nav entry marks the current page. Exact match, not
  * `startsWith`: `/` would otherwise light up on every route. Shared by the
@@ -158,7 +158,7 @@ export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
  * change that didn't happen on this page. */
 export const TRACKED_TRAINS_DESTINATION: NavDestination = {
   href: '/track/mine',
-  label: 'My Trains & Tickets',
+  label: 'My trains & tickets',
 };
 
 /** Visible only to authenticated users -- unlike

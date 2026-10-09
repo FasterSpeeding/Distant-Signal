@@ -7,6 +7,10 @@ import type {
   TripPlanViaSatisfied,
   TripPlanWaypointSatisfied,
 } from './types';
+import { describeFailure } from './failure';
+import { createLogger } from './logger';
+
+const log = createLogger('lib/tripPlan');
 
 /** A code a station-name lookup can resolve: not a station group
  * (`group:LON`) nor a choice of several (`KGX|EUS`). */
@@ -178,8 +182,7 @@ export function trainLegsForTracking(itineraries: TripPlanItinerary[]): TrainLeg
 
 /** What the trip planner shows for a 503 (docs/api-changelog.md,
  * 2026-10-06): Distant Signal is temporarily unavailable, not "no route". */
-export const TRIP_PLAN_UNAVAILABLE_MESSAGE =
-  'Journey planning is temporarily unavailable. Please try again in a minute.';
+export const TRIP_PLAN_UNAVAILABLE_MESSAGE = 'Journey planning is unavailable right now. Try again in a minute.';
 
 export class TripPlanError extends Error {
   status: number;
@@ -212,14 +215,14 @@ export async function fetchTripPlan(query: TripPlanQuery): Promise<TripPlanRespo
     const body = await response.text();
     if (response.status === 503) {
       // api could not reach its database, or is shedding load: retryable.
-      console.error('fetchTripPlan: api temporarily unavailable (503)', body);
+      log.warn('fetchTripPlan: api temporarily unavailable (503)', { body });
       throw new TripPlanError(TRIP_PLAN_UNAVAILABLE_MESSAGE, 503);
     }
     if (response.status !== 400 && response.status !== 404) {
-      console.error(`fetchTripPlan: request failed with ${response.status}`, body);
-      throw new TripPlanError('Something went wrong planning this trip. Please try again.', response.status);
+      log.error('fetchTripPlan: request failed', { status: response.status, body });
+      throw new TripPlanError(describeFailure('plan', 'this trip', response.status), response.status);
     }
-    throw new TripPlanError(body || 'Could not plan this trip.', response.status);
+    throw new TripPlanError(body || describeFailure('plan', 'this trip', response.status), response.status);
   }
   return (await response.json()) as TripPlanResponse;
 }

@@ -10,6 +10,7 @@ import {
 } from '@/lib/api';
 import { LoginButton } from '@/components/LoginButton';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
@@ -68,15 +69,10 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
     throw err;
   }
 
-  const title = `Join ${preview.groupName} — Distant Signal`;
+  const title = `Join ${preview.groupName}`;
   const description = `${preview.memberCount} member${preview.memberCount === 1 ? '' : 's'} already in ${preview.groupName}. Follow this link to join and share tracked trains with the group.`;
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 /** `/groups/join/{token}` -- confirm-before-join (spec §2.3): resolves the

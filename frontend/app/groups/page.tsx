@@ -6,6 +6,7 @@ import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
 import { LoginButton } from '@/components/LoginButton';
 import { TextLink } from '@/components/TextLink';
 import type { GroupSummary } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // See app/page.tsx's own `revalidate = 0` comment: no dynamic segment on
 // this route, so without this Next.js tries to prerender it during `next
@@ -40,16 +41,11 @@ export const revalidate = 0;
  * sentence happens to mention only trains. "your role in it" names the
  * second `Badge` on each row (`group.role`), alongside the member count
  * the first one carries. */
-const METADATA_TITLE = 'Groups — Distant Signal';
+const METADATA_TITLE = 'Groups';
 const METADATA_DESCRIPTION =
-  'Groups are how tracked trains and custom lines get shared with other people. Log in to see the ones you belong to — each with its member count and your role in it — or create a group and invite people to it.';
+  'Share tracked trains and custom lines with other people. Log in to see your groups or create one.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 /** `/groups` -- list of the current user's groups: name, member count,
  * role badge, "Create group" CTA (spec §6).
@@ -148,10 +144,12 @@ function GroupRow({ group }: { group: GroupSummary }) {
         <Group justify="space-between" wrap="nowrap">
           <Text fw={500}>{group.name}</Text>
           <Group gap="xs" wrap="nowrap">
-            <Badge variant="light">
+            <Badge tt="none" variant="light">
               {group.memberCount} member{group.memberCount === 1 ? '' : 's'}
             </Badge>
-            <Badge variant="outline">{group.role}</Badge>
+            <Badge tt="none" variant="outline">
+              {group.role}
+            </Badge>
             <Text aria-hidden c="dimmed">
               ›
             </Text>

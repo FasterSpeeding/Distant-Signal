@@ -18,9 +18,9 @@ vi.mock('next/navigation', () => ({
 }));
 
 const destinations: NavDestination[] = [
-  { href: '/lines', label: 'All Lines' },
+  { href: '/lines', label: 'Lines' },
   { href: '/stations', label: 'Station Lookup' },
-  { href: '/track/mine', label: 'My Trains & Tickets' },
+  { href: '/track/mine', label: 'My trains & tickets' },
 ];
 
 function burger() {
@@ -43,7 +43,7 @@ describe('AppNavDrawer', () => {
     // out of a screen reader's link list on a page they are not offered
     // on yet.
     renderWithMantine(<AppNavDrawer destinations={destinations} />);
-    expect(screen.queryByRole('link', { name: 'All Lines' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Lines' })).not.toBeInTheDocument();
   });
 
   it('opens a drawer listing every destination it is given, as real links', async () => {
@@ -97,8 +97,8 @@ describe('AppNavDrawer', () => {
     const current = await screen.findByRole('link', { name: 'Station Lookup' });
     expect(current).toHaveAttribute('data-active', 'true');
     expect(current).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('link', { name: 'All Lines' })).not.toHaveAttribute('data-active');
-    expect(screen.getByRole('link', { name: 'All Lines' })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('link', { name: 'Lines' })).not.toHaveAttribute('data-active');
+    expect(screen.getByRole('link', { name: 'Lines' })).not.toHaveAttribute('aria-current');
   });
 
   it('closes itself once a navigation has happened', async () => {

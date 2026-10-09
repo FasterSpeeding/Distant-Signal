@@ -9,6 +9,7 @@ import { LoginLink } from './LoginLink';
 import { RouteText } from './RouteArrow';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrackedTrainListItem } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Picker sourced from the user's own `/track/mine` list (spec §6),
  * fetched lazily on open via the same-origin `/api/Train/mine` proxy
@@ -42,7 +43,7 @@ export function AddTrainToGroupButton({
     try {
       const response = await fetch('/api/Train/mine');
       if (!response.ok) {
-        setError('Could not load your tracked trains.');
+        setError(describeFailure('load', 'your tracked trains', response.status));
         setLoading(false);
         return;
       }
@@ -50,7 +51,7 @@ export function AddTrainToGroupButton({
       setTrains(all.filter((t) => !excludeTrainSubscriptionIds.includes(t.id)));
       setLoading(false);
     } catch {
-      setError('Could not load your tracked trains.');
+      setError(describeFailure('load', 'your tracked trains'));
       setLoading(false);
     }
   }
@@ -70,8 +71,7 @@ export function AddTrainToGroupButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('add', 'this train to the group', response));
         }
         setSubmitting(false);
         return;
@@ -80,7 +80,7 @@ export function AddTrainToGroupButton({
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('add', 'this train to the group'));
       setSubmitting(false);
     }
   }

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Text } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 // Review §3.2.4: this used to fire straight to `router.refresh()` on
 // success, with nothing on screen ever saying the promotion happened --
@@ -47,8 +48,7 @@ export function PromoteMemberButton({ groupId, userId }: { groupId: string; user
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('change', "this member's role", response));
         }
         setPromoting(false);
         return;
@@ -59,7 +59,7 @@ export function PromoteMemberButton({ groupId, userId }: { groupId: string; user
       setJustPromoted(true);
       setTimeout(() => router.refresh(), PROMOTED_CONFIRMATION_MS);
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('change', "this member's role"));
       setPromoting(false);
     }
   }

@@ -74,8 +74,8 @@ describe('JourneyTemplateDetailPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'My commute' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run now' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete template' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Origin CRS')).toHaveValue('KGX');
-    expect(screen.getByLabelText('Destination CRS')).toHaveValue('EDB');
+    expect(screen.getByLabelText('From (station code)')).toHaveValue('KGX');
+    expect(screen.getByLabelText('To (station code)')).toHaveValue('EDB');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('09:00');
   });
 

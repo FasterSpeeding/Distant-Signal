@@ -96,7 +96,7 @@ describe('SaveAsTemplateButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Make this a template' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Save as template' }));
 
-    expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't save this template. Try again.")).toBeInTheDocument();
     expect(screen.queryByText('Log in to save a template')).not.toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });

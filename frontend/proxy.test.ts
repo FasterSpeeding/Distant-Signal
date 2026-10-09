@@ -90,6 +90,8 @@ describe('proxy matcher', () => {
     '/apple-icon.png',
     '/icon-192.png',
     '/icon-512.png',
+    '/icon-maskable-512.png',
+    '/opengraph-image.png',
   ])('skips %s', (path) => {
     expect(re.test(path)).toBe(false);
   });

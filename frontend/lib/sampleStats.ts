@@ -74,7 +74,7 @@ export function sampleUnavailableReason(status: SampleStatsCarrier): string | nu
   if (status.fullCoverageStats) return null;
   if (status.sampleStats) return null;
   if (status.dataQuality === 'tfl') {
-    return "Not measured by this app — status is TfL's own.";
+    return "Not measured by Distant Signal. The status is TfL's own.";
   }
   if (status.sampleAvailability.state === 'no-coverage') {
     return 'No live departure data received for this line yet.';

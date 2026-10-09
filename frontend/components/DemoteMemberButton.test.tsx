@@ -71,7 +71,7 @@ describe('DemoteMemberButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm demote member' }));
 
     await waitFor(() => {
-      expect(screen.getByText("the group owner can't be demoted")).toBeInTheDocument();
+      expect(screen.getByText("The group owner can't be demoted.")).toBeInTheDocument();
     });
     expect(refreshMock).not.toHaveBeenCalled();
   });
@@ -86,7 +86,7 @@ describe('DemoteMemberButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm demote member' }));
 
     await waitFor(() => {
-      expect(screen.getByText("that member isn't an admin")).toBeInTheDocument();
+      expect(screen.getByText("That member isn't an admin.")).toBeInTheDocument();
     });
   });
 

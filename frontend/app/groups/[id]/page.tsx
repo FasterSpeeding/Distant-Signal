@@ -36,6 +36,7 @@ import { worstStatus } from '@/lib/severity';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import type { GroupCustomLine, GroupJourney, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
+import type { Metadata } from 'next';
 
 export const revalidate = 0;
 
@@ -69,6 +70,8 @@ export const revalidate = 0;
 function isValidGroupId(id: string): boolean {
   return /^[A-Za-z0-9_-]+$/.test(id);
 }
+
+export const metadata: Metadata = { title: 'Group', robots: { index: false } };
 
 export default async function GroupDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -369,7 +372,9 @@ function MemberRow({
             (you)
           </Text>
         )}
-        <Badge variant="outline">{member.role}</Badge>
+        <Badge tt="none" variant="outline">
+          {member.role}
+        </Badge>
       </Group>
       <Group gap="xs" wrap="nowrap" className="groupMemberRow__actions">
         {/* `viewerIsOwner`, not `canManage`: `promote_member` and

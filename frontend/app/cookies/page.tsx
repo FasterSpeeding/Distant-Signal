@@ -2,6 +2,7 @@ import { List, ListItem, Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { LegalPage, LegalSection, requireLegalPages } from '@/components/LegalPage';
 import { legalPageMetadata } from '@/lib/legal';
+import { withAbsoluteTitle } from '@/lib/pageMetadata';
 
 // ============================================================================
 // DRAFT -- NOT LEGAL ADVICE -- REVIEW BEFORE PUBLISHING.
@@ -19,9 +20,8 @@ import { legalPageMetadata } from '@/lib/legal';
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
-  return legalPageMetadata(
-    'Cookies and browser storage',
-    'The cookies and browser storage Distant Signal uses, and why.',
+  return withAbsoluteTitle(
+    legalPageMetadata('Cookies and browser storage', 'The cookies and browser storage Distant Signal uses, and why.'),
   );
 }
 
@@ -105,7 +105,7 @@ export default function CookiesPage() {
         <StorageList items={COOKIES} />
       </LegalSection>
 
-      <LegalSection title="Browser storage (localStorage)">
+      <LegalSection title="Saved in this browser">
         <StorageList items={LOCAL_STORAGE} />
       </LegalSection>
 

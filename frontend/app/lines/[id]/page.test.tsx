@@ -304,7 +304,7 @@ describe('LineDetailPage embedded trends', () => {
     ]);
     await renderPage();
 
-    expect(await screen.findByRole('heading', { name: 'Full coverage' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Every train' })).toBeInTheDocument();
     // Two charts from the "Full coverage" section on top of the sample
     // series' own empty state (no chart).
     expect(await screen.findAllByTestId('line-chart')).toHaveLength(2);
@@ -319,8 +319,8 @@ describe('LineDetailPage embedded trends', () => {
     vi.mocked(api.getLineHalfHourlyCoverageStats).mockResolvedValue([]);
     await renderPage();
 
-    expect(await screen.findByRole('heading', { name: 'Full coverage' })).toBeInTheDocument();
-    expect(await screen.findByText('Not enough full-coverage data yet for this line.')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Every train' })).toBeInTheDocument();
+    expect(await screen.findByText('Not enough data for every train on this line yet.')).toBeInTheDocument();
   });
 });
 
@@ -558,11 +558,7 @@ describe('LineDetailPage -- a line with no status row yet', () => {
   it('says so honestly rather than claiming Good Service', async () => {
     await renderPage();
 
-    expect(
-      screen.getByText(
-        'No status has been computed for this line yet. It appears here once the aggregator has run a cycle covering it.',
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No status for this line yet. It appears within a few minutes.')).toBeInTheDocument();
     expect(screen.getByText('No status yet')).toBeInTheDocument();
     // `worstStatus` would have synthesised exactly this for an empty
     // report -- true of a line the aggregator has assessed, a lie about
@@ -727,10 +723,10 @@ describe('generateMetadata', () => {
       },
     ]);
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
-    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.title).toBe('My Commute');
     expect(metadata.description).toBe('My Commute: Severe Delays — Signal failure at Woking');
-    expect(metadata.openGraph?.title).toBe('My Commute — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+    expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
   it('describes a line with no reason text (Good Service)', async () => {
@@ -763,9 +759,9 @@ describe('generateMetadata', () => {
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
 
     expect(notFound).not.toHaveBeenCalled();
-    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.title).toBe('My Commute');
     expect(metadata.description).toBe('My Commute: no status computed yet');
-    expect(metadata.openGraph?.title).toBe('My Commute — Distant Signal');
+    expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
   });
 
   // Same failing-closed rule as the page's: a `getCustomLine` that blew up
@@ -782,7 +778,7 @@ describe('generateMetadata', () => {
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
 
     expect(notFound).not.toHaveBeenCalled();
-    expect(metadata.title).toBe('My Commute — Distant Signal');
+    expect(metadata.title).toBe('My Commute');
   });
 
   // The page component lets this same fetch throw, and the two halves of

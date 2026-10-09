@@ -33,6 +33,7 @@ import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/share
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
+import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
 // dynamic routes for the same `revalidate = 0` rationale: without it,
@@ -80,15 +81,15 @@ export const revalidate = 0;
  * places for the `<title>` and the unfurled card to drift apart. The same
  * pair of consts, with the same names, is how `/incidents`, `/trains` and
  * `/stations` spell theirs. */
-const METADATA_TITLE = 'Distant Signal';
+const METADATA_TITLE = SITE_NAME;
 const METADATA_DESCRIPTION =
-  "Live UK rail line status at a glance: which lines aren't running a Good Service right now — then pin the lines, stations and operators you care about, and track your trains, once you're logged in.";
+  'Live UK rail status: which lines have problems right now. Log in to pin lines and stations and track trains.';
 
 export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
+  ...pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION),
+  // The site name is this page's name: no "Distant Signal · Distant Signal".
+  title: { absolute: METADATA_TITLE },
+  ...previewCards(METADATA_TITLE, METADATA_DESCRIPTION),
 };
 
 // The exact shape getPreferences() already returns for a 401, named so the
@@ -483,12 +484,16 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <Title order={1}>Your Lines</Title>
+          <Title order={1}>Your lines</Title>
           {pinnedLineReports.length > 0 && <TextLink href="/lines">Browse all lines</TextLink>}
         </Group>
         {pinnedLineReports.length === 0 ? (
           <Text c="dimmed">
-            You haven&apos;t pinned any lines yet. <Link href="/lines">Browse all lines</Link> to pin some.
+            You haven&apos;t pinned any lines yet.{' '}
+            <TextLink href="/lines" underline="always" inline>
+              Browse all lines
+            </TextLink>{' '}
+            to pin some.
           </Text>
         ) : (
           <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
@@ -516,12 +521,16 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <SectionTitle>Your Stations</SectionTitle>
+          <SectionTitle>Your stations</SectionTitle>
           {pinnedStationEntries.length > 0 && <TextLink href="/stations">Look up a station</TextLink>}
         </Group>
         {pinnedStationEntries.length === 0 ? (
           <Text c="dimmed">
-            You haven&apos;t pinned any stations yet. <Link href="/stations">Look up a station</Link> to pin one.
+            You haven&apos;t pinned any stations yet.{' '}
+            <TextLink href="/stations" underline="always" inline>
+              Look up a station
+            </TextLink>{' '}
+            to pin one.
           </Text>
         ) : (
           <Stack gap="xs">
@@ -534,7 +543,7 @@ export default async function DashboardPage() {
                       <Group justify="space-between">
                         <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
                         {coverage === 'none' ? (
-                          <Badge color="gray" variant="light">
+                          <Badge tt="none" color="gray" variant="light">
                             Not tracked
                           </Badge>
                         ) : (
@@ -563,7 +572,7 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <SectionTitle>Your Operators</SectionTitle>
+          <SectionTitle>Your operators</SectionTitle>
           {pinnedOperatorSummaries.length > 0 && <TextLink href="/operators">Browse all operators</TextLink>}
         </Group>
         {pinnedOperatorSummaries.length === 0 ? (
@@ -577,8 +586,11 @@ export default async function DashboardPage() {
             <Text c="dimmed">Couldn&apos;t load operator status right now.</Text>
           ) : (
             <Text c="dimmed">
-              You haven&apos;t pinned any operators yet. <Link href="/operators">Browse all operators</Link> to pin
-              some.
+              You haven&apos;t pinned any operators yet.{' '}
+              <TextLink href="/operators" underline="always" inline>
+                Browse all operators
+              </TextLink>{' '}
+              to pin some.
             </Text>
           )
         ) : (
@@ -632,7 +644,7 @@ export default async function DashboardPage() {
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">
           <Group justify="space-between">
-            <SectionTitle>Your Tracked Trains</SectionTitle>
+            <SectionTitle>Your tracked trains</SectionTitle>
             <TextLink href="/track/mine">View all</TextLink>
           </Group>
           <Stack gap="xs">
@@ -770,7 +782,7 @@ function SharedCustomLineSummaryRow({
           />
           <Group gap="xs" wrap="wrap">
             {groupNames.map((groupName) => (
-              <Badge key={groupName} variant="light" color="grape">
+              <Badge tt="none" key={groupName} variant="light" color="grape">
                 from {groupName}
               </Badge>
             ))}
@@ -857,7 +869,7 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
               identically -- same helper and same wording /track/mine and
               /groups/{id} already use (`lib/memberLabel.ts`). */}
           {groupNames.map((groupName) => (
-            <Badge key={groupName} variant="light" color="grape">
+            <Badge tt="none" key={groupName} variant="light" color="grape">
               from {groupName}
             </Badge>
           ))}

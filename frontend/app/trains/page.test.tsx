@@ -56,7 +56,7 @@ describe('TrainsPage', () => {
   // plain TextInput time fields, which have no listbox.
   it('renders the title and the search form', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
-    expect(screen.getByRole('heading', { name: 'Find a Train' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Trains' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
   });
 
@@ -193,30 +193,13 @@ describe('TrainsPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Find a Train — Distant Signal');
+    expect(metadata.title).toBe('Trains');
   });
 
   it('describes network-wide scheduled-train search rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
+      'Search UK trains by station and date, then open one for its live status or track it.',
     );
-  });
-
-  it('keeps the page-level summary deliberately generic about ordering, leaving the specific rule to the field description', () => {
-    // Before 2026-09-22, `stops_at` was an unordered membership test for
-    // any station other than the same-station loop case, so wording here
-    // like "a station they stop at later" would have overclaimed a
-    // relational constraint the query did not enforce. That is no longer
-    // true: `stops_at` now always means "later in the journey than
-    // Station", for every named station (see
-    // crates/api/src/data/queries.rs and TrainSearchForm's own field
-    // description) -- so this case no longer forbids "later"/"after"
-    // wording in the page-level blurb; that wording would be accurate now.
-    // What still holds, and is what this asserts, is that this short
-    // SEO/OG summary stays generic ("along its route") rather than
-    // spelling the ordering rule out itself -- that level of detail
-    // belongs to the field description, not this page-level blurb.
-    expect(metadata.description).toMatch(/along its route/);
   });
 
   it('mirrors the same title and description into openGraph and twitter', () => {
@@ -224,16 +207,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Find a Train — Distant Signal',
-      description:
-        'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
+      title: 'Trains · Distant Signal',
+      description: 'Search UK trains by station and date, then open one for its live status or track it.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
-      card: 'summary',
-      title: 'Find a Train — Distant Signal',
-      description:
-        'Search scheduled UK trains by any station they call at, narrowing by origin, another station along its route, and date. Open any result for its live status, or track it to get updates.',
+      card: 'summary_large_image',
+      title: 'Trains · Distant Signal',
+      description: 'Search UK trains by station and date, then open one for its live status or track it.',
     });
   });
 

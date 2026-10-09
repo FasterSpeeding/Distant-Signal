@@ -2,6 +2,9 @@ import { notFound } from 'next/navigation';
 import { Center, Stack, Title } from '@mantine/core';
 import { ApiNotFoundError, getCustomLine } from '@/lib/api';
 import { CustomLineForm } from '../../CustomLineForm';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = { title: 'Edit custom line', robots: { index: false } };
 
 export default async function EditCustomLinePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

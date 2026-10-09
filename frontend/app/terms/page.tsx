@@ -4,6 +4,7 @@ import { ContactEmail, LegalPage, LegalSection, requireLegalPages } from '@/comp
 import { NON_AFFILIATION_STATEMENT } from '@/components/OpenDataAttribution';
 import { TextLink } from '@/components/TextLink';
 import { LEGAL_CONFIG, legalPageMetadata } from '@/lib/legal';
+import { withAbsoluteTitle } from '@/lib/pageMetadata';
 
 // ============================================================================
 // DRAFT -- NOT LEGAL ADVICE -- REVIEW BEFORE PUBLISHING.
@@ -21,7 +22,7 @@ import { LEGAL_CONFIG, legalPageMetadata } from '@/lib/legal';
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
-  return legalPageMetadata('Terms of use', 'The terms for using Distant Signal.');
+  return withAbsoluteTitle(legalPageMetadata('Terms of use', 'The terms for using Distant Signal.'));
 }
 
 export default function TermsPage() {

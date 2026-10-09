@@ -27,14 +27,14 @@ describe('ChatPage', () => {
     // Two matches now: the server-rendered LoginLink sentence and the
     // AutoOpenLoginPrompt modal's own copy of it -- see the dedicated
     // LoginLink assertion below for the inline one specifically.
-    expect(screen.getAllByText(/Sign in to ask about live departures/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Log in to ask about live departures/).length).toBeGreaterThan(0);
   });
 
   it('unauthenticated: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
     vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'unauthenticated' });
     renderWithMantine(await ChatPage());
     const link = screen.getByRole('link', {
-      name: 'Sign in to ask about live departures, disruptions and journeys',
+      name: 'Log in to ask about live departures, disruptions and journeys',
     });
     expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Fchat');
   });
@@ -60,7 +60,7 @@ describe('ChatPage', () => {
     vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', '');
     vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'forbidden' });
     renderWithMantine(await ChatPage());
-    expect(screen.getByText(/only available to a limited allowlist/)).toBeInTheDocument();
+    expect(screen.getByText(/open to a small group of accounts/)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Use Distant Signal in your own assistant' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
@@ -96,7 +96,7 @@ describe('ChatPage', () => {
     vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', '');
     vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'group' });
     renderWithMantine(await ChatPage());
-    expect(screen.getByText(/not configured on this deployment/)).toBeInTheDocument();
+    expect(screen.getByText(/isn.t available on this site/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/next train/)).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Use Distant Signal in your own assistant' })).not.toBeInTheDocument();
   });

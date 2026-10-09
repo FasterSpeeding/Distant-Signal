@@ -274,7 +274,7 @@ describe('GroupInviteLinkCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
 
     expect(await screen.findByRole('link', { name: 'Log in to manage this invite link' })).toBeInTheDocument();
-    expect(screen.queryByText('Could not create a new invite link.')).not.toBeInTheDocument();
+    expect(screen.queryByText("Couldn't create a new invite link. Try again.")).not.toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
@@ -303,7 +303,7 @@ describe('GroupInviteLinkCard', () => {
     renderWithMantine(<GroupInviteLinkCard groupId="grp-1" inviteLink={null} origin={ORIGIN} />);
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
 
-    expect(await screen.findByText('Could not create a new invite link.')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't create a new invite link. Try again.")).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Log in to manage this invite link' })).not.toBeInTheDocument();
   });
 });

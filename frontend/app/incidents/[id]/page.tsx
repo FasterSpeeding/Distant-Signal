@@ -12,6 +12,7 @@ import { formatDateTime, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import { operatorLabel, tocNameLookup } from '@/lib/displayLabels';
 import { stationLabel } from '@/lib/stationLabel';
 import type { IncidentDetail, IncidentHistoryEntry, ValidityPeriod } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // Same rationale as every dynamic `[param]` route in this app: without
 // this, `next build` may try to prerender against a database that only
@@ -64,20 +65,15 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     throw err;
   }
 
-  const title = `${incident.summary} — Distant Signal`;
-  const kind = incident.isPlanned ? 'Planned Work' : 'Real-Time';
+  const title = incident.summary;
+  const kind = incident.isPlanned ? 'Planned work' : 'Real-Time';
   const affectedLines = incident.currentlyAffectsLines.map((line) => line.name);
   const description =
     affectedLines.length > 0
       ? `${kind} incident affecting ${affectedLines.join(', ')}.`
       : `${kind} incident: ${incident.summary}.`;
 
-  return {
-    title,
-    description,
-    openGraph: { title, description, type: 'website' },
-    twitter: { card: 'summary', title, description },
-  };
+  return pageMetadata(title, description);
 }
 
 export default async function IncidentDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -115,7 +111,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           page most likely to be reached from a shared URL with no browser
           history to go back to. */}
       <TextLink href="/incidents" underline="always">
-        <span aria-hidden="true">←</span> Incident Archive
+        <span aria-hidden="true">←</span> Incidents
       </TextLink>
 
       {/* Review §3.3: a ten-word Knowledgebase summary used to wrap to four
@@ -141,9 +137,11 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           row instead of wrapping the button onto its own. */}
       <Group justify="space-between">
         <Group gap="sm">
-          <Badge color={incident.isPlanned ? 'blue' : 'orange'}>
-            {incident.isPlanned ? 'Planned Work' : 'Real-Time'}
-          </Badge>
+          {incident.isPlanned && (
+            <Badge color="blue" tt="none">
+              Planned work
+            </Badge>
+          )}
           {/* Review §3.3's "at-a-glance strip": the archive rows' own
               Active/Ended/Cleared badge, the same component, so a reader
               who has seen the archive recognises it immediately here. */}
@@ -181,7 +179,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           <SectionTitle>Affected stations</SectionTitle>
           <Group gap="xs">
             {incident.affectedStations.map((crs) => (
-              <Badge key={crs} variant="outline" color="gray">
+              <Badge tt="none" key={crs} variant="outline" color="gray">
                 {stationLabel(crs, stationNamesByCrs.get(crs))}
               </Badge>
             ))}

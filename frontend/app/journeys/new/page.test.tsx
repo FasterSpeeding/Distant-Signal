@@ -59,7 +59,7 @@ describe('JourneysNewPage', () => {
   it('renders the heading, an account hint, and the leg-1 tracking form', async () => {
     await renderPage();
 
-    expect(screen.getByRole('heading', { name: 'Track a Journey', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Track a journey', level: 1 })).toBeInTheDocument();
     expect(screen.getByText(/needs a Distant Signal account/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
   });
@@ -103,6 +103,6 @@ describe('JourneysNewPage', () => {
   });
 
   it('exports metadata matching its own heading', () => {
-    expect(metadata.title).toContain('Track a Journey');
+    expect(metadata.title).toContain('Track a journey');
   });
 });

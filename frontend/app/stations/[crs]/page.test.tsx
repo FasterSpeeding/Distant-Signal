@@ -396,10 +396,10 @@ describe('generateMetadata', () => {
   it('titles the page with the station name and describes its worst current status', async () => {
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([report('ecml', 'East Coast Main Line')]);
     const metadata = await generateMetadata({ params: Promise.resolve({ crs: 'KGX' }) });
-    expect(metadata.title).toBe('London Kings Cross (KGX) — Distant Signal');
+    expect(metadata.title).toBe('London Kings Cross (KGX)');
     expect(metadata.description).toBe('London Kings Cross (KGX): Severe Delays reported.');
-    expect(metadata.openGraph?.title).toBe('London Kings Cross (KGX) — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+    expect(metadata.openGraph?.title).toBe('London Kings Cross (KGX) · Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
   it('describes a covered, currently-fine station', async () => {

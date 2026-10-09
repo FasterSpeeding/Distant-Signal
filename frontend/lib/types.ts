@@ -904,6 +904,9 @@ export interface PublicTrainState extends ServiceModeFields, TimetableCertaintyF
   // (e.g. "1S00") -- from the published schedule. `null` when unknown or
   // ambiguous; optional so an older backend without it still type-checks.
   headcode?: string | null;
+  // The same headcode under the name the search and detail payloads give it
+  // from batch 54 on. Either may be present; the page reads both.
+  identity?: string | null;
   status: JourneyStatus | null;
   lastReportedLocation: string | null;
   lastEventType: string | null; // "ARRIVAL" | "DEPARTURE" | "PASS"

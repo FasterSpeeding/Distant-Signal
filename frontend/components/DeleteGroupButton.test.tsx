@@ -65,7 +65,7 @@ describe('DeleteGroupButton', () => {
     await waitFor(() => screen.getByRole('button', { name: 'Confirm delete group' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete group' }));
 
-    expect(await screen.findByText("you don't have permission to do that in this group")).toBeInTheDocument();
+    expect(await screen.findByText("You don't have permission to do that in this group.")).toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });
 });

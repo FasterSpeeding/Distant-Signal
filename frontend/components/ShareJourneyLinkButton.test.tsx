@@ -184,7 +184,7 @@ describe('ShareJourneyLinkButton', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Create link' }));
 
     expect(await screen.findByRole('link', { name: "Log in to manage this journey's share link" })).toBeInTheDocument();
-    expect(screen.queryByText('Could not create a share link.')).not.toBeInTheDocument();
+    expect(screen.queryByText("Couldn't create a share link. Try again.")).not.toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
@@ -211,7 +211,7 @@ describe('ShareJourneyLinkButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Get shareable link' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Create link' }));
 
-    expect(await screen.findByText('Could not create a share link.')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't create a share link. Try again.")).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: "Log in to manage this journey's share link" })).not.toBeInTheDocument();
   });
 });

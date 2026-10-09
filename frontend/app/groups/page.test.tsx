@@ -89,12 +89,12 @@ describe('GroupsPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Groups — Distant Signal');
+    expect(metadata.title).toBe('Groups');
   });
 
   it('explains what a group is rather than inheriting the generic site description', () => {
     expect(metadata.description).toBe(
-      'Groups are how tracked trains and custom lines get shared with other people. Log in to see the ones you belong to — each with its member count and your role in it — or create a group and invite people to it.',
+      'Share tracked trains and custom lines with other people. Log in to see your groups or create one.',
     );
   });
 
@@ -120,16 +120,14 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Groups — Distant Signal',
-      description:
-        'Groups are how tracked trains and custom lines get shared with other people. Log in to see the ones you belong to — each with its member count and your role in it — or create a group and invite people to it.',
+      title: 'Groups · Distant Signal',
+      description: 'Share tracked trains and custom lines with other people. Log in to see your groups or create one.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
-      card: 'summary',
-      title: 'Groups — Distant Signal',
-      description:
-        'Groups are how tracked trains and custom lines get shared with other people. Log in to see the ones you belong to — each with its member count and your role in it — or create a group and invite people to it.',
+      card: 'summary_large_image',
+      title: 'Groups · Distant Signal',
+      description: 'Share tracked trains and custom lines with other people. Log in to see your groups or create one.',
     });
   });
 });

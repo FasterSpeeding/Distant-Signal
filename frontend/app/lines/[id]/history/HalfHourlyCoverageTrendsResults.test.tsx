@@ -94,8 +94,8 @@ describe('HalfHourlyCoverageTrendsResults', () => {
     renderWithMantine(
       await HalfHourlyCoverageTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
-    expect(screen.getByRole('heading', { name: 'Full coverage', level: 3 })).toBeInTheDocument();
-    const text = screen.getByText('Not enough full-coverage data yet for this line.');
+    expect(screen.getByRole('heading', { name: 'Every train', level: 3 })).toBeInTheDocument();
+    const text = screen.getByText('Not enough data for every train on this line yet.');
     expect(text).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
     expect(text.closest('.mantine-Paper-root')).not.toBeNull();
@@ -106,7 +106,7 @@ describe('HalfHourlyCoverageTrendsResults', () => {
     renderWithMantine(
       await HalfHourlyCoverageTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
-    expect(screen.getByRole('heading', { name: 'Full coverage', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Every train', level: 3 })).toBeInTheDocument();
     expect(await screen.findByText("Coverage trend data isn't available right now.")).toBeInTheDocument();
     expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
   });
@@ -180,7 +180,7 @@ describe('HalfHourlyCoverageTrendsResults', () => {
       await HalfHourlyCoverageTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
 
-    expect(screen.getByRole('heading', { name: 'Full coverage', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Every train', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Delay / cancellation / skip rate', level: 4 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Average delay (minutes)', level: 4 })).toBeInTheDocument();
   });

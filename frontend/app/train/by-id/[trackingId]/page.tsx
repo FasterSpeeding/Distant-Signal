@@ -8,6 +8,10 @@ import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControl
 import { LastUpdated } from '@/components/LastUpdated';
 import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
 import { TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
+import type { Metadata } from 'next';
+import { trainIdentifiers, trainName } from '@/lib/trainName';
+
+export const metadata: Metadata = { title: 'Tracked train', robots: { index: false } };
 
 export default async function TrackedTrainByIdPage({ params }: { params: Promise<{ trackingId: string }> }) {
   const { trackingId } = await params;
@@ -78,7 +82,24 @@ export default async function TrackedTrainByIdPage({ params }: { params: Promise
   return (
     <Stack p="lg" gap="md">
       <Group justify="space-between">
-        <Title order={1}>Tracking Train {trackingId}</Title>
+        <Stack gap={2}>
+          <Title order={1}>
+            {state.customName ??
+              trainName({
+                departure: state.pinScheduledDeparture,
+                origin: state.pinOriginName ?? state.pinOriginCrs,
+                destination:
+                  state.pinDestinationName ??
+                  state.pinDestinationCrs ??
+                  state.scheduleDestinationName ??
+                  state.scheduleDestinationCrs,
+              }) ??
+              'Tracked train'}
+          </Title>
+          <Text size="sm" c="dimmed">
+            {trainIdentifiers({ headcode: null, uid: state.trainUid }) ?? 'Not matched to a train yet'}
+          </Text>
+        </Stack>
         <Group gap="xs">
           <TrackedTrainOwnerControls train={state} />
         </Group>

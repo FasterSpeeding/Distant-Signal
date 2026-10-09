@@ -146,8 +146,8 @@ function TimetableOnlyMessage({
       <Group gap="xs">
         <ServiceModeBadge mode={state.serviceMode} />
         {!suppressTrainUidHeading && (
-          <Text fw={500}>
-            {serviceNoun(state.serviceMode)} {state.trainUid}
+          <Text size="xs" c="dimmed">
+            {serviceNoun(state.serviceMode)} · UID {state.trainUid}
           </Text>
         )}
       </Group>
@@ -170,7 +170,14 @@ function StatusMessage({
   // `null` renders nothing either way (`{trainUidLine}` below), so this
   // never hides a genuinely different fact -- it only ever removes an
   // exact repeat of the page's own `<h1>`.
-  const trainUidLine = suppressTrainUidHeading ? null : <Text fw={500}>Train {state.trainUid}</Text>;
+  // Secondary and labelled: the commuter-facing name is the route and time
+  // above; the UID is detail for those who want it.
+  const trainUidLine =
+    suppressTrainUidHeading || !state.trainUid ? null : (
+      <Text size="xs" c="dimmed">
+        UID {state.trainUid}
+      </Text>
+    );
 
   const pinSummary = (
     <Text size="sm" c="dimmed">
@@ -201,8 +208,7 @@ function StatusMessage({
       <Stack gap="sm">
         <Group gap="xs">
           <Text fw={500}>
-            Matched to a scheduled service — Train {state.trainUid}
-            {destination ? ` to ${destination}` : ''}
+            {destination ? `Matched to the timetabled service to ${destination}` : 'Matched to a timetabled service'}
           </Text>
           <Tooltip label="This is the booked timetable, not a live report yet. It may change if Network Rail issues a late alteration, and we'll update this automatically once live tracking begins.">
             <Badge color="gray" variant="light" tt="none">
@@ -226,8 +232,8 @@ function StatusMessage({
         </Text>
         {pinSummary}
         <Text size="sm" c="dimmed">
-          Network Rail never reported a matching service for this pin. This won&apos;t resolve on its own — try tracking
-          the train again if it was a genuine mistake.
+          Network Rail never reported a matching service for this train. This won&apos;t resolve on its own — try
+          tracking the train again if it was a genuine mistake.
         </Text>
       </Stack>
     );
@@ -241,7 +247,7 @@ function StatusMessage({
   if (state.status === 'awaiting_activation' || state.status === null) {
     return (
       <Stack gap="sm">
-        <Text fw={500}>Matched to train {state.trainUid}</Text>
+        <Text fw={500}>Matched to a timetabled train</Text>
         {pinSummary}
         <Text size="sm" c="dimmed">
           Waiting for its first movement report.

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Stack, TextInput } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** `/groups/new`'s form -- creates a group, then immediately rotates its
  * first invite link (spec §6: "on success, immediately generate the
@@ -40,8 +41,7 @@ export function CreateGroupForm() {
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('create', 'this group', response));
         }
         setSubmitting(false);
         return;
@@ -54,7 +54,7 @@ export function CreateGroupForm() {
       }
       router.push(`/groups/${created.id}`);
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('create', 'this group'));
       setSubmitting(false);
     }
   }

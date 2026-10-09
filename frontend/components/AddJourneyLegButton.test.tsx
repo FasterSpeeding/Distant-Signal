@@ -38,7 +38,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const origin = await screen.findByLabelText('Origin CRS');
+    const origin = await screen.findByLabelText('From (station code)');
     expect(origin).toHaveValue('WAT');
   });
 
@@ -46,15 +46,15 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const origin = await screen.findByLabelText('Origin CRS');
+    const origin = await screen.findByLabelText('From (station code)');
     fireEvent.change(origin, { target: { value: 'CLJ' } });
     expect(origin).toHaveValue('CLJ');
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByLabelText('Origin CRS')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByLabelText('From (station code)')).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
-    const reopenedOrigin = await screen.findByLabelText('Origin CRS');
+    const reopenedOrigin = await screen.findByLabelText('From (station code)');
     expect(reopenedOrigin).toHaveValue('WAT');
   });
 
@@ -65,7 +65,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('Destination CRS');
+    const destination = await screen.findByLabelText('To (station code)');
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -97,7 +97,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('Destination CRS');
+    const destination = await screen.findByLabelText('To (station code)');
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -125,7 +125,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('Destination CRS');
+    const destination = await screen.findByLabelText('To (station code)');
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '18:00' } });
@@ -175,7 +175,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" onAdded={onAdded} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('Destination CRS');
+    const destination = await screen.findByLabelText('To (station code)');
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -195,7 +195,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('Destination CRS');
+    const destination = await screen.findByLabelText('To (station code)');
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -204,7 +204,7 @@ describe('AddJourneyLegButton', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
 
-    expect(await screen.findByText('no schedule matched that window')).toBeInTheDocument();
+    expect(await screen.findByText('No schedule matched that window.')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
@@ -218,10 +218,10 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const origin = await screen.findByLabelText('Origin CRS');
+    const origin = await screen.findByLabelText('From (station code)');
     fireEvent.change(origin, { target: { value: 'WOKX' } });
 
-    expect(await screen.findByText('Must be a 3-letter CRS code')).toBeInTheDocument();
+    expect(await screen.findByText('Must be a 3-letter station code')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
@@ -230,15 +230,15 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    await screen.findByLabelText('Origin CRS');
-    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+    await screen.findByLabelText('From (station code)');
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
   });
 
   it('shows an inline error for a malformed Service date and keeps the button disabled', async () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('Destination CRS');
+    const destination = await screen.findByLabelText('To (station code)');
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-02-30' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
@@ -255,12 +255,12 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('Destination CRS');
+    const destination = await screen.findByLabelText('To (station code)');
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
 
-    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
     expect(screen.queryByText('Must be a valid date (YYYY-MM-DD)')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled();
 

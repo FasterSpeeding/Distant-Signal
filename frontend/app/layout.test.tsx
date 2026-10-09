@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
-import { viewport, metadata } from './layout';
+import { viewport, SITE_METADATA as metadata, generateMetadata } from './layout';
 
 // This file imports `app/layout.tsx`, which imports `@/lib/api` -- whose
 // module scope reads `next/headers`. There is no Next request context in a
@@ -56,30 +56,26 @@ describe('metadata.appleWebApp', () => {
   });
 });
 
-describe('metadata: what the root layout deliberately omits', () => {
-  it('has no openGraph or twitter of its own, which is why every page repeats its title into both', () => {
-    // The premise the per-page metadata exports rest on, asserted rather
-    // than left as prose in this file's own comment. Next merges page
-    // metadata into a layout's PER FIELD, not per-object: because there is
-    // no `openGraph` object here to inherit from, a page that sets only
-    // `title`/`description` emits no `og:title` at all. That is exactly
-    // why `/`, `/incidents`, `/trains`, `/stations` and the five detail
-    // routes each repeat the same pair of strings into `openGraph` and
-    // `twitter` instead of relying on inheritance. If a site-wide
-    // `openGraph` is ever added here, that reasoning changes and those
-    // nine exports should be revisited together.
-    expect(metadata.openGraph).toBeUndefined();
-    expect(metadata.twitter).toBeUndefined();
+describe('metadata: the site-wide defaults', () => {
+  it('adds the site name to every page title through the template', () => {
+    expect(metadata.title).toEqual({ default: 'Distant Signal', template: '%s · Distant Signal' });
   });
 
-  it('sets no metadataBase, because no route emits a metadata URL needing one', () => {
-    // `metadataBase` exists solely to resolve RELATIVE metadata URLs into
-    // absolute ones. No route in this app emits `openGraph.images`,
-    // `openGraph.url` or `alternates.canonical`, so there is nothing to
-    // resolve and no configured public base URL to point one at. This
-    // pins that as a decision rather than an oversight -- add one here,
-    // and only here, the day a route gains an OG image or a canonical URL.
-    expect(metadata.metadataBase).toBeUndefined();
+  it('describes the site in one plain line, the same as the manifest', () => {
+    expect(metadata.description).toBe('Live UK rail status, train tracking and Delay Repay help.');
+  });
+
+  it('gives a page that sets no card of its own a site-wide one', () => {
+    expect(metadata.openGraph).toMatchObject({ title: 'Distant Signal', siteName: 'Distant Signal' });
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
+  });
+
+  it('resolves the preview image against NEXT_PUBLIC_SITE_URL when it is set', () => {
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://distant-signal.example/');
+    expect(generateMetadata().metadataBase?.toString()).toBe('https://distant-signal.example/');
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', '');
+    expect(generateMetadata().metadataBase).toBeUndefined();
+    vi.unstubAllEnvs();
   });
 });
 

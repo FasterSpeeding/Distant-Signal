@@ -39,13 +39,13 @@ describe('LeaveGroupButton', () => {
     renderWithMantine(<LeaveGroupButton groupId="grp-1" currentUserId="user-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
     await waitFor(() => screen.getByText(/lose access to every train shared/));
-    expect(screen.queryByText(/delete it for good/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/leaving deletes this group/)).not.toBeInTheDocument();
   });
 
   it('warns that leaving deletes the whole group when willDeleteGroup is set', async () => {
     renderWithMantine(<LeaveGroupButton groupId="grp-1" currentUserId="user-1" willDeleteGroup />);
     fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
-    await waitFor(() => screen.getByText(/delete it for good/));
+    await waitFor(() => screen.getByText(/leaving deletes this group/));
     expect(screen.queryByText(/lose access to every train shared/)).not.toBeInTheDocument();
   });
 
@@ -72,7 +72,7 @@ describe('LeaveGroupButton', () => {
       <LeaveGroupButton groupId="grp-1" currentUserId="user-1" willDeleteGroup nextOwnerLabel="Adam" />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
-    await waitFor(() => screen.getByText(/delete it for good/));
+    await waitFor(() => screen.getByText(/leaving deletes this group/));
     expect(screen.queryByText(/will become the new owner/)).not.toBeInTheDocument();
   });
 });

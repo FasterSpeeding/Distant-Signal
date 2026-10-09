@@ -8,7 +8,6 @@ import { DISPLAYED_MODES_PARAM, type Country } from '@/lib/modes';
 import { buildNetworkStatusOverview } from '@/lib/networkStatusOverview';
 import {
   isGoodSeverity,
-  SEVERITY_GROUP_COLORS,
   SEVERITY_GROUP_LABELS,
   SEVERITY_GROUPS_BY_RANK,
   severityColor,
@@ -20,6 +19,7 @@ import { TextLink } from '@/components/TextLink';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { LastUpdated } from '@/components/LastUpdated';
 import type { LineStatusReport } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // Same rationale as every other dynamic route in this app (see
 // app/lines/page.tsx's own comment): without this, `next build` treats the
@@ -28,16 +28,10 @@ import type { LineStatusReport } from '@/lib/types';
 // runtime.
 export const revalidate = 0;
 
-const METADATA_TITLE = 'Network Status — Distant Signal';
-const METADATA_DESCRIPTION =
-  'A live, network-wide snapshot of every National Rail and TfL line this app tracks: how many are running a Good Service versus facing disruption or a planned closure right now, which lines need attention most, and how that breaks down by mode and by country.';
+const METADATA_TITLE = 'Status';
+const METADATA_DESCRIPTION = 'Live status of every National Rail and TfL line: how many have problems, and which ones.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 const COUNTRY_LABELS: Record<Country, string> = {
   Gb: 'GB',
@@ -78,7 +72,7 @@ export default async function NetworkStatusPage() {
   return (
     <Stack p="lg" gap="xl">
       <Stack gap="xs">
-        <Title order={1}>Network Status</Title>
+        <Title order={1}>Status</Title>
         <Text c="dimmed">
           {overview.totalLines} line{overview.totalLines === 1 ? '' : 's'} tracked across {modesDescription} right now.
         </Text>
@@ -99,7 +93,9 @@ export default async function NetworkStatusPage() {
         {overview.lastUpdated && <LastUpdated timestamp={overview.lastUpdated} />}
       </Stack>
 
-      <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} spacing="md">
+      {/* Five tiles: on two columns the last one spans the row
+          (globals.css, [data-counter-tiles]) rather than sitting alone. */}
+      <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} spacing="md" data-counter-tiles>
         {SEVERITY_GROUPS_WORST_FIRST.map((group) => (
           <SeverityCounterTile key={group} group={group} count={overview.counts[group]} />
         ))}
@@ -162,10 +158,10 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
   // per §2.1's own recommendation).
   if (count === 0) {
     return (
-      <Card withBorder shadow="sm" padding="lg" data-group-card>
+      <Card withBorder padding="lg" data-group-card>
         <Stack gap={4} align="center">
           <Text size="xl" fw={700} c="dimmed">
-            none
+            0
           </Text>
           <Text size="sm" c="dimmed" ta="center">
             {label}
@@ -180,18 +176,9 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
       href={`/lines?statusGroup=${group}`}
       style={{ textDecoration: 'none', color: 'inherit' }}
       data-group-card-link
-      aria-label={`${count} line${count === 1 ? '' : 's'} with ${label} — view in All Lines`}
+      aria-label={`${count} line${count === 1 ? '' : 's'} with ${label} — view in Lines`}
     >
-      <Card
-        withBorder
-        shadow="sm"
-        padding="lg"
-        data-group-card
-        style={{
-          borderLeftWidth: 4,
-          borderLeftColor: `var(--mantine-color-${SEVERITY_GROUP_COLORS[group]}-6)`,
-        }}
-      >
+      <Card withBorder shadow="sm" padding="lg" data-group-card>
         <Stack gap={4} align="center">
           <Text size="xl" fw={700}>
             {count}
@@ -204,7 +191,7 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
               sighted-only visual affordance (grape link text + chevron)
               matching the app's established "this goes somewhere" cue. */}
           <Text size="xs" c="var(--mantine-color-anchor)" aria-hidden>
-            View lines ›
+            View lines <span aria-hidden="true">›</span>
           </Text>
         </Stack>
       </Card>
@@ -234,7 +221,7 @@ function WorstLinesSection({ worstFirst }: { worstFirst: LineStatusReport[] }) {
       ) : (
         <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
           {worstFirst.map((report) => (
-            <LineStatusCard key={report.id} report={report} />
+            <LineStatusCard key={report.id} report={report} showUpdated={false} />
           ))}
         </SimpleGrid>
       )}
@@ -295,7 +282,7 @@ function ModeCard({ label, reports }: { label: string; reports: LineStatusReport
       <Stack gap={4}>
         <Group justify="space-between">
           <Text fw={600}>{label}</Text>
-          <Badge color={badgeColor} variant="light">
+          <Badge tt="none" color={badgeColor} variant="light">
             {affected.length === 0 ? 'All Good Service' : `${affected.length} affected`}
           </Badge>
         </Group>

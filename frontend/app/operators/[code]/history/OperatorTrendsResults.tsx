@@ -97,11 +97,11 @@ export async function OperatorTrendsResults({
           literal has no such boundary for either transform to disagree
           about. */}
       <Text size="sm" c="dimmed">
-        {`${HONESTY_COPY[granularity]} Rates shown are summed across every line this operator runs. Private custom lines are never included, since they aren't public.`}
+        {`${HONESTY_COPY[granularity]} Summed across every line this operator runs. Custom lines aren't included.`}
       </Text>
       <TrendsCharts points={points} granularity={granularity} order={2} showVolume />
       <details>
-        <summary>How these rates are calculated</summary>
+        <summary>How this is calculated</summary>
         <Text size="sm" c="dimmed" mt="xs">
           {HONESTY_COPY_DETAILS[granularity]}
         </Text>

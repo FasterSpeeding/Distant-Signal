@@ -83,7 +83,7 @@ describe('DeleteAccountButton', () => {
     await openAndType(DELETE_ACCOUNT_CONFIRMATION);
     fireEvent.click(confirmButton());
 
-    expect(await screen.findByText('account deletion failed')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't delete your account. Try again.")).toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });
 

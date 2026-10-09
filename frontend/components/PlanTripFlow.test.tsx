@@ -611,9 +611,7 @@ describe('PlanTripFlow', () => {
     fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
-    await screen.findByText(
-      'Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.',
-    );
+    await screen.findByText("Tracked 1 of 2 legs. Couldn't add leg 2. You can add it from the journey page.");
     // C1 (final-review fix): `onCreated` must NOT fire yet -- calling it
     // here, before the visitor has had a chance to actually read the
     // message above, is exactly the unmountable-by-construction bug this
@@ -621,9 +619,7 @@ describe('PlanTripFlow', () => {
     // the hand-off button must coexist on screen first.
     expect(onCreated).not.toHaveBeenCalled();
     expect(
-      screen.getByText(
-        'Tracked 1 of 2 legs. Adding leg 2 failed: Failed to fetch. You can add it manually from the journey page.',
-      ),
+      screen.getByText("Tracked 1 of 2 legs. Couldn't add leg 2. You can add it from the journey page."),
     ).toBeInTheDocument();
     expect(screen.queryByText('Track this journey')).not.toBeInTheDocument();
 

@@ -181,7 +181,7 @@ describe('IncidentDetailPage', () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
     // The arrow is decorative and aria-hidden: the name is just "Incident Archive".
-    const back = screen.getByRole('link', { name: 'Incident Archive' });
+    const back = screen.getByRole('link', { name: 'Incidents' });
     expect(back).toHaveAttribute('href', '/incidents');
     expect(back.querySelector('[aria-hidden="true"]')).toHaveTextContent('←');
   });
@@ -285,16 +285,16 @@ describe('generateMetadata', () => {
   it('titles the page with the incident summary and describes the affected lines', async () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
-    expect(metadata.title).toBe('Signal failure at Woking — Distant Signal');
+    expect(metadata.title).toBe('Signal failure at Woking');
     expect(metadata.description).toBe('Real-Time incident affecting South Western Main Line.');
-    expect(metadata.openGraph?.title).toBe('Signal failure at Woking — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary' });
+    expect(metadata.openGraph?.title).toBe('Signal failure at Woking · Distant Signal');
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });
 
   it('labels a planned-work incident distinctly from a real-time one', async () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail({ isPlanned: true }));
     const metadata = await generateMetadata({ params: Promise.resolve({ id: '12345' }) });
-    expect(metadata.description).toBe('Planned Work incident affecting South Western Main Line.');
+    expect(metadata.description).toBe('Planned work incident affecting South Western Main Line.');
   });
 
   it('falls back to the summary when no line currently reports the incident', async () => {

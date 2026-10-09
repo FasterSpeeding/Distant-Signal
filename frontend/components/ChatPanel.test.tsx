@@ -49,7 +49,7 @@ describe('ChatPanel', () => {
     renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
-    expect(await screen.findByText(/connect chat to the rail data service/i)).toBeInTheDocument();
+    expect(await screen.findByText(/connect to the rail data service/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument();
     expect(mockRunChatTurn).not.toHaveBeenCalled();
   });
@@ -137,7 +137,7 @@ describe('ChatPanel', () => {
     renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
-    expect(await screen.findByText(/darwin timeout/i)).toBeInTheDocument();
+    expect(await screen.findByText(/couldn.t answer that\. try again/i)).toBeInTheDocument();
   });
 
   // Bug: `classifyChatError` used to do a bare `/401|403|unauthoriz/i.test(message)`
@@ -156,7 +156,7 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
 
-    expect(await screen.findByText(/train reporting number 401 was cancelled/i)).toBeInTheDocument();
+    expect(await screen.findByText(/couldn.t answer that\. try again/i)).toBeInTheDocument();
     expect(screen.queryByText(/reconnect/i)).not.toBeInTheDocument();
   });
 
@@ -255,7 +255,7 @@ describe('ChatPanel', () => {
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
     await screen.findByText(/next train is at 10:15/i);
-    const badges = screen.getAllByText('AI-generated');
+    const badges = screen.getAllByText('AI summary');
     expect(badges).toHaveLength(1);
     expect(badges[0]!.closest('[data-ai-badge]')).toHaveAccessibleDescription(CHAT_AI_NOTE);
     const userBubble = screen.getByText('when is the next train').closest('.mantine-Card-root')!;
@@ -382,7 +382,7 @@ describe('ChatPanel', () => {
       renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
       send();
       const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
-      expect(screen.getByText(/has expired or was not found/i)).toBeInTheDocument();
+      expect(screen.getByText(/has expired/i)).toBeInTheDocument();
       expect(localStorage.getItem('ds-mcp-oauth:tokens')).toBeNull();
       fireEvent.click(reconnect);
       expect(mockStartMcpSignIn).toHaveBeenCalledWith('https://mcp.example.com');
@@ -435,7 +435,7 @@ describe('ChatPanel', () => {
     it('on load, reports a sign-in that left for the authorization server and never came back', async () => {
       localStorage.setItem('ds-mcp-oauth:oauth-state', 'pending');
       renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
-      expect(await screen.findByText(/last sign-in to the rail data service didn.t finish/i)).toBeInTheDocument();
+      expect(await screen.findByText(/last login to the rail data service didn.t finish/i)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
     });
 
@@ -445,7 +445,9 @@ describe('ChatPanel', () => {
       renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
       send();
       fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
-      expect(await screen.findByText(/couldn.t start signing in.*HTTP 503 registering client/i)).toBeInTheDocument();
+      expect(
+        await screen.findByText(/couldn.t start logging in to the rail data service\. try again/i),
+      ).toBeInTheDocument();
       mockStartMcpSignIn.mockReturnValue(new Promise(() => {}));
       fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
       expect(mockStartMcpSignIn).toHaveBeenCalledTimes(2);

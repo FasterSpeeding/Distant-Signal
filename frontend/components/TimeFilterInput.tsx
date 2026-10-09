@@ -111,6 +111,9 @@ export const INCOMPLETE_TIME_MESSAGE = 'Enter a complete time, or clear this fie
  * names for the two buttons -- four of these render on one form, so
  * "Clear" and "Pick a time" alone would be four indistinguishable pairs in
  * a screen reader's control list. */
+/** Said once per form, on its first time field (`clockHint`). */
+export const CLOCK_HINT = '24-hour clock, e.g. 19:00.';
+
 export function TimeFilterInput({
   label,
   name,
@@ -119,6 +122,7 @@ export function TimeFilterInput({
   onChange,
   onIncompleteChange,
   error,
+  clockHint = false,
 }: {
   label: string;
   name: string;
@@ -127,6 +131,9 @@ export function TimeFilterInput({
   onChange: (value: string) => void;
   onIncompleteChange: (incomplete: boolean) => void;
   error: string | null;
+  /** Adds the 24-hour clock hint to the description. Set it on the first
+   * time field of a form only, so the hint is stated once. */
+  clockHint?: boolean;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   const [incomplete, setIncomplete] = useState(false);
@@ -241,7 +248,7 @@ export function TimeFilterInput({
       // and stores 24-hour time, appended to the caller's own field-specific
       // description rather than duplicated at every TimeFilterInput call
       // site.
-      description={`${description} Uses a 24-hour clock, e.g. 19:00 for 7pm.`}
+      description={clockHint ? `${description} ${CLOCK_HINT}` : description}
       value={value}
       onChange={(event) => {
         syncIncomplete(event.currentTarget);

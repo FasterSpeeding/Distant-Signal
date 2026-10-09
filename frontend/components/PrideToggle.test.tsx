@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { PrideToggle } from './PrideToggle';
+import { PrideModeApplier, PrideToggle } from './PrideToggle';
 
 describe('PrideToggle', () => {
   beforeEach(() => {
@@ -151,5 +151,24 @@ describe('PrideToggle', () => {
 
     // All 8 modes should have distinct gradients
     expect(gradients.size).toBe(8);
+  });
+});
+
+describe('PrideModeApplier', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    delete document.body.dataset.pride;
+  });
+
+  it('applies the saved mode with no control on screen', () => {
+    localStorage.setItem('pride-mode', 'trans');
+    renderWithMantine(<PrideModeApplier />);
+    expect(document.body.dataset.pride).toBe('trans');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('applies "off" when nothing is saved', () => {
+    renderWithMantine(<PrideModeApplier />);
+    expect(document.body.dataset.pride).toBe('off');
   });
 });

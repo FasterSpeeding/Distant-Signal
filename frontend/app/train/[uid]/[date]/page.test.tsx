@@ -159,13 +159,13 @@ describe('TrackedTrainByUidPage success path', () => {
   it('renders the shared train journey from the public response', async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState());
     await renderPage();
-    expect(screen.getByRole('heading', { name: 'Train W12345' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '19:32 WAT to WOK' })).toBeInTheDocument();
+    expect(screen.getByText('UID W12345')).toBeInTheDocument();
     expect(screen.getByText(/Last reported: Woking/)).toBeInTheDocument();
     expect(screen.getByText(/Next calling point: Basingstoke/)).toBeInTheDocument();
-    // Task 3.6.9: `TrainJourney`'s own "Train W12345" status line, which
-    // would otherwise repeat the `<h1>` above verbatim, must not also
-    // render as a second, separate text node.
-    expect(screen.getAllByText('Train W12345')).toHaveLength(1);
+    // Task 3.6.9: `TrainJourney`'s own UID line would repeat the page's
+    // own identifiers line, so it is suppressed here.
+    expect(screen.getAllByText(/UID W12345/)).toHaveLength(1);
   });
 
   // The shared `trains` row has no `resolution_status` column -- that is
@@ -202,7 +202,7 @@ describe('TrackedTrainByUidPage success path', () => {
       }),
     );
     await renderPage();
-    expect(screen.getByText('Matched to a scheduled service — Train W12345 to Woking')).toBeInTheDocument();
+    expect(screen.getByText('Matched to the timetabled service to Woking')).toBeInTheDocument();
   });
 
   it('renders a Track this train button for every visitor', async () => {
@@ -487,9 +487,12 @@ describe('generateMetadata', () => {
       publicTrainState({ originName: 'London Waterloo', destinationName: 'Woking' }),
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.title).toBe('London Waterloo to Woking — Distant Signal');
-    expect(metadata.openGraph?.title).toBe('London Waterloo to Woking — Distant Signal');
-    expect(metadata.twitter).toMatchObject({ card: 'summary', title: 'London Waterloo to Woking — Distant Signal' });
+    expect(metadata.title).toBe('19:32 London Waterloo to Woking');
+    expect(metadata.openGraph?.title).toBe('19:32 London Waterloo to Woking · Distant Signal');
+    expect(metadata.twitter).toMatchObject({
+      card: 'summary_large_image',
+      title: '19:32 London Waterloo to Woking · Distant Signal',
+    });
   });
 
   it('falls back to a bare train uid title when origin/destination are unknown', async () => {
@@ -497,7 +500,7 @@ describe('generateMetadata', () => {
       publicTrainState({ originCrs: null, originName: null, destinationCrs: null, destinationName: null }),
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.title).toBe('Train W12345 — Distant Signal');
+    expect(metadata.title).toBe('Train W12345');
   });
 
   it('describes an en-route train with its last reported location and delay', async () => {
@@ -512,7 +515,7 @@ describe('generateMetadata', () => {
   it('describes a cancelled train', async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(publicTrainState({ status: 'cancelled' }));
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.description).toBe('Train W12345: this service was cancelled.');
+    expect(metadata.description).toBe('This train was cancelled.');
   });
 
   it('calls notFound() on ApiNotFoundError, matching the page component', async () => {
@@ -548,7 +551,7 @@ describe('trainStatusSummary', () => {
 
   it('summarizes a train awaiting its first movement report', () => {
     expect(trainStatusSummary(toJourneyState(publicTrainState({ status: 'awaiting_activation' })))).toBe(
-      'Matched to train W12345 — waiting for its first movement report.',
+      'Matched to a timetabled train. Waiting for its first movement report.',
     );
   });
 
@@ -670,25 +673,26 @@ describe('TrackedTrainByUidPage: buses and ferries', () => {
     });
 
   it.each([
-    ['replacementBus', 'Rail replacement bus C30818', 'Track this bus'],
-    ['bus', 'Bus service C30818', 'Track this bus'],
-    ['ferry', 'Ferry C30818', 'Track this ferry'],
+    ['replacementBus', 'Rail replacement bus · UID C30818', 'Track this bus'],
+    ['bus', 'Bus service · UID C30818', 'Track this bus'],
+    ['ferry', 'Ferry · UID C30818', 'Track this ferry'],
   ] as const)('%s: the header uses the mode label and the page says timetabled only', async (mode, heading, button) => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(bus(mode));
     await renderPage('C30818');
-    expect(screen.getByRole('heading', { level: 1, name: heading })).toBeInTheDocument();
+    expect(screen.getByText(heading)).toBeInTheDocument();
     expect(screen.getByText(/Timetabled only — buses and ferries aren't tracked live/)).toBeInTheDocument();
     expect(screen.queryByText(/Waiting/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: button })).toBeInTheDocument();
     expect(screen.getByText(/there are no live alerts for buses and ferries/)).toBeInTheDocument();
   });
 
-  it('a train keeps the "Train {uid}" header', async () => {
+  it('a train is named by its time and route, with the UID as secondary text', async () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(
       publicTrainState({ serviceMode: 'train', liveTracking: true }),
     );
     await renderPage();
-    expect(screen.getByRole('heading', { level: 1, name: 'Train W12345' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: '19:32 WAT to WOK' })).toBeInTheDocument();
+    expect(screen.getByText('UID W12345')).toBeInTheDocument();
   });
 
   it('the summary and metadata say a bus is timetabled only', async () => {

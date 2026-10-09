@@ -103,7 +103,7 @@ describe('AddToGroupButton', () => {
     fireEvent.click(await screen.findByText('Commuters'));
     fireEvent.click(screen.getByRole('button', { name: 'Share' }));
 
-    expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't share this train. Try again.")).toBeInTheDocument();
     expect(screen.queryByText(/Added to/)).not.toBeInTheDocument();
   });
 

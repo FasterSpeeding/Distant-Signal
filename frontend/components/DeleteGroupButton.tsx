@@ -6,6 +6,7 @@ import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** `owner`-only "Delete group" control for `DELETE /groups/{id}` (spec §3:
  * "Delete the group entirely | `owner` only" -- the caller renders this
@@ -50,15 +51,14 @@ export function DeleteGroupButton({ groupId, name }: { groupId: string; name: st
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('delete', 'this group', response));
         }
         setDeleting(false);
         return;
       }
       router.push('/groups');
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('delete', 'this group'));
       setDeleting(false);
     }
   }

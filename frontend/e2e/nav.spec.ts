@@ -122,13 +122,13 @@ test.describe('desktop nav bar (1440x900)', () => {
     const nav = page.locator('nav[aria-label="Main"]');
     // `exact: true` matters here specifically for 'Trains': Playwright's
     // default accessible-name match is substring-based, and 'Trains' is
-    // also a substring of the separate 'My Trains & Tickets' destination
+    // also a substring of the separate 'My trains & tickets' destination
     // rendered in this same bar for an anonymous visitor -- non-exact
     // matching makes that one locator resolve to two elements (a real
     // strict-mode violation seen in CI), even though the two links read as
     // clearly distinct text to an actual reader/screen reader. This is a
     // test-matcher precision issue only, not a real accessibility gap.
-    for (const label of ['Track a Journey', 'Status', 'Lines', 'Stations', 'Trains', 'Incidents']) {
+    for (const label of ['Track a journey', 'Status', 'Lines', 'Stations', 'Trains', 'Incidents']) {
       await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
@@ -159,7 +159,7 @@ test.describe('desktop nav bar (1440x900)', () => {
         .click();
 
       const menu = page.getByRole('menu');
-      await expect(menu.getByRole('menuitem', { name: 'My Trains & Tickets' })).toHaveAttribute('href', '/track/mine');
+      await expect(menu.getByRole('menuitem', { name: 'My trains & tickets' })).toHaveAttribute('href', '/track/mine');
       await expect(menu.getByRole('menuitem', { name: 'Groups' })).toHaveAttribute('href', '/groups');
       // `exact`: Playwright name-matching is a case-insensitive substring match
       // by default, and "Log out other sessions" also contains "Log out".
@@ -170,7 +170,7 @@ test.describe('desktop nav bar (1440x900)', () => {
     test('keeps those three OUT of the bar itself', async ({ page }) => {
       await page.goto('/lines');
       const nav = page.locator('nav[aria-label="Main"]');
-      await expect(nav.getByRole('link', { name: 'My Trains & Tickets' })).toHaveCount(0);
+      await expect(nav.getByRole('link', { name: 'My trains & tickets' })).toHaveCount(0);
       await expect(nav.getByRole('link', { name: 'Groups' })).toHaveCount(0);
       await expect(nav.getByRole('button', { name: 'Log out', exact: true })).toHaveCount(0);
     });
@@ -191,8 +191,8 @@ test.describe('phone nav bar (390x844)', () => {
     const nav = page.locator('nav[aria-label="Main"]');
     await page.goto('/lines');
     await expect(nav.getByRole('link', { name: 'Distant Signal' })).toBeVisible();
-    await expect(nav.getByRole('button', { name: /^Theme:/ })).toBeVisible();
-    await expect(nav.getByRole('button', { name: /^Pride mode:/ })).toBeVisible();
+    await expect(nav.getByRole('button', { name: 'Colour theme' })).toBeVisible();
+    await expect(nav.getByRole('button', { name: /^Pride mode:/ })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Log in' })).toBeVisible();
   });
 
@@ -203,15 +203,15 @@ test.describe('phone nav bar (390x844)', () => {
 
     const drawer = await openNavDrawer(page);
     // `exact: true` for the same reason as the desktop-bar test above:
-    // 'Trains' is a substring of 'My Trains & Tickets', both present here.
+    // 'Trains' is a substring of 'My trains & tickets', both present here.
     for (const label of [
-      'Track a Journey',
+      'Track a journey',
       'Status',
       'Lines',
       'Stations',
       'Trains',
       'Incidents',
-      'My Trains & Tickets',
+      'My trains & tickets',
     ]) {
       await expect(drawer.getByRole('link', { name: label, exact: true })).toBeVisible();
     }

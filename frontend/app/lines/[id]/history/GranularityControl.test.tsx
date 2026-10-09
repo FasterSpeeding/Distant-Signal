@@ -21,7 +21,7 @@ describe('GranularityControl', () => {
     for (const label of ['30 min', 'Hourly', '6-hourly', 'Daily']) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    expect(screen.queryByText(/are not shown for this range/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not available for this range/)).not.toBeInTheDocument();
   });
 
   it('omits unavailable tiers and names them in the dimmed note', () => {
@@ -38,7 +38,7 @@ describe('GranularityControl', () => {
     expect(screen.queryByText('30 min')).not.toBeInTheDocument();
     expect(screen.queryByText('Hourly')).not.toBeInTheDocument();
     expect(screen.getByText('6-hourly')).toBeInTheDocument();
-    expect(screen.getByText(/30 min, Hourly are not shown for this range/)).toBeInTheDocument();
+    expect(screen.getByText(/30 min, Hourly are not available for this range/)).toBeInTheDocument();
   });
 
   it('navigates with the preset and the new granularity when a preset range is active', () => {

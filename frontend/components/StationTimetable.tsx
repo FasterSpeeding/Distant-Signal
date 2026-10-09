@@ -260,7 +260,7 @@ export function StationTimetable({
                   see its live status.
                 </Text>
                 <Text size="sm" c="dimmed">
-                  This list shows only departures from this station -- trains that terminate here won&apos;t be listed.
+                  Departures only. Trains that end here aren&apos;t listed.
                 </Text>
                 {resultsContent()}
               </Stack>

@@ -613,7 +613,7 @@ export function TrainSearchForm({
           loading: stationSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
-        error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter CRS code' : null}
+        error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter station code' : null}
         required
       />
       {/* `clearButtonProps`: Mantine's `clearable` clear button ships with
@@ -621,6 +621,7 @@ export function TrainSearchForm({
           soon as a date is picked. See `components/IncidentSearchForm.tsx`'s
           own note and `app/lines/AllLinesTable.tsx` for the same fix. */}
       <DatePickerInput
+        valueFormat="D MMM YYYY"
         label="Date (optional)"
         placeholder="Today"
         description={searchDateDescription(dateBounds, today)}
@@ -642,7 +643,7 @@ export function TrainSearchForm({
           loading: originSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
-        error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
+        error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
       />
       <Autocomplete
         label="Stops at (optional)"
@@ -655,7 +656,7 @@ export function TrainSearchForm({
           loading: stopsAtSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
-        error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter CRS code' : null}
+        error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter station code' : null}
       />
       {/* All four time filters are `TimeFilterInput` -- a native
        * `<input type="time">` with a clock button that opens the platform
@@ -694,6 +695,7 @@ export function TrainSearchForm({
        * removed placeholder. */}
       <Group grow align="flex-start">
         <TimeFilterInput
+          clockHint
           label="Earliest departure (optional)"
           name="earliest departure"
           description={`Only trains at ${stationDisplay} at or after this time.`}
@@ -717,7 +719,7 @@ export function TrainSearchForm({
           <TimeFilterInput
             label="Earliest arrival (optional)"
             name="earliest arrival"
-            description={`Only trains reaching ${stopsAtDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
+            description={`Only trains reaching ${stopsAtDisplay} at or after this time.`}
             value={arrivalFrom}
             onChange={setArrivalFrom}
             onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))}

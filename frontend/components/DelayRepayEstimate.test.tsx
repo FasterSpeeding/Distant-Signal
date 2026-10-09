@@ -112,7 +112,7 @@ describe('DelayRepayEstimate', () => {
     ];
     for (const r of cases) {
       const { unmount } = renderWithMantine(<DelayRepayEstimate response={r} />);
-      expect(screen.getByText('This app never submits a claim on your behalf.')).toBeInTheDocument();
+      expect(screen.getByText('Distant Signal never claims on your behalf.')).toBeInTheDocument();
       expect(screen.queryByText(TOP_LEVEL_DISCLAIMER)).not.toBeInTheDocument();
       unmount();
     }
@@ -143,7 +143,7 @@ describe('DelayRepayEstimate', () => {
   // LEG-14
   it("says when the rules were last checked and that delays may differ from the operator's records", () => {
     renderWithMantine(<DelayRepayEstimate response={response({ estimate: null, delayMinutes: 12 })} />);
-    expect(screen.getByText(/Rules last checked: 7 October 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Rules last checked: 7 Oct 2026/)).toBeInTheDocument();
     expect(screen.getByText(/may differ from the operator.s own records/)).toBeInTheDocument();
   });
 });
@@ -322,6 +322,6 @@ describe('DelayRepayEstimate: 2026-10-07 states', () => {
       <DelayRepayEstimate response={response({ delayMinutes: 5, rulesCheckedOn: '2026-10-07' })} />,
     );
     expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(/5 minutes/);
-    expect(screen.getByText(/Rules last checked: 7 October 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Rules last checked: 7 Oct 2026/)).toBeInTheDocument();
   });
 });

@@ -256,21 +256,33 @@ describe('TimeFilterInput', () => {
       .filter(Boolean)
       .map((id) => document.getElementById(id)?.textContent);
     expect(describedTexts).toContain('Must be a time like 09:00');
-    expect(describedTexts).toContain(
-      'Only trains at RDG at or after this time. Uses a 24-hour clock, e.g. 19:00 for 7pm.',
-    );
+    expect(describedTexts).toContain('Only trains at RDG at or after this time.');
   });
 
   // Chromium's native <input type="time"> picker chrome ignores `lang` for
-  // its own AM/PM-vs-24h display (confirmed via a standalone repro this
-  // session) -- a genuine platform limitation `lang="en-GB"` alone can't
-  // patch. This always-visible hint is the chosen mitigation: it stays
-  // legible even where the picker itself still shows "7:00 PM" for a typed
-  // "19:00".
-  it('always tells the user this field is 24-hour, appended to its own description', () => {
+  // its own AM/PM-vs-24h display, so the form says "24-hour clock" once,
+  // on its first time field.
+  it('adds the 24-hour hint to the description only when asked, so a form states it once', () => {
     renderWithMantine(<Harness initial="" />);
+    expect(screen.getByText('Only trains at RDG at or after this time.')).toBeInTheDocument();
+    expect(screen.queryByText(/24-hour clock/)).not.toBeInTheDocument();
+  });
+
+  it('appends the 24-hour hint with clockHint', () => {
+    renderWithMantine(
+      <TimeFilterInput
+        clockHint
+        label="Earliest departure (optional)"
+        name="earliest departure"
+        description="Only trains at RDG at or after this time."
+        value=""
+        onChange={() => {}}
+        onIncompleteChange={() => {}}
+        error={null}
+      />,
+    );
     expect(
-      screen.getByText('Only trains at RDG at or after this time. Uses a 24-hour clock, e.g. 19:00 for 7pm.'),
+      screen.getByText('Only trains at RDG at or after this time. 24-hour clock, e.g. 19:00.'),
     ).toBeInTheDocument();
   });
 

@@ -67,7 +67,7 @@ describe('AddMcpServerLinks', () => {
     expect(screen.getByLabelText('Gemini CLI command')).toHaveValue(
       `gemini mcp add --transport http distant-signal ${ENDPOINT}`,
     );
-    expect(screen.getByText('Then run /mcp auth distant-signal in Gemini CLI to sign in.')).toBeInTheDocument();
+    expect(screen.getByText('Then run /mcp auth distant-signal in Gemini CLI to log in.')).toBeInTheDocument();
   });
 
   it('links to /connect-claude from the Claude.ai steps', () => {

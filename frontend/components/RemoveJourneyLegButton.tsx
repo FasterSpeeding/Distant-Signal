@@ -6,6 +6,7 @@ import { Button, Group, Modal, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** 2026-09-22 UX review finding I14/2.4: a leg created WITHOUT a search
  * window (a direct `pin`/`knownTrain` pick) has no persisted window to
@@ -69,8 +70,7 @@ export function RemoveJourneyLegButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('remove', 'this leg', response));
         }
         setRemoving(false);
         return;
@@ -81,7 +81,7 @@ export function RemoveJourneyLegButton({
         router.refresh();
       }
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('remove', 'this leg'));
       setRemoving(false);
     }
   }

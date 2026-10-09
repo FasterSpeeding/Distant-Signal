@@ -1,5 +1,5 @@
-/** Renders the gap between two instants as "just now" / "Nm ago" / "Nh
- * ago" / "Nd ago". A negative gap (clock skew — `from` in the future
+/** Renders the gap between two instants as "just now" / "4 min ago" /
+ * "3 hr ago" / "2 days ago" (docs/style-guide.md, units). A negative gap (clock skew — `from` in the future
  * relative to `to`) is clamped to zero rather than shown as e.g. "-2m
  * ago", matching the same defensive clamp used for poller poll-interval
  * math (see `crates/common/src/ingest.rs`'s `duration_until_next_poll`). */
@@ -7,11 +7,11 @@ export function relativeTime(from: Date, to: Date): string {
   const diffMinutes = Math.max(0, Math.floor((to.getTime() - from.getTime()) / 60_000));
 
   if (diffMinutes < 1) return 'just now';
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
 
   const diffHours = Math.floor(diffMinutes / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) return `${diffHours} hr ago`;
 
   const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays}d ago`;
+  return `${diffDays} ${diffDays === 1 ? 'day' : 'days'} ago`;
 }

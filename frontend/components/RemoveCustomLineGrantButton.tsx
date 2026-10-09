@@ -6,6 +6,7 @@ import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Stops sharing a custom line with a group -- the member who shared it
  * (always the line's owner), or any `admin`/`owner`, may click this (the
@@ -47,8 +48,7 @@ export function RemoveCustomLineGrantButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('remove', 'this line from the group', response));
         }
         setRemoving(false);
         return;
@@ -56,7 +56,7 @@ export function RemoveCustomLineGrantButton({
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('remove', 'this line from the group'));
       setRemoving(false);
     }
   }

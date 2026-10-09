@@ -59,7 +59,7 @@ export const config = {
   matcher: [
     {
       source:
-        '/((?!(?:api|_next/static|_next/image)(?:/|$)|(?:healthz|favicon\\.ico|robots\\.txt|\\.well-known/security\\.txt|sw\\.js|sw-cache-rules\\.js|offline\\.html|manifest\\.webmanifest|icon\\.svg|apple-icon\\.png|icon-192\\.png|icon-512\\.png)$).*)',
+        '/((?!(?:api|_next/static|_next/image)(?:/|$)|(?:healthz|favicon\\.ico|robots\\.txt|\\.well-known/security\\.txt|sw\\.js|sw-cache-rules\\.js|offline\\.html|manifest\\.webmanifest|icon\\.svg|apple-icon\\.png|icon-192\\.png|icon-512\\.png|icon-maskable-512\\.png|opengraph-image\\.png)$).*)',
     },
   ],
 };

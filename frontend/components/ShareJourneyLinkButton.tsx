@@ -11,8 +11,9 @@ import { ShareIcon } from './ShareIcon';
 import type { JourneyShareLink } from '@/lib/types';
 import { readShareLinkBody } from '@/lib/freshLinkToken';
 import { formatDate } from '@/lib/dateFormat';
+import { describeFailure } from '@/lib/failure';
 
-const COPIED_LABEL = 'Copied!';
+const COPIED_LABEL = 'Copied';
 const COPIED_TIMEOUT_MS = 2000;
 
 /** The journey-detail-page "unlisted link" control -- a deliberate hybrid
@@ -116,7 +117,7 @@ export function ShareJourneyLinkButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          setError(shareLink ? 'Could not create a new share link.' : 'Could not create a share link.');
+          setError(describeFailure('create', shareLink ? 'a new share link' : 'a share link', response.status));
         }
         setBusy(false);
         return;
@@ -127,7 +128,7 @@ export function ShareJourneyLinkButton({
       router.refresh();
       setBusy(false);
     } catch {
-      setError(shareLink ? 'Could not create a new share link.' : 'Could not create a share link.');
+      setError(describeFailure('create', shareLink ? 'a new share link' : 'a share link'));
       setBusy(false);
     }
   }
@@ -142,7 +143,7 @@ export function ShareJourneyLinkButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          setError('Could not extend the share link.');
+          setError(describeFailure('extend', 'the share link', response.status));
         }
         setBusy(false);
         return;
@@ -151,7 +152,7 @@ export function ShareJourneyLinkButton({
       router.refresh();
       setBusy(false);
     } catch {
-      setError('Could not extend the share link.');
+      setError(describeFailure('extend', 'the share link'));
       setBusy(false);
     }
   }
@@ -166,7 +167,7 @@ export function ShareJourneyLinkButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          setError('Could not revoke the share link.');
+          setError(describeFailure('revoke', 'the share link', response.status));
         }
         setBusy(false);
         return;
@@ -176,7 +177,7 @@ export function ShareJourneyLinkButton({
       router.refresh();
       setBusy(false);
     } catch {
-      setError('Could not revoke the share link.');
+      setError(describeFailure('revoke', 'the share link'));
       setBusy(false);
     }
   }

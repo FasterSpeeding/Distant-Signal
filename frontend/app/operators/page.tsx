@@ -5,19 +5,14 @@ import { withStaleFallback } from '@/lib/liveDataCache';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { severityRank } from '@/lib/severity';
 import type { OperatorSummary, Preferences } from '@/lib/types';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
-const METADATA_TITLE = 'Operators — Distant Signal';
-const METADATA_DESCRIPTION =
-  'Every train operator this app tracks — National Rail TOCs and TfL — with its current worst status and aggregate delay/cancellation figures at a glance.';
+const METADATA_TITLE = 'Operators';
+const METADATA_DESCRIPTION = "Every train operator, with its worst line status and today's delays and cancellations.";
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 // Fails closed to "nothing pinned" on a preferences-fetch failure, the
 // exact shape a 401 already returns (design spec Decision 5) -- same
@@ -63,8 +58,7 @@ export default async function OperatorsPage() {
             rather than inventing separate wording, so the two can't drift
             apart. */}
         <Text c="dimmed">
-          Every operator this app tracks, with its worst current line status and today&apos;s delay and cancellation
-          figures — worst first.
+          Each operator&apos;s worst line status and today&apos;s delays and cancellations, worst first.
         </Text>
       </Stack>
       {sortedOperators.length === 0 ? (

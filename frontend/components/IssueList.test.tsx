@@ -425,7 +425,7 @@ describe('IssueList', () => {
     // to shrink, rather than truncating to "MINOR DEL…" / a circled letter.
     // They now use class-based layout from app/globals.css instead of inline styles.
     expect(within(control).getByText('Minor Delays').closest('.issueRow__badge')).not.toBeNull();
-    expect(within(control).getByText('Knowledgebase').closest('.issueRow__meta')).not.toBeNull();
+    expect(within(control).getByText('National Rail incidents').closest('.issueRow__meta')).not.toBeNull();
     // The description is the element that gives way instead.
     expect(description).toHaveClass('issueRow__reason');
   });
@@ -439,7 +439,7 @@ describe('IssueList', () => {
     // or interactive. Checked via the CSS var Mantine's outline variant
     // resolves the colour into, since asserting an exact rendered shade
     // would be brittle.
-    const badge = within(control).getByText('Knowledgebase').closest('.mantine-Badge-root') as HTMLElement;
+    const badge = within(control).getByText('National Rail incidents').closest('.mantine-Badge-root') as HTMLElement;
     expect(badge.getAttribute('style')).toContain('--mantine-color-gray-outline');
     expect(badge.getAttribute('style')).not.toContain('--mantine-color-grape-outline');
   });
@@ -448,7 +448,7 @@ describe('IssueList', () => {
     renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
-    const badge = within(control).getByText('Knowledgebase').closest('.mantine-Badge-root') as HTMLElement;
+    const badge = within(control).getByText('National Rail incidents').closest('.mantine-Badge-root') as HTMLElement;
     fireEvent.mouseEnter(badge);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.queryByText(/Based on real train-movement data/)).not.toBeInTheDocument();
@@ -464,7 +464,7 @@ describe('IssueList', () => {
     renderWithMantine(<IssueList items={toItems([withCoverage])} now={NOW} />);
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
-    const badge = within(control).getByText('Trust-inferred').closest('.mantine-Badge-root') as HTMLElement;
+    const badge = within(control).getByText('Network Rail train reports').closest('.mantine-Badge-root') as HTMLElement;
     fireEvent.mouseEnter(badge);
     expect(
       await screen.findByText(
@@ -513,7 +513,7 @@ describe('IssueList', () => {
     const control = description.closest('button') as HTMLElement;
     const meta = control.querySelector('.issueRow__meta') as HTMLElement;
     const badgeTexts = Array.from(meta.querySelectorAll('.mantine-Badge-root')).map((el) => el.textContent);
-    expect(badgeTexts.indexOf('No Scheduled Service')).toBeLessThan(badgeTexts.indexOf('Knowledgebase'));
+    expect(badgeTexts.indexOf('No Scheduled Service')).toBeLessThan(badgeTexts.indexOf('National Rail incidents'));
   });
 
   it('marks up the collapsed row so it can stack on narrow viewports', () => {
@@ -851,10 +851,12 @@ describe('IssueList', () => {
       openFilters();
       const sourceGroup = screen.getByRole('group', { name: /^Source/ });
       expect(within(sourceGroup).getAllByRole('checkbox')).toHaveLength(3);
-      expect(within(sourceGroup).getByRole('checkbox', { name: 'Knowledgebase' })).toBeInTheDocument();
+      expect(within(sourceGroup).getByRole('checkbox', { name: 'National Rail incidents' })).toBeInTheDocument();
       expect(within(sourceGroup).getByRole('checkbox', { name: 'Planned' })).toBeInTheDocument();
-      expect(within(sourceGroup).getByRole('checkbox', { name: 'LDBWS-inferred' })).toBeInTheDocument();
-      expect(within(sourceGroup).queryByRole('checkbox', { name: 'Trust-inferred' })).not.toBeInTheDocument();
+      expect(within(sourceGroup).getByRole('checkbox', { name: 'National Rail live board' })).toBeInTheDocument();
+      expect(
+        within(sourceGroup).queryByRole('checkbox', { name: 'Network Rail train reports' }),
+      ).not.toBeInTheDocument();
       expect(within(sourceGroup).queryByRole('checkbox', { name: 'TfL' })).not.toBeInTheDocument();
     });
 

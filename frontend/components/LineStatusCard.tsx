@@ -6,11 +6,13 @@ import { StatusBadge } from './StatusBadge';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 import { LastUpdated } from './LastUpdated';
 import { UpcomingDisruptions } from './UpcomingDisruptions';
-import { worstStatus } from '@/lib/severity';
+import { runsNoTrains, worstStatus } from '@/lib/severity';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport } from '@/lib/types';
 
-export function LineStatusCard({ report }: { report: LineStatusReport }) {
+/** `showUpdated={false}` where the page states one "Updated" time for
+ * every card (`/status`). */
+export function LineStatusCard({ report, showUpdated = true }: { report: LineStatusReport; showUpdated?: boolean }) {
   const worst = worstStatus(report);
   const representative = representativeStatus(report.lineStatuses);
   return (
@@ -54,11 +56,11 @@ export function LineStatusCard({ report }: { report: LineStatusReport }) {
           </Group>
         )}
         <Text size="xs" c="dimmed">
-          {formatSampleSummary(representative)}
+          {runsNoTrains(worst.statusSeverity) ? 'No trains running' : formatSampleSummary(representative)}
         </Text>
         {/* A note, not a status: the badge above never reflects it. */}
         <UpcomingDisruptions upcoming={report.upcoming} compact />
-        <LastUpdated timestamp={report.computedAt} />
+        {showUpdated && <LastUpdated timestamp={report.computedAt} />}
       </Stack>
     </Card>
   );

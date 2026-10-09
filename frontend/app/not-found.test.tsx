@@ -14,7 +14,7 @@ describe('app-wide not-found page', () => {
   });
 
   it('names the tab and keeps the page out of search indexes', () => {
-    expect(metadata.title).toBe('Page not found — Distant Signal');
+    expect(metadata.title).toBe('Page not found');
     expect(metadata.robots).toEqual({ index: false });
   });
 });

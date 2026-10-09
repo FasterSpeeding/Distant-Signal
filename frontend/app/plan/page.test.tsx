@@ -74,7 +74,7 @@ describe('PlanPage (/plan)', () => {
 
   it('opens straight on the planner, with no "I know my route" toggle', async () => {
     await renderPage();
-    expect(screen.getByRole('heading', { name: 'Plan a Journey', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Plan a journey', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'From' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'To' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Find routes' })).toBeInTheDocument();
@@ -150,7 +150,7 @@ describe('PlanPage (/plan)', () => {
   });
 
   it('exports metadata matching its heading, without any per-visitor value', () => {
-    expect(metadata.title).toBe('Plan a Journey — Distant Signal');
-    expect(String(metadata.description)).toContain('No account needed to plan');
+    expect(metadata.title).toBe('Plan a journey');
+    expect(String(metadata.description)).toContain('track the one you pick');
   });
 });

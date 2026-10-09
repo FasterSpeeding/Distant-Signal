@@ -113,7 +113,7 @@ export function AccountMenu({
           closeMenuOnClick={false}
           {...(logoutOtherSessionsError && { color: 'red' })}
         >
-          {logoutOtherSessionsError ? 'Could not log out other sessions -- try again' : 'Log out other sessions'}
+          {logoutOtherSessionsError ? "Couldn't log out other sessions. Try again." : 'Log out other sessions'}
         </Menu.Item>
         {/* `closeMenuOnClick={false}`: the request is in flight and the
             item shows a disabled/busy state while it is, so closing the

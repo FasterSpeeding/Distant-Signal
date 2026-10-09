@@ -114,7 +114,9 @@ describe('AddCustomLineToGroupButton', () => {
     fireEvent.click(await screen.findByText('My Commute'));
     fireEvent.click(screen.getByRole('button', { name: 'Share with group' }));
 
-    expect(await screen.findByText('custom line not found')).toBeInTheDocument();
+    expect(
+      await screen.findByText("Couldn't add this line to the group. It may have been removed."),
+    ).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

@@ -174,11 +174,8 @@ describe('IncidentSearchForm', () => {
     const list = document.querySelector('[data-incident-results]') as HTMLElement;
     expect(list.textContent).toContain('South Western Main Line');
     expect(list.textContent).toContain('retired-line');
-    // Neutral gray tags like the affected-station ones, not blue (blue
-    // means planned: the "Planned Work" badge on the same row).
-    expect(within(list).getAllByTitle('Affected line')[0]!.closest('.mantine-Badge-root')).toHaveStyle({
-      '--badge-color': 'var(--mantine-color-gray-outline)',
-    });
+    // Plain dimmed text, not a pill per line: a row carries at most two badges.
+    expect(within(list).queryAllByTitle('Affected line')).toHaveLength(0);
   });
 
   it('collapses a long affected-lines list into a "+N more" badge', async () => {

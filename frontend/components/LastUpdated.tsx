@@ -8,7 +8,7 @@ import { formatDateTime } from '@/lib/dateFormat';
 
 const RELATIVE_TIME_TICK_MS = 30_000;
 
-/** Shows "{label} Xm ago", with the exact time in a tooltip (or plain,
+/** Shows "{label} 4 min ago", with the exact time in a tooltip (or plain,
  * with `withTooltip={false}`, for reuse inside another tooltip's content —
  * see `DataFreshnessInfo`, which nests three of these inside one outer
  * `Tooltip` rather than each showing its own).

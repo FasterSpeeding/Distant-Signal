@@ -46,9 +46,7 @@ describe('EtaBadge', () => {
   it('keeps the precise "propagated" technical description available to screen readers', () => {
     renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" />);
     expect(
-      screen.getByText(
-        "Estimated by Network Rail's TRUST movement feed, propagated forward from the train's last reported delay",
-      ),
+      screen.getByText("From Network Rail train reports, carried forward from the train's last reported delay"),
     ).toBeInTheDocument();
   });
 

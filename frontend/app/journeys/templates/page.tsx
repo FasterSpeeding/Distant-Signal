@@ -7,8 +7,11 @@ import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { RouteText } from '@/components/RouteArrow';
 import type { JourneyTemplateListItem } from '@/lib/types';
+import type { Metadata } from 'next';
 
 export const revalidate = 0;
+
+export const metadata: Metadata = { title: 'Your journey templates', robots: { index: false } };
 
 /** `/journeys/templates` -- the templates list, per
  * docs/superpowers/specs/2026-09-22-reusable-repeating-journeys-design.md
@@ -31,7 +34,7 @@ export default async function JourneyTemplatesPage() {
   return (
     <Stack p="lg" gap="md">
       <TextLink href="/track/mine" underline="always">
-        Back to my trains &amp; journeys
+        Back to my trains &amp; tickets
       </TextLink>
       <Title order={1}>Your journey templates</Title>
       {templates.length === 0 && (

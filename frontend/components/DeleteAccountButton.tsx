@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Group, List, Modal, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { clearBrowserAccountData } from '@/lib/browserAccountData';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** The phrase the visitor types to confirm, and the exact value `DELETE
  * /public/account` requires in its `confirm` body field
@@ -49,8 +50,7 @@ export function DeleteAccountButton() {
         if (response.status === 401) {
           setError('Your session has expired. Log in again, then delete your account.');
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('delete', 'your account', response));
         }
         setDeleting(false);
         return;
@@ -59,7 +59,7 @@ export function DeleteAccountButton() {
       router.push('/account/deleted');
       router.refresh();
     } catch {
-      setError('Request failed. Nothing was deleted; try again.');
+      setError(`${describeFailure('delete', 'your account')} Nothing was deleted.`);
       setDeleting(false);
     }
   }
@@ -87,7 +87,7 @@ export function DeleteAccountButton() {
           </Text>
           <Text size="sm">Our database backups are encrypted, and your data can stay in them for up to 14 days.</Text>
           <Text size="sm">
-            You sign in through a separate single sign-on account (or Discord), which this does not delete. Close that
+            You log in through a separate single sign-on account (or Discord), which this does not delete. Close that
             account there if you want it gone too.
           </Text>
           <Text size="sm">You may want to download your data first. This can&apos;t be undone.</Text>

@@ -1,8 +1,9 @@
 'use client';
 
-import { ActionIcon, useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
+import { ActionIcon, useComputedColorScheme, useMantineColorScheme, VisuallyHidden } from '@mantine/core';
 import type { MantineColorScheme } from '@mantine/core';
 import { useMounted } from '@mantine/hooks';
+import { useId } from 'react';
 
 const NEXT_SCHEME: Record<MantineColorScheme, MantineColorScheme> = {
   light: 'dark',
@@ -102,12 +103,20 @@ function IconSunMoon() {
  * tree. Rendering the layout's default until after mount keeps that first
  * client render identical to the server output; the real, possibly-stored
  * preference then takes over post-hydration. */
+/** The toggle's state, read after its fixed name ("Colour theme"). */
+const THEME_STATE: Record<'light' | 'dark' | 'auto', string> = {
+  light: 'Light. Switches to dark.',
+  dark: 'Dark. Switches to match your device.',
+  auto: 'Matches your device. Switches to light.',
+};
+
 export function ThemeToggle() {
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const computedColorScheme = useComputedColorScheme('light');
   const mounted = useMounted();
 
   const displayedScheme = mounted ? colorScheme : 'auto';
+  const stateId = useId();
   const displayedComputedScheme = mounted ? computedColorScheme : 'light';
 
   let icon: React.ReactNode;
@@ -120,12 +129,16 @@ export function ThemeToggle() {
   }
 
   return (
-    <ActionIcon
-      variant="outline"
-      onClick={() => setColorScheme(NEXT_SCHEME[colorScheme])}
-      aria-label={`Theme: ${displayedScheme}. Click to switch.`}
-    >
-      {icon}
-    </ActionIcon>
+    <>
+      <ActionIcon
+        variant="outline"
+        onClick={() => setColorScheme(NEXT_SCHEME[colorScheme])}
+        aria-label="Colour theme"
+        aria-describedby={stateId}
+      >
+        {icon}
+      </ActionIcon>
+      <VisuallyHidden id={stateId}>{THEME_STATE[displayedScheme]}</VisuallyHidden>
+    </>
   );
 }

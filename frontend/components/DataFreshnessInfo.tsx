@@ -34,7 +34,7 @@ export function DataFreshnessInfo({ freshness }: { freshness: DataFreshness }) {
       label={
         <Stack gap={2}>
           {freshnessRow('Stations', freshness.stations)}
-          {freshnessRow('TOCs', freshness.tocs)}
+          {freshnessRow('Operators', freshness.tocs)}
           {freshnessRow('Incidents', freshness.incidents)}
           {freshnessRow('TfL', freshness.tfl)}
           {freshnessRow('Schedule feed', freshness.schedule_feed)}

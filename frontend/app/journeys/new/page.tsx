@@ -4,6 +4,7 @@ import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
 import { getTrainSearchDates } from '@/lib/api';
 import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 /** `/journeys/new` -- the app's primary, nav-linked entry point for
  * tracking something (`lib/navLinks.ts`'s `TRACK_JOURNEY_DESTINATION`).
@@ -68,16 +69,10 @@ import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
  * journey exists) already has its own equivalent 401 handling too -- this
  * page adds no login-prompt logic of its own; both reused components
  * bring their own. */
-const METADATA_TITLE = 'Track a Journey — Distant Signal';
-const METADATA_DESCRIPTION =
-  'Track a whole journey, start to finish — pin a specific train or search a time window for leg 1, then add another leg right here if your trip involves a change of trains. A single train is already a complete journey; stop whenever you like.';
+const METADATA_TITLE = 'Track a journey';
+const METADATA_DESCRIPTION = 'Track a journey of one or more trains, from start to finish.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 export default async function JourneysNewPage() {
   // The planner's date picker ends where the timetable search does
@@ -87,11 +82,11 @@ export default async function JourneysNewPage() {
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Track a Journey</Title>
+      <Title order={1}>Track a journey</Title>
       <Text c="dimmed">
-        Pin a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked you
-        can add another leg right here — for a journey with a change of trains — or stop now; a single train is already
-        a complete journey.
+        Track a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked
+        you can add another leg right here — for a journey with a change of trains — or stop now; a single train is
+        already a complete journey.
       </Text>
       <Text size="sm" c="dimmed">
         Tracking a journey needs a Distant Signal account — you&apos;ll be sent to log in when you save if you

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Alert, Button, Loader, Group, Stack, Text, Title } from '@mantine/core';
 import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
 import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
+import { describeFailure } from '@/lib/failure';
 
 /** Plain exclamation-in-a-circle, in the same inline-SVG house style as
  * `components/InfoIcon.tsx` (`@tabler/icons-react` is not a project
@@ -125,7 +126,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
   const [state, setState] = useState<CallbackState>(() =>
     serverUrl
       ? { kind: 'connecting' }
-      : { kind: 'error', message: 'The rail data service is not configured on this deployment.' },
+      : { kind: 'error', message: "The rail data service isn't available on this site." },
   );
 
   // FE-9: the one-time exchange for this mount. `consumeAndVerifyState` is
@@ -145,9 +146,9 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
     setReconnectError(null);
     try {
       await startMcpSignIn(url);
-    } catch (err) {
+    } catch {
       setReconnecting(false);
-      setReconnectError(err instanceof Error ? err.message : 'Signing in could not be started.');
+      setReconnectError(describeFailure('start', 'logging in'));
     }
   }
 
@@ -171,7 +172,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
       settled = true;
       setState({
         kind: 'error',
-        message: 'Connecting to the rail data service timed out. Please try again.',
+        message: 'Connecting to the rail data service timed out. Try again.',
       });
     }, AUTH_TIMEOUT_MS);
 
@@ -186,7 +187,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
         } else {
           setState({
             kind: 'error',
-            message: 'Authorization did not complete. Please try connecting again from the Chat page.',
+            message: "Authorization didn't finish. Connect again from the chat page.",
           });
         }
       })
@@ -224,8 +225,8 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
         <Alert color="red" icon={<ErrorIcon />} role="alert">
           <Stack gap="sm">
             <Text>We couldn&apos;t finish connecting to the rail data service.</Text>
-            {serverUrl && <Text>Reconnect to sign in again with a fresh connection.</Text>}
-            {reconnectError && <Text size="sm">Couldn&apos;t start signing in: {reconnectError}</Text>}
+            {serverUrl && <Text>Reconnect to log in again.</Text>}
+            {reconnectError && <Text size="sm">{reconnectError}</Text>}
             {/* `<Link>` wrapping a plain `Button`, not Mantine's
                 `component={Link}` polymorphic prop -- the same pattern
                 `components/ChatPanel.tsx`'s own "Track this train" button
@@ -240,7 +241,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
                 </Button>
               )}
               <Link href="/chat" style={{ textDecoration: 'none' }}>
-                <Button variant={serverUrl ? 'default' : 'filled'}>Back to Chat</Button>
+                <Button variant={serverUrl ? 'default' : 'filled'}>Back to chat</Button>
               </Link>
             </Group>
             <details>
@@ -257,10 +258,10 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>{state.kind === 'success' ? 'Connected, taking you to Chat…' : 'Connecting…'}</Title>
+      <Title order={1}>{state.kind === 'success' ? 'Connected, taking you to chat…' : 'Connecting…'}</Title>
       <Group gap="sm">
         {state.kind === 'connecting' && <Loader size="sm" />}
-        <Text c="dimmed">Finishing sign-in to the rail data service.</Text>
+        <Text c="dimmed">Finishing logging in to the rail data service.</Text>
       </Group>
     </Stack>
   );

@@ -72,7 +72,7 @@ export async function HalfHourlyCoverageTrendsResults({ id, from, to }: { id: st
   // fix, not assumed from the design doc alone.
   const heading = (
     <Title order={3} size="h6">
-      Full coverage
+      Every train
     </Title>
   );
 
@@ -95,7 +95,7 @@ export async function HalfHourlyCoverageTrendsResults({ id, from, to }: { id: st
       <Stack gap="xs">
         {heading}
         <Paper withBorder p="md">
-          <Text c="dimmed">Not enough full-coverage data yet for this line.</Text>
+          <Text c="dimmed">Not enough data for every train on this line yet.</Text>
         </Paper>
       </Stack>
     );

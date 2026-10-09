@@ -5,6 +5,8 @@ import { LoginLink } from '@/components/LoginLink';
 import { ChatPanel } from '@/components/ChatPanel';
 import { AddMcpServerLinks } from '@/components/AddMcpServerLinks';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
+import type { Metadata } from 'next';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 // Same reasoning as app/page.tsx's own `revalidate = 0` (and
 // track/mine/page.tsx's identical comment): no dynamic segment, so without
@@ -24,13 +26,21 @@ export const revalidate = 0;
  * available for your account' state, not a 404 -- the feature's existence
  * is not a secret"). `forbidden` only happens in the api's `group` mode;
  * with `CHATBOT_ACCESS=authenticated` every logged-in user is `allowed`. */
+/** Says plainly what answers here: an AI model, on the visitor's own key. */
+const CHAT_SUBLINE = 'Uses Claude with your own API key';
+
+export const metadata: Metadata = pageMetadata(
+  'Ask about trains',
+  'Ask about UK trains, departures and disruption in plain English. Uses Claude with your own API key.',
+);
+
 export default async function ChatPage() {
   const access = await getChatbotAccess();
 
   if (access.status === 'unauthenticated') {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>Chat</Title>
+        <Title order={1}>Ask about trains</Title>
         {/* Server-rendered, same pattern as
             app/train/by-id/[trackingId]/page.tsx's own
             ApiUnauthorizedError branch: a link-unfurler bot or a
@@ -40,8 +50,8 @@ export default async function ChatPage() {
             branch needs it -- the `forbidden` branch below already has
             real server-rendered content of its own, and the success
             branch is real content too. */}
-        <LoginLink underline="always">Sign in to ask about live departures, disruptions and journeys</LoginLink>
-        <AutoOpenLoginPrompt>Sign in to ask about live departures, disruptions and journeys.</AutoOpenLoginPrompt>
+        <LoginLink underline="always">Log in to ask about live departures, disruptions and journeys</LoginLink>
+        <AutoOpenLoginPrompt>Log in to ask about live departures, disruptions and journeys.</AutoOpenLoginPrompt>
       </Stack>
     );
   }
@@ -54,7 +64,7 @@ export default async function ChatPage() {
   if (access.status === 'forbidden') {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>Chat</Title>
+        <Title order={1}>Ask about trains</Title>
         <Text c="dimmed">Not available for your account yet.</Text>
         {/* Review §3.1.2: this used to be a dead end for every logged-in,
             non-allowlisted visitor. The MCP server has its own access
@@ -64,14 +74,13 @@ export default async function ChatPage() {
         {mcpServerUrl ? (
           <>
             <Text>
-              This embedded chat is only available to a limited allowlist right now. If your account has access to the
-              Distant Signal MCP server, you can ask your own assistant about live departures, disruptions and journeys
-              instead — see below.
+              Chat is open to a small group of accounts for now. If your account can use the Distant Signal MCP server,
+              ask your own assistant instead, as below.
             </Text>
             <AddMcpServerLinks mcpPublicUrl={mcpServerUrl} />
           </>
         ) : (
-          <Text>This embedded chat is only available to a limited allowlist right now.</Text>
+          <Text>Chat is open to a small group of accounts for now.</Text>
         )}
       </Stack>
     );
@@ -80,15 +89,18 @@ export default async function ChatPage() {
   if (!mcpServerUrl) {
     return (
       <Stack p="lg" gap="md">
-        <Title order={1}>Chat</Title>
-        <Text c="dimmed">Chat is not configured on this deployment.</Text>
+        <Title order={1}>Ask about trains</Title>
+        <Text c="dimmed">Chat isn&apos;t available on this site.</Text>
       </Stack>
     );
   }
 
   return (
     <Stack p="lg" gap="md" h="100%">
-      <Title order={1}>Chat</Title>
+      <Stack gap={4}>
+        <Title order={1}>Ask about trains</Title>
+        <Text c="dimmed">{CHAT_SUBLINE}</Text>
+      </Stack>
       <ChatPanel mcpServerUrl={mcpServerUrl} />
       {/* The MCP server's own access rule is flipped together with this
           api's (CHATBOT_ACCESS), so the "only accounts that have been

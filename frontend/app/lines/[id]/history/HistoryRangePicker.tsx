@@ -179,6 +179,7 @@ export function HistoryRangePicker({
         <>
           <Group align="end">
             <DatePickerInput
+              valueFormat="D MMM YYYY"
               type="range"
               label="Pick a date range"
               placeholder="Pick dates range"

@@ -76,7 +76,7 @@ export function TicketSummary({
             badge (components/IssueList.tsx:366-372): without a `color`,
             Mantine falls back to theme.primaryColor, making this read as
             branded or interactive. It's provenance, not brand. */}
-        <Badge variant="outline" size="sm" color="gray">
+        <Badge tt="none" variant="outline" size="sm" color="gray">
           {SOURCE_LABELS[ticket.source]}
         </Badge>
         {/* The one viewer-local timestamp in the app, and deliberately so:

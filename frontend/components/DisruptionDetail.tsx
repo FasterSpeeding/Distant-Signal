@@ -18,7 +18,7 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
     <Stack gap="xs">
       {impactLabel && (
         <Group gap="xs">
-          <Badge variant="light" color="orange" w="fit-content">
+          <Badge tt="none" variant="light" color="orange" w="fit-content">
             {impactLabel}
           </Badge>
           {/* `impactType` only ever comes from the enricher's LLM output. */}
@@ -40,7 +40,7 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
       {disruption.affectedStops.length > 0 && (
         <Group gap="xs">
           {disruption.affectedStops.map((crs) => (
-            <Badge key={crs} variant="outline" color="gray">
+            <Badge tt="none" key={crs} variant="outline" color="gray">
               {crs}
             </Badge>
           ))}

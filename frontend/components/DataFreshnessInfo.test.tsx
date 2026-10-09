@@ -35,7 +35,7 @@ describe('DataFreshnessInfo', () => {
     // LineDefinitionTooltip.test.tsx).
     fireEvent.mouseEnter(screen.getByRole('button', { name: 'Data freshness' }));
     expect(await screen.findByText(/^Stations:/)).toBeInTheDocument();
-    expect(screen.getByText(/^TOCs:/)).toBeInTheDocument();
+    expect(screen.getByText(/^Operators:/)).toBeInTheDocument();
   });
 
   it('shows "never fetched" for a null timestamp', async () => {

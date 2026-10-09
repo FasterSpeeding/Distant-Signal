@@ -9,7 +9,7 @@ export default function TrackedTrainByUidNotFound() {
       <Title order={1} size="h2">
         Tracked train not found
       </Title>
-      <Text c="dimmed">No resolved tracked train matches that train and date.</Text>
+      <Text c="dimmed">We have no train with that ID on that date.</Text>
       <TextLink href="/track" underline="always">
         Track a train
       </TextLink>

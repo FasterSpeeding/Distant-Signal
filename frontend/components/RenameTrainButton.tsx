@@ -7,6 +7,7 @@ import { Button, Modal, Text, TextInput, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Imperative escape hatch for `TrackedTrainRowMenu` -- see
  * `DeleteTrainButtonHandle` (`DeleteTrainButton.tsx`) for why this exists. */
@@ -90,8 +91,7 @@ export const RenameTrainButton = forwardRef<
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('rename', 'this train', response));
         }
         setSaving(false);
         return;
@@ -100,7 +100,7 @@ export const RenameTrainButton = forwardRef<
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('rename', 'this train'));
       setSaving(false);
     }
   }

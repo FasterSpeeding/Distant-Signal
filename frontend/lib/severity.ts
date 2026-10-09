@@ -31,6 +31,17 @@ const SEVERITY_TABLE: Record<number, { label: string; group: SeverityGroup }> = 
   26: { label: 'Information', group: 'informational' },
 };
 
+/** Statuses under which the whole line runs no trains: a delay or
+ * cancellation figure for them would read "0.0 min · 0%". */
+const NO_TRAINS_SEVERITIES = new Set([1, 2, 4, 22, 23]);
+
+/** Whether `severity` means no trains run on the line at all (Closed,
+ * Suspended, Planned Closure, Service Closed, Not Running). Part closures
+ * still run trains on the rest of the line. */
+export function runsNoTrains(severity: number): boolean {
+  return NO_TRAINS_SEVERITIES.has(severity);
+}
+
 const GROUP_COLOR: Record<SeverityGroup, string> = {
   good: 'green',
   informational: 'gray',

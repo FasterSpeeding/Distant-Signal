@@ -24,6 +24,7 @@ import { useNeedsLogin } from '@/components/useNeedsLogin';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
 import type { CustomLineDetail } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
@@ -139,8 +140,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('save', 'this line', response));
         }
         setSubmitting(false);
         return;
@@ -152,7 +152,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       // field reset for free, with no manual work needed here.
       router.push(existingLine ? `/lines/${existingLine.id}` : '/lines');
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('save', 'this line'));
       setSubmitting(false);
     }
   }
@@ -166,7 +166,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           immediately below their own `<h1>` with nothing in between. */}
       <Text size="sm" c="dimmed">
         A custom line groups any stations and operators you choose into one line you can track status for — it&apos;s
-        private to you, and appears in your own All Lines table.
+        private to you, and appears in your own lines table.
       </Text>
       {/* Task 3.4.13: create-only -- an owner reaching the edit form is
           already signed in (the route 404s a non-owner before this ever
@@ -202,7 +202,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       />
       <Group align="end">
         <Autocomplete
-          label="Add station (CRS code)"
+          label="Add station"
           placeholder="e.g. Woking or WOK"
           value={stationInput}
           onChange={setStationInput}
@@ -237,6 +237,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         <Group gap="xs">
           {stations.map((crs, index) => (
             <Badge
+              tt="none"
               key={crs}
               title={nameByCode[crs]}
               rightSection={
@@ -306,7 +307,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
             onChange={setHeadcodePrefixes}
           />
           <TagsInput
-            label="Destination CRS filter"
+            label="Only trains to these stations"
             placeholder="e.g. AON"
             value={destinationCrsFilter}
             onChange={setDestinationCrsFilter}

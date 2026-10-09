@@ -4,7 +4,7 @@ import { Box, Container, Group, Text } from '@mantine/core';
 import { AppNavDrawer } from './AppNavDrawer';
 import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
-import { PrideToggle } from './PrideToggle';
+import { PrideModeApplier } from './PrideToggle';
 import { PrimaryNavLink } from './PrimaryNavLink';
 import { ThemeToggle } from './ThemeToggle';
 import {
@@ -284,7 +284,7 @@ export function AppNavBar({
             <Group gap="xs" wrap="nowrap">
               <DataFreshnessInfo freshness={freshness} />
               <ThemeToggle />
-              <PrideToggle />
+              <PrideModeApplier />
             </Group>
             {/* This boundary is load-bearing and has nothing to do with
                 data fetching: the anonymous branch of `AuthStatus` is

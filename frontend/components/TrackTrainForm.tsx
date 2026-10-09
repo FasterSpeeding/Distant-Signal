@@ -30,6 +30,7 @@ import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
 import { addCalendarDays, nowInLondon, londonToday, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
 import type { BoardCallingPoint, CreateJourneyResponse, LineTrainSummaryLive } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
@@ -889,13 +890,12 @@ export function TrackTrainForm({
         return;
       }
       if (response.status === 400) {
-        const text = await response.text();
-        setFieldError(text || "Couldn't create the tracking pin. Try again.");
+        setFieldError(await failureFromResponse('track', 'this train', response));
         return;
       }
-      setFieldError("Couldn't create the tracking pin. Try again.");
+      setFieldError(describeFailure('track', 'this train', response.status));
     } catch {
-      setFieldError("Couldn't create the tracking pin. Try again.");
+      setFieldError(describeFailure('track', 'this train'));
     } finally {
       setSubmitting(false);
     }
@@ -954,13 +954,12 @@ export function TrackTrainForm({
         return;
       }
       if (response.status === 400) {
-        const text = await response.text();
-        setFieldError(text || "Couldn't search for a train. Try again.");
+        setFieldError(await failureFromResponse('search for', 'a train', response));
         return;
       }
-      setFieldError("Couldn't search for a train. Try again.");
+      setFieldError(describeFailure('search for', 'a train', response.status));
     } catch {
-      setFieldError("Couldn't search for a train. Try again.");
+      setFieldError(describeFailure('search for', 'a train'));
     } finally {
       setSubmitting(false);
     }
@@ -1029,7 +1028,7 @@ export function TrackTrainForm({
     if (!originValid || scheduledDeparture === null) {
       setFieldError(
         !originValid
-          ? 'Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.'
+          ? 'Pick an origin station from the suggestions, or enter its 3-letter code.'
           : 'Pick a scheduled departure before tracking.',
       );
       return;
@@ -1312,7 +1311,7 @@ export function TrackTrainForm({
         <Text c="dimmed">
           {mode === 'window'
             ? "Not sure which train yet? Tell us roughly when you're travelling — Origin, Destination and at least one of the times below — and we'll show you the matches to choose from. You can change your pick later."
-            : 'Pin a specific train to see its live position, delay and next calling point as Network Rail reports it.'}
+            : 'Track a specific train to see its live position, delay and next stop.'}
         </Text>
       )}
       <Stack gap="md" component="form" onSubmit={handleSubmit} maw={640}>
@@ -1327,7 +1326,7 @@ export function TrackTrainForm({
             loading: originSuggestionsLoading,
             noMatchMessage: 'No matching stations',
           })}
-          error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter CRS code' : null}
+          error={originTouched && originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
           // NOT the native `required` attribute (Task 3.6.14): an empty
           // origin is now validated by `handleSubmit` itself, which sets
           // `fieldError` and returns before ever calling `submitTrack` --
@@ -1397,7 +1396,7 @@ export function TrackTrainForm({
                 loading: destinationSuggestionsLoading,
                 noMatchMessage: 'No matching stations',
               })}
-              error={destinationCrs.length > 0 && !destinationValid ? 'Must be a 3-letter CRS code' : null}
+              error={destinationCrs.length > 0 && !destinationValid ? 'Must be a 3-letter station code' : null}
               // NOT the native `required` attribute -- same reasoning as the
               // Origin field's own comment above: a native `required` field
               // would let the browser's own constraint validation intercept
@@ -1409,6 +1408,7 @@ export function TrackTrainForm({
               // validation.
             />
             <DatePickerInput
+              valueFormat="D MMM YYYY"
               label="Date"
               // Review §2.2/M13: `windowServiceDate` is seeded with today's
               // real date above (not `null`), so this now shows an actual
@@ -1445,6 +1445,7 @@ export function TrackTrainForm({
             <Text size="sm">At least one of the four times below is required to search.</Text>
             <SimpleGrid cols={{ base: 1, sm: 2 }}>
               <TimeFilterInput
+                clockHint
                 label="Earliest departure (optional)"
                 name="earliest departure"
                 description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or after this time.`}

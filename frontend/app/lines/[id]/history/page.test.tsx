@@ -143,7 +143,7 @@ describe('LineHistoryPage', () => {
     const statuses = await screen.findAllByRole('status');
     const labels = statuses.map((s) => s.textContent);
     expect(labels).toContain('Loading trends…');
-    expect(labels).toContain('Loading full-coverage trends…');
+    expect(labels).toContain('Loading trends for every train…');
     for (const status of statuses) {
       expect(status).toHaveAttribute('aria-busy', 'true');
     }
@@ -188,7 +188,7 @@ describe('LineHistoryPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
     expect(await screen.findByText('Daily')).toBeInTheDocument();
     expect(screen.queryByText('30 min')).not.toBeInTheDocument();
-    expect(screen.getByText(/are not shown for this range/)).toBeInTheDocument();
+    expect(screen.getByText(/not available for this range/)).toBeInTheDocument();
   });
 
   it('switching to the Trends tab with no daily stats yet shows the sane fallback, not a crash', async () => {

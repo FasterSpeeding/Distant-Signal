@@ -81,7 +81,7 @@ describe('ShareButton', () => {
 
     await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(1));
     expect(writeTextMock).not.toHaveBeenCalled();
-    // No transient "Copied!" state either -- the OS's own share sheet
+    // No transient "Copied" state either -- the OS's own share sheet
     // already gave feedback.
     expect(screen.getByLabelText('Share this page')).toBeInTheDocument();
   });
@@ -98,7 +98,7 @@ describe('ShareButton', () => {
     });
   });
 
-  it('shows a transient "Copied!" state after a clipboard fallback, which reverts after ~2s', async () => {
+  it('shows a transient "Copied" state after a clipboard fallback, which reverts after ~2s', async () => {
     // Fake timers so the revert can be asserted deterministically instead
     // of actually waiting out the real 2s. `waitFor`'s own polling isn't
     // used here -- it relies on real timers under the hood, and vitest's
@@ -115,14 +115,14 @@ describe('ShareButton', () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByLabelText('Copied!')).toBeInTheDocument();
+    expect(screen.getByLabelText('Copied')).toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(2000);
     });
 
     expect(screen.getByLabelText('Share this page')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Copied!')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Copied')).not.toBeInTheDocument();
   });
 
   it('a cancelled native share (AbortError) does not fall back to the clipboard or error out', async () => {
@@ -136,7 +136,7 @@ describe('ShareButton', () => {
 
     await waitFor(() => expect(shareMock).toHaveBeenCalledTimes(1));
     expect(writeTextMock).not.toHaveBeenCalled();
-    // Stays on the default label -- no "Copied!" state, and no thrown
+    // Stays on the default label -- no "Copied" state, and no thrown
     // error breaks the click.
     expect(screen.getByLabelText('Share this page')).toBeInTheDocument();
   });

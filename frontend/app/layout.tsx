@@ -15,38 +15,26 @@ import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
 import { getChatbotAccess, getDataFreshness, getMyGroups, getSessionOrLoggedOut, LOGGED_OUT_SESSION } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { NONCE_HEADER } from '@/lib/csp';
+import { previewCards, SITE_DESCRIPTION, SITE_NAME, TITLE_TEMPLATE } from '@/lib/pageMetadata';
+import { getConfiguredSiteOrigin } from '@/lib/siteOrigin';
 import type { DataFreshness } from '@/lib/types';
 
-// Site-wide fallback metadata, and still the live fallback for every route
-// that has not overridden it (`/chat`, `/connect-claude`, and the smaller
-// sub-pages -- `/lines/new`, `/groups/new`, `/track/mine` and friends --
-// still inherit this wholesale; that is not an audit, just a pointer). A
-// page that wants its own link-preview card overrides `title`/`description`
-// and adds its own `openGraph`/`twitter`: the five detail routes do it via
-// `generateMetadata` (see `app/train/[uid]/[date]/page.tsx` for the
-// canonical shape), and the seven top-level pages -- `/`,
-// `/incidents`, `/trains`, `/stations`, `/lines`, `/track` and `/groups` --
-// via a static `export const metadata`. Note that Next merges these
-// per-field, not per-object: a page that sets `title` but no `openGraph`
-// inherits NOTHING into `og:title` (there is no `openGraph` here to
-// inherit), which is exactly why each of those pages repeats the pair into
-// all three slots.
+// Site-wide metadata. Every page names itself (its h1) as `title` and the
+// template adds the site name; lib/pageMetadata.ts builds each page's
+// description and link-preview card. Next merges metadata per top-level
+// field, so a page that sets `openGraph` replaces this one: the defaults
+// below only cover a page that sets none.
 //
-// Deliberately no `metadataBase`: it exists only to resolve RELATIVE URLs
-// in metadata into absolute ones, and nothing in this app emits a metadata
-// URL at all -- no `openGraph.images`, no `openGraph.url`, no
-// `alternates.canonical`, on any route (grep for those before assuming
-// otherwise). With nothing to resolve, a `metadataBase` would be an
-// unused, deploy-environment-specific hostname to keep correct, and this
-// app has no configured public base URL to source one from
-// (`NEXT_PUBLIC_RAILMCP_PUBLIC_URL` is the MCP server's address, not this
-// site's). Add one here -- and only here -- the day a route gains an OG
-// image or a canonical URL; Next will warn at build time if that day
-// arrives and this is still absent.
-export const metadata: Metadata = {
-  title: 'Distant Signal',
-  description:
-    'A personal UK rail companion: at-a-glance line status, live train tracking, and ticket/Delay-Repay support — with first-class handling of operators whose routes share trunk track, so an incident is only ever flagged on the lines it actually affects.',
+// The preview image is public/opengraph-image.png (lib/pageMetadata.ts's
+// PREVIEW_IMAGE). Next needs `metadataBase` to make its URL absolute; it comes from NEXT_PUBLIC_SITE_URL (the chart
+// sets it on the pod), read per request in `generateMetadata` below, the
+// same way app/robots.ts reads it. Without it Next falls back to
+// localhost, which only matters for local runs.
+export const SITE_METADATA: Metadata = {
+  // Every page sets its own name (its h1) as `title`; the template adds
+  // the site name. lib/pageMetadata.ts builds the matching preview card.
+  title: { default: SITE_NAME, template: TITLE_TEMPLATE },
+  description: SITE_DESCRIPTION,
   // `capable: false` is required, not redundant: Next's own
   // `resolveAppleWebApp` (node_modules/next/dist/lib/metadata/resolvers/
   // resolve-basics.js) defaults `capable` to `true` whenever `appleWebApp`
@@ -61,7 +49,13 @@ export const metadata: Metadata = {
     capable: false,
     statusBarStyle: 'black-translucent',
   },
+  ...previewCards(SITE_NAME, SITE_DESCRIPTION),
 };
+
+export function generateMetadata(): Metadata {
+  const origin = getConfiguredSiteOrigin();
+  return origin ? { ...SITE_METADATA, metadataBase: new URL(origin) } : SITE_METADATA;
+}
 
 // `colorScheme`'s 'light' is the same deterministic pre-mount fallback
 // ThemeToggle.tsx's own useComputedColorScheme('light') call already uses —

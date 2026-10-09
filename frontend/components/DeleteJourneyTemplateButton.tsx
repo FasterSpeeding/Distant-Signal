@@ -6,6 +6,7 @@ import { Button, Group, Modal, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Deletes a journey template the caller owns
  * (`DELETE /JourneyTemplates/{id}`). Every journey this template ever
@@ -38,15 +39,14 @@ export function DeleteJourneyTemplateButton({ templateId }: { templateId: number
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('delete', 'this template', response));
         }
         setDeleting(false);
         return;
       }
       router.push('/journeys/templates');
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('delete', 'this template'));
       setDeleting(false);
     }
   }

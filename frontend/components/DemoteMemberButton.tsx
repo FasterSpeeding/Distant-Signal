@@ -6,6 +6,7 @@ import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** `owner`-only "Demote to member" control -- the inverse of
  * `PromoteMemberButton`, gated the same way (the backend's `demote_member`
@@ -42,8 +43,7 @@ export function DemoteMemberButton({ groupId, userId, name }: { groupId: string;
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('change', "this member's role", response));
         }
         setDemoting(false);
         return;
@@ -51,7 +51,7 @@ export function DemoteMemberButton({ groupId, userId, name }: { groupId: string;
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('change', "this member's role"));
       setDemoting(false);
     }
   }

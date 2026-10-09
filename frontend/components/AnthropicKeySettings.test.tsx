@@ -11,10 +11,10 @@ describe('AnthropicKeySettings', () => {
 
   it('shows the one-time disclosure text and no key set state', () => {
     renderWithMantine(<AnthropicKeySettings />);
-    const disclosure = screen.getByText(/stored only in your browser/i);
+    const disclosure = screen.getByText(/saved in this browser/i);
     // A product notice: grape, not blue (docs/style-guide.md "Alerts").
     expect(disclosure.closest('.mantine-Alert-root')).toHaveStyle({ '--alert-bg': 'var(--mantine-color-grape-light)' });
-    expect(screen.getByText(/never (sent to|seen by) (any )?distant signal/i)).toBeInTheDocument();
+    expect(screen.getByText(/distant signal.s servers never/i)).toBeInTheDocument();
     expect(screen.getByText(/no key set/i)).toBeInTheDocument();
   });
 

@@ -75,7 +75,7 @@ describe('DeleteTrainButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm stop tracking' }));
 
     await waitFor(() => {
-      expect(screen.getByText('no tracked train with that id')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't remove this train. It may have been removed.")).toBeInTheDocument();
     });
     expect(pushMock).not.toHaveBeenCalled();
   });

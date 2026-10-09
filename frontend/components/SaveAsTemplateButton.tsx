@@ -7,6 +7,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { CreateJourneyTemplateRequest, CreateJourneyTemplateResponse } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** "Make this a template" — journey-detail-page header button
  * (docs/superpowers/specs/2026-09-22-reusable-repeating-journeys-design.md
@@ -55,8 +56,7 @@ export function SaveAsTemplateButton({ journeyId }: { journeyId: number }) {
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('save', 'this template', response));
         }
         setSubmitting(false);
         return;
@@ -66,7 +66,7 @@ export function SaveAsTemplateButton({ journeyId }: { journeyId: number }) {
       close();
       router.push(`/journeys/templates/${result.templateId}`);
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('save', 'this template'));
       setSubmitting(false);
     }
   }

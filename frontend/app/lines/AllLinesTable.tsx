@@ -41,11 +41,35 @@ import {
 } from '@/lib/sampleStats';
 import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
+import { fullTitle } from '@/lib/pageMetadata';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 interface SortState {
   field: SortField;
   direction: 'asc' | 'desc';
+}
+
+/** Feather-style chevrons: up, down, or both stacked for an unsorted
+ * column. 12px, `currentColor`, decorative. */
+function SortChevron({ direction }: { direction: 'asc' | 'desc' | null }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      data-sort-chevron={direction ?? 'none'}
+    >
+      {direction !== 'desc' && <polyline points={direction === 'asc' ? '6 15 12 9 18 15' : '7 10 12 5 17 10'} />}
+      {direction !== 'asc' && <polyline points={direction === 'desc' ? '6 9 12 15 18 9' : '7 14 12 19 17 14'} />}
+    </svg>
+  );
 }
 
 /** A neutral glyph on every sortable column, not just the active one:
@@ -55,9 +79,8 @@ interface SortState {
 function SortGlyph({ field, sort }: { field: SortField; sort: SortState | null }) {
   const active = sort?.field === field;
   return (
-    <Text span size="xs" c="dimmed" aria-hidden>
-      {' '}
-      {active ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}
+    <Text span size="xs" c="dimmed" aria-hidden style={{ marginInlineStart: 4, verticalAlign: 'middle' }}>
+      <SortChevron direction={active ? sort.direction : null} />
     </Text>
   );
 }
@@ -228,7 +251,7 @@ export function AllLinesTable({
   useEffect(() => {
     unfilteredTitleRef.current ??= document.title;
     document.title = statusGroupFilter
-      ? `${SEVERITY_GROUP_LABELS[statusGroupFilter]} on All Lines — Distant Signal`
+      ? fullTitle(`Lines: ${SEVERITY_GROUP_LABELS[statusGroupFilter]}`)
       : unfilteredTitleRef.current;
   }, [statusGroupFilter]);
 
@@ -472,11 +495,11 @@ export function AllLinesTable({
       )}
       {/* `TableScrollContainer` (same pattern, same `minWidth`, as
           `components/JourneyTimeline.tsx`): from the `sm` breakpoint up
-          this table is five columns (Name, Status, Avg Delay, Cancelled,
+          this table is five columns (Name, Status, Avg delay, Cancelled,
           Pin), and the Status column's badge deliberately doesn't truncate
           (see the `data-status-badge` comment below, Task 3.4.1), so a
           real minimum width is genuinely needed there. Below `sm` only
-          Name + Status + Pin are visible (Avg Delay/Cancelled fold into
+          Name + Status + Pin are visible (Avg delay/Cancelled fold into
           the Name cell's own sub-line instead -- see the `hiddenFrom="sm"`
           summary line below), which fits comfortably under 390px on its
           own; the same flat `420px` floor applied there anyway forced a
@@ -506,7 +529,7 @@ export function AllLinesTable({
                 the `<th>` itself: a bare cell with a click handler is not
                 focusable and cannot be triggered from the keyboard, which
                 made the whole sorting feature mouse-only. */}
-              {/* Task 3.4.7: `white-space: nowrap` so "Avg Delay ↕" (the
+              {/* Task 3.4.7: `white-space: nowrap` so "Avg delay ↕" (the
                 longest of the four labels) can't wrap its own sort glyph
                 onto a second line, orphaning it away from the label it
                 belongs to. */}
@@ -524,7 +547,7 @@ export function AllLinesTable({
               </TableTh>
               <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
                 <UnstyledButton onClick={() => toggleSort('avgDelay')} style={{ fontWeight: 'inherit' }}>
-                  Avg Delay
+                  Avg delay
                   <SortGlyph field="avgDelay" sort={sort} />
                 </UnstyledButton>
               </TableTh>
@@ -589,7 +612,7 @@ export function AllLinesTable({
                     // rule) -- otherwise "NO DATA" clips to "N…" in this same
                     // table at narrow widths.
                     <Tooltip label={noStatusReason(representative)}>
-                      <Badge color="gray" variant="outline" data-status-badge>
+                      <Badge tt="none" color="gray" variant="outline" data-status-badge>
                         NO DATA
                       </Badge>
                     </Tooltip>

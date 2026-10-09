@@ -54,7 +54,7 @@ describe('DeleteJourneyTemplateButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete template' }));
 
     await waitFor(() => {
-      expect(screen.getByText('no template with that id')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't delete this template. It may have been removed.")).toBeInTheDocument();
     });
     expect(pushMock).not.toHaveBeenCalled();
   });

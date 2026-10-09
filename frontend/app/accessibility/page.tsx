@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { ContactEmail, LegalPage, LegalSection, requireLegalPages } from '@/components/LegalPage';
 import { TextLink } from '@/components/TextLink';
 import { LEGAL_CONFIG, legalPageMetadata } from '@/lib/legal';
+import { withAbsoluteTitle } from '@/lib/pageMetadata';
 
 // ============================================================================
 // DRAFT -- REVIEW BEFORE PUBLISHING. The accessibility statement (LEG-15),
@@ -19,9 +20,11 @@ import { LEGAL_CONFIG, legalPageMetadata } from '@/lib/legal';
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(): Metadata {
-  return legalPageMetadata(
-    'Accessibility statement',
-    'How accessible Distant Signal is, known limitations, and how to ask for help.',
+  return withAbsoluteTitle(
+    legalPageMetadata(
+      'Accessibility statement',
+      'How accessible Distant Signal is, known limitations, and how to ask for help.',
+    ),
   );
 }
 

@@ -7,6 +7,7 @@ import { isSeverityGroup } from '@/lib/severity';
 import type { Preferences } from '@/lib/types';
 import { TextLink } from '@/components/TextLink';
 import { AllLinesTable } from './AllLinesTable';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
@@ -18,7 +19,7 @@ export const revalidate = 0;
  *
  * Static rather than an async `generateMetadata()` even though this route
  * DOES read `searchParams`: `generateMetadata` is handed `searchParams`
- * too, so a filter-aware title ("Severe Disruption on All Lines — Distant
+ * too, so a filter-aware title ("Lines: Severe Disruption — Distant
  * Signal") is technically reachable -- but `statusGroup` only ever seeds
  * `AllLinesTable`'s client-side filter (`initialStatusGroup` below, fed by
  * the dashboard's own counter-tile links in `app/status/page.tsx`'s
@@ -66,16 +67,10 @@ export const revalidate = 0;
  * below two distinct countries and today every reachable row is GB (see
  * `AllLinesTable`'s `countryOptions`), so describing it would promise a
  * control nobody currently sees. */
-const METADATA_TITLE = 'All Lines — Distant Signal';
-const METADATA_DESCRIPTION =
-  "Every National Rail and TfL line this app tracks — plus your own custom lines once you're logged in — in one sortable, operator-filterable table: worst current status, average delay and cancellation figures where available.";
+const METADATA_TITLE = 'Lines';
+const METADATA_DESCRIPTION = 'Every National Rail and TfL line, with its current status, delays and cancellations.';
 
-export const metadata: Metadata = {
-  title: METADATA_TITLE,
-  description: METADATA_DESCRIPTION,
-  openGraph: { title: METADATA_TITLE, description: METADATA_DESCRIPTION, type: 'website' },
-  twitter: { card: 'summary', title: METADATA_TITLE, description: METADATA_DESCRIPTION },
-};
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
 // The exact shape getPreferences() already returns for a 401, named so the
 // fallback below is typed as `Preferences` rather than inferred with
@@ -120,9 +115,9 @@ export default async function AllLinesPage({
     <Stack p="lg" gap="xl">
       <Stack gap="md">
         <Group justify="space-between" align="baseline">
-          <Title order={1}>All Lines</Title>
+          <Title order={1}>Lines</Title>
           <Group gap="md">
-            <TextLink href="/incidents">Incident Archive</TextLink>
+            <TextLink href="/incidents">Incidents</TextLink>
             <TextLink href="/lines/new">New custom line</TextLink>
           </Group>
         </Group>

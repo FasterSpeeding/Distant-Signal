@@ -29,7 +29,7 @@ describe('TRACK_JOURNEY_DESTINATION', () => {
 
 describe('PLAN_JOURNEY_DESTINATION', () => {
   it('points at the /plan page', () => {
-    expect(PLAN_JOURNEY_DESTINATION).toEqual({ href: '/plan', label: 'Plan a Journey' });
+    expect(PLAN_JOURNEY_DESTINATION).toEqual({ href: '/plan', label: 'Plan a journey' });
   });
 
   it('is not one of the always-inline primary links: the bar adds it itself, from lg up', () => {

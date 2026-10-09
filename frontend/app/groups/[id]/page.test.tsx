@@ -564,7 +564,7 @@ describe('GroupDetailPage', () => {
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
       fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
-      await waitFor(() => screen.getByText(/delete it for good/));
+      await waitFor(() => screen.getByText(/leaving deletes this group/));
     });
 
     it('does not warn about deleting the group for an owner with other members', async () => {
@@ -572,7 +572,7 @@ describe('GroupDetailPage', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
       await waitFor(() => screen.getByText(/lose access to every train shared/));
-      expect(screen.queryByText(/delete it for good/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/leaving deletes this group/)).not.toBeInTheDocument();
     });
 
     // Review §3.2.1: the owner leaving a group that survives (other members
@@ -609,7 +609,7 @@ describe('GroupDetailPage', () => {
       renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
 
       fireEvent.click(screen.getByRole('button', { name: 'Leave group' }));
-      await waitFor(() => screen.getByText(/delete it for good/));
+      await waitFor(() => screen.getByText(/leaving deletes this group/));
       expect(screen.queryByText(/will become the new owner/)).not.toBeInTheDocument();
     });
 

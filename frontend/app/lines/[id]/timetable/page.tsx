@@ -24,6 +24,8 @@ import type { LineCatalogueStation, LineTimetablePage } from '@/lib/types';
 import { ServiceRow, ServiceRowList } from '@/components/ServiceRow';
 import classes from '../LineTrains.module.css';
 import { TimetableMore, type TimetableQuery } from './TimetableMore';
+import { describeFailure } from '@/lib/failure';
+import { pageMetadata } from '@/lib/pageMetadata';
 
 const log = createLogger('app/lines/timetable');
 
@@ -80,8 +82,8 @@ function dateOptions(today: string): { value: string; label: string }[] {
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
   const { id } = await params;
   if (!/^[a-z0-9-]+$/.test(id)) notFound();
-  const title = `Timetable: ${await resolveLineName(id)} — Distant Signal`;
-  return { title, openGraph: { title, type: 'website' } };
+  const title = `Timetable: ${await resolveLineName(id)}`;
+  return pageMetadata(title, 'The booked timetable for this line, by day.');
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
@@ -251,7 +253,7 @@ export default async function LineTimetablePage({
   const heading = (
     <>
       <TextLink href={`/lines/${encodeURIComponent(id)}`} underline="always">
-        ← Back to {name}
+        <span aria-hidden="true">←</span> Back to {name}
       </TextLink>
       <Title order={1}>Timetable: {name}</Title>
     </>
@@ -264,7 +266,7 @@ export default async function LineTimetablePage({
         <Empty>
           {loaded.error === 'unpublished'
             ? `No timetable is published for this line on ${formatDate(`${date}T12:00:00Z`)}.`
-            : 'This timetable isn’t available right now. Please try again shortly.'}
+            : describeFailure('load', 'this timetable')}
         </Empty>
       </Stack>
     );

@@ -39,8 +39,8 @@ describe('OperatorTrendsResults', () => {
       await OperatorTrendsResults({ code: 'GR', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
     );
 
-    expect(screen.getByText(/flat line\. Rates shown are summed/)).toBeInTheDocument();
-    expect(screen.queryByText(/flat line\.Rates/)).not.toBeInTheDocument();
+    expect(screen.getByText(/too little data\. Summed across/)).toBeInTheDocument();
+    expect(screen.queryByText(/data\.Summed/)).not.toBeInTheDocument();
   });
 
   it('does not use "--" for a dash, and avoids the word "rollup", in the scope sentence', async () => {
@@ -62,6 +62,6 @@ describe('OperatorTrendsResults', () => {
       await OperatorTrendsResults({ code: 'GR', from: '2026-08-01T00:00:00Z', to: '2026-08-08T00:00:00Z' }),
     );
 
-    expect(container.querySelector('details summary')?.textContent).toBe('How these rates are calculated');
+    expect(container.querySelector('details summary')?.textContent).toBe('How this is calculated');
   });
 });

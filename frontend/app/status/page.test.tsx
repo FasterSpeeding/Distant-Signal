@@ -46,11 +46,11 @@ describe('NetworkStatusPage', () => {
     ]);
     renderWithMantine(await NetworkStatusPage());
 
-    const link = screen.getByRole('link', { name: '1 line with Severe Disruption — view in All Lines' });
+    const link = screen.getByRole('link', { name: '1 line with Severe Disruption — view in Lines' });
     expect(link).toHaveAttribute('href', '/lines?statusGroup=severe');
   });
 
-  it('does not link a zero-count tile, and shows "none" instead of "0"', async () => {
+  it('does not link a zero-count tile, and shows "0"', async () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 2 })] }),
     ]);
@@ -62,8 +62,10 @@ describe('NetworkStatusPage', () => {
     expect(screen.queryByRole('link', { name: /Informational/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Planned/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Minor Disruption/ })).not.toBeInTheDocument();
-    // "none" appears once per zero-count tile (four of the five groups).
-    expect(screen.getAllByText('none')).toHaveLength(4);
+    // "0" appears once per zero-count tile (four of the five groups).
+    expect(screen.getAllByText('0')).toHaveLength(4);
+    // One page-level "Updated" line, not one per card as well.
+    expect(screen.getAllByText(/^Updated/)).toHaveLength(1);
   });
 
   it('orders the counter tiles worst-first (regression: 2026-09-22 UX review §2.2, ascending Good..Severe read the answer last)', async () => {
@@ -99,7 +101,7 @@ describe('NetworkStatusPage', () => {
       report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 10 })] }),
     ]);
     renderWithMantine(await NetworkStatusPage());
-    expect(screen.getByRole('heading', { level: 1, name: 'Network Status' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Status' })).toBeInTheDocument();
     const sections = screen.getAllByRole('heading', { level: 2 });
     expect(sections.map((h) => h.textContent)).toEqual(expect.arrayContaining(['By mode', 'Lines to watch']));
     for (const heading of sections) {
@@ -190,11 +192,11 @@ describe('NetworkStatusPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading', () => {
-    expect(metadata.title).toBe('Network Status — Distant Signal');
+    expect(metadata.title).toBe('Status');
   });
 
   it('mirrors title/description into openGraph and twitter', () => {
-    expect(metadata.openGraph).toMatchObject({ title: metadata.title, type: 'website' });
-    expect(metadata.twitter).toMatchObject({ card: 'summary', title: metadata.title });
+    expect(metadata.openGraph).toMatchObject({ title: 'Status · Distant Signal', type: 'website' });
+    expect(metadata.twitter).toMatchObject({ card: 'summary_large_image', title: 'Status · Distant Signal' });
   });
 });

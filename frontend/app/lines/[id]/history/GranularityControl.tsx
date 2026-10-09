@@ -94,7 +94,7 @@ export function GranularityControl({
               it, so the bug passed every unit test and only showed up live (confirmed via a real dev
               server, textContent, not just the accessibility-tree snapshot). One template literal has
               no line-wrap boundary for either transform to collapse differently. */}
-          {`${unavailable.map((g) => LABELS[g]).join(', ')} ${unavailable.length === 1 ? 'is' : 'are'} not shown for this range -- it's wider than what's retained at that granularity, or would render too many points to read clearly.`}
+          {`${unavailable.map((g) => LABELS[g]).join(', ')} ${unavailable.length === 1 ? 'is' : 'are'} not available for this range.`}
         </Text>
       )}
     </Stack>

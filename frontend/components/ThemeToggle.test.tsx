@@ -17,7 +17,9 @@ describe('ThemeToggle', () => {
 
   it('starts on auto (the default) with a label stating so', () => {
     renderWithProvider();
-    expect(screen.getByLabelText('Theme: auto. Click to switch.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Colour theme' })).toHaveAccessibleDescription(
+      'Matches your device. Switches to light.',
+    );
   });
 
   it('cycles auto -> light -> dark -> auto on repeated clicks', () => {
@@ -25,13 +27,14 @@ describe('ThemeToggle', () => {
     const button = screen.getByRole('button');
 
     fireEvent.click(button);
-    expect(screen.getByLabelText('Theme: light. Click to switch.')).toBeInTheDocument();
+    expect(button).toHaveAccessibleName('Colour theme');
+    expect(button).toHaveAccessibleDescription('Light. Switches to dark.');
 
     fireEvent.click(button);
-    expect(screen.getByLabelText('Theme: dark. Click to switch.')).toBeInTheDocument();
+    expect(button).toHaveAccessibleDescription('Dark. Switches to match your device.');
 
     fireEvent.click(button);
-    expect(screen.getByLabelText('Theme: auto. Click to switch.')).toBeInTheDocument();
+    expect(button).toHaveAccessibleDescription('Matches your device. Switches to light.');
   });
 
   it('shows the sun-moon composite icon when in auto mode, changing to sun-only on light', () => {
@@ -46,7 +49,7 @@ describe('ThemeToggle', () => {
 
     fireEvent.click(button); // -> light
     // Explicit light mode should have a different icon now
-    expect(screen.getByLabelText('Theme: light. Click to switch.')).toBeInTheDocument();
+    expect(button).toHaveAccessibleDescription('Light. Switches to dark.');
   });
 
   it('shows SVG icons: sun-moon when auto, sun when light, moon when dark', () => {
@@ -92,8 +95,8 @@ describe('ThemeToggle', () => {
       </MantineProvider>,
     );
 
-    expect(html).toContain('Theme: auto. Click to switch.');
-    expect(html).not.toContain('Theme: dark. Click to switch.');
+    expect(html).toContain('Matches your device. Switches to light.');
+    expect(html).not.toContain('Dark. Switches to match your device.');
     // Should contain SVG markup, not emoji
     expect(html).toContain('<svg');
     expect(html).not.toContain('☀️');

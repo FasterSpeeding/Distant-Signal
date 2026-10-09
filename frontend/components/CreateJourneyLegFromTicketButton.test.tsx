@@ -82,7 +82,9 @@ describe('CreateJourneyLegFromTicketButton', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Create a journey leg from this ticket' }));
 
-    expect(await screen.findByText("Couldn't load a proposal for this ticket.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Couldn't load a journey leg for this ticket. It may have been removed."),
+    ).toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });
 
@@ -92,7 +94,7 @@ describe('CreateJourneyLegFromTicketButton', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Create a journey leg from this ticket' }));
 
-    expect(await screen.findByText("Couldn't load a proposal for this ticket.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load a journey leg for this ticket. Try again.")).toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,7 @@ import { Alert, Button, Group, Modal, Stack, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** `admin`/`owner`-only rename control for `PUT /groups/{id}` (spec §3:
  * "Rename the group | `admin` or `owner`"). A button that opens a modal
@@ -60,8 +61,7 @@ export function RenameGroupButton({ groupId, currentName }: { groupId: string; c
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('rename', 'this group', response));
         }
         setSubmitting(false);
         return;
@@ -70,7 +70,7 @@ export function RenameGroupButton({ groupId, currentName }: { groupId: string; c
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('rename', 'this group'));
       setSubmitting(false);
     }
   }

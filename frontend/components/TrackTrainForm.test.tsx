@@ -243,9 +243,7 @@ describe('TrackTrainForm', () => {
     expect(button).not.toBeDisabled();
     fireEvent.click(button);
     expect(
-      screen.getByText(
-        'Enter a valid origin station before tracking — pick one from the suggestions, or a 3-letter CRS code.',
-      ),
+      screen.getByText('Pick an origin station from the suggestions, or enter its 3-letter code.'),
     ).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
   });
@@ -267,13 +265,13 @@ describe('TrackTrainForm', () => {
     const field = screen.getByRole('combobox', { name: /Origin station/ });
     fireEvent.change(field, { target: { value: 'WATERLOO' } });
     fireEvent.blur(field);
-    expect(screen.getByText('Must be a 3-letter CRS code')).toBeInTheDocument();
+    expect(screen.getByText('Must be a 3-letter station code')).toBeInTheDocument();
   });
 
   it('does not show the origin error while still typing (no blur fired)', async () => {
     renderWithMantine(<TrackTrainForm />);
     fireEvent.change(screen.getByRole('combobox', { name: /Origin station/ }), { target: { value: 'Wok' } });
-    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
     // 'Wok' is a valid CRS -- see the previous test's comment on why this
     // awaits the departures effect before the test ends.
     await waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -284,7 +282,7 @@ describe('TrackTrainForm', () => {
     const field = screen.getByRole('combobox', { name: /Origin station/ });
     fireEvent.change(field, { target: { value: 'WAT' } });
     fireEvent.blur(field);
-    expect(screen.queryByText('Must be a 3-letter CRS code')).not.toBeInTheDocument();
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
     // See the earlier "does not show the origin error" test's comment on
     // why this awaits the departures effect before the test ends.
     await waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -518,7 +516,7 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't track this train. Try again.")).toBeInTheDocument();
   });
 
   it('on an empty-body 400, still shows the generic error message rather than nothing', async () => {
@@ -531,7 +529,7 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't track this train. Try again.")).toBeInTheDocument();
   });
 
   it('on a network failure, shows the generic error message instead of failing silently', async () => {
@@ -546,7 +544,7 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't track this train. Try again.")).toBeInTheDocument();
   });
 
   // Part A of the upload-first plan: `attachTicketId`, set when arriving
@@ -1197,7 +1195,7 @@ describe('TrackTrainForm', () => {
       // sibling needs a stand-in but this one, being asserted on its
       // rendered text rather than driven via `fireEvent.change`, does not.
       const dateButton = screen.getByLabelText('Date');
-      expect(dateButton).toHaveTextContent(nowInLondon().format('MMMM D, YYYY'));
+      expect(dateButton).toHaveTextContent(nowInLondon().format('D MMM YYYY'));
       expect(dateButton).not.toHaveTextContent('Today');
     });
 
@@ -1206,11 +1204,11 @@ describe('TrackTrainForm', () => {
     // owned by the page, so it reacts to the client-side toggle.
     it('switches the intro copy to describe window mode once selected', () => {
       renderWithMantine(<TrackTrainForm />);
-      expect(screen.getByText(/Pin a specific train to see its live position/)).toBeInTheDocument();
+      expect(screen.getByText(/Track a specific train to see its live position/)).toBeInTheDocument();
 
       switchToWindowMode();
 
-      expect(screen.queryByText(/Pin a specific train to see its live position/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Track a specific train to see its live position/)).not.toBeInTheDocument();
       expect(screen.getByText(/Not sure which train yet\?/)).toBeInTheDocument();
     });
   });
@@ -2456,7 +2454,7 @@ describe('TrackTrainForm', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
       await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
-      expect(screen.queryByText("Couldn't create the tracking pin. Try again.")).not.toBeInTheDocument();
+      expect(screen.queryByText("Couldn't track this train. Try again.")).not.toBeInTheDocument();
     });
 
     it('does not show the prompt at all when the user has zero groups', async () => {

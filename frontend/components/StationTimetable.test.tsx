@@ -435,9 +435,7 @@ describe('StationTimetable', () => {
     // documented Activity-API mount quirk.
     fireEvent.click(expand());
 
-    expect(
-      await screen.findByText(/only departures from this station -- trains that terminate here won't be listed/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Departures only. Trains that end here aren't listed/i)).toBeInTheDocument();
     expect(screen.queryByText(/operator is available/i)).not.toBeInTheDocument();
   });
 });

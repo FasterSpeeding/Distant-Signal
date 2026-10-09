@@ -22,6 +22,10 @@ import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/l
 import { RouteText } from './RouteArrow';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
+import { apiRefusalMessage, describeFailure, failureFromResponse } from '@/lib/failure';
+
+/** A failure already worded for the visitor (`describeFailure` or the API's own sentence). */
+class JourneyCreationError extends Error {}
 
 interface SegmentSelection {
   itinerary: TripPlanItinerary | null;
@@ -165,7 +169,7 @@ export function PlanTripFlow({
         setTooLarge(true);
         return;
       }
-      setPlanError(error instanceof TripPlanError ? error.message : 'Could not plan this trip. Please try again.');
+      setPlanError(error instanceof TripPlanError ? error.message : describeFailure('plan', 'this trip'));
     } finally {
       if (searchRequestId.current === requestId) setSearching(false);
     }
@@ -250,7 +254,7 @@ export function PlanTripFlow({
         return;
       }
       if (!createResponse.ok) {
-        throw new Error(await createResponse.text());
+        throw new JourneyCreationError(await failureFromResponse('create', 'this journey', createResponse));
       }
       const created = (await createResponse.json()) as CreateJourneyResponse;
 
@@ -309,7 +313,7 @@ export function PlanTripFlow({
             return;
           }
           if (!addResponse.ok) {
-            throw new Error(await addResponse.text());
+            throw new JourneyCreationError((await apiRefusalMessage(addResponse)) ?? '');
           }
         } catch (legError) {
           // Partial success: leg 1..i already exist. Tell the visitor
@@ -317,13 +321,13 @@ export function PlanTripFlow({
           // that DOES exist must not strand them (this plan's own Review
           // Focus, matching JourneyCreationFlow's own established
           // refetch-failure posture). Covers both an HTTP-error response
-          // (the `throw` above, whose `.message` is the backend's own
-          // plain-text body) and a genuine network exception (whose
-          // `.message` is the browser's own, e.g. "Failed to fetch").
-          const reason = legError instanceof Error ? legError.message : 'a network error';
+          // (the `throw` above, carrying the API's own sentence when it
+          // wrote one) and a genuine network exception, whose message is
+          // never shown.
+          const reason = legError instanceof JourneyCreationError && legError.message ? ` ${legError.message}` : '';
           setCreationError(
-            `Tracked ${i} of ${trainLegs.length} legs. Adding leg ${i + 1} failed: ${reason}. ` +
-              'You can add it manually from the journey page.',
+            `Tracked ${i} of ${trainLegs.length} legs. Couldn't add leg ${i + 1}.${reason} ` +
+              'You can add it from the journey page.',
           );
           // C1: do NOT call `onCreated` here -- see this component's own
           // doc comment. Store the already-created journey so the
@@ -337,7 +341,9 @@ export function PlanTripFlow({
 
       onCreated(created);
     } catch (error) {
-      setCreationError(error instanceof Error ? error.message : 'Could not create this journey. Please try again.');
+      setCreationError(
+        error instanceof JourneyCreationError ? error.message : describeFailure('create', 'this journey'),
+      );
     } finally {
       setCreating(false);
     }
