@@ -694,6 +694,7 @@ export function TrainSearchForm({
        * removed placeholder. */}
       <Group grow align="flex-start">
         <TimeFilterInput
+          clockHint
           label="Earliest departure (optional)"
           name="earliest departure"
           description={`Only trains at ${stationDisplay} at or after this time.`}
@@ -717,7 +718,7 @@ export function TrainSearchForm({
           <TimeFilterInput
             label="Earliest arrival (optional)"
             name="earliest arrival"
-            description={`Only trains reaching ${stopsAtDisplay} at or after this time -- separate from Earliest/Latest departure above, which are about ${stationDisplay}.`}
+            description={`Only trains reaching ${stopsAtDisplay} at or after this time.`}
             value={arrivalFrom}
             onChange={setArrivalFrom}
             onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))}

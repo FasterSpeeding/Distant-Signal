@@ -92,7 +92,7 @@ describe('app/error.tsx', () => {
 
   it('renders a generic heading rather than the old hardcoded "status data" title', () => {
     renderWithMantine(<ErrorBoundary error={errorWithDigest('boom')} reset={() => {}} />);
-    expect(screen.getByRole('heading', { name: 'Something went wrong' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Couldn't load this page" })).toBeInTheDocument();
   });
 
   // Connectivity-aware behaviour, per
@@ -108,7 +108,7 @@ describe('app/error.tsx', () => {
   it('shows the generic fallback copy, not the raw error, when this is not a connectivity failure', () => {
     renderWithMantine(<Harness initial={false} />);
 
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Something went wrong');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent("Couldn't load this page");
     expect(screen.queryByText(connectivityError.message)).not.toBeInTheDocument();
   });
 

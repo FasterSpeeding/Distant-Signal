@@ -6,6 +6,7 @@ import { Button, Modal, Text, TextInput, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Renames or clears a ticket's `customName` -- identical shape to
  * `RenameTrainButton.tsx` (see that component's own doc comment for the
@@ -50,8 +51,7 @@ export function RenameTicketButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('rename', 'this ticket', response));
         }
         setSaving(false);
         return;
@@ -60,7 +60,7 @@ export function RenameTicketButton({
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('rename', 'this ticket'));
       setSaving(false);
     }
   }

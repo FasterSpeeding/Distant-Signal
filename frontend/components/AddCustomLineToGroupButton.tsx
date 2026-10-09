@@ -7,6 +7,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { LineSummary } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Picker sourced from the caller's OWN custom lines, mirroring
  * `AddTrainToGroupButton`'s "picker sourced from the caller's own
@@ -43,7 +44,7 @@ export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupI
     try {
       const response = await fetch('/api/lines');
       if (!response.ok) {
-        setError('Could not load your custom lines.');
+        setError(describeFailure('load', 'your custom lines', response.status));
         setLoading(false);
         return;
       }
@@ -51,7 +52,7 @@ export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupI
       setLines(all.filter((l) => l.source === 'custom' && !excludeLineIds.includes(l.id)));
       setLoading(false);
     } catch {
-      setError('Could not load your custom lines.');
+      setError(describeFailure('load', 'your custom lines'));
       setLoading(false);
     }
   }
@@ -71,8 +72,7 @@ export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupI
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('add', 'this line to the group', response));
         }
         setSubmitting(false);
         return;
@@ -81,7 +81,7 @@ export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupI
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('add', 'this line to the group'));
       setSubmitting(false);
     }
   }

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Alert, Button, Loader, Group, Stack, Text, Title } from '@mantine/core';
 import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
 import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
+import { describeFailure } from '@/lib/failure';
 
 /** Plain exclamation-in-a-circle, in the same inline-SVG house style as
  * `components/InfoIcon.tsx` (`@tabler/icons-react` is not a project
@@ -147,7 +148,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
       await startMcpSignIn(url);
     } catch (err) {
       setReconnecting(false);
-      setReconnectError(err instanceof Error ? err.message : 'Signing in could not be started.');
+      setReconnectError(describeFailure('start', 'logging in'));
     }
   }
 
@@ -171,7 +172,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
       settled = true;
       setState({
         kind: 'error',
-        message: 'Connecting to the rail data service timed out. Please try again.',
+        message: 'Connecting to the rail data service timed out. Try again.',
       });
     }, AUTH_TIMEOUT_MS);
 
@@ -186,7 +187,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
         } else {
           setState({
             kind: 'error',
-            message: 'Authorization did not complete. Please try connecting again from the Chat page.',
+            message: "Authorization didn't finish. Connect again from the chat page.",
           });
         }
       })
@@ -225,7 +226,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
           <Stack gap="sm">
             <Text>We couldn&apos;t finish connecting to the rail data service.</Text>
             {serverUrl && <Text>Reconnect to sign in again with a fresh connection.</Text>}
-            {reconnectError && <Text size="sm">Couldn&apos;t start signing in: {reconnectError}</Text>}
+            {reconnectError && <Text size="sm">{reconnectError}</Text>}
             {/* `<Link>` wrapping a plain `Button`, not Mantine's
                 `component={Link}` polymorphic prop -- the same pattern
                 `components/ChatPanel.tsx`'s own "Track this train" button
@@ -240,7 +241,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
                 </Button>
               )}
               <Link href="/chat" style={{ textDecoration: 'none' }}>
-                <Button variant={serverUrl ? 'default' : 'filled'}>Back to Chat</Button>
+                <Button variant={serverUrl ? 'default' : 'filled'}>Back to chat</Button>
               </Link>
             </Group>
             <details>

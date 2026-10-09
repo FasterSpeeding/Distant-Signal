@@ -45,7 +45,7 @@ describe('RemoveMemberButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm remove member' }));
 
     await waitFor(() => {
-      expect(screen.getByText("the group owner can't be removed")).toBeInTheDocument();
+      expect(screen.getByText("The group owner can't be removed.")).toBeInTheDocument();
     });
     expect(refreshMock).not.toHaveBeenCalled();
   });

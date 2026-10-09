@@ -74,7 +74,7 @@ describe('OperatorStatusCard', () => {
       computedAt: '2026-07-15T09:00:00Z',
     };
     renderWithMantine(<OperatorStatusCard operator={tflOperator} pinned={false} />);
-    expect(screen.getByText("Not measured by this app — status is TfL's own.")).toBeInTheDocument();
+    expect(screen.getByText("Not measured by Distant Signal. The status is TfL's own.")).toBeInTheDocument();
   });
 
   it('renders the pinned state correctly when pinned is true', () => {

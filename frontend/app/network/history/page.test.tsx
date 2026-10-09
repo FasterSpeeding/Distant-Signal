@@ -55,7 +55,7 @@ describe('NetworkHistoryPage', () => {
 
     await renderPage();
 
-    expect(screen.getByText('Every National Rail line this app tracks (TfL not included)')).toBeInTheDocument();
+    expect(screen.getByText('Every National Rail line (TfL not included)')).toBeInTheDocument();
   });
 
   // Style-guide review: the chart's Suspense fallback was a bare,

@@ -518,7 +518,7 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't track this train. Try again.")).toBeInTheDocument();
   });
 
   it('on an empty-body 400, still shows the generic error message rather than nothing', async () => {
@@ -531,7 +531,7 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't track this train. Try again.")).toBeInTheDocument();
   });
 
   it('on a network failure, shows the generic error message instead of failing silently', async () => {
@@ -546,7 +546,7 @@ describe('TrackTrainForm', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
-    expect(await screen.findByText("Couldn't create the tracking pin. Try again.")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't track this train. Try again.")).toBeInTheDocument();
   });
 
   // Part A of the upload-first plan: `attachTicketId`, set when arriving
@@ -2456,7 +2456,7 @@ describe('TrackTrainForm', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
       await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
-      expect(screen.queryByText("Couldn't create the tracking pin. Try again.")).not.toBeInTheDocument();
+      expect(screen.queryByText("Couldn't track this train. Try again.")).not.toBeInTheDocument();
     });
 
     it('does not show the prompt at all when the user has zero groups', async () => {

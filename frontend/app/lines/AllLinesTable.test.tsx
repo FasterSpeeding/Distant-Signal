@@ -441,7 +441,9 @@ describe('AllLinesTable dash tooltip', () => {
     const row = screen.getByText('Tube Line').closest('tr')!;
     const [avgDelayDash] = within(row).getAllByText('—');
     fireEvent.mouseEnter(avgDelayDash!);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent("Not measured by this app — status is TfL's own.");
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      "Not measured by Distant Signal. The status is TfL's own.",
+    );
   });
 });
 

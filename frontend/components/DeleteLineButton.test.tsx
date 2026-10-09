@@ -52,7 +52,7 @@ describe('DeleteLineButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
 
     await waitFor(() => {
-      expect(screen.getByText('custom line not found')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't delete this line. It may have been removed.")).toBeInTheDocument();
     });
     expect(pushMock).not.toHaveBeenCalled();
   });

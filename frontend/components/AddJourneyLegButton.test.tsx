@@ -204,7 +204,7 @@ describe('AddJourneyLegButton', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
 
-    expect(await screen.findByText('no schedule matched that window')).toBeInTheDocument();
+    expect(await screen.findByText('No schedule matched that window.')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

@@ -3,7 +3,9 @@ import { formatOperatorSampleSummary } from './operatorStats';
 
 describe('formatOperatorSampleSummary', () => {
   it('renders the TfL-specific hedge when a TfL rollup has no sample stats', () => {
-    expect(formatOperatorSampleSummary({ code: 'TfL' })).toBe("Not measured by this app — status is TfL's own.");
+    expect(formatOperatorSampleSummary({ code: 'TfL' })).toBe(
+      "Not measured by Distant Signal. The status is TfL's own.",
+    );
   });
 
   it('renders a generic hedge for any other operator with no sample stats', () => {

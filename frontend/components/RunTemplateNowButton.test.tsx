@@ -95,7 +95,7 @@ describe('RunTemplateNowButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Create journey' }));
 
-    expect(await screen.findByText('template has no legs')).toBeInTheDocument();
+    expect(await screen.findByText('Template has no legs.')).toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
   });
 

@@ -6,6 +6,7 @@ import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Removes a shared train from a group -- the sharer, or any `admin`/
  * `owner`, may click this (the backend enforces which via
@@ -39,8 +40,7 @@ export function RemoveGroupTrainButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('remove', 'this train from the group', response));
         }
         setRemoving(false);
         return;
@@ -48,7 +48,7 @@ export function RemoveGroupTrainButton({
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('remove', 'this train from the group'));
       setRemoving(false);
     }
   }

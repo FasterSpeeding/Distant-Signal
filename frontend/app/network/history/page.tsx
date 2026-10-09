@@ -65,7 +65,7 @@ export default async function NetworkHistoryPage({
       {/* Review [OH] §3.4/I11: same "say the scope" line the operator
           history page carries under its own title. */}
       <Text c="dimmed" size="sm">
-        Every National Rail line this app tracks (TfL not included)
+        Every National Rail line (TfL not included)
       </Text>
       <HistoryRangePicker basePath={basePath} preset={range.preset} from={range.from} to={range.to} />
       <GranularityControl

@@ -112,7 +112,7 @@ describe('DelayRepayEstimate', () => {
     ];
     for (const r of cases) {
       const { unmount } = renderWithMantine(<DelayRepayEstimate response={r} />);
-      expect(screen.getByText('This app never submits a claim on your behalf.')).toBeInTheDocument();
+      expect(screen.getByText('Distant Signal never claims on your behalf.')).toBeInTheDocument();
       expect(screen.queryByText(TOP_LEVEL_DISCLAIMER)).not.toBeInTheDocument();
       unmount();
     }

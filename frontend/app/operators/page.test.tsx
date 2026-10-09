@@ -119,7 +119,7 @@ describe('OperatorsPage', () => {
   it('renders an intro sentence under the heading (review M7)', async () => {
     await renderPage();
 
-    expect(screen.getByText(/Every operator this app tracks/)).toBeInTheDocument();
+    expect(screen.getByText(/Each operator.s worst line status/)).toBeInTheDocument();
   });
 
   it('still renders with nothing pinned when getPreferences fails', async () => {

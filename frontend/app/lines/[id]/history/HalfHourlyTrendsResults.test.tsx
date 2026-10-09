@@ -144,7 +144,7 @@ describe('HalfHourlyTrendsResults', () => {
       await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
 
-    const summary = screen.getByText('How these rates are calculated');
+    const summary = screen.getByText('How this is calculated');
     expect(summary.closest('details')).not.toBeNull();
     expect(screen.getByText(HONESTY_COPY_DETAILS.halfHour)).toBeInTheDocument();
   });

@@ -6,6 +6,7 @@ import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** `admin`/`owner`-only "Remove" control for one row in the members list,
  * via the same-origin `/api/*` proxy. Mirrors `DeleteTrainButton.tsx`'s
@@ -31,8 +32,7 @@ export function RemoveMemberButton({ groupId, userId, name }: { groupId: string;
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('remove', 'this member', response));
         }
         setRemoving(false);
         return;
@@ -40,7 +40,7 @@ export function RemoveMemberButton({ groupId, userId, name }: { groupId: string;
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('remove', 'this member'));
       setRemoving(false);
     }
   }

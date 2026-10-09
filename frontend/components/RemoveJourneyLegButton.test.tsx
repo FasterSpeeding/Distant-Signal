@@ -71,7 +71,7 @@ describe('RemoveJourneyLegButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm remove leg' }));
 
     await waitFor(() => {
-      expect(screen.getByText('no journey leg with that id')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't remove this leg. It may have been removed.")).toBeInTheDocument();
     });
     expect(pushMock).not.toHaveBeenCalled();
     expect(refreshMock).not.toHaveBeenCalled();

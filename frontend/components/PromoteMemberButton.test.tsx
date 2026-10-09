@@ -68,7 +68,7 @@ describe('PromoteMemberButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Promote to admin' }));
 
     await waitFor(() => {
-      expect(screen.getByText('that member is already an admin or the owner')).toBeInTheDocument();
+      expect(screen.getByText('That member is already an admin or the owner.')).toBeInTheDocument();
     });
   });
 });

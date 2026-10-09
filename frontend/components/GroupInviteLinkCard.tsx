@@ -10,6 +10,7 @@ import { ShareIcon } from './ShareIcon';
 import { formatDate } from '@/lib/dateFormat';
 import type { GroupInviteLink } from '@/lib/types';
 import { freshTokenFromResponse } from '@/lib/freshLinkToken';
+import { describeFailure } from '@/lib/failure';
 
 /** Copy-to-clipboard / Web Share affordance for a group's invite link,
  * adapted from `ShareButton.tsx`'s own pattern (feature-detect
@@ -19,7 +20,7 @@ import { freshTokenFromResponse } from '@/lib/freshLinkToken';
  * page) than the one it's rendered on. `admin`/`owner`-only: the caller
  * (Task 12's page) never renders this for a plain `member` at all,
  * matching `inviteLink` being `null` in that case on the wire already. */
-const COPIED_LABEL = 'Copied!';
+const COPIED_LABEL = 'Copied';
 const COPIED_TIMEOUT_MS = 2000;
 
 export function GroupInviteLinkCard({
@@ -86,7 +87,7 @@ export function GroupInviteLinkCard({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          setError('Could not create a new invite link.');
+          setError(describeFailure('create', 'a new invite link', response.status));
         }
         setBusy(false);
         return;
@@ -95,7 +96,7 @@ export function GroupInviteLinkCard({
       router.refresh();
       setBusy(false);
     } catch {
-      setError('Could not create a new invite link.');
+      setError(describeFailure('create', 'a new invite link'));
       setBusy(false);
     }
   }
@@ -110,7 +111,7 @@ export function GroupInviteLinkCard({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          setError('Could not revoke the invite link.');
+          setError(describeFailure('revoke', 'the invite link', response.status));
         }
         setBusy(false);
         return;
@@ -119,7 +120,7 @@ export function GroupInviteLinkCard({
       router.refresh();
       setBusy(false);
     } catch {
-      setError('Could not revoke the invite link.');
+      setError(describeFailure('revoke', 'the invite link'));
       setBusy(false);
     }
   }

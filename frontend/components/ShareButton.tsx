@@ -43,7 +43,7 @@ const DEFAULT_LABEL = 'Share this page';
 // description, not the name. Kept generic (not train-specific) since the
 // same button/wording is shared by all four page kinds.
 const DEFAULT_TOOLTIP = 'Share this page — copies its permanent link';
-const COPIED_LABEL = 'Copied!';
+const COPIED_LABEL = 'Copied';
 // Long enough to read, short enough that the button doesn't feel stuck.
 const COPIED_TIMEOUT_MS = 2000;
 

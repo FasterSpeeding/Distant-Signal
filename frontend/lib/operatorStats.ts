@@ -19,7 +19,7 @@ import type { OperatorSummary } from './types';
 export function formatOperatorSampleSummary(operator: Pick<OperatorSummary, 'code' | 'sampleStats'>): string {
   if (!operator.sampleStats) {
     return operator.code === 'TfL'
-      ? "Not measured by this app — status is TfL's own."
+      ? "Not measured by Distant Signal. The status is TfL's own."
       : 'No delay/cancellation data available for this operator.';
   }
   const { avgDelayMinutes } = operator.sampleStats;

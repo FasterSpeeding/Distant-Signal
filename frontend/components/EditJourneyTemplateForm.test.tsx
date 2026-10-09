@@ -362,7 +362,7 @@ describe('EditJourneyTemplateForm', () => {
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText('destination must differ from origin')).toBeInTheDocument();
+    expect(await screen.findByText('Destination must differ from origin.')).toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

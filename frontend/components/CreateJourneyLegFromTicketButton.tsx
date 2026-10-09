@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Text } from '@mantine/core';
 import type { JourneyLegProposal } from '@/lib/types';
+import { describeFailure } from '@/lib/failure';
 
 /** `"HH:MM:SS" | null` -> `"HH:MM" | null` -- `TrackTrainForm`'s window-mode
  * time fields take the same "HH:MM" shape `TimeFilterInput` already uses
@@ -50,7 +51,7 @@ export function CreateJourneyLegFromTicketButton({ ticketId }: { ticketId: numbe
         setError(
           response.status === 401
             ? 'Log in to create a journey leg from this ticket.'
-            : "Couldn't load a proposal for this ticket.",
+            : describeFailure('load', 'a journey leg for this ticket', response.status),
         );
         return;
       }
@@ -68,7 +69,7 @@ export function CreateJourneyLegFromTicketButton({ ticketId }: { ticketId: numbe
 
       router.push(`/track?${params.toString()}`);
     } catch {
-      setError("Couldn't load a proposal for this ticket.");
+      setError(describeFailure('load', 'a journey leg for this ticket'));
     } finally {
       setLoading(false);
     }

@@ -6,6 +6,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** The mirror-image of `AddTrainToGroupButton.tsx`: that component starts
  * from a fixed `groupId` and picks a `trainSubscriptionId` from the
@@ -97,8 +98,7 @@ export function AddToGroupButton({ trainSubscriptionId }: { trainSubscriptionId:
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('share', 'this train', response));
         }
         setSubmitting(false);
         return;
@@ -108,7 +108,7 @@ export function AddToGroupButton({ trainSubscriptionId }: { trainSubscriptionId:
       setSelected(null);
       setSubmitting(false);
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('share', 'this train'));
       setSubmitting(false);
     }
   }

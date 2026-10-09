@@ -128,7 +128,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       setSigningIn(false);
       setError({
         kind: 'sign-in-failed',
-        message: err instanceof Error ? err.message : 'Something went wrong.',
+        message: err instanceof Error ? err.message : '',
       });
     }
   }
@@ -374,7 +374,7 @@ function classifyChatError(err: unknown): ChatError {
   if (status === 401 || status === 403) {
     return { kind: 'mcp-reconnect' };
   }
-  const message = err instanceof Error ? err.message : 'Something went wrong.';
+  const message = err instanceof Error ? err.message : '';
   if (status === null && /\b(unauthoriz(?:ed|ation)?|forbidden)\b|\bHTTP\s+(?:401|403)\b/i.test(message)) {
     return { kind: 'mcp-reconnect' };
   }
@@ -419,37 +419,37 @@ function ChatErrorAlert({
     case 'mcp-connect':
       return (
         <Alert color="orange" variant="light">
-          Connect Chat to the rail data service to start asking about trains. You&apos;ll be asked to sign in and
-          approve access, then brought back here.
+          Connect to the rail data service to start asking about trains. You&apos;ll be asked to log in and approve
+          access, then brought back here.
           {signInButton('Connect')}
         </Alert>
       );
     case 'mcp-reconnect':
       return (
         <Alert color="red" variant="light">
-          Your connection to the rail data service has expired or was not found. Reconnect to keep chatting --
-          you&apos;ll be asked to sign in again.
+          Your connection to the rail data service has expired. Reconnect to keep chatting. You&apos;ll be asked to log
+          in again.
           {signInButton('Reconnect')}
         </Alert>
       );
     case 'mcp-incomplete':
       return (
         <Alert color="orange" variant="light">
-          Your last sign-in to the rail data service didn&apos;t finish. Reconnect to try again with a fresh connection.
+          Your last login to the rail data service didn&apos;t finish. Reconnect to try again.
           {signInButton('Reconnect')}
         </Alert>
       );
     case 'sign-in-failed':
       return (
         <Alert color="red" variant="light">
-          Couldn&apos;t start signing in to the rail data service: {error.message}
+          Couldn&apos;t start logging in to the rail data service. Try again.
           {signInButton('Try again')}
         </Alert>
       );
     case 'tool-error':
       return (
         <Alert color="red" variant="light">
-          Something went wrong answering that: {error.message}
+          Couldn&apos;t answer that. Try again.
         </Alert>
       );
   }

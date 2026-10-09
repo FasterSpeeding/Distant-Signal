@@ -90,7 +90,7 @@ describe('sampleUnavailableReason', () => {
       dataQuality: 'tfl',
       sampleAvailability: { state: 'below-threshold', observed: 0, required: 1 },
     });
-    expect(sampleUnavailableReason(tflStatus)).toBe("Not measured by this app — status is TfL's own.");
+    expect(sampleUnavailableReason(tflStatus)).toBe("Not measured by Distant Signal. The status is TfL's own.");
   });
 
   it('returns the no-coverage copy', () => {

@@ -66,7 +66,7 @@ describe('JoinGroupButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Join group' }));
 
     await waitFor(() => {
-      expect(screen.getByText('this invite link is invalid or has expired')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't join this group. It may have been removed.")).toBeInTheDocument();
     });
     expect(pushMock).not.toHaveBeenCalled();
   });

@@ -63,8 +63,7 @@ export default async function OperatorsPage() {
             rather than inventing separate wording, so the two can't drift
             apart. */}
         <Text c="dimmed">
-          Every operator this app tracks, with its worst current line status and today&apos;s delay and cancellation
-          figures — worst first.
+          Each operator&apos;s worst line status and today&apos;s delays and cancellations, worst first.
         </Text>
       </Stack>
       {sortedOperators.length === 0 ? (

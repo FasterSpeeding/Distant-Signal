@@ -9,6 +9,7 @@ import { nowInLondon } from '@/lib/londonWallClock';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { MaterializeTemplateRequest, MaterializeTemplateResponse } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Bug: the Service date field here is free text with no client-side
  * format check -- a garbled date used to sail straight through to
@@ -73,8 +74,7 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('run', 'this template', response));
         }
         setSubmitting(false);
         return;
@@ -84,7 +84,7 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
       close();
       router.push(`/journeys/${result.journeyId}`);
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('run', 'this template'));
       setSubmitting(false);
     }
   }

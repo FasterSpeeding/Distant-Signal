@@ -188,7 +188,7 @@ describe('LineHistoryPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Trends' }));
     expect(await screen.findByText('Daily')).toBeInTheDocument();
     expect(screen.queryByText('30 min')).not.toBeInTheDocument();
-    expect(screen.getByText(/are not shown for this range/)).toBeInTheDocument();
+    expect(screen.getByText(/not available for this range/)).toBeInTheDocument();
   });
 
   it('switching to the Trends tab with no daily stats yet shows the sane fallback, not a crash', async () => {

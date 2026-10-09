@@ -7,6 +7,7 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import type { JourneyTemplateDetail, PutJourneyTemplateRequest, TemplateLegRequest } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 interface EditableLeg {
   // A stable, position-independent identity for this leg -- used for React
@@ -203,8 +204,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('save', 'this template', response));
         }
         setSubmitting(false);
         return;
@@ -213,7 +213,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
       setSaved(true);
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('save', 'this template'));
       setSubmitting(false);
     }
   }
@@ -307,6 +307,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
           </Group>
           <Group grow align="flex-start">
             <TimeFilterInput
+              clockHint
               label="Earliest departure (optional)"
               name={`leg-${index}-depart-from`}
               description="Only trains leaving at or after this time."

@@ -71,9 +71,8 @@ function PunctualitySection({ summary }: { summary: PunctualitySummary }) {
     // figure to show, but the cancellations themselves are real data.
     return (
       <Text size="sm" c="dimmed">
-        {summary.cancelledCount} tracked journey{summary.cancelledCount === 1 ? ' was' : 's were'} cancelled, with no
-        on-time/delay outcome recorded yet. Track more trains and check back once they&apos;ve finished running to build
-        up a punctuality picture.
+        {summary.cancelledCount} tracked journey{summary.cancelledCount === 1 ? ' was' : 's were'} cancelled.
+        Punctuality appears once a tracked train finishes running.
       </Text>
     );
   }
@@ -131,8 +130,7 @@ const BAND_LABELS: Record<string, string> = {
 // backend sentence's own tail ("...using the link above") is deliberately
 // NOT reproduced here: this rollup renders no claim link at all (below),
 // so that clause would describe a link that does not exist on screen.
-const CARRIED_FORWARD_DISCLAIMER =
-  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled.';
+const CARRIED_FORWARD_DISCLAIMER = 'A rough estimate, not a guarantee of compensation and not proof you travelled.';
 
 function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
   if (rollup.attachedTicketsWithOperator === 0) {
@@ -168,12 +166,14 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
           ))}
         </Stack>
       )}
-      <Text size="sm">
-        {CARRIED_FORWARD_DISCLAIMER} This is a count of tickets, not a total amount: this app never stores ticket
-        prices, so it has no fare figure to add up into a refund total, and never will. This app does not claim on your
-        behalf for any of them — always verify eligibility and claim directly with each operator, using the link already
-        shown against each ticket below.
-      </Text>
+      <Text size="sm">{CARRIED_FORWARD_DISCLAIMER} Claim with each operator using the link on each ticket.</Text>
+      <details>
+        <summary>How this is calculated</summary>
+        <Text size="sm" c="dimmed" mt="xs">
+          This counts tickets, not money: we don&apos;t store ticket prices, so there is no refund total. Distant Signal
+          never claims on your behalf. Check eligibility with the operator.
+        </Text>
+      </details>
     </Stack>
   );
 }

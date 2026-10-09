@@ -30,6 +30,7 @@ import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { stationLabel } from '@/lib/stationLabel';
 import { addCalendarDays, nowInLondon, londonToday, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
 import type { BoardCallingPoint, CreateJourneyResponse, LineTrainSummaryLive } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
@@ -889,13 +890,12 @@ export function TrackTrainForm({
         return;
       }
       if (response.status === 400) {
-        const text = await response.text();
-        setFieldError(text || "Couldn't create the tracking pin. Try again.");
+        setFieldError(await failureFromResponse('track', 'this train', response));
         return;
       }
-      setFieldError("Couldn't create the tracking pin. Try again.");
+      setFieldError(describeFailure('track', 'this train', response.status));
     } catch {
-      setFieldError("Couldn't create the tracking pin. Try again.");
+      setFieldError(describeFailure('track', 'this train'));
     } finally {
       setSubmitting(false);
     }
@@ -954,13 +954,12 @@ export function TrackTrainForm({
         return;
       }
       if (response.status === 400) {
-        const text = await response.text();
-        setFieldError(text || "Couldn't search for a train. Try again.");
+        setFieldError(await failureFromResponse('search for', 'a train', response));
         return;
       }
-      setFieldError("Couldn't search for a train. Try again.");
+      setFieldError(describeFailure('search for', 'a train', response.status));
     } catch {
-      setFieldError("Couldn't search for a train. Try again.");
+      setFieldError(describeFailure('search for', 'a train'));
     } finally {
       setSubmitting(false);
     }
@@ -1445,6 +1444,7 @@ export function TrackTrainForm({
             <Text size="sm">At least one of the four times below is required to search.</Text>
             <SimpleGrid cols={{ base: 1, sm: 2 }}>
               <TimeFilterInput
+                clockHint
                 label="Earliest departure (optional)"
                 name="earliest departure"
                 description={`Only trains leaving ${originValid ? originCrs.trim().toUpperCase() : 'the origin above'} at or after this time.`}

@@ -35,12 +35,10 @@ export const SPARSE_FLOOR: Record<TrendGranularity, number> = {
 // moved to `HONESTY_COPY_DETAILS` below, behind a collapsed "How these
 // rates are calculated" disclosure (`TrendsResults`'s own render).
 export const HONESTY_COPY: Record<TrendGranularity, string> = {
-  day: 'Each train is counted once per day, by the status it had when first seen. Days with too little data are left blank rather than shown as a misleading flat line.',
-  halfHour:
-    'Each train is counted once per half hour, by the status it had when first seen. Half-hour periods with too little data are left blank rather than shown as a misleading flat line.',
-  hour: 'Each train is counted once per hour, by the status it had when first seen. Hours with too little data are left blank rather than shown as a misleading flat line.',
-  sixHour:
-    'Each train is counted once per six-hour period, by the status it had when first seen. Six-hour periods with too little data are left blank rather than shown as a misleading flat line.',
+  day: 'Each train counts once a day, by its status when first seen. Gaps mean too little data.',
+  halfHour: 'Each train counts once per half hour, by its status when first seen. Gaps mean too little data.',
+  hour: 'Each train counts once an hour, by its status when first seen. Gaps mean too little data.',
+  sixHour: 'Each train counts once per six hours, by its status when first seen. Gaps mean too little data.',
 };
 
 /** The rest of what `HONESTY_COPY` used to say in one paragraph -- same
@@ -54,12 +52,12 @@ export const HONESTY_COPY: Record<TrendGranularity, string> = {
  * `components/StationAccessibilitySection.tsx`'s `Disclosure` doc comment
  * for the fuller reasoning against `Spoiler` specifically). */
 export const HONESTY_COPY_DETAILS: Record<TrendGranularity, string> = {
-  day: "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen that day, even a day too sparse to trust for a rate — a low bar there is exactly why that day may show as a gap in the rate chart below it. It counts each train once, in the day it was first seen, not how many were running at the same time.",
+  day: 'A train that leaves on time and runs late later still counts as on time: this is the status we saw first. The trains-counted chart shows every train seen in each day, even when there were too few to give a rate. It counts trains seen, not trains running at once.',
   halfHour:
-    "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen that half hour, even a half hour too sparse to trust for a rate — a low bar there is exactly why that half hour may show as a gap in the rate chart below it. It counts each train once, in the half hour it was first seen, not how many were running at the same time.",
-  hour: "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen that hour, even an hour too sparse to trust for a rate — a low bar there is exactly why that hour may show as a gap in the rate chart below it. It counts each train once, in the hour it was first seen, not how many were running at the same time.",
+    'A train that leaves on time and runs late later still counts as on time: this is the status we saw first. The trains-counted chart shows every train seen in each half hour, even when there were too few to give a rate. It counts trains seen, not trains running at once.',
+  hour: 'A train that leaves on time and runs late later still counts as on time: this is the status we saw first. The trains-counted chart shows every train seen in each hour, even when there were too few to give a rate. It counts trains seen, not trains running at once.',
   sixHour:
-    "A train that starts on time and only becomes delayed later, while still in view, still counts as on time here — it's the status we saw first, not a running tally. The trains-counted chart above always shows the real number of trains seen in that six-hour period, even a period too sparse to trust for a rate — a low bar there is exactly why that period may show as a gap in the rate chart below it. It counts each train once, in the period it was first seen, not how many were running at the same time.",
+    'A train that leaves on time and runs late later still counts as on time: this is the status we saw first. The trains-counted chart shows every train seen in each six-hour period, even when there were too few to give a rate. It counts trains seen, not trains running at once.',
 };
 
 interface StatsRow {
@@ -186,7 +184,7 @@ export async function TrendsResults({
           explanation collapsed below it rather than printed in full above
           the charts every time. */}
       <details>
-        <summary>How these rates are calculated</summary>
+        <summary>How this is calculated</summary>
         <Text size="sm" c="dimmed" mt="xs">
           {HONESTY_COPY_DETAILS[granularity]}
         </Text>

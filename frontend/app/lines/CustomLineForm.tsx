@@ -24,6 +24,7 @@ import { useNeedsLogin } from '@/components/useNeedsLogin';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
 import type { CustomLineDetail } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
@@ -139,8 +140,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('save', 'this line', response));
         }
         setSubmitting(false);
         return;
@@ -152,7 +152,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       // field reset for free, with no manual work needed here.
       router.push(existingLine ? `/lines/${existingLine.id}` : '/lines');
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('save', 'this line'));
       setSubmitting(false);
     }
   }

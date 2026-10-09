@@ -24,6 +24,7 @@ import type { LineCatalogueStation, LineTimetablePage } from '@/lib/types';
 import { ServiceRow, ServiceRowList } from '@/components/ServiceRow';
 import classes from '../LineTrains.module.css';
 import { TimetableMore, type TimetableQuery } from './TimetableMore';
+import { describeFailure } from '@/lib/failure';
 
 const log = createLogger('app/lines/timetable');
 
@@ -264,7 +265,7 @@ export default async function LineTimetablePage({
         <Empty>
           {loaded.error === 'unpublished'
             ? `No timetable is published for this line on ${formatDate(`${date}T12:00:00Z`)}.`
-            : 'This timetable isn’t available right now. Please try again shortly.'}
+            : describeFailure('load', 'this timetable')}
         </Empty>
       </Stack>
     );

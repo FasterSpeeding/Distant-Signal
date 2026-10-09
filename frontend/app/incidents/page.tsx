@@ -79,8 +79,8 @@ export default async function IncidentsPage({
     <Stack p="lg" gap="md">
       <Title order={1}>Incident Archive</Title>
       <Text c="dimmed">
-        Search National Rail incident messages across the whole network, independent of which line you were looking at.
-        Defaults to the last 30 days — use &quot;All time&quot; to see everything this app has ever ingested.
+        National Rail incident messages across the network. The last 30 days by default; choose &quot;All time&quot; for
+        everything we have.
       </Text>
       <IncidentSearchForm
         lines={lines}

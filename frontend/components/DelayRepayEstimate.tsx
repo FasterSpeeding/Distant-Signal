@@ -74,7 +74,7 @@ export function DelayRepayEstimate({ response }: { response: DelayRepayEstimateR
         Rules last checked: {formatCheckedOn(response.rulesCheckedOn)}. Delays are measured against the public timetable
         arrival at your destination, from public running data, and may differ from the operator&apos;s own records.
       </Text>
-      <Text size="sm">This app never submits a claim on your behalf.</Text>
+      <Text size="sm">Distant Signal never claims on your behalf.</Text>
       {/* The only place in this feature that opens a new tab -- every
           other action stays same-page. */}
       <TextLink href={response.claimUrl} underline="always" external>

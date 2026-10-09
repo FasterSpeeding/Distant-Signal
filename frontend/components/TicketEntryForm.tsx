@@ -11,6 +11,7 @@ import { searchStations, searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
+import { failureFromResponse } from '@/lib/failure';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 type Tab = 'manual' | 'pkpass' | 'pdf';
@@ -226,7 +227,7 @@ export function TicketEntryForm({
       if (response.status === 400) {
         setUploadError({
           kind,
-          message: "That doesn't look like a valid upload — try again or fill in the form manually",
+          message: "That doesn't look like a valid upload. Try again, or fill in the details manually",
         });
         return;
       }
@@ -236,20 +237,26 @@ export function TicketEntryForm({
         // PDF, not a .pkpass; upload it as a PDF e-ticket instead" (415,
         // the api's magic-byte check) -- safe to surface directly per
         // Decision 2's table.
-        setUploadError({ kind, message: await response.text() });
+        setUploadError({
+          kind,
+          message:
+            response.status === 415
+              ? `That file isn't a ${kind === 'pdf' ? 'PDF' : '.pkpass'}. Upload it in the other field, or fill in the details manually`
+              : "Couldn't read this ticket. Fill in the details manually",
+        });
         return;
       }
       if (response.status === 503) {
         setUploadError({
           kind,
-          message: 'Too many tickets are being read right now — try again in a moment, or fill in the details manually',
+          message: 'Too many tickets are being read right now. Try again in a minute, or fill in the details manually',
         });
         return;
       }
       if (response.status === 504) {
         setUploadError({
           kind,
-          message: 'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually',
+          message: 'That file took too long to read. Try a smaller PDF, or fill in the details manually',
         });
         return;
       }
@@ -314,7 +321,7 @@ export function TicketEntryForm({
         return;
       }
       if (response.status === 400) {
-        setSubmitError(await response.text());
+        setSubmitError(await failureFromResponse('save', 'this ticket', response));
         return;
       }
       setSubmitError("Couldn't save this ticket. Try again.");

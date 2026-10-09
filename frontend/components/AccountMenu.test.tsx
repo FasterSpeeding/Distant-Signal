@@ -148,7 +148,7 @@ describe('AccountMenu', () => {
     openMenu();
     fireEvent.click(await menuItem('Log out other sessions'));
 
-    expect(await menuItem('Could not log out other sessions -- try again')).toBeInTheDocument();
+    expect(await menuItem("Couldn't log out other sessions. Try again.")).toBeInTheDocument();
     expect(refresh).not.toHaveBeenCalled();
   });
 
@@ -220,7 +220,7 @@ describe('AccountMenu', () => {
     renderWithMantine(<AccountMenu label="Ada" destinations={destinations} />);
     openMenu();
     fireEvent.click(await menuItem('Log out other sessions'));
-    expect(await menuItem('Could not log out other sessions -- try again')).toBeInTheDocument();
+    expect(await menuItem("Couldn't log out other sessions. Try again.")).toBeInTheDocument();
     expect(localStorage.getItem('ds-mcp-oauth:tokens')).not.toBeNull();
   });
 

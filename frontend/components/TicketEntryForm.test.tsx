@@ -239,12 +239,12 @@ describe('TicketEntryForm', () => {
   }
 
   it.each([
-    [400, "That doesn't look like a valid upload — try again or fill in the form manually"],
-    [422, 'could not read this as a train .pkpass: not a zip file'],
-    [504, 'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually'],
+    [400, "That doesn't look like a valid upload. Try again, or fill in the details manually"],
+    [422, "Couldn't read this ticket. Fill in the details manually"],
+    [504, 'That file took too long to read. Try a smaller PDF, or fill in the details manually'],
     [413, 'That file is too large (8 MB limit). Try filling in the details manually'],
-    [415, 'this file is a PDF, not a .pkpass; upload it as a PDF e-ticket instead'],
-    [503, 'Too many tickets are being read right now — try again in a moment, or fill in the details manually'],
+    [415, "That file isn't a .pkpass. Upload it in the other field, or fill in the details manually"],
+    [503, 'Too many tickets are being read right now. Try again in a minute, or fill in the details manually'],
     [500, "Couldn't read this file. Try filling in the details manually"],
   ])('pkpass upload: a %i response shows the mapped inline message', async (status, expectedSubstring) => {
     mockDefaultResponse(new Response(uploadErrorBody(status), { status }));
@@ -260,12 +260,12 @@ describe('TicketEntryForm', () => {
   });
 
   it.each([
-    [400, "That doesn't look like a valid upload — try again or fill in the form manually"],
-    [422, 'could not read this as a train .pkpass: not a zip file'],
-    [504, 'That file took too long to read — try a smaller or simpler PDF, or fill in the details manually'],
+    [400, "That doesn't look like a valid upload. Try again, or fill in the details manually"],
+    [422, "Couldn't read this ticket. Fill in the details manually"],
+    [504, 'That file took too long to read. Try a smaller PDF, or fill in the details manually'],
     [413, 'That file is too large (8 MB limit). Try filling in the details manually'],
-    [415, 'this file is a PDF, not a .pkpass; upload it as a PDF e-ticket instead'],
-    [503, 'Too many tickets are being read right now — try again in a moment, or fill in the details manually'],
+    [415, "That file isn't a .pkpass. Upload it in the other field, or fill in the details manually"],
+    [503, 'Too many tickets are being read right now. Try again in a minute, or fill in the details manually'],
     [500, "Couldn't read this file. Try filling in the details manually"],
   ])('pkpass drop: a %i response shows the mapped inline message', async (status, expectedSubstring) => {
     mockDefaultResponse(new Response(uploadErrorBody(status), { status }));

@@ -10,6 +10,7 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 type LegMode = NewJourneyLegRequest['mode'];
 
@@ -185,8 +186,7 @@ export function AddJourneyLegButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('add', 'this leg', response));
         }
         setSubmitting(false);
         return;
@@ -204,7 +204,7 @@ export function AddJourneyLegButton({
         router.refresh();
       }
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('add', 'this leg'));
       setSubmitting(false);
     }
   }
@@ -266,6 +266,7 @@ export function AddJourneyLegButton({
                   the app. */}
               <Group grow align="flex-start">
                 <TimeFilterInput
+                  clockHint
                   label="Earliest departure (optional)"
                   name="earliest departure"
                   description={`Only trains leaving ${originCrs.trim() || 'the origin'} at or after this time.`}

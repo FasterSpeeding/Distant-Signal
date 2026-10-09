@@ -62,7 +62,7 @@ describe('DeleteJourneyButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete journey' }));
 
     await waitFor(() => {
-      expect(screen.getByText('no journey with that id')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't delete this journey. It may have been removed.")).toBeInTheDocument();
     });
     expect(pushMock).not.toHaveBeenCalled();
   });

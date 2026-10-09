@@ -109,7 +109,7 @@ export async function HalfHourlyTrendsResults({ id, from, to }: { id: string; fr
           behind "How these rates are calculated" rather than printed in
           full every time. */}
       <details>
-        <summary>How these rates are calculated</summary>
+        <summary>How this is calculated</summary>
         <Text size="sm" c="dimmed" mt="xs">
           {HONESTY_COPY_DETAILS.halfHour}
         </Text>

@@ -82,11 +82,11 @@ export async function NetworkTrendsResults({
           boundary -- see OperatorTrendsResults.tsx's identical comment for
           why (the same fix for the "running.Rates" finding, [OH] §3.3). */}
       <Text size="sm" c="dimmed">
-        {`${HONESTY_COPY[granularity]} Rates shown are summed across every National Rail line this app tracks. TfL isn't included yet.`}
+        {`${HONESTY_COPY[granularity]} Summed across every National Rail line. TfL isn't included.`}
       </Text>
       <TrendsCharts points={points} granularity={granularity} order={2} showVolume />
       <details>
-        <summary>How these rates are calculated</summary>
+        <summary>How this is calculated</summary>
         <Text size="sm" c="dimmed" mt="xs">
           {HONESTY_COPY_DETAILS[granularity]}
         </Text>

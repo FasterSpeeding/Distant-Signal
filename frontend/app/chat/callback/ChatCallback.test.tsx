@@ -91,7 +91,7 @@ describe('ChatCallback', () => {
     mockAuth.mockRejectedValue(new Error('token exchange failed'));
     renderAtWithValidState('?code=abc123');
     expect(await screen.findByText("We couldn't finish connecting to the rail data service.")).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Back to Chat' })).toHaveAttribute('href', '/chat');
+    expect(screen.getByRole('link', { name: 'Back to chat' })).toHaveAttribute('href', '/chat');
   });
 
   it('renders the error as a role="alert" with a non-colour icon (WCAG 1.4.1)', async () => {
@@ -122,7 +122,7 @@ describe('ChatCallback', () => {
       renderAtWithValidState('?code=abc123');
       const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
       expect(screen.getByText(/reconnect to sign in again with a fresh connection/i)).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'Back to Chat' })).toHaveAttribute('href', '/chat');
+      expect(screen.getByRole('link', { name: 'Back to chat' })).toHaveAttribute('href', '/chat');
 
       mockAuth.mockReturnValueOnce(new Promise(() => {}));
       act(() => reconnect.click());
@@ -151,7 +151,7 @@ describe('ChatCallback', () => {
       mockAuth.mockRejectedValueOnce(new Error('HTTP 503 registering client'));
       const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
       act(() => reconnect.click());
-      expect(await screen.findByText(/couldn.t start signing in: HTTP 503 registering client/i)).toBeInTheDocument();
+      expect(await screen.findByText(/couldn.t start logging in\. try again/i)).toBeInTheDocument();
     });
 
     it('has no Reconnect when the MCP server URL is not configured', async () => {
@@ -165,7 +165,7 @@ describe('ChatCallback', () => {
   it('shows an error when auth() returns REDIRECT instead of AUTHORIZED', async () => {
     mockAuth.mockResolvedValue('REDIRECT');
     renderAtWithValidState('?code=abc123');
-    expect(await screen.findByText(/did not complete/i)).toBeInTheDocument();
+    expect(await screen.findByText(/didn.t finish/i)).toBeInTheDocument();
     expect(mockReplace).not.toHaveBeenCalled();
   });
 

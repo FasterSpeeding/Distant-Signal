@@ -229,7 +229,7 @@ describe('LineTimetablePage', () => {
 
     vi.mocked(api.getLineTimetable).mockRejectedValue(new Error('ECONNREFUSED'));
     await render();
-    expect(screen.getByText(/This timetable isn’t available right now/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn't load this timetable/)).toBeInTheDocument();
   });
 
   it('names the line from the line list when it has no status yet', async () => {

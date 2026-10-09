@@ -627,7 +627,7 @@ export function IncidentSearchForm({
           <MultiSelect
             label="Operator (optional)"
             placeholder="Any operator"
-            description="Matches an incident whose operators overlap any of these -- not 'scoped to exactly this operator.'"
+            description="Incidents involving any of these operators."
             data={tocs.map((toc) => ({ value: toc.code, label: `${toc.code} — ${toc.name}` }))}
             value={operators}
             onChange={setOperators}
@@ -648,7 +648,7 @@ export function IncidentSearchForm({
           <Select
             label="Line (optional)"
             placeholder="Any line"
-            description="Incidents attributed to this line, using the same rules as its live status page. Incidents archived before this filter existed were only linked up to their line once, in a one-off catch-up run."
+            description="Incidents on this line, matched the same way as its status page."
             data={catalogueLines.map((line) => ({ value: line.id, label: line.name }))}
             value={lineId}
             onChange={setLineId}

@@ -6,6 +6,7 @@ import { Button, Group, Modal, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Direct, one-click "delete this journey" action on `/journeys/[id]`
  * (feature request: "journeys should be mutable ... you should be able to
@@ -68,15 +69,14 @@ export function DeleteJourneyButton({ journeyId }: { journeyId: number }) {
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('delete', 'this journey', response));
         }
         setDeleting(false);
         return;
       }
       router.push('/track/mine');
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('delete', 'this journey'));
       setDeleting(false);
     }
   }

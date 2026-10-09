@@ -6,6 +6,7 @@ import { Button, Modal, Text, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Deletes via the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * -- this is a Client Component and cannot reach the `api` service directly.
@@ -62,15 +63,14 @@ export function DeleteTicketButton({ ticketId }: { ticketId: number }) {
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('delete', 'this ticket', response));
         }
         setDeleting(false);
         return;
       }
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('delete', 'this ticket'));
       setDeleting(false);
     }
   }

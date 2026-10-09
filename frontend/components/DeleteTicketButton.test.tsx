@@ -52,7 +52,7 @@ describe('DeleteTicketButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
 
     await waitFor(() => {
-      expect(screen.getByText('no ticket with that id')).toBeInTheDocument();
+      expect(screen.getByText("Couldn't delete this ticket. It may have been removed.")).toBeInTheDocument();
     });
     expect(refreshMock).not.toHaveBeenCalled();
   });

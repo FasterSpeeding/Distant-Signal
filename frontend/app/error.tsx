@@ -4,6 +4,9 @@ import { useEffect, useRef } from 'react';
 import { Button, Group, Stack, Text, Title } from '@mantine/core';
 import { useConnectivity } from '@/components/ConnectivityMonitor';
 import { TextLink } from '@/components/TextLink';
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('app/error');
 
 /** The app's ONLY error boundary -- there is no `global-error.tsx` and no
  * per-route `error.tsx` (see `app/layout.tsx`, which works around that gap
@@ -25,7 +28,7 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
   useEffect(() => {
     // The only reporting channel this app has. Previously nothing logged
     // the error at all, while the useless half of it was rendered.
-    console.error('Unhandled error rendering a page', { digest: error.digest, error });
+    log.error('Unhandled error rendering a page', { digest: error.digest, error });
   }, [error]);
 
   // Next's own ErrorBoundaryHandler only clears a tripped error when the
@@ -64,17 +67,14 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
           tag changes. These render inside the root layout's <main>
           Container, so they need no landmarking of their own. */}
       <Title order={1} size="h2">
-        {disconnected ? 'Trying to reconnect…' : 'Something went wrong'}
+        {disconnected ? 'Trying to reconnect…' : "Couldn't load this page"}
       </Title>
       {disconnected ? (
         <Text c="dimmed">
           Can&apos;t reach live data right now. This page will come back on its own as soon as the connection returns.
         </Text>
       ) : (
-        <Text c="dimmed">
-          This page couldn&apos;t be loaded. It may be a temporary problem with the live data feeds — try again in a
-          moment.
-        </Text>
+        <Text c="dimmed">It may be a temporary problem with the live data. Try again in a moment.</Text>
       )}
       {/* Kept in both states: the auto-reset above only fires on a
           reconnect, so a visitor looking at a non-connectivity error still

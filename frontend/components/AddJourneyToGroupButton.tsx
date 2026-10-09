@@ -8,6 +8,7 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { RouteText } from './RouteArrow';
 import type { JourneyListItem } from '@/lib/types';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Picker sourced from the user's own `/Journeys/mine` list -- the direct
  * analogue of `AddTrainToGroupButton.tsx`, one level up (journeys instead
@@ -48,7 +49,7 @@ export function AddJourneyToGroupButton({
     try {
       const response = await fetch('/api/Journeys/mine');
       if (!response.ok) {
-        setError('Could not load your journeys.');
+        setError(describeFailure('load', 'your journeys', response.status));
         setLoading(false);
         return;
       }
@@ -56,7 +57,7 @@ export function AddJourneyToGroupButton({
       setJourneys(all.filter((j) => !excludeJourneyIds.includes(j.id)));
       setLoading(false);
     } catch {
-      setError('Could not load your journeys.');
+      setError(describeFailure('load', 'your journeys'));
       setLoading(false);
     }
   }
@@ -76,8 +77,7 @@ export function AddJourneyToGroupButton({
         if (response.status === 401) {
           needsLoginState.markNeedsLogin();
         } else {
-          const message = await response.text();
-          setError(message || `Request failed: ${response.status}`);
+          setError(await failureFromResponse('add', 'this journey to the group', response));
         }
         setSubmitting(false);
         return;
@@ -86,7 +86,7 @@ export function AddJourneyToGroupButton({
       close();
       router.refresh();
     } catch {
-      setError('Request failed.');
+      setError(describeFailure('add', 'this journey to the group'));
       setSubmitting(false);
     }
   }

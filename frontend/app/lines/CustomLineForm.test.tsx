@@ -347,7 +347,7 @@ describe('CustomLineForm', () => {
     renderWithProvider({ existingLine });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText('a line needs at least 2 stations')).toBeInTheDocument();
+    expect(await screen.findByText('A line needs at least 2 stations.')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Log in' })).not.toBeInTheDocument();
   });
 
