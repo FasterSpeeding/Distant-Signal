@@ -2978,6 +2978,14 @@ enricher:
     digest: ""
     pullPolicy: IfNotPresent
   llm:
+    # -- LLM_PROVIDER: `openai` (the default) is any OpenAI-compatible Chat
+    # Completions endpoint, configured by baseUrl/model/apiKey/... below.
+    # `anthropic` is the Claude API (docs/enricher-anthropic.md), configured
+    # by enricher.llm.anthropic instead: baseUrl, model, apiKey,
+    # existingSecret and auth below are then not used (auth must stay
+    # apiKey). Switching re-extracts every live incident once (the model is
+    # part of the extraction's model_version); so does switching back.
+    provider: openai
     baseUrl: ""
     model: ""
     # -- API key for the OpenAI-compatible endpoint. Empty is valid for
@@ -3033,6 +3041,48 @@ enricher:
         # -- LLM_AUTHENTIK_SCOPE: scopes requested from Authentik, e.g.
         # "profile" so its mapping emits the groups claim. Empty sends none.
         scope: ""
+    # The Claude API (provider: anthropic; docs/enricher-anthropic.md).
+    # reasoningEffort above is sent as output_config.effort, and the
+    # provider-policy env vars (enricher.extraEnv) apply as for openai.
+    anthropic:
+      # -- LLM_BASE_URL for the Claude API (requests go to {baseUrl}/messages
+      # and {baseUrl}/messages/batches). Its port gets a NetworkPolicy
+      # egress entry.
+      baseUrl: https://api.anthropic.com/v1
+      # -- LLM_MODEL. claude-haiku-5-5 (the default) is the Claude model
+      # positioned for high-volume extraction, at the gpt-6-luna price
+      # point; claude-sonnet-5-5 is the step-up if the eval shows misses
+      # (docs/enricher-anthropic.md, "Model").
+      model: claude-haiku-5-5
+      # -- Name of an existing Secret holding the Claude API key (sent as
+      # x-api-key). Required with provider: anthropic; the chart never
+      # renders this key into its own Secret.
+      existingSecret: ""
+      # -- Key within existingSecret.
+      existingSecretApiKeyKey: anthropic-api-key
+      # -- LLM_PROMPT_CACHE: `1h` (default), `5m` or `off`, the
+      # cache_control TTL on each call's static system prompt. See the
+      # caching analysis in docs/enricher-anthropic.md.
+      promptCache: 1h
+      # -- LLM_THINKING, sent as thinking.type when set (e.g. `disabled` on
+      # Haiku 5.5, `between_tools` on Sonnet 5.5). Empty: the model's
+      # default (adaptive thinking).
+      thinking: ""
+    # Message Batches for the reconciliation sweep (provider: anthropic
+    # only). Off by default.
+    batch:
+      # -- LLM_SWEEP_MODE: `sync` (default; one incident at a time, as the
+      # stream loop) or `batch` (the sweep submits Claude Message Batches
+      # at half price; results usually within an hour, at most 24 h). The
+      # stream loop and reclaim always stay synchronous.
+      sweepMode: sync
+      # -- LLM_BATCH_MIN_ITEMS: a sweep with fewer incidents runs them
+      # synchronously.
+      minItems: 20
+      # -- LLM_BATCH_MAX_ITEMS: most incidents per batch (capped at 5000).
+      maxItems: 2000
+      # -- LLM_BATCH_POLL_SECS: how often in-flight batches are polled.
+      pollIntervalSecs: 60
   # -- A dedicated ServiceAccount for the enricher pod. Off by default (the
   # pod uses the shared `serviceAccount`, like every other pod). Required
   # by the WIF modes (enricher.llm.auth): an OpenAI or Authentik trust rule

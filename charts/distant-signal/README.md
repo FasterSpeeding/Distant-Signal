@@ -1158,7 +1158,7 @@ cluster.
 | api | postgres, redis, dev IdP | yes (OIDC discovery and JWKS for `api.sso.issuerUrl` and `api.internalOauth.issuerUrl`) |
 | frontend | api | no (the `/chat` Anthropic calls run in the browser) |
 | aggregator | postgres | only with `archive.enabled` (S3) |
-| enricher | postgres, redis | yes (`enricher.llm.baseUrl`) |
+| enricher | postgres, redis | yes (`enricher.llm.baseUrl`, or `enricher.llm.anthropic.baseUrl` with provider `anthropic`) |
 | notifier | postgres | yes (Web Push services) |
 | pollers, consumers, movement-relay | api and/or redis, dev IdP | yes (upstream feeds, Kafka, the OAuth token endpoint) |
 | schedulefeed | api, dev IdP | yes (the OAuth token endpoint) |
@@ -2068,7 +2068,10 @@ loop, and it renders unconditionally.
 `enricher.llm.baseUrl` and `enricher.llm.model` are **required** (alongside
 the five `api.sso.*` values) — leaving either empty aborts the render, because both
 become non-optional env vars on the binary and an empty value would deploy a
-pod that fails every request forever.
+pod that fails every request forever. With `enricher.llm.provider: anthropic`
+(the Claude API, [docs/enricher-anthropic.md](../../docs/enricher-anthropic.md))
+they are not used: `enricher.llm.anthropic.*` has defaults for both, and
+`enricher.llm.anthropic.existingSecret` is the required value instead.
 
 | Key | Default | Description |
 |---|---|---|
@@ -2076,7 +2079,8 @@ pod that fails every request forever.
 | `enricher.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `enricher.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
 | `enricher.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
-| `enricher.llm.baseUrl` | `""` | **Required.** Base URL of an OpenAI-compatible chat-completions endpoint. Empty aborts the render. |
+| `enricher.llm.provider` | `openai` | `LLM_PROVIDER`. `openai` is any OpenAI-compatible Chat Completions endpoint (the keys below). `anthropic` is the Claude API, configured by `enricher.llm.anthropic.*` (`baseUrl`/`model`/`apiKey`/`existingSecret` here are then unused, and `auth` must stay `apiKey`). Switching either way re-extracts every live incident once. Any other value aborts the render. |
+| `enricher.llm.baseUrl` | `""` | **Required** (provider `openai`). Base URL of an OpenAI-compatible chat-completions endpoint. Empty aborts the render. |
 | `enricher.llm.model` | `""` | **Required.** Model name that endpoint serves. Empty aborts the render. Also stored as the extraction's `model_version`, so changing it re-extracts every incident on the next sweep. |
 | `enricher.llm.apiKey` | `""` | API key for that endpoint. Rendered into the chart Secret when `existingSecret` is empty. Empty is valid for a local endpoint needing no auth, and is never auto-generated. |
 | `enricher.llm.existingSecret` | `""` | Read the API key from this pre-existing Secret instead. |
@@ -2090,6 +2094,16 @@ pod that fails every request forever.
 | `enricher.llm.workloadIdentity.authentik.tokenUrl` | `""` | `LLM_AUTHENTIK_TOKEN_URL` (e.g. `https://sso.example.com/application/o/token/`). Required in `openaiWifAuthentik`. |
 | `enricher.llm.workloadIdentity.authentik.clientId` | `""` | `LLM_AUTHENTIK_CLIENT_ID`, the dedicated Authentik OAuth2 provider's client ID. Required in `openaiWifAuthentik`. |
 | `enricher.llm.workloadIdentity.authentik.scope` | `""` | `LLM_AUTHENTIK_SCOPE`, e.g. `profile` so Authentik's mapping emits the `groups` claim. Empty sends no `scope`. |
+| `enricher.llm.anthropic.baseUrl` | `https://api.anthropic.com/v1` | `LLM_BASE_URL` with provider `anthropic` (requests go to `{baseUrl}/messages` and `{baseUrl}/messages/batches`). Its port gets the NetworkPolicy egress entry. |
+| `enricher.llm.anthropic.model` | `claude-haiku-5-5` | `LLM_MODEL` with provider `anthropic`. `claude-sonnet-5-5` is the step-up if the quality eval shows misses (see the doc's "Model"). |
+| `enricher.llm.anthropic.existingSecret` | `""` | **Required** with provider `anthropic`: a pre-existing Secret holding the Claude API key (sent as `x-api-key`). The chart never renders this key into its own Secret. |
+| `enricher.llm.anthropic.existingSecretApiKeyKey` | `anthropic-api-key` | Key within `enricher.llm.anthropic.existingSecret`. |
+| `enricher.llm.anthropic.promptCache` | `1h` | `LLM_PROMPT_CACHE`: `1h`, `5m` or `off`, the `cache_control` TTL on each call's static system prompt (see the doc's caching analysis). Any other value aborts the render. |
+| `enricher.llm.anthropic.thinking` | `""` | `LLM_THINKING`, sent as `thinking.type` when set (e.g. `disabled` on Haiku 5.5, `between_tools` on Sonnet 5.5). Empty: the model's default (adaptive thinking). |
+| `enricher.llm.batch.sweepMode` | `sync` | `LLM_SWEEP_MODE`. `batch` (provider `anthropic` only) sends the reconciliation sweep's extractions through Claude Message Batches, at half price, results usually within an hour (at most 24 h); the stream loop and reclaim stay synchronous. `batch` with provider `openai`, or any other value, aborts the render. |
+| `enricher.llm.batch.minItems` | `20` | `LLM_BATCH_MIN_ITEMS`: a sweep that finds fewer incidents runs them synchronously. |
+| `enricher.llm.batch.maxItems` | `2000` | `LLM_BATCH_MAX_ITEMS`: most incidents per batch (the service caps it at 5000). |
+| `enricher.llm.batch.pollIntervalSecs` | `60` | `LLM_BATCH_POLL_SECS`: how often in-flight batches are polled. |
 | `enricher.serviceAccount.create` | `false` | Create a dedicated ServiceAccount for the enricher (`<fullname>-enricher`, or `name`), with no RBAC and `automountServiceAccountToken: false`. Off: the enricher uses the shared `serviceAccount`. Required (or `name`) by both WIF modes. |
 | `enricher.serviceAccount.name` | `""` | Its name. With `create: false`, an existing ServiceAccount, which must not be the shared one. |
 | `enricher.llmRequestTimeoutSecs` | `300` | Per-request timeout for a single LLM call (`LLM_REQUEST_TIMEOUT_SECS`). One incident makes three sequential calls. Behind a gateway that cuts calls itself (e.g. a 504 at ~302 s), set this slightly above the gateway's cutoff (e.g. `320`) so the 504 is what gets reported. |

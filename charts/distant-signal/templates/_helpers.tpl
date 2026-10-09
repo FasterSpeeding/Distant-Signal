@@ -132,6 +132,30 @@ other value. Takes root.
 {{- end }}
 
 {{/*
+"true" when enricher.llm.provider is anthropic (the Claude API), empty for
+openai (the default); fails on any other value. Takes root.
+*/}}
+{{- define "distant-signal.enricherAnthropic" -}}
+{{- $provider := .Values.enricher.llm.provider | default "openai" -}}
+{{- if not (has $provider (list "openai" "anthropic")) -}}
+{{- fail (printf "enricher.llm.provider=%q is not one of openai, anthropic." $provider) -}}
+{{- end -}}
+{{- if eq $provider "anthropic" -}}true{{- end -}}
+{{- end }}
+
+{{/*
+The enricher's LLM base URL: enricher.llm.anthropic.baseUrl with the
+anthropic provider, else enricher.llm.baseUrl. Takes root.
+*/}}
+{{- define "distant-signal.enricherLlmBaseUrl" -}}
+{{- if include "distant-signal.enricherAnthropic" . -}}
+{{- .Values.enricher.llm.anthropic.baseUrl -}}
+{{- else -}}
+{{- .Values.enricher.llm.baseUrl -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Audience of the enricher's projected service-account token:
 workloadIdentity.tokenAudience, else (openaiWifAuthentik) the Authentik
 client ID. Takes root.

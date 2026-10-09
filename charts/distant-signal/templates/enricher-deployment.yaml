@@ -8,11 +8,41 @@ Config, not Options -- an empty string parses fine, so the pod would boot and
 then fail every single extraction request forever with nothing but log noise
 to show for it.
 */}}
+{{- $anthropic := include "distant-signal.enricherAnthropic" . }}
+{{- $batch := .Values.enricher.llm.batch | default dict }}
+{{- $sweepMode := $batch.sweepMode | default "sync" }}
+{{- if not (has $sweepMode (list "sync" "batch")) }}
+{{- fail (printf "enricher.llm.batch.sweepMode=%q is not one of sync, batch." $sweepMode) }}
+{{- end }}
+{{- if $anthropic }}
+{{- /* The Claude API (enricher.llm.provider=anthropic): its own base URL,
+model and key Secret; no workload identity yet. */}}
+{{- $claude := .Values.enricher.llm.anthropic }}
+{{- if ne (.Values.enricher.llm.auth | default "apiKey") "apiKey" }}
+{{- fail "enricher.llm.provider=anthropic supports only enricher.llm.auth=apiKey: the workload identity modes mint OpenAI tokens." }}
+{{- end }}
+{{- if not $claude.baseUrl }}
+{{- fail "enricher.llm.anthropic.baseUrl is empty (the default is https://api.anthropic.com/v1)." }}
+{{- end }}
+{{- if not $claude.model }}
+{{- fail "enricher.llm.anthropic.model is empty (e.g. claude-haiku-5-5)." }}
+{{- end }}
+{{- if not $claude.existingSecret }}
+{{- fail "enricher.llm.provider=anthropic needs enricher.llm.anthropic.existingSecret: a Secret holding the Claude API key under enricher.llm.anthropic.existingSecretApiKeyKey (kubectl create secret generic enricher-anthropic --from-literal=anthropic-api-key=...)." }}
+{{- end }}
+{{- if not (has ($claude.promptCache | default "1h") (list "1h" "5m" "off")) }}
+{{- fail (printf "enricher.llm.anthropic.promptCache=%q is not one of 1h, 5m, off." $claude.promptCache) }}
+{{- end }}
+{{- else }}
+{{- if eq $sweepMode "batch" }}
+{{- fail "enricher.llm.batch.sweepMode=batch needs enricher.llm.provider=anthropic: the enricher has no OpenAI Batch API support." }}
+{{- end }}
 {{- if not .Values.enricher.llm.baseUrl }}
 {{- fail "enricher.llm.baseUrl is empty. Set it to the base URL of an OpenAI-compatible chat-completions endpoint (e.g. --set enricher.llm.baseUrl=http://vllm.internal:8000/v1). An empty value would deploy an enricher that fails every extraction request." }}
 {{- end }}
 {{- if not .Values.enricher.llm.model }}
 {{- fail "enricher.llm.model is empty. Set it to a model name the endpoint at enricher.llm.baseUrl serves (e.g. --set enricher.llm.model=gpt-4o-mini). An empty value would deploy an enricher that fails every extraction request." }}
+{{- end }}
 {{- end }}
 {{- /*
 Workload identity federation (enricher.llm.auth, docs/enricher-openai.md
@@ -163,11 +193,46 @@ with enricher.extraEnv, which replaces an entry of the same name.
             - name: REDIS_URL
               value: {{ include "distant-signal.redisUrl" . | quote }}
             {{- include "distant-signal.redisClientAuthEnv" (dict "root" . "client" "enricher" "user" "enricher") }}
+            {{- if include "distant-signal.enricherAnthropic" . }}
+            {{- $claude := .Values.enricher.llm.anthropic }}
+            {{- $batch := .Values.enricher.llm.batch | default dict }}
+            # The Claude API (enricher.llm.provider, docs/enricher-anthropic.md).
+            - name: LLM_PROVIDER
+              value: "anthropic"
+            - name: LLM_BASE_URL
+              value: {{ $claude.baseUrl | quote }}
+            - name: LLM_MODEL
+              value: {{ $claude.model | quote }}
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $claude.existingSecret }}
+                  key: {{ $claude.existingSecretApiKeyKey | default "anthropic-api-key" }}
+            - name: LLM_PROMPT_CACHE
+              value: {{ $claude.promptCache | default "1h" | quote }}
+            {{- with $claude.thinking }}
+            - name: LLM_THINKING
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if eq ($batch.sweepMode | default "sync") "batch" }}
+            - name: LLM_SWEEP_MODE
+              value: "batch"
+            - name: LLM_BATCH_MIN_ITEMS
+              value: {{ $batch.minItems | default 20 | quote }}
+            - name: LLM_BATCH_MAX_ITEMS
+              value: {{ $batch.maxItems | default 2000 | quote }}
+            - name: LLM_BATCH_POLL_SECS
+              value: {{ $batch.pollIntervalSecs | default 60 | quote }}
+            {{- end }}
+            {{- else }}
             - name: LLM_BASE_URL
               value: {{ .Values.enricher.llm.baseUrl | quote }}
             - name: LLM_MODEL
               value: {{ .Values.enricher.llm.model | quote }}
-            {{- if include "distant-signal.enricherWif" . }}
+            {{- end }}
+            {{- if include "distant-signal.enricherAnthropic" . }}
+            {{- /* The Claude key is above; no LLM_AUTH (api-key). */}}
+            {{- else if include "distant-signal.enricherWif" . }}
             {{- $wi := .Values.enricher.llm.workloadIdentity }}
             # Keyless (enricher.llm.auth): no API key env or Secret at all.
             - name: LLM_AUTH
