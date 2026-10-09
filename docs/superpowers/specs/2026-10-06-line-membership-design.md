@@ -150,7 +150,8 @@ each omitted when absent. See `docs/api-changelog.md`.
 ## 6. Full coverage (Phase 3)
 
 `FULL_COVERAGE_LINE_MEMBERSHIP=legacy|scope|shadow` (chart
-`fullCoverageConsumer.windowedStats.lineMembership`, default `legacy`):
+`fullCoverageConsumer.windowedStats.lineMembership`, chart default `scope`
+since batch 54, as production runs it; the binary's default is `legacy`):
 see the windowed-stats design's "Decisions (2026-10-06, line membership)".
 Expected effect per day: SWML 998 → 319, Leeds–York 200 → 67, Elizabeth
 678 → 336; all lines 62,930 → 28,319.

@@ -314,8 +314,8 @@ population entry a `scope`; `scope == "line"` is the line's own trains
 1. **Relevance follows train membership, switched in shadow first.**
    `FULL_COVERAGE_LINE_MEMBERSHIP` (chart
    `fullCoverageConsumer.windowedStats.lineMembership`):
-   - `legacy` (default): §4.1, unchanged;
-   - `scope`: relevant ⇔ the entry's `scope == "line"`; an entry without
+   - `legacy` (the binary's default): §4.1, unchanged;
+   - `scope` (the chart's default since batch 54, as production runs it): relevant ⇔ the entry's `scope == "line"`; an entry without
      `scope` (a population from before it) falls back to §4.1. Buses are
      still left out (rule 1). A `line` train needs one booked call at a
      line station (it must be due somewhere), not two: a fast train through
