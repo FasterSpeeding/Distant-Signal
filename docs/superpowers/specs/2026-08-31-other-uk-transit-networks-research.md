@@ -11,6 +11,25 @@ network specifically, at the depth
 `docs/superpowers/specs/2026-08-22-tfl-service-metrics-v2-design.md` gave
 TfL/Overground.
 
+> **Correction (2026-10-09).** This survey says the Bus Open Data Service
+> (BODS) "covers bus services only" and "none of it extends to tram/
+> light-rail operators" ("Other paths checked and ruled out", below). That
+> is wrong. On 2026-10-09:
+>
+> - BODS's anonymous North West GTFS bulk file
+>   (`https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/north_west/`)
+>   carried Manchester Metrolink as agency NOC `METL`: 83 routes, all
+>   `route_type 0`, and 15,849 trips.
+> - Its anonymous SIRI-SX bulk archive
+>   (`https://data.bus-data.dft.gov.uk/disruptions/download/bulk_archive`)
+>   carried TfGM tram situations (`VehicleMode=tram`) and South Yorkshire
+>   Supertram ones.
+>
+> Both are under the OGL. BODS still has no live tram arrivals for
+> Metrolink, so the real-time conclusions below stand. The text below is
+> left as written. The Metrolink design that uses these feeds is
+> [2026-10-09-transit-networks-design.md](2026-10-09-transit-networks-design.md).
+
 ## Problem being researched
 
 DESIGN.md scopes this app to two data ecosystems: National Rail's
@@ -342,7 +361,9 @@ this is unverified as a concrete data source in this pass.
   [Wikipedia](https://en.wikipedia.org/wiki/Bus_Open_Data_Service): covers
   bus services only, England-only. Publishes real-time formats (SIRI-VM,
   GTFS-RT) but none of it extends to tram/light-rail operators. Confirmed
-  not a route into any network on this list.
+  not a route into any network on this list. *(Corrected 2026-10-09: BODS
+  does carry Metrolink timetables and TfGM tram disruptions; see the
+  correction note at the top.)*
 - **No unified UK-wide light-rail status aggregator found.**
   [TransportAPI.com](https://www.transportapi.com/) is the closest
   candidate (a commercial managed transport-data platform advertising
