@@ -237,6 +237,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         <Group gap="xs">
           {stations.map((crs, index) => (
             <Badge
+              tt="none"
               key={crs}
               title={nameByCode[crs]}
               rightSection={

@@ -372,7 +372,9 @@ function MemberRow({
             (you)
           </Text>
         )}
-        <Badge variant="outline">{member.role}</Badge>
+        <Badge tt="none" variant="outline">
+          {member.role}
+        </Badge>
       </Group>
       <Group gap="xs" wrap="nowrap" className="groupMemberRow__actions">
         {/* `viewerIsOwner`, not `canManage`: `promote_member` and

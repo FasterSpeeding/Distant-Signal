@@ -137,9 +137,11 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           row instead of wrapping the button onto its own. */}
       <Group justify="space-between">
         <Group gap="sm">
-          <Badge color={incident.isPlanned ? 'blue' : 'orange'}>
-            {incident.isPlanned ? 'Planned work' : 'Real-Time'}
-          </Badge>
+          {incident.isPlanned && (
+            <Badge color="blue" tt="none">
+              Planned work
+            </Badge>
+          )}
           {/* Review §3.3's "at-a-glance strip": the archive rows' own
               Active/Ended/Cleared badge, the same component, so a reader
               who has seen the archive recognises it immediately here. */}
@@ -177,7 +179,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           <SectionTitle>Affected stations</SectionTitle>
           <Group gap="xs">
             {incident.affectedStations.map((crs) => (
-              <Badge key={crs} variant="outline" color="gray">
+              <Badge tt="none" key={crs} variant="outline" color="gray">
                 {stationLabel(crs, stationNamesByCrs.get(crs))}
               </Badge>
             ))}

@@ -471,7 +471,7 @@ export default async function LineDetailPage({
           {statusResult.coverage === 'present' ? (
             <StatusBadge severity={worstStatus(statusResult.report).statusSeverity} />
           ) : (
-            <Badge color="gray" variant="light" data-status-badge>
+            <Badge tt="none" color="gray" variant="light" data-status-badge>
               {NO_STATUS_BADGE}
             </Badge>
           )}

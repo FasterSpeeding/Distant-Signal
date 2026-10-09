@@ -590,7 +590,7 @@ export function AllLinesTable({
                     // rule) -- otherwise "NO DATA" clips to "N…" in this same
                     // table at narrow widths.
                     <Tooltip label={noStatusReason(representative)}>
-                      <Badge color="gray" variant="outline" data-status-badge>
+                      <Badge tt="none" color="gray" variant="outline" data-status-badge>
                         NO DATA
                       </Badge>
                     </Tooltip>

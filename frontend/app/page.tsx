@@ -535,7 +535,7 @@ export default async function DashboardPage() {
                       <Group justify="space-between">
                         <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
                         {coverage === 'none' ? (
-                          <Badge color="gray" variant="light">
+                          <Badge tt="none" color="gray" variant="light">
                             Not tracked
                           </Badge>
                         ) : (
@@ -771,7 +771,7 @@ function SharedCustomLineSummaryRow({
           />
           <Group gap="xs" wrap="wrap">
             {groupNames.map((groupName) => (
-              <Badge key={groupName} variant="light" color="grape">
+              <Badge tt="none" key={groupName} variant="light" color="grape">
                 from {groupName}
               </Badge>
             ))}
@@ -858,7 +858,7 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
               identically -- same helper and same wording /track/mine and
               /groups/{id} already use (`lib/memberLabel.ts`). */}
           {groupNames.map((groupName) => (
-            <Badge key={groupName} variant="light" color="grape">
+            <Badge tt="none" key={groupName} variant="light" color="grape">
               from {groupName}
             </Badge>
           ))}

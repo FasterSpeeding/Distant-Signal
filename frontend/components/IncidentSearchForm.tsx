@@ -48,6 +48,22 @@ function initialStateFilter(state: string | undefined, cleared: string | undefin
  * otherwise bury the summary under a wall of badges. */
 const MAX_LINE_BADGES = 4;
 
+/** "South Western Railway · South Western Main Line, Portsmouth Direct Line
+ * +3 more · WOK, GLD": the operators (by name), lines and stations an
+ * archived incident affects, as one line of text. */
+function affectsSummary(
+  row: Pick<IncidentSummary, 'operators' | 'affectedLines' | 'affectedStations'>,
+  tocNamesByCode: ReadonlyMap<string, string>,
+  lineNamesById: ReadonlyMap<string, string>,
+): string {
+  const operators = row.operators.map((code) => tocNamesByCode.get(code) ?? code).join(', ');
+  const lines = row.affectedLines ?? [];
+  const shownLines = lines.slice(0, MAX_LINE_BADGES).map((id) => lineNamesById.get(id) ?? id);
+  const moreLines = lines.length > MAX_LINE_BADGES ? ` +${lines.length - MAX_LINE_BADGES} more` : '';
+  const lineText = shownLines.length > 0 ? `${shownLines.join(', ')}${moreLines}` : '';
+  return [operators, lineText, row.affectedStations.join(', ')].filter((part) => part !== '').join(' · ');
+}
+
 function calendarDaysAgo(days: number): string {
   return nowInLondon().subtract(days, 'day').format('YYYY-MM-DD');
 }
@@ -177,6 +193,7 @@ export function IncidentSearchForm({
    * line retired from the catalogue since the incident was ingested) falls
    * back to the raw id rather than disappearing. */
   const lineNamesById = new Map(catalogueLines.map((line) => [line.id, line.name]));
+  const tocNamesByCode = new Map(tocs.map((toc) => [toc.code, toc.name]));
 
   const [operators, setOperators] = useState<string[]>(
     initialOperator ? initialOperator.split(',').filter(Boolean) : [],
@@ -536,46 +553,22 @@ export function IncidentSearchForm({
                   {formatDateTime(row.firstSeenAt)}
                 </Text>
               </Group>
+              {/* At most two badges: planned work (real-time is the default
+                  and needs no badge) and the incident's state. What it
+                  affects is plain dimmed text, operators by name. */}
               <Group gap="xs">
-                <Badge color={row.isPlanned ? 'blue' : 'orange'}>{row.isPlanned ? 'Planned work' : 'Real-Time'}</Badge>
-                <IncidentStateBadge isCleared={row.isCleared} sourceRemovedAt={row.sourceRemovedAt} />
-                {row.operators.map((code) => (
-                  <Badge key={code} variant="outline" color="grape">
-                    {code}
-                  </Badge>
-                ))}
-                {/* `?? []` is not defensive padding for its own sake: during
-                 * a rolling deploy this bundle can be served against an api
-                 * that predates `affectedLines`, and an unguarded `.map`
-                 * would take the whole results list down rather than just
-                 * omit the badges. Capped at MAX_LINE_BADGES because an
-                 * operator-wide incident on a large TOC genuinely matches a
-                 * dozen-plus catalogue lines. */}
-                {(row.affectedLines ?? []).slice(0, MAX_LINE_BADGES).map((id) => (
-                  <Badge key={id} variant="outline" color="gray" title="Affected line">
-                    {lineNamesById.get(id) ?? id}
-                  </Badge>
-                ))}
-                {(row.affectedLines ?? []).length > MAX_LINE_BADGES && (
-                  <Badge
-                    variant="outline"
-                    color="gray"
-                    /* The names themselves, not a generic label: collapsing
-                     * must hide them from the layout, not lose them. */
-                    title={(row.affectedLines ?? [])
-                      .slice(MAX_LINE_BADGES)
-                      .map((id) => lineNamesById.get(id) ?? id)
-                      .join(', ')}
-                  >
-                    {`+${(row.affectedLines ?? []).length - MAX_LINE_BADGES} more`}
+                {row.isPlanned && (
+                  <Badge color="blue" tt="none">
+                    Planned work
                   </Badge>
                 )}
-                {row.affectedStations.map((crs) => (
-                  <Badge key={crs} variant="outline" color="gray" title="Affected station">
-                    {crs}
-                  </Badge>
-                ))}
+                <IncidentStateBadge isCleared={row.isCleared} sourceRemovedAt={row.sourceRemovedAt} />
               </Group>
+              {affectsSummary(row, tocNamesByCode, lineNamesById) && (
+                <Text size="xs" c="dimmed">
+                  {affectsSummary(row, tocNamesByCode, lineNamesById)}
+                </Text>
+              )}
             </Stack>
           ))}
         </Stack>

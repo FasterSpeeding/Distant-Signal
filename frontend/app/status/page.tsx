@@ -282,7 +282,7 @@ function ModeCard({ label, reports }: { label: string; reports: LineStatusReport
       <Stack gap={4}>
         <Group justify="space-between">
           <Text fw={600}>{label}</Text>
-          <Badge color={badgeColor} variant="light">
+          <Badge tt="none" color={badgeColor} variant="light">
             {affected.length === 0 ? 'All Good Service' : `${affected.length} affected`}
           </Badge>
         </Group>

@@ -498,7 +498,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
               don't read identically -- same helper and same wording as
               `/groups/{id}`'s shared rows (`lib/memberLabel.ts`). */}
           {groupNames.map((groupName) => (
-            <Badge key={groupName} variant="light" color="grape">
+            <Badge tt="none" key={groupName} variant="light" color="grape">
               from {groupName}
             </Badge>
           ))}

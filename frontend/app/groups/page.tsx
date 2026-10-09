@@ -144,10 +144,12 @@ function GroupRow({ group }: { group: GroupSummary }) {
         <Group justify="space-between" wrap="nowrap">
           <Text fw={500}>{group.name}</Text>
           <Group gap="xs" wrap="nowrap">
-            <Badge variant="light">
+            <Badge tt="none" variant="light">
               {group.memberCount} member{group.memberCount === 1 ? '' : 's'}
             </Badge>
-            <Badge variant="outline">{group.role}</Badge>
+            <Badge tt="none" variant="outline">
+              {group.role}
+            </Badge>
             <Text aria-hidden c="dimmed">
               ›
             </Text>
