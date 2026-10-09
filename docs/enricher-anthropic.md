@@ -369,10 +369,16 @@ names the model and `base_url_host` `api.anthropic.com`). Changed or new:
     `submit_failed`, `ended`, `poll_failed`, `abandoned`;
   - `distant_signal_enricher_llm_batch_requests_total{call, result}`:
     `succeeded`, `invalid`, `errored`, `canceled`, `expired`, `missing`;
-  - `distant_signal_enricher_llm_batches_in_flight`.
+  - `distant_signal_enricher_llm_batches_in_flight`;
+  - `distant_signal_enricher_llm_batch_oldest_age_seconds`: the oldest
+    in-flight batch's age.
 
-There is no alert on batch failures yet: watch `abandoned`/`submit_failed`
-and `errored`/`expired` after enabling batch mode.
+Batch mode renders three alerts (docs/alerts.md):
+`DistantSignalEnricherBatchFailing` (batches failing to submit or
+abandoned), `DistantSignalEnricherBatchResultsFailing` (a high share of
+errored, expired or canceled results) and `DistantSignalEnricherBatchStuck`
+(a batch in flight for over 26 h). Thresholds are under
+`metrics.prometheusRule.rules.enricherBatches`.
 
 Spend for Haiku 5.5 over the last day (1-hour cache writes at $0.20; use
 $0.125 for `LLM_PROMPT_CACHE=5m`), in USD:

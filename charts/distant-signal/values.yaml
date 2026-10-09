@@ -5248,15 +5248,34 @@ metrics:
       severity: warning
     # DistantSignalEnricherTokenExchangeFailing: in a workload identity mode
     # (enricher.llm.auth), at least minFailures token requests to one stage
-    # (authentik or openai) failed over `window` with none succeeding, for
-    # `for`. Rendered only in those modes (the metric exists only there).
-    # The enricher keeps using a cached token until it expires, so this
-    # can fire before extractions start failing.
+    # (authentik, openai or anthropic) failed over `window` with none
+    # succeeding, for `for`. Rendered only in those modes (the metric exists
+    # only there). The enricher keeps using a cached token until it
+    # expires, so this can fire before extractions start failing.
     enricherTokenExchange:
       enabled: true
       window: 30m
       minFailures: 3
       for: 10m
+      severity: warning
+    # Claude Message Batches (enricher.llm.batch.sweepMode: batch; rendered
+    # only then, as the metrics exist only then). Three alerts:
+    # DistantSignalEnricherBatchFailing: at least minFailures batches failed
+    # to submit or were abandoned over `window`;
+    # DistantSignalEnricherBatchResultsFailing: over `window`, more than
+    # resultFailureRatio of the batch requests that ended were errored,
+    # expired or canceled, with at least minResults ended;
+    # DistantSignalEnricherBatchStuck: a batch still in flight
+    # maxAgeSeconds after submission (a batch expires after 24 h, so the
+    # default, 26 h, means the enricher is not finishing it).
+    enricherBatches:
+      enabled: true
+      window: 6h
+      minFailures: 2
+      resultFailureRatio: 0.2
+      minResults: 20
+      maxAgeSeconds: 93600
+      for: 15m
       severity: warning
     # DistantSignalComponentMemoryHigh: a container in this release's pods
     # using more than `ratio` of its memory limit. Reads cadvisor

@@ -64,6 +64,12 @@ const REQUESTS_METRIC: &str = "enricher_llm_batch_requests_total";
 /// `enricher_llm_batches_in_flight`: rows of `enricher_llm_batches`, as of
 /// the last poll.
 const IN_FLIGHT_METRIC: &str = "enricher_llm_batches_in_flight";
+/// `enricher_llm_batch_oldest_age_seconds`: how long ago the oldest
+/// in-flight batch row was submitted (0 with none), as of the last poll. A
+/// batch ends within 24 h (it expires then), and its adversarial stage is a
+/// new row, so a value well past a day means the enricher is not finishing
+/// it (`DistantSignalEnricherBatchStuck`).
+const OLDEST_AGE_METRIC: &str = "enricher_llm_batch_oldest_age_seconds";
 
 /// The batch-mode settings (`config::BatchConfig`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +201,7 @@ pub(crate) fn register_metrics() {
         }
     }
     metrics::gauge!(common::metrics::metric_name(IN_FLIGHT_METRIC)).set(0.0);
+    metrics::gauge!(common::metrics::metric_name(OLDEST_AGE_METRIC)).set(0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -428,19 +435,29 @@ pub(crate) struct BatchRow {
     pub stage: Stage,
     pub model_version: String,
     pub items: Vec<BatchItem>,
+    pub submitted_at: DateTime<Utc>,
 }
 
-type BatchRecord = (String, String, String, serde_json::Value);
+/// Seconds since the oldest row's submission (0 with none, or a clock
+/// behind the database's).
+pub(crate) fn oldest_age_secs(rows: &[BatchRow], now: DateTime<Utc>) -> u32 {
+    rows.iter()
+        .map(|row| (now - row.submitted_at).num_seconds())
+        .max()
+        .map_or(0, |secs| u32::try_from(secs.max(0)).unwrap_or(u32::MAX))
+}
+
+type BatchRecord = (String, String, String, serde_json::Value, DateTime<Utc>);
 
 async fn load_batches(pool: &PgPool) -> anyhow::Result<Vec<BatchRow>> {
     let rows: Vec<BatchRecord> = sqlx::query_as(
-        "SELECT batch_id, stage, model_version, items FROM enricher_llm_batches \
+        "SELECT batch_id, stage, model_version, items, submitted_at FROM enricher_llm_batches \
          ORDER BY submitted_at",
     )
     .fetch_all(pool)
     .await?;
     let mut batches = Vec::with_capacity(rows.len());
-    for (batch_id, stage, model_version, items) in rows {
+    for (batch_id, stage, model_version, items, submitted_at) in rows {
         let Some(stage) = Stage::parse(&stage) else {
             tracing::error!(batch_id, stage, "unknown batch stage; skipping the row");
             continue;
@@ -451,6 +468,7 @@ async fn load_batches(pool: &PgPool) -> anyhow::Result<Vec<BatchRow>> {
                 stage,
                 model_version,
                 items,
+                submitted_at,
             }),
             Err(err) => {
                 tracing::error!(batch_id, error = %err, "unreadable batch items; skipping the row");
@@ -615,6 +633,8 @@ pub(crate) async fn poll_loop(enricher: Arc<Enricher>, settings: BatchSettings) 
                 let count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
                 metrics::gauge!(common::metrics::metric_name(IN_FLIGHT_METRIC))
                     .set(f64::from(count));
+                metrics::gauge!(common::metrics::metric_name(OLDEST_AGE_METRIC))
+                    .set(f64::from(oldest_age_secs(&rows, Utc::now())));
                 for row in &rows {
                     if let Err(err) = poll_batch(&enricher, settings.max_items, row).await {
                         record_batch_event(row.stage, "poll_failed");
@@ -998,6 +1018,28 @@ mod tests {
             plan.records[1].usage.as_ref().unwrap().completion_tokens,
             Some(16000)
         );
+    }
+
+    #[test]
+    fn oldest_age_is_the_oldest_rows_and_zero_without_rows() {
+        let now: DateTime<Utc> = "2026-10-10T12:00:00Z".parse().unwrap();
+        let row = |submitted: &str| BatchRow {
+            batch_id: "b".into(),
+            stage: Stage::Primary,
+            model_version: "m".into(),
+            items: Vec::new(),
+            submitted_at: submitted.parse().unwrap(),
+        };
+        assert_eq!(oldest_age_secs(&[], now), 0);
+        assert_eq!(
+            oldest_age_secs(
+                &[row("2026-10-10T11:00:00Z"), row("2026-10-09T10:00:00Z")],
+                now
+            ),
+            26 * 3600
+        );
+        // A row "from the future" (clock skew) is not negative.
+        assert_eq!(oldest_age_secs(&[row("2026-10-10T12:05:00Z")], now), 0);
     }
 
     #[test]
