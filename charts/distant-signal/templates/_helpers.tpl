@@ -1126,10 +1126,10 @@ connected, nothing fails) instead of the render failure it was: a deployer
 with that producer disabled or rolled back to `sink: http` needs no
 `connect: false` as well. True (non-empty) when a `connect` that is on
 should take effect: always for the services not listed here; for writer,
-schedule_ingest, schedule_reference, stations, incidents, trust_backlog and
-trust_consumer only while their component uses the role. The read-only
-roles (connect still default false) keep failing in perServiceConnects when
-nothing uses them. Takes (dict "root" $ "service" ...).
+schedule_ingest, schedule_reference, stations, incidents, trust_backlog, trust_consumer,
+full_coverage_ro and ldbws_ro only while their component uses the role (the
+read-only two: on internalReads.source db). Takes (dict "root" $ "service"
+...).
 */}}
 {{- define "distant-signal.perServiceRoleUsed" -}}
 {{- $root := .root -}}
@@ -1145,6 +1145,8 @@ nothing uses them. Takes (dict "root" $ "service" ...).
 {{- if include "distant-signal.trustSinkDb" (dict "root" $root "service" .service) }}true{{ end -}}
 {{- else if eq .service "trust_consumer" -}}
 {{- if include "distant-signal.trustConsumerPool" $root | int }}true{{ end -}}
+{{- else if has .service (list "full_coverage_ro" "ldbws_ro") -}}
+{{- if include "distant-signal.internalReadsDb" (dict "root" $root "role" .service) }}true{{ end -}}
 {{- else -}}
 true
 {{- end -}}
@@ -1163,9 +1165,6 @@ not a connection (distant-signal.perServiceRoleUsed).
 {{- end -}}
 {{- if not (include "distant-signal.postgresRolesEnabled" .root) -}}
 {{- fail (printf "postgresql.roles.perService.%s.connect needs postgresql.roles.enabled: the per-service roles are members of the app role." .service) -}}
-{{- end -}}
-{{- if and (has .service (list "full_coverage_ro" "ldbws_ro")) (not (include "distant-signal.internalReadsDb" (dict "root" .root "role" .service))) -}}
-{{- fail (printf "postgresql.roles.perService.%s.connect needs %s.internalReads.source: db: nothing else connects as its role." .service (include "distant-signal.internalReadsValuesKey" .service)) -}}
 {{- end -}}
 true
 {{- end -}}
@@ -1647,6 +1646,21 @@ Takes root.
 {{- end -}}
 {{- if and (has $d.svc (list "stations" "trust_consumer")) (not (and $v.ingestWriter.enabled $v.ingestWriter.loops.enabled)) -}}
 {{- $missing = append $missing (printf "ingestWriter.enabled: true and ingestWriter.loops.enabled: true (%s: db; plans 2b.2 and 3b.3)" $d.key) -}}
+{{- end -}}
+{{- end -}}
+{{- /* The internal readers (phase 4) on internalReads.source db, each as
+     its own role: full_coverage_ro, ldbws_ro and trust_consumer (whose
+     reads share its sink's role and pool, plan 4.4). */ -}}
+{{- range $role := list "full_coverage_ro" "ldbws_ro" "trust_consumer" -}}
+{{- $key := include "distant-signal.internalReadsValuesKey" $role -}}
+{{- $values := ternary ($v.pollers.ldbws | default dict) (get $v (ternary "fullCoverageConsumer" "trustConsumer" (eq $role "full_coverage_ro")) | default dict) (eq $role "ldbws_ro") -}}
+{{- $deployed := ternary $values.enabled true (eq $role "ldbws_ro") -}}
+{{- if and $deployed (eq (toString (dig "internalReads" "source" "http" $values)) "db") -}}
+{{- $roles = true -}}
+{{- $optOut = append $optOut (printf "%s.internalReads.source: http" $key) -}}
+{{- if not (get $v.postgresql.roles.perService $role | default dict).connect -}}
+{{- $missing = append $missing (printf "postgresql.roles.perService.%s.connect: true (%s.internalReads.source: db; security review H2)" $role $key) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- /* Redis: the writer applies what the stream producers XADD. */ -}}

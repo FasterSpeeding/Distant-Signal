@@ -1016,7 +1016,8 @@ jobs:
             > /dev/null
 
       # Release A (2026-10-09, docs/ingest-phase5-runbook.md "Release A"):
-      # every producer defaults to its new sink. Without the prerequisites
+      # every producer defaults to its new sink, and every internal reader
+      # to its direct read (`internalReads.source: db`). Without the prerequisites
       # the render fails once, listing all of them and the per-producer
       # `sink: http` opt-out. With them, every producer renders its sink
       # and its own Postgres role, and the writer applies the four
@@ -1070,6 +1071,12 @@ jobs:
           declare -A role=(
             [poller-incidents]=incidents [poller-stations]=stations [trust-consumer]=trust_consumer
             [trust-backlog-consumer]=trust_backlog [ingest-writer]=writer
+            [full-coverage-consumer]=full_coverage_ro [poller-ldbws]=ldbws_ro
+          )
+          # The internal reads (phase 4) default to db too.
+          declare -A source=(
+            [full-coverage-consumer]=POPULATION_SOURCE [trust-consumer]=TRACKED_TRAINS_SOURCE
+            [poller-ldbws]=SAMPLE_STATIONS_SOURCE
           )
           # db_sinks MANIFEST: how many INGEST_SINK entries are db.
           db_sinks() { grep -A1 'name: INGEST_SINK$' <<<"$1" | grep -c -E 'value: "?db"?$' || true; }
@@ -1081,6 +1088,10 @@ jobs:
             dep=$(doc Deployment "distant-signal-${d}" <<<"${out}")
             grep -q "postgres://distant_signal_${role[${d}]}:" <<<"${dep}" \
               || fail "${d} must connect as distant_signal_${role[${d}]}"
+          done
+          for d in "${!source[@]}"; do
+            dep=$(doc Deployment "distant-signal-${d}" <<<"${out}")
+            env_is "${dep}" "${source[${d}]}" db "${d}"
           done
           sf=$(doc Deployment distant-signal-schedulefeed <<<"${out}")
           n=$(db_sinks "${sf}")
@@ -1105,6 +1116,14 @@ jobs:
               fail "${key[${d}]}.ingest.sink=http must render ${d} without INGEST_SINK"
             fi
           done
+          # And each reader's is its own `internalReads.source: http`.
+          for d in "${!source[@]}"; do
+            back=$(render "${all[@]}" --set "${key[${d}]}.internalReads.source=http")
+            dep=$(doc Deployment "distant-signal-${d}" <<<"${back}")
+            if grep -q "name: ${source[${d}]}\$" <<<"${dep}"; then
+              fail "${key[${d}]}.internalReads.source=http must render ${d} without ${source[${d}]}"
+            fi
+          done
           back=$(render "${all[@]}" --set scheduleFeed.ingest.sink=http)
           sf=$(doc Deployment distant-signal-schedulefeed <<<"${back}")
           n=$(db_sinks "${sf}")
@@ -1116,6 +1135,11 @@ jobs:
             fail "pollers.incidents on db without its connect must fail the render"
           fi
           grep -qF 'postgresql.roles.perService.incidents.connect: true' <<<"${err}" || fail "unexpected error: ${err}"
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if err=$(render "${all[@]}" --set postgresql.roles.perService.full_coverage_ro.connect=false 2>&1 >/dev/null); then
+            fail "fullCoverageConsumer's db reads without their connect must fail the render"
+          fi
+          grep -qF 'postgresql.roles.perService.full_coverage_ro.connect: true' <<<"${err}" || fail "unexpected error: ${err}"
 
           # defaultUser off and the disabled island-of-Ireland pollers: no user
           # needed (the render above). Enabled, each needs its own.

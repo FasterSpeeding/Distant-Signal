@@ -495,7 +495,12 @@ postgresql:
         # read-only role, not a member of `app`: SELECT on the line
         # populations and STANOX/CRS only. Created with the others whenever
         # `enabled` is on, unused until then.
-        connect: false
+        # Default true since release A (2026-10-09): it takes effect only
+        # while the component uses the role (deployed and on
+        # `internalReads.source: db`), and then needs `perService.enabled`,
+        # `postgresql.roles.enabled` and `setupJob.enabled`; the render
+        # fails otherwise rather than fall back to the app role.
+        connect: true
         # -- Password. Generated when empty (and no `existingSecret`).
         password: ""
         # -- Read the password from this pre-existing Secret instead.
@@ -514,7 +519,12 @@ postgresql:
         # `ingest_sample_station_pins` and `ingest_custom_line_stations`
         # only, never the personal tables behind them. Created with the
         # others whenever `enabled` is on, unused until then.
-        connect: false
+        # Default true since release A (2026-10-09): it takes effect only
+        # while the component uses the role (deployed and on
+        # `internalReads.source: db`), and then needs `perService.enabled`,
+        # `postgresql.roles.enabled` and `setupJob.enabled`; the render
+        # fails otherwise rather than fall back to the app role.
+        connect: true
         # -- Password. Generated when empty (and no `existingSecret`).
         password: ""
         # -- Read the password from this pre-existing Secret instead.
@@ -1365,8 +1375,10 @@ pollers:
       # (`postgresql.roles.perService.ldbws_ro.connect` is required; the
       # render fails without it, security review H2); the same list as the
       # api's, the two knobs above included. Adds Postgres egress and admission to
-      # the NetworkPolicies and the pool to the connection budgets.
-      source: http
+      # the NetworkPolicies and the pool to the connection budgets. `db` is
+      # the default since release A (2026-10-09); `http` is the rollback
+      # until phase 5.
+      source: db
       database:
         # -- Its Postgres pool under `db` (DATABASE_MAX_CONNECTIONS; spec
         # §6.6: pool 1, role limit 2).
@@ -3229,8 +3241,10 @@ trustConsumer:
     # (`postgresql.roles.perService.trust_consumer.connect` is required; the
     # render fails without it, security review H2), with the api's CORPUS
     # fallback passed on. Adds Postgres egress and admission to the
-    # NetworkPolicies and the pool to the connection budgets.
-    source: http
+    # NetworkPolicies and the pool to the connection budgets. `db` is the
+    # default since release A (2026-10-09); `http` is the rollback until
+    # phase 5.
+    source: db
     database:
       # -- Its Postgres pool under `db` (DATABASE_MAX_CONNECTIONS; spec
       # §6.6: pool 2).
@@ -3340,8 +3354,9 @@ fullCoverageConsumer:
     # (`postgresql.roles.perService.full_coverage_ro.connect` is required; the
     # render fails without it, security review H2); the api's CORPUS fallback is passed
     # on. Adds Postgres egress and admission to the NetworkPolicies and the
-    # pool to the connection budgets.
-    source: http
+    # pool to the connection budgets. `db` is the default since release A
+    # (2026-10-09); `http` is the rollback until phase 5.
+    source: db
     database:
       # -- Its Postgres pool under `db` (DATABASE_MAX_CONNECTIONS; spec
       # §6.6: pool 2, role limit 3).

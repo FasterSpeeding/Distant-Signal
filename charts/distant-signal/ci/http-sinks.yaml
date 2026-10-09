@@ -1,6 +1,6 @@
-# Render-test values for CI: every ingest producer back on the api's
-# /private routes, as the chart's defaults were before release A
-# (2026-10-09), and the writer reading no stream. The render checks of
+# Render-test values for CI: every ingest producer and internal reader back
+# on the api's /private routes, as the chart's defaults were before release
+# A (2026-10-09), and the writer reading no stream. The render checks of
 # features unrelated to the ingest cutover (archive, sftp, probes, ...) use
 # this as their base, so they need none of release A's prerequisites. It is
 # also release A's complete rollback (docs/ingest-phase5-runbook.md,
@@ -23,15 +23,21 @@ pollers:
   ldbws:
     ingest:
       sink: http
+    internalReads:
+      source: http
 trustConsumer:
   ingest:
     sink: http
+  internalReads:
+    source: http
 trustBacklogConsumer:
   ingest:
     sink: http
 fullCoverageConsumer:
   ingest:
     sink: http
+  internalReads:
+    source: http
 scheduleFeed:
   ingest:
     sink: http
