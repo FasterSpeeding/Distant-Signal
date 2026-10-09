@@ -146,7 +146,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
     setReconnectError(null);
     try {
       await startMcpSignIn(url);
-    } catch (err) {
+    } catch {
       setReconnecting(false);
       setReconnectError(describeFailure('start', 'logging in'));
     }

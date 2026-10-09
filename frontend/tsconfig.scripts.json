@@ -20,6 +20,7 @@
   "files": [
     "scripts/stamp-sw-version.mjs",
     "scripts/build-id.mjs",
+    "scripts/extract-copy.mjs",
     "scripts/build-id.test.js",
     "e2e/screenshots/take-screenshots.mjs",
     "e2e/screenshots/_interactive-shots.mjs",

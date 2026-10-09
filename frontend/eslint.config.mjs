@@ -25,6 +25,7 @@ const TEST_FILES = [
 const NODE_SCRIPT_FILES = [
   'scripts/stamp-sw-version.mjs',
   'scripts/build-id.mjs',
+  'scripts/extract-copy.mjs',
   'scripts/build-id.test.js',
   'e2e/screenshots/take-screenshots.mjs',
   'e2e/screenshots/_interactive-shots.mjs',
@@ -33,6 +34,38 @@ const NODE_SCRIPT_FILES = [
   'next.config.test.js',
   'postcss.config.cjs',
 ];
+
+// Copy guardrails (docs/style-guide.md, "Writing"). Each entry is an AST
+// selector plus the rule it enforces; `no-restricted-syntax` takes them all
+// at once, so a file-scoped override has to repeat the whole list.
+const FAILURE_COPY = /Something went wrong|Please try again|Could not |Request failed/;
+const COPY_RULES = [
+  {
+    selector: 'JSXText[value=/--/]',
+    message: 'Write an em dash "—" (or rephrase), never "--", in UI text.',
+  },
+  {
+    selector: `JSXText[value=${String(FAILURE_COPY)}]`,
+    message: 'Failures read "Couldn\'t load this train. Try again." Use describeFailure() from lib/failure.ts.',
+  },
+  {
+    selector: `JSXAttribute > Literal[value=${String(FAILURE_COPY)}]`,
+    message: 'Failures read "Couldn\'t load this train. Try again." Use describeFailure() from lib/failure.ts.',
+  },
+  {
+    selector: 'JSXText[value=/!\\s*$/]',
+    message: 'No exclamation marks in UI text: terse and factual, like a departure board.',
+  },
+  {
+    selector: 'JSXOpeningElement[name.name="DatePickerInput"]:not(:has(JSXAttribute[name.name="valueFormat"]))',
+    message: 'Give every DatePickerInput valueFormat="D MMM YYYY" so dates read "9 Oct 2026".',
+  },
+];
+const DATE_FORMAT_RULE = {
+  selector: 'CallExpression[callee.property.name=/^toLocale(Date|Time)?String$/]',
+  message:
+    'Format dates, times and numbers through lib/dateFormat.ts, not toLocale*String (server and browser zones differ).',
+};
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -94,6 +127,27 @@ const eslintConfig = defineConfig([
       // editor shows it as one.
       'react-hooks/exhaustive-deps': 'error',
     },
+  },
+
+  // Copy and logging guardrails for the app code. Tests assert on old and
+  // new strings alike, so they are exempt; lib/logger.ts and
+  // lib/consoleBridge.ts are the console's only writers, and
+  // lib/dateFormat.ts is the one place toLocale*String runs.
+  {
+    files: ['**/*.{ts,tsx}'],
+    ignores: [...TEST_FILES, ...SERVICE_WORKER_FILES],
+    rules: {
+      'no-console': 'error',
+      'no-restricted-syntax': ['error', ...COPY_RULES, DATE_FORMAT_RULE],
+    },
+  },
+  {
+    files: ['lib/logger.ts', 'lib/consoleBridge.ts'],
+    rules: { 'no-console': 'off' },
+  },
+  {
+    files: ['lib/dateFormat.ts'],
+    rules: { 'no-restricted-syntax': ['error', ...COPY_RULES] },
   },
 
   // TypeScript: `import type` for type-only imports, which
