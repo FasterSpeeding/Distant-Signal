@@ -731,6 +731,7 @@ mod tests {
                 completion_tokens: Some(80),
                 reasoning_tokens: Some(0),
                 cached_tokens: Some(1024),
+                cache_write_tokens: None,
             }),
             ..call
         };

@@ -161,14 +161,27 @@ impl LlmAuth {
         matches!(self, Self::Federated(_))
     }
 
-    /// The bearer token for the next request, if any. Only the federated
-    /// variant can fail (`LlmCallError::CredentialUnavailable`).
-    pub(crate) async fn bearer(&self) -> Result<Option<Secret>, LlmCallError> {
-        match self {
-            Self::None => Ok(None),
-            Self::Static(key) => Ok(Some(key.clone())),
-            Self::Federated(source) => source.bearer().await.map(Some),
-        }
+    /// The credential for the next request and how it goes on the wire.
+    /// Only the federated variant can fail
+    /// (`LlmCallError::CredentialUnavailable`).
+    /// `static_key` says how this provider takes a static API key
+    /// (`OpenAI`-compatible: `Authorization: Bearer`; Anthropic:
+    /// `x-api-key`). A minted (federated) token is always a bearer token
+    /// and never also sent as `x-api-key`: that is how `OpenAI`'s exchanged
+    /// tokens work today, and how the Claude API's own workload identity
+    /// federation tokens are presented (see [`Credential`]).
+    pub(crate) async fn credential(
+        &self,
+        static_key: StaticKeyHeader,
+    ) -> Result<Option<Credential>, LlmCallError> {
+        Ok(match self {
+            Self::None => None,
+            Self::Static(key) => Some(match static_key {
+                StaticKeyHeader::Bearer => Credential::Bearer(key.clone()),
+                StaticKeyHeader::XApiKey => Credential::ApiKey(key.clone()),
+            }),
+            Self::Federated(source) => Some(Credential::Bearer(source.bearer().await?)),
+        })
     }
 
     /// The endpoint rejected `rejected` (a 401): forget it, so the next
@@ -177,6 +190,67 @@ impl LlmAuth {
     pub(crate) fn invalidate(&self, rejected: &Secret) {
         if let Self::Federated(source) = self {
             source.invalidate(rejected);
+        }
+    }
+}
+
+/// How a provider takes a static API key (`LLM_API_KEY`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StaticKeyHeader {
+    /// `Authorization: Bearer <key>` (`OpenAI` and every OpenAI-compatible
+    /// server).
+    Bearer,
+    /// `x-api-key: <key>` (the Claude API).
+    XApiKey,
+}
+
+/// One request's credential, as it goes on the wire.
+///
+/// The seam for keyless Claude auth (not implemented): the Claude API's
+/// workload identity federation exchanges a projected service-account JWT
+/// at `POST {base}/oauth/token` (RFC 7523 `jwt-bearer` grant; body fields
+/// `assertion`, `federation_rule_id`, `organization_id`,
+/// `service_account_id`, optional `workspace_id`) for an `access_token`
+/// with an `expires_in`, sent as `Authorization: Bearer` with no
+/// `x-api-key`. It would be another [`LlmAuth::Federated`] source (a new
+/// `LLM_AUTH` mode) whose token arrives here as [`Credential::Bearer`], so
+/// nothing in `llm.rs` changes. Two differences from the `OpenAI` source
+/// above: the subject JWT is single-use (its `jti` is checked), so a
+/// refresh must re-read the projected token file every time and never
+/// re-present one; and the token file path and settings should be named
+/// generically, not `openai`. Batches belong to the workspace, not the
+/// credential, so batch ids persisted under an API key stay valid after a
+/// switch to federation in the same workspace.
+#[derive(Clone)]
+pub(crate) enum Credential {
+    /// `Authorization: Bearer <token>`.
+    Bearer(Secret),
+    /// `x-api-key: <key>`.
+    ApiKey(Secret),
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bearer(_) => f.write_str("Credential::Bearer(***)"),
+            Self::ApiKey(_) => f.write_str("Credential::ApiKey(***)"),
+        }
+    }
+}
+
+impl Credential {
+    /// The secret itself (for [`LlmAuth::invalidate`] after a 401).
+    pub(crate) fn secret(&self) -> &Secret {
+        match self {
+            Self::Bearer(secret) | Self::ApiKey(secret) => secret,
+        }
+    }
+
+    /// Adds this credential's header to `request`.
+    pub(crate) fn apply(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self {
+            Self::Bearer(token) => request.bearer_auth(token.expose()),
+            Self::ApiKey(key) => request.header("x-api-key", key.expose()),
         }
     }
 }
@@ -1225,10 +1299,17 @@ pub(crate) mod tests {
         let auth = LlmAuth::Federated(Arc::new(
             FederatedTokenSource::new(authentik_config(&server, file.path())).unwrap(),
         ));
-        let token = auth.bearer().await.unwrap().unwrap();
+        let credential = auth
+            .credential(StaticKeyHeader::XApiKey)
+            .await
+            .unwrap()
+            .unwrap();
+        // A minted token is a bearer token whatever the static-key header.
+        assert!(matches!(credential, Credential::Bearer(_)));
+        let token = credential.secret().clone();
         assert_eq!(token.expose(), "oai-secret-token");
         auth.invalidate(&token);
-        assert!(auth.bearer().await.is_err());
+        assert!(auth.credential(StaticKeyHeader::Bearer).await.is_err());
 
         let debug = format!(
             "{auth:?} {token:?} {:?}",

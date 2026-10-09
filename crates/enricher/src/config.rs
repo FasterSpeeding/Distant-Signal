@@ -5,6 +5,8 @@ use clap::{Parser, ValueEnum as _};
 use common::secret::Secret;
 
 use crate::auth::{AuthentikConfig, FederatedTokenSource, FederationConfig, LlmAuth, LlmAuthMode};
+use crate::llm::ProviderKind;
+use crate::llm::anthropic::{AnthropicSettings, PromptCache};
 
 /// CLI/env configuration for the `enricher` service.
 /// `Debug` is safe to log: every credential is a [`common::secret::Secret`]
@@ -30,10 +32,18 @@ pub(crate) struct Config {
     #[arg(long, env)]
     pub redis_username: Option<String>,
 
-    /// Base URL of an OpenAI-compatible Chat Completions endpoint, e.g.
-    /// `http://localhost:8080/v1` for a local server. No vendor is assumed.
+    /// `LLM_PROVIDER`: `openai` (the default; any OpenAI-compatible Chat
+    /// Completions endpoint) or `anthropic` (the Claude API,
+    /// docs/enricher-anthropic.md).
+    #[arg(long, env, value_enum, default_value_t = ProviderKind::Openai)]
+    pub llm_provider: ProviderKind,
+
+    /// Base URL of the endpoint, `/v1` included. `openai`: an
+    /// OpenAI-compatible Chat Completions endpoint, e.g.
+    /// `http://localhost:8080/v1` for a local server (required; no vendor is
+    /// assumed). `anthropic`: defaults to `https://api.anthropic.com/v1`.
     #[arg(long, env)]
-    pub llm_base_url: String,
+    pub llm_base_url: Option<String>,
 
     /// Optional -- many local OpenAI-compatible servers don't require one.
     /// Only for `LLM_AUTH=api-key` (the default); setting it in a workload
@@ -46,9 +56,21 @@ pub(crate) struct Config {
     #[command(flatten)]
     pub llm_auth: LlmAuthConfig,
 
-    /// Model name/identifier as the endpoint expects it.
+    /// Model name/identifier as the endpoint expects it. Required for
+    /// `openai`; `anthropic` defaults to `claude-haiku-5-5`
+    /// (`llm::anthropic::DEFAULT_MODEL`).
     #[arg(long, env)]
-    pub llm_model: String,
+    pub llm_model: Option<String>,
+
+    /// The Claude-only settings (`LLM_ANTHROPIC_VERSION`, `LLM_PROMPT_CACHE`,
+    /// `LLM_THINKING`); ignored by `openai`.
+    #[command(flatten)]
+    pub anthropic: AnthropicConfig,
+
+    /// `LLM_SWEEP_MODE` and the Message Batches settings. Off by default
+    /// (`sync`).
+    #[command(flatten)]
+    pub batch: BatchConfig,
 
     /// Per-request timeout for a single LLM call (`LLM_REQUEST_TIMEOUT_SECS`).
     /// One incident makes three sequential calls (primary,
@@ -133,6 +155,170 @@ pub(crate) struct Config {
     /// false until the initial database connection is up) -- SVC-08/INF-5.
     #[command(flatten)]
     pub health: common::service_args::HealthArgs,
+}
+
+/// The endpoint, model and provider after defaults and validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedLlm {
+    pub provider: ProviderKind,
+    pub base_url: String,
+    pub model: String,
+}
+
+impl Config {
+    /// [`ResolvedLlm`] plus every cross-setting check, so a bad combination
+    /// fails the pod at startup instead of every extraction.
+    pub(crate) fn resolved_llm(&self) -> anyhow::Result<ResolvedLlm> {
+        resolve_llm(
+            self.llm_provider,
+            self.llm_base_url.as_deref(),
+            self.llm_model.as_deref(),
+            self.llm_auth.llm_auth,
+            self.llm_api_key.as_ref(),
+            self.batch.llm_sweep_mode,
+        )
+    }
+}
+
+/// See [`Config::resolved_llm`]; also used by the model-eval targets.
+pub(crate) fn resolve_llm(
+    provider: ProviderKind,
+    base_url: Option<&str>,
+    model: Option<&str>,
+    auth: LlmAuthMode,
+    api_key: Option<&Secret>,
+    sweep_mode: SweepMode,
+) -> anyhow::Result<ResolvedLlm> {
+    let set = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let (base_url, model) = match provider {
+        ProviderKind::Openai => {
+            if sweep_mode == SweepMode::Batch {
+                anyhow::bail!(
+                    "LLM_SWEEP_MODE=batch needs LLM_PROVIDER=anthropic: the enricher has no \
+                     OpenAI Batch API support (docs/enricher-anthropic.md, \"Batch mode\")"
+                );
+            }
+            (
+                set(base_url).ok_or_else(|| anyhow::anyhow!("LLM_BASE_URL is required"))?,
+                set(model).ok_or_else(|| anyhow::anyhow!("LLM_MODEL is required"))?,
+            )
+        }
+        ProviderKind::Anthropic => {
+            // The keyless seam is auth.rs's `Credential`; today's workload
+            // identity modes mint OpenAI tokens, which the Claude API refuses.
+            if auth != LlmAuthMode::ApiKey {
+                anyhow::bail!(
+                    "LLM_PROVIDER=anthropic supports only LLM_AUTH=api-key for now (the \
+                     workload identity modes mint OpenAI tokens)"
+                );
+            }
+            if api_key.is_none_or(Secret::is_empty) {
+                anyhow::bail!("LLM_PROVIDER=anthropic needs LLM_API_KEY (a Claude API key)");
+            }
+            (
+                set(base_url)
+                    .unwrap_or_else(|| crate::llm::anthropic::DEFAULT_BASE_URL.to_string()),
+                set(model).unwrap_or_else(|| crate::llm::anthropic::DEFAULT_MODEL.to_string()),
+            )
+        }
+    };
+    Ok(ResolvedLlm {
+        provider,
+        base_url: base_url.trim_end_matches('/').to_string(),
+        model,
+    })
+}
+
+/// The Claude API's own settings (`LLM_PROVIDER=anthropic` only).
+#[derive(Debug, Clone, Parser)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "clap derives each env var from the field name, so the prefix is part of the interface"
+)]
+pub(crate) struct AnthropicConfig {
+    /// The `anthropic-version` header.
+    #[arg(long, env, default_value = crate::llm::anthropic::DEFAULT_VERSION)]
+    pub llm_anthropic_version: String,
+    /// `LLM_PROMPT_CACHE`: `1h` (default), `5m` or `off` -- the
+    /// `cache_control` TTL on each call's static system prompt
+    /// (docs/enricher-anthropic.md, "Prompt caching").
+    #[arg(long, env, value_enum, default_value_t = PromptCache::OneHour)]
+    pub llm_prompt_cache: PromptCache,
+    /// `LLM_THINKING`: sent as `thinking: {"type": <this>}` when set (e.g.
+    /// `disabled` on Haiku 5.5, `between_tools` on Sonnet 5.5). Unset: the
+    /// model's default (adaptive thinking).
+    #[arg(long, env)]
+    pub llm_thinking: Option<String>,
+}
+
+impl AnthropicConfig {
+    pub(crate) fn settings(&self) -> AnthropicSettings {
+        AnthropicSettings {
+            version: self.llm_anthropic_version.clone(),
+            prompt_cache: self.llm_prompt_cache,
+            thinking: self
+                .llm_thinking
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string),
+        }
+    }
+}
+
+/// `LLM_SWEEP_MODE`: how the reconciliation sweep runs its extractions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum SweepMode {
+    /// One incident at a time through the synchronous API, like the stream
+    /// loop (the default; the only mode before 2026-10).
+    #[default]
+    Sync,
+    /// Through the Claude Message Batches API (half price, results within
+    /// 24 h, usually under an hour), when the sweep finds at least
+    /// `LLM_BATCH_MIN_ITEMS` incidents. `anthropic` only.
+    Batch,
+}
+
+/// The batch-mode knobs (`batch.rs`).
+#[derive(Debug, Clone, Parser)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "clap derives each env var from the field name, so the prefix is part of the interface"
+)]
+pub(crate) struct BatchConfig {
+    /// `LLM_SWEEP_MODE`: `sync` (default) or `batch`.
+    #[arg(long, env, value_enum, default_value_t = SweepMode::Sync)]
+    pub llm_sweep_mode: SweepMode,
+    /// A sweep that finds fewer incidents than this runs them synchronously
+    /// as before: a batch's latency (minutes to hours) isn't worth half the
+    /// price of a handful of calls.
+    #[arg(long, env, default_value_t = 20)]
+    pub llm_batch_min_items: usize,
+    /// Most incidents in one Message Batch (each is 1 request in the
+    /// primary batch and 2 in the adversarial one). A bigger sweep is split.
+    #[arg(long, env, default_value_t = 2000)]
+    pub llm_batch_max_items: usize,
+    /// How often in-flight batches are polled, in seconds.
+    #[arg(long, env, default_value_t = 60)]
+    pub llm_batch_poll_secs: u64,
+}
+
+impl BatchConfig {
+    /// `Some` in batch mode.
+    pub(crate) fn settings(&self) -> Option<crate::batch::BatchSettings> {
+        (self.llm_sweep_mode == SweepMode::Batch).then(|| crate::batch::BatchSettings {
+            min_items: self.llm_batch_min_items.max(1),
+            max_items: self
+                .llm_batch_max_items
+                .clamp(1, crate::batch::MAX_BATCH_INCIDENTS),
+            poll_interval: Duration::from_secs(self.llm_batch_poll_secs.max(1)),
+        })
+    }
 }
 
 /// Per-provider request/retry knobs, flattened into [`Config`] and also
