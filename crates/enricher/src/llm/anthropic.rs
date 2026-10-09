@@ -610,3 +610,7 @@ impl LlmClient {
         Ok(parse_results_jsonl(&text))
     }
 }
+
+/// Mocked-HTTP fixtures for the Messages and Message Batches routes.
+#[cfg(test)]
+mod tests;

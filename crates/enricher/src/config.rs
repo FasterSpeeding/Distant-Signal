@@ -652,4 +652,107 @@ mod tests {
             LlmAuthConfig::try_parse_from(["enricher", "--llm-auth", "openai-wif-gcp"]).is_err()
         );
     }
+
+    fn config(args: &[&str]) -> Config {
+        let base = [
+            "enricher",
+            "--database-url",
+            "postgres://x",
+            "--redis-url",
+            "redis://x",
+        ];
+        Config::try_parse_from(base.iter().chain(args.iter()).copied()).unwrap()
+    }
+
+    /// Unset, the provider is `openai` and everything is as before: base
+    /// URL and model required, sync sweep, no batch settings.
+    #[test]
+    fn openai_is_the_default_and_needs_url_and_model() {
+        let config = config(&["--llm-base-url", "http://l/v1/", "--llm-model", "m"]);
+        assert_eq!(config.llm_provider, ProviderKind::Openai);
+        assert_eq!(config.batch.llm_sweep_mode, SweepMode::Sync);
+        assert!(config.batch.settings().is_none());
+        assert_eq!(config.anthropic.llm_prompt_cache, PromptCache::OneHour);
+        let resolved = config.resolved_llm().unwrap();
+        assert_eq!(resolved.base_url, "http://l/v1");
+        assert_eq!(resolved.model, "m");
+        let missing = |args: &[&str]| self::config(args).resolved_llm().unwrap_err().to_string();
+        assert!(missing(&["--llm-model", "m"]).contains("LLM_BASE_URL"));
+        assert!(missing(&["--llm-base-url", "http://l/v1"]).contains("LLM_MODEL"));
+        assert!(
+            missing(&[
+                "--llm-base-url",
+                "http://l/v1",
+                "--llm-model",
+                "m",
+                "--llm-sweep-mode",
+                "batch"
+            ])
+            .contains("needs LLM_PROVIDER=anthropic")
+        );
+    }
+
+    #[test]
+    fn anthropic_defaults_and_validation() {
+        let resolved = config(&["--llm-provider", "anthropic", "--llm-api-key", "sk-ant"])
+            .resolved_llm()
+            .unwrap();
+        assert_eq!(resolved.provider, ProviderKind::Anthropic);
+        assert_eq!(resolved.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(resolved.model, "claude-haiku-5-5");
+
+        let custom = config(&[
+            "--llm-provider",
+            "anthropic",
+            "--llm-api-key",
+            "sk-ant",
+            "--llm-model",
+            "claude-sonnet-5-5",
+            "--llm-prompt-cache",
+            "5m",
+            "--llm-thinking",
+            "between_tools",
+            "--llm-sweep-mode",
+            "batch",
+            "--llm-batch-max-items",
+            "999999",
+        ]);
+        assert_eq!(custom.resolved_llm().unwrap().model, "claude-sonnet-5-5");
+        let settings = custom.anthropic.settings();
+        assert_eq!(settings.prompt_cache, PromptCache::FiveMinutes);
+        assert_eq!(settings.thinking.as_deref(), Some("between_tools"));
+        assert_eq!(settings.version, "2023-06-01");
+        let batch = custom.batch.settings().unwrap();
+        assert_eq!(batch.min_items, 20);
+        assert_eq!(batch.max_items, crate::batch::MAX_BATCH_INCIDENTS);
+        assert_eq!(batch.poll_interval, Duration::from_secs(60));
+
+        let err = |args: &[&str]| config(args).resolved_llm().unwrap_err().to_string();
+        assert!(err(&["--llm-provider", "anthropic"]).contains("needs LLM_API_KEY"));
+        assert!(
+            err(&["--llm-provider", "anthropic", "--llm-api-key", ""])
+                .contains("needs LLM_API_KEY")
+        );
+        assert!(
+            err(&[
+                "--llm-provider",
+                "anthropic",
+                "--llm-auth",
+                "openai-wif-kubernetes"
+            ])
+            .contains("LLM_AUTH=api-key")
+        );
+        assert!(
+            Config::try_parse_from([
+                "enricher",
+                "--database-url",
+                "postgres://x",
+                "--redis-url",
+                "redis://x",
+                "--llm-prompt-cache",
+                "2h"
+            ])
+            .is_err()
+        );
+    }
 }
