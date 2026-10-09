@@ -16,9 +16,14 @@ LLM API. This renders the chart and checks:
   - batch mode renders LLM_SWEEP_MODE and the LLM_BATCH_* knobs;
   - with egress NetworkPolicies on, the enricher's internet rule opens the
     Claude base URL's port without enricher.llm.baseUrl being set;
-  - every unusable combination refuses to render: no Claude key Secret, a
-    workload identity mode, batch mode on openai, an unknown provider,
-    sweep mode or prompt-cache TTL.
+  - every unusable combination refuses to render: no Claude key Secret, an
+    OpenAI workload identity mode, batch mode on openai, an unknown
+    provider, sweep mode or prompt-cache TTL;
+  - keyless Claude auth (`anthropicWifAuthentik`) renders the Claude IDs,
+    the generic projected-token path, an audience-bound token for the
+    Authentik client, no API key anywhere, the token URLs' ports and the
+    token-exchange alert, and refuses to render without its IDs, a
+    dedicated ServiceAccount, with a key Secret, or on openai.
 
 Exit 1 with one line per failed check. Needs helm on PATH (or --helm) and
 PyYAML (pyproject.toml's lint group).
@@ -65,6 +70,17 @@ BATCH = sets(
     "enricher.llm.batch.pollIntervalSecs=120",
 )
 EGRESS = sets("networkPolicy.enabled=true", "networkPolicy.egress.enabled=true")
+# Keyless Claude auth (enricher.llm.auth=anthropicWifAuthentik).
+CLAUDE_WIF = sets(
+    "enricher.llm.provider=anthropic",
+    "enricher.llm.auth=anthropicWifAuthentik",
+    "enricher.serviceAccount.create=true",
+    "enricher.llm.workloadIdentity.anthropic.organizationId=org-uuid",
+    "enricher.llm.workloadIdentity.anthropic.serviceAccountId=svac_1",
+    "enricher.llm.workloadIdentity.anthropic.federationRuleId=fdrl_1",
+    "enricher.llm.workloadIdentity.authentik.tokenUrl=https://sso.example.com:8443/application/o/token/",
+    "enricher.llm.workloadIdentity.authentik.clientId=ds-enricher-anthropic",
+)
 
 type Doc = dict[str, object]
 
@@ -278,8 +294,8 @@ def check_refusals(c: Checker) -> None:
         *sets("enricher.llm.provider=anthropic"),
     )
     c.refuses(
-        "anthropic with workload identity",
-        "supports only enricher.llm.auth=apiKey",
+        "anthropic with an OpenAI workload identity mode",
+        "supports enricher.llm.auth=apiKey or anthropicWifAuthentik",
         *ANTHROPIC,
         *sets(
             "enricher.llm.auth=openaiWifKubernetes",
@@ -312,6 +328,91 @@ def check_refusals(c: Checker) -> None:
     )
 
 
+def wif_without(key: str) -> tuple[str, ...]:
+    """CLAUDE_WIF with the `--set` for `key` (a values path suffix) left out."""
+    pairs = [CLAUDE_WIF[i + 1] for i in range(0, len(CLAUDE_WIF), 2)]
+    return sets(*(p for p in pairs if not p.split("=")[0].endswith(key)))
+
+
+def check_claude_wif(c: Checker) -> None:
+    """Check keyless Claude auth: its env, mount and audience, no key, guards."""
+    docs = c.docs(
+        "claude wif",
+        *CLAUDE_WIF,
+        *sets("enricher.llm.workloadIdentity.anthropic.workspaceId=wrkspc_1"),
+    )
+    env = enricher_env(docs)
+    expect(
+        c,
+        "claude wif",
+        env,
+        {
+            "LLM_PROVIDER": "anthropic",
+            "LLM_AUTH": "anthropic-wif-authentik",
+            "ANTHROPIC_FEDERATION_RULE_ID": "fdrl_1",
+            "ANTHROPIC_ORGANIZATION_ID": "org-uuid",
+            "ANTHROPIC_SERVICE_ACCOUNT_ID": "svac_1",
+            "ANTHROPIC_WORKSPACE_ID": "wrkspc_1",
+            "LLM_IDENTITY_TOKEN_FILE": "/var/run/secrets/llm-identity/token",
+            "LLM_TOKEN_EXCHANGE_URL": "https://api.anthropic.com/v1/oauth/token",
+            "LLM_AUTHENTIK_TOKEN_URL": "https://sso.example.com:8443/application/o/token/",
+            "LLM_AUTHENTIK_CLIENT_ID": "ds-enricher-anthropic",
+            "LLM_API_KEY": None,
+            "OPENAI_IDENTITY_PROVIDER_ID": None,
+        },
+    )
+    deployment = find(docs, "Deployment", ENRICHER)
+    pod = as_map(as_map(as_map(deployment.get("spec")).get("template")).get("spec"))
+    if pod.get("serviceAccountName") != ENRICHER:
+        c.failures.append("claude wif: the pod must use the dedicated ServiceAccount")
+    volumes = as_list(pod.get("volumes"))
+    sources = [
+        as_map(as_map(s).get("serviceAccountToken"))
+        for v in volumes
+        for s in as_list(as_map(as_map(v).get("projected")).get("sources"))
+    ]
+    if [s.get("audience") for s in sources] != ["ds-enricher-anthropic"]:
+        c.failures.append(
+            f"claude wif: want one token for ds-enricher-anthropic, got {sources}"
+        )
+    secret = find(docs, "Secret", "distant-signal")
+    if "llm-api-key" in as_map(secret.get("data")):
+        c.failures.append("claude wif: no llm-api-key Secret entry may render")
+    ports = internet_ports(
+        find(
+            c.docs("claude wif egress", *CLAUDE_WIF, *EGRESS), "NetworkPolicy", ENRICHER
+        )
+    )
+    if ports != [443, 8443]:
+        c.failures.append(f"claude wif egress: want [443, 8443], got {ports}")
+    rule = c.docs(
+        "claude wif alert", *CLAUDE_WIF, *sets("metrics.prometheusRule.enabled=true")
+    )
+    if "DistantSignalEnricherTokenExchangeFailing" not in yaml.safe_dump(rule):
+        c.failures.append("claude wif: the token-exchange alert must render")
+
+    for key, needle in [
+        ("organizationId", "workloadIdentity.anthropic.organizationId"),
+        ("serviceAccountId", "workloadIdentity.anthropic.serviceAccountId"),
+        ("federationRuleId", "workloadIdentity.anthropic.federationRuleId"),
+        ("authentik.clientId", "workloadIdentity.authentik.clientId"),
+        ("serviceAccount.create", "needs a dedicated ServiceAccount"),
+    ]:
+        c.refuses(f"claude wif without {key}", needle, *wif_without(key))
+    c.refuses(
+        "claude wif with a key Secret",
+        "is keyless: unset enricher.llm.anthropic.existingSecret",
+        *CLAUDE_WIF,
+        *sets("enricher.llm.anthropic.existingSecret=enricher-anthropic"),
+    )
+    c.refuses(
+        "claude wif on openai",
+        "needs enricher.llm.provider=anthropic",
+        *wif_without("provider"),
+        *OPENAI,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run every check; print failures."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
@@ -322,6 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     check_anthropic(c)
     check_egress(c)
     check_refusals(c)
+    check_claude_wif(c)
     for failure in c.failures:
         print(failure)
     if not c.failures:

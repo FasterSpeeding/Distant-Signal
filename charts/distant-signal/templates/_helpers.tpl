@@ -120,15 +120,48 @@ one above. Takes root.
 
 {{/*
 "true" when enricher.llm.auth is a workload identity federation mode
-(openaiWifAuthentik / openaiWifKubernetes), empty for apiKey; fails on any
-other value. Takes root.
+(openaiWifAuthentik / openaiWifKubernetes / anthropicWifAuthentik), empty
+for apiKey; fails on any other value. Takes root.
 */}}
 {{- define "distant-signal.enricherWif" -}}
 {{- $auth := .Values.enricher.llm.auth | default "apiKey" -}}
-{{- if not (has $auth (list "apiKey" "openaiWifAuthentik" "openaiWifKubernetes")) -}}
-{{- fail (printf "enricher.llm.auth=%q is not one of apiKey, openaiWifAuthentik, openaiWifKubernetes." $auth) -}}
+{{- if not (has $auth (list "apiKey" "openaiWifAuthentik" "openaiWifKubernetes" "anthropicWifAuthentik")) -}}
+{{- fail (printf "enricher.llm.auth=%q is not one of apiKey, openaiWifAuthentik, openaiWifKubernetes, anthropicWifAuthentik." $auth) -}}
 {{- end -}}
 {{- if ne $auth "apiKey" -}}true{{- end -}}
+{{- end }}
+
+{{/*
+"true" in an Authentik-backed workload identity mode (openaiWifAuthentik,
+anthropicWifAuthentik). Takes root.
+*/}}
+{{- define "distant-signal.enricherWifAuthentik" -}}
+{{- if has (.Values.enricher.llm.auth | default "apiKey") (list "openaiWifAuthentik" "anthropicWifAuthentik") -}}true{{- end -}}
+{{- end }}
+
+{{/*
+Where the enricher's projected identity token is mounted: the historical
+/var/run/secrets/openai in the OpenAI modes (unchanged renders), a
+provider-neutral /var/run/secrets/llm-identity in anthropicWifAuthentik.
+Takes root.
+*/}}
+{{- define "distant-signal.enricherIdentityTokenDir" -}}
+{{- if eq (.Values.enricher.llm.auth | default "apiKey") "anthropicWifAuthentik" -}}
+/var/run/secrets/llm-identity
+{{- else -}}
+/var/run/secrets/openai
+{{- end -}}
+{{- end }}
+
+{{/*
+The token-exchange URL of the current workload identity mode. Takes root.
+*/}}
+{{- define "distant-signal.enricherTokenExchangeUrl" -}}
+{{- if eq (.Values.enricher.llm.auth | default "apiKey") "anthropicWifAuthentik" -}}
+{{- .Values.enricher.llm.workloadIdentity.anthropic.tokenExchangeUrl -}}
+{{- else -}}
+{{- .Values.enricher.llm.workloadIdentity.tokenExchangeUrl -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -157,14 +190,14 @@ anthropic provider, else enricher.llm.baseUrl. Takes root.
 
 {{/*
 Audience of the enricher's projected service-account token:
-workloadIdentity.tokenAudience, else (openaiWifAuthentik) the Authentik
+workloadIdentity.tokenAudience, else (an Authentik mode) the Authentik
 client ID. Takes root.
 */}}
 {{- define "distant-signal.enricherTokenAudience" -}}
 {{- $wi := .Values.enricher.llm.workloadIdentity -}}
 {{- if $wi.tokenAudience -}}
 {{- $wi.tokenAudience -}}
-{{- else if eq .Values.enricher.llm.auth "openaiWifAuthentik" -}}
+{{- else if include "distant-signal.enricherWifAuthentik" . -}}
 {{- $wi.authentik.clientId -}}
 {{- end -}}
 {{- end }}

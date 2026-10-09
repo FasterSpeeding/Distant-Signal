@@ -768,7 +768,7 @@ spec:
     {{- with $rule.enricherTokenExchange }}
     {{- /*
     Workload identity federation (enricher.llm.auth): token requests to one
-    stage (authentik, openai) keep failing and none succeeds. The counter is
+    stage (authentik, openai, anthropic) keep failing and none succeeds. The counter is
     registered at 0 for every stage and outcome, so increase() sees the
     first failure and the success series exists (== 0) before any success.
     */}}

@@ -3012,6 +3012,13 @@ enricher:
     # (fallback). Both need enricher.serviceAccount (a dedicated account),
     # the workloadIdentity IDs below, and apiKey/existingSecret empty: the
     # chart renders no LLM_API_KEY and no llm-api-key Secret entry then.
+    # `anthropicWifAuthentik` is keyless Claude auth (provider: anthropic
+    # only; docs/enricher-anthropic.md, "Keyless auth"): the projected token
+    # goes to Authentik, and a fresh Authentik token per exchange is the
+    # assertion of the Claude token exchange. It needs
+    # workloadIdentity.anthropic.* and workloadIdentity.authentik.* (a
+    # separate Authentik provider from OpenAI's), and
+    # anthropic.existingSecret empty.
     auth: apiKey
     workloadIdentity:
       # -- OPENAI_IDENTITY_PROVIDER_ID: the OpenAI Workload Identity
@@ -3041,6 +3048,24 @@ enricher:
         # -- LLM_AUTHENTIK_SCOPE: scopes requested from Authentik, e.g.
         # "profile" so its mapping emits the groups claim. Empty sends none.
         scope: ""
+      # Keyless Claude auth (auth: anthropicWifAuthentik): the Claude
+      # Console's IDs (docs/enricher-anthropic.md, "Keyless auth").
+      anthropic:
+        # -- ANTHROPIC_ORGANIZATION_ID: the Claude organization UUID.
+        # Required in anthropicWifAuthentik mode.
+        organizationId: ""
+        # -- ANTHROPIC_SERVICE_ACCOUNT_ID: the Claude service account
+        # (svac_...). Required in anthropicWifAuthentik mode.
+        serviceAccountId: ""
+        # -- ANTHROPIC_FEDERATION_RULE_ID: the federation rule (fdrl_...).
+        # Required in anthropicWifAuthentik mode.
+        federationRuleId: ""
+        # -- ANTHROPIC_WORKSPACE_ID (wrkspc_...): only needed when the rule
+        # spans more than one workspace.
+        workspaceId: ""
+        # -- LLM_TOKEN_EXCHANGE_URL in anthropicWifAuthentik mode. Its port
+        # gets a NetworkPolicy egress entry.
+        tokenExchangeUrl: https://api.anthropic.com/v1/oauth/token
     # The Claude API (provider: anthropic; docs/enricher-anthropic.md).
     # reasoningEffort above is sent as output_config.effort, and the
     # provider-policy env vars (enricher.extraEnv) apply as for openai.

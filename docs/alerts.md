@@ -458,14 +458,15 @@ enabled.
 
 ### DistantSignalEnricherTokenExchangeFailing
 
-Only rendered with keyless auth (`enricher.llm.auth` is `openaiWifAuthentik`
-or `openaiWifKubernetes`). At least `enricherTokenExchange.minFailures`
-token requests to one `stage` failed over the window and none succeeded
-(`distant_signal:enricher_llm_token_exchange_failures:increase` and
-`:successes:increase`, from `enricher_llm_token_exchange_total`). The
-enricher keeps using its cached OpenAI token until it expires (at most an
-hour; `enricher_llm_token_remaining_seconds` shows what is left), so this
-can fire before extractions fail with `outcome="auth_error"`.
+Only rendered with keyless auth (`enricher.llm.auth` is `openaiWifAuthentik`,
+`openaiWifKubernetes` or `anthropicWifAuthentik`). At least
+`enricherTokenExchange.minFailures` token requests to one `stage`
+(`authentik`, `openai` or `anthropic`) failed over the window and none
+succeeded (`distant_signal:enricher_llm_token_exchange_failures:increase`
+and `:successes:increase`, from `enricher_llm_token_exchange_total`). The
+enricher keeps using its cached OpenAI or Claude token until it expires (at
+most an hour; `enricher_llm_token_remaining_seconds` shows what is left), so
+this can fire before extractions fail with `outcome="auth_error"`.
 
 The `outcome` label of `enricher_llm_token_exchange_total` and enricher's
 `LLM token request rejected` log lines (`stage`, `status`, `error_code`,
@@ -484,11 +485,20 @@ The `outcome` label of `enricher_llm_token_exchange_total` and enricher's
   a signing-key rotation (in `openaiWifKubernetes` mode, upload the new
   JWKS first), or a mapping that no longer matches the `sub` or the group
   attribute.
+- `stage="anthropic"`, `authentication_failed`: the Claude API refused the
+  exchange. Its 401 is deliberately opaque; the reason (for example
+  `match_subject_prefix`, `jti_reused`, `workspace_id_required`, an `iss`
+  mismatch) is only on the Claude Console's Workload identity →
+  authentication history page. See
+  [enricher-anthropic.md](enricher-anthropic.md#troubleshooting-keyless-auth).
+  The projected token for this mode is in the `llm-identity-token` volume.
 - `timeout`, `error`, `http_error`: the endpoint is unreachable or failing
-  (NetworkPolicy egress, DNS, an Authentik or OpenAI outage).
+  (NetworkPolicy egress, DNS, an Authentik, OpenAI or Claude outage).
 
 The checklist and rotation runbook are in
-[enricher-openai.md](enricher-openai.md#keyless-auth-workload-identity-federation).
+[enricher-openai.md](enricher-openai.md#keyless-auth-workload-identity-federation)
+(OpenAI) and [enricher-anthropic.md](enricher-anthropic.md#keyless-auth)
+(Claude).
 To switch from Authentik to the fallback, follow "Switching to the fallback"
 there.
 

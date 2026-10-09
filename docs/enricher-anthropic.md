@@ -36,7 +36,7 @@ errors and their outcome labels, the per-text backoff, and the metrics.
 | | `openai` (default) | `anthropic` |
 | --- | --- | --- |
 | Endpoint | `POST {LLM_BASE_URL}/chat/completions` | `POST {LLM_BASE_URL}/messages` (default base `https://api.anthropic.com/v1`) |
-| Credential | `Authorization: Bearer` (or keyless WIF) | `x-api-key` + `anthropic-version: 2023-06-01` |
+| Credential | `Authorization: Bearer` (or keyless WIF) | `x-api-key` (or keyless WIF: `Authorization: Bearer`) + `anthropic-version: 2023-06-01` |
 | System prompt | a `system` message | one `system` text block with `cache_control` (`LLM_PROMPT_CACHE`) |
 | Structured output | `response_format: json_schema, strict: true` | `output_config.format: json_schema` (schema rewritten, below) |
 | Temperature | `0` | not sent: the current Claude models reject a non-default one |
@@ -113,9 +113,12 @@ Service env vars (the chart sets them; listed for local runs):
 | `LLM_BATCH_MAX_ITEMS` | `2000` | incidents per batch, capped at 5000 |
 | `LLM_BATCH_POLL_SECS` | `60` | poll interval for in-flight batches |
 
-Startup refuses `anthropic` without `LLM_API_KEY`, with a workload identity
-`LLM_AUTH` mode, and `LLM_SWEEP_MODE=batch` with `openai`; the chart refuses
-the same combinations at render time.
+Startup refuses `anthropic` without `LLM_API_KEY` (unless
+`LLM_AUTH=anthropic-wif-authentik`, which in turn refuses a key), with an
+`openai-wif-*` mode, `anthropic-wif-authentik` with `openai`, and
+`LLM_SWEEP_MODE=batch` with `openai`; the chart refuses the same
+combinations at render time. For keyless auth see
+[Keyless auth](#keyless-auth).
 
 ### Errors and what the enricher does with them
 
@@ -190,7 +193,7 @@ transaction, after the new batch exists. Known gaps, all bounded:
 - Batch mode records no churn measurement (the `churn` baseline isn't
   persisted).
 - Batches belong to the Claude workspace, not to the key, so in-flight batch
-  ids stay valid across a key rotation (or a future switch to keyless auth)
+  ids stay valid across a key rotation (or a switch to [keyless auth](#keyless-auth))
   in the same workspace.
 
 **OpenAI batch.** The enricher has no OpenAI Batch API path, and
@@ -454,12 +457,185 @@ self-hosted model, so the same follow-up as for OpenAI applies
 (docs/enricher-openai.md, "Legal follow-up before switching"), with Anthropic
 as the processor.
 
-## Keyless auth (not implemented)
+## Keyless auth
 
-The Claude API supports workload identity federation, but the enricher only
-takes an API key with `anthropic` for now. The seam is `auth.rs`'s
-`Credential`: a federated token source would mint a token
-(`POST {base}/oauth/token`, RFC 7523 `jwt-bearer` grant) that goes out as
-`Authorization: Bearer` with no `x-api-key`, with no change to `llm.rs`. The
-subject JWT is single-use, so that source must re-read the projected token
-for every exchange.
+`enricher.llm.auth: anthropicWifAuthentik` (`LLM_AUTH=anthropic-wif-authentik`)
+replaces the API key with the Claude API's workload identity federation,
+through Authentik, the same way `openaiWifAuthentik` works for OpenAI
+(docs/enricher-openai.md, "Keyless auth"). Off by default. There is no
+Kubernetes-direct variant: the cluster's issuer isn't publicly reachable,
+and Authentik is the identity the Claude rule trusts.
+
+Claude docs (read 2026-10-09):
+<https://platform.claude.com/docs/en/manage-claude/workload-identity-federation>
+and <https://platform.claude.com/docs/en/manage-claude/wif-reference>.
+
+### The flow
+
+1. The kubelet projects a service-account token for the dedicated
+   `enricher` ServiceAccount, with audience = the Authentik client ID, at
+   `/var/run/secrets/llm-identity/token` (`LLM_IDENTITY_TOKEN_FILE`; a
+   provider-neutral path, unlike the OpenAI modes' `/var/run/secrets/openai`).
+2. The enricher sends it to Authentik's token endpoint as a JWT client
+   assertion (`client_credentials`, as `openaiWifAuthentik` does) and gets an
+   Authentik access token (a JWT).
+3. That JWT is the `assertion` of
+   `POST https://api.anthropic.com/v1/oauth/token`, JSON body, RFC 7523:
+   `grant_type: urn:ietf:params:oauth:grant-type:jwt-bearer`, `assertion`,
+   `federation_rule_id`, `organization_id`, `service_account_id`, and
+   `workspace_id` when set. The answer is `access_token` (`sk-ant-oat01-...`),
+   `token_type: Bearer`, `expires_in`.
+4. Every Messages and Message Batches request carries
+   `Authorization: Bearer <token>` and no `x-api-key`.
+
+**One Authentik token per exchange.** The Claude API accepts a JWT that
+carries a `jti` only once per issuer; a second exchange with it fails
+(`jti_reused`). So this mode never caches the Authentik token: every Claude
+exchange, including the one after a 401 and every refresh, first fetches a
+fresh one. The Claude token itself is cached and refreshed before expiry
+with the usual margin (the larger of `LLM_TOKEN_REFRESH_SKEW_SECS`, 60 s,
+and 10% of its life).
+
+**Lifetime.** The minted token lives min(the rule's token lifetime, 2 × the
+presented JWT's remaining life). With the rule at 3600 s and a fresh
+Authentik token of 30 minutes, that is the full hour, so the enricher
+exchanges about once an hour.
+
+**Batches.** Batches belong to the workspace, not the credential: batch ids
+submitted under an API key stay valid after switching to keyless auth in
+the same workspace, and the reverse.
+
+### Console runbook (Claude side)
+
+Done by hand in the Claude Console by an org admin. Write down every ID.
+
+1. **Workspace.** Settings → Workspaces → Create workspace, e.g.
+   `distant-signal`. Set its spend limit (Limits) to about twice the expected
+   month (see [Cost](#cost)) and, if you want, a lower rate limit. Note its ID
+   (`wrkspc_...`).
+2. **Service account.** Settings → Workload identity → Service accounts →
+   Create, name `ds-enricher`, organization role `developer`. Note its ID
+   (`svac_...`). Open the `distant-signal` workspace → Members → add
+   `ds-enricher` (a service account acts only in workspaces it is a member
+   of, plus the Default workspace).
+3. **Issuer.** Workload identity → Issuers → Create (Custom OIDC):
+   - Issuer URL: the Authentik application's issuer, **exactly** as it
+     appears in Authentik tokens' `iss`, trailing slash included, e.g.
+     `https://sso.example.com/application/o/ds-enricher-anthropic/`.
+     Decode a token (below) and copy `iss` byte for byte.
+   - JWKS source: `discovery` (Anthropic fetches
+     `<issuer>/.well-known/openid-configuration`, which Authentik serves).
+     The issuer must be reachable from the internet on https/443 with a
+     public DNS name. Use **Verify issuer**.
+   - Leave `check_jti` on (the default).
+4. **Rule.** Workload identity → Rules → Create:
+   - Issuer: the one above. Target: `ds-enricher`. Workspace:
+     `distant-signal` only (then `workspaceId` can stay empty in the chart).
+   - Match: `subject_prefix` = the Authentik token's `sub` (exact; decode a
+     token to read it) and `audience` = the Authentik provider's client ID
+     (the Anthropic one, below). At least the subject must be set; add
+     `claims` if your Authentik mapping emits a group claim you want pinned.
+   - Scope: `workspace:developer`. Not `workspace:inference`: its documented
+     endpoint list (Messages, Models) doesn't include Message Batches, which
+     batch mode needs. `developer` matches what a workspace API key can do.
+   - **Token lifetime: 3600.** The Connect-workload wizard pre-fills 600;
+     change it, or the enricher re-exchanges every few minutes.
+   - Note the rule ID (`fdrl_...`).
+5. **Organization ID.** Settings → Organization: the UUID.
+
+### Authentik side (Ranma-Config)
+
+Create a **separate** OAuth2/OpenID provider and application for Claude,
+not the OpenAI one:
+
+- its own client ID (e.g. `ds-enricher-anthropic`), so its access tokens
+  carry their own audience and can't be replayed at OpenAI (or OpenAI's at
+  Claude);
+- the same JWT-federation (machine-to-machine) setup as the OpenAI provider:
+  the k3s Generic OAuth Source as a federated source, an expression policy
+  binding that checks the projected token's audience and service account;
+- access token validity `minutes=30` (at most 60: the Claude issuer
+  rejects JWTs whose `exp − iat` exceeds 1 hour by default, and the minted
+  token lives at most twice what is left of it);
+- signing key: an RS256/ES256 certificate (the Claude API refuses HMAC);
+- **check that its access tokens carry a `jti`** (decode one). If they do,
+  the "fresh token per exchange" rule above matters and is what the
+  enricher does; if they don't, nothing breaks, but there is no replay
+  protection at Anthropic.
+
+### Chart values
+
+```yaml
+enricher:
+  serviceAccount:
+    create: true
+  llm:
+    provider: anthropic
+    auth: anthropicWifAuthentik
+    anthropic:
+      existingSecret: ""            # keyless: no key Secret
+    workloadIdentity:
+      anthropic:
+        organizationId: <org-uuid>
+        serviceAccountId: svac_...
+        federationRuleId: fdrl_...
+        # workspaceId: wrkspc_...   # only if the rule spans several workspaces
+      authentik:
+        tokenUrl: https://sso.example.com/application/o/token/
+        clientId: ds-enricher-anthropic
+      # tokenAudience: ""           # empty: the Authentik client ID
+```
+
+The chart refuses to render without the three IDs, the Authentik URL and
+client ID, a dedicated ServiceAccount, with a Claude key Secret set, or with
+`provider: openai`; it opens the token URLs' ports in the egress
+NetworkPolicy, and renders `DistantSignalEnricherTokenExchangeFailing`.
+
+### Test exchange
+
+From a pod running as the enricher's ServiceAccount (or with a token minted
+by `kubectl create token`):
+
+```bash
+K8S=$(kubectl -n <ns> create token <enricher-sa> --audience ds-enricher-anthropic --duration 10m)
+claims() { python3 -c 'import base64,json,sys; p=sys.argv[1].split(".")[1]; print(json.dumps(json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4))),indent=2))' "$1"; }
+# 1. Authentik (a NEW token each time: a jti is single-use at Anthropic).
+AK=$(curl -sS https://sso.example.com/application/o/token/ \
+  -d grant_type=client_credentials -d client_id=ds-enricher-anthropic \
+  -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
+  --data-urlencode "client_assertion=$K8S" | jq -r .access_token)
+claims "$AK"   # iss must equal the Claude issuer URL byte for byte; note sub, aud, jti
+# 2. Claude.
+CT=$(jq -n --arg a "$AK" '{grant_type:"urn:ietf:params:oauth:grant-type:jwt-bearer",
+  assertion:$a, federation_rule_id:"fdrl_...", organization_id:"<org-uuid>",
+  service_account_id:"svac_..."}' \
+  | curl -sS https://api.anthropic.com/v1/oauth/token -H 'content-type: application/json' -d @- \
+  | jq -r .access_token)
+# 3. One tiny request.
+curl -sS https://api.anthropic.com/v1/messages -H "authorization: Bearer $CT" \
+  -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+  -d '{"model":"claude-haiku-5-5","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}'
+```
+
+Re-running step 2 with the same `$AK` must fail (that is the `jti` check
+working); fetch a new one.
+
+### Troubleshooting keyless auth
+
+- Every denial is the same `401 authentication_error` ("Authentication
+  failed"), counted as `enricher_llm_token_exchange_total{stage="anthropic",
+  outcome="authentication_failed"}`. **The reason is only on the Console's
+  Workload identity → Authentication history page** (for example
+  `match_subject_prefix`, `jti_reused`, `workspace_id_required`, an `iss`
+  mismatch, a JWKS fetch failure). A 401 with no history entry usually means
+  the rule ID itself is wrong.
+- `iss` must match the issuer URL byte for byte (scheme, host, path,
+  trailing slash).
+- A 400 `invalid_request_error` is a malformed request (a missing field, a
+  bad `workspace_id`); its message names the problem.
+- A token that works for Messages but gets 403 on batches means the rule's
+  scope is too narrow: use `workspace:developer`.
+- `stage="authentik"` failures are Authentik's side, as in the OpenAI mode
+  (docs/alerts.md, DistantSignalEnricherTokenExchangeFailing).
+- Rolling back: set `auth: apiKey` and `anthropic.existingSecret` again; no
+  data or batch state changes.

@@ -440,8 +440,8 @@ in a workload identity mode. The internet rule is IP-based, so this only
 opens their ports, not their hosts. */}}
 {{- $enricherUrls := list (include "distant-signal.enricherLlmBaseUrl" .) }}
 {{- if include "distant-signal.enricherWif" . }}
-{{- $enricherUrls = append $enricherUrls .Values.enricher.llm.workloadIdentity.tokenExchangeUrl }}
-{{- if eq .Values.enricher.llm.auth "openaiWifAuthentik" }}
+{{- $enricherUrls = append $enricherUrls (include "distant-signal.enricherTokenExchangeUrl" .) }}
+{{- if include "distant-signal.enricherWifAuthentik" . }}
 {{- $enricherUrls = append $enricherUrls .Values.enricher.llm.workloadIdentity.authentik.tokenUrl }}
 {{- end }}
 {{- end }}
