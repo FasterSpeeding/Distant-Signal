@@ -94,7 +94,8 @@ pub(crate) struct Target {
 }
 
 /// `[targets.workload_identity]`: the service's WIF env vars, by the same
-/// names in lower case without the `LLM_`/`OPENAI_` prefix. Unset keys take
+/// names in lower case without the `LLM_`/`OPENAI_` prefix (the Claude ones
+/// keep an `anthropic_` prefix where a name would clash). Unset keys take
 /// the service's defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,6 +124,18 @@ pub(crate) struct WorkloadIdentityTarget {
     /// `LLM_TOKEN_REFRESH_SKEW_SECS`.
     #[serde(default)]
     pub token_refresh_skew_secs: Option<u64>,
+    /// `ANTHROPIC_FEDERATION_RULE_ID`.
+    #[serde(default)]
+    pub federation_rule_id: Option<String>,
+    /// `ANTHROPIC_ORGANIZATION_ID`.
+    #[serde(default)]
+    pub organization_id: Option<String>,
+    /// `ANTHROPIC_SERVICE_ACCOUNT_ID`.
+    #[serde(default)]
+    pub anthropic_service_account_id: Option<String>,
+    /// `ANTHROPIC_WORKSPACE_ID`.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
 }
 
 impl WorkloadIdentityTarget {
@@ -131,11 +144,15 @@ impl WorkloadIdentityTarget {
             identity_provider_id: config.openai_identity_provider_id.clone(),
             service_account_id: config.openai_service_account_id.clone(),
             identity_token_file: Some(config.llm_identity_token_file.clone()),
-            token_exchange_url: Some(config.llm_token_exchange_url.clone()),
+            token_exchange_url: config.llm_token_exchange_url.clone(),
             authentik_token_url: config.llm_authentik_token_url.clone(),
             authentik_client_id: config.llm_authentik_client_id.clone(),
             authentik_scope: config.llm_authentik_scope.clone(),
             token_refresh_skew_secs: Some(config.llm_token_refresh_skew_secs),
+            federation_rule_id: config.anthropic_federation_rule_id.clone(),
+            organization_id: config.anthropic_organization_id.clone(),
+            anthropic_service_account_id: config.anthropic_service_account_id.clone(),
+            workspace_id: config.anthropic_workspace_id.clone(),
         }
     }
 }
@@ -218,9 +235,11 @@ impl Target {
             llm_identity_token_file: wif
                 .identity_token_file
                 .unwrap_or_else(|| service_default("llm_identity_token_file")),
-            llm_token_exchange_url: wif
-                .token_exchange_url
-                .unwrap_or_else(|| service_default("llm_token_exchange_url")),
+            llm_token_exchange_url: wif.token_exchange_url,
+            anthropic_federation_rule_id: wif.federation_rule_id,
+            anthropic_organization_id: wif.organization_id,
+            anthropic_service_account_id: wif.anthropic_service_account_id,
+            anthropic_workspace_id: wif.workspace_id,
             llm_authentik_token_url: wif.authentik_token_url,
             llm_authentik_client_id: wif.authentik_client_id,
             llm_authentik_scope: wif.authentik_scope,
@@ -505,12 +524,16 @@ mod tests {
         assert_eq!(target.auth, LlmAuthMode::OpenaiWifKubernetes);
         let config = target.auth_config();
         assert_eq!(
-            config.llm_token_exchange_url,
+            config.token_exchange_url(),
             "https://auth.openai.com/oauth/token"
         );
         assert_eq!(config.llm_token_refresh_skew_secs, 60);
         let federation = config.federation(None).unwrap().unwrap();
-        assert_eq!(federation.identity_provider_id, "idp_1");
+        assert!(matches!(
+            federation.target,
+            crate::auth::ExchangeTarget::Openai { ref identity_provider_id, .. }
+                if identity_provider_id == "idp_1"
+        ));
         // Out of cluster there is no projected token: the client refuses.
         let err = target.client(1).err().unwrap().to_string();
         assert!(err.contains("not readable"), "{err}");

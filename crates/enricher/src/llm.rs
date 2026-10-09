@@ -660,7 +660,7 @@ impl std::fmt::Display for LlmCallError {
             Self::Unauthorized => write!(
                 f,
                 "LLM endpoint rejected a freshly exchanged access token (401 twice); check the \
-                 OpenAI service account, its project and the WIF mapping"
+                 service account, its project or workspace and the federation mapping or rule"
             ),
             Self::Other(err) => write!(f, "{err}"),
         }

@@ -687,3 +687,72 @@ async fn message_batch_lifecycle() {
     );
     assert!(openai.create_message_batch(&requests).await.is_err());
 }
+
+/// Keyless Claude auth: the minted token goes out as `Authorization:
+/// Bearer`, with no `x-api-key`.
+#[tokio::test]
+async fn a_federated_token_is_a_bearer_with_no_api_key() {
+    let server = MockServer::start().await;
+    let file = crate::auth::tests::token_file("k8s.jwt");
+    Mock::given(method("POST"))
+        .and(path("/application/o/token/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "authentik.jwt", "token_type": "Bearer", "expires_in": 1800
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "sk-ant-oat01-minted", "token_type": "Bearer", "expires_in": 3600
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .and(header("authorization", "Bearer sk-ant-oat01-minted"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(message_body(&primary_text(), plain_usage())),
+        )
+        .mount(&server)
+        .await;
+    let source = crate::auth::FederatedTokenSource::new(crate::auth::FederationConfig {
+        target: crate::auth::ExchangeTarget::Anthropic {
+            federation_rule_id: "fdrl_1".into(),
+            organization_id: "org".into(),
+            service_account_id: "svac_1".into(),
+            workspace_id: None,
+        },
+        identity_token_file: file.path().to_path_buf(),
+        token_exchange_url: format!("{}/v1/oauth/token", server.uri()),
+        authentik: Some(crate::auth::AuthentikConfig {
+            token_url: format!("{}/application/o/token/", server.uri()),
+            client_id: "ds-enricher-anthropic".into(),
+            scope: None,
+        }),
+        refresh_skew: std::time::Duration::from_secs(60),
+        exchange_timeout: std::time::Duration::from_secs(5),
+    })
+    .unwrap();
+    let client = LlmClient::new(
+        server.uri(),
+        None,
+        "claude-haiku-5-5".into(),
+        std::time::Duration::from_secs(30),
+    )
+    .with_auth(crate::auth::LlmAuth::Federated(std::sync::Arc::new(source)))
+    .with_anthropic(AnthropicSettings::default());
+    client
+        .extract_primary("s", "d", reference_date())
+        .await
+        .unwrap();
+    let messages: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/messages")
+        .collect();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].headers.get("x-api-key").is_none());
+}
