@@ -11,6 +11,7 @@ import {
   mcpEndpointUrl,
   vscodeInstallLink,
 } from '@/lib/mcpInstallLinks';
+import { SectionTitle } from './SectionTitle';
 
 const COPIED_RESET_MS = 2000;
 
@@ -134,9 +135,7 @@ export function AddMcpServerLinks({
   return (
     <Card withBorder component="section" aria-labelledby={headingId}>
       <Stack gap="sm">
-        <Title order={2} size="h3" id={headingId}>
-          Use Distant Signal in your own assistant
-        </Title>
+        <SectionTitle id={headingId}>Use Distant Signal in your own assistant</SectionTitle>
         <Text size="sm">
           Add Distant Signal to an AI assistant you already use, then ask it about live departures, disruptions and
           journeys there. When the assistant first connects, you’ll sign in with your Distant Signal account.

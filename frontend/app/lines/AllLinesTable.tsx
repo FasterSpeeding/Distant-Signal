@@ -49,6 +49,29 @@ interface SortState {
   direction: 'asc' | 'desc';
 }
 
+/** Feather-style chevrons: up, down, or both stacked for an unsorted
+ * column. 12px, `currentColor`, decorative. */
+function SortChevron({ direction }: { direction: 'asc' | 'desc' | null }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+      data-sort-chevron={direction ?? 'none'}
+    >
+      {direction !== 'desc' && <polyline points={direction === 'asc' ? '6 15 12 9 18 15' : '7 10 12 5 17 10'} />}
+      {direction !== 'asc' && <polyline points={direction === 'desc' ? '6 9 12 15 18 9' : '7 14 12 19 17 14'} />}
+    </svg>
+  );
+}
+
 /** A neutral glyph on every sortable column, not just the active one:
  * without it there was no affordance at all until after a click, so the
  * headers looked like plain labels. `aria-hidden` because `aria-sort` on
@@ -56,9 +79,8 @@ interface SortState {
 function SortGlyph({ field, sort }: { field: SortField; sort: SortState | null }) {
   const active = sort?.field === field;
   return (
-    <Text span size="xs" c="dimmed" aria-hidden>
-      {' '}
-      {active ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}
+    <Text span size="xs" c="dimmed" aria-hidden style={{ marginInlineStart: 4, verticalAlign: 'middle' }}>
+      <SortChevron direction={active ? sort.direction : null} />
     </Text>
   );
 }

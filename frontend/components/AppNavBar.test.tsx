@@ -102,12 +102,14 @@ describe('AppNavBar', () => {
     expect(screen.queryByRole('button', { name: /^Account menu for/ })).not.toBeInTheDocument();
   });
 
-  it('keeps the brand, the theme toggle, the pride toggle and the freshness readout in the bar', () => {
+  it('keeps the brand, the theme toggle and the freshness readout in the bar, and no pride control', () => {
     // The four things the mobile collapse must NOT sweep into the drawer.
     renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
     expect(screen.getByRole('link', { name: 'Distant Signal' })).toHaveAttribute('href', '/');
-    expect(screen.getByRole('button', { name: /^Theme:/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Pride/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Colour theme' })).toBeInTheDocument();
+    // The pride toggle moves to the preferences page; the saved mode is
+    // still applied (PrideModeApplier).
+    expect(screen.queryByRole('button', { name: /^Pride/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
   });
 

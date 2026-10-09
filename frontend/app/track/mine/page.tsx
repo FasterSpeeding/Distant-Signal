@@ -194,8 +194,11 @@ export default async function MyTrackedTrainsPage() {
       </TextLink>
       {nothingToShow ? (
         <Text c="dimmed">
-          You haven&apos;t tracked any trains or added any tickets yet. <Link href="/track">Track a train</Link> to get
-          started.
+          You haven&apos;t tracked any trains or added any tickets yet.{' '}
+          <TextLink href="/track" underline="always" inline>
+            Track a train
+          </TextLink>{' '}
+          to get started.
         </Text>
       ) : (
         <>

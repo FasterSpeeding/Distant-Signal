@@ -293,7 +293,7 @@ describe('LineTrainsResults', () => {
   it('links the full day’s timetable with the current direction and the window’s start', async () => {
     vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
     await render({ dir: 'down' });
-    expect(screen.getByRole('link', { name: "Full day's timetable →" })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: "Full day's timetable" })).toHaveAttribute(
       'href',
       `/lines/${ID}/timetable?dir=down&at=13%3A30`,
     );

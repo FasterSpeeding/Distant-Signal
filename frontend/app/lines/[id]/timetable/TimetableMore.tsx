@@ -107,7 +107,9 @@ export function TimetableMore({
       />
       {nextHref && (
         <noscript>
-          <TextLink href={nextHref}>Next trains →</TextLink>
+          <TextLink href={nextHref}>
+            Next trains <span aria-hidden="true">→</span>
+          </TextLink>
         </noscript>
       )}
     </>

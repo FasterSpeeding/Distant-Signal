@@ -489,7 +489,11 @@ export default async function DashboardPage() {
         </Group>
         {pinnedLineReports.length === 0 ? (
           <Text c="dimmed">
-            You haven&apos;t pinned any lines yet. <Link href="/lines">Browse all lines</Link> to pin some.
+            You haven&apos;t pinned any lines yet.{' '}
+            <TextLink href="/lines" underline="always" inline>
+              Browse all lines
+            </TextLink>{' '}
+            to pin some.
           </Text>
         ) : (
           <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
@@ -522,7 +526,11 @@ export default async function DashboardPage() {
         </Group>
         {pinnedStationEntries.length === 0 ? (
           <Text c="dimmed">
-            You haven&apos;t pinned any stations yet. <Link href="/stations">Look up a station</Link> to pin one.
+            You haven&apos;t pinned any stations yet.{' '}
+            <TextLink href="/stations" underline="always" inline>
+              Look up a station
+            </TextLink>{' '}
+            to pin one.
           </Text>
         ) : (
           <Stack gap="xs">
@@ -578,8 +586,11 @@ export default async function DashboardPage() {
             <Text c="dimmed">Couldn&apos;t load operator status right now.</Text>
           ) : (
             <Text c="dimmed">
-              You haven&apos;t pinned any operators yet. <Link href="/operators">Browse all operators</Link> to pin
-              some.
+              You haven&apos;t pinned any operators yet.{' '}
+              <TextLink href="/operators" underline="always" inline>
+                Browse all operators
+              </TextLink>{' '}
+              to pin some.
             </Text>
           )
         ) : (

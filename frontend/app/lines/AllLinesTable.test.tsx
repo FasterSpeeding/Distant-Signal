@@ -680,7 +680,7 @@ describe('AllLinesTable TfL operator filter', () => {
 describe('AllLinesTable sorting affordance', () => {
   it('shows a sort glyph on every sortable header before anything is clicked', () => {
     renderTable();
-    expect(screen.getAllByText('↕').length).toBeGreaterThanOrEqual(3);
+    expect(document.querySelectorAll('[data-sort-chevron="none"]').length).toBeGreaterThanOrEqual(3);
   });
 
   it('makes the headers real buttons, so they are keyboard-operable', () => {

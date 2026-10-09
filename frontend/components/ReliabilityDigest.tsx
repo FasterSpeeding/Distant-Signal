@@ -1,6 +1,6 @@
 import { Alert, Card, Group, Stack, Text } from '@mantine/core';
 import { SectionTitle } from './SectionTitle';
-import Link from 'next/link';
+import { TextLink } from './TextLink';
 import {
   computeDelayRepayRollup,
   computePunctualitySummary,
@@ -93,7 +93,9 @@ function PunctualitySection({ summary }: { summary: PunctualitySummary }) {
           </Text>
           {summary.worstJourneys.map((journey) => (
             <Group key={journey.trainId} gap="xs">
-              <Link href={journeyHref(journey)}>{formatDate(journey.serviceDate)}</Link>
+              <TextLink href={journeyHref(journey)} underline="always" inline>
+                {formatDate(journey.serviceDate)}
+              </TextLink>
               <Text size="sm" c="dimmed">
                 {journey.delayMinutes} minutes late
               </Text>

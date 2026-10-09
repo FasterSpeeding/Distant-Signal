@@ -253,7 +253,7 @@ export default async function LineTimetablePage({
   const heading = (
     <>
       <TextLink href={`/lines/${encodeURIComponent(id)}`} underline="always">
-        ← Back to {name}
+        <span aria-hidden="true">←</span> Back to {name}
       </TextLink>
       <Title order={1}>Timetable: {name}</Title>
     </>

@@ -757,11 +757,13 @@ export function IncidentSearchForm({
           >
             <Group grow align="flex-start">
               <NumberInput
+                hideControls
                 label="Minimum"
                 value={priorityMin}
                 onChange={(value) => setPriorityMin(typeof value === 'number' ? value : '')}
               />
               <NumberInput
+                hideControls
                 label="Maximum"
                 value={priorityMax}
                 onChange={(value) => setPriorityMax(typeof value === 'number' ? value : '')}

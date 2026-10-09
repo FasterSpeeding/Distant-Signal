@@ -147,12 +147,12 @@ function WindowNav({
       <Group gap="md" wrap="wrap">
         <span className={classes.desktopOnly}>
           <TextLink href={at(window.earlierDesktop)} ariaLabel="Earlier trains">
-            ← Earlier
+            <span aria-hidden="true">←</span> Earlier
           </TextLink>
         </span>
         <span className={classes.phoneOnly}>
           <TextLink href={at(window.earlierPhone)} ariaLabel="Earlier trains">
-            ← Earlier
+            <span aria-hidden="true">←</span> Earlier
           </TextLink>
         </span>
         {params.at !== null && (
@@ -162,12 +162,12 @@ function WindowNav({
         )}
         <span className={classes.desktopOnly}>
           <TextLink href={at(window.laterDesktop)} ariaLabel="Later trains">
-            Later →
+            Later <span aria-hidden="true">→</span>
           </TextLink>
         </span>
         <span className={classes.phoneOnly}>
           <TextLink href={at(window.laterPhone)} ariaLabel="Later trains">
-            Later →
+            Later <span aria-hidden="true">→</span>
           </TextLink>
         </span>
       </Group>
@@ -570,7 +570,9 @@ export async function LineTrainsResults({
 
   const stations = summary.stations;
   const timetableLink = (
-    <TextLink href={lineTimetableLink(id, params, window.from)}>Full day&apos;s timetable →</TextLink>
+    <TextLink href={lineTimetableLink(id, params, window.from)}>
+      Full day&apos;s timetable <span aria-hidden="true">→</span>
+    </TextLink>
   );
   const header = (
     <Group gap="xs" justify="space-between" wrap="wrap">

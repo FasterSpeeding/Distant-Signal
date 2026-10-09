@@ -6,6 +6,7 @@ import { TextLink } from '@/components/TextLink';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { SectionTitle } from '@/components/SectionTitle';
 
 // Read the environment per request, never at build time: the connector URL
 // comes from the runtime env (see connectorUrl() below), and the image
@@ -76,9 +77,7 @@ export default function ConnectClaudePage() {
           body copy. */}
       <Card withBorder component="section" aria-labelledby="connect-steps-heading">
         <Stack gap="sm">
-          <Title order={2} size="h3" id="connect-steps-heading">
-            How to connect
-          </Title>
+          <SectionTitle id="connect-steps-heading">How to connect</SectionTitle>
           {/* Flat `ListItem` named export, not the `List.Item` dot-notation
               compound API -- this page is a Server Component and `List` carries
               a `"use client"` directive, so a dot-notation sub-component

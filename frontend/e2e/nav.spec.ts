@@ -191,8 +191,8 @@ test.describe('phone nav bar (390x844)', () => {
     const nav = page.locator('nav[aria-label="Main"]');
     await page.goto('/lines');
     await expect(nav.getByRole('link', { name: 'Distant Signal' })).toBeVisible();
-    await expect(nav.getByRole('button', { name: /^Theme:/ })).toBeVisible();
-    await expect(nav.getByRole('button', { name: /^Pride mode:/ })).toBeVisible();
+    await expect(nav.getByRole('button', { name: 'Colour theme' })).toBeVisible();
+    await expect(nav.getByRole('button', { name: /^Pride mode:/ })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Log in' })).toBeVisible();
   });
 

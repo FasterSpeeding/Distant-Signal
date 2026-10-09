@@ -495,7 +495,9 @@ export default async function LineDetailPage({
           {sharedWithGroups.map((group, index) => (
             <span key={group.id}>
               {index > 0 && ', '}
-              <Link href={`/groups/${group.id}`}>{group.name}</Link>
+              <TextLink href={`/groups/${group.id}`} underline="always" inline>
+                {group.name}
+              </TextLink>
             </span>
           ))}
         </Text>

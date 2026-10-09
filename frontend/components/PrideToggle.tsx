@@ -99,6 +99,19 @@ function parseStoredMode(raw: string | null): PrideMode {
  * in `localStorage`, which isn't available during SSR, so the server (and
  * the client's first pre-mount render) always renders the "off" state and
  * the stored preference takes over only after `useMounted` flips. */
+/** Applies the saved pride mode (`document.body.dataset.pride`) without
+ * showing a control. The nav mounts this instead of `PrideToggle`, whose
+ * off state rendered as an empty square; the toggle itself moves to the
+ * preferences page in wave 2, reading and writing the same STORAGE_KEY. */
+export function PrideModeApplier(): null {
+  const mounted = useMounted();
+  useEffect(() => {
+    if (!mounted) return;
+    document.body.dataset.pride = parseStoredMode(localStorage.getItem(STORAGE_KEY));
+  }, [mounted]);
+  return null;
+}
+
 export function PrideToggle() {
   const mounted = useMounted();
   const [mode, setMode] = useState<PrideMode>('off');

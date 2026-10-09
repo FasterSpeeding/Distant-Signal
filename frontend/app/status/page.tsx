@@ -191,7 +191,7 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
               sighted-only visual affordance (grape link text + chevron)
               matching the app's established "this goes somewhere" cue. */}
           <Text size="xs" c="var(--mantine-color-anchor)" aria-hidden>
-            View lines ›
+            View lines <span aria-hidden="true">›</span>
           </Text>
         </Stack>
       </Card>
