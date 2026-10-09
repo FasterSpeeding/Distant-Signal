@@ -210,6 +210,21 @@ pub(crate) enum ProviderKind {
     Anthropic,
 }
 
+impl ProviderKind {
+    /// `LLM_PROVIDER` from the environment (default `openai`), for the
+    /// model-eval harness and the live evals.
+    #[cfg(test)]
+    pub(crate) fn from_env() -> anyhow::Result<Self> {
+        match std::env::var("LLM_PROVIDER") {
+            Ok(value) if !value.trim().is_empty() => {
+                <Self as clap::ValueEnum>::from_str(value.trim(), true)
+                    .map_err(|err| anyhow::anyhow!("LLM_PROVIDER: {err}"))
+            }
+            _ => Ok(Self::Openai),
+        }
+    }
+}
+
 /// The provider and its provider-specific settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Provider {
@@ -1889,25 +1904,41 @@ fn build_period_user_content(
 /// e.g. to give a cold-starting model extra room), and the SAME provider
 /// policy env vars the service parses (`config::ProviderPolicyConfig`), so a
 /// reasoning model gets its `reasoning_effort`/`max_tokens` in an eval too.
+/// `LLM_PROVIDER=anthropic` (with `LLM_PROMPT_CACHE`/`LLM_THINKING`) runs
+/// them against the Claude API, where `LLM_BASE_URL`/`LLM_MODEL` default.
 #[cfg(test)]
 pub(crate) fn live_client_from_env() -> LlmClient {
     use clap::Parser;
 
-    let base_url = std::env::var("LLM_BASE_URL").expect("LLM_BASE_URL must be set for live eval");
+    let provider = ProviderKind::from_env().expect("LLM_PROVIDER must be openai or anthropic");
+    let (base_url, model) = match provider {
+        ProviderKind::Openai => (
+            std::env::var("LLM_BASE_URL").expect("LLM_BASE_URL must be set for live eval"),
+            std::env::var("LLM_MODEL").expect("LLM_MODEL must be set for live eval"),
+        ),
+        ProviderKind::Anthropic => (
+            std::env::var("LLM_BASE_URL").unwrap_or_else(|_| anthropic::DEFAULT_BASE_URL.into()),
+            std::env::var("LLM_MODEL").unwrap_or_else(|_| anthropic::DEFAULT_MODEL.into()),
+        ),
+    };
     let api_key = std::env::var("LLM_API_KEY").ok();
-    let model = std::env::var("LLM_MODEL").expect("LLM_MODEL must be set for live eval");
     let timeout_secs: u64 = std::env::var("LIVE_EVAL_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(180);
     let policy = crate::config::ProviderPolicyConfig::parse_from(["live-eval"]).policy();
-    LlmClient::new(
+    let client = LlmClient::new(
         base_url,
         api_key,
         model,
         std::time::Duration::from_secs(timeout_secs),
     )
-    .with_provider_policy(policy)
+    .with_provider_policy(policy);
+    match provider {
+        ProviderKind::Openai => client,
+        ProviderKind::Anthropic => client
+            .with_anthropic(crate::config::AnthropicConfig::parse_from(["live-eval"]).settings()),
+    }
 }
 
 #[cfg(test)]

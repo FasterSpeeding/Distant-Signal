@@ -7,7 +7,10 @@
 # enricher service itself defaults to, so an unset key benchmarks the
 # deployment as it would really run. Keys mirror the service's env vars:
 #
-#   base_url              LLM_BASE_URL (OpenAI-compatible, ends in /v1)
+#   provider              LLM_PROVIDER: "openai" (default; any OpenAI-compatible
+#                         Chat Completions endpoint) or "anthropic" (the Claude
+#                         API, docs/enricher-anthropic.md)
+#   base_url              LLM_BASE_URL (ends in /v1)
 #   model                 LLM_MODEL
 #   api_key_env           NAME of the env var holding the key (never the key)
 #   request_timeout_secs  LLM_REQUEST_TIMEOUT_SECS (perf benchmark only)
@@ -21,6 +24,12 @@
 #   gateway_retries       LLM_GATEWAY_RETRIES
 #   auth                  LLM_AUTH: "api-key" (default), "openai-wif-authentik"
 #                         or "openai-wif-kubernetes"
+#   prompt_cache          LLM_PROMPT_CACHE (anthropic): "1h" (default), "5m", "off"
+#   thinking              LLM_THINKING (anthropic), e.g. "disabled"
+#   anthropic_version     LLM_ANTHROPIC_VERSION (anthropic)
+#
+# For "anthropic", reasoning_effort is sent as output_config.effort and
+# max_tokens defaults to 16000 (the Messages API requires it).
 #
 # api_key_env is the normal route, OpenAI included. The keyless workload
 # identity modes (docs/enricher-openai.md, "Keyless auth") need a projected
@@ -82,3 +91,32 @@ request_timeout_secs = 120
 max_in_flight = 3
 rate_limit_retries = 3
 gateway_retries = 1
+
+# The Claude API (docs/enricher-anthropic.md). Haiku 5.5 is the service's
+# default model for LLM_PROVIDER=anthropic; Sonnet 5.5 is the quality
+# reference to compare it with. Both at the model's default effort and
+# adaptive thinking; add reasoning_effort = "low" (or thinking = "disabled"
+# on Haiku) as further targets to measure the cheaper settings.
+[[targets]]
+name = "anthropic-claude-haiku-5-5"
+environment = "Claude API (api.anthropic.com), standard tier; see docs/enricher-anthropic.md"
+provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+model = "claude-haiku-5-5"
+api_key_env = "ANTHROPIC_API_KEY"
+request_timeout_secs = 120
+max_in_flight = 3
+rate_limit_retries = 3
+gateway_retries = 2
+
+[[targets]]
+name = "anthropic-claude-sonnet-5-5"
+environment = "Claude API (api.anthropic.com), standard tier; see docs/enricher-anthropic.md"
+provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+model = "claude-sonnet-5-5"
+api_key_env = "ANTHROPIC_API_KEY"
+request_timeout_secs = 180
+max_in_flight = 3
+rate_limit_retries = 3
+gateway_retries = 2
