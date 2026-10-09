@@ -9,6 +9,27 @@ then fail every single extraction request forever with nothing but log noise
 to show for it.
 */}}
 {{- $anthropic := include "distant-signal.enricherAnthropic" . }}
+{{- /* Profiles (crates/enricher/src/profile.rs): a known name, and a
+number or `omit` for each sampling override. */}}
+{{- $llmValues := .Values.enricher.llm }}
+{{- with $llmValues.profile }}
+{{- if not (has . (list "openai-gpt-6-luna" "openai-default" "claude-default")) }}
+{{- fail (printf "enricher.llm.profile=%q is not one of openai-gpt-6-luna, openai-default, claude-default." .) }}
+{{- end }}
+{{- if and $anthropic (hasPrefix "openai-" .) }}
+{{- fail (printf "enricher.llm.profile=%q is an OpenAI profile but enricher.llm.provider is anthropic." .) }}
+{{- end }}
+{{- if and (not $anthropic) (hasPrefix "claude-" .) }}
+{{- fail (printf "enricher.llm.profile=%q is a Claude profile but enricher.llm.provider is openai." .) }}
+{{- end }}
+{{- end }}
+{{- range $key := list "temperature" "topP" }}
+{{- $v := toString (get $llmValues $key | default "") }}
+{{- if and $v (ne $v "omit") (not (regexMatch "^[0-9]+(\\.[0-9]+)?$" $v)) }}
+{{- fail (printf "enricher.llm.%s=%q must be a number or \"omit\"." $key $v) }}
+{{- end }}
+{{- end }}
+{{- $prompts := $llmValues.prompts | default dict }}
 {{- $batch := .Values.enricher.llm.batch | default dict }}
 {{- $sweepMode := $batch.sweepMode | default "sync" }}
 {{- if not (has $sweepMode (list "sync" "batch")) }}
@@ -155,18 +176,26 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if $wif }}
+          {{- if or $wif $prompts.configMap }}
           volumeMounts:
+            {{- if $wif }}
             - name: {{ ternary "llm-identity-token" "openai-identity-token" (eq .Values.enricher.llm.auth "anthropicWifAuthentik") }}
               mountPath: {{ include "distant-signal.enricherIdentityTokenDir" . }}
               readOnly: true
+            {{- end }}
+            {{- with $prompts.configMap }}
+            - name: llm-prompts
+              mountPath: /etc/enricher/prompts
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if $wif }}
-      # The workload identity token (enricher.llm.auth): ONLY an
-      # audience-bound service-account token, rotated by the kubelet. No
-      # ca.crt or namespace, so it is no use against the Kubernetes API (and
-      # no RBAC binds the account anyway).
+      {{- if or $wif $prompts.configMap }}
       volumes:
+        {{- if $wif }}
+        # The workload identity token (enricher.llm.auth): ONLY an
+        # audience-bound service-account token, rotated by the kubelet. No
+        # ca.crt or namespace, so it is no use against the Kubernetes API
+        # (and no RBAC binds the account anyway).
         - name: {{ ternary "llm-identity-token" "openai-identity-token" (eq .Values.enricher.llm.auth "anthropicWifAuthentik") }}
           projected:
             sources:
@@ -174,6 +203,14 @@ spec:
                   path: token
                   audience: {{ include "distant-signal.enricherTokenAudience" . | quote }}
                   expirationSeconds: 3600
+        {{- end }}
+        {{- with $prompts.configMap }}
+        # Prompt overrides (enricher.llm.prompts.configMap): keys
+        # <profile>.<call>.txt or <call>.txt.
+        - name: llm-prompts
+          configMap:
+            name: {{ . | quote }}
+        {{- end }}
       {{- end }}
       {{- with .Values.enricher.nodeSelector }}
       nodeSelector:
@@ -311,6 +348,23 @@ with enricher.extraEnv, which replaces an entry of the same name.
             {{- with .Values.enricher.llm.reasoningEffort }}
             - name: LLM_REASONING_EFFORT
               value: {{ . | quote }}
+            {{- end }}
+            {{- /* Profiles (docs/enricher-anthropic.md, "Tuning per model"). */}}
+            {{- with .Values.enricher.llm.profile }}
+            - name: LLM_PROFILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.enricher.llm.temperature }}
+            - name: LLM_TEMPERATURE
+              value: {{ . | toString | quote }}
+            {{- end }}
+            {{- with .Values.enricher.llm.topP }}
+            - name: LLM_TOP_P
+              value: {{ . | toString | quote }}
+            {{- end }}
+            {{- if (.Values.enricher.llm.prompts | default dict).configMap }}
+            - name: LLM_PROMPTS_DIR
+              value: "/etc/enricher/prompts"
             {{- end }}
             - name: LLM_REQUEST_TIMEOUT_SECS
               value: {{ .Values.enricher.llmRequestTimeoutSecs | quote }}

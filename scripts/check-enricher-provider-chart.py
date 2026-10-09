@@ -413,6 +413,72 @@ def check_claude_wif(c: Checker) -> None:
     )
 
 
+def check_profiles(c: Checker) -> None:
+    """Check the profile settings and prompt overrides render and are guarded."""
+    expect(
+        c,
+        "profile defaults",
+        enricher_env(c.docs("profile defaults", *OPENAI)),
+        {"LLM_PROFILE": None, "LLM_TEMPERATURE": None, "LLM_TOP_P": None},
+    )
+    docs = c.docs(
+        "profile set",
+        *ANTHROPIC,
+        *sets(
+            "enricher.llm.profile=claude-default",
+            "enricher.llm.temperature=omit",
+            "enricher.llm.topP=0.9",
+            "enricher.llm.prompts.configMap=enricher-prompts",
+        ),
+    )
+    expect(
+        c,
+        "profile set",
+        enricher_env(docs),
+        {
+            "LLM_PROFILE": "claude-default",
+            "LLM_TEMPERATURE": "omit",
+            "LLM_TOP_P": "0.9",
+            "LLM_PROMPTS_DIR": "/etc/enricher/prompts",
+        },
+    )
+    pod = as_map(
+        as_map(
+            as_map(find(docs, "Deployment", ENRICHER).get("spec")).get("template")
+        ).get("spec")
+    )
+    maps = [
+        as_map(as_map(v).get("configMap")).get("name")
+        for v in as_list(pod.get("volumes"))
+    ]
+    if maps != ["enricher-prompts"]:
+        c.failures.append(f"profile set: want the prompts ConfigMap volume, got {maps}")
+    c.refuses(
+        "unknown profile",
+        "is not one of openai-gpt-6-luna",
+        *OPENAI,
+        *sets("enricher.llm.profile=fast"),
+    )
+    c.refuses(
+        "Claude profile on openai",
+        "is a Claude profile",
+        *OPENAI,
+        *sets("enricher.llm.profile=claude-default"),
+    )
+    c.refuses(
+        "OpenAI profile on anthropic",
+        "is an OpenAI profile",
+        *ANTHROPIC,
+        *sets("enricher.llm.profile=openai-default"),
+    )
+    c.refuses(
+        "bad temperature",
+        "must be a number",
+        *OPENAI,
+        *sets("enricher.llm.temperature=warm"),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run every check; print failures."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
@@ -424,6 +490,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     check_egress(c)
     check_refusals(c)
     check_claude_wif(c)
+    check_profiles(c)
     for failure in c.failures:
         print(failure)
     if not c.failures:

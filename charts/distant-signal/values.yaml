@@ -3093,6 +3093,27 @@ enricher:
       # Haiku 5.5, `between_tools` on Sonnet 5.5). Empty: the model's
       # default (adaptive thinking).
       thinking: ""
+    # -- LLM_PROFILE: a built-in generation profile by name
+    # (openai-gpt-6-luna, openai-default, claude-default). Empty (the
+    # default) picks it by provider and model: OpenAI-compatible endpoints
+    # send temperature 0 (gpt-6-luna also effort none), Claude sends no
+    # sampling parameters (docs/enricher-anthropic.md, "Tuning per model").
+    profile: ""
+    # -- LLM_TEMPERATURE: overrides the profile's temperature; a number, or
+    # "omit" to send none. A temperature a model is known to reject (the
+    # current Claude models) fails at startup. Empty keeps the profile's.
+    temperature: ""
+    # -- LLM_TOP_P: overrides the profile's top_p (none); a number or
+    # "omit". Empty keeps the profile's.
+    topP: ""
+    prompts:
+      # -- Name of an existing ConfigMap of system-prompt overrides, mounted
+      # at /etc/enricher/prompts (LLM_PROMPTS_DIR). Keys
+      # `<profile>.<call>.txt` or `<call>.txt`, call one of primary,
+      # adversarial, severity_adversarial; a call with neither keeps the
+      # built-in prompt. Changing a prompt changes model_version, so the
+      # sweep re-extracts. Empty (the default): the built-in prompts.
+      configMap: ""
     # Message Batches for the reconciliation sweep (provider: anthropic
     # only). Off by default.
     batch:

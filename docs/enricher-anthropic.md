@@ -63,7 +63,76 @@ unchanged. `every_schema_is_rewritten_into_claudes_subset` checks all three.
 runs over the same text are not guaranteed identical, unlike the `openai`
 path's `temperature: 0`. The per-text backoff and the combine-mismatch
 tracker still work, but a "deterministic" persistent mismatch may now
-sometimes clear on retry.
+sometimes clear on retry. (The `claude-default` profile, below, is what
+sends none; setting one for these models fails at startup.)
+
+## Tuning per model
+
+Generation settings and prompts come from a **profile**
+(`crates/enricher/src/profile.rs`), picked by provider plus a model glob,
+first match wins, or named with `LLM_PROFILE` / `enricher.llm.profile`:
+
+| Profile | Provider | Models | Defaults |
+| --- | --- | --- | --- |
+| `openai-gpt-6-luna` | openai | `gpt-6-luna*` | `temperature: 0`, effort `none` |
+| `openai-default` | openai | `*` | `temperature: 0` (the pre-profile behaviour) |
+| `claude-default` | anthropic | `*` | nothing: no `temperature`/`top_p`, the model's effort and adaptive thinking |
+
+On top of the profile, explicit settings win, and `omit` means "don't send
+the profile's value"; unset means the profile's value, and a value nobody
+sets is never sent:
+
+| Setting | Env | Chart |
+| --- | --- | --- |
+| temperature | `LLM_TEMPERATURE` (number or `omit`) | `enricher.llm.temperature` |
+| top_p | `LLM_TOP_P` (number or `omit`) | `enricher.llm.topP` |
+| max_tokens | `LLM_MAX_TOKENS` | `enricher.extraEnv` |
+| reasoning effort | `LLM_REASONING_EFFORT` (or `omit`) | `enricher.llm.reasoningEffort` |
+| thinking (Claude) | `LLM_THINKING` (or `omit`) | `enricher.llm.anthropic.thinking` |
+
+**Startup checks (best effort).** A small capability table knows which
+models reject sampling parameters: Claude Haiku 5.5, Sonnet 5 / 5.5, Opus
+4.7 and later, Fable/Mythos 5 reject `temperature` and `top_p`;
+`gpt-6-luna` takes `temperature` only at effort `none`. A resolved
+configuration that would send one fails at startup with the setting to
+change, instead of every request answering 400. Models not in the table
+(any self-hosted one, Haiku 4.5) aren't checked. The table also knows each
+Claude model's minimum cacheable prefix: with caching on, a primary prompt
+below it logs a startup warning (caching would silently not apply).
+
+**Prompts.** The three system prompts (`primary`, `adversarial`,
+`severity_adversarial`) default to the shared built-in ones. To tune them
+per profile, put overrides in a ConfigMap and name it in
+`enricher.llm.prompts.configMap`; the chart mounts it at
+`/etc/enricher/prompts` (`LLM_PROMPTS_DIR`). Per call the enricher reads
+`<profile>.<call>.txt`, else `<call>.txt`, else the built-in prompt; an
+empty file fails startup. The schemas and parsers stay shared, so whatever
+the prompt, the output has the same shape. For example:
+
+```bash
+kubectl create configmap enricher-prompts \
+  --from-file=claude-default.primary.txt=./primary-for-claude.txt
+```
+
+The active prompt set's 12-character hash (`prompt_version`) is logged at
+startup with the profile, the resolved settings and where each prompt came
+from; `enricher_llm_model_info` carries a `profile` label. When the prompts
+aren't the built-in ones, the hash is appended to `model_version`
+(`<model>@periods-v2+prompts-<hash>`), so a prompt change re-extracts every
+live incident, like a model change, and going back to the built-in prompts
+restores the old `model_version`. Keep caching in mind: an edited primary
+prompt below ~2,000 characters drops under the Claude cache minimum.
+
+**Evaluating a tuning.** Eval targets take the same keys (`profile`,
+`temperature`, `top_p`, `reasoning_effort`, `thinking`, `prompts_dir`; see
+`crates/enricher/eval/targets.example.toml`) and resolve exactly like the
+service, and each record's prompt fingerprint is the prompts actually sent.
+Compare a tuned target with the untuned one before deploying.
+
+**Rolling back a tuning.** Clear the values (`profile`, `temperature`,
+`topP`, `prompts.configMap`). With the prompts back to built-in,
+`model_version` returns to `<model>@periods-v2` and the sweep re-extracts
+once more.
 
 ## Setup
 

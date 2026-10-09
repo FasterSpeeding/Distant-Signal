@@ -72,10 +72,27 @@ gives the same extraction as far as the model allows. For gpt-6-luna,
 effort (`low`, `medium`, `high`, `xhigh`, `max`) it must be left out, and
 leaving `LLM_REASONING_EFFORT` unset means the model's default, `medium`,
 so an unset effort breaks every request (latest-model guide; model page).
-The enricher has no switch to drop `temperature`, on purpose: effort `none`
-is the configuration chosen. Effort `none` is also the cheapest and
-fastest option, and it leaves no reasoning tokens to bill (check
+Effort `none` is the configuration chosen, and since profiles (below) it
+is gpt-6-luna's default: the built-in `openai-gpt-6-luna` profile sends
+`temperature: 0` with effort `none` even with `LLM_REASONING_EFFORT` unset.
+Another effort with the profile's temperature fails at startup; to try
+one, also set `LLM_TEMPERATURE=omit`. Effort `none` is also the cheapest
+and fastest option, and it leaves no reasoning tokens to bill (check
 `reasoning_tokens` in the eval records).
+
+### Tuning per model
+
+Since 2026-10 the generation settings and system prompts come from a
+per-provider, per-model profile: `openai-gpt-6-luna` (above) and
+`openai-default` (`temperature: 0`, nothing else: exactly the requests sent
+before profiles) for OpenAI-compatible endpoints. `LLM_TEMPERATURE`,
+`LLM_TOP_P`, `LLM_MAX_TOKENS` and `LLM_REASONING_EFFORT` override a
+profile (`omit` drops its value), `LLM_PROFILE` names one, and
+`enricher.llm.prompts.configMap` overrides prompts per profile. The details,
+the startup checks, the prompt-version hash in `model_version`, evaluating
+and rolling back a tuning are in
+[enricher-anthropic.md, "Tuning per model"](enricher-anthropic.md#tuning-per-model);
+they apply to both providers.
 
 `LLM_REASONING_EFFORT=none` passes config validation (the knob is free
 text) and is sent as `"reasoning_effort": "none"`. Both are unit-tested
