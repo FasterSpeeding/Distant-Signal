@@ -168,7 +168,51 @@
   //                   busybox, drakkan/sftpgo, postgres (alpine) and
   //                   goauthentik/server all extract with their digests,
   //                   and so does every Dockerfile's `# syntax=` pin.
+  // --- PR volume (2026-10-09) ------------------------------------------
+  // Non-major updates arrive as one grouped PR per ecosystem, in the
+  // preset's weekly window (schedule:weekly). That includes github-actions,
+  // which the shared preset otherwise updates "at any time". Majors stay
+  // as their own PRs in the same window. Security and vulnerability PRs
+  // are never scheduled or grouped. Branches are rebased only on conflict,
+  // so a busy main doesn't re-run CI on every open Renovate PR.
+  "rebaseWhen": "conflicted",
+  "github-actions": {
+    "schedule": ["before 4am on monday"],
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "groupName": null,
+  },
+
   "packageRules": [
+    // One non-major group per ecosystem. These come before the rules that
+    // disable updates below, so those still win.
+    {
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "cargo non-major",
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "npm non-major",
+    },
+    {
+      "matchManagers": ["pep621", "pyenv"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "python non-major",
+    },
+    {
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "container images non-major",
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "github-actions non-major",
+    },
     // No "postgres 16" group any more: it kept docker/postgres-pgbackrest.Dockerfile
     // on the same postgres image as `postgresql.image.tag`, and that
     // Dockerfile is gone (the pgBackRest image now comes from
