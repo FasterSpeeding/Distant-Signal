@@ -134,7 +134,7 @@ export default async function TrackPage({
           only ever follows the pin-mode path) and needs no reactivity. */}
       {attachTicketId !== undefined && (
         <Text c="dimmed">
-          Find or track the train your saved ticket is for — it&apos;ll be attached automatically once you do.
+          Find or track the train your saved ticket is for. It&apos;ll be attached automatically once you do.
         </Text>
       )}
       {/* Review §2.16: `TrackTrainForm`'s own "Track this train" button is
@@ -147,7 +147,7 @@ export default async function TrackPage({
           client form regardless, so there is no static-rendering property
           to preserve the way `/lines/new`'s own comment protects. */}
       <Text size="sm" c="dimmed">
-        Tracking a train needs a Distant Signal account — you&apos;ll be sent to log in when you save if you aren&apos;t
+        Tracking a train needs a Distant Signal account. You&apos;ll be sent to log in when you save if you aren&apos;t
         already signed in.
       </Text>
       <TrackTrainForm

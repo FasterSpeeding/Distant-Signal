@@ -42,7 +42,7 @@ describe('PinToggle', () => {
   // account until they clicked and hit the 401 prompt.
   it('hints that pinning needs an account when needsAccountHint is set and the line is unpinned', () => {
     renderWithMantine(<PinToggle kind="line" id="wcml" initiallyPinned={false} needsAccountHint />);
-    expect(screen.getByLabelText('Pin — needs an account')).toBeInTheDocument();
+    expect(screen.getByLabelText('Pin (needs an account)')).toBeInTheDocument();
   });
 
   // A pinned line implies an account already exists -- the hint must not

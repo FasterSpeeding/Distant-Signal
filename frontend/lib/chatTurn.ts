@@ -67,6 +67,7 @@ const MARKER_CONFUSABLES: Readonly<Record<string, string>> = {
   '\u2011': '-', // non-breaking hyphen
   '\u2012': '-', // figure dash
   '\u2013': '-', // en dash
+  // eslint-disable-next-line no-restricted-syntax -- a confusable to normalise, not copy
   '\u2014': '-', // em dash
   '\u2015': '-', // horizontal bar
   '\u2212': '-', // minus sign

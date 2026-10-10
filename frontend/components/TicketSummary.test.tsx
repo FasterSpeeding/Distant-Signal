@@ -22,7 +22,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.getByText('LNER — Off-Peak Day Single')).toBeInTheDocument();
+    expect(screen.getByText('LNER · Off-Peak Day Single')).toBeInTheDocument();
   });
 
   it('renders the custom name in place of the operator/ticketType title when set, leaving the route line unchanged', () => {
@@ -42,7 +42,7 @@ describe('TicketSummary', () => {
       />,
     );
     expect(screen.getByText("Mum's ticket to Leeds")).toBeInTheDocument();
-    expect(screen.queryByText('LNER — Off-Peak Day Single')).not.toBeInTheDocument();
+    expect(screen.queryByText('LNER · Off-Peak Day Single')).not.toBeInTheDocument();
     expect(screen.getByText(byVisibleText('KGX → EDB'))).toBeInTheDocument();
   });
 

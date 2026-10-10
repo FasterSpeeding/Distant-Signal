@@ -28,7 +28,7 @@ export default async function AccountPage() {
       <Stack p="lg" gap="md" maw={640}>
         <Title order={1}>Account &amp; data</Title>
         <Text>Log in to download your data or delete your account.</Text>
-        <LoginButton title="Log in — needs a Distant Signal account">Log in</LoginButton>
+        <LoginButton title="Log in (needs a Distant Signal account)">Log in</LoginButton>
       </Stack>
     );
   }

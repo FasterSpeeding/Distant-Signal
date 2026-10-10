@@ -129,7 +129,7 @@ export function TicketEntryForm({
 
   // Same station/operator `Autocomplete` pattern `TrackTrainForm.tsx` uses
   // (Task 3.6.4) -- one shared suggestion source (`searchStations`/
-  // `searchTocs`) and the same "CODE — Name" `renderOption`, instead of
+  // `searchTocs`) and the same "CODE · Name" `renderOption`, instead of
   // this form's own bare CRS-code `TextInput`s, which never told a user
   // typing a station or operator name (rather than its code) that a match
   // existed.
@@ -420,7 +420,7 @@ export function TicketEntryForm({
             Drop a ticket file here
           </Text>
           <Text size="xs" c="dimmed">
-            .pkpass or PDF e-ticket — or use the tabs below
+            .pkpass or PDF e-ticket, or use the tabs below
           </Text>
         </Group>
       </Dropzone>
@@ -472,7 +472,7 @@ export function TicketEntryForm({
                 loading: operatorSuggestionsLoading,
                 noMatchMessage: 'No matching operators',
               })}
-              description={autoFilled.has('operator') ? 'Auto-filled — please check this value' : undefined}
+              description={autoFilled.has('operator') ? 'Auto-filled. Check this value.' : undefined}
             />
             <TextInput
               label="Ticket type (optional)"
@@ -482,7 +482,7 @@ export function TicketEntryForm({
                 setTicketType(event.currentTarget.value);
                 clearAutoFilled('ticketType');
               }}
-              description={autoFilled.has('ticketType') ? 'Auto-filled — please check this value' : undefined}
+              description={autoFilled.has('ticketType') ? 'Auto-filled. Check this value.' : undefined}
             />
             <Autocomplete
               label="Origin station (optional)"

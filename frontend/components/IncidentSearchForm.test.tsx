@@ -413,7 +413,7 @@ describe('IncidentSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
     expect(
-      await screen.findByText("You've reached the end — no more incidents match these filters."),
+      await screen.findByText("You've reached the end. No more incidents match these filters."),
     ).toBeInTheDocument();
   });
 
@@ -424,7 +424,7 @@ describe('IncidentSearchForm', () => {
     await clickSearch();
 
     expect(
-      await screen.findByText("You've reached the end — no more incidents match these filters."),
+      await screen.findByText("You've reached the end. No more incidents match these filters."),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
@@ -456,7 +456,7 @@ describe('IncidentSearchForm', () => {
     // call 2 the failed "Load more", call 3 this retry.
     expect(new URL(fetchMock.mock.calls[3]![0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
-    expect(screen.getByText("You've reached the end — no more incidents match these filters.")).toBeInTheDocument();
+    expect(screen.getByText("You've reached the end. No more incidents match these filters.")).toBeInTheDocument();
   });
 
   it('reports a "Load more" whose fetch throws the same way it reports a non-2xx', async () => {
@@ -495,7 +495,7 @@ describe('IncidentSearchForm', () => {
     await clickSearch();
 
     expect(
-      await screen.findByText("You've reached the end — no more incidents match these filters."),
+      await screen.findByText("You've reached the end. No more incidents match these filters."),
     ).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
   });
@@ -540,7 +540,7 @@ describe('IncidentSearchForm', () => {
     } as unknown as Response);
 
     await waitFor(() =>
-      expect(screen.getByText("You've reached the end — no more incidents match these filters.")).toBeInTheDocument(),
+      expect(screen.getByText("You've reached the end. No more incidents match these filters.")).toBeInTheDocument(),
     );
     expect(screen.queryByText('Trespass incident at Woking')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();

@@ -115,7 +115,7 @@ describe('DeleteTrainButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
     await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
     expect(
-      screen.getByText('This train is shared in 1 group — deleting it will remove it from that group too.'),
+      screen.getByText('This train is shared in 1 group. Deleting it will remove it from that group too.'),
     ).toBeInTheDocument();
   });
 
@@ -125,7 +125,7 @@ describe('DeleteTrainButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
     await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
     expect(
-      screen.getByText('This train is shared in 3 groups — deleting it will remove it from those groups too.'),
+      screen.getByText('This train is shared in 3 groups. Deleting it will remove it from those groups too.'),
     ).toBeInTheDocument();
   });
 });

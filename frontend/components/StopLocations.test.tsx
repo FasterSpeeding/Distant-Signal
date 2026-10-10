@@ -135,10 +135,10 @@ describe('planner locations', () => {
     expect(suggestionOptionLabel({ code: 'tiploc:BDICK', name: 'Brodick (ferry)', kind: 'ferry' })).toBe(
       'Brodick (ferry)',
     );
-    expect(suggestionOptionLabel({ code: 'EDB', name: 'Edinburgh' })).toBe('EDB — Edinburgh');
+    expect(suggestionOptionLabel({ code: 'EDB', name: 'Edinburgh' })).toBe('EDB · Edinburgh');
     expect(codeStationLabel('tiploc:SANWBUS', 'St Andrews (bus)')).toBe('St Andrews (bus)');
     expect(codeRouteLabel('tiploc:SANWBUS', 'St Andrews (bus)', 'EDB', 'Edinburgh')).toBe(
-      'St Andrews (bus) → EDB — Edinburgh',
+      'St Andrews (bus) → EDB · Edinburgh',
     );
   });
 

@@ -577,7 +577,7 @@ export function IncidentSearchForm({
           loading={loadingMore}
           failed={results.loadMoreFailed}
           onLoadMore={handleLoadMore}
-          endMessage="You've reached the end — no more incidents match these filters."
+          endMessage="You've reached the end. No more incidents match these filters."
         />
       </>
     );
@@ -621,7 +621,7 @@ export function IncidentSearchForm({
             label="Operator (optional)"
             placeholder="Any operator"
             description="Incidents involving any of these operators."
-            data={tocs.map((toc) => ({ value: toc.code, label: `${toc.code} — ${toc.name}` }))}
+            data={tocs.map((toc) => ({ value: toc.code, label: `${toc.code} · ${toc.name}` }))}
             value={operators}
             onChange={setOperators}
             searchable
@@ -750,7 +750,7 @@ export function IncidentSearchForm({
             description={
               <>
                 Raw feed value from National Rail&apos;s own incident data with no documented
-                &quot;major&quot;/&quot;minor&quot; meaning — shown as-is, not a severity scale.
+                &quot;major&quot;/&quot;minor&quot; meaning. Shown as-is, not a severity scale.
               </>
             }
             error={!priorityValid ? 'Minimum must not exceed maximum' : null}

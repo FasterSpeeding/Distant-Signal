@@ -107,7 +107,7 @@ export function JourneyTimeline({
   if (allUnnamed) {
     return (
       <Text size="sm" c="dimmed">
-        {total} {total === 1 ? 'stop' : 'stops'} — station names unavailable
+        {total} {total === 1 ? 'stop' : 'stops'} (station names unavailable)
       </Text>
     );
   }

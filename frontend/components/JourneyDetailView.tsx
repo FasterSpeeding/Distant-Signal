@@ -95,7 +95,7 @@ function LegConnector({ leg }: { leg: JourneyLegDetail }) {
   return (
     <Text size="xs" c="dimmed" pl="sm">
       <span aria-hidden="true">↓</span> Change at {stationName}
-      {arrival ? ` — ${arrival}` : ''}
+      {arrival ? `, ${arrival}` : ''}
     </Text>
   );
 }

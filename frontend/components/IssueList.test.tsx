@@ -385,8 +385,8 @@ describe('IssueList', () => {
   it('labels what each chip row filters, and says so when nothing is narrowed', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     openFilters();
-    expect(screen.getByText('Severity — showing all')).toBeInTheDocument();
-    expect(screen.getByText('Source — showing all')).toBeInTheDocument();
+    expect(screen.getByText('Severity: showing all')).toBeInTheDocument();
+    expect(screen.getByText('Source: showing all')).toBeInTheDocument();
   });
 
   it('reports how many chips are selected in each row label', () => {
@@ -395,8 +395,8 @@ describe('IssueList', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
-    expect(screen.getByText('Severity — 2 selected')).toBeInTheDocument();
-    expect(screen.getByText('Source — 1 selected')).toBeInTheDocument();
+    expect(screen.getByText('Severity: 2 selected')).toBeInTheDocument();
+    expect(screen.getByText('Source: 1 selected')).toBeInTheDocument();
   });
 
   it('renders selected chips in a visually distinct variant from unselected ones', () => {
@@ -414,8 +414,8 @@ describe('IssueList', () => {
   it('associates each chip row with its label for screen readers', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     openFilters();
-    expect(screen.getByRole('group', { name: 'Severity — showing all' })).toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Source — showing all' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Severity: showing all' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Source: showing all' })).toBeInTheDocument();
   });
   it('keeps the row badges at full size and lets the description text absorb the squeeze', () => {
     renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
@@ -468,7 +468,7 @@ describe('IssueList', () => {
     fireEvent.mouseEnter(badge);
     expect(
       await screen.findByText(
-        'Based on real train-movement data for every scheduled service on this line — not a live-departure sample.',
+        'Based on real train-movement data for every scheduled service on this line, not a live-departure sample.',
       ),
     ).toBeInTheDocument();
   });
@@ -635,9 +635,9 @@ describe('IssueList', () => {
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} />);
-    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+    expect(screen.getByText('Good service. No issues reported on this line.')).toBeInTheDocument();
     expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Severity:/)).not.toBeInTheDocument();
   });
 
   it("also collapses the chrome for TfL's No Issues (25), not just NR's Good Service (10)", () => {
@@ -656,9 +656,9 @@ describe('IssueList', () => {
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: noIssues }]} now={NOW} />);
-    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+    expect(screen.getByText('Good service. No issues reported on this line.')).toBeInTheDocument();
     expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Severity:/)).not.toBeInTheDocument();
   });
 
   it('says the station is clear (not "the line") when subject="station" and there are no issues at all', () => {
@@ -678,7 +678,7 @@ describe('IssueList', () => {
       validityPeriods: [{ fromDate: new Date(NOW).toISOString(), toDate: null, isNow: true }],
     };
     renderWithMantine(<IssueList items={[{ status: goodService }]} now={NOW} subject="station" />);
-    expect(screen.getByText('Good service — no issues reported on this station.')).toBeInTheDocument();
+    expect(screen.getByText('Good service. No issues reported on this station.')).toBeInTheDocument();
   });
 
   it('says "this station" (not "this line") in the empty Active tab when subject="station"', () => {
@@ -764,7 +764,7 @@ describe('IssueList', () => {
       validityPeriods: [{ fromDate: now, toDate: null, isNow: true }],
     };
     const { rerender } = renderWithMantine(<IssueList items={toItems([goodService])} now={NOW} />);
-    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+    expect(screen.getByText('Good service. No issues reported on this line.')).toBeInTheDocument();
 
     rerender(
       <MantineProvider theme={theme}>
@@ -772,7 +772,7 @@ describe('IssueList', () => {
       </MantineProvider>,
     );
     expect(screen.getByText(/^All \(2\)/)).toBeInTheDocument();
-    expect(screen.queryByText('Good service — no issues reported on this line.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Good service. No issues reported on this line.')).not.toBeInTheDocument();
   });
 
   it('does not break React hook ordering when a mounted instance goes from a mixed set to all Good Service', () => {
@@ -793,7 +793,7 @@ describe('IssueList', () => {
         <IssueList items={toItems([goodService])} now={NOW} />
       </MantineProvider>,
     );
-    expect(screen.getByText('Good service — no issues reported on this line.')).toBeInTheDocument();
+    expect(screen.getByText('Good service. No issues reported on this line.')).toBeInTheDocument();
     expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
   });
 
@@ -803,15 +803,15 @@ describe('IssueList', () => {
     it('collapses the Severity/Source chips behind a "Filter" toggle on a short report', () => {
       renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
       expect(screen.getByRole('button', { name: 'Filter' })).toBeInTheDocument();
-      expect(screen.queryByText(/Severity —/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/Source —/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Severity:/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Source:/)).not.toBeInTheDocument();
     });
 
     it('reveals the chips once "Filter" is toggled open', () => {
       renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
       openFilters();
-      expect(screen.getByText('Severity — showing all')).toBeInTheDocument();
-      expect(screen.getByText('Source — showing all')).toBeInTheDocument();
+      expect(screen.getByText('Severity: showing all')).toBeInTheDocument();
+      expect(screen.getByText('Source: showing all')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Hide filters' })).toBeInTheDocument();
     });
 
@@ -819,8 +819,8 @@ describe('IssueList', () => {
       const fourth: LineStatus = { ...minorNow, reason: 'A fourth issue' };
       renderWithMantine(<IssueList items={toItems([...all, fourth])} now={NOW} />);
       expect(screen.queryByRole('button', { name: /^Filter/ })).not.toBeInTheDocument();
-      expect(screen.getByText(/Severity —/)).toBeInTheDocument();
-      expect(screen.getByText(/Source —/)).toBeInTheDocument();
+      expect(screen.getByText(/Severity:/)).toBeInTheDocument();
+      expect(screen.getByText(/Source:/)).toBeInTheDocument();
     });
 
     it('keeps the All/Active/Upcoming control visible even while the chip filters are collapsed', () => {

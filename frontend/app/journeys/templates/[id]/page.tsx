@@ -33,7 +33,7 @@ export default async function JourneyTemplateDetailPage({ params }: { params: Pr
     if (err instanceof ApiUnauthorizedError) {
       return (
         <Stack p="lg" gap="md">
-          <Title order={1}>Someone&apos;s journey template — log in to see it</Title>
+          <Title order={1}>Log in to see this journey template</Title>
           <LoginLink underline="always">Log in to view this template</LoginLink>
         </Stack>
       );

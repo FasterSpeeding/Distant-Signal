@@ -103,7 +103,7 @@ export function TimetableMore({
         loading={loading}
         failed={failed}
         onLoadMore={() => void loadMore()}
-        endMessage="You've reached the end — no more trains on this line that day."
+        endMessage="You've reached the end. No more trains on this line that day."
       />
       {nextHref && (
         <noscript>

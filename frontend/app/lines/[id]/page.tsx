@@ -237,7 +237,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const worst = worstStatus(report);
   const title = report.name;
   const description = worst.reason
-    ? `${report.name}: ${severityLabel(worst.statusSeverity)} — ${worst.reason}`
+    ? `${report.name}: ${severityLabel(worst.statusSeverity)}. ${worst.reason}`
     : `${report.name}: ${severityLabel(worst.statusSeverity)}`;
 
   return pageMetadata(title, description);

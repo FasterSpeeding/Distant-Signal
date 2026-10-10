@@ -414,7 +414,7 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
     await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
     expect(
-      screen.getByText('This train is shared in 2 groups — deleting it will remove it from those groups too.'),
+      screen.getByText('This train is shared in 2 groups. Deleting it will remove it from those groups too.'),
     ).toBeInTheDocument();
   });
 });
@@ -508,8 +508,8 @@ describe('generateMetadata', () => {
       publicTrainState({ lastReportedLocation: 'Woking', delayMinutes: 5 }),
     );
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'W12345', date: '2026-08-31' }) });
-    expect(metadata.description).toBe('Last reported: Woking — 5 min late');
-    expect(metadata.openGraph?.description).toBe('Last reported: Woking — 5 min late');
+    expect(metadata.description).toBe('Last reported: Woking. 5 min late');
+    expect(metadata.openGraph?.description).toBe('Last reported: Woking. 5 min late');
   });
 
   it('describes a cancelled train', async () => {
@@ -546,7 +546,7 @@ describe('trainStatusSummary', () => {
   it('summarizes a schedule-matched train', () => {
     expect(
       trainStatusSummary(toJourneyState(publicTrainState({ trainId: null, status: null, destinationName: 'Woking' }))),
-    ).toBe('Matched to a scheduled service — waiting for live tracking to begin.');
+    ).toBe('Matched to a scheduled service. Waiting for live tracking to begin.');
   });
 
   it('summarizes a train awaiting its first movement report', () => {
@@ -564,7 +564,7 @@ describe('trainStatusSummary', () => {
   it('summarizes an on-time en-route train', () => {
     expect(
       trainStatusSummary(toJourneyState(publicTrainState({ lastReportedLocation: 'Woking', delayMinutes: 0 }))),
-    ).toBe('Last reported: Woking — On time');
+    ).toBe('Last reported: Woking. On time');
   });
 
   it('flags a may-have-arrived train as an inference', () => {
@@ -680,7 +680,7 @@ describe('TrackedTrainByUidPage: buses and ferries', () => {
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(bus(mode));
     await renderPage('C30818');
     expect(screen.getByText(heading)).toBeInTheDocument();
-    expect(screen.getByText(/Timetabled only — buses and ferries aren't tracked live/)).toBeInTheDocument();
+    expect(screen.getByText(/Timetabled only. Buses and ferries aren't tracked live/)).toBeInTheDocument();
     expect(screen.queryByText(/Waiting/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: button })).toBeInTheDocument();
     expect(screen.getByText(/there are no live alerts for buses and ferries/)).toBeInTheDocument();
@@ -698,9 +698,9 @@ describe('TrackedTrainByUidPage: buses and ferries', () => {
   it('the summary and metadata say a bus is timetabled only', async () => {
     const state = toJourneyState(bus('bus'));
     expect(state.serviceMode).toBe('bus');
-    expect(trainStatusSummary(state)).toBe("Bus service: Timetabled only — buses and ferries aren't tracked live.");
+    expect(trainStatusSummary(state)).toBe("Bus service: Timetabled only. Buses and ferries aren't tracked live.");
     vi.mocked(api.getPublicTrainByUidAndDate).mockResolvedValue(bus('ferry'));
     const metadata = await generateMetadata({ params: Promise.resolve({ uid: 'C30818', date: '2026-08-31' }) });
-    expect(metadata.description).toBe("Ferry: Timetabled only — buses and ferries aren't tracked live.");
+    expect(metadata.description).toBe("Ferry: Timetabled only. Buses and ferries aren't tracked live.");
   });
 });

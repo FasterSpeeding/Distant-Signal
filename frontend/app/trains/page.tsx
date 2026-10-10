@@ -114,7 +114,7 @@ export default async function TrainsPage({
       <Title order={1}>Trains</Title>
       <Text c="dimmed">
         {attachTicketId !== undefined
-          ? "Find the train your saved ticket is for — it'll be attached automatically once you track it."
+          ? "Find the train your saved ticket is for. It'll be attached automatically once you track it."
           : 'Search the whole network by any station a train calls at. Open any result for its live status, or track it to get updates.'}
       </Text>
       <TrainSearchForm

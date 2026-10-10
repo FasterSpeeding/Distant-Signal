@@ -5,9 +5,9 @@ import { DelayRepayEstimate } from './DelayRepayEstimate';
 import type { DelayRepayEstimate as DelayRepayEstimateType, DelayRepayEstimateResponse } from '@/lib/types';
 
 const TOP_LEVEL_DISCLAIMER =
-  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. This app never submits a claim on your behalf — verify eligibility and claim directly from the operator using the link above.';
+  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. Distant Signal never submits a claim on your behalf. Verify eligibility and claim directly from the operator using the link above.';
 const ESTIMATE_DISCLAIMER =
-  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. Always verify eligibility and submit any claim directly with the operator — this app never submits a claim on your behalf.';
+  'This is a rough, community-sourced estimate, not a guarantee of compensation and not proof you travelled. Always verify eligibility and submit any claim directly with the operator. Distant Signal never submits a claim on your behalf.';
 
 function response(overrides: Partial<DelayRepayEstimateResponse> = {}): DelayRepayEstimateResponse {
   return {
@@ -82,7 +82,7 @@ describe('DelayRepayEstimate', () => {
   it('estimate null with a real delayMinutes: does not assert a specific reason', () => {
     renderWithMantine(<DelayRepayEstimate response={response({ delayMinutes: 10 })} />);
     expect(screen.getByText(/10 minutes/)).toBeInTheDocument();
-    expect(screen.getByText(/rules vary and this estimate can be wrong/)).toBeInTheDocument();
+    expect(screen.getByText(/Rules vary and this estimate can be wrong/)).toBeInTheDocument();
   });
 
   it('renders a space between the delayMinutes interpolation and "minutes)" (review §4.4: explicit {\' \'} guard against dropped whitespace)', () => {

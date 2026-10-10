@@ -922,7 +922,7 @@ describe('TrainSearchForm', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     // The button doesn't just vanish -- the list says it is complete.
     expect(
-      screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+      screen.getByText("You've reached the end. No more scheduled trains match those filters."),
     ).toBeInTheDocument();
   });
 
@@ -946,7 +946,7 @@ describe('TrainSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
     expect(
-      await screen.findByText("You've reached the end — no more scheduled trains match those filters."),
+      await screen.findByText("You've reached the end. No more scheduled trains match those filters."),
     ).toBeInTheDocument();
   });
 
@@ -1165,7 +1165,7 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+        screen.getByText("You've reached the end. No more scheduled trains match those filters."),
       ).toBeInTheDocument(),
     );
     expect(screen.queryByRole('link', { name: rowName('11:40', 'WAT') })).not.toBeInTheDocument();

@@ -159,7 +159,7 @@ export function JourneyCreationFlow({
   return (
     <Stack gap="md">
       <Alert color="green" title="First leg tracked">
-        Add another leg now if this trip involves a change of trains, or finish here — a single leg is already a
+        Add another leg now if this trip involves a change of trains, or finish here. A single leg is already a
         complete, useful journey.
       </Alert>
       {loadingJourney && journey === null && (
@@ -205,7 +205,7 @@ export function JourneyCreationFlow({
           />
         )}
         <Button component={Link} href={`/journeys/${journeyId}`}>
-          Done — view journey
+          View journey
         </Button>
       </Group>
     </Stack>

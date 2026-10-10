@@ -71,7 +71,7 @@ export function routeLabel(
     : `${originCrs} → ${destinationCrs}`;
 }
 
-/** `"EUS — London Euston"`, or the bare code when no name resolved. The
+/** `"EUS · London Euston"`, or the bare code when no name resolved. The
  * code-first counterpart to `stationLabel` above (which puts the name
  * first, `Name (CODE)`): this is the shape every CRS/TOC `Autocomplete`
  * dropdown in this app already renders a suggestion as
@@ -91,7 +91,7 @@ export function codeStationLabel(crs: string, name: string | null | undefined): 
   // reader, and its name already says what it is ("Keswick (bus)").
   // Nor does a station group's `group:` code; its name is its label.
   if (isTiplocCode(crs) || isGroupCode(crs)) return name ?? crs;
-  return name ? `${crs} — ${name}` : crs;
+  return name ? `${crs} · ${name}` : crs;
 }
 
 /** The planner's identifier for a bus stop or ferry terminal with no CRS:
@@ -136,7 +136,7 @@ export function normalizeLocationCode(code: string): string {
 /** Code-first two-sided join, mirroring `routeLabel`'s own "never mix a
  * resolved name with a bare code on the other end" rule (see its doc
  * comment) -- a route with only one name known must not render as e.g.
- * "EUS — London Euston → MKC" (a resolved name right next to a bare code
+ * "EUS · London Euston → MKC" (a resolved name right next to a bare code
  * reads as a data error, not a degraded lookup). Built from
  * `codeStationLabel` rather than `stationLabel` for the same reason that
  * function exists: to match the code-first shape of the picker the

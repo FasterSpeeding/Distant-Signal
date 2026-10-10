@@ -165,8 +165,8 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           `app/lines/[id]/edit/page.tsx`, since both mount this form
           immediately below their own `<h1>` with nothing in between. */}
       <Text size="sm" c="dimmed">
-        A custom line groups any stations and operators you choose into one line you can track status for — it&apos;s
-        private to you, and appears in your own lines table.
+        A custom line groups any stations and operators you choose into one line you can track status for. It&apos;s
+        private to you and appears in your own lines table.
       </Text>
       {/* Task 3.4.13: create-only -- an owner reaching the edit form is
           already signed in (the route 404s a non-owner before this ever
@@ -182,8 +182,8 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           duplicated alongside it. */}
       {!existingLine && (
         <Alert color="grape" variant="light">
-          Creating a line needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
-          aren&apos;t already signed in.
+          Creating a line needs a Distant Signal account. You&apos;ll be sent to log in when you save if you aren&apos;t
+          already signed in.
         </Alert>
       )}
       <TextInput label="Name" withAsterisk value={name} onChange={(event) => setName(event.currentTarget.value)} />
@@ -193,7 +193,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
         value={operators}
         onChange={setOperators}
         onSearchChange={setOperatorsQuery}
-        data={operatorSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
+        data={operatorSuggestions.map((s) => ({ value: s.code, label: `${s.code} · ${s.name}` }))}
         renderPill={({ option, onRemove }) => (
           <Pill withRemoveButton {...(onRemove && { onRemove })} title={nameByCode[String(option.value)]}>
             {option.value}
@@ -231,7 +231,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           stays out of scope here. */}
       {stations.length === 0 ? (
         <Text size="sm" c="dimmed">
-          No stations yet — add at least two, in travel order.
+          No stations yet. Add at least two, in travel order.
         </Text>
       ) : (
         <Group gap="xs">
@@ -312,7 +312,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
             value={destinationCrsFilter}
             onChange={setDestinationCrsFilter}
             onSearchChange={setDestinationQuery}
-            data={destinationSuggestions.map((s) => ({ value: s.code, label: `${s.code} — ${s.name}` }))}
+            data={destinationSuggestions.map((s) => ({ value: s.code, label: `${s.code} · ${s.name}` }))}
             renderPill={({ option, onRemove }) => (
               <Pill withRemoveButton {...(onRemove && { onRemove })} title={nameByCode[String(option.value)]}>
                 {option.value}

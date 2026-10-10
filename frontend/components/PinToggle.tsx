@@ -161,7 +161,7 @@ export function PinToggle({
   const label = pinned
     ? 'Unpin (currently pinned)'
     : needsAccountHint
-      ? 'Pin — needs an account'
+      ? 'Pin (needs an account)'
       : 'Pin (currently not pinned)';
 
   return (

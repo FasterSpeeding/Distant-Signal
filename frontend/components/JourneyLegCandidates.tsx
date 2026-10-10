@@ -313,7 +313,7 @@ export function JourneyLegCandidates({
             simply not stating a total at all. */}
         <Text size="sm" c="dimmed">
           {results.rows.length} train{results.rows.length === 1 ? '' : 's'}{' '}
-          {results.rows.length === 1 ? 'matches' : 'match'} your search — pick the one you&apos;ll be on. You can change
+          {results.rows.length === 1 ? 'matches' : 'match'} your search. Pick the one you&apos;ll be on. You can change
           it later.
         </Text>
         <Text size="sm" c="dimmed">
@@ -336,7 +336,7 @@ export function JourneyLegCandidates({
           loading={loadingMore}
           failed={results.loadMoreFailed}
           onLoadMore={handleLoadMore}
-          endMessage="You've reached the end — no more candidate trains match this window."
+          endMessage="You've reached the end. No more candidate trains match this window."
         />
       </>
     );
@@ -438,7 +438,7 @@ function CandidateRowView({
           loading={picking === row.uid}
           disabled={picking !== null}
           onClick={onPick}
-          aria-label={`Track this ${noun} — ${spoken}`}
+          aria-label={`Track this ${noun}: ${spoken}`}
         >
           Track this {noun}
         </Button>

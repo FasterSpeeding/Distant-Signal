@@ -174,11 +174,11 @@ export function ConnectivityMonitor({
               claim is, and isn't). */}
           <Notification loading withCloseButton={false} title="Reconnecting…" role="status" aria-live="polite">
             {isFormRoute(pathname) ? (
-              <>Can&apos;t reach the server right now — your entries are safe until you submit.</>
+              <>Can&apos;t reach the server right now. Your entries are safe until you submit.</>
             ) : lastGoodAt ? (
-              <>Can&apos;t reach live data right now — showing the update from {formatDateTime(lastGoodAt)}.</>
+              <>Can&apos;t reach live data right now. Showing the update from {formatDateTime(lastGoodAt)}.</>
             ) : (
-              <>Can&apos;t reach live data right now — showing the last update.</>
+              <>Can&apos;t reach live data right now. Showing the last update.</>
             )}
           </Notification>
         </div>

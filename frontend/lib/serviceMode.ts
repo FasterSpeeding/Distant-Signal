@@ -18,7 +18,7 @@ export const SERVICE_MODE_LABELS: Record<Exclude<ServiceMode, 'train'>, string> 
 };
 
 /** The copy shown wherever live progress would be. */
-export const TIMETABLE_ONLY_MESSAGE = "Timetabled only — buses and ferries aren't tracked live";
+export const TIMETABLE_ONLY_MESSAGE = "Timetabled only. Buses and ferries aren't tracked live";
 
 /** `null` for a train, or when the backend predates `serviceMode`. */
 export function serviceModeLabel(mode: ServiceMode | null | undefined): string | null {

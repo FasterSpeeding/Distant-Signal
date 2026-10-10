@@ -3,6 +3,29 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-10: no em dashes in API-written text
+
+No shape changes. Text the API and aggregator write themselves no longer
+uses an em dash or a "--":
+
+- Validation errors (400/409 bodies) are two sentences: "That departure
+  is too far ahead. Trains can be tracked up to 28 days before they run."
+  instead of "... too far ahead — trains can ...". Likewise the station
+  code, departure age, custom and group name length, group full, train
+  identifier, template leg and track-by-UID messages, and the window
+  search error ("... to search a window, or pick a specific known
+  departure instead.").
+- The Delay Repay `disclaimer` (estimate) and top-level `disclaimer`
+  (route) say "Distant Signal never submits a claim on your behalf." as
+  their own sentence, in place of "-- this app never submits ...".
+- A line-status `reason` with a high-confidence "resolved" extraction
+  ends `(reported resolved, showing residual impact)` instead of
+  `(reported resolved — showing residual impact)`.
+
+Third-party text (National Rail incident summaries and descriptions,
+TfL reasons) is passed through unchanged. Line-status history already
+stored keeps the old wording.
+
 ## 2026-10-09: plainer line-status `reason` text
 
 No shape changes. The aggregator's free-text `reason` on line statuses

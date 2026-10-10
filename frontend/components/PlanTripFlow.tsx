@@ -204,7 +204,7 @@ export function PlanTripFlow({
 
     const [firstLeg, ...laterLegs] = trainLegs;
     if (firstLeg === undefined) {
-      setCreationError('This route needs no train — there is nothing to track.');
+      setCreationError('This route needs no train, so there is nothing to track.');
       setCreating(false);
       return;
     }

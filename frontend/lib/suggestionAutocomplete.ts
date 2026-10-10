@@ -12,7 +12,7 @@ import { codeStationLabel } from './stationLabel';
  * One of those five copies (`TrackTrainForm.tsx`'s window-mode Destination
  * field) had silently dropped `renderOption` -- nothing forced the three
  * pieces to be kept in sync by hand, so its dropdown quietly regressed to
- * showing the bare CRS code instead of `CODE — Name` like every sibling
+ * showing the bare CRS code instead of `CODE · Name` like every sibling
  * field. Routing every call site through this one function is the fix for
  * the class of bug, not just that one instance: there is now exactly one
  * place this trio can be assembled, so a future field either uses it (and
@@ -20,13 +20,13 @@ import { codeStationLabel } from './stationLabel';
  *
  * Two requirements this enforces for every caller, uniformly:
  *
- * 1. Display -- every option always shows `CODE — Name` (the bare code
+ * 1. Display -- every option always shows `CODE · Name` (the bare code
  *    only for the synthetic "no matches" placeholder, which isn't a real
  *    suggestion). `Autocomplete` writes `data`'s `label` — not `value` —
  *    into the field on selection (confirmed by reading its source:
  *    `handleValueChange(optionsLockup[val].label)`), so `label` is kept as
  *    the bare code (what should land in the input once picked) and the
- *    friendlier `CODE — Name` text is rendered dropdown-only via
+ *    friendlier `CODE · Name` text is rendered dropdown-only via
  *    `renderOption`, which doesn't affect what gets written into the
  *    field.
  * 2. Search matching -- callers already get "code, full name, or any
@@ -40,7 +40,7 @@ import { codeStationLabel } from './stationLabel';
  *    checks `label` (the bare code per point 1 above), which would hide a
  *    correct name/substring match the server already found.
  */
-/** One dropdown row: `CODE — Name`, or for a bus stop or ferry terminal
+/** One dropdown row: `CODE · Name`, or for a bus stop or ferry terminal
  * (a `tiploc:` code) just its name, which already ends `(bus)`/`(ferry)`. */
 export function suggestionOptionLabel(suggestion: Suggestion): string {
   return codeStationLabel(suggestion.code, suggestion.name);

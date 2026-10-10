@@ -79,7 +79,7 @@ export function SaveAsTemplateButton({ journeyId }: { journeyId: number }) {
       <Modal opened={opened} onClose={close} title="Save this journey as a reusable template">
         <Stack>
           <Text size="sm">
-            Creates a reusable template from this journey&apos;s route — you can run it again for a new date any time
+            Creates a reusable template from this journey&apos;s route. You can run it again for a new date any time
             from your templates list.
           </Text>
           <TextInput

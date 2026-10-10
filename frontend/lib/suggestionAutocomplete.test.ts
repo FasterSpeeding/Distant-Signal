@@ -42,14 +42,14 @@ describe('suggestionAutocompleteProps', () => {
   });
 
   describe('renderOption (requirement 1: display)', () => {
-    it('renders every real option as "CODE — Name", both code and full name together', () => {
+    it('renders every real option as "CODE · Name", both code and full name together', () => {
       const { renderOption } = suggestionAutocompleteProps(STATIONS, {
         query: 'wo',
         loading: false,
         noMatchMessage: 'No matching stations',
       });
-      expect(renderOption!({ option: { value: 'WOK' } })).toBe('WOK — Woking');
-      expect(renderOption!({ option: { value: 'RDG' } })).toBe('RDG — Reading');
+      expect(renderOption!({ option: { value: 'WOK' } })).toBe('WOK · Woking');
+      expect(renderOption!({ option: { value: 'RDG' } })).toBe('RDG · Reading');
     });
 
     it('falls back to the bare value for a value not present in the current suggestions', () => {

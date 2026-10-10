@@ -143,7 +143,7 @@ function emptyStateMessage({
  * row label carries both the facet name and its state: an empty selection
  * filters nothing, which is not the same as filtering to nothing. */
 function chipRowLabel(facet: string, selected: number): string {
-  return selected === 0 ? `${facet} — showing all` : `${facet} — ${selected} selected`;
+  return selected === 0 ? `${facet}: showing all` : `${facet}: ${selected} selected`;
 }
 
 export function IssueList({
@@ -228,7 +228,7 @@ export function IssueList({
   // hook unconditional while still skipping all of the chrome below.
   const allGood = statuses.length > 0 && statuses.every((status) => isGoodSeverity(status.statusSeverity));
   if (allGood) {
-    return <Text c="dimmed">Good service — no issues reported on this {subject}.</Text>;
+    return <Text c="dimmed">Good service. No issues reported on this {subject}.</Text>;
   }
 
   // Severity/source chips narrow the pool every tab counts from, but not

@@ -209,7 +209,7 @@ fn validate_group_name(name: &str) -> Result<String, String> {
     }
     if trimmed.chars().count() > MAX_GROUP_NAME_LENGTH {
         return Err(format!(
-            "That name is too long — group names can be at most {MAX_GROUP_NAME_LENGTH} \
+            "That name is too long. Group names can be at most {MAX_GROUP_NAME_LENGTH} \
              characters."
         ));
     }
@@ -613,7 +613,7 @@ async fn post_join(
         groups::JoinOutcome::GroupFull => Err((
             StatusCode::CONFLICT,
             format!(
-                "This group is full — groups can have at most {} members.",
+                "This group is full. Groups can have at most {} members.",
                 groups::MAX_MEMBERS_PER_GROUP
             ),
         )),

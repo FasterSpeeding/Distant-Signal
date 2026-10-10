@@ -176,7 +176,7 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
       href={`/lines?statusGroup=${group}`}
       style={{ textDecoration: 'none', color: 'inherit' }}
       data-group-card-link
-      aria-label={`${count} line${count === 1 ? '' : 's'} with ${label} — view in Lines`}
+      aria-label={`${count} line${count === 1 ? '' : 's'} with ${label}, view in Lines`}
     >
       <Card withBorder shadow="sm" padding="lg" data-group-card>
         <Stack gap={4} align="center">

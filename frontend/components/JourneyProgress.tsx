@@ -271,12 +271,12 @@ function progressCopy(
   if (status === 'cancelled') {
     if (lastIndex === -1) {
       return {
-        caption: 'Cancelled — no movement was ever confirmed.',
+        caption: 'Cancelled. No movement was ever confirmed.',
         ariaLabel: 'Journey progress: cancelled before any confirmed movement',
       };
     }
     return {
-      caption: `Cancelled — last confirmed at ${markerName}.`,
+      caption: `Cancelled. Last confirmed at ${markerName}.`,
       ariaLabel: `Journey progress: cancelled, last confirmed at ${markerName}, stop ${stopNumber} of ${total}`,
     };
   }
@@ -292,7 +292,7 @@ function progressCopy(
   if (lastIndex === -1) {
     if (resolutionStatus === 'schedule_matched') {
       return {
-        caption: "Scheduled route shown — live tracking hasn't started yet.",
+        caption: "Scheduled route shown. Live tracking hasn't started yet.",
         ariaLabel: 'Journey progress: scheduled route shown, live tracking not yet started',
       };
     }
@@ -309,7 +309,7 @@ function progressCopy(
     if (status === 'en_route') {
       if (lastReportedLocation) {
         return {
-          caption: `Last reported at ${lastReportedLocation} — that report couldn't be matched to a timetabled stop, so no position is shown on the line.`,
+          caption: `Last reported at ${lastReportedLocation}. That report couldn't be matched to a timetabled stop, so no position is shown on the line.`,
           ariaLabel: `Journey progress: last reported at ${lastReportedLocation}, not matched to a timetabled stop, no position shown`,
         };
       }

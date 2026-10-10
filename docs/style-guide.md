@@ -72,7 +72,7 @@ later-injected `:root` block on specificity.
 | --- | --- | --- |
 | green | Good service, on time, arrived, **success** | Severity `good`; "On time"; "Arrived"; every success Alert ("Saved.", "Ticket saved", "Added to …") |
 | gray | Informational, neutral, unknown | Severity `informational`; unchanged platform; "Awaiting first report"; provenance badges; "Affected line"/"Affected station" tags; the trip planner's "N changes" |
-| blue | **A planned or changed arrangement — not a fault** | Severity `planned` (Planned Closure, Part Closure); incident "Planned work"; a changed platform |
+| blue | **A planned or changed arrangement, not a fault** | Severity `planned` (Planned Closure, Part Closure); incident "Planned work"; a changed platform |
 | yellow | Minor disruption, caution, partial data | Severity `mild`; journey leg "Delayed"; "Some of this range isn't available" |
 | orange | Running late, skipped stop, draft | "12 min late"; "Not stopping at your station"; draft legal page |
 | teal | Early, or a live board source | "3 min early"; ETA "Live departure board" |
@@ -317,7 +317,8 @@ available but labelled and secondary: small dimmed text, a tooltip or a
 
 Terse and factual, like a departure board. Say what is true and what to
 do next. No chatter, no apologies, no exclamation marks, no marketing
-words, no paired em-dash asides ("— like this —"): make it two sentences.
+words, no em dashes: write two sentences, or use a comma, a colon or
+parentheses.
 Second person ("your trains"), and "we" or "Distant Signal" for the site,
 never "this app".
 
@@ -383,13 +384,15 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 
 ### Banned phrases
 
-On screen, never: "--", "Something went wrong", "Please try again",
+On screen, never: "—" (em dash), "--", "Something went wrong", "Please try again",
 "Could not", "Request failed", "this app", "ingest", "aggregator",
 "full coverage", "TOC", "deployment", "allowlist", "localStorage",
 "tracking pin", "propagated", "extraction", "seamless", "effortless",
 "powerful", "revolutionary", "supercharge", "unlock", "game-changer",
 "cutting-edge", "best-in-class", "delightful", "magic".
-`scripts/check-copy.py` holds the list.
+`scripts/check-copy.py` holds the list. The em dash is banned in every
+string the app holds, not only the ones the checker recognises as copy,
+and ESLint flags it in any string literal or JSX text.
 
 ### Other rules
 
@@ -399,7 +402,19 @@ On screen, never: "--", "Something went wrong", "Please try again",
   (Network Rail)".
 - Credits use each licence's exact wording; the site calls itself "an
   independent, unofficial service" and uses no provider logos.
-- Em dash "—" in data (route labels), never "--"; ellipsis "…".
+- No em dash "—" anywhere in UI copy, and never "--". Rewrite the
+  sentence: "Log in (needs a Distant Signal account)", "Cancelled. Last
+  confirmed at Woking.", "Country: showing all".
+- An en dash "–" only for ranges: "08:00–09:00", "15–29 minute delays".
+- A code with its name is "Name (CODE)" ("Woking (WOK)", `stationLabel`),
+  or code first with a middle dot where the picker shows codes first
+  ("WOK · Woking", `codeStationLabel`, operator pickers). A label and its
+  value take a colon ("Lifts: Available").
+- An empty table cell: words where there is room ("No data", "None"). In
+  a narrow numeric column an en dash "–" keeps the column scannable; mark
+  it `aria-hidden` with a visually hidden "No data" beside it
+  (`NO_VALUE` in `app/lines/AllLinesTable.tsx`).
+- Ellipsis "…".
 - No engineering vocabulary on screen: no raw enum values, field names,
   bare codes, ISO dates or `error.message`. Map through
   `lib/displayLabels.ts` and `lib/stationLabel.ts`.
@@ -410,7 +425,8 @@ On screen, never: "--", "Something went wrong", "Please try again",
 - **Do** `describeFailure()` for every failure. **Don't** show a response
   body, a status code or `error.message`.
 - **Do** `pageMetadata(title, description)` for a page's metadata.
-  **Don't** append " — Distant Signal" by hand; the root template does.
+  **Don't** append " · Distant Signal" by hand; the root template does
+  (`fullTitle()` where a title must carry it).
 - **Do** `<Text c="dimmed" size="xs">` for secondary text. **Don't**
   `c="gray.6"` or a hex grey: gray 6 is 3.32:1 on white.
 - **Do** use `TextLink` for every text link. **Don't** hand-roll anchors.

@@ -20,6 +20,7 @@
 
 import type { Metadata } from 'next';
 import { createLogger } from './logger';
+import { fullTitle } from './pageMetadata';
 
 const log = createLogger('lib/legal');
 
@@ -143,12 +144,12 @@ export function legalPageMetadata(
   description: string,
   published: boolean = legalPagesPublished(),
 ): Metadata {
-  const fullTitle = `${title} — Distant Signal`;
+  const fullPageTitle = fullTitle(title);
   return {
-    title: fullTitle,
+    title: fullPageTitle,
     description,
-    openGraph: { title: fullTitle, description, type: 'website' },
-    twitter: { card: 'summary', title: fullTitle, description },
+    openGraph: { title: fullPageTitle, description, type: 'website' },
+    twitter: { card: 'summary', title: fullPageTitle, description },
     ...(published ? {} : { robots: { index: false, follow: false } }),
   };
 }

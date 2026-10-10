@@ -46,7 +46,7 @@ export function lastPinDate(): string {
   return addCalendarDays(londonToday(), PIN_MAX_DAYS_AHEAD);
 }
 
-const pinTooFarMessage = `That departure is too far ahead — trains can be tracked up to ${PIN_MAX_DAYS_AHEAD} days before they run.`;
+const pinTooFarMessage = `That departure is too far ahead. Trains can be tracked up to ${PIN_MAX_DAYS_AHEAD} days before they run.`;
 
 /** True unless `destinationCrs` looks like a resolved 3-letter code AND
  * the row's own destination doesn't case-insensitively match it. While
@@ -1124,14 +1124,14 @@ export function TrackTrainForm({
     if (picker === null) {
       return (
         <Text size="sm" c="dimmed">
-          Couldn&apos;t load departures for this station right now — enter the details below.
+          Couldn&apos;t load departures for this station right now. Enter the details below.
         </Text>
       );
     }
     if (picker === 'unavailable') {
       return (
         <Text size="sm" c="dimmed">
-          No departure information is available for this station — enter the details below.
+          No departure information is available for this station. Enter the details below.
         </Text>
       );
     }
@@ -1212,8 +1212,8 @@ export function TrackTrainForm({
     return (
       <>
         <Text size="sm" c="dimmed">
-          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead — this
-          is not live running information and may be up to 30 minutes out of date.
+          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead. This is
+          not live running information and may be up to 30 minutes out of date.
         </Text>
         {filtered.length === 0 ? (
           <Text size="sm" c="dimmed">
@@ -1310,7 +1310,7 @@ export function TrackTrainForm({
       {attachTicketId === undefined && (
         <Text c="dimmed">
           {mode === 'window'
-            ? "Not sure which train yet? Tell us roughly when you're travelling — Origin, Destination and at least one of the times below — and we'll show you the matches to choose from. You can change your pick later."
+            ? "Not sure which train yet? Tell us roughly when you're travelling (Origin, Destination and at least one of the times below) and we'll show you the matches to choose from. You can change your pick later."
             : 'Track a specific train to see its live position, delay and next stop.'}
         </Text>
       )}

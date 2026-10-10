@@ -164,7 +164,7 @@ describe('ConnectivityMonitor', () => {
     act(() => observe(failure()));
     const status = screen.getByRole('status');
     expect(status).toHaveTextContent(BANNER);
-    expect(status).toHaveTextContent('showing the last update.');
+    expect(status).toHaveTextContent('Showing the last update.');
   });
 
   // Review §2.16: "showing the update from {time}"/"showing the last
@@ -179,7 +179,7 @@ describe('ConnectivityMonitor', () => {
         act(() => observe(failure()));
         const status = screen.getByRole('status');
         expect(status).toHaveTextContent(BANNER);
-        expect(status).toHaveTextContent("Can't reach the server right now — your entries are safe until you submit.");
+        expect(status).toHaveTextContent("Can't reach the server right now. Your entries are safe until you submit.");
         expect(status).not.toHaveTextContent('showing the');
       },
     );
@@ -194,7 +194,7 @@ describe('ConnectivityMonitor', () => {
       act(() => observe(failure()));
       act(() => observe(failure()));
       const status = screen.getByRole('status');
-      expect(status).toHaveTextContent('your entries are safe until you submit.');
+      expect(status).toHaveTextContent('Your entries are safe until you submit.');
     });
   });
 
@@ -205,7 +205,7 @@ describe('ConnectivityMonitor', () => {
     renderMonitor(failure());
     act(() => observe(failure()));
     const status = screen.getByRole('status');
-    expect(status).toHaveTextContent('showing the last update.');
+    expect(status).toHaveTextContent('Showing the last update.');
   });
 
   // Review §2.16: on a 390px phone the unconstrained `Notification` shrank

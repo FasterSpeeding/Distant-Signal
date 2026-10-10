@@ -617,7 +617,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByText("Scheduled route shown — live tracking hasn't started yet.")).toBeInTheDocument();
+    expect(screen.getByText("Scheduled route shown. Live tracking hasn't started yet.")).toBeInTheDocument();
   });
 
   it('resolved + cancelled with journeyStops: JourneyProgress caption names the last confirmed stop', () => {
@@ -693,7 +693,7 @@ describe('TrainJourney', () => {
         })}
       />,
     );
-    expect(screen.getByText('Cancelled — last confirmed at Surbiton.')).toBeInTheDocument();
+    expect(screen.getByText('Cancelled. Last confirmed at Surbiton.')).toBeInTheDocument();
   });
 });
 
@@ -835,7 +835,7 @@ describe('TrainJourney journeyStops filtering (genuine calling points only)', ()
     );
     // Not "5 stops" -- the three junction passes were already filtered out
     // before `JourneyTimeline` ever computed `total`/`allUnnamed`.
-    expect(screen.getByText('2 stops — station names unavailable')).toBeInTheDocument();
+    expect(screen.getByText('2 stops (station names unavailable)')).toBeInTheDocument();
     expect(screen.queryByText(/5 stops/)).not.toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
@@ -916,7 +916,7 @@ describe('TrainJourney: buses and ferries (timetable-only)', () => {
     );
     expect(screen.getByText(label)).toBeInTheDocument();
     expect(screen.getByText(heading)).toBeInTheDocument();
-    expect(screen.getByText(/Timetabled only — buses and ferries aren't tracked live/)).toBeInTheDocument();
+    expect(screen.getByText(/Timetabled only. Buses and ferries aren't tracked live/)).toBeInTheDocument();
   });
 
   it.each(['pending', 'schedule_matched', 'resolved'] as const)(

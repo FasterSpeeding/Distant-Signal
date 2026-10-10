@@ -122,10 +122,10 @@ export function trainStatusSummary(state: TrainJourneyState): string {
     return `${serviceModeLabel(state.serviceMode) ?? 'This service'}: ${TIMETABLE_ONLY_MESSAGE}.`;
   }
   if (state.resolutionStatus === 'pending') {
-    return "Waiting to hear from Network Rail — this train hasn't been matched to a live service yet.";
+    return "Waiting to hear from Network Rail. This train hasn't been matched to a live service yet.";
   }
   if (state.resolutionStatus === 'schedule_matched') {
-    return 'Matched to a scheduled service — waiting for live tracking to begin.';
+    return 'Matched to a scheduled service. Waiting for live tracking to begin.';
   }
   if (state.resolutionStatus === 'unresolved') {
     return "Couldn't be matched to a live service.";
@@ -159,7 +159,7 @@ export function trainStatusSummary(state: TrainJourneyState): string {
   if (state.delayMinutes !== null) {
     parts.push(delayLabel(state.delayMinutes).text);
   }
-  return parts.length > 0 ? parts.join(' — ') : `Train ${state.trainUid} is currently en route.`;
+  return parts.length > 0 ? parts.join('. ') : `Train ${state.trainUid} is currently en route.`;
 }
 
 /** Per-page Open Graph/Twitter/`<title>` metadata for a shared train link

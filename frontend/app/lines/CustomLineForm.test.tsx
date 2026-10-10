@@ -62,7 +62,7 @@ describe('CustomLineForm', () => {
       await vi.advanceTimersByTimeAsync(250);
     });
 
-    const option = await screen.findByRole('option', { name: 'WOK — Woking', hidden: true });
+    const option = await screen.findByRole('option', { name: 'WOK · Woking', hidden: true });
     fireEvent.click(option);
 
     expect(input).toHaveValue('WOK');
@@ -81,7 +81,7 @@ describe('CustomLineForm', () => {
       await vi.advanceTimersByTimeAsync(250);
     });
 
-    const option = await screen.findByRole('option', { name: 'WOK — Woking', hidden: true });
+    const option = await screen.findByRole('option', { name: 'WOK · Woking', hidden: true });
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
@@ -148,7 +148,7 @@ describe('CustomLineForm', () => {
       await vi.advanceTimersByTimeAsync(250);
     });
 
-    const option = await screen.findByRole('option', { name: 'WOK — Woking', hidden: true });
+    const option = await screen.findByRole('option', { name: 'WOK · Woking', hidden: true });
     fireEvent.click(option);
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
@@ -233,11 +233,11 @@ describe('CustomLineForm', () => {
       await vi.advanceTimersByTimeAsync(250);
     });
 
-    const option = await screen.findByRole('option', { name: 'SW — South Western Railway', hidden: true });
+    const option = await screen.findByRole('option', { name: 'SW · South Western Railway', hidden: true });
     fireEvent.click(option);
 
     expect(screen.getByText('SW')).toBeInTheDocument();
-    expect(screen.queryByText('SW — South Western Railway')).not.toBeInTheDocument();
+    expect(screen.queryByText('SW · South Western Railway')).not.toBeInTheDocument();
   });
 
   it('the committed operator pill carries the full name as a title tooltip', async () => {
@@ -250,7 +250,7 @@ describe('CustomLineForm', () => {
       await vi.advanceTimersByTimeAsync(250);
     });
 
-    const option = await screen.findByRole('option', { name: 'SW — South Western Railway', hidden: true });
+    const option = await screen.findByRole('option', { name: 'SW · South Western Railway', hidden: true });
     fireEvent.click(option);
 
     const pill = screen.getByText('SW').closest('[title]');
@@ -381,13 +381,13 @@ describe('CustomLineForm', () => {
   // first station was added.
   it('shows an empty-state hint before any station is added, and hides it once one is', () => {
     renderWithProvider();
-    expect(screen.getByText('No stations yet — add at least two, in travel order.')).toBeInTheDocument();
+    expect(screen.getByText('No stations yet. Add at least two, in travel order.')).toBeInTheDocument();
 
     const input = screen.getByRole('combobox', { name: 'Add station' });
     fireEvent.change(input, { target: { value: 'wok' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.queryByText('No stations yet — add at least two, in travel order.')).not.toBeInTheDocument();
+    expect(screen.queryByText('No stations yet. Add at least two, in travel order.')).not.toBeInTheDocument();
   });
 
   // Task 3.4.4: Name is validated as required with no visual mark.

@@ -11,6 +11,8 @@ copy audit used) and prints one JSON record per string literal, JSX text
 or heading. `--extracted` reads saved records instead (the unit tests).
 
 Fails (exit 1) on:
+  - a banned character in any string the app holds: an em dash (an en
+    dash is for ranges);
   - a banned phrase in a user-facing string: internal vocabulary (ingest,
     aggregator, full coverage, TOC, deployment, allowlist, localStorage,
     "this app"), "--", and marketing words;
@@ -107,7 +109,7 @@ MARKETING = (
 BANNED: Sequence[tuple[re.Pattern[str], str]] = (
     (
         re.compile(r"(?<![\w(-])--(?![\w-])"),
-        'a literal "--" (write an em dash, or two sentences)',
+        'a literal "--" (write two sentences, or a comma, colon or parentheses)',
     ),
     (
         re.compile(r"\bthis app\b", re.IGNORECASE),
@@ -138,6 +140,20 @@ BANNED: Sequence[tuple[re.Pattern[str], str]] = (
             re.IGNORECASE,
         ),
         "a marketing word",
+    ),
+)
+
+# Characters that read as machine-written copy. Banned in every string
+# the app renders, not just the ones `is_user_facing` recognises: none of
+# them belongs in a key, URL or log line either, and a helper's return
+# value or a call's argument (`setError('...')`) is still copy.
+BANNED_CHARACTERS: Sequence[tuple[re.Pattern[str], str]] = (
+    (
+        re.compile("\u2014"),
+        (
+            'an em dash "\u2014" (write two sentences, or a comma, colon or'
+            ' parentheses; an en dash "\u2013" only for ranges)'
+        ),
     ),
 )
 
@@ -238,6 +254,20 @@ def is_user_facing(record: Record) -> bool:
     else:
         facing = record.element is not None
     return facing
+
+
+def banned_characters(records: Iterable[Record]) -> Iterator[Finding]:
+    """Yield a finding per banned character in any string the app holds."""
+    for record in records:
+        if record.file in SKIP_FILES or record.kind == "heading":
+            continue
+        for pattern, why in BANNED_CHARACTERS:
+            if pattern.search(record.text):
+                yield Finding(
+                    record.file,
+                    record.line,
+                    f"banned character: {why}: {record.text[:80]!r}",
+                )
 
 
 def banned_phrases(records: Iterable[Record]) -> Iterator[Finding]:
@@ -350,6 +380,7 @@ def extract(frontend: Path) -> list[str]:
 def check(records: Sequence[Record], frontend: Path | None) -> list[Finding]:
     """Return every finding, in a stable order."""
     findings = [
+        *banned_characters(records),
         *banned_phrases(records),
         *title_case_headings(records),
         *long_meta_descriptions(records),

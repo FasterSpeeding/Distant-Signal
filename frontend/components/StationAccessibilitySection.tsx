@@ -331,7 +331,7 @@ function AccessibilityNodeView({
             {/* The words, always -- the icon is decorative and carries none
                 of this (design §4.2). */}
             <Text size="sm" fw={500}>
-              {label ? `${label} — ` : ''}
+              {label ? `${label}: ` : ''}
               {node.available ? 'Available' : 'Not available'}
             </Text>
           </Group>
@@ -632,7 +632,7 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
           {group.entries.map((entry) => (
             <Stack key={entry.key} gap={4} pl="sm">
               {/* A Pattern A key says its own name on its availability line
-                  ("Lifts — Available"), so a separate label above it would
+                  ("Lifts: Available"), so a separate label above it would
                   print the name twice. */}
               {entry.node.kind !== 'facility' && (
                 <Title order={4} size="sm" fw={500}>

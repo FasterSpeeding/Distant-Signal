@@ -62,7 +62,7 @@ export function TicketSummary({
         {ticket.customName ?? (
           <>
             {ticket.operator ?? 'Ticket'}
-            {ticket.ticketType ? ` — ${ticket.ticketType}` : ''}
+            {ticket.ticketType ? ` · ${ticket.ticketType}` : ''}
           </>
         )}
       </Text>

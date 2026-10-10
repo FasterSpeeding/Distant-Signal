@@ -129,6 +129,34 @@ class BannedPhrases(unittest.TestCase):
         self.assertEqual(findings(record(text="Click the stop button.")), [])
 
 
+class BannedCharacters(unittest.TestCase):
+    """Typographic tells, in every string the app holds."""
+
+    def test_flags_an_em_dash_in_jsx_text(self) -> None:
+        """Check that it flags an em dash in jsx text."""
+        messages = findings(record(text="Log in — needs an account"))
+        self.assertTrue(any("em dash" in message for message in messages))
+
+    def test_flags_an_em_dash_with_no_copy_context(self) -> None:
+        """Check that it flags an em dash in a call argument or return value."""
+        self.assertTrue(
+            findings(record(kind="string", text="Cancelled — no movement."))
+        )
+        self.assertTrue(findings(record(kind="template", text="{} — {}", decl="label")))
+
+    def test_allows_an_en_dash_for_a_range(self) -> None:
+        """Check that it allows an en dash in a range."""
+        self.assertEqual(findings(record(text="08:00\u201309:00")), [])
+        self.assertEqual(findings(record(kind="string", text="15\u201329 min")), [])
+
+    def test_skips_files_that_are_not_copy(self) -> None:
+        """Check that it skips the chat prompt's normalisation table."""
+        self.assertEqual(
+            findings(record(file="lib/chatTurn.ts", kind="string", text="—")),
+            [],
+        )
+
+
 class TitleCaseHeadings(unittest.TestCase):
     """h1 and h2 in sentence case, official names allowed."""
 

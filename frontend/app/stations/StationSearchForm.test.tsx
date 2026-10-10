@@ -46,7 +46,7 @@ describe('StationSearchForm', () => {
     vi.unstubAllGlobals();
   });
 
-  it('selecting a suggestion sets the field to just the CRS code, not "code — name"', async () => {
+  it('selecting a suggestion sets the field to just the CRS code, not "code · name"', async () => {
     renderWithProvider();
     const input = screen.getByRole('combobox', { name: 'Station name or code' });
 
@@ -62,7 +62,7 @@ describe('StationSearchForm', () => {
     // visibility filter — `fireEvent.click` dispatches directly to the
     // node regardless of CSS visibility, so the click still reaches
     // Mantine's real selection handler.
-    const option = await screen.findByRole('option', { name: 'WOK — Woking', hidden: true });
+    const option = await screen.findByRole('option', { name: 'WOK · Woking', hidden: true });
     fireEvent.click(option);
 
     expect(input).toHaveValue('WOK');
@@ -85,7 +85,7 @@ describe('StationSearchForm', () => {
       await vi.advanceTimersByTimeAsync(250);
     });
 
-    expect(await screen.findByRole('option', { name: 'WOK — Woking', hidden: true })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: 'WOK · Woking', hidden: true })).toBeInTheDocument();
   });
 
   it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', async () => {
@@ -273,8 +273,8 @@ describe('StationSearchForm', () => {
 
       const list = await screen.findByRole('list', { name: 'Nearby stations' });
       expect(list).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Woking (WOK) — 0.4 km' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Basingstoke (BSK) — 12.3 km' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Woking (WOK), 0.4 km' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Basingstoke (BSK), 12.3 km' })).toBeInTheDocument();
     });
 
     it('navigates to the station page when a nearby result is chosen', async () => {
@@ -293,7 +293,7 @@ describe('StationSearchForm', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
       });
       await act(async () => {
-        fireEvent.click(await screen.findByRole('button', { name: 'Woking (WOK) — 0.4 km' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Woking (WOK), 0.4 km' }));
       });
 
       expect(pushMock).toHaveBeenCalledWith('/stations/WOK');

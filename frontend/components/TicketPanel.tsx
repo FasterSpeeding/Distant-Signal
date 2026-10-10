@@ -94,7 +94,7 @@ export async function TicketPanel({ trackingId }: { trackingId: number }) {
             <RenameTicketButton
               ticketId={ticket.id}
               customName={ticket.customName}
-              defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
+              defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` · ${ticket.ticketType}` : ''}`}
             />
             <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
             <DeleteTicketButton ticketId={ticket.id} />

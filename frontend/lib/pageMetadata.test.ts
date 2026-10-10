@@ -22,8 +22,8 @@ describe('pageMetadata', () => {
 
 describe('withAbsoluteTitle', () => {
   it('keeps a title that already names the site out of the template', () => {
-    expect(withAbsoluteTitle({ title: 'Terms of use — Distant Signal' }).title).toEqual({
-      absolute: 'Terms of use — Distant Signal',
+    expect(withAbsoluteTitle({ title: 'Terms of use · Distant Signal' }).title).toEqual({
+      absolute: 'Terms of use · Distant Signal',
     });
   });
 });

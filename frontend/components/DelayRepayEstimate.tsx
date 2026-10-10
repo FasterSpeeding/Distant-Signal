@@ -215,8 +215,7 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
       <>
         <Text size="sm">
           Based on the recorded delay ({delayMinutes} minutes), this operator&apos;s Delay Repay rules may not give a
-          payout at that length — but rules vary and this estimate can be wrong, so it&apos;s still worth checking
-          directly.
+          payout at that length. Rules vary and this estimate can be wrong, so it&apos;s still worth checking directly.
         </Text>
         <ProvisionalNote response={response} />
       </>
@@ -225,7 +224,7 @@ function EstimateSummary({ response }: { response: DelayRepayEstimateResponse })
 
   return (
     <Text size="sm">
-      No delay data recorded yet for this journey — if you already know you were delayed, the link below still goes
+      No delay data recorded yet for this journey. If you already know you were delayed, the link below still goes
       straight to the operator.
     </Text>
   );

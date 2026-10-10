@@ -634,14 +634,14 @@ describe('DashboardPage', () => {
       // Five cards, then the overflow line accounting for the other seven.
       expect(screen.getByRole('link', { name: /Line 05/ })).toBeInTheDocument();
       expect(screen.queryByRole('link', { name: /Line 06/ })).not.toBeInTheDocument();
-      expect(screen.getByText(/Showing the first 5 — 7 more lines are not at Good Service\./)).toBeInTheDocument();
+      expect(screen.getByText(/Showing the first 5\. 7 more lines are not at Good Service\./)).toBeInTheDocument();
       expect(overflowLink(/7 more lines are not at Good Service/)).toHaveAttribute('href', '/lines');
     });
 
     it('says "line is", not "lines are", when exactly one is hidden', async () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(6));
       renderWithMantine(await DashboardPage());
-      expect(screen.getByText(/Showing the first 5 — 1 more line is not at Good Service\./)).toBeInTheDocument();
+      expect(screen.getByText(/Showing the first 5\. 1 more line is not at Good Service\./)).toBeInTheDocument();
     });
 
     it('hides the least severe lines, not an arbitrary five', async () => {
@@ -675,7 +675,7 @@ describe('DashboardPage', () => {
       expect(screen.getByRole('link', { name: /Line 04/ })).toBeInTheDocument();
       expect(screen.getByRole('link', { name: /Aardvark/ })).toBeInTheDocument();
       expect(screen.queryByRole('link', { name: /Abacus/ })).not.toBeInTheDocument();
-      expect(screen.getByText(/Showing the first 5 — 1 more line is not at Good Service\./)).toBeInTheDocument();
+      expect(screen.getByText(/Showing the first 5\. 1 more line is not at Good Service\./)).toBeInTheDocument();
     });
 
     it('shows no overflow line when the list is exactly full', async () => {
@@ -720,7 +720,7 @@ describe('DashboardPage', () => {
       ]);
       renderWithMantine(await DashboardPage());
       expect(screen.getByText(/6 lines not at Good Service right now/)).toBeInTheDocument();
-      expect(screen.getByText(/Showing the first 5 — 1 more line is not at Good Service\./)).toBeInTheDocument();
+      expect(screen.getByText(/Showing the first 5\. 1 more line is not at Good Service\./)).toBeInTheDocument();
     });
 
     it('renders the overflow line in the authenticated zero-pinned-lines branch too', async () => {
@@ -734,7 +734,7 @@ describe('DashboardPage', () => {
       vi.mocked(api.getLineStatusForMode).mockResolvedValue(disruptedReports(7));
       renderWithMantine(await DashboardPage());
       expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
-      expect(screen.getByText(/Showing the first 5 — 2 more lines are not at Good Service\./)).toBeInTheDocument();
+      expect(screen.getByText(/Showing the first 5\. 2 more lines are not at Good Service\./)).toBeInTheDocument();
       // "Browse all lines" beside the "Your Lines" heading points at /lines
       // too, so this scopes to the overflow row's own copy of it.
       expect(overflowLink(/2 more lines are not at Good Service/)).toHaveAttribute('href', '/lines');

@@ -75,7 +75,7 @@ export default async function GroupsPage() {
             visitor can take on this route had markedly less visual weight
             than the "Create group" `TextLink` an authenticated visitor sees
             in its place. */}
-        <LoginButton title="Log in — needs a Distant Signal account">Log in to see your groups</LoginButton>
+        <LoginButton title="Log in (needs a Distant Signal account)">Log in to see your groups</LoginButton>
         <AutoOpenLoginPrompt>Log in to see your groups.</AutoOpenLoginPrompt>
       </Stack>
     );
@@ -104,8 +104,8 @@ export default async function GroupsPage() {
               being invited -- which the page previously never mentioned at
               all. */}
           <Text>
-            You&apos;re not in any groups yet. Create one to share journeys and custom lines with other people — or ask
-            a group member to send you their invite link if you&apos;re joining an existing one.
+            You&apos;re not in any groups yet. Create one to share journeys and custom lines with other people, or ask a
+            group member to send you their invite link if you&apos;re joining an existing one.
           </Text>
           <Link href="/groups/new" style={{ textDecoration: 'none' }}>
             <Button>Create a group</Button>

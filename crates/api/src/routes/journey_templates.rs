@@ -317,8 +317,8 @@ async fn post_journey_template(
             {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    "At least one leg of this journey has no known origin/destination yet — \
-                     try again once its train has schedule data."
+                    "At least one leg of this journey has no known origin/destination yet. \
+                     Try again once its train has schedule data."
                         .to_string(),
                 ));
             }

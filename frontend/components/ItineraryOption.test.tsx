@@ -100,7 +100,7 @@ describe('ItineraryOption', () => {
   it('disables selection for a fixed-link-only itinerary with no train leg', () => {
     renderWithMantine(<ItineraryOption itinerary={fixedLinkOnlyItinerary} selected={false} onSelect={vi.fn()} />);
     expect(screen.getByRole('radio')).toBeDisabled();
-    expect(screen.getByText('This route needs no train — there is nothing to track.')).toBeInTheDocument();
+    expect(screen.getByText('This route needs no train, so there is nothing to track.')).toBeInTheDocument();
   });
 
   // The bug this fixes: `GET /Trips/plan` never sends a name alongside a
@@ -108,9 +108,9 @@ describe('ItineraryOption', () => {
   // station-bearing response in this app), so this line used to render
   // ONLY the raw codes. `PlanTripFlow` (the only real caller) resolves
   // names itself and passes them down via `stationNames`; this proves the
-  // leg summary renders `CODE — Name` once a name is available, for both
+  // leg summary renders `CODE · Name` once a name is available, for both
   // a train leg and a transfer leg.
-  it('renders "CODE — Name" for each leg end once stationNames resolves a name', () => {
+  it('renders "CODE · Name" for each leg end once stationNames resolves a name', () => {
     const stationNames = new Map([
       ['EUS', 'London Euston'],
       ['MKC', 'Milton Keynes Central'],
@@ -119,11 +119,11 @@ describe('ItineraryOption', () => {
       <ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,
     );
     expect(
-      screen.getByText(byVisibleText('08:00 EUS — London Euston → MKC — Milton Keynes Central 08:50')),
+      screen.getByText(byVisibleText('08:00 EUS · London Euston → MKC · Milton Keynes Central 08:50')),
     ).toBeInTheDocument();
   });
 
-  it('renders "CODE — Name" for a transfer leg once stationNames resolves a name', () => {
+  it('renders "CODE · Name" for a transfer leg once stationNames resolves a name', () => {
     const stationNames = new Map([
       ['EUS', 'London Euston'],
       ['KGX', 'London Kings Cross'],
@@ -137,14 +137,14 @@ describe('ItineraryOption', () => {
       />,
     );
     expect(
-      screen.getByText(byVisibleText('Tube EUS — London Euston → KGX — London Kings Cross, 5 min')),
+      screen.getByText(byVisibleText('Tube EUS · London Euston → KGX · London Kings Cross, 5 min')),
     ).toBeInTheDocument();
   });
 
   it('falls back to bare codes for an end whose name did not resolve, without mixing forms', () => {
     // Only EUS resolved -- per `codeRouteLabel`'s own "never mix" rule
     // (mirroring `routeLabel`'s), BOTH ends must render as bare codes
-    // rather than "EUS — London Euston → MKC".
+    // rather than "EUS · London Euston → MKC".
     const stationNames = new Map([['EUS', 'London Euston']]);
     renderWithMantine(
       <ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,

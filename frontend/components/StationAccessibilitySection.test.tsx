@@ -114,7 +114,7 @@ describe('StationAccessibilitySection', () => {
     // no h4 for it); "Cycling" is a plain sentence and gets one.
     expect(screen.getByRole('heading', { level: 4, name: 'Cycling' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 4, name: 'Lifts' })).not.toBeInTheDocument();
-    expect(screen.getByText('Lifts — Available')).toBeInTheDocument();
+    expect(screen.getByText('Lifts: Available')).toBeInTheDocument();
     // No h5/h6 anywhere -- nothing in this component emits one -- and no
     // level is skipped: h2 has an h3 child, and every h3 present has at
     // least the section's own content beneath it (h4 or plain text).
@@ -337,7 +337,7 @@ describe('StationAccessibilitySection, pattern rendering', () => {
     renderWithMantine(
       <StationAccessibilitySection result={{ coverage: 'present', data: { lifts: { available: true } } }} />,
     );
-    expect(screen.getByText('Lifts — Available')).toBeInTheDocument();
+    expect(screen.getByText('Lifts: Available')).toBeInTheDocument();
     // Not also as a separate label above it.
     expect(screen.queryByText('Lifts')).not.toBeInTheDocument();
   });
@@ -575,7 +575,7 @@ describe('StationAccessibilitySection, against real station payloads', () => {
       <StationAccessibilitySection result={{ coverage: 'present', data: loadAccessibilityFixture('DNO') }} />,
     );
     expect(screen.queryByRole('button', { name: /Raw data/ })).not.toBeInTheDocument();
-    expect(screen.getByText('Lifts — Not available')).toBeInTheDocument();
+    expect(screen.getByText('Lifts: Not available')).toBeInTheDocument();
   });
 
   // BAL (smallest payload) and MAN (largest).

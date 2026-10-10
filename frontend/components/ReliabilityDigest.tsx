@@ -163,7 +163,7 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
         <Stack gap={2}>
           {bandEntries.map(([key, count]) => (
             <Text key={key} size="sm">
-              {count} ticket{count === 1 ? '' : 's'} — {BAND_LABELS[key] ?? key}
+              {count} ticket{count === 1 ? '' : 's'}: {BAND_LABELS[key] ?? key}
             </Text>
           ))}
         </Stack>

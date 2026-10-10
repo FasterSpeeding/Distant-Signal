@@ -22,13 +22,13 @@ describe('RenameTicketButton', () => {
 
   it('does not call the API until Save is clicked', () => {
     const fetchMock = vi.mocked(fetch);
-    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER · Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('Save is disabled when the input is empty', async () => {
-    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER · Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     const save = await screen.findByRole('button', { name: 'Save' });
     expect(save).toBeDisabled();
@@ -38,7 +38,7 @@ describe('RenameTicketButton', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ customName: "Mum's ticket to Leeds" }), { status: 200 }));
 
-    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER · Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     const input = await screen.findByLabelText('Custom name');
     fireEvent.change(input, { target: { value: "  Mum's ticket to Leeds  " } });
@@ -59,7 +59,7 @@ describe('RenameTicketButton', () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ customName: null }), { status: 200 }));
 
     renderWithMantine(
-      <RenameTicketButton ticketId={7} customName="Mum's ticket to Leeds" defaultName="LNER — Off-Peak Day Single" />,
+      <RenameTicketButton ticketId={7} customName="Mum's ticket to Leeds" defaultName="LNER · Off-Peak Day Single" />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Clear' }));
@@ -75,7 +75,7 @@ describe('RenameTicketButton', () => {
   });
 
   it('does not render a Clear button when there is no custom name yet', async () => {
-    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER · Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     await screen.findByRole('button', { name: 'Save' });
     expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument();
@@ -84,10 +84,10 @@ describe('RenameTicketButton', () => {
   it('shows the backend error text on a 400', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(
-      new Response('That name is too long — custom names can be at most 100 characters.', { status: 400 }),
+      new Response('That name is too long. Custom names can be at most 100 characters.', { status: 400 }),
     );
 
-    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER · Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     const input = await screen.findByLabelText('Custom name');
     fireEvent.change(input, { target: { value: 'x'.repeat(101) } });
@@ -95,7 +95,7 @@ describe('RenameTicketButton', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('That name is too long — custom names can be at most 100 characters.'),
+        screen.getByText('That name is too long. Custom names can be at most 100 characters.'),
       ).toBeInTheDocument();
     });
     expect(refreshMock).not.toHaveBeenCalled();
@@ -110,7 +110,7 @@ describe('RenameTicketButton', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ customName: 'My ticket' }), { status: 200 }));
 
-    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER · Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     let input = await screen.findByLabelText('Custom name');
     fireEvent.change(input, { target: { value: 'My ticket' } });
@@ -127,7 +127,7 @@ describe('RenameTicketButton', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
-    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER — Off-Peak Day Single" />);
+    renderWithMantine(<RenameTicketButton ticketId={7} customName={null} defaultName="LNER · Off-Peak Day Single" />);
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     const input = await screen.findByLabelText('Custom name');
     fireEvent.change(input, { target: { value: 'My ticket' } });

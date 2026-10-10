@@ -91,7 +91,7 @@ describe('GroupInviteLinkCard', () => {
         origin={ORIGIN}
       />,
     );
-    expect(screen.getByText(/the old one stops working immediately/)).toBeInTheDocument();
+    expect(screen.getByText(/The old one stops working immediately/)).toBeInTheDocument();
   });
 
   it('says nothing about invalidating a link that does not exist yet', () => {

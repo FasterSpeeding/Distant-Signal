@@ -199,7 +199,7 @@ describe('LineTimetablePage', () => {
     await waitFor(() => expect(screen.getByRole('list', { name: 'More trains' })).toBeInTheDocument());
     expect(visibleText(within(screen.getByRole('list', { name: 'More trains' })).getByRole('link'))).toMatch(/^06:30/);
     expect(screen.getByText('1 more train loaded.')).toBeInTheDocument();
-    expect(screen.getByText("You've reached the end — no more trains on this line that day.")).toBeInTheDocument();
+    expect(screen.getByText("You've reached the end. No more trains on this line that day.")).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 

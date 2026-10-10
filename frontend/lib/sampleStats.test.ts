@@ -204,7 +204,7 @@ describe('formatSampleSummary', () => {
 describe('coverageProvenanceNote', () => {
   it('returns the confident provenance sentence when fullCoverageStats is present', () => {
     expect(coverageProvenanceNote(status({ fullCoverageStats: coverageStats }))).toBe(
-      'Based on real train-movement data for every scheduled service on this line — not a live-departure sample.',
+      'Based on real train-movement data for every scheduled service on this line, not a live-departure sample.',
     );
   });
 
@@ -220,7 +220,7 @@ describe('coverageProvenanceNote', () => {
 describe('pendingCoverageNote', () => {
   it('returns the "still resolving" sentence only when fullCoverageAvailability is pending', () => {
     expect(pendingCoverageNote(status({ fullCoverageAvailability: { state: 'pending' } }))).toBe(
-      'Full train-movement data is being resolved for this line — showing the live sample in the meantime.',
+      'Full train-movement data is being resolved for this line. Showing the live sample in the meantime.',
     );
   });
 

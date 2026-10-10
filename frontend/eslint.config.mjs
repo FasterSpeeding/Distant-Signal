@@ -42,8 +42,18 @@ const FAILURE_COPY = /Something went wrong|Please try again|Could not |Request f
 const COPY_RULES = [
   {
     selector: 'JSXText[value=/--/]',
-    message: 'Write an em dash "—" (or rephrase), never "--", in UI text.',
+    message: 'Never "--" in UI text: write two sentences, or a comma, colon or parentheses.',
   },
+  // An em dash reads as machine-written copy. Banned in every string, not
+  // just JSX text: a helper's return value or a call's argument is copy too.
+  // An en dash "–" is for ranges ("08:00–09:00").
+  ...['JSXText[value=/\u2014/]', 'Literal[value=/\u2014/]', 'TemplateElement[value.raw=/\u2014/]'].map(
+    (selector) => ({
+      selector,
+      message:
+        'No em dash "\u2014" in UI copy: write two sentences, or a comma, colon or parentheses. An en dash "\u2013" is for ranges.',
+    }),
+  ),
   {
     selector: `JSXText[value=${String(FAILURE_COPY)}]`,
     message: 'Failures read "Couldn\'t load this train. Try again." Use describeFailure() from lib/failure.ts.',

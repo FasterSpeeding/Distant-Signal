@@ -101,7 +101,7 @@ describe('TrackedTrainByIdPage error handling', () => {
     // Task 3.6.10: never the raw internal `trackingId` as a "train name"
     // pre-auth -- this route can't disclose anything more than "someone
     // tracks a train here" before the visitor logs in as its owner.
-    expect(screen.getByRole('heading', { name: "Someone's tracked train — log in to see it" })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Log in to see this tracked train' })).toBeInTheDocument();
     expect(screen.queryByText(/Tracking Train 42/)).not.toBeInTheDocument();
   });
 

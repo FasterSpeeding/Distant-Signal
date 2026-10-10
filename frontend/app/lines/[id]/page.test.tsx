@@ -724,7 +724,7 @@ describe('generateMetadata', () => {
     ]);
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
     expect(metadata.title).toBe('My Commute');
-    expect(metadata.description).toBe('My Commute: Severe Delays — Signal failure at Woking');
+    expect(metadata.description).toBe('My Commute: Severe Delays. Signal failure at Woking');
     expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });

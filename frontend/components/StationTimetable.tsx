@@ -227,7 +227,7 @@ export function StationTimetable({
           loading={loadingMore}
           failed={results.loadMoreFailed}
           onLoadMore={handleLoadMore}
-          endMessage="You've reached the end — no more scheduled departures today."
+          endMessage="You've reached the end. No more scheduled departures today."
         />
       </Stack>
     );

@@ -587,21 +587,21 @@ pub fn validate_window_leg(
     // (normalization to uppercase happens downstream, same as there).
     if !is_three_letter_crs(origin_crs) {
         return Err(
-            "Enter a valid origin station — CRS codes are three letters, like WOK or EUS."
+            "Enter a valid origin station. CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
     if !is_three_letter_crs(destination_crs) {
         return Err(
-            "Enter a valid destination station — CRS codes are three letters, like WOK or \
+            "Enter a valid destination station. CRS codes are three letters, like WOK or \
              EUS."
                 .to_string(),
         );
     }
     if depart_window.is_empty() && arrive_window.is_empty() {
         return Err(
-            "Enter at least one earliest/latest departure or arrival time to search a window \
-             — or pick a specific known departure instead."
+            "Enter at least one earliest/latest departure or arrival time to search a window, \
+             or pick a specific known departure instead."
                 .to_string(),
         );
     }
@@ -679,13 +679,13 @@ pub fn validate_known_train_overrides(
     // [`is_three_letter_crs`] helper for consistency.
     if origin_crs.is_some_and(|origin_crs| !is_three_letter_crs(origin_crs)) {
         return Err(
-            "Enter a valid origin station — CRS codes are three letters, like WOK or EUS."
+            "Enter a valid origin station. CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
     if destination_crs.is_some_and(|destination_crs| !is_three_letter_crs(destination_crs)) {
         return Err(
-            "Enter a valid destination station — CRS codes are three letters, like WOK or EUS."
+            "Enter a valid destination station. CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
@@ -732,7 +732,7 @@ pub fn validate_train_uid(train_uid: &str) -> Result<(), String> {
     let trimmed = train_uid.trim();
     if trimmed.len() != TRAIN_UID_LENGTH || !trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err(format!(
-            "That doesn't look like a real train identifier — train IDs are \
+            "That doesn't look like a real train identifier. Train IDs are \
              {TRAIN_UID_LENGTH}-character codes like \"C21373\"."
         ));
     }

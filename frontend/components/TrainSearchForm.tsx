@@ -512,8 +512,8 @@ export function TrainSearchForm({
       return (
         <Text size="sm" c="dimmed">
           {unpublishedDate
-            ? `Scheduled timetable data for ${unpublishedDate} isn't available yet — it may not have been published, or that station may not be one this feed covers.`
-            : "Today's scheduled timetable data isn't available yet — it may not have been published, or that station may not be one this feed covers."}
+            ? `Scheduled timetable data for ${unpublishedDate} isn't available yet. It may not have been published, or that station may not be one this feed covers.`
+            : "Today's scheduled timetable data isn't available yet. It may not have been published, or that station may not be one this feed covers."}
         </Text>
       );
     }
@@ -594,7 +594,7 @@ export function TrainSearchForm({
           loading={loadingMore}
           failed={results.loadMoreFailed}
           onLoadMore={handleLoadMore}
-          endMessage="You've reached the end — no more scheduled trains match those filters."
+          endMessage="You've reached the end. No more scheduled trains match those filters."
         />
       </>
     );

@@ -192,7 +192,7 @@ describe('JourneyLegCandidates', () => {
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(
-      await screen.findByText("2 trains match your search — pick the one you'll be on. You can change it later."),
+      await screen.findByText("2 trains match your search. Pick the one you'll be on. You can change it later."),
     ).toBeInTheDocument();
   });
 
@@ -209,7 +209,7 @@ describe('JourneyLegCandidates', () => {
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
     expect(
-      await screen.findByText("1 train matches your search — pick the one you'll be on. You can change it later."),
+      await screen.findByText("1 train matches your search. Pick the one you'll be on. You can change it later."),
     ).toBeInTheDocument();
   });
 
@@ -220,8 +220,8 @@ describe('JourneyLegCandidates', () => {
     // The pre-fix state: two buttons, both named exactly "Track this
     // train", indistinguishable in a screen reader's control list.
     expect(await screen.findAllByRole('button', { name: /^Track this train/ })).toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'Track this train — 10:32 to PAD, arriving 11:08' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Track this train — 11:02 to PAD, arriving 11:38' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Track this train: 10:32 to PAD, arriving 11:08' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Track this train: 11:02 to PAD, arriving 11:38' })).toBeInTheDocument();
     // Label-in-Name (WCAG 2.5.3): the accessible name still CONTAINS the
     // visible label.
     expect(screen.getAllByText('Track this train')).toHaveLength(2);
@@ -233,7 +233,7 @@ describe('JourneyLegCandidates', () => {
 
     const link = await screen.findByRole('link', { name: rowName('10:32', 'PAD') });
     expect(link).toHaveAttribute('href', '/train/C11052/2026-09-22');
-    const button = screen.getByRole('button', { name: /^Track this train — 10:32/ });
+    const button = screen.getByRole('button', { name: /^Track this train: 10:32/ });
     expect(button.closest('a')).toBeNull();
     expect(link.closest('li')).toContainElement(button);
   });
@@ -263,7 +263,7 @@ describe('JourneyLegCandidates', () => {
     // Never the train's terminus arrival standing in for the leg's own.
     expect(row).not.toHaveTextContent('12:05');
     expect(row).not.toHaveTextContent('arriving');
-    expect(screen.getByRole('button', { name: 'Track this train — 10:32 to PAD' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Track this train: 10:32 to PAD' })).toBeInTheDocument();
   });
 
   it('says so when the leg arrives the next day', async () => {
@@ -293,7 +293,7 @@ describe('JourneyLegCandidates', () => {
     expect(row).toHaveTextContent('arriving at 02:15+1 (next day)');
     expect(within(row).getByText('+1')).toHaveAttribute('aria-hidden', 'true');
     expect(
-      screen.getByRole('button', { name: 'Track this train — 23:40 to PAD, arriving 02:15 (next day)' }),
+      screen.getByRole('button', { name: 'Track this train: 23:40 to PAD, arriving 02:15 (next day)' }),
     ).toBeInTheDocument();
   });
 
@@ -576,7 +576,7 @@ describe('JourneyLegCandidates', () => {
     // plumbing every other CRS/TOC-code field in this app uses -- not a
     // re-test of `searchTocs`'s own server-side matching logic
     // (`TrackTrainForm.test.tsx` already covers that), just that selecting a
-    // suggestion here behaves identically: the dropdown shows `CODE — Name`,
+    // suggestion here behaves identically: the dropdown shows `CODE · Name`,
     // and picking an option writes the bare code into the field.
     it("uses the shared suggestion plumbing for the Operator field's own dropdown", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -597,7 +597,7 @@ describe('JourneyLegCandidates', () => {
         // `hidden: true`: jsdom-only workaround for the stubbed
         // `ResizeObserver` -- see `TrackTrainForm.test.tsx`'s identical
         // comment on this exact pattern.
-        const option = await screen.findByRole('option', { name: 'GW — Great Western Railway', hidden: true });
+        const option = await screen.findByRole('option', { name: 'GW · Great Western Railway', hidden: true });
         fireEvent.click(option);
 
         // Selecting the option writes just the bare code into the field --
@@ -736,7 +736,7 @@ describe('JourneyLegCandidates', () => {
       // The control disappears once nextCursor comes back null.
       await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument());
       expect(
-        screen.getByText("You've reached the end — no more candidate trains match this window."),
+        screen.getByText("You've reached the end. No more candidate trains match this window."),
       ).toBeInTheDocument();
     });
 
@@ -811,7 +811,7 @@ describe('JourneyLegCandidates: service mode and live fields', () => {
     expect(row).toHaveTextContent('Rail replacement bus');
     expect(row).toHaveTextContent('Timetable only');
     expect(row).toHaveTextContent('Bus C11052 · From BRI');
-    expect(within(row).getByRole('button', { name: /^Track this bus — 10:32 to PAD/ })).toHaveTextContent(
+    expect(within(row).getByRole('button', { name: /^Track this bus: 10:32 to PAD/ })).toHaveTextContent(
       'Track this bus',
     );
   });

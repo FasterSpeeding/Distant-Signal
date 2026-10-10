@@ -112,9 +112,9 @@ describe('PlanTripFlow', () => {
   // the raw code -- unreadable to anyone who doesn't already know UK
   // station codes by heart. `PlanTripFlow` now resolves every code the
   // plan mentions itself (`getStationNames`, mocked here via
-  // `mockStationNames`) and renders `CODE — Name` wherever a bare code
+  // `mockStationNames`) and renders `CODE · Name` wherever a bare code
   // used to stand alone.
-  it('shows resolved station names (CODE — Name) in the segment heading and itinerary leg summary', async () => {
+  it('shows resolved station names (CODE · Name) in the segment heading and itinerary leg summary', async () => {
     mockStationNames.set('EUS', 'London Euston');
     mockStationNames.set('MKC', 'Milton Keynes Central');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) }));
@@ -128,9 +128,9 @@ describe('PlanTripFlow', () => {
     // above, this full string is unique: the itinerary line below embeds
     // it inside "08:00 ... 08:50", which is a DIFFERENT full string, not
     // an ambiguous substring match).
-    await screen.findByText(byVisibleText('EUS — London Euston → MKC — Milton Keynes Central'));
+    await screen.findByText(byVisibleText('EUS · London Euston → MKC · Milton Keynes Central'));
     // The itinerary's own leg summary line, same names.
-    await screen.findByText(byVisibleText('08:00 EUS — London Euston → MKC — Milton Keynes Central 08:50'));
+    await screen.findByText(byVisibleText('08:00 EUS · London Euston → MKC · Milton Keynes Central 08:50'));
   });
 
   it('falls back to bare codes in the segment heading/leg summary when no name resolves', async () => {
@@ -657,7 +657,7 @@ describe('PlanTripFlow', () => {
 
     fireEvent.click(await screen.findByText('Track this journey'));
 
-    await screen.findByText('This route needs no train — there is nothing to track.');
+    await screen.findByText('This route needs no train, so there is nothing to track.');
     expect(onCreated).not.toHaveBeenCalled();
     // Only the plan GET -- no `POST /Journeys` was ever attempted.
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1127,7 +1127,7 @@ describe('PlanTripFlow advanced options', () => {
     };
     await search(vi.fn().mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(noVia) }));
     expect(await screen.findByText(/passes through STA \(calling there or not\)/)).toBeInTheDocument();
-    expect(await screen.findByText(/Try removing STA — Stafford from "Pass through"/)).toBeInTheDocument();
+    expect(await screen.findByText(/Try removing STA · Stafford from "Pass through"/)).toBeInTheDocument();
   });
 
   it('suggests allowing more changes for a maxChanges no-result', async () => {

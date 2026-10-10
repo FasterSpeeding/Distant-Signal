@@ -68,8 +68,8 @@ describe('routeLabel', () => {
 });
 
 describe('codeStationLabel', () => {
-  it('renders "CODE — Name" when a name resolved', () => {
-    expect(codeStationLabel('EUS', 'London Euston')).toBe('EUS — London Euston');
+  it('renders "CODE · Name" when a name resolved', () => {
+    expect(codeStationLabel('EUS', 'London Euston')).toBe('EUS · London Euston');
   });
 
   it('falls back to the bare code when name is null', () => {
@@ -84,7 +84,7 @@ describe('codeStationLabel', () => {
 describe('codeRouteLabel', () => {
   it('renders both ends with names when both resolved', () => {
     expect(codeRouteLabel('EUS', 'London Euston', 'MKC', 'Milton Keynes Central')).toBe(
-      'EUS — London Euston → MKC — Milton Keynes Central',
+      'EUS · London Euston → MKC · Milton Keynes Central',
     );
   });
 
@@ -94,7 +94,7 @@ describe('codeRouteLabel', () => {
 
   // Same "never mix forms" rule as `routeLabel` (see its own tests) --
   // only one end's name resolving must not render e.g.
-  // "EUS — London Euston → MKC".
+  // "EUS · London Euston → MKC".
   it('falls back to bare codes on both ends when only the origin name is unresolved', () => {
     expect(codeRouteLabel('EUS', null, 'MKC', 'Milton Keynes Central')).toBe('EUS → MKC');
   });

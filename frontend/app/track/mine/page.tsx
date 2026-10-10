@@ -402,7 +402,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
                   <RenameTicketButton
                     ticketId={ticket.id}
                     customName={ticket.customName}
-                    defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
+                    defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` · ${ticket.ticketType}` : ''}`}
                   />
                   <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
                   <DeleteTicketButton ticketId={ticket.id} />
@@ -539,7 +539,7 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
           <RenameTicketButton
             ticketId={ticket.id}
             customName={ticket.customName}
-            defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
+            defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` · ${ticket.ticketType}` : ''}`}
           />
           <DeleteTicketButton ticketId={ticket.id} />
         </Group>

@@ -143,7 +143,7 @@ export function ItineraryOption({
       </Group>
       {!hasTrainLeg && (
         <Text size="xs" c="dimmed" mt="xs">
-          This route needs no train — there is nothing to track.
+          This route needs no train, so there is nothing to track.
         </Text>
       )}
     </Card>

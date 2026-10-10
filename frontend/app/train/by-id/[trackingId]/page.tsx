@@ -46,7 +46,7 @@ export default async function TrackedTrainByIdPage({ params }: { params: Promise
               verbatim, meaningless (and mildly confusing, reading like a
               train's own identifier) to a visitor who isn't logged in as
               its owner. */}
-          <Title order={1}>Someone&apos;s tracked train — log in to see it</Title>
+          <Title order={1}>Log in to see this tracked train</Title>
           <LoginLink underline="always">Log in to view this tracked train</LoginLink>
         </Stack>
       );

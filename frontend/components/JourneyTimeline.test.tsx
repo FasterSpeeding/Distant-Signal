@@ -434,7 +434,7 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(screen.getByText('3 stops — station names unavailable')).toBeInTheDocument();
+    expect(screen.getByText('3 stops (station names unavailable)')).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.queryByText(/Stop \d/)).not.toBeInTheDocument();
   });

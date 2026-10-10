@@ -123,7 +123,7 @@ describe('PlanTripForm advanced options', () => {
     renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
     await openAdvanced();
     fireEvent.change(screen.getByRole('combobox', { name: 'Pass through (in order)' }), { target: { value: 'staf' } });
-    expect(await screen.findByText('STA — Stafford')).toBeInTheDocument();
+    expect(await screen.findByText('STA · Stafford')).toBeInTheDocument();
     expect(await screen.findByText(/Stafford Bus Station \(bus\)/)).toBeInTheDocument();
   });
 

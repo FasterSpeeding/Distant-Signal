@@ -180,7 +180,7 @@ export function StationSearchForm() {
               {nearby.stations.map((station) => (
                 <li key={station.code}>
                   <UnstyledButton onClick={() => goToStation(station.code)} disabled={isPending}>
-                    {station.name} ({station.code}) — {station.distanceKm.toFixed(1)} km
+                    {station.name} ({station.code}), {station.distanceKm.toFixed(1)} km
                   </UnstyledButton>
                 </li>
               ))}

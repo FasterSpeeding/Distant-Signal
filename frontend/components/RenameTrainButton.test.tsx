@@ -82,7 +82,7 @@ describe('RenameTrainButton', () => {
   it('shows the backend error text on a 400', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(
-      new Response('That name is too long — custom names can be at most 100 characters.', { status: 400 }),
+      new Response('That name is too long. Custom names can be at most 100 characters.', { status: 400 }),
     );
 
     renderWithMantine(<RenameTrainButton trackingId={42} customName={null} defaultName="KGX → EDB, 10 May" />);
@@ -93,7 +93,7 @@ describe('RenameTrainButton', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('That name is too long — custom names can be at most 100 characters.'),
+        screen.getByText('That name is too long. Custom names can be at most 100 characters.'),
       ).toBeInTheDocument();
     });
     expect(refreshMock).not.toHaveBeenCalled();
