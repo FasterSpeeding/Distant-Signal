@@ -316,10 +316,10 @@ pub(crate) struct RawCall {
 }
 
 /// Token counts from a response's `usage` object. Every field is optional:
-/// `OpenAI` sends the first four (`reasoning_tokens` under
-/// `completion_tokens_details`, `cached_tokens` under
-/// `prompt_tokens_details`); Ollama and others send some or none. The
-/// Claude API's usage maps onto the same kinds plus `cache_write_tokens`
+/// `OpenAI` sends all five (`reasoning_tokens` under
+/// `completion_tokens_details`; `cached_tokens` and `cache_write_tokens`
+/// under `prompt_tokens_details`); Ollama and others send some or none. The
+/// Claude API's usage maps onto the same kinds
 /// (`anthropic::usage_from_message`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[expect(
@@ -335,10 +335,10 @@ pub(crate) struct TokenUsage {
     pub reasoning_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<u64>,
-    /// Prompt tokens written to the prompt cache (the Claude API's
-    /// `cache_creation_input_tokens`, billed at the cache-write premium).
-    /// Part of `prompt_tokens`, like `cached_tokens`. `OpenAI` never sends
-    /// it.
+    /// Prompt tokens written to the prompt cache, billed at the cache-write
+    /// premium: `OpenAI`'s `prompt_tokens_details.cache_write_tokens`
+    /// (GPT-5.6 and later), the Claude API's `cache_creation_input_tokens`.
+    /// Part of `prompt_tokens`, like `cached_tokens`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
 }
@@ -357,7 +357,7 @@ impl TokenUsage {
             completion_tokens: count(Some(usage), "completion_tokens"),
             reasoning_tokens: count(usage.get("completion_tokens_details"), "reasoning_tokens"),
             cached_tokens: count(usage.get("prompt_tokens_details"), "cached_tokens"),
-            cache_write_tokens: None,
+            cache_write_tokens: count(usage.get("prompt_tokens_details"), "cache_write_tokens"),
         };
         (parsed != Self::default()).then_some(parsed)
     }
@@ -376,10 +376,11 @@ impl TokenUsage {
 /// output). So spend = (prompt - cached) x input price + cached x cached
 /// price + completion x output price; never add `reasoning` on top.
 ///
-/// The Claude API adds `cache_write`, also a subset of `prompt` (billed at
-/// the cache-write premium): spend = (prompt - cached - `cache_write`) x
-/// input + cached x cache-read + `cache_write` x cache-write + completion x
-/// output (docs/enricher-anthropic.md, "Metrics and cost"). Message Batches
+/// `cache_write` (the Claude API, and `OpenAI` GPT-5.6 and later) is also a
+/// subset of `prompt`, billed at the cache-write premium: spend = (prompt -
+/// cached - `cache_write`) x input + cached x cache-read + `cache_write` x
+/// cache-write + completion x output (docs/enricher-anthropic.md, "Metrics
+/// and cost"; docs/enricher-openai.md, "Prompt caching"). Message Batches
 /// results are counted in [`BATCH_TOKENS_METRIC`] instead, because they are
 /// billed at half price.
 pub(crate) const TOKENS_METRIC: &str = "enricher_llm_tokens_total";
