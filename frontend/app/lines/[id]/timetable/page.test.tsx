@@ -120,7 +120,7 @@ describe('LineTimetablePage', () => {
     // The stop strip starts at the picked station: Waterloo is not listed.
     expect(within(list).getByRole('link')).toHaveAccessibleName(/Then calls at Weymouth\./);
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
-      'This line’s trains, from Woking to Weymouth, towards Weymouth from 06:00',
+      "This line's trains, from Woking to Weymouth, towards Weymouth from 06:00",
     );
     expect(screen.getByRole('link', { name: 'Show the whole day' })).toHaveAttribute(
       'href',

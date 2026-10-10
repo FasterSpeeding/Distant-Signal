@@ -276,7 +276,7 @@ export default async function DashboardPage() {
             <NotificationsToggle />
           </Group>
           <Text c="dimmed">
-            Live UK rail line status, train tracking, and Delay Repay support. Pin the lines, stations and operators you
+            Live UK rail line status, train tracking and Delay Repay support. Pin the lines, stations and operators you
             care about once you&apos;re logged in.
           </Text>
         </Stack>

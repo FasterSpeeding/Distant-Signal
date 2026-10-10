@@ -374,8 +374,8 @@ export function PlanTripFlow({
           </Text>
           <List size="sm" mt={4}>
             <ListItem>Switch Results to Fastest, which has no such limit.</ListItem>
-            <ListItem>Remove some stops to call at, or some “Pass through” stations.</ListItem>
-            <ListItem>Lower “Most changes” in Advanced options.</ListItem>
+            <ListItem>Remove some stops to call at, or some &quot;Pass through&quot; stations.</ListItem>
+            <ListItem>Lower &quot;Most changes&quot; in Advanced options.</ListItem>
           </List>
         </Alert>
       )}

@@ -441,7 +441,7 @@ function StationPairResults({
       <Empty>
         {result.error === 'unpublished'
           ? 'No timetable is published for today yet.'
-          : 'Trains between these stations aren’t available right now.'}{' '}
+          : "Trains between these stations aren't available right now."}{' '}
         <TextLink href={clear}>Show all trains on this line</TextLink>
       </Empty>
     );

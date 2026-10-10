@@ -1100,7 +1100,7 @@ describe('PlanTripFlow advanced options', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('the search is too large');
     expect(alert).toHaveTextContent('Switch Results to Fastest');
-    expect(alert).toHaveTextContent('Remove some stops to call at, or some “Pass through” stations');
+    expect(alert).toHaveTextContent('Remove some stops to call at, or some "Pass through" stations');
     expect(alert).not.toHaveTextContent('(waypoints + 1)');
   });
 

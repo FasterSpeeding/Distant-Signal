@@ -81,7 +81,7 @@ function WaypointField({
 }) {
   const { suggestions, loading } = useSuggestions(value, search);
   const help = first
-    ? 'The train must stop at each of these. A group such as “Any of the London Terminals” means a stop at any one of its stations. To go through a station without stopping, use “Pass through” in Advanced options.'
+    ? 'The train must stop at each of these. A group such as "Any of the London Terminals" means a stop at any one of its stations. To go through a station without stopping, use "Pass through" in Advanced options.'
     : null;
   const shown = isGroupCode(value) && groupLabel !== undefined ? groupLabel : null;
   const parts = [help, shown].filter((part): part is string => part !== null);

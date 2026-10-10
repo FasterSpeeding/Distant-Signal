@@ -115,6 +115,6 @@ describe('AddMcpServerLinks', () => {
   it('says so, visibly and in the live region, when the clipboard is unavailable', async () => {
     renderWithMantine(<AddMcpServerLinks mcpPublicUrl={PUBLIC_URL} />);
     fireEvent.click(screen.getByRole('button', { name: 'Copy MCP server URL' }));
-    await waitFor(() => expect(statusFor('MCP server URL')).toHaveTextContent(/Couldn’t copy/));
+    await waitFor(() => expect(statusFor('MCP server URL')).toHaveTextContent(/Couldn't copy/));
   });
 });

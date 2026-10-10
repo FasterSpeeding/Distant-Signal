@@ -107,7 +107,7 @@ function CopyField({ label, value, description }: { label: string; value: string
       />
       <Text role="status" aria-live="polite" size="xs" c={state === 'failed' ? 'var(--ds-color-error-text)' : 'dimmed'}>
         {state === 'copied' && 'Copied.'}
-        {state === 'failed' && 'Couldn’t copy. Select the text and copy it yourself.'}
+        {state === 'failed' && "Couldn't copy. Select the text and copy it yourself."}
       </Text>
     </Stack>
   );
@@ -138,12 +138,12 @@ export function AddMcpServerLinks({
         <SectionTitle id={headingId}>Use Distant Signal in your own assistant</SectionTitle>
         <Text size="sm">
           Add Distant Signal to an AI assistant you already use, then ask it about live departures, disruptions and
-          journeys there. When the assistant first connects, you’ll sign in with your Distant Signal account.
+          journeys there. When the assistant first connects, you&apos;ll sign in with your Distant Signal account.
         </Text>
         {accessRestricted && (
           <Text size="sm" c="dimmed">
-            Only accounts that have been given access to the Distant Signal MCP server can connect. If yours hasn’t,
-            logging in will be refused.
+            Only accounts that have been given access to the Distant Signal MCP server can connect. If yours
+            hasn&apos;t, logging in will be refused.
           </Text>
         )}
 
@@ -162,7 +162,7 @@ export function AddMcpServerLinks({
             </Button>
           </Group>
           <Text size="xs" c="dimmed">
-            Opens the app if it’s installed. It asks you to confirm, then to log in when you first use it.
+            Opens the app if it&apos;s installed. It asks you to confirm, then to log in when you first use it.
           </Text>
         </Stack>
 
@@ -231,7 +231,7 @@ export function AddMcpServerLinks({
         <details>
           <summary>
             <Text span size="xs" c="dimmed">
-              Logging in fails with “unregistered redirect_uri”?
+              Logging in fails with &quot;unregistered redirect_uri&quot;?
             </Text>
           </summary>
           <Text size="xs" c="dimmed" mt={4}>
