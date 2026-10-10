@@ -21,6 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub(crate) mod anthropic;
+pub(crate) mod openai_cache;
 
 /// A date range as stated (or inferred) by the primary pass. `None` on
 /// either side is a real, distinct fact -- not "unknown":
@@ -283,6 +284,12 @@ pub(crate) struct LlmClient {
     /// `Some` only when `ProviderPolicy::max_in_flight` is set. Held for the duration of one
     /// HTTP attempt only, never across a 429 back-off sleep.
     in_flight: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    /// `LLM_OPENAI_PROMPT_CACHE` (from the profile); `None` sends nothing.
+    /// Chat Completions only.
+    openai_prompt_cache: Option<openai_cache::OpenAiPromptCache>,
+    /// The active profile's name, for the `prompt_cache_key` (empty unless
+    /// set by [`Self::with_profile`]).
+    profile: &'static str,
 }
 
 /// One pass's raw chat-completion result: the unparsed `content` (or the
@@ -835,6 +842,13 @@ struct ChatCompletionRequest<'a> {
     /// Omitted from the wire when `None` (the default policy).
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
+    /// Sent only with `LLM_OPENAI_PROMPT_CACHE=explicit`
+    /// ([`openai_cache::cache_key`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    /// Sent when `LLM_OPENAI_PROMPT_CACHE` is set (`explicit` or `off`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_options: Option<openai_cache::PromptCacheOptions>,
 }
 
 /// One prepared request, on the wire of the client's provider.
@@ -893,7 +907,7 @@ fn chat_completion_content(
 #[derive(Serialize)]
 struct ChatMessage {
     role: &'static str,
-    content: String,
+    content: openai_cache::MessageContent,
 }
 
 #[derive(Serialize)]
@@ -1325,6 +1339,8 @@ impl LlmClient {
             http,
             policy: ProviderPolicy::default(),
             in_flight: None,
+            openai_prompt_cache: None,
+            profile: "",
         }
     }
 
@@ -1361,7 +1377,16 @@ impl LlmClient {
         if let Provider::Anthropic(settings) = &mut self.provider {
             settings.thinking.clone_from(&generation.thinking);
         }
+        self.openai_prompt_cache = generation.openai_prompt_cache;
         self
+    }
+
+    /// [`Self::with_generation`] with the resolved profile's settings, and
+    /// its name for the `prompt_cache_key`.
+    pub(crate) fn with_profile(self, active: &crate::profile::Resolved) -> Self {
+        let mut client = self.with_generation(&active.generation);
+        client.profile = active.profile;
+        client
     }
 
     /// Uses these system prompts (`profile::PromptSet::load`).
@@ -1420,32 +1445,50 @@ impl LlmClient {
     /// or a Claude Messages API body.
     fn wire_request(&self, spec: CallSpec) -> WireRequest<'_> {
         match &self.provider {
-            Provider::OpenAi => WireRequest::Chat(ChatCompletionRequest {
-                call: spec.call,
-                model: &self.model,
-                messages: vec![
-                    ChatMessage {
-                        role: "system",
-                        content: spec.system_prompt,
+            Provider::OpenAi => {
+                use openai_cache::{MessageContent, OpenAiPromptCache, PromptCacheOptions};
+                // The static system prompt comes first (after the schema,
+                // which OpenAI renders ahead of the messages), the
+                // per-incident text last: the breakpoint ends the prefix
+                // every call of this kind shares.
+                let explicit = self.openai_prompt_cache == Some(OpenAiPromptCache::Explicit);
+                let system = if explicit {
+                    MessageContent::with_breakpoint(spec.system_prompt)
+                } else {
+                    MessageContent::Text(spec.system_prompt)
+                };
+                WireRequest::Chat(ChatCompletionRequest {
+                    call: spec.call,
+                    model: &self.model,
+                    messages: vec![
+                        ChatMessage {
+                            role: "system",
+                            content: system,
+                        },
+                        ChatMessage {
+                            role: "user",
+                            content: MessageContent::Text(spec.user_content),
+                        },
+                    ],
+                    response_format: ResponseFormat {
+                        kind: "json_schema",
+                        json_schema: JsonSchemaSpec {
+                            name: spec.schema_name,
+                            strict: true,
+                            schema: spec.schema,
+                        },
                     },
-                    ChatMessage {
-                        role: "user",
-                        content: spec.user_content,
-                    },
-                ],
-                response_format: ResponseFormat {
-                    kind: "json_schema",
-                    json_schema: JsonSchemaSpec {
-                        name: spec.schema_name,
-                        strict: true,
-                        schema: spec.schema,
-                    },
-                },
-                temperature: self.sampling.temperature,
-                top_p: self.sampling.top_p,
-                max_tokens: self.policy.max_tokens,
-                reasoning_effort: self.policy.reasoning_effort.as_deref(),
-            }),
+                    temperature: self.sampling.temperature,
+                    top_p: self.sampling.top_p,
+                    max_tokens: self.policy.max_tokens,
+                    reasoning_effort: self.policy.reasoning_effort.as_deref(),
+                    prompt_cache_key: explicit
+                        .then(|| openai_cache::cache_key(self.profile, spec.call)),
+                    prompt_cache_options: self
+                        .openai_prompt_cache
+                        .map(|_| PromptCacheOptions::EXPLICIT),
+                })
+            }
             Provider::Anthropic(settings) => WireRequest::Messages {
                 call: spec.call,
                 version: &settings.version,
@@ -2070,9 +2113,7 @@ pub(crate) fn live_client_from_env() -> LlmClient {
         ProviderKind::Openai => client,
         ProviderKind::Anthropic => client.with_anthropic(anthropic.settings()),
     };
-    client
-        .with_generation(&active.generation)
-        .with_prompts(prompts)
+    client.with_profile(&active).with_prompts(prompts)
 }
 
 #[cfg(test)]
@@ -4362,6 +4403,151 @@ mod tests {
             request.headers.get("authorization").unwrap(),
             "Bearer sk-test"
         );
+    }
+
+    /// gpt-6-luna's profile (`LLM_OPENAI_PROMPT_CACHE` unset): explicit-only
+    /// caching with the one breakpoint at the end of the static system
+    /// prompt, the per-incident text after it, and a stable key per profile
+    /// and call; `cache_write_tokens` maps onto the `cache_write` kind.
+    #[tokio::test]
+    async fn gpt_6_luna_profile_caches_the_system_prompt_explicitly() {
+        use crate::profile::{Overrides, resolve};
+
+        let server = MockServer::start().await;
+        let mut body = flat_primary_body();
+        body["usage"] = serde_json::json!({
+            "prompt_tokens": 3100,
+            "completion_tokens": 150,
+            "prompt_tokens_details": { "cached_tokens": 2400, "cache_write_tokens": 0 },
+        });
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let active = resolve(
+            ProviderKind::Openai,
+            "gpt-6-luna",
+            None,
+            Overrides::default(),
+        )
+        .unwrap();
+        let client = LlmClient::new(
+            server.uri(),
+            Some("sk-test".into()),
+            "gpt-6-luna".into(),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+        .with_profile(&active);
+        let raw = client.primary_raw("s", "d", reference_date()).await;
+        assert_eq!(
+            raw.usage,
+            Some(TokenUsage {
+                prompt_tokens: Some(3100),
+                completion_tokens: Some(150),
+                reasoning_tokens: None,
+                cached_tokens: Some(2400),
+                cache_write_tokens: Some(0),
+            })
+        );
+        client
+            .extract_severity_adversarial("s", "d", &[])
+            .await
+            .ok();
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(
+            body["prompt_cache_options"],
+            serde_json::json!({ "mode": "explicit" })
+        );
+        assert_eq!(
+            body["prompt_cache_key"],
+            "ds-enricher:openai-gpt-6-luna:primary"
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"],
+            serde_json::json!([{
+                "type": "text",
+                "text": PRIMARY_PROMPT,
+                "prompt_cache_breakpoint": { "mode": "explicit" }
+            }])
+        );
+        // The dynamic part stays a plain string after the breakpoint.
+        assert_eq!(messages[1]["role"], "user");
+        assert!(messages[1]["content"].is_string(), "{body}");
+        assert_eq!(body["reasoning_effort"], "none");
+        assert_eq!(body["temperature"], 0.0);
+        if let Some(severity) = requests.get(1) {
+            let body: serde_json::Value = serde_json::from_slice(&severity.body).unwrap();
+            assert_eq!(
+                body["prompt_cache_key"],
+                "ds-enricher:openai-gpt-6-luna:severity_adversarial"
+            );
+        }
+    }
+
+    /// `LLM_OPENAI_PROMPT_CACHE=off` sends explicit mode with no breakpoint
+    /// (no caching, no cache writes) and no key; the `openai-default`
+    /// profile sends no caching fields at all, as before.
+    #[tokio::test]
+    async fn openai_prompt_cache_off_and_default_profile() {
+        use crate::profile::{Overrides, Setting, resolve};
+        use openai_cache::OpenAiPromptCache;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(flat_primary_body()))
+            .mount(&server)
+            .await;
+        let off = resolve(
+            ProviderKind::Openai,
+            "gpt-6-luna",
+            None,
+            Overrides {
+                openai_prompt_cache: Some(Setting::Set(OpenAiPromptCache::Off)),
+                ..Overrides::default()
+            },
+        )
+        .unwrap();
+        let default = resolve(ProviderKind::Openai, "m", None, Overrides::default()).unwrap();
+        assert_eq!(default.profile, "openai-default");
+        let omitted = resolve(
+            ProviderKind::Openai,
+            "gpt-6-luna",
+            None,
+            Overrides {
+                openai_prompt_cache: Some(Setting::Omit),
+                ..Overrides::default()
+            },
+        )
+        .unwrap();
+        for active in [&off, &default, &omitted] {
+            LlmClient::new(server.uri(), None, "m".into(), DEFAULT_REQUEST_TIMEOUT)
+                .with_profile(active)
+                .extract_primary("s", "d", reference_date())
+                .await
+                .unwrap();
+        }
+        let requests = server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        assert_eq!(
+            bodies[0]["prompt_cache_options"],
+            serde_json::json!({ "mode": "explicit" })
+        );
+        assert!(bodies[0].get("prompt_cache_key").is_none(), "{}", bodies[0]);
+        assert!(bodies[0]["messages"][0]["content"].is_string());
+        for body in &bodies[1..] {
+            assert!(body.get("prompt_cache_options").is_none(), "{body}");
+            assert!(body.get("prompt_cache_key").is_none(), "{body}");
+            assert_eq!(body["messages"][0]["content"], PRIMARY_PROMPT);
+        }
     }
 
     // -- `DateRange` wire-convention fixtures (design §1's testing-plan
