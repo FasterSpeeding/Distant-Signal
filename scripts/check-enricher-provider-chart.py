@@ -516,7 +516,24 @@ def check_profiles(c: Checker) -> None:
         c,
         "profile defaults",
         enricher_env(c.docs("profile defaults", *OPENAI)),
-        {"LLM_PROFILE": None, "LLM_TEMPERATURE": None, "LLM_TOP_P": None},
+        {
+            "LLM_PROFILE": None,
+            "LLM_TEMPERATURE": None,
+            "LLM_TOP_P": None,
+            "LLM_OPENAI_PROMPT_CACHE": None,
+        },
+    )
+    expect(
+        c,
+        "openai prompt cache",
+        enricher_env(
+            c.docs(
+                "openai prompt cache",
+                *OPENAI,
+                *sets("enricher.llm.openaiPromptCache=off"),
+            )
+        ),
+        {"LLM_OPENAI_PROMPT_CACHE": "off"},
     )
     docs = c.docs(
         "profile set",
@@ -573,6 +590,12 @@ def check_profiles(c: Checker) -> None:
         "must be a number",
         *OPENAI,
         *sets("enricher.llm.temperature=warm"),
+    )
+    c.refuses(
+        "bad openai prompt cache",
+        "is not one of explicit, off, omit",
+        *OPENAI,
+        *sets("enricher.llm.openaiPromptCache=1h"),
     )
 
 
