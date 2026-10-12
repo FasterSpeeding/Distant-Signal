@@ -246,6 +246,17 @@ requests stay capped at `LLM_MAX_IN_FLIGHT` across all three loops. Each
 call keeps its own `LLM_RATE_LIMIT_RETRIES` / `LLM_GATEWAY_RETRIES` budget;
 a 429 waits its `retry-after` without holding a request slot.
 
+**What a sweep reads.** The sweep compares hashes in SQL: it recomputes
+`common::text_hash::text_hash` (the SHA-256 of the summary, a NUL byte and
+the description) as `sha256(convert_to(...))`. It fetches the text of only
+the live incidents whose stored `source_text_hash` or
+`extraction_model_version` is missing or different. Before this, it read
+every live incident's text on each sweep (about 920 rows and 1.5 MB in
+prod, 2026-10). The Rust check still runs on what comes back. If the two
+hashes ever disagreed, the sweep would fetch more rows than it needs, never
+fewer. All 919 live prod rows' stored hashes matched the SQL expression
+when this shipped.
+
 ## LLM modes
 
 `LLM_MODE` (chart `enricher.llm.batch.mode`) decides where extractions run.

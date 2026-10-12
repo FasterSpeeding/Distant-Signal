@@ -621,8 +621,9 @@ impl MismatchTracker {
     }
 }
 
-/// Hourly (by default) backstop that re-checks every uncleared incident's
-/// text hash / extraction model version against what's stored, catching
+/// Hourly (by default) backstop that re-checks every live incident's
+/// text hash / extraction model version against what's stored (in SQL:
+/// only stale rows are fetched, `sweep::fetch_sweep_rows`), catching
 /// anything the Redis Stream consumer loop above missed (publish failure,
 /// consumer downtime, etc). Runs independently of that loop, processing
 /// each incident it finds through the same `process_incident` the stream
@@ -632,7 +633,7 @@ async fn sweep_loop(enricher: Arc<Enricher>, interval_secs: u64) {
     let mut interval = ticking_interval(interval_secs);
     loop {
         interval.tick().await;
-        match sweep::fetch_sweep_rows(&enricher.pool).await {
+        match sweep::fetch_sweep_rows(&enricher.pool, &enricher.model_version).await {
             Ok(rows) => {
                 let mut ids = sweep::incidents_needing_extraction(&rows, &enricher.model_version);
                 tracing::info!(
