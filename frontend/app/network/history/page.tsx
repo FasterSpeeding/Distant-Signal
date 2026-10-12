@@ -92,7 +92,7 @@ export default async function NetworkHistoryPage({
       )}
       <Suspense
         key={`${granularity}-${range.preset ?? `${range.from}-${range.to}`}`}
-        fallback={<LoadingPlaceholder label="Loading trends…" height={320} />}
+        fallback={<LoadingPlaceholder label="Loading trends" height={320} />}
       >
         <NetworkTrendsResults from={range.from} to={range.to} granularity={granularity} />
       </Suspense>

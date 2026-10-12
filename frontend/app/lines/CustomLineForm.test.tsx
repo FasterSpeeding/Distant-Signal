@@ -402,18 +402,18 @@ describe('CustomLineForm', () => {
 
   // Task 3.4.11: the edit page had no way to delete a line at all -- only
   // the (separate) detail page did.
-  it('offers a "Delete line…" link only when editing an existing line', () => {
+  it('offers a "Delete line" link only when editing an existing line', () => {
     renderWithProvider();
-    expect(screen.queryByRole('button', { name: 'Delete line…' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete line' })).not.toBeInTheDocument();
 
     cleanup();
     renderWithProvider({ existingLine });
-    expect(screen.getByRole('button', { name: 'Delete line…' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete line' })).toBeInTheDocument();
   });
 
-  it('opens the delete confirmation modal from the "Delete line…" link', async () => {
+  it('opens the delete confirmation modal from the "Delete line" link', async () => {
     renderWithProvider({ existingLine });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete line…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
     expect(await screen.findByText('Delete this line?')).toBeInTheDocument();
   });
 });

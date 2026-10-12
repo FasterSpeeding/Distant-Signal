@@ -24,6 +24,7 @@ import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { formatDateTime } from '@/lib/dateFormat';
 import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
+import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 
 type DatePreset = '7d' | '30d' | '90d' | 'all';
 
@@ -243,7 +244,7 @@ export function IncidentSearchForm({
    * applied immediately, sitting above a pair of always-visible From/To date
    * pickers that a hand-edit could silently disagree with (no preset stayed
    * highlighted once either field was touched). One `SegmentedControl`
-   * fixes both: "Custom…" is always the correct, real answer once a date has
+   * fixes both: "Custom dates" is always the correct, real answer once a date has
    * been hand-edited or is being edited at all, and the two picker fields
    * below only render while it's selected. */
   function handlePeriodChange(next: string) {
@@ -443,11 +444,7 @@ export function IncidentSearchForm({
 
   function resultsContent() {
     if (searching) {
-      return (
-        <Text size="sm" c="dimmed">
-          Searching…
-        </Text>
-      );
+      return <LoadingText>Searching</LoadingText>;
     }
     if (results === null) {
       return (
@@ -675,7 +672,7 @@ export function IncidentSearchForm({
                 { label: '30 days', value: '30d' },
                 { label: '90 days', value: '90d' },
                 { label: 'All time', value: 'all' },
-                { label: 'Custom…', value: 'custom' },
+                { label: 'Custom dates', value: 'custom' },
               ]}
             />
           </Stack>
@@ -771,8 +768,12 @@ export function IncidentSearchForm({
             </Group>
           </InputWrapper>
           <Group>
-            <Button type="submit" disabled={!priorityValid || searching}>
-              {searching ? 'Searching…' : 'Search'}
+            <Button
+              type="submit"
+              disabled={!priorityValid || searching}
+              leftSection={searching ? <ButtonSpinner /> : undefined}
+            >
+              {searching ? 'Searching' : 'Search'}
             </Button>
           </Group>
         </Stack>

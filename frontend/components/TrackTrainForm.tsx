@@ -31,6 +31,7 @@ import { stationLabel } from '@/lib/stationLabel';
 import { addCalendarDays, nowInLondon, londonToday, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
 import type { BoardCallingPoint, CreateJourneyResponse, LineTrainSummaryLive } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
@@ -561,7 +562,7 @@ export function TrackTrainForm({
   const [originTouched, setOriginTouched] = useState(false);
   const [picker, setPicker] = useState<Picker>(null);
   // Initialized from `initialOrigin` (not `false`) so a form mounted with
-  // an already-valid pre-filled origin shows "Checking for departures…"
+  // an already-valid pre-filled origin shows "Checking for departures"
   // on the very first paint rather than flashing the `picker === null`
   // "couldn't load" sentence for one render before the effect below runs.
   // Per docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
@@ -981,7 +982,7 @@ export function TrackTrainForm({
    * app-wide for one button, this takes the plan's other sanctioned
    * fix: the button now only disables while a submit is actually in
    * flight (`submitting`, a brief, self-explanatory state with its own
-   * "Tracking…" label) -- an invalid press instead falls through to here
+   * "Tracking" label) -- an invalid press instead falls through to here
    * and surfaces the same `fieldError` `Alert` a failed backend
    * validation already renders, so a click always gets a visible result
    * instead of silently doing nothing behind an near-invisible control. */
@@ -1115,11 +1116,7 @@ export function TrackTrainForm({
       );
     }
     if (pickerLoading) {
-      return (
-        <Text size="sm" c="dimmed">
-          Checking for departures…
-        </Text>
-      );
+      return <LoadingText>Checking for departures</LoadingText>;
     }
     if (picker === null) {
       return (
@@ -1579,13 +1576,13 @@ export function TrackTrainForm({
             `handleSubmit`'s own doc comment (Task 3.6.14) for why an
             invalid-but-not-yet-submitted form no longer disables this
             button at all. */}
-          <Button type="submit" disabled={submitting}>
+          <Button type="submit" disabled={submitting} leftSection={submitting ? <ButtonSpinner /> : undefined}>
             {mode === 'window'
               ? submitting
-                ? 'Searching…'
+                ? 'Searching'
                 : 'Search for a train'
               : submitting
-                ? 'Tracking…'
+                ? 'Tracking'
                 : 'Track this train'}
           </Button>
         </Group>

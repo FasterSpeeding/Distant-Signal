@@ -68,7 +68,7 @@ const LOCAL_STORAGE: readonly StorageItem[] = [
     lasts: 'Until you remove it, log out, or delete your account.',
   },
   {
-    name: 'ds-mcp-oauth:…',
+    name: 'ds-mcp-oauth:*',
     purpose: 'Only if you use the AI chat: the sign-in details that let the chat look up rail data for you.',
     lasts: 'Until you log out, delete your account, or clear it.',
   },

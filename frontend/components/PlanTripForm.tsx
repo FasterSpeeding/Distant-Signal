@@ -14,6 +14,7 @@ import { searchDateBounds } from '@/lib/searchDates';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
 import { PlanTripAdvancedOptions, advancedOptionErrors } from './PlanTripAdvancedOptions';
+import { ButtonSpinner } from '@/components/LoadingText';
 
 /** `@tabler/icons-react` isn't a project dependency (checked package.json,
  * matching `components/InfoIcon.tsx`/`KebabIcon.tsx`'s own reasoning) --
@@ -413,8 +414,9 @@ export function PlanTripForm({
         disabled={!canSubmit || searching}
         onClick={handleSubmit}
         aria-describedby={firstError ? advancedErrorId : undefined}
+        leftSection={searching ? <ButtonSpinner /> : undefined}
       >
-        {searching ? 'Searching…' : 'Find routes'}
+        {searching ? 'Searching' : 'Find routes'}
       </Button>
     </Stack>
   );

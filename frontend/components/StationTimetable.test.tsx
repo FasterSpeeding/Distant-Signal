@@ -46,7 +46,7 @@ describe('StationTimetable', () => {
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     expect(screen.getByRole('button', { name: 'Scheduled departures' })).toBeInTheDocument();
-    expect(screen.queryByText('Loading scheduled departures…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading scheduled departures')).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -71,8 +71,8 @@ describe('StationTimetable', () => {
 
     fireEvent.click(expand());
 
-    await waitFor(() => expect(screen.getByText('Loading scheduled departures…')).toBeInTheDocument());
-    const status = screen.getByText('Loading scheduled departures…').closest('[role="status"]');
+    await waitFor(() => expect(screen.getByText('Loading scheduled departures')).toBeInTheDocument());
+    const status = screen.getByText('Loading scheduled departures').closest('[role="status"]');
     expect(status).toHaveAttribute('aria-busy', 'true');
   });
 
@@ -389,7 +389,7 @@ describe('StationTimetable', () => {
 
     expect(screen.queryByRole('link', { name: rowName('08:22', 'BRI') })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: rowName('10:05', 'EXD') })).not.toBeInTheDocument();
-    expect(screen.queryByText('Loading scheduled departures…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading scheduled departures')).not.toBeInTheDocument();
   });
 
   it('shows a disclaimer above the rows once expanded with results', async () => {

@@ -67,7 +67,7 @@ describe('NetworkHistoryPage', () => {
     await renderPage();
 
     const status = await screen.findByRole('status');
-    expect(status).toHaveTextContent('Loading trends…');
+    expect(status).toHaveTextContent('Loading trends');
     expect(status).toHaveAttribute('aria-busy', 'true');
   });
 });

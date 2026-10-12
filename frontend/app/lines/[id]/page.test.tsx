@@ -282,7 +282,7 @@ describe('LineDetailPage embedded trends', () => {
     vi.mocked(api.getLineHalfHourlyCoverageStats).mockReturnValue(new Promise(() => {}));
     await renderPage();
 
-    const fallbacks = await screen.findAllByText('Loading trends…');
+    const fallbacks = await screen.findAllByText('Loading trends');
     expect(fallbacks).toHaveLength(2);
     for (const fallback of fallbacks) {
       const region = fallback.closest('[role="status"]');

@@ -9,6 +9,7 @@ import { TrackDestinationModal } from './TrackDestinationModal';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import type { CreateJourneyResponse } from '@/lib/types';
+import { ButtonSpinner } from '@/components/LoadingText';
 
 /** The "Track this train" action for a train whose real CIF identity is
  * already known -- a `(train_uid, service_date)` pair. Calls `POST
@@ -158,8 +159,8 @@ export function TrackThisTrainButton({
 
   return (
     <Stack gap="xs">
-      <Button size={size} onClick={handleClick} disabled={busy}>
-        {busy ? 'Tracking…' : `Track this ${noun}`}
+      <Button size={size} onClick={handleClick} disabled={busy} leftSection={busy ? <ButtonSpinner /> : undefined}>
+        {busy ? 'Tracking' : `Track this ${noun}`}
       </Button>
       {error && (
         <Alert color="red" title={`Couldn't track this ${noun}`}>

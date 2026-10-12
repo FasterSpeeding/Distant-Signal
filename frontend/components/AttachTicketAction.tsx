@@ -7,6 +7,7 @@ import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import type { TrackedTrainListItem } from '@/lib/types';
 import { RouteText } from './RouteArrow';
+import { ButtonSpinner } from '@/components/LoadingText';
 
 /** Same gap, same fix, as `components/IncidentSearchForm.tsx`'s own
  * `noOptionsFound` (see that file's comment): Mantine's `Combobox.Empty` --
@@ -101,8 +102,13 @@ export function AttachTicketAction({ ticketId, trains }: { ticketId: number; tra
         searchable
         nothingFoundMessage={noOptionsFound('No matching tracked trains')}
       />
-      <Button size="xs" onClick={handleAttach} disabled={!selected || attaching}>
-        {attaching ? 'Attaching…' : 'Attach'}
+      <Button
+        size="xs"
+        onClick={handleAttach}
+        disabled={!selected || attaching}
+        leftSection={attaching ? <ButtonSpinner /> : undefined}
+      >
+        {attaching ? 'Attaching' : 'Attach'}
       </Button>
       {error && (
         <Text size="xs" c="var(--ds-color-error-text)">

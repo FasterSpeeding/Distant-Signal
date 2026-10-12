@@ -9,6 +9,7 @@ import { LoginLink } from './LoginLink';
 import { RouteText } from './RouteArrow';
 import type { JourneyListItem } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { LoadingText } from '@/components/LoadingText';
 
 /** Picker sourced from the user's own `/Journeys/mine` list -- the direct
  * analogue of `AddTrainToGroupButton.tsx`, one level up (journeys instead
@@ -97,7 +98,7 @@ export function AddJourneyToGroupButton({
         Add one of my journeys
       </Button>
       <Modal opened={opened} onClose={close} title="Share a journey with this group">
-        {loading && <Text c="dimmed">Loading your journeys…</Text>}
+        {loading && <LoadingText>Loading your journeys</LoadingText>}
         {!loading && journeys !== null && journeys.length === 0 && (
           <Text c="dimmed">Every journey you have is already shared into this group.</Text>
         )}

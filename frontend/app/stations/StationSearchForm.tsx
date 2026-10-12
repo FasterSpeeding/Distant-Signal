@@ -9,6 +9,7 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { NearbyStation } from '@/lib/types';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
+import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 
 /** The "near me" lookup's own state machine -- mirrors the shape
  * `IncidentSearchForm.tsx`'s `Results` type already establishes (one
@@ -113,8 +114,12 @@ export function StationSearchForm() {
             noMatchMessage: 'No matching stations',
           })}
         />
-        <Button onClick={handleSearch} disabled={isPending || crs.trim().length === 0}>
-          {isPending ? 'Looking up…' : 'Look up'}
+        <Button
+          onClick={handleSearch}
+          disabled={isPending || crs.trim().length === 0}
+          leftSection={isPending ? <ButtonSpinner /> : undefined}
+        >
+          {isPending ? 'Looking up' : 'Look up'}
         </Button>
       </Group>
       {isPending && (
@@ -125,7 +130,7 @@ export function StationSearchForm() {
         // old `aria-label` on a `role="status"` of bare `Skeleton`s gave a
         // live region with no content to announce and nothing in words
         // for a sighted user either.
-        <LoadingPlaceholder label="Looking up disruptions…">
+        <LoadingPlaceholder label="Looking up disruptions">
           <Skeleton height={20} width="40%" />
           <Skeleton height={60} />
         </LoadingPlaceholder>
@@ -137,8 +142,13 @@ export function StationSearchForm() {
       {geolocationSupported && (
         <Stack gap="xs">
           <Group>
-            <Button variant="default" onClick={handleNearMe} disabled={nearby.status === 'loading'}>
-              {nearby.status === 'loading' ? 'Locating…' : 'Use my location'}
+            <Button
+              variant="default"
+              onClick={handleNearMe}
+              disabled={nearby.status === 'loading'}
+              leftSection={nearby.status === 'loading' ? <ButtonSpinner /> : undefined}
+            >
+              {nearby.status === 'loading' ? 'Locating' : 'Use my location'}
             </Button>
           </Group>
           {nearby.status === 'loading' && (
@@ -146,9 +156,9 @@ export function StationSearchForm() {
             // "the UI isn't frozen" signal for that wait, same `role="status"`
             // convention the pending-navigation Skeleton above and
             // `ConnectivityMonitor`'s reconnecting banner both use.
-            <Text size="sm" c="dimmed" role="status" aria-live="polite">
-              Finding stations near you…
-            </Text>
+            <LoadingText role="status" aria-live="polite">
+              Finding stations near you
+            </LoadingText>
           )}
           {nearby.status === 'denied' && (
             // A declined location prompt is a common, expected outcome --

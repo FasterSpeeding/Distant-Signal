@@ -172,7 +172,7 @@ export function ConnectivityMonitor({
               their own unsent entries, which this branch answers honestly
               (see `isFormRoute`'s own comment on exactly how honest that
               claim is, and isn't). */}
-          <Notification loading withCloseButton={false} title="Reconnecting…" role="status" aria-live="polite">
+          <Notification loading withCloseButton={false} title="Reconnecting" role="status" aria-live="polite">
             {isFormRoute(pathname) ? (
               <>Can&apos;t reach the server right now. Your entries are safe until you submit.</>
             ) : lastGoodAt ? (

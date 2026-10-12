@@ -190,7 +190,7 @@ export function StationTimetable({
 
   function resultsContent() {
     if (loading) {
-      return <ServiceListNotice busy>Loading scheduled departures…</ServiceListNotice>;
+      return <ServiceListNotice busy>Loading scheduled departures</ServiceListNotice>;
     }
     if (results === 'error') {
       return <ServiceListNotice>Couldn&apos;t load the scheduled departures right now.</ServiceListNotice>;

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore, type SubmitEvent } from 'react';
 import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { LoadingText } from '@/components/LoadingText';
 import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -273,7 +274,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
         <Group gap="xs" align="flex-end">
           <TextInput
             style={{ flex: 1 }}
-            placeholder="Ask about the next train, delays, or plan a journey…"
+            placeholder="Ask about the next train or delays, or plan a journey"
             value={input}
             onChange={(event) => setInput(event.currentTarget.value)}
             disabled={sending}
@@ -520,7 +521,11 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
             <AiGeneratedBadge note={CHAT_AI_NOTE} />
           </Group>
         )}
-        <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content || (isUser ? '' : '…')}</Text>
+        {message.content || isUser ? (
+          <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content}</Text>
+        ) : (
+          <LoadingText>Writing a reply</LoadingText>
+        )}
       </Card>
       {message.legs.map((leg, index) => (
         <TrainLegCard key={index} leg={leg} />

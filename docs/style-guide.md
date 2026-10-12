@@ -230,12 +230,12 @@ list-row titles 500.
 
 | State | Pattern | Example copy |
 | --- | --- | --- |
-| Loading | `Skeleton` inside Suspense; `Loader size="sm"` inline. Pair with visible "Loading…" in `role="status" aria-busy`. The nav's fallback is the full logged-out bar. | "Loading…" |
+| Loading | `Skeleton` inside Suspense (`LoadingPlaceholder`); inline, `LoadingText` (a plain word beside an `aria-hidden` `Loader`) in `role="status" aria-busy` where it is the region's content. A busy button keeps a word label ("Saving") with `leftSection={<ButtonSpinner />}`. No "…". The nav's fallback is the full logged-out bar. | "Loading trends", "Searching" |
 | Empty | Dimmed text saying what would appear, with a route out. No illustrations. | "Nothing is affecting this line right now." |
-| Error (page) | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest | "This page couldn't be loaded…" |
+| Error (page) | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest | "Couldn't load this page" |
 | Error (inline) | Red Alert, title names the failed action | "Couldn't save this ticket" |
-| Not found | h1 at h2 size, cause, three always-underlined way-out links | "There's no page at this address…" |
-| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4 min ago." | "Reconnecting…" |
+| Not found | h1 at h2 size, cause, three always-underlined way-out links | "There's no page at this address." |
+| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4 min ago." | "Reconnecting" |
 | Cancelled | Red badge "Cancelled", red Alert on the train page, struck-through platform | "Cancelled: the train no longer calls at this platform" |
 | Unknown | Omit the element or say so plainly; never fabricate | "No status yet" · "(no arrival report received)" |
 
@@ -384,7 +384,7 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 
 ### Banned phrases
 
-On screen, never: "—" (em dash), "--", "Something went wrong", "Please try again",
+On screen, never: "—" (em dash), "…" (ellipsis), "--", "Something went wrong", "Please try again",
 "Could not", "Request failed", "this app", "ingest", "aggregator",
 "full coverage", "TOC", "deployment", "allowlist", "localStorage",
 "tracking pin", "propagated", "extraction", "seamless", "effortless",
@@ -392,7 +392,7 @@ On screen, never: "—" (em dash), "--", "Something went wrong", "Please try aga
 "cutting-edge", "best-in-class", "delightful", "magic".
 `scripts/check-copy.py` holds the list. The em dash is banned in every
 string the app holds, not only the ones the checker recognises as copy,
-and ESLint flags it in any string literal or JSX text.
+and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 ### Other rules
 
@@ -414,7 +414,11 @@ and ESLint flags it in any string literal or JSX text.
   a narrow numeric column an en dash "–" keeps the column scannable; mark
   it `aria-hidden` with a visually hidden "No data" beside it
   (`NO_VALUE` in `app/lines/AllLinesTable.tsx`).
-- Ellipsis "…".
+- No ellipsis "…" in copy. In-progress text is a plain word and a spinner
+  ("Saving", "Loading trains"); a menu item that opens a dialog is just
+  its action ("Delete line"); a select option is a noun ("Custom dates").
+  Text cut short by CSS (`text-overflow: ellipsis`) is fine: that is
+  layout, not copy.
 - No engineering vocabulary on screen: no raw enum values, field names,
   bare codes, ISO dates or `error.message`. Map through
   `lib/displayLabels.ts` and `lib/stationLabel.ts`.

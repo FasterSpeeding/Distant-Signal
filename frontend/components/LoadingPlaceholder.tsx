@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
-import { Skeleton, Stack, Text } from '@mantine/core';
+import { Skeleton, Stack } from '@mantine/core';
+import { LoadingText } from './LoadingText';
 
-/** The app's one loading placeholder: a visible "Loading…" label inside a
+/** The app's one loading placeholder: a visible "Loading" label and spinner inside a
  * `role="status"` / `aria-busy` region, with an optional skeleton below it
  * to hold the space the real content will take.
  *
@@ -21,16 +22,14 @@ export function LoadingPlaceholder({
   height,
   children,
 }: {
-  /** Visible and announced, e.g. "Loading trends…". End with "…". */
+  /** Visible and announced, e.g. "Loading trends". No "…": the spinner beside it says it is still going. */
   label: string;
   height?: number;
   children?: ReactNode;
 }) {
   return (
     <Stack gap="xs" role="status" aria-busy="true" data-loading-placeholder>
-      <Text size="sm" c="dimmed">
-        {label}
-      </Text>
+      <LoadingText>{label}</LoadingText>
       {children !== undefined ? (
         <Stack gap="xs" aria-hidden="true">
           {children}

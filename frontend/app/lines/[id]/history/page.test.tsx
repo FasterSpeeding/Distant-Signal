@@ -127,7 +127,7 @@ describe('LineHistoryPage', () => {
     await renderPage();
 
     const fallback = await screen.findByRole('status');
-    expect(fallback).toHaveTextContent('Loading history…');
+    expect(fallback).toHaveTextContent('Loading history');
     expect(fallback).toHaveAttribute('aria-busy', 'true');
   });
 
@@ -142,8 +142,8 @@ describe('LineHistoryPage', () => {
 
     const statuses = await screen.findAllByRole('status');
     const labels = statuses.map((s) => s.textContent);
-    expect(labels).toContain('Loading trends…');
-    expect(labels).toContain('Loading trends for every train…');
+    expect(labels).toContain('Loading trends');
+    expect(labels).toContain('Loading trends for every train');
     for (const status of statuses) {
       expect(status).toHaveAttribute('aria-busy', 'true');
     }

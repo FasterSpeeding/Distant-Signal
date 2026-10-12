@@ -14,6 +14,7 @@ import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchR
 import { serviceNoun } from '@/lib/serviceMode';
 import { dayOffsetMarker } from '@/lib/serviceStatus';
 import type { TrainSearchResult } from '@/lib/types';
+import { LoadingText } from '@/components/LoadingText';
 
 // Mirrors `lib/useSuggestions.ts`'s own (non-exported) `DEBOUNCE_MS = 250`
 // constant -- this is a SEPARATE debounce, for the committed filter value
@@ -262,11 +263,7 @@ export function JourneyLegCandidates({
   // uniformly, rather than being duplicated into every early-return branch.
   function body() {
     if (results === null || results === 'loading') {
-      return (
-        <Text size="sm" c="dimmed">
-          Searching for candidate trains…
-        </Text>
-      );
+      return <LoadingText>Searching for candidate trains</LoadingText>;
     }
     if (results === 'error') {
       // A lapsed session gets its own message -- "Try again" is honest

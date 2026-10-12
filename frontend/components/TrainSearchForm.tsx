@@ -17,6 +17,7 @@ import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 /** The exact `"HH:MM"` shape the four time filters put on the wire
@@ -488,11 +489,7 @@ export function TrainSearchForm({
       );
     }
     if (searching) {
-      return (
-        <Text size="sm" c="dimmed">
-          Searching…
-        </Text>
-      );
+      return <LoadingText>Searching</LoadingText>;
     }
     if (results === null) {
       return (
@@ -737,8 +734,8 @@ export function TrainSearchForm({
         </Group>
       )}
       <Group>
-        <Button type="submit" disabled={!canSearch}>
-          {searching ? 'Searching…' : 'Search'}
+        <Button type="submit" disabled={!canSearch} leftSection={searching ? <ButtonSpinner /> : undefined}>
+          {searching ? 'Searching' : 'Search'}
         </Button>
       </Group>
       <Stack gap="xs" mih={72}>

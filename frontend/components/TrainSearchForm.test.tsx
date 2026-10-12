@@ -164,7 +164,7 @@ function searchCallUrl(fetchMock: ReturnType<typeof vi.fn>): string {
 }
 
 /** Clicks the Search button once it reads "Search" again, rather than
- * "Searching…" -- this form's mount-time auto-search (see
+ * "Searching" -- this form's mount-time auto-search (see
  * `TrainSearchForm.tsx`'s own mount `useEffect`, and
  * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
  * §3.3) means a search can already be in flight the instant a test with a

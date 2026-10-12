@@ -149,6 +149,20 @@ class BannedCharacters(unittest.TestCase):
         self.assertEqual(findings(record(text="08:00\u201309:00")), [])
         self.assertEqual(findings(record(kind="string", text="15\u201329 min")), [])
 
+    def test_flags_an_ellipsis_in_loading_copy(self) -> None:
+        """Check that it flags an ellipsis in a busy label or placeholder."""
+        messages = findings(record(kind="string", text="Saving…"))
+        self.assertTrue(any("ellipsis" in message for message in messages))
+        self.assertTrue(findings(record(kind="attr", attr="placeholder", text="Ask…")))
+        self.assertEqual(findings(record(text="Saving")), [])
+
+    def test_skips_the_loggers_truncation_marker(self) -> None:
+        """Check that it skips the logger's "[…]" marker."""
+        self.assertEqual(
+            findings(record(file="lib/logger.ts", kind="string", text="[…]")),
+            [],
+        )
+
     def test_skips_files_that_are_not_copy(self) -> None:
         """Check that it skips the chat prompt's normalisation table."""
         self.assertEqual(

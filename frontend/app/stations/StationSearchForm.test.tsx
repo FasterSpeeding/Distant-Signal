@@ -181,7 +181,7 @@ describe('StationSearchForm', () => {
     // Developer vocabulary ("Rendering...") is out; user-facing wording is
     // in, and the button stays disabled so a second click can't fire a
     // second navigation.
-    const pendingButton = screen.getByRole('button', { name: 'Looking up…' });
+    const pendingButton = screen.getByRole('button', { name: 'Looking up' });
     expect(pendingButton).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Look up' })).not.toBeInTheDocument();
 
@@ -191,7 +191,7 @@ describe('StationSearchForm', () => {
     // ...and says so in words (visible and announced), not just as bare
     // skeleton boxes.
     const status = screen.getByRole('status');
-    expect(status).toHaveTextContent('Looking up disruptions…');
+    expect(status).toHaveTextContent('Looking up disruptions');
     expect(status).toHaveAttribute('aria-busy', 'true');
 
     await act(async () => {
@@ -340,8 +340,8 @@ describe('StationSearchForm', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
 
-      expect(screen.getByRole('button', { name: 'Locating…' })).toBeDisabled();
-      expect(screen.getByText('Finding stations near you…')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Locating' })).toBeDisabled();
+      expect(screen.getByText('Finding stations near you')).toBeInTheDocument();
 
       vi.stubGlobal(
         'fetch',

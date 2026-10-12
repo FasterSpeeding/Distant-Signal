@@ -134,7 +134,7 @@ export default async function OperatorHistoryPage({
       )}
       <Suspense
         key={`${granularity}-${range.preset ?? `${range.from}-${range.to}`}`}
-        fallback={<LoadingPlaceholder label="Loading trends…" height={320} />}
+        fallback={<LoadingPlaceholder label="Loading trends" height={320} />}
       >
         <OperatorTrendsResults code={code} from={range.from} to={range.to} granularity={granularity} />
       </Suspense>

@@ -11,6 +11,7 @@ import { routeLabel } from '@/lib/stationLabel';
 import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
+import { LoadingText } from '@/components/LoadingText';
 
 /** The `/journeys/new` page's own interactive body -- see that page's doc
  * comment for the design this component is the engine of. Two states:
@@ -162,11 +163,7 @@ export function JourneyCreationFlow({
         Add another leg now if this trip involves a change of trains, or finish here. A single leg is already a
         complete, useful journey.
       </Alert>
-      {loadingJourney && journey === null && (
-        <Text c="dimmed" size="sm">
-          Loading your journey…
-        </Text>
-      )}
+      {loadingJourney && journey === null && <LoadingText>Loading your journey</LoadingText>}
       {journeyLoadError && (
         <Alert color="red" title="Couldn't load the journey's latest status">
           <Stack gap="xs">

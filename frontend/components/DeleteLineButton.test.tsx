@@ -79,11 +79,11 @@ describe('DeleteLineButton', () => {
   // Task 3.4.11: CustomLineForm's edit-mode footer wants a quieter text
   // link rather than the detail page's heading-row `Button` -- same modal,
   // same delete flow, different trigger.
-  it('renders a "Delete line…" text trigger when trigger="link", opening the same modal', async () => {
+  it('renders a "Delete line" text trigger when trigger="link", opening the same modal', async () => {
     renderWithMantine(<DeleteLineButton id="custom-my-commute" trigger="link" />);
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete line…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
     expect(await screen.findByText('Delete this line?')).toBeInTheDocument();
   });
 });

@@ -23,7 +23,7 @@ vi.mock('next/navigation', () => ({
   usePathname: () => pathname,
 }));
 
-const BANNER = 'Reconnecting…';
+const BANNER = 'Reconnecting';
 
 interface Observation {
   backendReachable: boolean;

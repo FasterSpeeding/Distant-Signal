@@ -12,6 +12,7 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { PartialTicket, TicketCreatedResponse, TicketEntryRequest, TicketSource } from '@/lib/types';
 import { failureFromResponse } from '@/lib/failure';
+import { ButtonSpinner } from '@/components/LoadingText';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 type Tab = 'manual' | 'pkpass' | 'pdf';
@@ -555,8 +556,12 @@ export function TicketEntryForm({
       )}
 
       <Group>
-        <Button onClick={handleSubmit} disabled={submitting || !originValid || !destinationValid}>
-          {submitting ? 'Saving…' : 'Save ticket'}
+        <Button
+          onClick={handleSubmit}
+          disabled={submitting || !originValid || !destinationValid}
+          leftSection={submitting ? <ButtonSpinner /> : undefined}
+        >
+          {submitting ? 'Saving' : 'Save ticket'}
         </Button>
         <Button variant="subtle" onClick={() => setOpen(false)}>
           Cancel

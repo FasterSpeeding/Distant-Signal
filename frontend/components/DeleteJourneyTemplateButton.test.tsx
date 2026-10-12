@@ -77,8 +77,6 @@ describe('DeleteJourneyTemplateButton', () => {
   it('mentions that already-run journeys survive the delete', async () => {
     renderWithMantine(<DeleteJourneyTemplateButton templateId={167} />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete template' }));
-    await waitFor(() =>
-      expect(screen.getByText(/not any journeys you've already run from it/)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/not any journeys you've already run from it/)).toBeInTheDocument());
   });
 });

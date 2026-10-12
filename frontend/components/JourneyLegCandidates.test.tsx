@@ -131,7 +131,7 @@ describe('JourneyLegCandidates', () => {
     );
     renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
 
-    expect(screen.getByText('Searching for candidate trains…')).toBeInTheDocument();
+    expect(screen.getByText('Searching for candidate trains')).toBeInTheDocument();
 
     // Let the pending fetch settle within `act` so no state update leaks
     // past the end of the test.

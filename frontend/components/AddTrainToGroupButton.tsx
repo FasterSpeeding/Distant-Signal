@@ -10,6 +10,7 @@ import { RouteText } from './RouteArrow';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrackedTrainListItem } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { LoadingText } from '@/components/LoadingText';
 
 /** Picker sourced from the user's own `/track/mine` list (spec §6),
  * fetched lazily on open via the same-origin `/api/Train/mine` proxy
@@ -91,7 +92,7 @@ export function AddTrainToGroupButton({
         Add one of my trains
       </Button>
       <Modal opened={opened} onClose={close} title="Share a tracked train with this group">
-        {loading && <Text c="dimmed">Loading your tracked trains…</Text>}
+        {loading && <LoadingText>Loading your tracked trains</LoadingText>}
         {!loading && trains !== null && trains.length === 0 && (
           <Text c="dimmed">Every train you&apos;re tracking is already shared into this group.</Text>
         )}

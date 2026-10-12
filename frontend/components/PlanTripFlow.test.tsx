@@ -804,15 +804,15 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
 
-    expect(screen.queryByText('Searching…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Searching')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText('Searching…');
+    await screen.findByText('Searching');
 
     resolveFetch({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response);
 
     await screen.findByText('Find routes');
-    expect(screen.queryByText('Searching…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Searching')).not.toBeInTheDocument();
     await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
   });
 
@@ -853,7 +853,7 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'AAA' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'BBB' } });
     fireEvent.click(screen.getByText('Find routes'));
-    await screen.findByText('Searching…');
+    await screen.findByText('Searching');
     // Unmounting mid-search does not cancel the in-flight `fetch` -- the
     // stale first request is still going to resolve later, same as it
     // would if a second, later click had issued it instead.
@@ -908,7 +908,7 @@ describe('PlanTripFlow', () => {
     fireEvent.click(button);
     fireEvent.click(button);
 
-    await screen.findByText('Searching…');
+    await screen.findByText('Searching');
     resolveFetch({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response);
 
     await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));

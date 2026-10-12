@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { Button, Group, Stack, Text, Title } from '@mantine/core';
 import { useConnectivity } from '@/components/ConnectivityMonitor';
+import { LoadingText } from '@/components/LoadingText';
 import { TextLink } from '@/components/TextLink';
 import { createLogger } from '@/lib/logger';
 
@@ -67,12 +68,12 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
           tag changes. These render inside the root layout's <main>
           Container, so they need no landmarking of their own. */}
       <Title order={1} size="h2">
-        {disconnected ? 'Trying to reconnect…' : "Couldn't load this page"}
+        {disconnected ? 'Trying to reconnect' : "Couldn't load this page"}
       </Title>
       {disconnected ? (
-        <Text c="dimmed">
+        <LoadingText size="md">
           Can&apos;t reach live data right now. This page will come back on its own as soon as the connection returns.
-        </Text>
+        </LoadingText>
       ) : (
         <Text c="dimmed">It may be a temporary problem with the live data. Try again in a moment.</Text>
       )}

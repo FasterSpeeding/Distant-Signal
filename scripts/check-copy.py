@@ -12,7 +12,7 @@ or heading. `--extracted` reads saved records instead (the unit tests).
 
 Fails (exit 1) on:
   - a banned character in any string the app holds: an em dash (an en
-    dash is for ranges);
+    dash is for ranges) or an ellipsis (a spinner says "in progress");
   - a banned phrase in a user-facing string: internal vocabulary (ingest,
     aggregator, full coverage, TOC, deployment, allowlist, localStorage,
     "this app"), "--", and marketing words;
@@ -86,7 +86,12 @@ USER_DECL = re.compile(
 # Files whose strings are not UI copy: the chat model's system prompt, and
 # the MCP OAuth plumbing's developer errors.
 SKIP_FILES = frozenset(
-    {"lib/chatTurn.ts", "lib/mcpOAuthProvider.ts", "lib/mcpInstallLinks.ts"}
+    {
+        "lib/chatTurn.ts",
+        "lib/logger.ts",  # its "[…]" truncation marker is a log line's
+        "lib/mcpOAuthProvider.ts",
+        "lib/mcpInstallLinks.ts",
+    }
 )
 
 MARKETING = (
@@ -153,6 +158,13 @@ BANNED_CHARACTERS: Sequence[tuple[re.Pattern[str], str]] = (
         (
             'an em dash "\u2014" (write two sentences, or a comma, colon or'
             ' parentheses; an en dash "\u2013" only for ranges)'
+        ),
+    ),
+    (
+        re.compile("\u2026"),
+        (
+            'an ellipsis "\u2026" (in-progress text is a plain word beside a'
+            " spinner: LoadingText, ButtonSpinner)"
         ),
     ),
 )

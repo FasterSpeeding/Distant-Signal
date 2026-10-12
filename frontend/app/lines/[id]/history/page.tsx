@@ -207,7 +207,7 @@ export default async function LineHistoryPage({
                 line of text. */}
             <Suspense
               key={range.preset ?? `${range.from}-${range.to}`}
-              fallback={<LoadingPlaceholder label="Loading history…" />}
+              fallback={<LoadingPlaceholder label="Loading history" />}
             >
               <HistoryResults
                 id={id}
@@ -246,7 +246,7 @@ export default async function LineHistoryPage({
             )}
             <Suspense
               key={`${granularity}-${range.preset ?? `${range.from}-${range.to}`}`}
-              fallback={<LoadingPlaceholder label="Loading trends…" height={320} />}
+              fallback={<LoadingPlaceholder label="Loading trends" height={320} />}
             >
               <TrendsResults id={id} from={range.from} to={range.to} granularity={granularity} />
             </Suspense>
@@ -263,7 +263,7 @@ export default async function LineHistoryPage({
                 since nothing produces full-coverage data yet. */}
             <Suspense
               key={range.preset ?? `${range.from}-${range.to}`}
-              fallback={<LoadingPlaceholder label="Loading trends for every train…" height={320} />}
+              fallback={<LoadingPlaceholder label="Loading trends for every train" height={320} />}
             >
               <CoverageTrendsResults id={id} from={range.from} to={range.to} />
             </Suspense>

@@ -115,7 +115,7 @@ describe('app/error.tsx', () => {
   it('shows reconnecting copy, not the raw error, while disconnected', () => {
     renderWithMantine(<Harness initial />);
 
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Trying to reconnect…');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Trying to reconnect');
     expect(screen.queryByText(connectivityError.message)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
