@@ -71,16 +71,16 @@ describe('legRouteAndTime', () => {
       stop({ crs: 'KGX', name: 'London Kings Cross', scheduledDeparture: '2026-09-22T16:00:00Z' }),
       stop({ crs: 'YRK', name: 'York' }),
     ];
-    expect(legRouteAndTime('KGX', 'YRK', stops, noPin)).toBe('London Kings Cross (KGX) → York (YRK) · 17:00');
+    expect(legRouteAndTime('KGX', 'YRK', stops, noPin)).toBe('London Kings Cross (KGX) to York (YRK) · 17:00');
   });
 
   it('omits the time when the leg origin stop is not found', () => {
-    expect(legRouteAndTime('KGX', 'YRK', null, noPin)).toBe('KGX → YRK');
+    expect(legRouteAndTime('KGX', 'YRK', null, noPin)).toBe('KGX to YRK');
   });
 
   it('falls back to bare CRS codes when no names resolve', () => {
     const stops = [stop({ crs: 'KGX', name: null }), stop({ crs: 'YRK', name: null })];
-    expect(legRouteAndTime('KGX', 'YRK', stops, noPin)).toBe('KGX → YRK');
+    expect(legRouteAndTime('KGX', 'YRK', stops, noPin)).toBe('KGX to YRK');
   });
 
   it('uses the leg destination stop, not the train terminus, for a mid-route leg', () => {
@@ -90,7 +90,7 @@ describe('legRouteAndTime', () => {
       stop({ crs: 'EDB', name: 'Edinburgh', kind: 'Terminate' }),
     ];
     // Leg is KGX -> YRK even though the train continues to Edinburgh.
-    expect(legRouteAndTime('KGX', 'YRK', stops, noPin)).toBe('London Kings Cross (KGX) → York (YRK) · 17:00');
+    expect(legRouteAndTime('KGX', 'YRK', stops, noPin)).toBe('London Kings Cross (KGX) to York (YRK) · 17:00');
   });
 });
 

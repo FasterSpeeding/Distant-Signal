@@ -85,7 +85,7 @@ describe('legalPageMetadata', () => {
   it('is noindex unless the pages are really published', () => {
     expect(legalPageMetadata('Terms of use', 'd', false).robots).toEqual({ index: false, follow: false });
     expect(legalPageMetadata('Terms of use', 'd', true).robots).toBeUndefined();
-    expect(legalPageMetadata('Terms of use', 'd', true).title).toBe('Terms of use — Distant Signal');
+    expect(legalPageMetadata('Terms of use', 'd', true).title).toBe('Terms of use · Distant Signal');
   });
 });
 

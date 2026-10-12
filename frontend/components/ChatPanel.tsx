@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore, type SubmitEvent } from 'react';
 import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { LoadingText } from '@/components/LoadingText';
 import Anthropic from '@anthropic-ai/sdk';
 import Link from 'next/link';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -12,7 +13,6 @@ import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
 import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
-import { RouteArrow } from './RouteArrow';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
 
@@ -273,7 +273,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
         <Group gap="xs" align="flex-end">
           <TextInput
             style={{ flex: 1 }}
-            placeholder="Ask about the next train, delays, or plan a journey…"
+            placeholder="Ask about the next train or delays, or plan a journey"
             value={input}
             onChange={(event) => setInput(event.currentTarget.value)}
             disabled={sending}
@@ -520,7 +520,11 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
             <AiGeneratedBadge note={CHAT_AI_NOTE} />
           </Group>
         )}
-        <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content || (isUser ? '' : '…')}</Text>
+        {message.content || isUser ? (
+          <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content}</Text>
+        ) : (
+          <LoadingText>Writing a reply</LoadingText>
+        )}
       </Card>
       {message.legs.map((leg, index) => (
         <TrainLegCard key={index} leg={leg} />
@@ -546,7 +550,7 @@ function TrainLegCard({ leg }: { leg: RenderedTrainLeg }) {
     <Card withBorder padding="sm" radius="md" maw="80%">
       <Stack gap={4}>
         <Text size="sm" fw={500}>
-          {originName} <RouteArrow /> {destinationName}
+          {originName} to {destinationName}
         </Text>
         <Text size="xs" c="dimmed">
           {leg.departure}

@@ -112,7 +112,7 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       what: 'If you turn on notifications: the address your browser gives us for sending them, its encryption keys, and when it was last used.',
       why: 'To send you the notifications you asked for.',
       basis: CONTRACT,
-      retention: `Until you turn notifications off, your browser’s push service tells us the address no longer works, you have more than 20 devices registered (the oldest is removed)${
+      retention: `Until you turn notifications off, your browser's push service tells us the address no longer works, you have more than 20 devices registered (the oldest is removed)${
         retention.stalePushSubscriptionDays > 0
           ? `, you have not signed in (and your browser has not renewed the address) for ${describeRetentionDays(retention.stalePushSubscriptionDays)}`
           : ''
@@ -138,7 +138,7 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       why: 'To secure that server against break-in attempts, and to show which files we received from our supplier and when.',
       basis: LEGITIMATE_INTERESTS,
       retention:
-        '7 days for connections that never try to sign in, 90 days for failed sign-ins and blocked addresses, and 400 days for successful sign-ins and file transfers (in practice, only our supplier’s).',
+        "7 days for connections that never try to sign in, 90 days for failed sign-ins and blocked addresses, and 400 days for successful sign-ins and file transfers (in practice, only our supplier's).",
     },
     {
       title: 'Backups',

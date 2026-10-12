@@ -34,12 +34,12 @@ describe('DisruptionDetail', () => {
 
   it('renders the affected route range', () => {
     renderWithMantine(<DisruptionDetail disruption={sample} />);
-    expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
   });
 
   it('renders nothing extra when affectedRoutes is empty', () => {
     renderWithMantine(<DisruptionDetail disruption={{ ...sample, affectedRoutes: [] }} />);
-    expect(screen.queryByText(byVisibleText(/→/))).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText(/ to /))).not.toBeInTheDocument();
   });
 
   it('renders a human label for the source, not the raw provenance string', () => {

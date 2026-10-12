@@ -6,6 +6,7 @@ import { Alert, Button, Stack, TextInput } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ButtonSpinner } from '@/components/LoadingText';
 
 /** `/groups/new`'s form -- creates a group, then immediately rotates its
  * first invite link (spec §6: "on success, immediately generate the
@@ -75,8 +76,12 @@ export function CreateGroupForm() {
           {error}
         </Alert>
       )}
-      <Button type="submit" disabled={name.trim().length === 0 || submitting}>
-        {submitting ? 'Creating…' : 'Create group'}
+      <Button
+        type="submit"
+        disabled={name.trim().length === 0 || submitting}
+        leftSection={submitting ? <ButtonSpinner /> : undefined}
+      >
+        {submitting ? 'Creating' : 'Create group'}
       </Button>
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to create a group.

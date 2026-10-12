@@ -206,7 +206,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
   it('renders the computed status, not the no-status state, when a status row exists', async () => {
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
     await renderPage();
-    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(screen.getByText('Good service')).toBeInTheDocument();
     expect(screen.queryByText('No status yet')).not.toBeInTheDocument();
     expect(screen.queryByText(/No status has been computed for this line yet/)).not.toBeInTheDocument();
     await screen.findByText('Not enough sampled data yet for this line.');
@@ -282,7 +282,7 @@ describe('LineDetailPage embedded trends', () => {
     vi.mocked(api.getLineHalfHourlyCoverageStats).mockReturnValue(new Promise(() => {}));
     await renderPage();
 
-    const fallbacks = await screen.findAllByText('Loading trends…');
+    const fallbacks = await screen.findAllByText('Loading trends');
     expect(fallbacks).toHaveLength(2);
     for (const fallback of fallbacks) {
       const region = fallback.closest('[role="status"]');
@@ -724,7 +724,7 @@ describe('generateMetadata', () => {
     ]);
     const metadata = await generateMetadata({ params: Promise.resolve({ id: 'custom-my-commute' }) });
     expect(metadata.title).toBe('My Commute');
-    expect(metadata.description).toBe('My Commute: Severe Delays — Signal failure at Woking');
+    expect(metadata.description).toBe('My Commute: Severe Delays. Signal failure at Woking');
     expect(metadata.openGraph?.title).toBe('My Commute · Distant Signal');
     expect(metadata.twitter).toMatchObject({ card: 'summary_large_image' });
   });

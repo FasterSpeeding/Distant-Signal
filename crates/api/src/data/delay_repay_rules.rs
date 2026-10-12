@@ -368,7 +368,7 @@ pub struct DelayRepayEstimate {
 
 const DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a guarantee of \
     compensation and not proof you travelled. Always verify eligibility and submit any claim \
-    directly with the operator -- this app never submits a claim on your behalf.";
+    directly with the operator. Distant Signal never submits a claim on your behalf.";
 
 /// [`DISCLAIMER`] for a provisional estimate: the same caveat, led by the
 /// fact that the train has not arrived yet and the figure will change.
@@ -376,7 +376,7 @@ pub const PROVISIONAL_DISCLAIMER: &str = "Provisional: the train has not reached
     destination yet, so this uses its current delay projected to the public timetable arrival \
     there, and it will change. This is a rough, community-sourced estimate, not a guarantee of \
     compensation and not proof you travelled. Always verify eligibility and submit any claim \
-    directly with the operator -- this app never submits a claim on your behalf.";
+    directly with the operator. Distant Signal never submits a claim on your behalf.";
 
 /// The route-level disclaimer rendered by every HTTP response that carries
 /// a Delay Repay estimate -- textually DIFFERENT from `DISCLAIMER` above
@@ -386,8 +386,8 @@ pub const PROVISIONAL_DISCLAIMER: &str = "Provisional: the train has not reached
 /// [`assess`], so the safety-critical, verbatim-required text cannot drift
 /// between them (see `components/DelayRepayEstimate.tsx`'s doc comment).
 pub const ROUTE_DISCLAIMER: &str = "This is a rough, community-sourced estimate, not a \
-    guarantee of compensation and not proof you travelled. This app never submits a claim on your \
-    behalf -- verify eligibility and claim directly from the operator using the link above.";
+    guarantee of compensation and not proof you travelled. Distant Signal never submits a claim \
+    on your behalf. Verify eligibility and claim directly from the operator using the link above.";
 
 /// The estimate for `delay_minutes` under `scheme`; `None` below the
 /// scheme's lowest band, or for an own-scheme operator (no percentage is

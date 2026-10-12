@@ -190,7 +190,7 @@ export function StationTimetable({
 
   function resultsContent() {
     if (loading) {
-      return <ServiceListNotice busy>Loading scheduled departures…</ServiceListNotice>;
+      return <ServiceListNotice busy>Loading scheduled departures</ServiceListNotice>;
     }
     if (results === 'error') {
       return <ServiceListNotice>Couldn&apos;t load the scheduled departures right now.</ServiceListNotice>;
@@ -227,7 +227,7 @@ export function StationTimetable({
           loading={loadingMore}
           failed={results.loadMoreFailed}
           onLoadMore={handleLoadMore}
-          endMessage="You've reached the end — no more scheduled departures today."
+          endMessage="You've reached the end. No more scheduled departures today."
         />
       </Stack>
     );
@@ -271,7 +271,7 @@ export function StationTimetable({
             phone column, and so would the link's hit area. */}
         <div>
           <TextLink href={`/trains?station=${crs.toUpperCase()}`} inline underline="always">
-            Search a different day or filter <span aria-hidden="true">→</span>
+            Search a different day or filter
           </TextLink>
         </div>
       </Flex>

@@ -19,7 +19,6 @@ import { planPageSearch, type PlanFormInitial } from '@/lib/tripPlanUrl';
 import { getStationNames } from '@/lib/suggestions';
 import { groupLabels, useStationGroups } from '@/lib/stationGroups';
 import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
-import { RouteText } from './RouteArrow';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 import { apiRefusalMessage, describeFailure, failureFromResponse } from '@/lib/failure';
@@ -204,7 +203,7 @@ export function PlanTripFlow({
 
     const [firstLeg, ...laterLegs] = trainLegs;
     if (firstLeg === undefined) {
-      setCreationError('This route needs no train — there is nothing to track.');
+      setCreationError('This route needs no train, so there is nothing to track.');
       setCreating(false);
       return;
     }
@@ -374,8 +373,8 @@ export function PlanTripFlow({
           </Text>
           <List size="sm" mt={4}>
             <ListItem>Switch Results to Fastest, which has no such limit.</ListItem>
-            <ListItem>Remove some stops to call at, or some “Pass through” stations.</ListItem>
-            <ListItem>Lower “Most changes” in Advanced options.</ListItem>
+            <ListItem>Remove some stops to call at, or some &quot;Pass through&quot; stations.</ListItem>
+            <ListItem>Lower &quot;Most changes&quot; in Advanced options.</ListItem>
           </List>
         </Alert>
       )}
@@ -392,12 +391,10 @@ export function PlanTripFlow({
         );
         return (
           <Stack key={segmentIndex} gap="xs">
-            <Text fw={600}>
-              <RouteText>{segmentLabel}</RouteText>
-            </Text>
+            <Text fw={600}>{segmentLabel}</Text>
             {segment.itineraries.length === 0 && (
               <Alert color="yellow">
-                No route found for <RouteText>{segmentLabel}</RouteText>.
+                No route found for {segmentLabel}.
                 {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
                 {segment.noResultReason && hintFor(segment.noResultReason) && (
                   <Text size="sm" mt={4}>

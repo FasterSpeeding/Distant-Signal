@@ -2,7 +2,6 @@ import { Badge, Group, Stack, Text } from '@mantine/core';
 import type { TrackedTrainTicket, TicketListItem, TicketSource } from '@/lib/types';
 import { stationLabel } from '@/lib/stationLabel';
 import { LocalDateTime } from './LocalDateTime';
-import { RouteText } from './RouteArrow';
 
 /** Provenance labels for `TicketSummary`'s badge -- styled after
  * `IssueList.tsx`'s `DATA_QUALITY_LABELS` (`components/IssueList.tsx:38-44`),
@@ -19,7 +18,7 @@ const SOURCE_LABELS: Record<TicketSource, string> = {
   'pdf-heuristic': 'From PDF',
 };
 
-/** The "operator — ticket type" / "origin → destination" row renderer,
+/** The "operator · ticket type" / "origin to destination" row renderer,
  * shared by `TicketPanel.tsx` (one tracked train's own tickets) and the
  * merged `app/track/mine/page.tsx` (both a train's attached tickets and
  * its own standalone-tickets section) -- extracted out of `TicketPanel.tsx`,
@@ -52,7 +51,7 @@ export function TicketSummary({
   // a non-null origin, which doesn't fit this component's looser shape.
   const route =
     ticket.originCrs || ticket.destinationCrs
-      ? `${ticket.originCrs ? stationLabel(ticket.originCrs, ticket.originName) : '?'} → ${
+      ? `${ticket.originCrs ? stationLabel(ticket.originCrs, ticket.originName) : '?'} to ${
           ticket.destinationCrs ? stationLabel(ticket.destinationCrs, ticket.destinationName) : '?'
         }`
       : null;
@@ -62,15 +61,11 @@ export function TicketSummary({
         {ticket.customName ?? (
           <>
             {ticket.operator ?? 'Ticket'}
-            {ticket.ticketType ? ` — ${ticket.ticketType}` : ''}
+            {ticket.ticketType ? ` · ${ticket.ticketType}` : ''}
           </>
         )}
       </Text>
-      {route && (
-        <Text size="sm">
-          <RouteText>{route}</RouteText>
-        </Text>
-      )}
+      {route && <Text size="sm">{route}</Text>}
       <Group gap="xs">
         {/* Explicit gray, same rationale as IssueList.tsx's dataQuality
             badge (components/IssueList.tsx:366-372): without a `color`,

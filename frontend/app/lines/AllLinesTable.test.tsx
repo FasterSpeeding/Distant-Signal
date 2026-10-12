@@ -321,10 +321,15 @@ describe('AllLinesTable', () => {
 // whose report just has an empty `lineStatuses`; see `worstStatus`, which
 // never itself returns undefined for a real report).
 describe('AllLinesTable "NO DATA" status badge', () => {
-  it('renders a grey "NO DATA" badge, with a reason tooltip, for a line with no report at all', async () => {
+  it('renders a grey "No data" badge, with a reason tooltip, for a line with no report at all', async () => {
     renderTable();
     const row = screen.getByText('South Western').closest('tr')!;
-    expect(within(row).getByText('NO DATA')).toBeInTheDocument();
+    // The numeric cells' en dashes also read "No data" (visually hidden).
+    const badgeRoot = within(row)
+      .getAllByText('No data')
+      .map((el) => el.closest('.mantine-Badge-root'))
+      .find((el) => el !== null)!;
+    expect(badgeRoot).toBeInTheDocument();
 
     // Mantine `Tooltip` binds its hover listeners to the wrapped child's
     // own root node -- `Badge` renders its visible text in a nested
@@ -334,7 +339,6 @@ describe('AllLinesTable "NO DATA" status badge', () => {
     // `Tooltip`+`Badge` repro; every other Tooltip+`Text` pair elsewhere in
     // this file doesn't hit this because `Text` itself is the wrapped
     // root, with no further nesting).
-    const badgeRoot = within(row).getByText('NO DATA').closest('.mantine-Badge-root')!;
     fireEvent.mouseEnter(badgeRoot);
     expect(await screen.findByRole('tooltip')).toHaveTextContent('No status has been computed for this line yet.');
   });
@@ -411,26 +415,31 @@ describe('AllLinesTable dash tooltip', () => {
     return renderWithMantine(<AllLinesTable lines={dashLines} reports={dashReports} pinnedLineIds={[]} tocs={[]} />);
   }
 
-  it('renders a plain dash glyph for every state, no new visual vocabulary', () => {
+  it('renders an en dash, read as "No data", for every state, no new visual vocabulary', () => {
     renderDashTable();
-    const dashes = screen.getAllByText('—');
+    const dashes = screen.getAllByText('–');
     // Two numeric columns (Avg Delay, Cancelled) per row, times three rows.
     expect(dashes.length).toBe(6);
+    // Each reads "No data" to a screen reader; the dash itself is aria-hidden.
+    expect(screen.getAllByText('No data')).toHaveLength(6);
+    for (const dash of dashes) expect(dash).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('shows the no-coverage reason on hover for a line with zero StationSample rows', async () => {
     renderDashTable();
     const row = screen.getByText('No Coverage Line').closest('tr')!;
-    const [avgDelayDash] = within(row).getAllByText('—');
-    fireEvent.mouseEnter(avgDelayDash!);
+    const [avgDelayDash] = within(row).getAllByText('–');
+    // The tooltip wraps the cell text, whose en dash is an aria-hidden span.
+    fireEvent.mouseEnter(avgDelayDash!.parentElement!);
     expect(await screen.findByRole('tooltip')).toHaveTextContent('No live departure data received for this line yet.');
   });
 
   it('shows the below-threshold reason on hover for a line with thin coverage', async () => {
     renderDashTable();
     const row = screen.getByText('Below Threshold Line').closest('tr')!;
-    const [avgDelayDash] = within(row).getAllByText('—');
-    fireEvent.mouseEnter(avgDelayDash!);
+    const [avgDelayDash] = within(row).getAllByText('–');
+    // The tooltip wraps the cell text, whose en dash is an aria-hidden span.
+    fireEvent.mouseEnter(avgDelayDash!.parentElement!);
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       'Too few live departures sampled to report a rate right now.',
     );
@@ -439,8 +448,9 @@ describe('AllLinesTable dash tooltip', () => {
   it('shows the TfL copy on hover, not the below-threshold copy, even though sampleAvailability says below-threshold', async () => {
     renderDashTable();
     const row = screen.getByText('Tube Line').closest('tr')!;
-    const [avgDelayDash] = within(row).getAllByText('—');
-    fireEvent.mouseEnter(avgDelayDash!);
+    const [avgDelayDash] = within(row).getAllByText('–');
+    // The tooltip wraps the cell text, whose en dash is an aria-hidden span.
+    fireEvent.mouseEnter(avgDelayDash!.parentElement!);
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       "Not measured by Distant Signal. The status is TfL's own.",
     );
@@ -483,7 +493,7 @@ describe('AllLinesTable responsive columns', () => {
 
   it('renders the full status label, never an ellipsized stub', () => {
     renderMobileTable();
-    expect(screen.getByText('Severe Delays')).toBeInTheDocument();
+    expect(screen.getByText('Severe delays')).toBeInTheDocument();
   });
 
   it('hides the numeric columns below the sm breakpoint', () => {
@@ -723,7 +733,7 @@ describe('AllLinesTable country filter', () => {
     ];
     renderWithMantine(<AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />);
 
-    expect(screen.getByText('Country — showing all')).toBeInTheDocument();
+    expect(screen.getByText('Country: showing all')).toBeInTheDocument();
     // Mantine's Chip in `multiple` mode renders as an accessible checkbox,
     // not a button (verified against this repo's own IssueList.test.tsx,
     // which exercises the identical ChipGroup-multiple pattern) -- see
@@ -735,12 +745,12 @@ describe('AllLinesTable country filter', () => {
     fireEvent.click(niChip);
     expect(screen.getByText('Synthetic NI Line')).toBeInTheDocument();
     expect(screen.queryByText('West Coast Main Line')).not.toBeInTheDocument();
-    expect(screen.getByText('Country — 1 selected')).toBeInTheDocument();
+    expect(screen.getByText('Country: 1 selected')).toBeInTheDocument();
 
     fireEvent.click(gbChip);
     expect(screen.getByText('Synthetic NI Line')).toBeInTheDocument();
     expect(screen.getByText('West Coast Main Line')).toBeInTheDocument();
-    expect(screen.getByText('Country — 2 selected')).toBeInTheDocument();
+    expect(screen.getByText('Country: 2 selected')).toBeInTheDocument();
 
     fireEvent.click(niChip); // toggle off, leaving only GB selected
     expect(screen.queryByText('Synthetic NI Line')).not.toBeInTheDocument();

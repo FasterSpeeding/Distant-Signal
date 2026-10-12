@@ -12,7 +12,6 @@ import { AttachTicketAction } from '@/components/AttachTicketAction';
 import { CreateJourneyLegFromTicketButton } from '@/components/CreateJourneyLegFromTicketButton';
 import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
-import { RouteText } from '@/components/RouteArrow';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
@@ -292,7 +291,7 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
           title={
             <Link href={`/journeys/${journey.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
               <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
-                <RouteText>{title}</RouteText>
+                {title}
               </Text>
             </Link>
           }
@@ -303,7 +302,7 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
             date are never printed twice on one row. */}
         {journey.customName && (
           <Text size="sm" c="dimmed">
-            <RouteText>{route}</RouteText>, {when}
+            {route}, {when}
           </Text>
         )}
       </Stack>
@@ -402,7 +401,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
                   <RenameTicketButton
                     ticketId={ticket.id}
                     customName={ticket.customName}
-                    defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
+                    defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` · ${ticket.ticketType}` : ''}`}
                   />
                   <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
                   <DeleteTicketButton ticketId={ticket.id} />
@@ -460,7 +459,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
   const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
   const heading = (
     <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
-      <RouteText>{displayName}</RouteText>
+      {displayName}
     </Text>
   );
 
@@ -539,7 +538,7 @@ function UnattachedTicketRow({ ticket, trains }: { ticket: TicketListItem; train
           <RenameTicketButton
             ticketId={ticket.id}
             customName={ticket.customName}
-            defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` — ${ticket.ticketType}` : ''}`}
+            defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` · ${ticket.ticketType}` : ''}`}
           />
           <DeleteTicketButton ticketId={ticket.id} />
         </Group>

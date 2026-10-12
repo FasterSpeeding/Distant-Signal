@@ -1,6 +1,5 @@
 import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
 import { codeRouteLabel } from '@/lib/stationLabel';
-import { RouteText } from './RouteArrow';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
 import { CANCELLED_LABEL, delayLabel } from '@/lib/serviceStatus';
@@ -102,9 +101,7 @@ export function ItineraryOption({
                 // says what it really is (and that it isn't tracked live).
                 <Stack key={index} gap={0}>
                   <Group gap="xs" wrap="wrap">
-                    <Text size="sm">
-                      <RouteText>{legSummary(leg, stationNames)}</RouteText>
-                    </Text>
+                    <Text size="sm">{legSummary(leg, stationNames)}</Text>
                     {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
                   </Group>
                   {viaPasses
@@ -143,7 +140,7 @@ export function ItineraryOption({
       </Group>
       {!hasTrainLeg && (
         <Text size="xs" c="dimmed" mt="xs">
-          This route needs no train — there is nothing to track.
+          This route needs no train, so there is nothing to track.
         </Text>
       )}
     </Card>

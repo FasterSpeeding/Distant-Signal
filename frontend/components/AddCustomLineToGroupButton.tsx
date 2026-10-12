@@ -8,6 +8,7 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import type { LineSummary } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { LoadingText } from '@/components/LoadingText';
 
 /** Picker sourced from the caller's OWN custom lines, mirroring
  * `AddTrainToGroupButton`'s "picker sourced from the caller's own
@@ -96,7 +97,7 @@ export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupI
           Everyone in this group will be able to see this line&apos;s stations, operators and live status. Only you can
           edit or delete it, and you can stop sharing it at any time.
         </Text>
-        {loading && <Text c="dimmed">Loading your custom lines…</Text>}
+        {loading && <LoadingText>Loading your custom lines</LoadingText>}
         {!loading && lines !== null && lines.length === 0 && (
           <Text c="dimmed">You have no custom lines left to share with this group.</Text>
         )}

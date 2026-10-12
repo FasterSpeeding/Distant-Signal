@@ -5,7 +5,6 @@ import { JourneyProgress } from './JourneyProgress';
 import { JourneyTimeline, isGenuineCallingPoint, type JourneyEndpointNames } from './JourneyTimeline';
 import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
-import { RouteText } from './RouteArrow';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly, serviceNoun, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
 import type { TrainJourneyState } from '@/lib/types';
@@ -152,7 +151,7 @@ function TimetableOnlyMessage({
         )}
       </Group>
       <Text size="sm" c="dimmed">
-        <RouteText>{trackedTrainDisplayName(state)}</RouteText>
+        {trackedTrainDisplayName(state)}
       </Text>
       <Text size="sm">{TIMETABLE_ONLY_MESSAGE}. These are the scheduled times.</Text>
     </Stack>
@@ -181,7 +180,7 @@ function StatusMessage({
 
   const pinSummary = (
     <Text size="sm" c="dimmed">
-      <RouteText>{trackedTrainDisplayName(state)}</RouteText>
+      {trackedTrainDisplayName(state)}
     </Text>
   );
 
@@ -194,7 +193,7 @@ function StatusMessage({
         </Group>
         {pinSummary}
         <Text size="sm" c="dimmed">
-          This train hasn&apos;t been matched to a live service yet — that&apos;s normal if it hasn&apos;t started
+          This train hasn&apos;t been matched to a live service yet. That&apos;s normal if it hasn&apos;t started
           running. Network Rail typically doesn&apos;t report a service until shortly before it departs. This page
           updates automatically.
         </Text>
@@ -232,7 +231,7 @@ function StatusMessage({
         </Text>
         {pinSummary}
         <Text size="sm" c="dimmed">
-          Network Rail never reported a matching service for this train. This won&apos;t resolve on its own — try
+          Network Rail never reported a matching service for this train. This won&apos;t resolve on its own. Try
           tracking the train again if it was a genuine mistake.
         </Text>
       </Stack>

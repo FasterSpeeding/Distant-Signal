@@ -119,13 +119,13 @@ pub fn validate_template_leg(
     // for the identical bug.
     if !is_three_letter_crs(origin_crs) {
         return Err(
-            "Enter a valid origin station — CRS codes are three letters, like WOK or EUS."
+            "Enter a valid origin station. CRS codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
     if !is_three_letter_crs(destination_crs) {
         return Err(
-            "Enter a valid destination station — CRS codes are three letters, like WOK or \
+            "Enter a valid destination station. CRS codes are three letters, like WOK or \
              EUS."
                 .to_string(),
         );

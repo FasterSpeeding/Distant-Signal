@@ -49,8 +49,8 @@ export function londonTodayDayProps(
  * separate submit (the picker), with no state at all for "I hand-edited a
  * date" (the buttons all read as unselected, but so does a freshly-loaded
  * default). Collapsed to a single `SegmentedControl` -- 7 days / 30 days /
- * Custom… -- with the picker and its submit button only shown once
- * "Custom…" is picked. That both fixes the undefined "no preset
+ * Custom dates -- with the picker and its submit button only shown once
+ * "Custom dates" is picked. That both fixes the undefined "no preset
  * highlighted" state (Custom is always the correct, real answer once a
  * date has been hand-edited) and recovers the picker's vertical space on
  * every render that isn't actually using it. */
@@ -74,7 +74,7 @@ export function HistoryRangePicker({
   // mounted instance with a fresh `preset`) without the component
   // remounting, so a plain `useState` initialiser would go stale. `preset`
   // is only ever `null` when `resolveRange` fell through to a genuine
-  // custom `from`/`to` -- the correct display for that is "Custom…", not
+  // custom `from`/`to` -- the correct display for that is "Custom dates", not
   // "no selection".
   const [selection, setSelection] = useState<Selection>(preset ?? 'custom');
 
@@ -95,7 +95,7 @@ export function HistoryRangePicker({
   }, [from, to]);
 
   // Only resynced off `preset` itself (not `from`/`to`), and deliberately:
-  // picking "Custom…" locally, before a range has been submitted, must not
+  // picking "Custom dates" locally, before a range has been submitted, must not
   // get clobbered back to the old preset just because this effect re-ran
   // for some unrelated reason -- `preset` hasn't actually changed yet in
   // that case, so the dependency array never fires.
@@ -171,7 +171,7 @@ export function HistoryRangePicker({
           data={[
             { label: '7 days', value: '7d' },
             { label: '30 days', value: '30d' },
-            { label: 'Custom…', value: 'custom' },
+            { label: 'Custom dates', value: 'custom' },
           ]}
         />
       </Stack>

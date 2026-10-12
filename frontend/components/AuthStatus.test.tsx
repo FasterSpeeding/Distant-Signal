@@ -110,12 +110,15 @@ describe('AuthStatus', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
     // `hidden: true` -- same as AccountMenu.test.tsx's own `menuItem`
     // helper: Mantine's dropdown content can be aria-hidden mid-transition.
-    expect(await screen.findByRole('menuitem', { name: 'Chat', hidden: true })).toHaveAttribute('href', '/chat');
+    expect(await screen.findByRole('menuitem', { name: 'Ask about trains', hidden: true })).toHaveAttribute(
+      'href',
+      '/chat',
+    );
   });
 
   it('omits Chat from the account menu by default', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
-    expect(screen.queryByRole('menuitem', { name: 'Chat' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Ask about trains' })).not.toBeInTheDocument();
   });
 });

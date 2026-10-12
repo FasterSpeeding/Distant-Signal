@@ -48,7 +48,7 @@ describe('HistoryRangePicker', () => {
     expect(screen.queryByText(/Pick both a start and end date/)).not.toBeInTheDocument();
   });
 
-  it('shows the date picker and "Show history" once Custom… is selected', () => {
+  it('shows the date picker and "Show history" once Custom dates is selected', () => {
     renderWithMantine(
       <HistoryRangePicker
         basePath="/lines/northern/history"
@@ -57,12 +57,12 @@ describe('HistoryRangePicker', () => {
         to="2026-08-21T12:00:00Z"
       />,
     );
-    fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom dates' }));
     expect(screen.getByText('Pick a date range')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Show history' })).toBeInTheDocument();
   });
 
-  it('shows Custom… as selected (not an undefined state) when the resolved range has no preset', () => {
+  it('shows Custom dates as selected (not an undefined state) when the resolved range has no preset', () => {
     renderWithMantine(
       <HistoryRangePicker
         basePath="/lines/northern/history"
@@ -71,7 +71,7 @@ describe('HistoryRangePicker', () => {
         to="2026-08-21T12:00:00Z"
       />,
     );
-    expect(screen.getByRole('radio', { name: 'Custom…' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Custom dates' })).toBeChecked();
     expect(screen.getByText('Pick a date range')).toBeInTheDocument();
   });
 

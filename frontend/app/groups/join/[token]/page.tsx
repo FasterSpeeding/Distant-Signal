@@ -162,7 +162,7 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>You&apos;re already in {preview.groupName}</Title>
-        <Text>No need to join again — you can open the group instead.</Text>
+        <Text>No need to join again. You can open the group instead.</Text>
         {/* Plain `<Link>` wrapping `Button`, not `component={Link}` on a
             Mantine polymorphic prop -- this page is a Server Component,
             and that pattern previously broke `next build`'s Server/Client
@@ -180,13 +180,13 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
       <Title order={1}>Join {preview.groupName}?</Title>
       <Text>
         {preview.memberCount} member{preview.memberCount === 1 ? '' : 's'} already in this group. Joining lets everyone
-        in {preview.groupName} see any tracked train you choose to share into it — your other tracked trains and tickets
+        in {preview.groupName} see any tracked train you choose to share into it. Your other tracked trains and tickets
         stay private.
       </Text>
       {session.authenticated ? (
         <JoinGroupButton token={token} groupId={preview.groupId} />
       ) : (
-        <LoginButton title="Log in — needs a Distant Signal account">Log in to join {preview.groupName}</LoginButton>
+        <LoginButton title="Log in (needs a Distant Signal account)">Log in to join {preview.groupName}</LoginButton>
       )}
     </Stack>
   );

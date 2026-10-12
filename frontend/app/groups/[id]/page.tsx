@@ -26,7 +26,6 @@ import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantB
 import { AddJourneyToGroupButton } from '@/components/AddJourneyToGroupButton';
 import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton';
 import { StatusBadge } from '@/components/StatusBadge';
-import { RouteText } from '@/components/RouteArrow';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { LoginLink } from '@/components/LoginLink';
@@ -185,7 +184,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
           `app/lines/[id]/history/page.tsx`'s own "Back to line" TextLink,
           placed above the `<h1>` the same way. */}
       <TextLink href="/groups" underline="always">
-        <span aria-hidden="true">←</span> Groups
+        Back to groups
       </TextLink>
       <Group justify="space-between" align="baseline">
         <Title order={1}>{group.name}</Title>
@@ -490,9 +489,7 @@ function SharedJourneyRow({
       <StatusRow
         title={
           <Link href={`/journeys/${journey.journeyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <Text fw={500}>
-              <RouteText>{displayName}</RouteText>
-            </Text>
+            <Text fw={500}>{displayName}</Text>
           </Link>
         }
         subtitle={

@@ -59,10 +59,10 @@ describe('LoginButton', () => {
   it('carries an optional title hint that the action needs an account', () => {
     mockUsePathname.mockReturnValue('/groups');
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
-    renderWithMantine(<LoginButton title="Log in — needs a Distant Signal account">Log in</LoginButton>);
+    renderWithMantine(<LoginButton title="Log in (needs a Distant Signal account)">Log in</LoginButton>);
     expect(screen.getByRole('button', { name: 'Log in' })).toHaveAttribute(
       'title',
-      'Log in — needs a Distant Signal account',
+      'Log in (needs a Distant Signal account)',
     );
   });
 

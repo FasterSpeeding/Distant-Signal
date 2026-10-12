@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { isGoodSeverity, isSeverityGroup, severityColor, severityGroup, severityLabel, worstStatus } from './severity';
+import {
+  isGoodSeverity,
+  isSeverityGroup,
+  severityBadgeLabel,
+  severityColor,
+  severityGroup,
+  severityLabel,
+  worstStatus,
+} from './severity';
 import type { LineStatusReport } from './types';
 
 describe('severityColor', () => {
@@ -179,5 +187,14 @@ describe('isSeverityGroup', () => {
 
   it('rejects undefined (no query param at all)', () => {
     expect(isSeverityGroup(undefined)).toBe(false);
+  });
+});
+
+describe('severityBadgeLabel', () => {
+  it('is the official name in sentence case, for badges', () => {
+    expect(severityLabel(9)).toBe('Minor Delays');
+    expect(severityBadgeLabel(9)).toBe('Minor delays');
+    expect(severityBadgeLabel(13)).toBe('No step free access');
+    expect(severityBadgeLabel(999)).toBe('Unknown');
   });
 });

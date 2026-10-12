@@ -40,7 +40,7 @@ describe('OperatorStatusCard', () => {
 
   it('renders the worst status badge', () => {
     renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
-    expect(screen.getByText('Minor Delays')).toBeInTheDocument();
+    expect(screen.getByText('Minor delays')).toBeInTheDocument();
   });
 
   it('renders the reason', () => {
@@ -96,7 +96,7 @@ describe('OperatorStatusCard', () => {
       <OperatorStatusCard operator={operator} pinned={false} needsAccountHint={true} />,
     );
     const pinToggle = container.querySelector('[aria-label*="Pin"]');
-    expect(pinToggle).toHaveAttribute('aria-label', 'Pin — needs an account');
+    expect(pinToggle).toHaveAttribute('aria-label', 'Pin (needs an account)');
   });
 
   it('clamps a long reason rather than letting it fill the card', () => {

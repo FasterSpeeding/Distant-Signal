@@ -21,6 +21,7 @@ import {
   MultiSelect,
   UnstyledButton,
   Tooltip,
+  VisuallyHidden,
 } from '@mantine/core';
 import { PinToggle } from '@/components/PinToggle';
 import { TextLink } from '@/components/TextLink';
@@ -102,7 +103,7 @@ function ariaSort(field: SortField, sort: SortState | null): 'ascending' | 'desc
  * problems. */
 const NO_DATA_STATUS_RANK = -1;
 
-/** The "NO DATA" badge's tooltip reason (Task 3.4.1). Mirrors the numeric
+/** The "No data" badge's tooltip reason (Task 3.4.1). Mirrors the numeric
  * columns' own `representative ? sampleUnavailableReason(representative) :
  * <plain dash>` shape immediately below for the same reason -- `worst` and
  * `representative` are both derived from the same possibly-absent
@@ -141,6 +142,16 @@ const COUNTRY_LABELS: Record<Country, string> = {
   RepublicOfIreland: 'Republic of Ireland',
 };
 
+/** An empty numeric cell (no sampled rate): an en dash keeps the column
+ * scannable at a glance; a screen reader hears "No data" instead.
+ * docs/style-guide.md, Writing: placeholders. */
+const NO_VALUE = (
+  <Text size="sm" c="dimmed">
+    <span aria-hidden="true">–</span>
+    <VisuallyHidden>No data</VisuallyHidden>
+  </Text>
+);
+
 /** Mirrors `chipRowLabel` in `components/IssueList.tsx:131-133` --
  * duplicated rather than imported since that function isn't exported and
  * this is a one-line, component-local concern in both places (same as
@@ -149,14 +160,14 @@ const COUNTRY_LABELS: Record<Country, string> = {
  * nothing, not "filters to nothing" -- the exact confusion that file's own
  * comment names. */
 function countryChipLabel(selected: number): string {
-  return selected === 0 ? 'Country — showing all' : `Country — ${selected} selected`;
+  return selected === 0 ? 'Country: showing all' : `Country: ${selected} selected`;
 }
 
 /** Mirrors `countryChipLabel` immediately above -- single-select, not
  * multi (a line has exactly one worst status right now, so "2 selected"
  * would never be a meaningful state the way it is for operator/country). */
 function statusChipLabel(selected: SeverityGroup | null): string {
-  return selected ? `Status — ${SEVERITY_GROUP_LABELS[selected]}` : 'Status — showing all';
+  return selected ? `Status: ${SEVERITY_GROUP_LABELS[selected]}` : 'Status: showing all';
 }
 
 /** Same gap, same fix, as `components/IncidentSearchForm.tsx`'s own
@@ -335,7 +346,7 @@ export function AllLinesTable({
     // AND-combined with the other three filters, same posture: a
     // severity-group filter answers a different question (what state is
     // the line in right now) than operator/country/name do. `row.worst` is
-    // `undefined` for a line with no computed status at all ("NO DATA" in
+    // `undefined` for a line with no computed status at all ("No data" in
     // the table below) -- such a row cannot match any specific bucket, and
     // is only ever visible under "All statuses".
     if (statusGroupFilter) {
@@ -609,11 +620,11 @@ export function AllLinesTable({
                     // ellipsis truncation, the same fix `/lines/[id]`'s own
                     // "No status yet" badge and `StatusBadge` itself already
                     // rely on (see app/globals.css's `[data-status-badge]`
-                    // rule) -- otherwise "NO DATA" clips to "N…" in this same
+                    // rule) -- otherwise "No data" clips to "N…" in this same
                     // table at narrow widths.
                     <Tooltip label={noStatusReason(representative)}>
                       <Badge tt="none" color="gray" variant="outline" data-status-badge>
-                        NO DATA
+                        No data
                       </Badge>
                     </Tooltip>
                   )}
@@ -622,30 +633,18 @@ export function AllLinesTable({
                   {stats ? (
                     <Text size="sm">{stats.avgDelayMinutes.toFixed(1)} min</Text>
                   ) : representative ? (
-                    <Tooltip label={sampleUnavailableReason(representative)}>
-                      <Text size="sm" c="dimmed">
-                        —
-                      </Text>
-                    </Tooltip>
+                    <Tooltip label={sampleUnavailableReason(representative)}>{NO_VALUE}</Tooltip>
                   ) : (
-                    <Text size="sm" c="dimmed">
-                      —
-                    </Text>
+                    NO_VALUE
                   )}
                 </TableTd>
                 <TableTd visibleFrom="sm">
                   {cancelledPct !== null ? (
                     <Text size="sm">{cancelledPct}%</Text>
                   ) : representative ? (
-                    <Tooltip label={sampleUnavailableReason(representative)}>
-                      <Text size="sm" c="dimmed">
-                        —
-                      </Text>
-                    </Tooltip>
+                    <Tooltip label={sampleUnavailableReason(representative)}>{NO_VALUE}</Tooltip>
                   ) : (
-                    <Text size="sm" c="dimmed">
-                      —
-                    </Text>
+                    NO_VALUE
                   )}
                 </TableTd>
                 <TableTd>

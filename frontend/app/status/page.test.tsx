@@ -46,7 +46,7 @@ describe('NetworkStatusPage', () => {
     ]);
     renderWithMantine(await NetworkStatusPage());
 
-    const link = screen.getByRole('link', { name: '1 line with Severe Disruption — view in Lines' });
+    const link = screen.getByRole('link', { name: '1 line with Severe Disruption, view in Lines' });
     expect(link).toHaveAttribute('href', '/lines?statusGroup=severe');
   });
 

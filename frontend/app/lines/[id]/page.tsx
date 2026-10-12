@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { Badge, Stack, Title, Text, Group, Button, Paper } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
+import { LoadingText } from '@/components/LoadingText';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines, getAllTocs } from '@/lib/api';
@@ -37,7 +38,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
 function TrendsLoadingFallback() {
   return (
     <Paper withBorder p="md" role="status" aria-busy="true">
-      <Text c="dimmed">Loading trends…</Text>
+      <LoadingText size="md">Loading trends</LoadingText>
     </Paper>
   );
 }
@@ -50,7 +51,7 @@ function TrendsLoadingFallback() {
 function TrainsLoadingFallback() {
   return (
     <Paper withBorder p="md" role="status" aria-busy="true">
-      <Text c="dimmed">Loading trains…</Text>
+      <LoadingText size="md">Loading trains</LoadingText>
     </Paper>
   );
 }
@@ -237,7 +238,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const worst = worstStatus(report);
   const title = report.name;
   const description = worst.reason
-    ? `${report.name}: ${severityLabel(worst.statusSeverity)} — ${worst.reason}`
+    ? `${report.name}: ${severityLabel(worst.statusSeverity)}. ${worst.reason}`
     : `${report.name}: ${severityLabel(worst.statusSeverity)}`;
 
   return pageMetadata(title, description);

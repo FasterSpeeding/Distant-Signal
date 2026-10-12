@@ -46,7 +46,7 @@ describe('StationTimetable', () => {
     renderWithMantine(<StationTimetable crs="RDG" />);
 
     expect(screen.getByRole('button', { name: 'Scheduled departures' })).toBeInTheDocument();
-    expect(screen.queryByText('Loading scheduled departures…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading scheduled departures')).not.toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -71,8 +71,8 @@ describe('StationTimetable', () => {
 
     fireEvent.click(expand());
 
-    await waitFor(() => expect(screen.getByText('Loading scheduled departures…')).toBeInTheDocument());
-    const status = screen.getByText('Loading scheduled departures…').closest('[role="status"]');
+    await waitFor(() => expect(screen.getByText('Loading scheduled departures')).toBeInTheDocument());
+    const status = screen.getByText('Loading scheduled departures').closest('[role="status"]');
     expect(status).toHaveAttribute('aria-busy', 'true');
   });
 
@@ -183,7 +183,7 @@ describe('StationTimetable', () => {
     await screen.findByRole('link', { name: rowName('08:22', 'BRI') });
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     // The button doesn't just vanish -- the list says it is complete.
-    expect(screen.getByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
+    expect(screen.getByText("You've reached the end. No more scheduled departures today.")).toBeInTheDocument();
   });
 
   it('says the end has been reached once the last page is in, rather than just dropping the button', async () => {
@@ -202,7 +202,7 @@ describe('StationTimetable', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
-    expect(await screen.findByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
+    expect(await screen.findByText("You've reached the end. No more scheduled departures today.")).toBeInTheDocument();
   });
 
   it('does not claim the end of results when a "Load more" page fails -- it reports the failure and keeps the retry', async () => {
@@ -246,7 +246,7 @@ describe('StationTimetable', () => {
 
     expect(await screen.findByRole('link', { name: rowName('11:40', 'BRI') })).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
-    expect(screen.getByText("You've reached the end — no more scheduled departures today.")).toBeInTheDocument();
+    expect(screen.getByText("You've reached the end. No more scheduled departures today.")).toBeInTheDocument();
   });
 
   it('collapsing mid-"Load more" leaves a working button on re-expand, not one stuck spinning', async () => {
@@ -389,7 +389,7 @@ describe('StationTimetable', () => {
 
     expect(screen.queryByRole('link', { name: rowName('08:22', 'BRI') })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: rowName('10:05', 'EXD') })).not.toBeInTheDocument();
-    expect(screen.queryByText('Loading scheduled departures…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading scheduled departures')).not.toBeInTheDocument();
   });
 
   it('shows a disclaimer above the rows once expanded with results', async () => {
@@ -415,8 +415,7 @@ describe('StationTimetable', () => {
 
     const link = screen.getByRole('link', { name: 'Search a different day or filter' });
     expect(link).toHaveAttribute('href', '/trains?station=RDG');
-    // The trailing arrow is still on screen, but aria-hidden.
-    expect(link.querySelector('[aria-hidden="true"]')).toHaveTextContent('→');
+    expect(link).not.toHaveTextContent('→');
   });
 
   it('notes that trains terminating at this station will not appear, without claiming the operator is unknown', async () => {

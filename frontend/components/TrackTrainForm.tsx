@@ -31,6 +31,7 @@ import { stationLabel } from '@/lib/stationLabel';
 import { addCalendarDays, nowInLondon, londonToday, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
 import type { BoardCallingPoint, CreateJourneyResponse, LineTrainSummaryLive } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
@@ -46,7 +47,7 @@ export function lastPinDate(): string {
   return addCalendarDays(londonToday(), PIN_MAX_DAYS_AHEAD);
 }
 
-const pinTooFarMessage = `That departure is too far ahead — trains can be tracked up to ${PIN_MAX_DAYS_AHEAD} days before they run.`;
+const pinTooFarMessage = `That departure is too far ahead. Trains can be tracked up to ${PIN_MAX_DAYS_AHEAD} days before they run.`;
 
 /** True unless `destinationCrs` looks like a resolved 3-letter code AND
  * the row's own destination doesn't case-insensitively match it. While
@@ -561,7 +562,7 @@ export function TrackTrainForm({
   const [originTouched, setOriginTouched] = useState(false);
   const [picker, setPicker] = useState<Picker>(null);
   // Initialized from `initialOrigin` (not `false`) so a form mounted with
-  // an already-valid pre-filled origin shows "Checking for departures…"
+  // an already-valid pre-filled origin shows "Checking for departures"
   // on the very first paint rather than flashing the `picker === null`
   // "couldn't load" sentence for one render before the effect below runs.
   // Per docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
@@ -981,7 +982,7 @@ export function TrackTrainForm({
    * app-wide for one button, this takes the plan's other sanctioned
    * fix: the button now only disables while a submit is actually in
    * flight (`submitting`, a brief, self-explanatory state with its own
-   * "Tracking…" label) -- an invalid press instead falls through to here
+   * "Tracking" label) -- an invalid press instead falls through to here
    * and surfaces the same `fieldError` `Alert` a failed backend
    * validation already renders, so a click always gets a visible result
    * instead of silently doing nothing behind an near-invisible control. */
@@ -1115,23 +1116,19 @@ export function TrackTrainForm({
       );
     }
     if (pickerLoading) {
-      return (
-        <Text size="sm" c="dimmed">
-          Checking for departures…
-        </Text>
-      );
+      return <LoadingText>Checking for departures</LoadingText>;
     }
     if (picker === null) {
       return (
         <Text size="sm" c="dimmed">
-          Couldn&apos;t load departures for this station right now — enter the details below.
+          Couldn&apos;t load departures for this station right now. Enter the details below.
         </Text>
       );
     }
     if (picker === 'unavailable') {
       return (
         <Text size="sm" c="dimmed">
-          No departure information is available for this station — enter the details below.
+          No departure information is available for this station. Enter the details below.
         </Text>
       );
     }
@@ -1212,8 +1209,8 @@ export function TrackTrainForm({
     return (
       <>
         <Text size="sm" c="dimmed">
-          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead — this
-          is not live running information and may be up to 30 minutes out of date.
+          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead. This is
+          not live running information and may be up to 30 minutes out of date.
         </Text>
         {filtered.length === 0 ? (
           <Text size="sm" c="dimmed">
@@ -1310,7 +1307,7 @@ export function TrackTrainForm({
       {attachTicketId === undefined && (
         <Text c="dimmed">
           {mode === 'window'
-            ? "Not sure which train yet? Tell us roughly when you're travelling — Origin, Destination and at least one of the times below — and we'll show you the matches to choose from. You can change your pick later."
+            ? "Not sure which train yet? Tell us roughly when you're travelling (Origin, Destination and at least one of the times below) and we'll show you the matches to choose from. You can change your pick later."
             : 'Track a specific train to see its live position, delay and next stop.'}
         </Text>
       )}
@@ -1579,13 +1576,13 @@ export function TrackTrainForm({
             `handleSubmit`'s own doc comment (Task 3.6.14) for why an
             invalid-but-not-yet-submitted form no longer disables this
             button at all. */}
-          <Button type="submit" disabled={submitting}>
+          <Button type="submit" disabled={submitting} leftSection={submitting ? <ButtonSpinner /> : undefined}>
             {mode === 'window'
               ? submitting
-                ? 'Searching…'
+                ? 'Searching'
                 : 'Search for a train'
               : submitting
-                ? 'Tracking…'
+                ? 'Tracking'
                 : 'Track this train'}
           </Button>
         </Group>

@@ -182,7 +182,9 @@ export function PlanTripAdvancedOptions({
           <Stack gap="lg">
             <StationListPicker
               label="Pass through (in order)"
-              description="Every route goes through these stations, in this order, whether or not the train stops there. Unlike “Call at”, you don't need to stop. A group such as “Any of the London Terminals” is passed through any one of its stations."
+              description={
+                'Every route goes through these stations, in this order, whether or not the train stops there. Unlike "Call at", you don\'t need to stop. A group such as "Any of the London Terminals" is passed through any one of its stations.'
+              }
               values={options.viaCrs ?? []}
               onChange={(viaCrs) => onChange({ ...options, viaCrs })}
               names={names}

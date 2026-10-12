@@ -7,6 +7,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ButtonSpinner } from '@/components/LoadingText';
 
 /** `admin`/`owner`-only rename control for `PUT /groups/{id}` (spec §3:
  * "Rename the group | `admin` or `owner`"). A button that opens a modal
@@ -100,8 +101,13 @@ export function RenameGroupButton({ groupId, currentName }: { groupId: string; c
             <Button variant="default" onClick={close} disabled={submitting}>
               Cancel
             </Button>
-            <Button type="submit" disabled={name.trim().length === 0 || submitting} aria-label="Confirm rename group">
-              {submitting ? 'Saving…' : 'Save'}
+            <Button
+              type="submit"
+              disabled={name.trim().length === 0 || submitting}
+              aria-label="Confirm rename group"
+              leftSection={submitting ? <ButtonSpinner /> : undefined}
+            >
+              {submitting ? 'Saving' : 'Save'}
             </Button>
           </Group>
         </Stack>

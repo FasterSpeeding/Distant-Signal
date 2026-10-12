@@ -23,7 +23,7 @@ export function generateMetadata(): Metadata {
   return withAbsoluteTitle(
     legalPageMetadata(
       'Accessibility statement',
-      'How accessible Distant Signal is, known limitations, and how to ask for help.',
+      'How accessible Distant Signal is, known limitations and how to ask for help.',
     ),
   );
 }

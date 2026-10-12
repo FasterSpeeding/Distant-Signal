@@ -38,7 +38,7 @@ function ErrorIcon() {
 
 /** How long to wait for `auth()`'s authorization-code exchange before
  * giving up and showing an error -- there is otherwise no bound on how
- * long this page can sit on "Connecting…" if the exchange (a round trip
+ * long this page can sit on "Connecting" if the exchange (a round trip
  * to `distant-signal-mcp`'s own token endpoint) hangs rather than
  * rejecting outright. 20s: generous for a same-request OAuth token
  * exchange, but short enough that a genuinely stuck connection doesn't
@@ -108,7 +108,7 @@ type CallbackState = { kind: 'connecting' } | { kind: 'success' } | { kind: 'err
  * `BrowserMcpOAuthProvider` (Task 7) so the resulting tokens land in
  * `localStorage` the same way either caller would leave them.
  *
- * Review §3.1.1: this used to keep "Connecting…" as the heading in every
+ * Review §3.1.1: this used to keep "Connecting" as the heading in every
  * branch, including a failed one, and rendered the raw exchange error
  * (`err.message` -- anything the MCP SDK or the token endpoint felt like
  * throwing) as the page's only explanation, with no next step. The
@@ -258,7 +258,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>{state.kind === 'success' ? 'Connected, taking you to chat…' : 'Connecting…'}</Title>
+      <Title order={1}>{state.kind === 'success' ? 'Connected. Taking you to chat' : 'Connecting'}</Title>
       <Group gap="sm">
         {state.kind === 'connecting' && <Loader size="sm" />}
         <Text c="dimmed">Finishing logging in to the rail data service.</Text>

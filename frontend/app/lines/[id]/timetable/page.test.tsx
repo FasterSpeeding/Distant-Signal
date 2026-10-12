@@ -120,7 +120,7 @@ describe('LineTimetablePage', () => {
     // The stop strip starts at the picked station: Waterloo is not listed.
     expect(within(list).getByRole('link')).toHaveAccessibleName(/Then calls at Weymouth\./);
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
-      'This line’s trains, from Woking to Weymouth, towards Weymouth from 06:00',
+      "This line's trains, from Woking to Weymouth, towards Weymouth from 06:00",
     );
     expect(screen.getByRole('link', { name: 'Show the whole day' })).toHaveAttribute(
       'href',
@@ -199,7 +199,7 @@ describe('LineTimetablePage', () => {
     await waitFor(() => expect(screen.getByRole('list', { name: 'More trains' })).toBeInTheDocument());
     expect(visibleText(within(screen.getByRole('list', { name: 'More trains' })).getByRole('link'))).toMatch(/^06:30/);
     expect(screen.getByText('1 more train loaded.')).toBeInTheDocument();
-    expect(screen.getByText("You've reached the end — no more trains on this line that day.")).toBeInTheDocument();
+    expect(screen.getByText("You've reached the end. No more trains on this line that day.")).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 

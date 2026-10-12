@@ -133,7 +133,7 @@ describe('PlanPage (/plan)', () => {
 
     // The plan request went out with no login step in front of it, and
     // its results render for a visitor with no session.
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]![0])).toMatch(/^\/api\/Trips\/plan\?/);
     expect(screen.queryByText('Log in required')).not.toBeInTheDocument();

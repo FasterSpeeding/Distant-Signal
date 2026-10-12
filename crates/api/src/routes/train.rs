@@ -1231,7 +1231,7 @@ async fn post_track_by_uid(
         return Err((
             StatusCode::BAD_REQUEST,
             format!(
-                "That train ran too long ago — trains can be tracked up to {} days after they run.",
+                "That train ran too long ago. Trains can be tracked up to {} days after they run.",
                 train_tracking::TRACK_BY_UID_MAX_DAYS_BEHIND
             ),
         ));

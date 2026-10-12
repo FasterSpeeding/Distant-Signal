@@ -3,7 +3,7 @@ import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { LoadMoreControl } from './LoadMoreControl';
 
-const END_MESSAGE = "You've reached the end — no more results.";
+const END_MESSAGE = "You've reached the end. No more results.";
 
 describe('LoadMoreControl', () => {
   it('renders the button, and no end-of-results copy, while there is another page', () => {

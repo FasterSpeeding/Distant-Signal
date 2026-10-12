@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { Paper, Text, VisuallyHidden } from '@mantine/core';
+import { LoadingText } from '@/components/LoadingText';
 import { ServiceModeBadge } from '@/components/ServiceModeBadge';
 import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import type { LineCatalogueStation, LineTrainSummary } from '@/lib/types';
@@ -28,9 +29,13 @@ export function ServiceRowList(props: Omit<ComponentPropsWithoutRef<'ul'>, 'clas
 export function ServiceListNotice({ children, busy = false }: { children: ReactNode; busy?: boolean }) {
   return (
     <Paper withBorder p="md" role="status" aria-busy={busy || undefined}>
-      <Text size="sm" c="dimmed">
-        {children}
-      </Text>
+      {busy ? (
+        <LoadingText>{children}</LoadingText>
+      ) : (
+        <Text size="sm" c="dimmed">
+          {children}
+        </Text>
+      )}
     </Paper>
   );
 }

@@ -276,8 +276,8 @@ export default async function DashboardPage() {
             <NotificationsToggle />
           </Group>
           <Text c="dimmed">
-            Live UK rail line status, train tracking, and Delay Repay support — pin the lines, stations and operators
-            you care about once you&apos;re logged in.
+            Live UK rail line status, train tracking and Delay Repay support. Pin the lines, stations and operators you
+            care about once you&apos;re logged in.
           </Text>
         </Stack>
 
@@ -738,7 +738,7 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
             // `<p>`, or the rest of the sentence gets forced onto its own
             // line. See TextLink's own doc comment.
             <Text size="sm" c="dimmed">
-              Showing the first {worst.length} — {hidden} more {hidden === 1 ? 'line is' : 'lines are'} not at Good
+              Showing the first {worst.length}. {hidden} more {hidden === 1 ? 'line is' : 'lines are'} not at Good
               Service.{' '}
               <TextLink href="/lines" underline="always" inline>
                 Browse all lines

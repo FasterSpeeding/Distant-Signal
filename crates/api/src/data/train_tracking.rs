@@ -55,7 +55,7 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
     }
     if !crate::routes::is_crs_code(&pin.origin_crs) {
         return Err(
-            "That doesn't look like a station code — CRS codes are three letters, like WOK \
+            "That doesn't look like a station code. CRS codes are three letters, like WOK \
              or EUS."
                 .to_string(),
         );
@@ -64,7 +64,7 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
         // Interpolated from MAX_PIN_AGE, not typed as prose, so this message
         // can never drift from the constant it describes.
         return Err(format!(
-            "That departure time is more than {} hours ago — trains can only be tracked \
+            "That departure time is more than {} hours ago. Trains can only be tracked \
              within {} hours of departure.",
             MAX_PIN_AGE.num_hours(),
             MAX_PIN_AGE.num_hours(),
@@ -83,7 +83,7 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
         && !crate::routes::is_crs_code(crs)
     {
         return Err(
-            "That doesn't look like a destination station code — CRS codes are three \
+            "That doesn't look like a destination station code. CRS codes are three \
              letters, like WOK or EUS."
                 .to_string(),
         );
@@ -126,7 +126,7 @@ pub fn beyond_tracking_horizon(
 /// wording, shared by every way of tracking.
 pub fn too_far_ahead_message() -> String {
     format!(
-        "That departure is too far ahead — trains can be tracked up to {PIN_MAX_DAYS_AHEAD} \
+        "That departure is too far ahead. Trains can be tracked up to {PIN_MAX_DAYS_AHEAD} \
          days before they run."
     )
 }
@@ -504,7 +504,7 @@ pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
         && crs.len() != 3
     {
         return Err(
-            "That doesn't look like a station code — CRS codes are three letters, like WOK \
+            "That doesn't look like a station code. CRS codes are three letters, like WOK \
              or EUS."
                 .to_string(),
         );
@@ -513,7 +513,7 @@ pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
         && crs.len() != 3
     {
         return Err(
-            "That doesn't look like a destination station code — CRS codes are three \
+            "That doesn't look like a destination station code. CRS codes are three \
              letters, like WOK or EUS."
                 .to_string(),
         );
@@ -553,7 +553,7 @@ pub fn validate_custom_name(name: Option<&str>) -> Result<Option<String>, String
     }
     if trimmed.chars().count() > CUSTOM_NAME_MAX_LENGTH {
         return Err(format!(
-            "That name is too long — custom names can be at most {CUSTOM_NAME_MAX_LENGTH} \
+            "That name is too long. Custom names can be at most {CUSTOM_NAME_MAX_LENGTH} \
              characters."
         ));
     }

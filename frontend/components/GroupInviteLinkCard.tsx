@@ -199,7 +199,7 @@ export function GroupInviteLinkCard({
             the first one. */}
         {hasActiveLink && (
           <Text size="xs" c="dimmed">
-            Regenerating creates a new link — the old one stops working immediately.
+            Regenerating creates a new link. The old one stops working immediately.
           </Text>
         )}
       </Stack>

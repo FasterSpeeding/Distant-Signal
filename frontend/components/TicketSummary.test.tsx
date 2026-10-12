@@ -22,7 +22,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.getByText('LNER — Off-Peak Day Single')).toBeInTheDocument();
+    expect(screen.getByText('LNER · Off-Peak Day Single')).toBeInTheDocument();
   });
 
   it('renders the custom name in place of the operator/ticketType title when set, leaving the route line unchanged', () => {
@@ -42,8 +42,8 @@ describe('TicketSummary', () => {
       />,
     );
     expect(screen.getByText("Mum's ticket to Leeds")).toBeInTheDocument();
-    expect(screen.queryByText('LNER — Off-Peak Day Single')).not.toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('KGX → EDB'))).toBeInTheDocument();
+    expect(screen.queryByText('LNER · Off-Peak Day Single')).not.toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('KGX to EDB'))).toBeInTheDocument();
   });
 
   it('falls back to "Ticket" when operator is null', () => {
@@ -81,7 +81,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.getByText(byVisibleText('KGX → EDB'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('KGX to EDB'))).toBeInTheDocument();
   });
 
   it('renders station names in the route when the backend resolved them', () => {
@@ -100,7 +100,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.getByText(byVisibleText('London Kings Cross (KGX) → Edinburgh Waverley (EDB)'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('London Kings Cross (KGX) to Edinburgh Waverley (EDB)'))).toBeInTheDocument();
   });
 
   it('renders no route line when both origin and destination are null', () => {
@@ -119,7 +119,7 @@ describe('TicketSummary', () => {
         }}
       />,
     );
-    expect(screen.queryByText(byVisibleText(/→/))).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText(/ to /))).not.toBeInTheDocument();
   });
 
   it('renders a provenance badge for the ticket source', () => {

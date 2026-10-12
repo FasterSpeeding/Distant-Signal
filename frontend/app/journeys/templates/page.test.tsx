@@ -61,7 +61,7 @@ describe('JourneyTemplatesPage', () => {
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute('href', '/journeys/templates/1');
     // The computed route is still shown as a secondary line under a custom name.
-    expect(screen.getByText(byVisibleText('London Kings Cross (KGX) → Edinburgh (EDB)'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('London Kings Cross (KGX) to Edinburgh (EDB)'))).toBeInTheDocument();
   });
 
   it('falls back to the computed route as the title when there is no custom name', async () => {

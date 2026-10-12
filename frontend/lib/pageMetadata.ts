@@ -46,7 +46,7 @@ export function pageMetadata(title: string, description: string): Metadata {
 }
 
 /** Keeps a title that already names the site (the legal pages' "Terms of
- * use — Distant Signal", built in lib/legal.ts) out of the root template,
+ * use · Distant Signal", built in lib/legal.ts) out of the root template,
  * so it isn't suffixed twice. */
 export function withAbsoluteTitle(metadata: Metadata): Metadata {
   return typeof metadata.title === 'string' ? { ...metadata, title: { absolute: metadata.title } } : metadata;

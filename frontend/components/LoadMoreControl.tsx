@@ -61,7 +61,7 @@ export function LoadMoreControl({
   /** The last load-more attempt failed and can be retried. */
   failed?: boolean;
   onLoadMore: () => void;
-  /** End-of-results copy, e.g. "You've reached the end — no more incidents
+  /** End-of-results copy, e.g. "You've reached the end. No more incidents
    * match these filters." */
   endMessage: string;
 }) {

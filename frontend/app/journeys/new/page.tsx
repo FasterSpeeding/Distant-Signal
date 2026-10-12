@@ -85,16 +85,15 @@ export default async function JourneysNewPage() {
       <Title order={1}>Track a journey</Title>
       <Text c="dimmed">
         Track a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked
-        you can add another leg right here — for a journey with a change of trains — or stop now; a single train is
-        already a complete journey.
+        you can add another leg here for a change of trains, or stop now: a single train is already a complete journey.
       </Text>
       <Text size="sm" c="dimmed">
-        Tracking a journey needs a Distant Signal account — you&apos;ll be sent to log in when you save if you
+        Tracking a journey needs a Distant Signal account. You&apos;ll be sent to log in when you save if you
         aren&apos;t already signed in. Just looking for routes?{' '}
         <TextLink href={PLAN_JOURNEY_DESTINATION.href} underline="always" inline>
           Plan a journey
         </TextLink>{' '}
-        — no account needed.
+        (no account needed).
       </Text>
       <JourneyCreationFlow planSearchDates={searchDates} />
     </Stack>

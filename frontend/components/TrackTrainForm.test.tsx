@@ -407,7 +407,7 @@ describe('TrackTrainForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Track this train/ }));
 
     expect(
-      screen.getByText('That departure is too far ahead — trains can be tracked up to 28 days before they run.'),
+      screen.getByText('That departure is too far ahead. Trains can be tracked up to 28 days before they run.'),
     ).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
   });
@@ -488,7 +488,7 @@ describe('TrackTrainForm', () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(
       new Response(
-        'That departure time is more than 6 hours ago — trains can only be tracked within 6 hours of departure.',
+        'That departure time is more than 6 hours ago. Trains can only be tracked within 6 hours of departure.',
         { status: 400 },
       ),
     );
@@ -501,7 +501,7 @@ describe('TrackTrainForm', () => {
 
     expect(
       await screen.findByText(
-        'That departure time is more than 6 hours ago — trains can only be tracked within 6 hours of departure.',
+        'That departure time is more than 6 hours ago. Trains can only be tracked within 6 hours of departure.',
       ),
     ).toBeInTheDocument();
   });
@@ -850,7 +850,7 @@ describe('TrackTrainForm', () => {
       // Only answers a query that actually matches "Reading" -- WAT (the
       // Origin field's own query, still live in the background) must NOT
       // also resolve to Reading, or its dropdown would contribute a
-      // second, identically-labelled "RDG — Reading" option and make the
+      // second, identically-labelled "RDG · Reading" option and make the
       // one this test cares about ambiguous to query for.
       const fetchMock = vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
@@ -877,7 +877,7 @@ describe('TrackTrainForm', () => {
       // `hidden: true`: jsdom-only workaround for the stubbed
       // `ResizeObserver` -- see the "selecting a real operator suggestion"
       // test's own comment on this exact pattern.
-      const option = await screen.findByRole('option', { name: 'RDG — Reading', hidden: true });
+      const option = await screen.findByRole('option', { name: 'RDG · Reading', hidden: true });
       expect(option).toBeInTheDocument();
 
       fireEvent.click(option);
@@ -1178,7 +1178,7 @@ describe('TrackTrainForm', () => {
       fireEvent.click(screen.getByRole('button', { name: /Search for a train/ }));
 
       expect(
-        screen.getByText('That departure is too far ahead — trains can be tracked up to 28 days before they run.'),
+        screen.getByText('That departure is too far ahead. Trains can be tracked up to 28 days before they run.'),
       ).toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalledWith('/api/Journeys', expect.anything());
     });
@@ -1271,7 +1271,7 @@ describe('TrackTrainForm', () => {
       renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
       expect(
-        await screen.findByText('No departure information is available for this station — enter the details below.'),
+        await screen.findByText('No departure information is available for this station. Enter the details below.'),
       ).toBeInTheDocument();
     });
 
@@ -1676,7 +1676,7 @@ describe('TrackTrainForm', () => {
 
       await waitFor(() => expect(fetchMock).toHaveBeenCalled());
       expect(
-        screen.queryByText('No departure information is available for this station — enter the details below.'),
+        screen.queryByText('No departure information is available for this station. Enter the details below.'),
       ).not.toBeInTheDocument();
       expect(screen.queryByText(/Showing the scheduled timetable/)).not.toBeInTheDocument();
       expect(

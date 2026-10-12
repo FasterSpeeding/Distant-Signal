@@ -178,7 +178,7 @@ describe('TrackThisTrainButton', () => {
     const button = screen.getByRole('button', { name: 'Track this train' });
     fireEvent.click(button);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Tracking…' })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Tracking' })).toBeDisabled());
 
     resolveTrack(
       new Response(JSON.stringify({ journeyId: 99, legId: 1, trackingId: 42, resolutionStatus: 'pending' }), {

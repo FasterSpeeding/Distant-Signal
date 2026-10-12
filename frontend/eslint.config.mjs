@@ -39,11 +39,34 @@ const NODE_SCRIPT_FILES = [
 // selector plus the rule it enforces; `no-restricted-syntax` takes them all
 // at once, so a file-scoped override has to repeat the whole list.
 const FAILURE_COPY = /Something went wrong|Please try again|Could not |Request failed/;
+/** [character as a regex escape, why] */
+const BANNED_CHARACTERS = [
+  [
+    '\\u2014',
+    'No em dash "\u2014" in UI copy: write two sentences, or a comma, colon or parentheses. An en dash "\u2013" is for ranges.',
+  ],
+  [
+    '\\u2026',
+    'No ellipsis "\u2026" in UI copy: in-progress text is a plain word beside a spinner (LoadingText, ButtonSpinner).',
+  ],
+  [
+    '[\\u2190\\u2192\\u2197]',
+    'No arrows in UI copy: a route reads "KGX to YRK", a back link "Back to groups"; an external link uses ExternalLinkIcon.',
+  ],
+];
 const COPY_RULES = [
   {
     selector: 'JSXText[value=/--/]',
-    message: 'Write an em dash "—" (or rephrase), never "--", in UI text.',
+    message: 'Never "--" in UI text: write two sentences, or a comma, colon or parentheses.',
   },
+  // Characters that read as machine-written copy, banned in every string,
+  // not just JSX text: a helper's return value or a call's argument is copy
+  // too. scripts/check-copy.py holds the same list.
+  ...BANNED_CHARACTERS.flatMap(([char, message]) =>
+    [`JSXText[value=/${char}/]`, `Literal[value=/${char}/]`, `TemplateElement[value.raw=/${char}/]`].map(
+      (selector) => ({ selector, message }),
+    ),
+  ),
   {
     selector: `JSXText[value=${String(FAILURE_COPY)}]`,
     message: 'Failures read "Couldn\'t load this train. Try again." Use describeFailure() from lib/failure.ts.',

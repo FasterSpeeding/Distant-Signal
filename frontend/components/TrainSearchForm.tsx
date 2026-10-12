@@ -10,13 +10,14 @@ import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
-import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
+import { searchRowDetails, searchRowHeadcode, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import type { ServiceModeFields, TrainSearchDates, TrainSearchPage, TrainSearchResult } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 /** The exact `"HH:MM"` shape the four time filters put on the wire
@@ -488,11 +489,7 @@ export function TrainSearchForm({
       );
     }
     if (searching) {
-      return (
-        <Text size="sm" c="dimmed">
-          Searching…
-        </Text>
-      );
+      return <LoadingText>Searching</LoadingText>;
     }
     if (results === null) {
       return (
@@ -512,8 +509,8 @@ export function TrainSearchForm({
       return (
         <Text size="sm" c="dimmed">
           {unpublishedDate
-            ? `Scheduled timetable data for ${unpublishedDate} isn't available yet — it may not have been published, or that station may not be one this feed covers.`
-            : "Today's scheduled timetable data isn't available yet — it may not have been published, or that station may not be one this feed covers."}
+            ? `Scheduled timetable data for ${unpublishedDate} isn't available yet. It may not have been published, or that station may not be one this feed covers.`
+            : "Today's scheduled timetable data isn't available yet. It may not have been published, or that station may not be one this feed covers."}
         </Text>
       );
     }
@@ -576,7 +573,9 @@ export function TrainSearchForm({
               date={displayDate}
               timeOverride={searchRowTime(row)}
               dayOffset={row.dayOffset}
-              details={searchRowDetails(row, operatorLookup)}
+              details={
+                [searchRowDetails(row, operatorLookup), searchRowHeadcode(row)].filter(Boolean).join(' · ') || undefined
+              }
               actions={
                 <TrackThisTrainButton
                   uid={row.uid}
@@ -594,7 +593,7 @@ export function TrainSearchForm({
           loading={loadingMore}
           failed={results.loadMoreFailed}
           onLoadMore={handleLoadMore}
-          endMessage="You've reached the end — no more scheduled trains match those filters."
+          endMessage="You've reached the end. No more scheduled trains match those filters."
         />
       </>
     );
@@ -737,8 +736,8 @@ export function TrainSearchForm({
         </Group>
       )}
       <Group>
-        <Button type="submit" disabled={!canSearch}>
-          {searching ? 'Searching…' : 'Search'}
+        <Button type="submit" disabled={!canSearch} leftSection={searching ? <ButtonSpinner /> : undefined}>
+          {searching ? 'Searching' : 'Search'}
         </Button>
       </Group>
       <Stack gap="xs" mih={72}>

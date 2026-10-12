@@ -69,16 +69,16 @@ describe('ChatCallback', () => {
     );
   });
 
-  it('shows "Connecting…" as the heading, with a spinner, while the exchange is in flight', () => {
+  it('shows "Connecting" as the heading, with a spinner, while the exchange is in flight', () => {
     mockAuth.mockReturnValue(new Promise(() => {})); // never resolves
     renderAtWithValidState('?code=abc123');
-    expect(screen.getByRole('heading', { name: 'Connecting…' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connecting' })).toBeInTheDocument();
   });
 
-  it('shows a "Connected…" heading on success, distinct from the connecting/error headings', async () => {
+  it('shows a "Connected" heading on success, distinct from the connecting/error headings', async () => {
     mockAuth.mockResolvedValue('AUTHORIZED');
     renderAtWithValidState('?code=abc123');
-    expect(await screen.findByRole('heading', { name: 'Connected, taking you to chat…' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Connected. Taking you to chat' })).toBeInTheDocument();
   });
 
   it('shows an error and does not redirect when no code is present', async () => {
@@ -281,10 +281,10 @@ describe('ChatCallback', () => {
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/chat'));
     expect(mockAuth).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/could not be verified/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Connected, taking you to chat…' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connected. Taking you to chat' })).toBeInTheDocument();
   });
 
-  it('under StrictMode, keeps showing "Connecting…" (not an error) while the exchange is in flight', async () => {
+  it('under StrictMode, keeps showing "Connecting" (not an error) while the exchange is in flight', async () => {
     mockAuth.mockReturnValue(new Promise(() => {})); // never resolves
     const provider = new BrowserMcpOAuthProvider(`${window.location.origin}/chat/callback`);
     const state = provider.state();
@@ -293,7 +293,7 @@ describe('ChatCallback', () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(screen.getByRole('heading', { name: 'Connecting…' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connecting' })).toBeInTheDocument();
     expect(screen.queryByText(/could not be verified/i)).not.toBeInTheDocument();
     expect(mockAuth).toHaveBeenCalledTimes(1);
   });

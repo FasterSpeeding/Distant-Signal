@@ -164,7 +164,7 @@ function searchCallUrl(fetchMock: ReturnType<typeof vi.fn>): string {
 }
 
 /** Clicks the Search button once it reads "Search" again, rather than
- * "Searching…" -- this form's mount-time auto-search (see
+ * "Searching" -- this form's mount-time auto-search (see
  * `TrainSearchForm.tsx`'s own mount `useEffect`, and
  * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
  * §3.3) means a search can already be in flight the instant a test with a
@@ -607,6 +607,40 @@ describe('TrainSearchForm', () => {
     expect(row.closest('li')).toHaveTextContent('From EUS · Great Western Railway (GW)');
   });
 
+  it("shows each row's headcode, labelled, on its details line", async () => {
+    const rows = [
+      {
+        uid: 'C10001',
+        scheduled: '08:22',
+        stationCrs: 'MAN',
+        originCrs: 'EUS',
+        destinationCrs: 'WAT',
+        identity: '1A23',
+      },
+      {
+        uid: 'C10002',
+        scheduled: '10:05',
+        stationCrs: 'MAN',
+        originCrs: 'CRE',
+        destinationCrs: 'WAT',
+        headcode: '2B45',
+      },
+      { uid: 'C10003', scheduled: '11:40', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT', identity: null },
+    ];
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody(rows), { status: 200 }) }));
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    await clickSearch();
+
+    const first = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(first.closest('li')).toHaveTextContent('From EUS · Headcode 1A23');
+    // An older payload's `headcode` is the fallback.
+    expect(screen.getByRole('link', { name: rowName('10:05', 'WAT') }).closest('li')).toHaveTextContent(
+      'From CRE · Headcode 2B45',
+    );
+    expect(screen.getByRole('link', { name: rowName('11:40', 'WAT') }).closest('li')).not.toHaveTextContent('Headcode');
+  });
+
   it('shows no operator on the details line without operatorNames', async () => {
     const rows = [
       { uid: 'C10001', scheduled: '08:22', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT', operator: 'GW' },
@@ -922,7 +956,7 @@ describe('TrainSearchForm', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     // The button doesn't just vanish -- the list says it is complete.
     expect(
-      screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+      screen.getByText("You've reached the end. No more scheduled trains match those filters."),
     ).toBeInTheDocument();
   });
 
@@ -946,7 +980,7 @@ describe('TrainSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
     expect(
-      await screen.findByText("You've reached the end — no more scheduled trains match those filters."),
+      await screen.findByText("You've reached the end. No more scheduled trains match those filters."),
     ).toBeInTheDocument();
   });
 
@@ -1165,7 +1199,7 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText("You've reached the end — no more scheduled trains match those filters."),
+        screen.getByText("You've reached the end. No more scheduled trains match those filters."),
       ).toBeInTheDocument(),
     );
     expect(screen.queryByRole('link', { name: rowName('11:40', 'WAT') })).not.toBeInTheDocument();

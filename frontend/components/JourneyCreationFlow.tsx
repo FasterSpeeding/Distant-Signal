@@ -8,9 +8,9 @@ import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
 import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { routeLabel } from '@/lib/stationLabel';
-import { RouteText } from './RouteArrow';
 import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
+import { LoadingText } from '@/components/LoadingText';
 
 /** The `/journeys/new` page's own interactive body -- see that page's doc
  * comment for the design this component is the engine of. Two states:
@@ -159,14 +159,10 @@ export function JourneyCreationFlow({
   return (
     <Stack gap="md">
       <Alert color="green" title="First leg tracked">
-        Add another leg now if this trip involves a change of trains, or finish here — a single leg is already a
+        Add another leg now if this trip involves a change of trains, or finish here. A single leg is already a
         complete, useful journey.
       </Alert>
-      {loadingJourney && journey === null && (
-        <Text c="dimmed" size="sm">
-          Loading your journey…
-        </Text>
-      )}
+      {loadingJourney && journey === null && <LoadingText>Loading your journey</LoadingText>}
       {journeyLoadError && (
         <Alert color="red" title="Couldn't load the journey's latest status">
           <Stack gap="xs">
@@ -183,10 +179,7 @@ export function JourneyCreationFlow({
             <Card withBorder key={leg.id}>
               <Group justify="space-between" wrap="wrap">
                 <Text size="sm">
-                  Leg {index + 1}:{' '}
-                  <RouteText>
-                    {routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
-                  </RouteText>
+                  Leg {index + 1}: {routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
                 </Text>
                 <Text size="sm" c="dimmed">
                   {leg.trackedTrainState ? 'Train matched' : 'Not yet matched'}
@@ -205,7 +198,7 @@ export function JourneyCreationFlow({
           />
         )}
         <Button component={Link} href={`/journeys/${journeyId}`}>
-          Done — view journey
+          View journey
         </Button>
       </Group>
     </Stack>

@@ -78,7 +78,7 @@ export async function OperatorTrendsResults({
       <Paper withBorder p="md">
         <Text c="dimmed">
           Not enough sampled data yet for this operator. If this operator&apos;s lines are TfL-operated, this may never
-          populate — TfL lines aren&apos;t counted here yet.
+          populate, because TfL lines aren&apos;t counted here yet.
         </Text>
       </Paper>
     );

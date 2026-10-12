@@ -108,7 +108,7 @@ export function formatSampleSummary(status: SampleStatsCarrier | undefined): str
  * exists. */
 export function coverageProvenanceNote(status: SampleStatsCarrier): string | null {
   if (status.fullCoverageStats) {
-    return 'Based on real train-movement data for every scheduled service on this line — not a live-departure sample.';
+    return 'Based on real train-movement data for every scheduled service on this line, not a live-departure sample.';
   }
   return null;
 }
@@ -123,7 +123,7 @@ export function coverageProvenanceNote(status: SampleStatsCarrier): string | nul
  * practice today, since no line has `full_coverage_enabled` set yet. */
 export function pendingCoverageNote(status: LineStatus): string | null {
   if (status.fullCoverageAvailability.state === 'pending') {
-    return 'Full train-movement data is being resolved for this line — showing the live sample in the meantime.';
+    return 'Full train-movement data is being resolved for this line. Showing the live sample in the meantime.';
   }
   return null;
 }

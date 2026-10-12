@@ -63,7 +63,7 @@ function errorResponse() {
 }
 
 /** Clicks the Search button once it reads "Search" again, rather than
- * "Searching…" -- review §3.3's "run the search once on mount" fix means
+ * "Searching" -- review §3.3's "run the search once on mount" fix means
  * an auto-search is already in flight the instant this form renders, so
  * the button can still show that in-flight label for the one microtask
  * tick between render and this click. `findByRole` (not `getByRole`)
@@ -220,9 +220,9 @@ describe('IncidentSearchForm', () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
 
-    // The date fields only render once "Custom…" is selected -- see the
+    // The date fields only render once "Custom dates" is selected -- see the
     // Period `SegmentedControl` tests below for the collapse itself.
-    fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom dates' }));
     fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: '2026-09-15' } });
     await clickSearch();
 
@@ -237,7 +237,7 @@ describe('IncidentSearchForm', () => {
   it('sends a start-of-London-day "from" bound for a picked date (FE-5)', async () => {
     fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
     renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
-    fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom dates' }));
     fireEvent.change(screen.getByLabelText('From (optional)'), { target: { value: '2026-05-10' } });
     await clickSearch();
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
@@ -413,7 +413,7 @@ describe('IncidentSearchForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
 
     expect(
-      await screen.findByText("You've reached the end — no more incidents match these filters."),
+      await screen.findByText("You've reached the end. No more incidents match these filters."),
     ).toBeInTheDocument();
   });
 
@@ -424,7 +424,7 @@ describe('IncidentSearchForm', () => {
     await clickSearch();
 
     expect(
-      await screen.findByText("You've reached the end — no more incidents match these filters."),
+      await screen.findByText("You've reached the end. No more incidents match these filters."),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
@@ -456,7 +456,7 @@ describe('IncidentSearchForm', () => {
     // call 2 the failed "Load more", call 3 this retry.
     expect(new URL(fetchMock.mock.calls[3]![0], 'http://localhost').searchParams.get('after')).toBe('cursor-a');
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
-    expect(screen.getByText("You've reached the end — no more incidents match these filters.")).toBeInTheDocument();
+    expect(screen.getByText("You've reached the end. No more incidents match these filters.")).toBeInTheDocument();
   });
 
   it('reports a "Load more" whose fetch throws the same way it reports a non-2xx', async () => {
@@ -495,7 +495,7 @@ describe('IncidentSearchForm', () => {
     await clickSearch();
 
     expect(
-      await screen.findByText("You've reached the end — no more incidents match these filters."),
+      await screen.findByText("You've reached the end. No more incidents match these filters."),
     ).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument();
   });
@@ -540,7 +540,7 @@ describe('IncidentSearchForm', () => {
     } as unknown as Response);
 
     await waitFor(() =>
-      expect(screen.getByText("You've reached the end — no more incidents match these filters.")).toBeInTheDocument(),
+      expect(screen.getByText("You've reached the end. No more incidents match these filters.")).toBeInTheDocument(),
     );
     expect(screen.queryByText('Trespass incident at Woking')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
@@ -614,18 +614,18 @@ describe('IncidentSearchForm', () => {
       expect(screen.queryByLabelText('To (optional)')).not.toBeInTheDocument();
     });
 
-    it('reveals the From/To date pickers only once Custom… is selected', async () => {
+    it('reveals the From/To date pickers only once Custom dates is selected', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
       await awaitMountSettled();
-      fireEvent.click(screen.getByRole('radio', { name: 'Custom…' }));
+      fireEvent.click(screen.getByRole('radio', { name: 'Custom dates' }));
       expect(screen.getByLabelText('From (optional)')).toBeInTheDocument();
       expect(screen.getByLabelText('To (optional)')).toBeInTheDocument();
     });
 
-    it('shows Custom… as selected (not an undefined state) when initial filters supply an explicit from date', async () => {
+    it('shows Custom dates as selected (not an undefined state) when initial filters supply an explicit from date', async () => {
       renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialFrom="2026-08-01T00:00:00Z" />);
       await awaitMountSettled();
-      expect(screen.getByRole('radio', { name: 'Custom…' })).toBeChecked();
+      expect(screen.getByRole('radio', { name: 'Custom dates' })).toBeChecked();
       expect(screen.getByLabelText('From (optional)')).toBeInTheDocument();
     });
   });
@@ -878,8 +878,8 @@ describe('IncidentSearchForm', () => {
       await awaitMountSettled();
 
       expect(screen.getByRole('radio', { name: 'All time' })).toBeChecked();
-      // The date pickers only render once "Custom…" is selected -- "All
-      // time" being checked and NOT "Custom…" is itself proof both dates
+      // The date pickers only render once "Custom dates" is selected -- "All
+      // time" being checked and NOT "Custom dates" is itself proof both dates
       // are unset, but this also confirms the mount-time auto-search (which
       // already ran by the time `awaitMountSettled` resolves) went out with
       // no lower/upper bound at all.

@@ -218,12 +218,12 @@ export interface SharedGroup {
 }
 
 /** Shared trains grouped by operator and route ("CrossCountry · Manchester
- * Piccadilly → Bournemouth"), groups in order of their first train. */
+ * Piccadilly to Bournemouth"), groups in order of their first train. */
 export function groupShared(trains: LineTrainSummary[], operatorName: (code: string) => string): SharedGroup[] {
   const groups = new Map<string, SharedGroup>();
   for (const train of sortByLineTime(trains)) {
     const operator = train.operator ? operatorName(train.operator) : 'Unknown operator';
-    const route = `${train.origin?.name ?? train.origin?.crs ?? '?'} → ${
+    const route = `${train.origin?.name ?? train.origin?.crs ?? '?'} to ${
       train.destination?.name ?? train.destination?.crs ?? '?'
     }`;
     const key = `${train.operator ?? ''}|${train.origin?.crs ?? ''}|${train.destination?.crs ?? ''}`;
@@ -281,7 +281,7 @@ export function stopStrip(train: LineTrainSummary, stations: LineCatalogueStatio
 
 export interface PatternGroup {
   key: string;
-  /** "London Waterloo → Weymouth" */
+  /** "London Waterloo to Weymouth" */
   route: string;
   /** "fast" / "semi-fast" / "stopping" when the route has several
    * stopping patterns; null otherwise. */
@@ -344,7 +344,7 @@ export function groupPatterns(trains: LineTrainSummary[]): PatternGroup[] {
     return [
       {
         key,
-        route: `${head.origin?.name ?? head.origin?.crs ?? '?'} → ${head.destination?.name ?? head.destination?.crs ?? '?'}`,
+        route: `${head.origin?.name ?? head.origin?.crs ?? '?'} to ${head.destination?.name ?? head.destination?.crs ?? '?'}`,
         kind,
         frequency: frequencySummary(minutes),
         trains: group,

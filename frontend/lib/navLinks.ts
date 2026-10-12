@@ -176,7 +176,7 @@ export const GROUPS_DESTINATION: NavDestination = { href: '/groups', label: 'Gro
  * boundary) actually resolves to `'allowed'` -- a non-allow-listed logged-in
  * visitor gets the explained dead-end at `/chat` itself (Task 3.1.2), not a
  * nav item pointing at it. */
-export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Chat' };
+export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Ask about trains' };
 
 /** The account page: download your data, delete your account (UK legal
  * audit LEG-4). Authenticated only, like `GROUPS_DESTINATION`, since there

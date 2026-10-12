@@ -253,7 +253,7 @@ export default async function LineTimetablePage({
   const heading = (
     <>
       <TextLink href={`/lines/${encodeURIComponent(id)}`} underline="always">
-        <span aria-hidden="true">←</span> Back to {name}
+        Back to {name}
       </TextLink>
       <Title order={1}>Timetable: {name}</Title>
     </>
@@ -278,7 +278,7 @@ export default async function LineTimetablePage({
   const total = Object.values(page.counts[tp.scope] ?? {}).reduce<number>((sum, n) => sum + (n ?? 0), 0);
   const dirName = tp.dir ? directionLabel(tp.dir, stations) : null;
   const what = [
-    tp.scope === 'shared' ? 'Other trains running along this line' : 'This line’s trains',
+    tp.scope === 'shared' ? 'Other trains running along this line' : "This line's trains",
     fromName && toName ? `from ${fromName} to ${toName}` : fromName ? `calling at ${fromName}` : null,
     !fromName && toName ? `calling at ${toName}` : null,
     dirName ? `${dirName.charAt(0).toLowerCase()}${dirName.slice(1)}` : null,

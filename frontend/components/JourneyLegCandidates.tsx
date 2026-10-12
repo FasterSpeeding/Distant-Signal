@@ -14,6 +14,7 @@ import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchR
 import { serviceNoun } from '@/lib/serviceMode';
 import { dayOffsetMarker } from '@/lib/serviceStatus';
 import type { TrainSearchResult } from '@/lib/types';
+import { LoadingText } from '@/components/LoadingText';
 
 // Mirrors `lib/useSuggestions.ts`'s own (non-exported) `DEBOUNCE_MS = 250`
 // constant -- this is a SEPARATE debounce, for the committed filter value
@@ -34,7 +35,7 @@ const FILTER_DEBOUNCE_MS = 250;
  * `destinationArrival` describe the TRAIN's own route -- for a
  * York->Newcastle leg riding a London->Edinburgh service they say
  * "KGX -> EDB", which is why every candidate used to render identically as
- * "19:00 · KGX → EDB" and the one decision this list exists to support
+ * "19:00 · KGX to EDB" and the one decision this list exists to support
  * could not be made from it. `stationCrs`/`legOriginCrs`,
  * `legDestinationCrs` and `legDestinationArrival` describe the
  * TRAVELLER's leg: where they get on, where they get off, and when. */
@@ -262,11 +263,7 @@ export function JourneyLegCandidates({
   // uniformly, rather than being duplicated into every early-return branch.
   function body() {
     if (results === null || results === 'loading') {
-      return (
-        <Text size="sm" c="dimmed">
-          Searching for candidate trains…
-        </Text>
-      );
+      return <LoadingText>Searching for candidate trains</LoadingText>;
     }
     if (results === 'error') {
       // A lapsed session gets its own message -- "Try again" is honest
@@ -313,7 +310,7 @@ export function JourneyLegCandidates({
             simply not stating a total at all. */}
         <Text size="sm" c="dimmed">
           {results.rows.length} train{results.rows.length === 1 ? '' : 's'}{' '}
-          {results.rows.length === 1 ? 'matches' : 'match'} your search — pick the one you&apos;ll be on. You can change
+          {results.rows.length === 1 ? 'matches' : 'match'} your search. Pick the one you&apos;ll be on. You can change
           it later.
         </Text>
         <Text size="sm" c="dimmed">
@@ -336,7 +333,7 @@ export function JourneyLegCandidates({
           loading={loadingMore}
           failed={results.loadMoreFailed}
           onLoadMore={handleLoadMore}
-          endMessage="You've reached the end — no more candidate trains match this window."
+          endMessage="You've reached the end. No more candidate trains match this window."
         />
       </>
     );
@@ -438,7 +435,7 @@ function CandidateRowView({
           loading={picking === row.uid}
           disabled={picking !== null}
           onClick={onPick}
-          aria-label={`Track this ${noun} — ${spoken}`}
+          aria-label={`Track this ${noun}: ${spoken}`}
         >
           Track this {noun}
         </Button>

@@ -70,7 +70,7 @@ export function DeleteLineButton({ id, trigger = 'button' }: { id: string; trigg
     <>
       {trigger === 'link' ? (
         <Anchor component="button" type="button" c="red" onClick={open}>
-          Delete line…
+          Delete line
         </Anchor>
       ) : (
         <Button variant="outline" color="red" size="xs" onClick={open}>

@@ -121,7 +121,7 @@ export default function ConnectClaudePage() {
         <TextLink href="/chat" underline="always" inline size="sm">
           the setup steps on the chat page
         </TextLink>{' '}
-        (you’ll need to log in).
+        (you&apos;ll need to log in).
       </Text>
     </Stack>
   );

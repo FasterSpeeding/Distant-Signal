@@ -205,7 +205,7 @@ describe('AppNavBar', () => {
     it('adds Chat only when chatAllowed is true', async () => {
       renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} chatAllowed />);
       openDrawer();
-      expect(within(await screen.findByRole('dialog')).getByRole('link', { name: 'Chat' })).toHaveAttribute(
+      expect(within(await screen.findByRole('dialog')).getByRole('link', { name: 'Ask about trains' })).toHaveAttribute(
         'href',
         '/chat',
       );
@@ -214,7 +214,7 @@ describe('AppNavBar', () => {
     it('omits Chat by default (chatAllowed not yet confirmed)', async () => {
       renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} />);
       openDrawer();
-      expect(within(await screen.findByRole('dialog')).queryByRole('link', { name: 'Chat' })).toBeNull();
+      expect(within(await screen.findByRole('dialog')).queryByRole('link', { name: 'Ask about trains' })).toBeNull();
     });
   });
 });

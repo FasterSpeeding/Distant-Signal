@@ -47,7 +47,7 @@ export default async function JourneyDetailPage({ params }: { params: Promise<{ 
     if (err instanceof ApiUnauthorizedError) {
       return (
         <Stack p="lg" gap="md">
-          <Title order={1}>Someone&apos;s tracked journey — log in to see it</Title>
+          <Title order={1}>Log in to see this tracked journey</Title>
           <LoginLink underline="always">Log in to view this journey</LoginLink>
         </Stack>
       );

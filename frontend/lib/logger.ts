@@ -82,6 +82,7 @@ function sanitize(value: unknown, depth: number, seen: WeakSet<object>): unknown
   if (value instanceof Error) return errorText(value);
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? String(value) : value.toISOString();
   if (value instanceof URL) return value.toString();
+  // eslint-disable-next-line no-restricted-syntax -- a log line's truncation marker, not UI copy
   if (seen.has(value) || depth >= MAX_DEPTH) return '[…]';
   seen.add(value);
   if (Array.isArray(value)) return value.map((item) => sanitize(item, depth + 1, seen));

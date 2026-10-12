@@ -72,7 +72,7 @@ later-injected `:root` block on specificity.
 | --- | --- | --- |
 | green | Good service, on time, arrived, **success** | Severity `good`; "On time"; "Arrived"; every success Alert ("Saved.", "Ticket saved", "Added to …") |
 | gray | Informational, neutral, unknown | Severity `informational`; unchanged platform; "Awaiting first report"; provenance badges; "Affected line"/"Affected station" tags; the trip planner's "N changes" |
-| blue | **A planned or changed arrangement — not a fault** | Severity `planned` (Planned Closure, Part Closure); incident "Planned work"; a changed platform |
+| blue | **A planned or changed arrangement, not a fault** | Severity `planned` (Planned Closure, Part Closure); incident "Planned work"; a changed platform |
 | yellow | Minor disruption, caution, partial data | Severity `mild`; journey leg "Delayed"; "Some of this range isn't available" |
 | orange | Running late, skipped stop, draft | "12 min late"; "Not stopping at your station"; draft legal page |
 | teal | Early, or a live board source | "3 min early"; ETA "Live departure board" |
@@ -104,9 +104,10 @@ list-row titles 500.
 
 - Heading level and visual size are set separately. Pick the level for the
   outline; the size follows from it (see [Heading rules](#heading-rules)).
-- Badges keep Mantine's uppercase only for the severity `StatusBadge`.
-  Every other badge gets `tt="none"`: "12 min late", "Not stopping at your
-  station", "Planned work", "AI summary". There is deliberately no
+- Every badge is sentence case with `tt="none"`, the severity
+  `StatusBadge` included ("Minor delays", via `severityBadgeLabel`):
+  "12 min late", "Not stopping at your station", "Planned work", "AI
+  summary". There is deliberately no
   theme-level Badge default (`lib/theme.ts` explains why).
 - At most three badges in a row. Lines, operators and stations an item
   affects are dimmed text, operators by name, not pills. Don't badge what
@@ -188,20 +189,18 @@ list-row titles 500.
   colour and is marked by its underline alone. Don't hand-roll
   `<a style={{ color: 'inherit' }}>`. `external` opens a new tab and marks
   it with the `ExternalLinkIcon` SVG plus visually hidden "(opens in a new
-  tab)"; never write "↗" into link text. Decorative text arrows ("← Groups")
-  go in `<span aria-hidden="true">`.
-- **Route arrows** (`components/RouteArrow.tsx`): "KGX → YRK" keeps its
-  arrow on screen but reads "KGX to YRK": the arrow is aria-hidden and a
-  `VisuallyHidden` "to" stands in. Render route strings from
-  `lib/stationLabel.ts` through `<RouteText>`, write `<RouteArrow />` in
-  place of a literal "→" in JSX, and use `spokenRoute()` where only plain
-  text fits (`aria-label`, titles). `Select` options take
-  `renderOption` with `RouteText`.
+  tab)"; never write "↗" into link text. No text arrows on links: a back
+  link says "Back to groups", a forward link says what it opens ("Next
+  trains", "Full day's timetable").
+- **Route text**: a route reads "KGX to YRK" on screen and to a screen
+  reader alike. `lib/stationLabel.ts` (`routeLabel`, `codeRouteLabel`)
+  joins the ends with "to", so its strings go straight into JSX, titles,
+  `aria-label`s and `Select` options. Never "→" in copy.
 - **Buttons**: Mantine Button sm, 36px, 14px/600, radius 8. Filled grape
   for the primary action, light for secondary, default for neutral, red
   filled for destructive (text via `autoContrast`). Icon buttons are
   `ActionIcon` subtle or outline with 16px SVGs.
-- **StatusBadge**: filled, uppercase, severity colour; text colour by
+- **StatusBadge**: filled, sentence case ("Part suspended"), severity colour; text colour by
   `autoContrast` at threshold 0.179; gray and blue use `light-dark()` so
   dark mode gets white.
 - **PlatformBadge**: light, sentence case. Unchanged gray; changed blue with
@@ -230,12 +229,12 @@ list-row titles 500.
 
 | State | Pattern | Example copy |
 | --- | --- | --- |
-| Loading | `Skeleton` inside Suspense; `Loader size="sm"` inline. Pair with visible "Loading…" in `role="status" aria-busy`. The nav's fallback is the full logged-out bar. | "Loading…" |
+| Loading | `Skeleton` inside Suspense (`LoadingPlaceholder`); inline, `LoadingText` (a plain word beside an `aria-hidden` `Loader`) in `role="status" aria-busy` where it is the region's content. A busy button keeps a word label ("Saving") with `leftSection={<ButtonSpinner />}`. No "…". The nav's fallback is the full logged-out bar. | "Loading trends", "Searching" |
 | Empty | Dimmed text saying what would appear, with a route out. No illustrations. | "Nothing is affecting this line right now." |
-| Error (page) | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest | "This page couldn't be loaded…" |
+| Error (page) | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest | "Couldn't load this page" |
 | Error (inline) | Red Alert, title names the failed action | "Couldn't save this ticket" |
-| Not found | h1 at h2 size, cause, three always-underlined way-out links | "There's no page at this address…" |
-| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4 min ago." | "Reconnecting…" |
+| Not found | h1 at h2 size, cause, three always-underlined way-out links | "There's no page at this address." |
+| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4 min ago." | "Reconnecting" |
 | Cancelled | Red badge "Cancelled", red Alert on the train page, struck-through platform | "Cancelled: the train no longer calls at this platform" |
 | Unknown | Omit the element or say so plainly; never fabricate | "No status yet" · "(no arrival report received)" |
 
@@ -310,6 +309,8 @@ available but labelled and secondary: small dimmed text, a tooltip or a
 - A train is named by its departure time from its origin and its route:
   "08:42 Woking to London Waterloo" (`lib/trainName.ts`). The headcode and
   UID go underneath in small text, labelled: "Headcode 1S00 · UID W12345".
+  A train search row shows the headcode the same way on its details line
+  ("From Reading · Headcode 1S00").
 - Never lead with an internal identifier ("Train W12345", "Tracking Train
   42").
 
@@ -317,15 +318,18 @@ available but labelled and secondary: small dimmed text, a tooltip or a
 
 Terse and factual, like a departure board. Say what is true and what to
 do next. No chatter, no apologies, no exclamation marks, no marketing
-words, no paired em-dash asides ("— like this —"): make it two sentences.
+words, no em dashes: write two sentences, or use a comma, a colon or
+parentheses.
 Second person ("your trains"), and "we" or "Distant Signal" for the site,
 never "this app".
 
 - Sentence case for every heading, nav label, button, badge and page
-  title. The only Title Case is an official status name: "Good Service",
-  "Minor Delays", "Part Suspended" (`lib/severity.ts`).
+  title. The only Title Case is an official status name named in running
+  text: "7 more lines are not at Good Service" (`severityLabel` in
+  `lib/severity.ts`). On a badge the same status
+  is sentence case ("Good service", `severityBadgeLabel`).
 - A page's h1 is its nav label: Status, Lines, Stations, Trains,
-  Incidents.
+  Incidents, Ask about trains.
 - Helper text is one line. If the detail matters, put it behind a "How
   this is calculated" disclosure.
 - Meta descriptions: one plain sentence, 20 words or fewer, at most 160
@@ -383,13 +387,15 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 
 ### Banned phrases
 
-On screen, never: "--", "Something went wrong", "Please try again",
+On screen, never: "—" (em dash), "…" (ellipsis), "→", "←", "↗", "--", "Something went wrong", "Please try again",
 "Could not", "Request failed", "this app", "ingest", "aggregator",
 "full coverage", "TOC", "deployment", "allowlist", "localStorage",
 "tracking pin", "propagated", "extraction", "seamless", "effortless",
 "powerful", "revolutionary", "supercharge", "unlock", "game-changer",
 "cutting-edge", "best-in-class", "delightful", "magic".
-`scripts/check-copy.py` holds the list.
+`scripts/check-copy.py` holds the list. The em dash is banned in every
+string the app holds, not only the ones the checker recognises as copy,
+and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 ### Other rules
 
@@ -399,7 +405,23 @@ On screen, never: "--", "Something went wrong", "Please try again",
   (Network Rail)".
 - Credits use each licence's exact wording; the site calls itself "an
   independent, unofficial service" and uses no provider logos.
-- Em dash "—" in data (route labels), never "--"; ellipsis "…".
+- No em dash "—" anywhere in UI copy, and never "--". Rewrite the
+  sentence: "Log in (needs a Distant Signal account)", "Cancelled. Last
+  confirmed at Woking.", "Country: showing all".
+- An en dash "–" only for ranges: "08:00–09:00", "15–29 minute delays".
+- A code with its name is "Name (CODE)" ("Woking (WOK)", `stationLabel`),
+  or code first with a middle dot where the picker shows codes first
+  ("WOK · Woking", `codeStationLabel`, operator pickers). A label and its
+  value take a colon ("Lifts: Available").
+- An empty table cell: words where there is room ("No data", "None"). In
+  a narrow numeric column an en dash "–" keeps the column scannable; mark
+  it `aria-hidden` with a visually hidden "No data" beside it
+  (`NO_VALUE` in `app/lines/AllLinesTable.tsx`).
+- No ellipsis "…" in copy. In-progress text is a plain word and a spinner
+  ("Saving", "Loading trains"); a menu item that opens a dialog is just
+  its action ("Delete line"); a select option is a noun ("Custom dates").
+  Text cut short by CSS (`text-overflow: ellipsis`) is fine: that is
+  layout, not copy.
 - No engineering vocabulary on screen: no raw enum values, field names,
   bare codes, ISO dates or `error.message`. Map through
   `lib/displayLabels.ts` and `lib/stationLabel.ts`.
@@ -410,7 +432,8 @@ On screen, never: "--", "Something went wrong", "Please try again",
 - **Do** `describeFailure()` for every failure. **Don't** show a response
   body, a status code or `error.message`.
 - **Do** `pageMetadata(title, description)` for a page's metadata.
-  **Don't** append " — Distant Signal" by hand; the root template does.
+  **Don't** append " · Distant Signal" by hand; the root template does
+  (`fullTitle()` where a title must carry it).
 - **Do** `<Text c="dimmed" size="xs">` for secondary text. **Don't**
   `c="gray.6"` or a hex grey: gray 6 is 3.32:1 on white.
 - **Do** use `TextLink` for every text link. **Don't** hand-roll anchors.

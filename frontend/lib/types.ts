@@ -2314,6 +2314,9 @@ export interface TrainSearchResult extends ServiceModeFields {
   /** The CIF Train Identity (headcode, e.g. `1S00`), `null` when blank or
    * not yet published; absent from an older backend. */
   identity?: string | null;
+  /** The same headcode under the train payloads' older name, read when
+   * `identity` is absent (as `PublicTrainState` does). */
+  headcode?: string | null;
   /** The line summary's compact live status, `null` when the train has
    * none; absent from an older backend. Either way the row reads
    * "Scheduled". */

@@ -173,7 +173,7 @@ describe('TrainsPage', () => {
   it('shows the ticket-attach explainer copy when arriving with a ticketId', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ ticketId: '7' }) }));
     expect(
-      screen.getByText("Find the train your saved ticket is for — it'll be attached automatically once you track it."),
+      screen.getByText("Find the train your saved ticket is for. It'll be attached automatically once you track it."),
     ).toBeInTheDocument();
   });
 

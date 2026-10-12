@@ -13,19 +13,9 @@ export function stationLabel(crs: string, name: string | null | undefined): stri
   return name ? `${name} (${crs})` : crs;
 }
 
-/** The arrow between a route's two ends ("KGX → YRK"). Every route string
- * in this module joins its ends with it, space-padded. Rendered through
- * `RouteText`/`RouteArrow` (`components/RouteArrow.tsx`), which keep the
- * arrow on screen but have screen readers say "to" instead of "right
- * arrow". */
-export const ROUTE_ARROW = '→';
-
-/** A route string with its arrows spelled out as "to" ("KGX to YRK"), for
- * plain-text contexts that can't hold `RouteText`'s markup: document
- * titles, `aria-label`s, `Select` option labels. */
-export function spokenRoute(label: string): string {
-  return label.split(` ${ROUTE_ARROW} `).join(' to ');
-}
+/* Every route string in this module joins its ends with the word "to"
+ * ("KGX to YRK"), on screen and to a screen reader alike: no arrow glyph,
+ * so nothing needs a spoken stand-in (docs/style-guide.md, Route text). */
 
 /** What to render in place of a station when there isn't one to name. A
  * tracked train's `pinOriginCrs` is genuinely `null` for a subscription
@@ -34,7 +24,7 @@ export function spokenRoute(label: string): string {
  * `lib/types.ts`. */
 export const UNKNOWN_STATION_LABEL = 'Unknown station';
 
-/** `"A (AAA) → B (BBB)"`, or just the origin when there is no destination
+/** `"A (AAA) to B (BBB)"`, or just the origin when there is no destination
  * (a pre-match pin genuinely has none -- see
  * `2026-09-01-tracked-trains-home-page-design.md` Decision 1).
  *
@@ -45,7 +35,7 @@ export const UNKNOWN_STATION_LABEL = 'Unknown station';
  * lookup for either side -- so a name being null here means the same
  * thing on either end: no reference row for that code. Previously the two
  * ends were resolved independently, so a route with only one name known
- * rendered as e.g. "London Kings Cross (KGX) → EDB" -- a real code paired
+ * rendered as e.g. "London Kings Cross (KGX) to EDB" -- a real code paired
  * with a resolved name right next to a bare code, which reads as a data
  * error rather than a degraded lookup (review §2.9). Falling back to a
  * bare code is right; mixing the two forms in one string is not. */
@@ -63,15 +53,15 @@ export function routeLabel(
   // rather than joining the both-ends-consistent branch below.
   if (!originCrs) {
     if (!destinationCrs) return UNKNOWN_STATION_LABEL;
-    return `${UNKNOWN_STATION_LABEL} → ${stationLabel(destinationCrs, destinationName)}`;
+    return `${UNKNOWN_STATION_LABEL} to ${stationLabel(destinationCrs, destinationName)}`;
   }
   if (!destinationCrs) return stationLabel(originCrs, originName);
   return originName && destinationName
-    ? `${stationLabel(originCrs, originName)} → ${stationLabel(destinationCrs, destinationName)}`
-    : `${originCrs} → ${destinationCrs}`;
+    ? `${stationLabel(originCrs, originName)} to ${stationLabel(destinationCrs, destinationName)}`
+    : `${originCrs} to ${destinationCrs}`;
 }
 
-/** `"EUS — London Euston"`, or the bare code when no name resolved. The
+/** `"EUS · London Euston"`, or the bare code when no name resolved. The
  * code-first counterpart to `stationLabel` above (which puts the name
  * first, `Name (CODE)`): this is the shape every CRS/TOC `Autocomplete`
  * dropdown in this app already renders a suggestion as
@@ -91,7 +81,7 @@ export function codeStationLabel(crs: string, name: string | null | undefined): 
   // reader, and its name already says what it is ("Keswick (bus)").
   // Nor does a station group's `group:` code; its name is its label.
   if (isTiplocCode(crs) || isGroupCode(crs)) return name ?? crs;
-  return name ? `${crs} — ${name}` : crs;
+  return name ? `${crs} · ${name}` : crs;
 }
 
 /** The planner's identifier for a bus stop or ferry terminal with no CRS:
@@ -136,7 +126,7 @@ export function normalizeLocationCode(code: string): string {
 /** Code-first two-sided join, mirroring `routeLabel`'s own "never mix a
  * resolved name with a bare code on the other end" rule (see its doc
  * comment) -- a route with only one name known must not render as e.g.
- * "EUS — London Euston → MKC" (a resolved name right next to a bare code
+ * "EUS · London Euston to MKC" (a resolved name right next to a bare code
  * reads as a data error, not a degraded lookup). Built from
  * `codeStationLabel` rather than `stationLabel` for the same reason that
  * function exists: to match the code-first shape of the picker the
@@ -157,9 +147,9 @@ export function codeRouteLabel(
   unknownLabel = '?',
 ): string {
   if (!originCrs || !destinationCrs) {
-    return `${originCrs ?? unknownLabel} → ${destinationCrs ?? unknownLabel}`;
+    return `${originCrs ?? unknownLabel} to ${destinationCrs ?? unknownLabel}`;
   }
   return originName && destinationName
-    ? `${codeStationLabel(originCrs, originName)} → ${codeStationLabel(destinationCrs, destinationName)}`
-    : `${originCrs} → ${destinationCrs}`;
+    ? `${codeStationLabel(originCrs, originName)} to ${codeStationLabel(destinationCrs, destinationName)}`
+    : `${originCrs} to ${destinationCrs}`;
 }

@@ -160,8 +160,8 @@ export const DeleteTrainButton = forwardRef<
         <Text>This cannot be undone.</Text>
         {sharedGroupCount > 0 && (
           <Text>
-            This train is shared in {sharedGroupCount} group{sharedGroupCount === 1 ? '' : 's'} — deleting it will
-            remove it from {sharedGroupCount === 1 ? 'that group' : 'those groups'} too.
+            This train is shared in {sharedGroupCount} group{sharedGroupCount === 1 ? '' : 's'}. Deleting it will remove
+            it from {sharedGroupCount === 1 ? 'that group' : 'those groups'} too.
           </Text>
         )}
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}

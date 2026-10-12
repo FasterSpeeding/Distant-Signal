@@ -117,7 +117,7 @@ describe('CoverageTrendsResults', () => {
 
     expect(
       screen.getByText(
-        /Rates shown cover every scheduled service on this line, cross-referenced against real train-movement data — not a sample of live departures at a handful of stations\./,
+        /Rates shown cover every scheduled service on this line, cross-referenced against real train-movement data, not a sample of live departures at a handful of stations\./,
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByTestId('line-chart')).toHaveLength(2);

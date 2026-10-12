@@ -147,12 +147,12 @@ function WindowNav({
       <Group gap="md" wrap="wrap">
         <span className={classes.desktopOnly}>
           <TextLink href={at(window.earlierDesktop)} ariaLabel="Earlier trains">
-            <span aria-hidden="true">←</span> Earlier
+            Earlier
           </TextLink>
         </span>
         <span className={classes.phoneOnly}>
           <TextLink href={at(window.earlierPhone)} ariaLabel="Earlier trains">
-            <span aria-hidden="true">←</span> Earlier
+            Earlier
           </TextLink>
         </span>
         {params.at !== null && (
@@ -162,12 +162,12 @@ function WindowNav({
         )}
         <span className={classes.desktopOnly}>
           <TextLink href={at(window.laterDesktop)} ariaLabel="Later trains">
-            Later <span aria-hidden="true">→</span>
+            Later
           </TextLink>
         </span>
         <span className={classes.phoneOnly}>
           <TextLink href={at(window.laterPhone)} ariaLabel="Later trains">
-            Later <span aria-hidden="true">→</span>
+            Later
           </TextLink>
         </span>
       </Group>
@@ -303,14 +303,14 @@ function SharedGroup({
   );
 }
 
-/** "Other trains at <station> →": the line's hubs, where the trains that
+/** "Other trains at <station>": the line's hubs, where the trains that
  * only touch the line (not listed here) call -- their station timetables. */
 function HubLinks({ stations }: { stations: LineCatalogueStation[] }) {
   const hubs = hubStations(stations);
   if (hubs.length === 0) return null;
   const link = (hub: LineCatalogueStation) => (
     <TextLink key={hub.crs} href={`/stations/${hub.crs}#departures`}>
-      Other trains at {hub.name ?? hub.crs} →
+      Other trains at {hub.name ?? hub.crs}
     </TextLink>
   );
   // A phone gets the most important few and the rest behind a disclosure
@@ -441,7 +441,7 @@ function StationPairResults({
       <Empty>
         {result.error === 'unpublished'
           ? 'No timetable is published for today yet.'
-          : 'Trains between these stations aren’t available right now.'}{' '}
+          : "Trains between these stations aren't available right now."}{' '}
         <TextLink href={clear}>Show all trains on this line</TextLink>
       </Empty>
     );
@@ -570,9 +570,7 @@ export async function LineTrainsResults({
 
   const stations = summary.stations;
   const timetableLink = (
-    <TextLink href={lineTimetableLink(id, params, window.from)}>
-      Full day&apos;s timetable <span aria-hidden="true">→</span>
-    </TextLink>
+    <TextLink href={lineTimetableLink(id, params, window.from)}>Full day&apos;s timetable</TextLink>
   );
   const header = (
     <Group gap="xs" justify="space-between" wrap="wrap">

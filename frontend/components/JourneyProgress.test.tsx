@@ -1107,7 +1107,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(screen.getByText("Scheduled route shown — live tracking hasn't started yet.")).toBeInTheDocument();
+    expect(screen.getByText("Scheduled route shown. Live tracking hasn't started yet.")).toBeInTheDocument();
     expect(
       screen.getByRole('group', { name: 'Journey progress: scheduled route shown, live tracking not yet started' }),
     ).toBeInTheDocument();
@@ -1153,7 +1153,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     );
     expect(
       screen.getByText(
-        "Last reported at York — that report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+        "Last reported at York. That report couldn't be matched to a timetabled stop, so no position is shown on the line.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -1252,7 +1252,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
       );
       expect(
         screen.getByText(
-          "Last reported at Hitchin South Junction — that report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+          "Last reported at Hitchin South Junction. That report couldn't be matched to a timetabled stop, so no position is shown on the line.",
         ),
       ).toBeInTheDocument();
     });
@@ -1274,7 +1274,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
       );
       expect(
         screen.getByText(
-          "Last reported at Stop 2 — that report couldn't be matched to a timetabled stop, so no position is shown on the line.",
+          "Last reported at Stop 2. That report couldn't be matched to a timetabled stop, so no position is shown on the line.",
         ),
       ).toBeInTheDocument();
     });
@@ -1343,7 +1343,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
     ).toBeInTheDocument();
   });
 
-  it('resolved + cancelled, with a confirmed marker: "Cancelled — last confirmed at X" caption/aria-label', () => {
+  it('resolved + cancelled, with a confirmed marker: "Cancelled. Last confirmed at X" caption/aria-label', () => {
     renderWithMantine(
       <JourneyProgress
         stops={[
@@ -1357,7 +1357,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(screen.getByText('Cancelled — last confirmed at Alpha.')).toBeInTheDocument();
+    expect(screen.getByText('Cancelled. Last confirmed at Alpha.')).toBeInTheDocument();
     expect(
       screen.getByRole('group', { name: 'Journey progress: cancelled, last confirmed at Alpha, stop 1 of 2' }),
     ).toBeInTheDocument();
@@ -1374,7 +1374,7 @@ describe('JourneyProgress decision-table captions and aria-labels', () => {
         lastReportedLocation={null}
       />,
     );
-    expect(screen.getByText('Cancelled — no movement was ever confirmed.')).toBeInTheDocument();
+    expect(screen.getByText('Cancelled. No movement was ever confirmed.')).toBeInTheDocument();
     expect(
       screen.getByRole('group', { name: 'Journey progress: cancelled before any confirmed movement' }),
     ).toBeInTheDocument();
