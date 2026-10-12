@@ -18,7 +18,7 @@ export default function ConnectClaudeAuthorizeRetiredPage() {
       <Title order={1}>This connection link has expired</Title>
       <Text>
         Claude connections no longer go through this page. Start again from Claude: add or reconnect the Distant Signal
-        connector there, and Claude will send you straight to the sign-in page.
+        connector there, and Claude will send you straight to the login page.
       </Text>
       <TextLink href="/connect-claude" underline="always">
         How to connect Claude

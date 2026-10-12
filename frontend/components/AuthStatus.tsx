@@ -63,6 +63,6 @@ export function AuthStatus({
   // fallback chain can be got wrong.
   // Name, else the user's own username (the app holds no email address to
   // fall back to). Self-view only: this is the signed-in user's own label.
-  const label = session.name?.trim() || session.username?.trim() || 'Signed in';
+  const label = session.name?.trim() || session.username?.trim() || 'Logged in';
   return <AccountMenu label={label} destinations={accountMenuDestinations(chatAllowed)} />;
 }

@@ -390,7 +390,8 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 On screen, never: "—" (em dash), "…" (ellipsis), "→", "←", "↗", "--", "Something went wrong", "Please try again",
 "Could not", "Request failed", "this app", "ingest", "aggregator",
 "full coverage", "TOC", "deployment", "allowlist", "localStorage",
-"tracking pin", "propagated", "extraction", "seamless", "effortless",
+"tracking pin", "propagated", "extraction", "sign in", "signed in",
+"sign-in", "CRS", "CRS code", "--:--", "seamless", "effortless",
 "powerful", "revolutionary", "supercharge", "unlock", "game-changer",
 "cutting-edge", "best-in-class", "delightful", "magic".
 `scripts/check-copy.py` holds the list. The em dash is banned in every

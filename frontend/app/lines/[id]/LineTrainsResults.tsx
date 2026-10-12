@@ -7,7 +7,7 @@ import { TextLink } from '@/components/TextLink';
 import { ServiceModeBadge } from '@/components/ServiceModeBadge';
 import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import { LastUpdated } from '@/components/LastUpdated';
-import { formatDate, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
+import { formatDate, NO_TIME, TIMES_IN_UK_LOCAL_TIME } from '@/lib/dateFormat';
 import {
   addCounts,
   DAY_MINUTES,
@@ -277,7 +277,7 @@ function SharedGroup({
             <ul className={classes.timeLinks}>
               {group.trains.map((train) => {
                 const minute = lineTimeMinute(train.lineDue);
-                const time = minute === null ? '--:--' : formatClock(minute);
+                const time = minute === null ? NO_TIME : formatClock(minute);
                 return (
                   <li key={`${dateFor(train)}-${train.uid}`}>
                     <TextLink

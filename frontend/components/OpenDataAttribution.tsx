@@ -280,7 +280,7 @@ export const DATA_SOURCES: readonly DataSource[] = [
     // OGL v3's default, as for the delay attribution glossary.
     id: 'network-rail-corpus',
     title: 'Network Rail (CORPUS location codes)',
-    use: 'Used during development to check the station codes (CRS and TIPLOC) in our line catalogue. Not shown on this site.',
+    use: 'Used during development to check the station and timing point codes in our line catalogue. Not shown on this site.',
     statement: (
       <>
         Contains information of Network Rail Infrastructure Limited licensed under the{' '}

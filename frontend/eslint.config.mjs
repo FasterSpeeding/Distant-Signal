@@ -39,6 +39,9 @@ const NODE_SCRIPT_FILES = [
 // selector plus the rule it enforces; `no-restricted-syntax` takes them all
 // at once, so a file-scoped override has to repeat the whole list.
 const FAILURE_COPY = /Something went wrong|Please try again|Could not |Request failed/;
+// Terminology (docs/style-guide.md, "Terminology"): "log in", not "sign in";
+// "station code", not "CRS". scripts/check-copy.py holds the same bans.
+const TERMINOLOGY_COPY = /\b[Ss]ign(ed|ing|s)?[- ]?ins?\b|\bCRS\b/;
 /** [character as a regex escape, why] */
 const BANNED_CHARACTERS = [
   [
@@ -74,6 +77,14 @@ const COPY_RULES = [
   {
     selector: `JSXAttribute > Literal[value=${String(FAILURE_COPY)}]`,
     message: 'Failures read "Couldn\'t load this train. Try again." Use describeFailure() from lib/failure.ts.',
+  },
+  {
+    selector: `JSXText[value=${String(TERMINOLOGY_COPY)}]`,
+    message: 'Say "log in" / "logged in" (not "sign in") and "station code" (not "CRS").',
+  },
+  {
+    selector: `JSXAttribute > Literal[value=${String(TERMINOLOGY_COPY)}]`,
+    message: 'Say "log in" / "logged in" (not "sign in") and "station code" (not "CRS").',
   },
   {
     selector: 'JSXText[value=/!\\s*$/]',

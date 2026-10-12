@@ -33,7 +33,7 @@ export default function TermsPage() {
       <LegalSection title="About these terms">
         <Text>
           Distant Signal is a free rail information service run by {OPERATOR_NAME} (&quot;we&quot;). By using it, or by
-          signing in, you agree to these terms. Our{' '}
+          logging in, you agree to these terms. Our{' '}
           <TextLink href="/privacy" underline="always" inline>
             privacy notice
           </TextLink>{' '}

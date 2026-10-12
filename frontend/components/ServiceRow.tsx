@@ -5,6 +5,7 @@ import { LoadingText } from '@/components/LoadingText';
 import { ServiceModeBadge } from '@/components/ServiceModeBadge';
 import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import type { LineCatalogueStation, LineTrainSummary } from '@/lib/types';
+import { NO_TIME } from '@/lib/dateFormat';
 import { formatClock, lineTimeMinute, stopStrip } from '@/lib/lineTrains';
 import { dayOffsetMarker, liveStatusLabel, type LiveTone } from '@/lib/serviceStatus';
 import classes from './ServiceRow.module.css';
@@ -65,8 +66,9 @@ export interface ServiceRowProps {
   /** A row past the phone window: hidden below the `sm` breakpoint by CSS,
    * so the page needs no JavaScript to show a shorter window on a phone. */
   beyondPhone?: boolean | undefined;
-  /** A time other than `lineDue`, e.g. the departure from a picked station. */
-  timeOverride?: string | undefined;
+  /** A time other than `lineDue`, e.g. the departure from a picked station;
+   * `null` for a row whose time is unknown. */
+  timeOverride?: string | null | undefined;
   /** Days after the service date the listed time falls on; a positive
    * value shows a "+1" marker ("next day" to a screen reader). */
   dayOffset?: number | undefined;
@@ -107,7 +109,7 @@ export function ServiceRow({
   actions,
 }: ServiceRowProps) {
   const minute = lineTimeMinute(train.lineDue);
-  const time = timeOverride ?? (minute === null ? '--:--' : formatClock(minute));
+  const time = timeOverride !== undefined ? timeOverride : minute === null ? null : formatClock(minute);
   const destination =
     train.destination?.name ?? train.destination?.crs ?? `${serviceNoun(train.serviceMode)} ${train.uid}`;
   const status = liveStatusLabel(train.live, train.serviceMode);
@@ -122,7 +124,12 @@ export function ServiceRow({
       className={`${classes.time} ${status.tone === 'cancelled' ? classes.struck : ''}`}
       aria-hidden={hasActions || undefined}
     >
-      {time}
+      {time ?? (
+        <>
+          <span aria-hidden="true">–</span>
+          <VisuallyHidden>{NO_TIME}</VisuallyHidden>
+        </>
+      )}
       <NextDay dayOffset={dayOffset} spoken={!hasActions} />
     </span>
   );
@@ -175,7 +182,7 @@ export function ServiceRow({
           <span className={classes.dest}>
             <Link href={href} className={classes.destLink}>
               <VisuallyHidden>
-                {time}
+                {time ?? NO_TIME}
                 {nextDay && ` (${nextDay.spoken})`}{' '}
               </VisuallyHidden>
               <VisuallyHidden>to </VisuallyHidden>
