@@ -3210,6 +3210,12 @@ enricher:
       # built-in prompt. Changing a prompt changes model_version, so the
       # sweep re-extracts. Empty (the default): the built-in prompts.
       configMap: ""
+    # -- CARRY_FORWARD_SEMANTIC_NOOPS: when true (the default), a text
+    # change that only touches HTML, whitespace, entities, case or in-word
+    # punctuation re-stamps the existing extraction instead of re-running
+    # the LLM. false re-runs the LLM for every text change. Must be a
+    # boolean.
+    carryForwardSemanticNoops: true
     # Claude Message Batches (provider: anthropic only). Off by default.
     # docs/enricher-anthropic.md, "LLM modes".
     batch:
@@ -3278,8 +3284,9 @@ enricher:
   logLevel: info
   # -- Extra env vars. The enricher's off-by-default settings (provider
   # policy: LLM_REASONING_EFFORT, LLM_MAX_TOKENS, LLM_MAX_IN_FLIGHT,
-  # LLM_RATE_LIMIT_RETRIES, LLM_RATE_LIMIT_RETRY_SECS, LLM_GATEWAY_RETRIES;
-  # and CARRY_FORWARD_SEMANTIC_NOOPS) are set here -- see the README.
+  # LLM_RATE_LIMIT_RETRIES, LLM_RATE_LIMIT_RETRY_SECS, LLM_GATEWAY_RETRIES)
+  # are set here -- see the README. An entry replaces a chart-rendered env
+  # var of the same name.
   extraEnv: []
   # Reads one incident at a time off Redis and calls out to the LLM
   # over HTTP. Almost all of its wall-clock is waiting on that call, so

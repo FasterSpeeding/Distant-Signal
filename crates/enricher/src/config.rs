@@ -153,10 +153,12 @@ pub(crate) struct Config {
     /// that `text_delta::classify` judges a semantic no-op (HTML/whitespace/
     /// entity/case/in-word-punctuation only) re-stamps the existing
     /// extraction's `source_text_hash` instead of running the LLM (see
-    /// `queries::carry_forward_extraction` for its guards). Off by default:
-    /// with it off, the edit class is still computed, but only to label the
-    /// churn metrics (measurement only).
-    #[arg(long, env, default_value_t = false)]
+    /// `queries::carry_forward_extraction` for its guards). On by default
+    /// since 2026-10 (a tuning study measured ~6.5 such edits a day, 3.6% of
+    /// calls); `false` turns it off, leaving the edit class computed only to
+    /// label the churn metrics (measurement only). Takes a value
+    /// (`--carry-forward-semantic-noops=false`), like the env var.
+    #[arg(long, env, default_value_t = true, action = clap::ArgAction::Set)]
     pub carry_forward_semantic_noops: bool,
 
     /// `/livez` (liveness: loop progress) and `/healthz` (readiness: also
@@ -898,6 +900,22 @@ mod tests {
             "redis://x",
         ];
         Config::try_parse_from(base.iter().chain(args.iter()).copied()).unwrap()
+    }
+
+    /// `CARRY_FORWARD_SEMANTIC_NOOPS` is on unless set to `false`.
+    #[test]
+    fn carry_forward_semantic_noops_defaults_on_and_can_be_turned_off() {
+        assert!(config(&[]).carry_forward_semantic_noops);
+        assert!(!config(&["--carry-forward-semantic-noops", "false"]).carry_forward_semantic_noops);
+        assert!(config(&["--carry-forward-semantic-noops=true"]).carry_forward_semantic_noops);
+        let base = ["enricher", "--database-url", "x", "--redis-url", "x"];
+        assert!(
+            Config::try_parse_from(
+                base.iter()
+                    .chain(&["--carry-forward-semantic-noops", "maybe"])
+            )
+            .is_err()
+        );
     }
 
     /// Unset, the provider is `openai` and everything is as before: base

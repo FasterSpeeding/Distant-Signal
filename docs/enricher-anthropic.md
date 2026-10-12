@@ -208,6 +208,26 @@ support asks for. Responses also carry `thinking` blocks (adaptive thinking;
 their text is empty by default): they are skipped, and only `text` blocks are
 parsed.
 
+## Semantic no-ops
+
+`CARRY_FORWARD_SEMANTIC_NOOPS` (chart
+`enricher.llm.carryForwardSemanticNoops`) is **on by default** since
+2026-10. When an incident's text changes under the same `model_version`,
+the enricher classifies the edit (`text_delta.rs`). A *semantic no-op*
+changes only HTML, whitespace, entities, case or in-word punctuation. It
+re-stamps the existing extraction's `source_text_hash` and makes no LLM
+call (`enricher_extraction_carried_forward_total`, latency `outcome`
+`carried_forward`). The write is guarded: if the text or the extraction
+moved in the meantime, it falls back to a full extraction.
+
+A tuning study of the live feed counted about 6.5 such edits a day, 3.6% of
+the calls. Each one costs three calls, and the result can't differ in
+meaning from the stored one. Set it to `false` (or the env var to `false`)
+to re-run the LLM for every text change. The edit class is then only a
+label on `enricher_extraction_rerun_total` and
+`enricher_extraction_churn_total` (`edit_class`). It applies on every path
+(stream, reclaim, sweep, and the batch preflight) and to both providers.
+
 ## LLM modes
 
 `LLM_MODE` (chart `enricher.llm.batch.mode`) decides where extractions run.
@@ -227,8 +247,8 @@ to render).
 Both new modes share these rules:
 
 - **The stream loop and reclaim still do everything that needs no LLM.**
-  Unchanged text is skipped and, with `CARRY_FORWARD_SEMANTIC_NOOPS`, a
-  semantic no-op is carried forward. Only a text that needs the LLM is
+  Unchanged text is skipped and a semantic no-op is carried forward
+  ([`CARRY_FORWARD_SEMANTIC_NOOPS`](#semantic-no-ops), on by default). Only a text that needs the LLM is
   deferred: the entry is ACKed and counted in
   `distant_signal_enricher_deferred_to_batch_total{path="stream"|"reclaim"}`,
   and the incident stays stale (its stored `source_text_hash` doesn't match)

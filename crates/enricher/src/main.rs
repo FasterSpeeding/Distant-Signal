@@ -235,7 +235,11 @@ async fn run() -> anyhow::Result<()> {
     });
     if enricher.carry_forward_noops {
         tracing::info!(
-            "CARRY_FORWARD_SEMANTIC_NOOPS is on: semantic no-op text changes skip the LLM"
+            "CARRY_FORWARD_SEMANTIC_NOOPS is on (the default): semantic no-op text changes skip the LLM"
+        );
+    } else {
+        tracing::info!(
+            "CARRY_FORWARD_SEMANTIC_NOOPS is off: semantic no-op text changes re-run the LLM"
         );
     }
 
@@ -338,7 +342,7 @@ struct Enricher {
     mismatch_tracker: MismatchTracker,
     retry_backoff: RetryBackoff,
     in_flight: InFlight,
-    /// `CARRY_FORWARD_SEMANTIC_NOOPS` (default off).
+    /// `CARRY_FORWARD_SEMANTIC_NOOPS` (default on).
     carry_forward_noops: bool,
     /// `LLM_MODE=batch`/`batch-only`, or `LLM_SWEEP_MODE=batch` (default
     /// off): the sweep submits Message Batches (`batch.rs`).
@@ -1866,7 +1870,7 @@ mod tests {
 
     /// Carry-forward end to end: a semantic no-op text change makes 0 LLM
     /// requests and advances `source_text_hash` with the flag on, and runs
-    /// the full 3-call extraction with it off (the default).
+    /// the full 3-call extraction with it off.
     #[tokio::test]
     #[ignore = "requires a live database; run with `cargo test -p enricher carry_forward -- --ignored --test-threads=1`"]
     async fn carry_forward_skips_the_llm_for_a_semantic_noop_only_when_enabled() {
