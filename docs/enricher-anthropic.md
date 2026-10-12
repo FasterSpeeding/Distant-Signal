@@ -184,9 +184,9 @@ Service env vars (the chart sets them; listed for local runs):
 
 Startup refuses `anthropic` without `LLM_API_KEY` (unless
 `LLM_AUTH=anthropic-wif-authentik`, which in turn refuses a key), with an
-`openai-wif-*` mode, `anthropic-wif-authentik` with `openai`, and
-`LLM_SWEEP_MODE=batch` with `openai`; the chart refuses the same
-combinations at render time. For keyless auth see
+`openai-wif-*` mode, and `anthropic-wif-authentik` with `openai`; the
+chart refuses the same combinations at render time. (`LLM_SWEEP_MODE=batch`
+and `LLM_MODE=batch`/`batch-only` work with either provider.) For keyless auth see
 [Keyless auth](#keyless-auth).
 
 ### Errors and what the enricher does with them
@@ -260,9 +260,9 @@ when this shipped.
 ## LLM modes
 
 `LLM_MODE` (chart `enricher.llm.batch.mode`) decides where extractions run.
-`normal` is the default and today's behaviour; `batch` and `batch-only` are
-Claude only (with `openai` the pod refuses to start and the chart refuses
-to render).
+`normal` is the default and today's behaviour. `batch` and `batch-only`
+work with either provider: with `openai` they go through the OpenAI Batch
+API ([enricher-openai.md, "Batch mode"](enricher-openai.md#batch-mode)).
 
 | | `normal` (default) | `batch` | `batch-only` |
 | --- | --- | --- | --- |
@@ -430,16 +430,14 @@ transaction, after the new batch exists. Known gaps, all bounded:
   ids stay valid across a key rotation (or a switch to [keyless auth](#keyless-auth))
   in the same workspace.
 
-**OpenAI batch.** The enricher has no OpenAI Batch API path, and
-`LLM_SWEEP_MODE=batch` with `openai` is refused. The design leaves room for
-one (the table has a `provider` column, the stage planning in `batch.rs` is
-provider-neutral, and `custom_id` matching is the same idea), but OpenAI's
-flow is different enough (upload a JSONL file, create a batch on it, download
-an output file) to need its own client. **Recommendation: don't build it
-yet.** On gpt-6-luna the whole workload is about $4.50 a month
-(docs/enricher-openai.md), and the sweep is a small share of it outside
-re-extractions; half of that is cents. Revisit only if re-extractions become
-frequent or large.
+**OpenAI batch.** `LLM_SWEEP_MODE=batch` and the `batch`/`batch-only`
+[LLM modes](#llm-modes) work with `openai` too, through
+the OpenAI Batch API. `batch.rs` and its table, stages, metrics and alerts
+are provider-neutral (`llm/batch_api.rs` dispatches on the provider). Only
+the wire API differs: upload a JSONL file, create a batch on it, then
+download and delete the output and error files. See
+[enricher-openai.md, "Batch mode"](enricher-openai.md#batch-mode) for the
+flow, the `api.batch.write` permission and file retention.
 
 ### Is the latency acceptable?
 
@@ -677,8 +675,9 @@ names the model and `base_url_host` `api.anthropic.com`). Changed or new:
   `prompt` is every input token (`input_tokens` +
   `cache_creation_input_tokens` + `cache_read_input_tokens`), `cached` the
   cache reads, `cache_write` the cache writes, `completion` `output_tokens`
-  (thinking included), `reasoning` always 0. OpenAI never sends
-  `cache_write`.
+  (thinking included), `reasoning` always 0. OpenAI sends `cache_write`
+  on GPT-5.6 and later
+  ([enricher-openai.md](enricher-openai.md#prompt-caching)).
 - `distant_signal_enricher_deferred_to_batch_total{path}`
   (`LLM_MODE=batch`/`batch-only` only, registered at 0 then): text changes
   the stream loop (`path="stream"`) or reclaim (`path="reclaim"`) left for

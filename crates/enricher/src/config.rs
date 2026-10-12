@@ -185,7 +185,6 @@ impl Config {
             self.llm_model.as_deref(),
             self.llm_auth.llm_auth,
             self.llm_api_key.as_ref(),
-            self.batch.batching_setting(),
         )
     }
 }
@@ -197,8 +196,6 @@ pub(crate) fn resolve_llm(
     model: Option<&str>,
     auth: LlmAuthMode,
     api_key: Option<&Secret>,
-    // The setting that turns Message Batches on (`BatchConfig::batching_setting`).
-    batching: Option<&str>,
 ) -> anyhow::Result<ResolvedLlm> {
     let set = |value: Option<&str>| {
         value
@@ -212,12 +209,6 @@ pub(crate) fn resolve_llm(
                 anyhow::bail!(
                     "LLM_AUTH=anthropic-wif-authentik mints Claude API tokens: it needs \
                      LLM_PROVIDER=anthropic"
-                );
-            }
-            if let Some(setting) = batching {
-                anyhow::bail!(
-                    "{setting} needs LLM_PROVIDER=anthropic: the enricher has no \
-                     OpenAI Batch API support (docs/enricher-anthropic.md, \"Batch mode\")"
                 );
             }
             (
@@ -305,9 +296,10 @@ pub(crate) enum SweepMode {
     /// once (one when unset) -- the default; the only mode before 2026-10.
     #[default]
     Sync,
-    /// Through the Claude Message Batches API (half price, results within
-    /// 24 h, usually under an hour), when the sweep finds at least
-    /// `LLM_BATCH_MIN_ITEMS` incidents. `anthropic` only.
+    /// Through the provider's batch API (the Claude Message Batches API or
+    /// the `OpenAI` Batch API: half price, results within 24 h, usually
+    /// under an hour), when the sweep finds at least `LLM_BATCH_MIN_ITEMS`
+    /// incidents.
     Batch,
 }
 
@@ -492,11 +484,18 @@ pub(crate) struct GenerationConfig {
     /// prompts.
     #[arg(long, env)]
     pub llm_prompts_dir: Option<PathBuf>,
+    /// `LLM_OPENAI_PROMPT_CACHE`: `explicit` (cache the static system
+    /// prompt), `off` (no caching, no cache writes) or `omit` (send nothing:
+    /// the endpoint's default); unset keeps the profile's (`explicit` for
+    /// gpt-6-luna, nothing otherwise). Chat Completions only
+    /// (docs/enricher-openai.md, "Prompt caching").
+    #[arg(long, env)]
+    pub llm_openai_prompt_cache: Option<String>,
 }
 
 /// The profile overrides from the service's env: `LLM_TEMPERATURE`,
 /// `LLM_TOP_P`, `LLM_MAX_TOKENS`, `LLM_REASONING_EFFORT` (`omit` drops the
-/// profile's) and `LLM_THINKING` (likewise).
+/// profile's), `LLM_THINKING` and `LLM_OPENAI_PROMPT_CACHE` (likewise).
 pub(crate) fn profile_overrides(
     generation: &GenerationConfig,
     policy: &ProviderPolicyConfig,
@@ -512,6 +511,10 @@ pub(crate) fn profile_overrides(
             policy.llm_reasoning_effort.as_deref(),
         )?,
         thinking: parse_setting("LLM_THINKING", thinking)?,
+        openai_prompt_cache: parse_setting(
+            "LLM_OPENAI_PROMPT_CACHE",
+            generation.llm_openai_prompt_cache.as_deref(),
+        )?,
     })
 }
 
@@ -933,17 +936,17 @@ mod tests {
         let missing = |args: &[&str]| self::config(args).resolved_llm().unwrap_err().to_string();
         assert!(missing(&["--llm-model", "m"]).contains("LLM_BASE_URL"));
         assert!(missing(&["--llm-base-url", "http://l/v1"]).contains("LLM_MODEL"));
-        assert!(
-            missing(&[
-                "--llm-base-url",
-                "http://l/v1",
-                "--llm-model",
-                "m",
-                "--llm-sweep-mode",
-                "batch"
-            ])
-            .contains("needs LLM_PROVIDER=anthropic")
-        );
+        // Batch mode works on openai too (the OpenAI Batch API).
+        let batch = self::config(&[
+            "--llm-base-url",
+            "http://l/v1",
+            "--llm-model",
+            "m",
+            "--llm-sweep-mode",
+            "batch",
+        ]);
+        assert_eq!(batch.resolved_llm().unwrap().provider, ProviderKind::Openai);
+        assert!(batch.batch.settings().is_some());
     }
 
     #[test]
@@ -1160,23 +1163,21 @@ mod tests {
             45
         );
 
-        // Both refused on openai at startup.
+        // Both work on openai too (the OpenAI Batch API).
         for mode in ["batch", "batch-only"] {
-            let err = config(&[
+            let on_openai = config(&[
                 "--llm-base-url",
                 "http://l/v1",
                 "--llm-model",
                 "m",
                 "--llm-mode",
                 mode,
-            ])
-            .resolved_llm()
-            .unwrap_err()
-            .to_string();
-            assert!(
-                err.contains(&format!("LLM_MODE={mode} needs LLM_PROVIDER=anthropic")),
-                "{err}"
+            ]);
+            assert_eq!(
+                on_openai.resolved_llm().unwrap().provider,
+                ProviderKind::Openai
             );
+            assert!(on_openai.batch.settings().is_some(), "{mode}");
         }
         assert!(
             Config::try_parse_from([

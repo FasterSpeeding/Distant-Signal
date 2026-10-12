@@ -13,16 +13,16 @@ LLM API. This renders the chart and checks:
   - `anthropic` renders LLM_PROVIDER, the Claude base URL and model, the
     key from enricher.llm.anthropic.existingSecret (never the chart's own
     Secret), LLM_PROMPT_CACHE, and no batch env unless batch mode is on;
-  - batch mode renders LLM_SWEEP_MODE and the LLM_BATCH_* knobs;
+  - batch mode renders LLM_SWEEP_MODE and the LLM_BATCH_* knobs, on
+    either provider (the OpenAI Batch API since 2026-10-10);
   - enricher.llm.batch.mode batch / batch-only renders LLM_MODE (not
     LLM_SWEEP_MODE), LLM_BATCH_SWEEP_INTERVAL_SECS only when set, and the
-    batch alerts;
+    batch alerts, on either provider;
   - with egress NetworkPolicies on, the enricher's internet rule opens the
     Claude base URL's port without enricher.llm.baseUrl being set;
   - every unusable combination refuses to render: no Claude key Secret, an
-    OpenAI workload identity mode, batch mode or LLM mode batch /
-    batch-only on openai, an unknown provider, sweep mode, LLM mode or
-    prompt-cache TTL, a bad batch sweep interval;
+    OpenAI workload identity mode, an unknown provider, sweep mode, LLM
+    mode or prompt-cache TTL, a bad batch sweep interval;
   - keyless Claude auth (`anthropicWifAuthentik`) renders the Claude IDs,
     the generic projected-token path, an audience-bound token for the
     Authentik client, no API key anywhere, the token URLs' ports and the
@@ -247,11 +247,12 @@ def check_llm_modes(c: Checker) -> None:
                 "LLM_BATCH_SWEEP_INTERVAL_SECS": "90",
             },
         )
-        c.refuses(
+        # Either provider: openai runs it through the OpenAI Batch API.
+        expect(
+            c,
             f"{label} on openai",
-            f"enricher.llm.batch.mode={mode} needs enricher.llm.provider=anthropic",
-            *OPENAI,
-            *mode_set,
+            enricher_env(c.docs(f"{label} on openai", *OPENAI, *mode_set)),
+            {"LLM_PROVIDER": None, "LLM_MODE": mode, "LLM_SWEEP_MODE": None},
         )
     rules = yaml.safe_dump(c.docs("mode normal alerts", *ANTHROPIC, *PROMETHEUS_RULE))
     if any(alert in rules for alert in BATCH_ALERTS):
@@ -349,6 +350,23 @@ def check_anthropic(c: Checker) -> None:
     )
 
 
+def check_openai_batch(c: Checker) -> None:
+    """Check batch mode renders on openai (the OpenAI Batch API)."""
+    env = enricher_env(c.docs("openai batch", *OPENAI, *BATCH))
+    expect(
+        c,
+        "openai batch",
+        env,
+        {
+            "LLM_PROVIDER": None,
+            "LLM_SWEEP_MODE": "batch",
+            "LLM_BATCH_MIN_ITEMS": "5",
+            "LLM_BATCH_MAX_ITEMS": "300",
+            "LLM_BATCH_POLL_SECS": "120",
+        },
+    )
+
+
 def internet_ports(policy: Doc) -> list[int]:
     """Ports of the egress rules that allow the public internet."""
     ports: list[int] = []
@@ -404,9 +422,6 @@ def check_refusals(c: Checker) -> None:
             "enricher.llm.workloadIdentity.serviceAccountId=s",
             "enricher.llm.workloadIdentity.tokenAudience=a",
         ),
-    )
-    c.refuses(
-        "batch on openai", "needs enricher.llm.provider=anthropic", *OPENAI, *BATCH
     )
     c.refuses(
         "unknown provider",
@@ -519,7 +534,24 @@ def check_profiles(c: Checker) -> None:
         c,
         "profile defaults",
         enricher_env(c.docs("profile defaults", *OPENAI)),
-        {"LLM_PROFILE": None, "LLM_TEMPERATURE": None, "LLM_TOP_P": None},
+        {
+            "LLM_PROFILE": None,
+            "LLM_TEMPERATURE": None,
+            "LLM_TOP_P": None,
+            "LLM_OPENAI_PROMPT_CACHE": None,
+        },
+    )
+    expect(
+        c,
+        "openai prompt cache",
+        enricher_env(
+            c.docs(
+                "openai prompt cache",
+                *OPENAI,
+                *sets("enricher.llm.openaiPromptCache=off"),
+            )
+        ),
+        {"LLM_OPENAI_PROMPT_CACHE": "off"},
     )
     docs = c.docs(
         "profile set",
@@ -577,6 +609,12 @@ def check_profiles(c: Checker) -> None:
         *OPENAI,
         *sets("enricher.llm.temperature=warm"),
     )
+    c.refuses(
+        "bad openai prompt cache",
+        "is not one of explicit, off, omit",
+        *OPENAI,
+        *sets("enricher.llm.openaiPromptCache=1h"),
+    )
 
 
 def check_carry_forward(c: Checker) -> None:
@@ -623,6 +661,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     c = Checker(cast("str", args.helm))
     check_openai_default(c)
     check_anthropic(c)
+    check_openai_batch(c)
     check_egress(c)
     check_refusals(c)
     check_claude_wif(c)
