@@ -10,6 +10,7 @@
  * code.
  */
 import { operatorLabel } from './displayLabels';
+import { trainIdentifiers } from './trainName';
 import type { LineTrainSummary, TrainSearchResult } from './types';
 
 /** A search row as a line-summary row. `known` is the same train from a
@@ -50,4 +51,11 @@ export function searchRowDetails(
   }
   if (row.operator && operatorNames) parts.push(operatorLabel(row.operator, operatorNames));
   return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+/** The row's headcode as labelled secondary text, "Headcode 1S00", as the
+ * train page shows it (`trainIdentifiers`). From `identity`, else the
+ * older `headcode`; `undefined` when neither is known. */
+export function searchRowHeadcode(row: Pick<TrainSearchResult, 'identity' | 'headcode'>): string | undefined {
+  return trainIdentifiers({ headcode: row.identity ?? row.headcode, uid: null }) ?? undefined;
 }

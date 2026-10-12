@@ -10,7 +10,7 @@ import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
-import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
+import { searchRowDetails, searchRowHeadcode, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import type { ServiceModeFields, TrainSearchDates, TrainSearchPage, TrainSearchResult } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
@@ -573,7 +573,9 @@ export function TrainSearchForm({
               date={displayDate}
               timeOverride={searchRowTime(row)}
               dayOffset={row.dayOffset}
-              details={searchRowDetails(row, operatorLookup)}
+              details={
+                [searchRowDetails(row, operatorLookup), searchRowHeadcode(row)].filter(Boolean).join(' · ') || undefined
+              }
               actions={
                 <TrackThisTrainButton
                   uid={row.uid}

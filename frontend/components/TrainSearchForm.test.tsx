@@ -607,6 +607,40 @@ describe('TrainSearchForm', () => {
     expect(row.closest('li')).toHaveTextContent('From EUS · Great Western Railway (GW)');
   });
 
+  it("shows each row's headcode, labelled, on its details line", async () => {
+    const rows = [
+      {
+        uid: 'C10001',
+        scheduled: '08:22',
+        stationCrs: 'MAN',
+        originCrs: 'EUS',
+        destinationCrs: 'WAT',
+        identity: '1A23',
+      },
+      {
+        uid: 'C10002',
+        scheduled: '10:05',
+        stationCrs: 'MAN',
+        originCrs: 'CRE',
+        destinationCrs: 'WAT',
+        headcode: '2B45',
+      },
+      { uid: 'C10003', scheduled: '11:40', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT', identity: null },
+    ];
+    vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody(rows), { status: 200 }) }));
+    renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+
+    await clickSearch();
+
+    const first = await screen.findByRole('link', { name: rowName('08:22', 'WAT') });
+    expect(first.closest('li')).toHaveTextContent('From EUS · Headcode 1A23');
+    // An older payload's `headcode` is the fallback.
+    expect(screen.getByRole('link', { name: rowName('10:05', 'WAT') }).closest('li')).toHaveTextContent(
+      'From CRE · Headcode 2B45',
+    );
+    expect(screen.getByRole('link', { name: rowName('11:40', 'WAT') }).closest('li')).not.toHaveTextContent('Headcode');
+  });
+
   it('shows no operator on the details line without operatorNames', async () => {
     const rows = [
       { uid: 'C10001', scheduled: '08:22', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT', operator: 'GW' },

@@ -309,6 +309,8 @@ available but labelled and secondary: small dimmed text, a tooltip or a
 - A train is named by its departure time from its origin and its route:
   "08:42 Woking to London Waterloo" (`lib/trainName.ts`). The headcode and
   UID go underneath in small text, labelled: "Headcode 1S00 · UID W12345".
+  A train search row shows the headcode the same way on its details line
+  ("From Reading · Headcode 1S00").
 - Never lead with an internal identifier ("Train W12345", "Tracking Train
   42").
 
@@ -327,7 +329,7 @@ never "this app".
   `lib/severity.ts`). On a badge the same status
   is sentence case ("Good service", `severityBadgeLabel`).
 - A page's h1 is its nav label: Status, Lines, Stations, Trains,
-  Incidents.
+  Incidents, Ask about trains.
 - Helper text is one line. If the detail matters, put it behind a "How
   this is calculated" disclosure.
 - Meta descriptions: one plain sentence, 20 words or fewer, at most 160

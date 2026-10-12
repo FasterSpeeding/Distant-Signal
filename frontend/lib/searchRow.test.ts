@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { searchRowDetails, searchRowSummary, searchRowTime } from './searchRow';
+import { searchRowDetails, searchRowHeadcode, searchRowSummary, searchRowTime } from './searchRow';
 import { train } from '@/test/lineTrainsFixtures';
 import type { TrainSearchResult } from './types';
 
@@ -92,5 +92,14 @@ describe('searchRowDetails', () => {
   it('leaves the operator out without a lookup, and says nothing when nothing is known', () => {
     expect(searchRowDetails(row())).toBe('From PAD');
     expect(searchRowDetails(row({ originCrs: null, operator: null }), names)).toBeUndefined();
+  });
+});
+
+describe('searchRowHeadcode', () => {
+  it('labels the identity, falling back to the older headcode field', () => {
+    expect(searchRowHeadcode(row({ identity: '1A23' }))).toBe('Headcode 1A23');
+    expect(searchRowHeadcode(row({ headcode: '2B45' }))).toBe('Headcode 2B45');
+    expect(searchRowHeadcode(row({ identity: '1A23', headcode: '2B45' }))).toBe('Headcode 1A23');
+    expect(searchRowHeadcode(row({ identity: null }))).toBeUndefined();
   });
 });
