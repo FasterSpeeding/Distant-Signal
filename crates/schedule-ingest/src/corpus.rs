@@ -13,17 +13,16 @@
 //!    row with no NLC or fewer than `CORPUS_MIN_ROWS` rows is REJECTED:
 //!    counted, logged and moved to `storage_dir/corpus/rejected/`, never
 //!    loaded;
-//! 3. hands the whole set to the sink (`sink.rs`): sent by POST to api, or under
-//!    `INGEST_SINK=db` written directly; either way `corpus_locations` is
-//!    replaced in one transaction;
+//! 3. hands the whole set to the sink (`sink.rs`), which replaces
+//!    `corpus_locations` in Postgres in one transaction;
 //! 4. on success moves the file to `storage_dir/corpus/`, keeping the
 //!    newest `CORPUS_RETENTION_KEEP`, so files never pile up in
 //!    `watch_dir`.
 //!
 //! Both moves re-check the file's `(mtime, size)` first, so a re-upload
-//! that starts mid-cycle is never moved away half-written. A failed POST
+//! that starts mid-cycle is never moved away half-written. A failed load
 //! leaves the file where it is and the next cycle tries again; loading the
-//! same file twice is idempotent on the api side, so a restart at any point
+//! same file twice is idempotent, so a restart at any point
 //! is safe without persisted state.
 
 use std::collections::HashSet;
@@ -51,7 +50,7 @@ const ARCHIVE_DIR: &str = "corpus";
 const REJECTED_DIR: &str = "rejected";
 
 /// One normalised CORPUS location: `ds_store`'s own type (plan 2d.1), the
-/// one the api route deserialises and the direct sink writes.
+/// one the direct sink writes.
 pub(crate) use ds_store::corpus::CorpusLocation;
 
 /// Why a file can never be loaded. Its bytes cannot change without its
@@ -73,7 +72,7 @@ pub(crate) struct CorpusState {
     known_stable: HashSet<String>,
     /// The last file this process loaded or rejected, as `(name, mtime,
     /// size)`. Only matters when the move out of `watch_dir` failed: it
-    /// stops the same file being re-POSTed (or re-counted as rejected)
+    /// stops the same file being loaded again (or re-counted as rejected)
     /// every cycle while the move is retried.
     handled: Option<(String, SystemTime, u64)>,
 }
@@ -370,7 +369,7 @@ pub(crate) async fn run_corpus_cycle(
     if let Err(err) = sink.load_corpus(&request).await {
         // Every failure is retried, a rejection too (as before the sink):
         // the file stays in watch_dir.
-        tracing::error!(error = %err, file = %name, "CORPUS load POST to api failed; retrying next cycle");
+        tracing::error!(error = %err, file = %name, "CORPUS load failed; retrying next cycle");
         return Ok(());
     }
     tracing::info!(file = %name, delivered_at = %delivered_at, rows = locations.len(), "loaded CORPUS extract");
@@ -412,6 +411,8 @@ pub(crate) async fn run_corpus_cycle(
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+
+    use crate::sink::tests::{Answer, FakeSink};
 
     use super::*;
 
@@ -578,38 +579,14 @@ mod tests {
         assert_eq!(std::fs::read_dir(dest.path()).unwrap().count(), 1);
     }
 
-    fn args(api_url: String) -> CorpusArgs {
+    fn args() -> CorpusArgs {
         CorpusArgs {
             corpus_ingest_enabled: true,
             corpus_file_pattern: crate::config::DEFAULT_CORPUS_FILE_PATTERN.to_string(),
-            corpus_api_url: api_url,
             corpus_max_decompressed_bytes: 1024 * 1024,
             corpus_min_rows: 1,
             corpus_retention_keep: 3,
         }
-    }
-
-    /// The HTTP sink at `args.corpus_api_url`, as `main` builds it.
-    fn http_sink(
-        args: &CorpusArgs,
-        tokens: common::oauth_client::OAuthTokenCache,
-    ) -> crate::sink::HttpSink {
-        crate::sink::HttpSink::new(
-            reqwest::Client::new(),
-            "http://127.0.0.1:1/unused".to_string(),
-            args.corpus_api_url.clone(),
-            tokens,
-        )
-    }
-
-    fn oauth(token_url: String) -> common::oauth_client::OAuthTokenCache {
-        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
-            token_url,
-            client_id: "test-client".to_string(),
-            scope: "groups".to_string(),
-            username: "test-user".to_string(),
-            password: "test-password".to_string(),
-        })
     }
 
     /// Runs `cycles` CORPUS cycles (`stability_cycles` = 2).
@@ -647,32 +624,11 @@ mod tests {
         names
     }
 
-    /// The whole path against a mock api: the stable extract is `POSTed`
-    /// once with normalised rows, then moved out of `watch_dir` into the
-    /// archive; the SMART `.csv.gz` sharing its name is never touched.
+    /// The whole path: the stable extract is loaded once with normalised
+    /// rows, then moved out of `watch_dir` into the archive; the SMART
+    /// `.csv.gz` sharing its name is never touched.
     #[tokio::test]
     async fn a_stable_extract_is_loaded_once_and_archived() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"access_token": "t", "expires_in": 3600})),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/private/corpus-locations"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"upserted": 8})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-
         let watch = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let delivered = gzip(FIXTURE.as_bytes());
@@ -683,14 +639,14 @@ mod tests {
         )
         .unwrap();
 
-        let args = args(format!("{}/private/corpus-locations", server.uri()));
-        let sink = http_sink(&args, oauth(format!("{}/token", server.uri())));
+        let args = args();
+        let sink = FakeSink::new(Answer::Accept);
         let mut state = CorpusState::new();
         let (guard, logs) = crate::audit::tests::capture_default();
         run(watch.path(), storage.path(), &args, &sink, &mut state, 4).await;
         drop(guard);
 
-        // Provenance: the POST and one audit line carry the file's hash.
+        // Provenance: the load and one audit line carry the file's hash.
         let expected = crate::audit::DeliveredFile::from_bytes("CORPUSExtract.json.gz", &delivered);
         let audit = logs.audit_lines();
         assert_eq!(audit.len(), 1, "{audit:?}");
@@ -707,12 +663,9 @@ mod tests {
             "{archived:?}"
         );
 
-        let requests = server.received_requests().await.unwrap();
-        let load = requests
-            .iter()
-            .find(|r| r.url.path() == "/private/corpus-locations")
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&load.body).unwrap();
+        let loads = sink.corpus_loads();
+        assert_eq!(loads.len(), 1, "loaded once");
+        let body = &loads[0];
         assert_eq!(body["source_file"], "CORPUSExtract.json.gz");
         assert_eq!(body["sha256"], expected.sha256.as_str());
         assert_eq!(body["source_bytes"], expected.bytes);
@@ -721,7 +674,7 @@ mod tests {
         assert_eq!(body["locations"][1]["tiploc"], serde_json::Value::Null);
     }
 
-    /// A failing api leaves the file in place for the next cycle.
+    /// A failing database leaves the file in place for the next cycle.
     #[tokio::test]
     async fn a_failed_load_leaves_the_file_for_the_next_cycle() {
         let watch = tempfile::tempdir().unwrap();
@@ -731,8 +684,8 @@ mod tests {
             gzip(FIXTURE.as_bytes()),
         )
         .unwrap();
-        let args = args("http://127.0.0.1:1/private/corpus-locations".to_string());
-        let sink = http_sink(&args, oauth("http://127.0.0.1:1/token".to_string()));
+        let args = args();
+        let sink = FakeSink::new(Answer::Transient);
         let mut state = CorpusState::new();
         run(watch.path(), storage.path(), &args, &sink, &mut state, 3).await;
 
@@ -740,9 +693,9 @@ mod tests {
         assert!(names(storage.path()).is_empty());
     }
 
-    /// An extract that is not CORPUS is never `POSTed`: it is moved to the
-    /// rejected archive (no api is listening here, so a POST attempt would
-    /// have left the file in place instead).
+    /// An extract that is not CORPUS is never loaded: it is moved to the
+    /// rejected archive (the sink fails every write here, so a load attempt
+    /// would have left the file in place instead).
     #[tokio::test]
     async fn a_malformed_extract_is_rejected_and_moved_aside() {
         let watch = tempfile::tempdir().unwrap();
@@ -752,8 +705,8 @@ mod tests {
             gzip(b"TD,STEPTYPE,FROMBERTH\nA2,B,0632\n"),
         )
         .unwrap();
-        let args = args("http://127.0.0.1:1/private/corpus-locations".to_string());
-        let sink = http_sink(&args, oauth("http://127.0.0.1:1/token".to_string()));
+        let args = args();
+        let sink = FakeSink::new(Answer::Transient);
         let mut state = CorpusState::new();
         let (guard, logs) = crate::audit::tests::capture_default();
         run(watch.path(), storage.path(), &args, &sink, &mut state, 3).await;
@@ -769,6 +722,7 @@ mod tests {
             "{audit:?}"
         );
         assert!(names(watch.path()).is_empty());
+        assert!(sink.corpus_loads().is_empty());
         let rejected = names(&storage.path().join(ARCHIVE_DIR).join(REJECTED_DIR));
         assert_eq!(rejected.len(), 1);
         assert!(

@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use clap::Parser;
 use common::secret::Secret;
 
-use crate::sink::SinkKind;
-
 /// Default for [`Config::cif_file_pattern`]: exactly the name DTD delivers
 /// the full CIF timetable under. Locked to that name by the repo owner
 /// (2026-09-28), since the same SFTP account now also receives other feeds;
@@ -68,7 +66,7 @@ impl CifCheckArgs {
     reason = "clap derives each env var from the field name, so the prefix is part of the interface"
 )]
 pub(crate) struct CorpusArgs {
-    /// Load CORPUS deliveries from `watch_dir` into api's
+    /// Load CORPUS deliveries from `watch_dir` into
     /// `corpus_locations`. Off by default: until it is on, a CORPUS file is
     /// left in `watch_dir` and reported once as a stray, as before.
     #[arg(long, env, default_value_t = false)]
@@ -78,10 +76,6 @@ pub(crate) struct CorpusArgs {
     /// extract in `watch_dir`. Never a CIF candidate.
     #[arg(long, env, default_value = DEFAULT_CORPUS_FILE_PATTERN)]
     pub corpus_file_pattern: String,
-
-    /// api's CORPUS load endpoint.
-    #[arg(long, env, default_value = "http://api:8080/private/corpus-locations")]
-    pub corpus_api_url: String,
 
     /// The most bytes one extract may decompress to (gzip-bomb guard). The
     /// real extract is ~7 MB of JSON.
@@ -218,32 +212,18 @@ pub(crate) struct Config {
     #[arg(long, env, default_value_t = 5)]
     pub stability_cycles: u32,
 
-    /// The `api` crate's ingestion endpoint for completed schedule feed
-    /// sequences.
-    #[arg(
-        long,
-        env,
-        default_value = "http://api:8080/private/schedule-feed-ingests"
-    )]
-    pub api_ingest_url: String,
+    /// Where each delivery's record and each CORPUS load go: only `db`,
+    /// Postgres directly at `DATABASE_URL` (`sink.rs`). `http` (api's
+    /// `/private/*` routes) was removed in release B (ingest phase 5,
+    /// docs/ingest-phase5-runbook.md), so an old `INGEST_SINK=http` fails
+    /// at startup; the next release drops the variable.
+    #[arg(long, env = "INGEST_SINK", default_value = "db", value_parser = ["db"])]
+    pub ingest_sink: String,
 
-    /// Where each delivery's record and each CORPUS load go (ingest
-    /// architecture plan 2d.1, `sink.rs`): `http`, api's `/private/*`
-    /// routes at `API_INGEST_URL`/`CORPUS_API_URL` (the default), or `db`,
-    /// Postgres directly at `DATABASE_URL`.
-    #[arg(long, env, value_enum, default_value_t = SinkKind::Http)]
-    pub ingest_sink: SinkKind,
-
-    /// Postgres, for `INGEST_SINK=db` only (ignored under `http`). The
-    /// pool reads the shared `DATABASE_*` settings (`common::pg`); its
-    /// default size is 1.
+    /// Postgres, as the `schedule_ingest` role. The pool reads the shared
+    /// `DATABASE_*` settings (`common::pg`); its default size is 1.
     #[arg(long, env, hide_env_values = true)]
-    pub database_url: Option<Secret>,
-
-    /// Shared, non-secret `OAuth2` client-credentials config (same value
-    /// across all 9 real callers).
-    #[command(flatten)]
-    pub internal_oauth: common::oauth_client::InternalOAuthArgs,
+    pub database_url: Secret,
 
     /// Port for this service's Prometheus `/metrics` endpoint. Stays a
     /// plain field, not part of `MetricsArgs` -- its default differs per
@@ -264,9 +244,8 @@ pub(crate) struct Config {
 /// `charts/distant-signal/templates/schedulefeed-deployment.yaml` -- the
 /// same declared-but-unwired guard as
 /// `crates/schedule-reference/src/config.rs`'s own `chart_env_wiring_tests`.
-/// An unwired `*_URL` silently falls back to `http://api:8080/...`, a host
-/// that does not exist under Helm, and an unwired `CORPUS_*`/`CIF_*` means
-/// the chart value an operator sets does nothing.
+/// An unwired `CORPUS_*`/`CIF_*` means the chart value an operator sets
+/// does nothing.
 #[cfg(test)]
 mod chart_env_wiring_tests {
     use clap::CommandFactory;
@@ -310,8 +289,8 @@ mod chart_env_wiring_tests {
         let declared: Vec<String> = command
             .get_arguments()
             .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
-            // DATABASE_URL: only under `INGEST_SINK=db`, from the shared
-            // databaseEnvFor helper (checked below).
+            // DATABASE_URL: from the shared databaseEnvFor helper
+            // (checked below).
             .filter(|env| *env != "DATABASE_URL")
             .filter(|env| {
                 env.starts_with("CORPUS_") || env.starts_with("CIF_") || env.ends_with("_URL")
@@ -334,12 +313,26 @@ mod chart_env_wiring_tests {
         );
     }
 
-    /// Plan 2d.2: `scheduleFeed.ingest.sink=db` sets `INGEST_SINK` and the
-    /// `schedule_ingest` role's `DATABASE_URL` on this container.
+    /// Release B: the chart sets the `schedule_ingest` role's
+    /// `DATABASE_URL` on this container, and no longer `INGEST_SINK`, the
+    /// api URLs or the internal OAuth settings; `INGEST_SINK` accepts only
+    /// its default, `db`.
     #[test]
     fn the_db_sink_env_is_set_on_the_charts_ingest_container() {
         let block = ingest_container_block();
-        assert!(block.contains("- name: INGEST_SINK\n"), "INGEST_SINK");
+        for gone in [
+            "INGEST_SINK",
+            "API_INGEST_URL",
+            "CORPUS_API_URL",
+            "INTERNAL_OAUTH_TOKEN_URL",
+            "INTERNAL_OAUTH_USERNAME",
+            "INTERNAL_OAUTH_PASSWORD",
+        ] {
+            assert!(
+                !block.contains(&format!("- name: {gone}\n")),
+                "{gone} is no longer rendered"
+            );
+        }
         assert!(
             block.contains(
                 "include \"distant-signal.databaseEnvFor\" (dict \"root\" . \"service\" \"schedule_ingest\")"
@@ -347,26 +340,33 @@ mod chart_env_wiring_tests {
             "DATABASE_URL from databaseEnvFor, as the schedule_ingest role"
         );
         let command = Config::command();
-        let env = |id: &str| {
+        let arg = |id: &str| {
             command
                 .get_arguments()
                 .find(|arg| arg.get_id() == id)
-                .and_then(|arg| arg.get_env())
-                .and_then(|env| env.to_str())
-                .map(str::to_owned)
+                .unwrap_or_else(|| panic!("no argument {id}"))
         };
-        assert_eq!(env("ingest_sink").as_deref(), Some("INGEST_SINK"));
-        let sink_default: Vec<String> = command
-            .get_arguments()
-            .find(|arg| arg.get_id() == "ingest_sink")
-            .map(|arg| {
-                arg.get_default_values()
-                    .iter()
-                    .map(|v| v.to_string_lossy().into_owned())
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert_eq!(sink_default, ["http"], "off by default");
-        assert_eq!(env("database_url").as_deref(), Some("DATABASE_URL"));
+        let sink = arg("ingest_sink");
+        assert_eq!(
+            sink.get_env().and_then(|env| env.to_str()),
+            Some("INGEST_SINK")
+        );
+        let defaults: Vec<String> = sink
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(defaults, ["db"]);
+        let possible: Vec<String> = sink
+            .get_possible_values()
+            .iter()
+            .map(|v| v.get_name().to_owned())
+            .collect();
+        assert_eq!(possible, ["db"], "http and http+shadow are refused");
+        assert_eq!(
+            arg("database_url").get_env().and_then(|env| env.to_str()),
+            Some("DATABASE_URL")
+        );
+        assert!(arg("database_url").is_required_set());
     }
 }

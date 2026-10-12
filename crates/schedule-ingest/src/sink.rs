@@ -2,30 +2,27 @@
 //! spec §9.1): the per-delivery feed marker (`schedule_feed_ingests`) and
 //! the monthly CORPUS load (`corpus_locations`).
 //!
-//! `INGEST_SINK` picks one implementation of [`IngestSink`] at startup:
+//! [`DbSink`] makes the same `ds_store` calls api's retired
+//! `/private/schedule-feed-ingests` and `/private/corpus-locations` routes
+//! made (`insert_schedule_feed_ingest`,
+//! `replace_corpus_locations_with_provenance`), as the `schedule_ingest`
+//! role, after the same validation those routes applied
+//! (`schedule_feed_ingest_problem`, `corpus_load_problem` and the CORPUS
+//! provenance check, all in `ds_store`). The HTTP sink went in release B
+//! (ingest phase 5, docs/ingest-phase5-runbook.md).
 //!
-//! - [`HttpSink`] (`http`, the default): today's `POST`s to api's
-//!   `/private/schedule-feed-ingests` and `/private/corpus-locations`,
-//!   unchanged;
-//! - [`DbSink`] (`db`): the same `ds_store` calls those routes make
-//!   (`insert_schedule_feed_ingest`, `replace_corpus_locations_with_provenance`),
-//!   as the `schedule_ingest` role, after the same validation the routes
-//!   apply (`schedule_feed_ingest_problem`, `corpus_load_problem` and the
-//!   CORPUS provenance check, all in `ds_store`).
+//! Failures come back in one vocabulary, [`SinkError`], which the callers'
+//! retry and quarantine logic reads; [`IngestSink`] lets the tests stand a
+//! fake in for the database.
 //!
-//! Both report failures in one vocabulary, [`SinkError`], so the callers'
-//! retry and quarantine logic is the same whichever sink is active.
-//!
-//! What the api route does after a CORPUS load and [`DbSink`] does not: the
-//! `api_corpus_last_delivered_at_seconds` gauge and the CORPUS-vs-timetable
-//! comparison. Under `db` both come from the ingest-writer's CORPUS
+//! The `api_corpus_last_delivered_at_seconds` gauge and the
+//! CORPUS-vs-timetable comparison come from the ingest-writer's CORPUS
 //! crosswalk loop (`ds_store::loops::corpus_crosswalk_comparing`), which
 //! reads the durable `corpus_deliveries` marker, so this process needs no
 //! read grants beyond the load's own.
 
 use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
-use common::oauth_client::OAuthTokenCache;
 use common::secret::Secret;
 use ds_store::corpus::{
     CorpusLocation, DeliveredFileProvenance, corpus_delivery_problem, corpus_provenance_problem,
@@ -34,7 +31,6 @@ use ds_store::corpus::{
 use ds_store::schedule::{
     ScheduleFeedSource, insert_schedule_feed_ingest, schedule_feed_ingest_problem,
 };
-use reqwest::Client;
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -46,36 +42,19 @@ const APPLICATION_NAME: &str = "distant-signal-schedule-ingest";
 /// and the CORPUS load never run at once.
 const DEFAULT_MAX_CONNECTIONS: u32 = 1;
 
-/// `INGEST_SINK`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub(crate) enum SinkKind {
-    /// api's `/private/*` routes (today's behaviour).
-    Http,
-    /// Postgres directly (`DATABASE_URL`).
-    Db,
-}
-
 /// Why a write failed, as far as retrying it is concerned.
 #[derive(Debug)]
 pub(crate) enum SinkError {
     /// The data itself was refused, so the same request fails the same way
-    /// every time: api's 400/413/422 under `http`; under `db` the routes'
-    /// own checks or a data error (SQLSTATE class 22 or 23).
+    /// every time: the retired routes' own checks or a data error (SQLSTATE
+    /// class 22 or 23).
     Rejected(anyhow::Error),
-    /// Anything else: api or Postgres unreachable, a timeout, a 5xx. The
-    /// same data can succeed later.
+    /// Anything else: Postgres unreachable, a timeout. The same data can
+    /// succeed later.
     Transient(anyhow::Error),
 }
 
 impl SinkError {
-    /// Classifies an error from `common::ingest`'s POST helpers.
-    fn from_http(err: anyhow::Error) -> Self {
-        match common::ingest::classify_failure(&err) {
-            common::ingest::FailureClass::Rejected => Self::Rejected(err),
-            common::ingest::FailureClass::Transient => Self::Transient(err),
-        }
-    }
-
     /// Classifies an error from a `ds_store` write: a data error (class 22
     /// or 23) is a rejection, everything else transient.
     fn from_db(err: anyhow::Error) -> Self {
@@ -101,8 +80,8 @@ impl std::fmt::Display for SinkError {
     }
 }
 
-/// One CORPUS delivery: the body of `POST /private/corpus-locations`
-/// (api's `ds_store::corpus::CorpusLoadRequest`, field for field).
+/// One CORPUS delivery: the body the retired `POST /private/corpus-locations`
+/// took (`ds_store::corpus::CorpusLoadRequest`, field for field).
 #[derive(Debug, Serialize)]
 pub(crate) struct CorpusLoadRequest<'a> {
     pub delivered_at: DateTime<Utc>,
@@ -113,7 +92,7 @@ pub(crate) struct CorpusLoadRequest<'a> {
     pub sha256: &'a str,
 }
 
-/// The two writes, whichever way they go.
+/// The two writes ([`DbSink`]; a fake in the tests).
 pub(crate) trait IngestSink {
     /// Records one verified schedule-feed delivery. Idempotent on
     /// `delivered_at`.
@@ -125,88 +104,6 @@ pub(crate) trait IngestSink {
     /// Replaces `corpus_locations` with one whole CORPUS delivery.
     /// Idempotent: the same delivery twice leaves the same rows.
     async fn load_corpus(&self, request: &CorpusLoadRequest<'_>) -> Result<(), SinkError>;
-}
-
-/// The configured sink.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one value per process, built once at startup; boxing buys nothing"
-)]
-pub(crate) enum Sink {
-    Http(HttpSink),
-    Db(DbSink),
-}
-
-impl IngestSink for Sink {
-    async fn record_feed_ingest(
-        &self,
-        request: &ScheduleFeedIngestRequest,
-    ) -> Result<(), SinkError> {
-        match self {
-            Self::Http(sink) => sink.record_feed_ingest(request).await,
-            Self::Db(sink) => sink.record_feed_ingest(request).await,
-        }
-    }
-
-    async fn load_corpus(&self, request: &CorpusLoadRequest<'_>) -> Result<(), SinkError> {
-        match self {
-            Self::Http(sink) => sink.load_corpus(request).await,
-            Self::Db(sink) => sink.load_corpus(request).await,
-        }
-    }
-}
-
-/// api's `/private/*` routes, with an internal OAuth token.
-pub(crate) struct HttpSink {
-    client: Client,
-    feed_url: String,
-    corpus_url: String,
-    tokens: OAuthTokenCache,
-}
-
-impl HttpSink {
-    pub(crate) fn new(
-        client: Client,
-        feed_url: String,
-        corpus_url: String,
-        tokens: OAuthTokenCache,
-    ) -> Self {
-        Self {
-            client,
-            feed_url,
-            corpus_url,
-            tokens,
-        }
-    }
-}
-
-impl IngestSink for HttpSink {
-    /// Deliberately **not** `common::ingest::post_batch`: that helper
-    /// always serializes a JSON *array*, but the route takes one JSON
-    /// *object*, one record per verified delivery.
-    async fn record_feed_ingest(
-        &self,
-        request: &ScheduleFeedIngestRequest,
-    ) -> Result<(), SinkError> {
-        common::ingest::post_json(&self.client, &self.feed_url, &self.tokens, request)
-            .await
-            // `context`, not a fresh `anyhow!`: the `HttpStatusError`
-            // underneath must survive for `classify_failure` (N-2).
-            .context("schedule feed ingest POST failed")
-            .map_err(SinkError::from_http)?;
-        tracing::info!(
-            delivered_at = %request.delivered_at,
-            files = request.files.len(),
-            "posted schedule feed ingest to api"
-        );
-        Ok(())
-    }
-
-    async fn load_corpus(&self, request: &CorpusLoadRequest<'_>) -> Result<(), SinkError> {
-        common::ingest::post_json(&self.client, &self.corpus_url, &self.tokens, request)
-            .await
-            .map_err(SinkError::from_http)
-    }
 }
 
 /// Postgres directly, through `ds_store`.
@@ -259,8 +156,8 @@ impl DbSink {
 }
 
 impl IngestSink for DbSink {
-    /// `POST /private/schedule-feed-ingests`'s body, without the HTTP:
-    /// the route's 422 check, then the same insert.
+    /// What the retired `POST /private/schedule-feed-ingests` did: its 422
+    /// check, then the insert.
     async fn record_feed_ingest(
         &self,
         request: &ScheduleFeedIngestRequest,
@@ -297,9 +194,9 @@ impl IngestSink for DbSink {
         Ok(())
     }
 
-    /// `POST /private/corpus-locations`'s body, without the HTTP: the
-    /// route's 400 and 422 checks in its order, then the same load (one
-    /// transaction, crosswalk included).
+    /// What the retired `POST /private/corpus-locations` did: its 400 and
+    /// 422 checks in its order, then the load (one transaction, crosswalk
+    /// included).
     async fn load_corpus(&self, request: &CorpusLoadRequest<'_>) -> Result<(), SinkError> {
         if let Some(problem) = corpus_load_request_problem(request) {
             return Err(SinkError::Rejected(
@@ -330,7 +227,7 @@ impl IngestSink for DbSink {
     }
 }
 
-/// The record as api's route deserialises it.
+/// The record as the retired route deserialised it.
 fn feed_ingest_record(
     request: &ScheduleFeedIngestRequest,
 ) -> ds_store::schedule::ScheduleFeedIngestRequest {
@@ -364,6 +261,76 @@ pub(crate) mod tests {
     use super::*;
     use crate::ScheduleFeedFile;
 
+    /// How a [`FakeSink`] answers every write.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum Answer {
+        Accept,
+        /// A data rejection (a refused record, a class 22/23 SQLSTATE).
+        Reject,
+        /// Postgres unreachable.
+        Transient,
+    }
+
+    /// An [`IngestSink`] that records every write (as its JSON) and
+    /// answers each with `answer`.
+    pub(crate) struct FakeSink {
+        answer: Answer,
+        feed: std::sync::Mutex<Vec<serde_json::Value>>,
+        corpus: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl FakeSink {
+        pub(crate) fn new(answer: Answer) -> Self {
+            Self {
+                answer,
+                feed: std::sync::Mutex::default(),
+                corpus: std::sync::Mutex::default(),
+            }
+        }
+
+        /// Every feed record written (attempted), in order.
+        pub(crate) fn feed_records(&self) -> Vec<serde_json::Value> {
+            self.feed.lock().unwrap().clone()
+        }
+
+        /// Every CORPUS load written (attempted), in order.
+        pub(crate) fn corpus_loads(&self) -> Vec<serde_json::Value> {
+            self.corpus.lock().unwrap().clone()
+        }
+
+        fn answer(&self) -> Result<(), SinkError> {
+            match self.answer {
+                Answer::Accept => Ok(()),
+                Answer::Reject => Err(SinkError::Rejected(anyhow!("bad"))),
+                Answer::Transient => Err(SinkError::Transient(anyhow!("connection refused"))),
+            }
+        }
+    }
+
+    impl IngestSink for FakeSink {
+        fn record_feed_ingest(
+            &self,
+            request: &ScheduleFeedIngestRequest,
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            self.feed
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(request).unwrap());
+            std::future::ready(self.answer())
+        }
+
+        fn load_corpus(
+            &self,
+            request: &CorpusLoadRequest<'_>,
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            self.corpus
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(request).unwrap());
+            std::future::ready(self.answer())
+        }
+    }
+
     pub(crate) fn location(nlc: &str) -> CorpusLocation {
         CorpusLocation {
             nlc: nlc.to_string(),
@@ -391,7 +358,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The api's own deserialisation of what [`HttpSink`] sends.
+    /// The retired route's deserialisation of the request as JSON.
     fn as_api_parses_it(
         request: &ScheduleFeedIngestRequest,
     ) -> ds_store::schedule::ScheduleFeedIngestRequest {
@@ -492,68 +459,6 @@ pub(crate) mod tests {
             )),
             None
         );
-    }
-
-    /// Under `http` a 400/413/422 is a rejection and everything else
-    /// (here a 503) transient, exactly as `common::ingest::classify_failure`
-    /// said before the sink existed.
-    #[tokio::test]
-    async fn the_http_sink_classifies_the_route_s_answers() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"access_token": "t", "expires_in": 3600})),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/feed"))
-            .respond_with(
-                ResponseTemplate::new(422).set_body_string("source_file must not be blank"),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/corpus"))
-            .respond_with(ResponseTemplate::new(503))
-            .mount(&server)
-            .await;
-        let sink = HttpSink::new(
-            Client::new(),
-            format!("{}/feed", server.uri()),
-            format!("{}/corpus", server.uri()),
-            OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
-                token_url: format!("{}/token", server.uri()),
-                client_id: "test-client".to_string(),
-                scope: "groups".to_string(),
-                username: "test-user".to_string(),
-                password: "test-password".to_string(),
-            }),
-        );
-        match sink.record_feed_ingest(&feed_request()).await {
-            Err(SinkError::Rejected(err)) => {
-                assert!(format!("{err:#}").contains("source_file must not be blank"));
-            }
-            other => panic!("expected a rejection, got {other:?}"),
-        }
-        let good = [location("559500")];
-        let sha = "0f".repeat(32);
-        let corpus = CorpusLoadRequest {
-            delivered_at: Utc::now(),
-            source_file: "CORPUSExtract.json.gz",
-            locations: &good,
-            source_bytes: 1,
-            sha256: &sha,
-        };
-        assert!(matches!(
-            sink.load_corpus(&corpus).await,
-            Err(SinkError::Transient(_))
-        ));
     }
 
     #[test]

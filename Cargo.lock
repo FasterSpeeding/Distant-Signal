@@ -1575,7 +1575,6 @@ dependencies = [
  "metrics",
  "movement-feed",
  "redis",
- "reqwest 0.13.4",
  "schedule-query",
  "serde",
  "serde_json",
@@ -1583,7 +1582,6 @@ dependencies = [
  "tokio",
  "tracing",
  "trust-schema",
- "wiremock",
 ]
 
 [[package]]
@@ -3414,7 +3412,6 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
- "wiremock",
 ]
 
 [[package]]
@@ -3520,7 +3517,6 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
- "wiremock",
 ]
 
 [[package]]
@@ -4301,7 +4297,6 @@ dependencies = [
  "flate2",
  "health-http",
  "metrics",
- "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4310,7 +4305,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "wiremock",
  "zip",
 ]
 
@@ -4338,7 +4332,6 @@ dependencies = [
  "health-http",
  "metrics",
  "metrics-exporter-prometheus",
- "reqwest 0.13.4",
  "schedule-query",
  "serde",
  "serde_json",
@@ -4347,7 +4340,6 @@ dependencies = [
  "tokio",
  "tracing",
  "trip-planner",
- "wiremock",
 ]
 
 [[package]]
@@ -5556,14 +5548,12 @@ dependencies = [
  "health-http",
  "metrics",
  "movement-feed",
- "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
  "tracing",
  "trust-schema",
- "wiremock",
 ]
 
 [[package]]
@@ -5588,7 +5578,6 @@ dependencies = [
  "tokio",
  "tracing",
  "trust-schema",
- "wiremock",
 ]
 
 [[package]]

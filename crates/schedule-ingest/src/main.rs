@@ -1,7 +1,8 @@
 //! `schedule-ingest`: watches a locally mounted directory for a pushed CIF
 //! SCHEDULE feed delivery from Network Rail/RDG (a single `.zip` archive,
 //! overwritten in place on every new delivery), extracts it once stable,
-//! and forwards each new delivery to the `api` crate's ingestion endpoint.
+//! and records each new delivery in Postgres (`sink.rs`; until release B,
+//! ingest phase 5, through the `api` crate's `/private` ingestion endpoint).
 //!
 //! See `docs/superpowers/specs/2026-09-01-schedule-feed-push-design.md` for
 //! the original design and
@@ -15,11 +16,10 @@
 //!
 //! ## The last-ingested-mtime gap (same shape as the old sequence gap)
 //!
-//! `GET /private/schedule-feed-ingests` (see `crates/api/src/routes/ingest.rs`)
-//! only returns `fetched_at` -- the last known-delivered timestamp -- not a
-//! value this process could seed `last_ingested_mtime` from cheaply without
+//! The database only holds the last known-delivered timestamp, not a value
+//! this process could seed `last_ingested_mtime` from cheaply without
 //! re-deriving state. Since `schedule-ingest` keeps no persistent state of
-//! its own (state lives in `api`, per the design), a process restart loses
+//! its own (state lives in Postgres, per the design), a process restart loses
 //! `last_ingested_mtime` and `known_stable`/`known_stray_files` -- the next
 //! cycle will find the same zip (still present in `watch_dir`, since this
 //! crate reads it in place and never deletes/moves it -- see `delivery.rs`)
@@ -32,8 +32,8 @@
 //! "stalled upload" ERROR past the final check time, no second POST. A
 //! delivery extracted but not known to be posted (the POST had not yet
 //! succeeded, or the directory predates the record) skips the wait and is
-//! posted once; the `api` insert is `ON CONFLICT (delivered_at) DO
-//! NOTHING`, so that is at worst a harmless redundant POST.
+//! posted once; the insert is `ON CONFLICT (delivered_at) DO NOTHING`, so
+//! that is at worst a harmless redundant write.
 
 mod audit;
 mod cif_check;
@@ -48,29 +48,22 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::Context;
 use chrono::{DateTime, NaiveTime, Utc};
 use chrono_tz::Europe::London;
 use clap::Parser;
 use config::Config;
 use delivery::DeliveryRelation;
 use pattern::{FilePattern, Routing};
-use reqwest::Client;
 use scan::{StabilityTracker, scan_incoming};
 use serde::Serialize;
 use sink::{IngestSink, SinkError};
-
-/// Per-request timeout — matches the other pollers' identical rationale
-/// (comfortably short relative to `poll_interval_secs`'s default of two
-/// minutes between scans).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Builds the scan-cycle `tokio::time::Interval`, ticking every
 /// `poll_interval_secs` -- with `MissedTickBehavior::Delay` rather than the
 /// default `Burst`.
 ///
 /// `Burst` fires every missed tick back-to-back with zero gap once a cycle
-/// overruns its interval (a slow extraction, a slow POST to `api`) --
+/// overruns its interval (a slow extraction, a slow database write) --
 /// exactly when the dependency it's calling is already struggling, it
 /// would pile up a burst of immediate follow-up scans instead of settling
 /// back into its normal cadence. `Delay` instead waits a fresh
@@ -101,17 +94,13 @@ async fn main() -> std::process::ExitCode {
     clippy::expect_used,
     reason = "parse_check_times guarantees a non-empty list"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the process's startup sequence, read top to bottom; plan 2d's sink choice tipped it over"
-)]
 async fn run() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     common::logging::init("schedule-ingest");
 
     let config = Config::parse();
-    common::metrics::ingest_sink_info(&common::metrics::value_enum_name(&config.ingest_sink));
+    common::metrics::ingest_sink_info(&config.ingest_sink);
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
@@ -159,23 +148,9 @@ async fn run() -> anyhow::Result<()> {
         tracing::info!(pattern = %config.corpus.corpus_file_pattern, "CORPUS ingest enabled");
     }
 
-    // Plan 2d.1: api's routes (`http`, the default) or Postgres (`db`).
-    let sink = match config.ingest_sink {
-        sink::SinkKind::Http => sink::Sink::Http(sink::HttpSink::new(
-            Client::builder().timeout(REQUEST_TIMEOUT).build()?,
-            config.api_ingest_url.clone(),
-            config.corpus.corpus_api_url.clone(),
-            config.internal_oauth.token_cache(),
-        )),
-        sink::SinkKind::Db => {
-            let database_url = config
-                .database_url
-                .as_ref()
-                .context("INGEST_SINK=db needs DATABASE_URL")?;
-            tracing::info!("INGEST_SINK=db: feed markers and CORPUS loads go to Postgres directly");
-            sink::Sink::Db(sink::DbSink::connect(database_url, &progress).await?)
-        }
-    };
+    // Plan 2d.1: feed markers and CORPUS loads go to Postgres directly, as
+    // the schedule_ingest role (the api's routes went in release B).
+    let sink = sink::DbSink::connect(&config.database_url, &progress).await?;
     // Registered at 0 so the alert's increase() sees the first rejection.
     metrics::counter!(common::metrics::metric_name(ZIP_REJECTED_METRIC)).increment(0);
     metrics::counter!(common::metrics::metric_name(INGEST_REJECTED_METRIC)).increment(0);
@@ -613,18 +588,17 @@ fn record_ingested(storage_dir: &std::path::Path, request: &ScheduleFeedIngestRe
 /// chart's `DistantSignalScheduleFeedZipRejected` alert reads it.
 const ZIP_REJECTED_METRIC: &str = "schedule_feed_zip_rejected_total";
 
-/// Counts delivery records api refused (400/413/422); the chart's
+/// Counts delivery records refused as data errors; the chart's
 /// `DistantSignalScheduleFeedIngestRejected` alert reads it.
 const INGEST_REJECTED_METRIC: &str = "schedule_feed_ingest_rejected_total";
 
-/// What to do with a delivery record whose POST failed (N-2, the R-083
+/// What to do with a delivery record whose write failed (N-2, the R-083
 /// classification schedule-reference already uses): a transient failure
-/// (api down, a timeout, 5xx, 401/403/404/408/429) is queued and retried
-/// every cycle; a data rejection (400/413/422) would be refused the same
-/// way every time, so the delivery is quarantined like a rejected zip
-/// until a new upload replaces it, and counted for the alert. Under
-/// `INGEST_SINK=db` the same split comes from the route's checks and the
-/// SQLSTATE ([`SinkError`]).
+/// (Postgres down, a timeout) is queued and retried every cycle; a data
+/// rejection (the record's checks, a class 22/23 SQLSTATE: [`SinkError`])
+/// would be refused the same way every time, so the delivery is
+/// quarantined like a rejected zip until a new upload replaces it, and
+/// counted for the alert.
 fn queue_or_quarantine_failed_post(
     err: SinkError,
     request: ScheduleFeedIngestRequest,
@@ -636,7 +610,7 @@ fn queue_or_quarantine_failed_post(
             tracing::error!(
                 error = ?err,
                 delivered_at = %request.delivered_at,
-                "api rejected this delivery's ingest record (400/413/422); NOT retrying it, \
+                "this delivery's ingest record was refused; NOT retrying it, \
                  waiting for a new upload"
             );
             audit::decision(
@@ -653,26 +627,21 @@ fn queue_or_quarantine_failed_post(
             tracing::error!(
                 error = ?err,
                 delivered_at = %request.delivered_at,
-                "files extracted to storage but POST to api failed; will retry next cycle"
+                "files extracted to storage but recording the delivery failed; will retry next cycle"
             );
             *pending_post = Some(request);
         }
     }
 }
 
-/// Mirrors `crates/api/src/routes/ingest.rs`'s private
-/// `ScheduleFeedIngestRequest`/`ScheduleFeedFile` structs field-for-field
-/// (names, types, and JSON casing -- neither struct carries a
-/// `#[serde(rename_all = ...)]`, so plain `snake_case` field names already
-/// match on the wire). Those types are private to the `api` crate, so this
-/// crate can't import them -- it only needs to produce matching JSON, not
-/// share a Rust type. If either crate's shape drifts, this comment is the
-/// first thing to check.
+/// One delivery's record, field for field the JSON the retired api route
+/// took (`ds_store::schedule::ScheduleFeedIngestRequest`, which
+/// `sink::DbSink` converts it to).
 ///
 /// `delivered_at` is the delivery's *own* mtime (converted to UTC) -- the
-/// real identity of "which delivery is this", used as the primary key on
-/// the `api` side. `ingested_at` is when this process actually processed
-/// it, kept only as separate observability data (see the migration/query
+/// real identity of "which delivery is this", the table's primary key.
+/// `ingested_at` is when this process actually processed it, kept only as
+/// separate observability data (see the migration/query
 /// changes for why `delivered_at`, not `ingested_at`, now backs freshness).
 ///
 /// `source_*` are the delivered zip's own name, size and SHA-256 (see
@@ -831,7 +800,10 @@ fn prune_old_deliveries(storage_dir: &std::path::Path, keep: u32) -> anyhow::Res
     reason = "test code: test string building is not hot"
 )]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::sink::tests::{Answer, FakeSink};
 
     /// Regression for the "L1 -- `MissedTickBehavior::Burst` still default"
     /// finding: this scan loop's own interval must opt into `Delay`, not
@@ -1003,9 +975,8 @@ mod tests {
     /// End-to-end-ish integration test through `run_scan_cycle` itself,
     /// using a real zip fixture built via `delivery::build_test_zip` --
     /// covers zip detection, stability, mtime-dedup, and extraction all
-    /// wired together the way `main`'s loop actually calls them (an HTTP
-    /// POST is not exercised here -- `config.api_ingest_url` points at an
-    /// address nothing listens on, so the POST fails and the delivery is
+    /// wired together the way `main`'s loop actually calls them (the sink
+    /// answers every write as if Postgres were down, so the delivery is
     /// left in `pending_post`, which is exactly what this test asserts).
     #[tokio::test]
     async fn a_stable_new_zip_is_extracted_into_a_timestamp_named_directory() {
@@ -1016,10 +987,7 @@ mod tests {
         std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
 
         let config = test_config(watch_dir.path(), storage_dir.path());
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let internal_oauth = test_oauth();
-
-        let sink = test_sink(&config, client, internal_oauth);
+        let sink = unreachable_sink();
 
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
@@ -1047,10 +1015,10 @@ mod tests {
             .unwrap();
         }
 
-        // The POST attempt fails (nothing is listening), so the delivery
+        // The write fails (Postgres "down"), so the delivery
         // is tracked as pending rather than advancing last_ingested_mtime
         // -- but the files must already be extracted to storage_dir at
-        // this point (extraction happens before the POST attempt).
+        // this point (extraction happens before the write).
         assert!(pending_post.is_some());
 
         let entries: Vec<String> = std::fs::read_dir(storage_dir.path())
@@ -1087,9 +1055,7 @@ mod tests {
         std::fs::write(watch_dir.path().join("CORPUSExtract.csv.gz"), b"gz").unwrap();
 
         let config = test_config(watch_dir.path(), storage_dir.path());
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let internal_oauth = test_oauth();
-        let sink = test_sink(&config, client, internal_oauth);
+        let sink = unreachable_sink();
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1148,9 +1114,7 @@ mod tests {
 
         let mut config = test_config(watch_dir.path(), storage_dir.path());
         config.max_extracted_bytes = 12;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let internal_oauth = test_oauth();
-        let sink = test_sink(&config, client, internal_oauth);
+        let sink = unreachable_sink();
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1184,7 +1148,7 @@ mod tests {
         );
     }
 
-    /// PL-13: while the api POST keeps failing, later cycles neither
+    /// PL-13: while the write keeps failing, later cycles neither
     /// extract the zip again nor send a second copy of the request -- the
     /// queued retry is the only POST.
     #[tokio::test]
@@ -1195,9 +1159,7 @@ mod tests {
         std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
 
         let config = test_config(watch_dir.path(), storage_dir.path());
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let internal_oauth = test_oauth();
-        let sink = test_sink(&config, client, internal_oauth);
+        let sink = unreachable_sink();
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1269,7 +1231,6 @@ mod tests {
             corpus: config::CorpusArgs {
                 corpus_ingest_enabled: false,
                 corpus_file_pattern: config::DEFAULT_CORPUS_FILE_PATTERN.to_string(),
-                corpus_api_url: "http://127.0.0.1:1/corpus-locations".to_string(),
                 corpus_max_decompressed_bytes: 256 * 1024 * 1024,
                 corpus_min_rows: 1,
                 corpus_retention_keep: 3,
@@ -1287,18 +1248,9 @@ mod tests {
                 cif_max_record_drop_percent: 20,
             },
             stability_cycles: 2,
-            // Deliberately an address nothing listens on -- these tests
-            // only exercise up to the POST attempt, not a real server.
-            api_ingest_url: "http://127.0.0.1:1/schedule-feed-ingests".to_string(),
-            ingest_sink: sink::SinkKind::Http,
-            database_url: None,
-            internal_oauth: common::oauth_client::InternalOAuthArgs {
-                internal_oauth_token_url: "http://127.0.0.1:1/token".to_string(),
-                internal_oauth_client_id: "test-client".to_string(),
-                internal_oauth_scope: "groups".to_string(),
-                internal_oauth_username: "test-user".to_string(),
-                internal_oauth_password: "test-password".to_string(),
-            },
+            ingest_sink: "db".to_string(),
+            // Unused: the tests pass their own sink.
+            database_url: common::secret::Secret::new("postgres://unused@127.0.0.1:1/none"),
             metrics_port: 0,
             metrics: common::service_args::MetricsArgs {
                 metrics_enabled: false,
@@ -1310,49 +1262,19 @@ mod tests {
         }
     }
 
-    /// N-2: a 400 from api is a data rejection: the delivery is
-    /// quarantined (not queued), and later cycles neither POST it again
-    /// nor re-extract it. A 503 stays queued for retry.
+    /// N-2: a data rejection quarantines the delivery (not queued), and
+    /// later cycles neither write it again nor re-extract it. A transient
+    /// failure stays queued for retry.
     #[tokio::test]
-    async fn a_rejected_ingest_post_is_not_retried_every_cycle() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        for (status, rejected) in [(400u16, true), (503, false)] {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/token"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(
-                        serde_json::json!({"access_token": "t", "expires_in": 3600}),
-                    ),
-                )
-                .mount(&server)
-                .await;
-            Mock::given(method("POST"))
-                .and(path("/schedule-feed-ingests"))
-                .respond_with(ResponseTemplate::new(status).set_body_string("bad"))
-                .mount(&server)
-                .await;
-
+    async fn a_rejected_ingest_record_is_not_retried_every_cycle() {
+        for (answer, rejected) in [(Answer::Reject, true), (Answer::Transient, false)] {
             let watch_dir = tempfile::tempdir().unwrap();
             let storage_dir = tempfile::tempdir().unwrap();
             let bytes = real_zip();
             std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
 
-            let mut config = test_config(watch_dir.path(), storage_dir.path());
-            config.api_ingest_url = format!("{}/schedule-feed-ingests", server.uri());
-            let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-            let internal_oauth = common::oauth_client::OAuthTokenCache::new(
-                common::oauth_client::OAuthCredentials {
-                    token_url: format!("{}/token", server.uri()),
-                    client_id: "test-client".to_string(),
-                    scope: "groups".to_string(),
-                    username: "test-user".to_string(),
-                    password: "test-password".to_string(),
-                },
-            );
-            let sink = test_sink(&config, client, internal_oauth);
+            let config = test_config(watch_dir.path(), storage_dir.path());
+            let sink = FakeSink::new(answer);
             let mut tracker = StabilityTracker::new();
             let mut known_stable = HashSet::new();
             let mut known_stray_files = HashSet::new();
@@ -1377,74 +1299,40 @@ mod tests {
                 .unwrap();
             }
 
-            let posts = server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .filter(|r| r.url.path() == "/schedule-feed-ingests")
-                .count();
-            assert_eq!(last_ingested_mtime, None, "status {status}");
+            let writes = sink.feed_records().len();
+            assert_eq!(last_ingested_mtime, None, "{answer:?}");
             if rejected {
-                assert_eq!(posts, 1, "a 400 is sent once, never retried");
+                assert_eq!(writes, 1, "a rejection is sent once, never retried");
                 assert!(pending_post.is_none());
                 assert!(rejected_mtime.is_some(), "the delivery is quarantined");
             } else {
                 // Stable on cycle 2, then one queued retry per cycle.
-                assert_eq!(posts, 4, "a 503 is retried every cycle");
+                assert_eq!(writes, 4, "a transient failure is retried every cycle");
                 assert!(pending_post.is_some());
                 assert!(rejected_mtime.is_none());
             }
         }
     }
 
-    /// Provenance end to end: the record posted to api carries the zip's
-    /// name, size and SHA-256 and each extracted file's SHA-256, and the
-    /// delivery gets exactly one `accepted` audit line with the same hash.
-    /// A 400 instead gives one `rejected_by_api` line.
+    /// Provenance end to end: the record written carries the zip's name,
+    /// size and SHA-256 and each extracted file's SHA-256, and the delivery
+    /// gets exactly one `accepted` audit line with the same hash. A data
+    /// rejection instead gives one `rejected_by_api` line (the outcome's
+    /// name predates the direct write).
     #[tokio::test]
     async fn an_accepted_delivery_records_and_logs_its_sha256() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        for (status, outcome) in [(200u16, "accepted"), (400, "rejected_by_api")] {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/token"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(
-                        serde_json::json!({"access_token": "t", "expires_in": 3600}),
-                    ),
-                )
-                .mount(&server)
-                .await;
-            Mock::given(method("POST"))
-                .and(path("/schedule-feed-ingests"))
-                .respond_with(
-                    ResponseTemplate::new(status).set_body_json(serde_json::json!({"upserted": 1})),
-                )
-                .mount(&server)
-                .await;
-
+        for (answer, outcome) in [
+            (Answer::Accept, "accepted"),
+            (Answer::Reject, "rejected_by_api"),
+        ] {
             let watch_dir = tempfile::tempdir().unwrap();
             let storage_dir = tempfile::tempdir().unwrap();
             let bytes = real_zip();
             std::fs::write(watch_dir.path().join("timetable_full.zip"), &bytes).unwrap();
             let zip_sha = audit::DeliveredFile::from_bytes("", &bytes).sha256;
 
-            let mut config = test_config(watch_dir.path(), storage_dir.path());
-            config.api_ingest_url = format!("{}/schedule-feed-ingests", server.uri());
-            let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-            let internal_oauth = common::oauth_client::OAuthTokenCache::new(
-                common::oauth_client::OAuthCredentials {
-                    token_url: format!("{}/token", server.uri()),
-                    client_id: "test-client".to_string(),
-                    scope: "groups".to_string(),
-                    username: "test-user".to_string(),
-                    password: "test-password".to_string(),
-                },
-            );
-            let sink = test_sink(&config, client, internal_oauth);
+            let config = test_config(watch_dir.path(), storage_dir.path());
+            let sink = FakeSink::new(answer);
             let mut tracker = StabilityTracker::new();
             let mut known_stable = HashSet::new();
             let mut known_stray_files = HashSet::new();
@@ -1477,22 +1365,15 @@ mod tests {
             assert_eq!(audit[0]["file"], "timetable_full.zip");
             assert_eq!(audit[0]["bytes"], bytes.len() as u64);
             assert_eq!(audit[0]["sha256"], zip_sha.as_str());
-            assert_eq!(audit[0].get("reason").is_some(), status != 200);
+            assert_eq!(audit[0].get("reason").is_some(), outcome != "accepted");
 
-            let posts: Vec<serde_json::Value> = server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .filter(|r| r.url.path() == "/schedule-feed-ingests")
-                .map(|r| serde_json::from_slice(&r.body).unwrap())
-                .collect();
-            assert_eq!(posts.len(), 1);
-            assert_eq!(posts[0]["source_file"], "timetable_full.zip");
-            assert_eq!(posts[0]["source_bytes"], bytes.len() as u64);
-            assert_eq!(posts[0]["source_sha256"], zip_sha.as_str());
+            let records = sink.feed_records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0]["source_file"], "timetable_full.zip");
+            assert_eq!(records[0]["source_bytes"], bytes.len() as u64);
+            assert_eq!(records[0]["source_sha256"], zip_sha.as_str());
             assert_eq!(
-                posts[0]["files"][0]["sha256"],
+                records[0]["files"][0]["sha256"],
                 audit::DeliveredFile::from_bytes("", cif_check::tests::MCA.as_bytes())
                     .sha256
                     .as_str()
@@ -1500,44 +1381,21 @@ mod tests {
         }
     }
 
-    /// A mock api accepting every token and ingest request.
-    async fn accepting_api() -> wiremock::MockServer {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"access_token": "t", "expires_in": 3600})),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/schedule-feed-ingests"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"upserted": 1})),
-            )
-            .mount(&server)
-            .await;
-        server
+    /// A sink accepting every write, shared by the `Process`es of one test
+    /// (one database across a restart).
+    fn accepting_sink() -> Arc<FakeSink> {
+        Arc::new(FakeSink::new(Answer::Accept))
     }
 
-    async fn ingest_posts(server: &wiremock::MockServer) -> usize {
-        server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .filter(|r| r.url.path() == "/schedule-feed-ingests")
-            .count()
+    fn ingest_posts(sink: &FakeSink) -> usize {
+        sink.feed_records().len()
     }
 
     /// One process's in-memory scan state, pointed at `server`. A new
     /// `Process` over the same directories is a pod restart.
     struct Process {
         config: Config,
-        sink: sink::HttpSink,
+        sink: Arc<FakeSink>,
         tracker: StabilityTracker,
         known_stable: HashSet<String>,
         known_stray_files: HashSet<String>,
@@ -1550,23 +1408,10 @@ mod tests {
         fn start(
             watch_dir: &std::path::Path,
             storage_dir: &std::path::Path,
-            server: &wiremock::MockServer,
+            sink: &Arc<FakeSink>,
         ) -> Self {
-            let mut config = test_config(watch_dir, storage_dir);
-            config.api_ingest_url = format!("{}/schedule-feed-ingests", server.uri());
-            let sink = test_sink(
-                &config,
-                Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap(),
-                common::oauth_client::OAuthTokenCache::new(
-                    common::oauth_client::OAuthCredentials {
-                        token_url: format!("{}/token", server.uri()),
-                        client_id: "test-client".to_string(),
-                        scope: "groups".to_string(),
-                        username: "test-user".to_string(),
-                        password: "test-password".to_string(),
-                    },
-                ),
-            );
+            let config = test_config(watch_dir, storage_dir);
+            let sink = Arc::clone(sink);
             Self {
                 config,
                 sink,
@@ -1584,7 +1429,7 @@ mod tests {
         async fn final_check_cycle(&mut self) -> Vec<serde_json::Value> {
             let (guard, logs) = audit::tests::capture_default();
             run_scan_cycle(
-                &self.sink,
+                &*self.sink,
                 &self.config,
                 &Routing::defaults(),
                 &mut self.tracker,
@@ -1615,7 +1460,7 @@ mod tests {
     /// upload" ERROR, and no second POST -- and only once.
     #[tokio::test]
     async fn an_already_ingested_zip_is_recognised_at_once_after_a_restart() {
-        let server = accepting_api().await;
+        let server = accepting_sink();
         let watch_dir = tempfile::tempdir().unwrap();
         let storage_dir = tempfile::tempdir().unwrap();
         let zip_path = watch_dir.path().join("timetable_full.zip");
@@ -1627,7 +1472,7 @@ mod tests {
             before.final_check_cycle().await;
         }
         assert_eq!(before.last_ingested_mtime, Some(zip_mtime));
-        assert_eq!(ingest_posts(&server).await, 1);
+        assert_eq!(ingest_posts(&server), 1);
         let dir = storage_dir
             .path()
             .join(delivery::delivery_dir_name(zip_mtime));
@@ -1645,7 +1490,7 @@ mod tests {
             );
             assert_eq!(after.last_ingested_mtime, Some(zip_mtime));
         }
-        assert_eq!(ingest_posts(&server).await, 1, "not posted again");
+        assert_eq!(ingest_posts(&server), 1, "not posted again");
     }
 
     /// A delivery extracted before a restart whose POST had not yet
@@ -1654,7 +1499,7 @@ mod tests {
     /// posted -- once -- and then recorded.
     #[tokio::test]
     async fn an_extracted_but_unposted_zip_is_posted_without_a_wait_after_a_restart() {
-        let server = accepting_api().await;
+        let server = accepting_sink();
         let watch_dir = tempfile::tempdir().unwrap();
         let storage_dir = tempfile::tempdir().unwrap();
         let zip_path = watch_dir.path().join("timetable_full.zip");
@@ -1674,10 +1519,10 @@ mod tests {
         let lines = after.final_check_cycle().await;
         assert_eq!(errors(&lines), Vec::<&serde_json::Value>::new());
         assert_eq!(after.last_ingested_mtime, Some(zip_mtime));
-        assert_eq!(ingest_posts(&server).await, 2);
+        assert_eq!(ingest_posts(&server), 2);
         assert!(dir.join(delivery::INGESTED_RECORD).is_file());
         after.final_check_cycle().await;
-        assert_eq!(ingest_posts(&server).await, 2);
+        assert_eq!(ingest_posts(&server), 2);
     }
 
     /// The stalled-upload detection still holds after a restart for a
@@ -1686,7 +1531,7 @@ mod tests {
     /// ERROR past the final check time, before it is extracted and posted.
     #[tokio::test]
     async fn a_new_zip_after_a_restart_still_waits_to_be_stable() {
-        let server = accepting_api().await;
+        let server = accepting_sink();
         let watch_dir = tempfile::tempdir().unwrap();
         let storage_dir = tempfile::tempdir().unwrap();
         let zip_path = watch_dir.path().join("timetable_full.zip");
@@ -1703,7 +1548,7 @@ mod tests {
         for _ in 0..2 {
             before.final_check_cycle().await;
         }
-        assert_eq!(ingest_posts(&server).await, 1);
+        assert_eq!(ingest_posts(&server), 1);
 
         // Today's upload replaces it in place, then the pod restarts.
         std::fs::write(&zip_path, real_zip()).unwrap();
@@ -1725,11 +1570,11 @@ mod tests {
             "{errors:?}"
         );
         assert_eq!(after.last_ingested_mtime, None);
-        assert_eq!(ingest_posts(&server).await, 1);
+        assert_eq!(ingest_posts(&server), 1);
 
         after.final_check_cycle().await;
         assert_eq!(after.last_ingested_mtime, Some(new_mtime));
-        assert_eq!(ingest_posts(&server).await, 2);
+        assert_eq!(ingest_posts(&server), 2);
     }
 
     /// Today's date as the RJTTF banner writes it, so a fixture delivery
@@ -1744,17 +1589,15 @@ mod tests {
         cif_check::tests::delivery_zip(&today())
     }
 
-    /// Runs `cycles` scan cycles against `watch_dir`/`storage_dir` with no
-    /// api listening; returns the quarantined mtime and the audit lines.
+    /// Runs `cycles` scan cycles against `watch_dir`/`storage_dir` with the
+    /// database down; returns the quarantined mtime and the audit lines.
     async fn run_cycles(
         watch_dir: &std::path::Path,
         storage_dir: &std::path::Path,
         cycles: usize,
     ) -> (Option<SystemTime>, Vec<serde_json::Value>) {
         let config = test_config(watch_dir, storage_dir);
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let internal_oauth = test_oauth();
-        let sink = test_sink(&config, client, internal_oauth);
+        let sink = unreachable_sink();
         let mut tracker = StabilityTracker::new();
         let mut known_stable = HashSet::new();
         let mut known_stray_files = HashSet::new();
@@ -1867,27 +1710,8 @@ mod tests {
         assert_eq!(dirs, ["20200101T000000Z"]);
     }
 
-    /// The HTTP sink `main` builds from `config` (`INGEST_SINK=http`).
-    fn test_sink(
-        config: &Config,
-        client: Client,
-        tokens: common::oauth_client::OAuthTokenCache,
-    ) -> sink::HttpSink {
-        sink::HttpSink::new(
-            client,
-            config.api_ingest_url.clone(),
-            config.corpus.corpus_api_url.clone(),
-            tokens,
-        )
-    }
-
-    fn test_oauth() -> common::oauth_client::OAuthTokenCache {
-        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
-            token_url: "http://127.0.0.1:1/token".to_string(),
-            client_id: "test-client".to_string(),
-            scope: "groups".to_string(),
-            username: "test-user".to_string(),
-            password: "test-password".to_string(),
-        })
+    /// A sink whose every write fails as if Postgres were down.
+    fn unreachable_sink() -> FakeSink {
+        FakeSink::new(Answer::Transient)
     }
 }

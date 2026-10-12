@@ -4,8 +4,9 @@
 //! `docs/superpowers/specs/2026-09-03-schedule-feed-zip-delivery-correction.md`),
 //! reads that delivery's `RJTTF*MCA.txt` (`TI` records) and `RJTTF*MSN.txt`
 //! (`A` records) directly off the already-local, read-only-mounted PVC,
-//! resolves a STANOX->CRS table, and POSTs it to `api`'s
-//! `/private/stanox-crs`. See
+//! resolves a STANOX->CRS table and the other schedule products, and
+//! writes them to Postgres (`sink`; until release B, ingest phase 5,
+//! through `api`'s `/private` routes). See
 //! docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
 
 mod alf;
@@ -19,22 +20,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use config::Config;
-use reqwest::Client;
-#[cfg(test)]
-use sink::first_chunk_url;
-use sink::{ChunkPart, DatedProduct, DbSink, HttpSink, LinePopulation, PublishSink, SinkError};
-
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// HTTP timeout for the FINAL chunk of a per-date diff publish, overriding
-/// [`REQUEST_TIMEOUT`] for that one request. The final chunk is the one
-/// where `api` deletes the rows the publish did not carry, under its own
-/// 120s `statement_timeout` (`PUBLISH_DELETE_STATEMENT_TIMEOUT` in
-/// `crates/api/src/data/queries.rs`). This must stay comfortably above that,
-/// so a slow delete ends with `api`'s own answer (a 503 after rolling back)
-/// rather than with this client hanging up while the server keeps working --
-/// which, retried, is how 8+ deletes piled up on 2026-09-27.
-const FINAL_CHUNK_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+use sink::{ChunkPart, DatedProduct, DbSink, LinePopulation, PublishSink, SinkError};
 
 /// A publish failure that must NOT be retried within this cycle -- see
 /// [`publish_with_retry`] and [`SinkError::defers_final_chunk`].
@@ -81,7 +67,7 @@ impl std::error::Error for RefusedToClear {}
 /// default `Burst`.
 ///
 /// `Burst` fires every missed tick back-to-back with zero gap once a cycle
-/// overruns `poll_interval` (a slow PVC read, a slow POST to `api`) --
+/// overruns `poll_interval` (a slow PVC read, a slow publish) --
 /// exactly when the dependency it's calling is already struggling, it
 /// would pile up a burst of immediate follow-up cycles instead of
 /// settling back into its normal cadence. `Delay` instead waits a fresh
@@ -110,37 +96,22 @@ async fn run() -> anyhow::Result<()> {
     common::logging::init("schedule-reference");
 
     let config = Config::parse();
-    common::metrics::ingest_sink_info(&common::metrics::value_enum_name(&config.ingest_sink));
+    common::metrics::ingest_sink_info(&config.ingest_sink);
     config.validate()?;
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
     let progress = health_http::spawn_liveness(&config.health);
-    tracing::info!(sink = ?config.ingest_sink, "schedule-reference starting");
-    match config.ingest_sink {
-        config::IngestSink::Http => {
-            let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-            let internal_oauth = config.internal_oauth.token_cache();
-            let sink = HttpSink::new(
-                &client,
-                &config,
-                &internal_oauth,
-                FINAL_CHUNK_REQUEST_TIMEOUT,
-            );
-            run_with(&sink, &config, &progress).await
-        }
-        config::IngestSink::Db => {
-            let pool = connect_db(&config, &progress).await?;
-            sink::db::register_metrics();
-            run_with(&DbSink::new(pool, &config.lines), &config, &progress).await
-        }
-    }
+    tracing::info!(sink = %config.ingest_sink, "schedule-reference starting");
+    let pool = connect_db(&config, &progress).await?;
+    sink::db::register_metrics();
+    run_with(&DbSink::new(pool, &config.lines), &config, &progress).await
 }
 
-/// `pg_stat_activity.application_name` of the `db` sink's pool.
+/// `pg_stat_activity.application_name` of the sink's pool.
 const DB_APPLICATION_NAME: &str = "distant-signal-schedule-reference";
 
-/// The `db` sink's pool (ingest architecture plan 2a.3): waits for Postgres
+/// The sink's pool (ingest architecture plan 2a.3): waits for Postgres
 /// (INF-5, like the other DB services), connects as `DATABASE_URL`'s role
 /// with [`config::DB_POOL_SIZE`] connections, and passes the schema gate
 /// (spec §12.2) before the first poll -- so a binary newer than the
@@ -197,7 +168,7 @@ async fn run_with(
         );
     } else {
         tracing::info!(
-            "no completed schedule-reference publish cycle recorded by api yet; will process the next delivery poll_once finds (first-run behavior)"
+            "no completed schedule-reference publish cycle recorded yet; will process the next delivery poll_once finds (first-run behavior)"
         );
     }
 
@@ -397,8 +368,8 @@ impl CycleOutcome {
                 tracing::error!(
                     error = ?err,
                     product,
-                    "api rejected this product's data (400/413/422); NOT retrying it for this \
-                     delivery, and the durable completion marker will not be written"
+                    "this product's data was refused; NOT retrying it for this delivery, and \
+                     the durable completion marker will not be written"
                 );
                 telemetry::record(&product, telemetry::REJECTED);
                 self.permanent_failures.push(product.clone());
@@ -651,13 +622,13 @@ async fn publish_with_retry(
                     error = ?err,
                     product,
                     attempt = tries + 1,
-                    "publish's final chunk failed in a way that suggests api is still busy with \
-                     it; not retrying within this cycle"
+                    "publish's final chunk failed in a way that suggests its delete is still \
+                     running; not retrying within this cycle"
                 );
                 return Err(err);
             }
             Err(err) if sink::classify(&err) == common::ingest::FailureClass::Rejected => {
-                // DQ6/SCHED-1: api refused the data itself; the same request
+                // DQ6/SCHED-1: the data itself was refused; the same request
                 // is refused the same way however often it is sent.
                 return Err(err);
             }
@@ -895,13 +866,13 @@ async fn record_completed_publish(sink: &impl PublishSink, delivery: &str) {
     match sink.record_completed_publish(delivery).await {
         Ok(()) => tracing::info!(
             delivery = %delivery,
-            "recorded this delivery's completed publish cycle with api; a restart will not \
+            "recorded this delivery's completed publish cycle; a restart will not \
              redundantly republish it"
         ),
         Err(err) => tracing::warn!(
             error = ?err,
             delivery = %delivery,
-            "could not record this delivery's completed publish cycle with api; this process will \
+            "could not record this delivery's completed publish cycle; this process will \
              still not republish it, but a restart before the next delivery will (wasteful, not \
              incorrect)"
         ),
@@ -1134,8 +1105,7 @@ async fn seed_last_processed_delivery(sink: &impl PublishSink, config: &Config) 
                 if failures > 0 {
                     tracing::info!(
                         failed_attempts = failures,
-                        "fetched this service's own last completed publish cycle from api after \
-                         retrying"
+                        "fetched this service's own last completed publish cycle after retrying"
                     );
                 }
                 return delivery;
@@ -1147,7 +1117,7 @@ async fn seed_last_processed_delivery(sink: &impl PublishSink, config: &Config) 
                     error = ?err,
                     failed_attempts = failures,
                     retry_in = ?delay,
-                    "could not fetch this service's own last completed publish cycle from api on \
+                    "could not fetch this service's own last completed publish cycle on \
                      startup; retrying (NOT falling back to first-run behavior, which would \
                      republish a delivery that may already be complete)"
                 );
@@ -2389,9 +2359,9 @@ fn lines_to_publish<'a>(
 /// per destination-departures row that product's sizing design measured, one
 /// chunk is roughly 5MB of JSON -- about 5% of `api`'s
 /// `DefaultBodyLimit::max(100 * 1024 * 1024)` (`crates/api/src/routes/mod.rs`)
-/// and small enough that a single chunk comfortably fits inside this crate's
-/// 30-second [`REQUEST_TIMEOUT`], which is the limit that actually binds
-/// first.
+/// and small enough that a single chunk comfortably fitted inside the
+/// retired HTTP sink's 30-second request timeout, which was the limit that
+/// actually bound first.
 ///
 /// **Why this was closed proactively rather than after a failure.**
 /// `schedule_calling_points_full` emits every `LO`/`LI`/`LT` calling point of
@@ -2441,31 +2411,16 @@ const PUBLISH_CHUNK_ROWS: usize = 50_000;
 // (`post_date_scoped_row_stream`); the existing tests pin both through this.
 #[cfg(test)]
 async fn post_date_scoped_rows_in_chunks(
-    client: &Client,
-    url: &str,
-    tokens: &common::oauth_client::OAuthTokenCache,
+    sink: &sink::fake::FakePublishSink,
     rows: &[serde_json::Value],
 ) -> anyhow::Result<()> {
     post_date_scoped_row_stream(
-        &test_http_sink(client, url, tokens, FINAL_CHUNK_REQUEST_TIMEOUT),
+        sink,
         DatedProduct::CallingPointsFull,
         rows.iter().cloned(),
         EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).expect("valid date")),
     )
     .await
-}
-
-/// An [`HttpSink`] whose two chunked products both post to `url` (the
-/// chunk-protocol tests mount one route), with `final_chunk_timeout`.
-#[cfg(test)]
-fn test_http_sink<'a>(
-    client: &'a Client,
-    url: &str,
-    tokens: &'a common::oauth_client::OAuthTokenCache,
-    final_chunk_timeout: Duration,
-) -> HttpSink<'a> {
-    let config = poll_once_tests::test_config_for_server("http://unused.invalid");
-    HttpSink::new(client, &config, tokens, final_chunk_timeout).with_dated_url(url)
 }
 
 /// [`post_date_scoped_rows_in_chunks`], pulling rows from an iterator one
@@ -2487,9 +2442,8 @@ fn test_http_sink<'a>(
 /// iterator's size hint is (always, for the slice wrapper above) and `?`
 /// otherwise.
 ///
-/// Each chunk goes to `sink` ([`PublishSink::publish_part`]); the
-/// `HttpSink` sends the final chunk with [`FINAL_CHUNK_REQUEST_TIMEOUT`]
-/// instead of the client's own timeout. A final-chunk failure that
+/// Each chunk goes to `sink` ([`PublishSink::publish_part`]). A final-chunk
+/// failure that
 /// [`SinkError::defers_final_chunk`] (`Busy` or `Timeout`: the delete may
 /// still be running, or just timed out) is returned as
 /// [`DeferToNextCycle`]; any other failure keeps its [`SinkError`] under
@@ -2652,6 +2606,7 @@ mod poll_interval_tests {
     reason = "test code: casts of small known test values; scenario tests read top to bottom"
 )]
 mod poll_once_tests {
+    use super::sink::fake::{self, Fail, FakePublishSink};
     use super::*;
 
     #[test]
@@ -4170,41 +4125,17 @@ LTWVRMPTN 2211 22113     TF";
         }
     }
 
-    /// Points EVERY one of this `Config`'s `*_URL` fields at `base`, on the
-    /// real route paths, so a `poll_once` test can mount per-route mocks and
-    /// see exactly which products published and which did not. `lines` is
-    /// empty on purpose: `publish_schedule_line_population` then has nothing
-    /// to publish, keeping these tests about the six whole-network products.
-    pub(super) fn test_config_for_server(base: &str) -> Config {
+    /// A `Config` for the `poll_once` tests, which pass their own sink (a
+    /// [`sink::fake::FakePublishSink`]). `lines` is empty on purpose:
+    /// `publish_schedule_line_population` then has nothing to publish,
+    /// keeping these tests about the whole-network products.
+    pub(super) fn test_config() -> Config {
         Config {
-            ingest_sink: config::IngestSink::Http,
-            database_url: None,
+            ingest_sink: "db".to_string(),
+            database_url: common::secret::Secret::new("postgres://unused@127.0.0.1:1/none"),
             storage_dir: std::path::PathBuf::from("/tmp/schedule-reference-test-does-not-exist"),
             poll_interval_secs: 1800,
-            api_ingest_url: format!("{base}/private/stanox-crs"),
-            schedule_line_population_url: format!("{base}/private/schedule-line-population"),
-            schedule_network_departures_url: format!("{base}/private/schedule-network-departures"),
-            schedule_destination_departures_url: format!(
-                "{base}/private/schedule-destination-departures"
-            ),
-            fixed_links_url: format!("{base}/private/fixed-links"),
-            schedule_calling_points_full_url: format!(
-                "{base}/private/schedule-calling-points-full"
-            ),
-            schedule_services_url: format!("{base}/private/schedule-services"),
-            tiploc_crs_url: format!("{base}/private/tiploc-crs"),
-            tiploc_locations_url: format!("{base}/private/tiploc-locations"),
-            schedule_reference_publishes_url: format!(
-                "{base}/private/schedule-reference-publishes"
-            ),
             lines: common::config::LineCatalogue(vec![]),
-            internal_oauth: common::oauth_client::InternalOAuthArgs {
-                internal_oauth_token_url: format!("{base}/token/"),
-                internal_oauth_client_id: "test-client".to_string(),
-                internal_oauth_scope: "groups".to_string(),
-                internal_oauth_username: "test-user".to_string(),
-                internal_oauth_password: "test-password".to_string(),
-            },
             metrics_port: 0,
             metrics: common::service_args::MetricsArgs {
                 metrics_enabled: false,
@@ -4222,49 +4153,10 @@ LTWVRMPTN 2211 22113     TF";
         }
     }
 
-    /// The production [`HttpSink`] over `config`'s URLs (the protocol tests
-    /// drive every publish through it, as `run` does).
-    pub(super) fn http_sink<'a>(
-        client: &'a Client,
-        config: &Config,
-        tokens: &'a common::oauth_client::OAuthTokenCache,
-    ) -> HttpSink<'a> {
-        HttpSink::new(client, config, tokens, FINAL_CHUNK_REQUEST_TIMEOUT)
-    }
-
     /// Millisecond-scale backoff so retry tests do not wait out the
     /// production schedule.
     pub(super) const FAST_BACKOFF: common::backoff::Backoff =
         common::backoff::Backoff::new(Duration::from_millis(1), Duration::from_millis(5));
-
-    /// Mounts a token-issuing mock onto `server` and returns a token cache
-    /// pointed at it -- mirrors `common::poller_loop::tests::token_cache`
-    /// and `common::ingest::tests`' own mock-Authentik setup exactly (same
-    /// `/token/` path, same fake-JWT response shape), so the real
-    /// `common::ingest::get_json`/`post_batch` calls under test succeed their
-    /// bearer-token fetch before hitting whichever per-route mock each test
-    /// mounts separately.
-    pub(super) async fn mock_token_cache(
-        server: &wiremock::MockServer,
-    ) -> common::oauth_client::OAuthTokenCache {
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/token/"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "access_token": "fake-jwt",
-                    "expires_in": 300,
-                })),
-            )
-            .mount(server)
-            .await;
-        common::oauth_client::OAuthTokenCache::new(common::oauth_client::OAuthCredentials {
-            token_url: format!("{}/token/", server.uri()),
-            client_id: "test-client".to_string(),
-            scope: "groups".to_string(),
-            username: "test-user".to_string(),
-            password: "test-password".to_string(),
-        })
-    }
 
     #[test]
     fn telemetry_product_kinds_are_bounded() {
@@ -4316,21 +4208,9 @@ LTWVRMPTN 2211 22113     TF";
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         let _guard = metrics::set_default_local_recorder(&recorder);
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "delivery": "20260903T172830Z" })),
-            )
-            .mount(&server)
-            .await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config_for_server(&server.uri());
-        seed_and_report(&http_sink(&client, &config, &tokens), &config).await;
+        let sink = FakePublishSink::new().with_last_completed(Some("20260903T172830Z"));
+        let config = test_config();
+        seed_and_report(&sink, &config).await;
 
         let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
         let mut outcome = CycleOutcome::default();
@@ -4356,23 +4236,10 @@ LTWVRMPTN 2211 22113     TF";
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         let _guard = metrics::set_default_local_recorder(&recorder);
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "delivery": null })),
-            )
-            .mount(&server)
-            .await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config_for_server(&server.uri());
+        let config = test_config();
 
         assert_eq!(
-            seed_and_report(&http_sink(&client, &config, &tokens), &config).await,
+            seed_and_report(&FakePublishSink::new(), &config).await,
             None
         );
         let rendered = handle.render();
@@ -4388,240 +4255,98 @@ LTWVRMPTN 2211 22113     TF";
     /// nor skips one it never finished.
     #[tokio::test]
     async fn seed_last_processed_delivery_seeds_from_its_own_completion_marker() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "delivery": "20260903T172830Z"
-                })),
-            )
-            .mount(&server)
-            .await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config_for_server(&server.uri());
-
-        let seeded =
-            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await;
+        let sink = FakePublishSink::new().with_last_completed(Some("20260903T172830Z"));
+        let seeded = seed_last_processed_delivery(&sink, &test_config()).await;
 
         assert_eq!(
             seeded,
             Some("20260903T172830Z".to_string()),
             "must seed the exact dir_name a real discovery::latest_complete_delivery scan finds"
         );
+        assert_eq!(sink.count(fake::LAST_PUBLISH), 1);
     }
 
-    /// **The regression test for finding #1 (High).** The dedup marker must
-    /// come from `schedule-reference`'s own completion record, NOT from
-    /// `schedule-ingest`'s extraction record.
-    ///
-    /// The shape reproduced here is the exact production one: `schedule-ingest`
-    /// HAS recorded a delivery (so `/private/schedule-feed-ingests` would
-    /// happily answer with it, and is mounted here to prove it is not read),
-    /// but `schedule-reference` never finished publishing it -- it was
-    /// restarted mid-cycle. Seeding from the ingest record made `poll_once`
-    /// short-circuit on "no new delivery" and silently skip every product for
-    /// that delivery until the next one landed ~24 hours later. Seeding from
-    /// its own (absent) completion marker must instead fall back to first-run
-    /// behavior, i.e. process the delivery.
+    /// **The regression test for finding #1 (High).** The dedup marker comes
+    /// from `schedule-reference`'s own completion record, never from
+    /// `schedule-ingest`'s extraction record (`schedule_feed_ingests`): the
+    /// sink has no way to read the latter at all. A delivery `schedule-ingest`
+    /// extracted but this service never finished publishing (it was
+    /// restarted mid-cycle) has no completion marker, so the seed falls back
+    /// to first-run behavior and the delivery is processed. Seeding from the
+    /// ingest record made `poll_once` short-circuit on "no new delivery" and
+    /// silently skip every product for that delivery until the next one
+    /// landed ~24 hours later.
     #[tokio::test]
     async fn seed_last_processed_delivery_does_not_seed_from_schedule_ingests_extraction_record() {
-        let server = wiremock::MockServer::start().await;
-        // schedule-ingest DID extract and record a delivery.
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/private/schedule-feed-ingests"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "fetchedAt": "2026-09-03T17:28:30Z"
-                })),
-            )
-            .mount(&server)
-            .await;
-        // schedule-reference never completed a publish cycle for it.
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "delivery": null })),
-            )
-            .mount(&server)
-            .await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config_for_server(&server.uri());
-
-        let seeded =
-            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await;
-
+        let sink = FakePublishSink::new();
         assert_eq!(
-            seeded, None,
+            seed_last_processed_delivery(&sink, &test_config()).await,
+            None,
             "a delivery schedule-ingest extracted but schedule-reference never published must NOT \
              be treated as already processed -- that is the bug that silently loses a whole day of \
              every published product"
         );
-        let ingest_reads = server
-            .received_requests()
-            .await
-            .expect("wiremock records requests")
-            .into_iter()
-            .filter(|req| req.url.path() == "/private/schedule-feed-ingests")
-            .count();
         assert_eq!(
-            ingest_reads, 0,
-            "schedule-reference must not read schedule-ingest's extraction record at all any more"
+            sink.calls()
+                .iter()
+                .map(|call| call.endpoint)
+                .collect::<Vec<_>>(),
+            [fake::LAST_PUBLISH],
+            "the seed reads this service's own marker and nothing else"
         );
     }
 
     /// A genuinely fresh deployment (an empty `schedule_reference_publishes`
-    /// table, `delivery: null`) is a real, valid case -- not an error -- and
-    /// must fall back to this service's pre-existing first-run behavior.
+    /// table) is a real, valid case -- not an error -- and must fall back to
+    /// this service's pre-existing first-run behavior.
     #[tokio::test]
     async fn seed_last_processed_delivery_falls_back_to_none_when_no_prior_record_exists() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "delivery": null })),
-            )
-            .mount(&server)
-            .await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config_for_server(&server.uri());
-
         assert_eq!(
-            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await,
+            seed_last_processed_delivery(&FakePublishSink::new(), &test_config()).await,
             None,
             "an empty schedule_reference_publishes table must fall back to None/first-run behavior"
         );
     }
 
-    /// **2026-09-26 node-reboot regression.** A GET that fails (here: 502
-    /// twice, as the IdP/api answered while the node came back) must NOT be
-    /// read as "no completed cycle": it is retried, and the answer it
-    /// eventually gets -- a completed delivery -- is what seeds the marker.
-    /// Falling back to `None` here is what republished a finished delivery
-    /// in full.
+    /// **2026-09-26 node-reboot regression.** A read that fails (here: twice,
+    /// as the api answered 502 while the node came back) must NOT be read as
+    /// "no completed cycle": it is retried, and the answer it eventually gets
+    /// -- a completed delivery -- is what seeds the marker. Falling back to
+    /// `None` here is what republished a finished delivery in full.
     #[tokio::test]
     async fn seed_last_processed_delivery_retries_a_failed_get_instead_of_falling_back_to_first_run()
      {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(wiremock::ResponseTemplate::new(502))
-            .up_to_n_times(2)
-            .expect(2)
-            .mount(&server)
-            .await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "delivery": "20260926T200045Z"
-                })),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config_for_server(&server.uri());
+        let sink = FakePublishSink::new().with_last_completed(Some("20260926T200045Z"));
+        sink.fail(fake::LAST_PUBLISH, 2, Fail::Transient);
 
         assert_eq!(
-            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await,
+            seed_last_processed_delivery(&sink, &test_config()).await,
             Some("20260926T200045Z".to_string()),
             "a transient fetch failure must be retried, not treated as a first run"
         );
+        assert_eq!(sink.count(fake::LAST_PUBLISH), 3);
     }
 
-    /// The same, when it is the OAuth token fetch that fails first (the
-    /// production shape: DNS for the `IdP`, then 502s) -- and when the api's
-    /// eventual answer is a genuine "nothing completed yet", THAT is still
-    /// first-run behavior.
+    /// The same for a database that stays unreachable: the seed keeps
+    /// retrying; bounded here by a timeout because the retry is, by design,
+    /// unbounded.
     #[tokio::test]
-    async fn seed_last_processed_delivery_waits_out_a_token_outage_then_honours_a_genuine_first_run()
-     {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/token/"))
-            .respond_with(wiremock::ResponseTemplate::new(502))
-            .up_to_n_times(5)
-            .mount(&server)
-            .await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-reference-publishes",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({ "delivery": null })),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        // Mounted after the 502s, so it answers only once they are used up.
-        let tokens = mock_token_cache(&server)
-            .await
-            .with_fetch_retry(1, FAST_BACKOFF);
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let config = test_config_for_server(&server.uri());
-
-        assert_eq!(
-            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config).await,
-            None
-        );
-        let token_posts = server
-            .received_requests()
-            .await
-            .expect("wiremock records requests")
-            .into_iter()
-            .filter(|req| req.url.path() == "/token/")
-            .count();
-        assert_eq!(
-            token_posts, 6,
-            "five failed token fetches, each followed by a startup retry, then the one that works"
-        );
-    }
-
-    /// A connect failure (nothing listening -- the same reqwest error class a
-    /// DNS resolution failure is) is retried too; bounded here by a timeout
-    /// because the retry is, by design, unbounded.
-    #[tokio::test]
-    async fn seed_last_processed_delivery_keeps_retrying_while_api_is_unreachable() {
-        let port = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().port()
-        };
-        let server = wiremock::MockServer::start().await;
-        let tokens = mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let mut config = test_config_for_server(&server.uri());
-        config.schedule_reference_publishes_url =
-            format!("http://127.0.0.1:{port}/private/schedule-reference-publishes");
+    async fn seed_last_processed_delivery_keeps_retrying_while_the_database_is_unreachable() {
+        let sink = FakePublishSink::new();
+        sink.fail(fake::LAST_PUBLISH, u64::MAX, Fail::Transient);
 
         let result = tokio::time::timeout(
             Duration::from_millis(300),
-            seed_last_processed_delivery(&http_sink(&client, &config, &tokens), &config),
+            seed_last_processed_delivery(&sink, &test_config()),
         )
         .await;
 
         assert!(
             result.is_err(),
-            "an unreachable api must keep the seed retrying, never resolve to first-run None; got \
-             {result:?}"
+            "an unreachable database must keep the seed retrying, never resolve to first-run \
+             None; got {result:?}"
         );
+        assert!(sink.count(fake::LAST_PUBLISH) > 1);
     }
 }
 
@@ -4630,12 +4355,12 @@ LTWVRMPTN 2211 22113     TF";
 /// because `last_processed_delivery` advanced after the FIRST one.
 ///
 /// These drive the real `poll_once` against a real delivery directory on disk
-/// and a mock `api`, because that is the only place the bug was observable:
+/// and a recording sink, because that is the only place the bug was observable:
 /// every individual publish function already "worked", and what was broken was
 /// the sequencing between them.
 #[cfg(test)]
 mod poll_once_retry_tests {
-    use super::poll_once_tests::http_sink;
+    use super::sink::fake::FakePublishSink;
     use super::*;
 
     /// One real, minimal delivery directory of the exact shape
@@ -4683,68 +4408,26 @@ mod poll_once_retry_tests {
         std::fs::write(dir.join(common::schedule_delivery::COMPLETE_MARKER), b"").unwrap();
     }
 
-    /// Mounts a 200-answering POST mock for every publish route, then lets the
-    /// caller override individual routes by mounting a mock FIRST (wiremock
-    /// matches in mount order, so anything mounted before this call wins).
-    pub(super) async fn mount_all_publishes_ok(server: &wiremock::MockServer) {
-        for path in [
-            "/private/stanox-crs",
-            "/private/tiploc-crs",
-            "/private/tiploc-locations",
-            "/private/schedule-line-population",
-            "/private/schedule-network-departures",
-            "/private/schedule-destination-departures",
-            "/private/schedule-calling-points-full",
-            "/private/schedule-services",
-            "/private/schedule-reference-publishes",
-        ] {
-            wiremock::Mock::given(wiremock::matchers::method("POST"))
-                .and(wiremock::matchers::path(path))
-                .respond_with(
-                    wiremock::ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({ "upserted": 1 })),
-                )
-                .mount(server)
-                .await;
-        }
-    }
-
-    pub(super) async fn posts_to(server: &wiremock::MockServer, path: &str) -> usize {
-        server
-            .received_requests()
-            .await
-            .expect("wiremock records requests")
-            .into_iter()
-            .filter(|req| req.url.path() == path)
-            .count()
-    }
-
     /// **The regression test for finding #2.** The LAST of the seven publishes
     /// fails; the delivery must NOT be recorded as processed, so the next
     /// cycle retries it -- which is exactly what every one of those publishes'
     /// own log lines has always claimed and, before this fix, never did.
     #[tokio::test]
     async fn a_failing_late_publish_leaves_the_delivery_unprocessed_so_the_next_cycle_retries_it() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        // Mounted BEFORE the catch-all 200s, so this route's 500 wins.
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path(
-                "/private/schedule-calling-points-full",
-            ))
-            .respond_with(wiremock::ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
+        sink.fail(
+            sink::fake::CALLING_POINTS_FULL,
+            u64::MAX,
+            sink::fake::Fail::Transient,
+        );
 
         let storage = tempfile::tempdir().unwrap();
         write_fixture_delivery(storage.path(), "20260925T180000Z");
-        let mut config = poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config();
         config.storage_dir = storage.path().to_path_buf();
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("a failed publish is logged and accumulated, never a hard cycle error");
 
@@ -4754,14 +4437,14 @@ mod poll_once_retry_tests {
              reprocesses and republishes the whole delivery"
         );
         assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
+            sink.count("schedule-reference-publishes"),
             0,
             "a cycle that did not fully publish must not write the durable completion marker"
         );
         // The products AFTER the failing one in the cycle must still have been
         // attempted this cycle -- a failure is log-and-continue, not abort.
         assert!(
-            posts_to(&server, "/private/schedule-destination-departures").await > 0,
+            sink.count("schedule-destination-departures") > 0,
             "the sibling product published in the same per-date loop must still be attempted"
         );
     }
@@ -4771,20 +4454,15 @@ mod poll_once_retry_tests {
     /// no new delivery does nothing.
     #[tokio::test]
     async fn a_fully_successful_cycle_advances_the_marker_and_records_the_durable_completion() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
 
         let storage = tempfile::tempdir().unwrap();
         write_fixture_delivery(storage.path(), "20260925T180000Z");
-        let mut config = poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config();
         config.storage_dir = storage.path().to_path_buf();
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .expect("cycle");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
 
         assert_eq!(
             state.last_processed_delivery,
@@ -4792,17 +4470,17 @@ mod poll_once_retry_tests {
             "a fully successful cycle must advance the dedup marker"
         );
         assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
+            sink.count("schedule-reference-publishes"),
             1,
             "a fully successful cycle must write exactly one durable completion marker"
         );
 
-        let stanox_posts_after_first_cycle = posts_to(&server, "/private/stanox-crs").await;
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        let stanox_posts_after_first_cycle = sink.count("stanox-crs");
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("second cycle");
         assert_eq!(
-            posts_to(&server, "/private/stanox-crs").await,
+            sink.count("stanox-crs"),
             stanox_posts_after_first_cycle,
             "a second cycle with no new delivery must publish nothing at all"
         );
@@ -4816,9 +4494,7 @@ mod poll_once_retry_tests {
     /// completion marker, since the cycle genuinely did not fully publish.
     #[tokio::test]
     async fn a_permanently_failing_product_does_not_trap_the_delivery_in_a_retry_loop() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
 
         let storage = tempfile::tempdir().unwrap();
         write_fixture_delivery(storage.path(), "20260925T180000Z");
@@ -4830,14 +4506,11 @@ mod poll_once_retry_tests {
             "not an ALF record at all\n",
         )
         .unwrap();
-        let mut config = poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config();
         config.storage_dir = storage.path().to_path_buf();
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .expect("cycle");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
 
         assert_eq!(
             state.last_processed_delivery,
@@ -4845,12 +4518,12 @@ mod poll_once_retry_tests {
             "a failure reprocessing cannot fix must not hold the delivery back"
         );
         assert_eq!(
-            posts_to(&server, "/private/fixed-links").await,
+            sink.count("fixed-links"),
             0,
             "an ALF that parses to zero links must not be published (it would wipe the table)"
         );
         assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
+            sink.count("schedule-reference-publishes"),
             0,
             "a cycle with any failed product must not claim a complete publish in api's durable \
              record -- a restart should still re-attempt this delivery"
@@ -4863,46 +4536,30 @@ mod poll_once_retry_tests {
 /// republishes.
 #[cfg(test)]
 mod per_product_retry_tests {
-    use super::poll_once_retry_tests::{mount_all_publishes_ok, posts_to, write_fixture_delivery};
-    use super::poll_once_tests::http_sink;
+    use super::poll_once_retry_tests::write_fixture_delivery;
+    use super::sink::fake::{Call, Fail, FakePublishSink};
     use super::*;
     use std::collections::HashSet;
 
     const DELIVERY: &str = "20260926T200045Z";
 
-    async fn setup(
-        server: &wiremock::MockServer,
-    ) -> (
-        common::oauth_client::OAuthTokenCache,
-        Config,
-        Client,
-        tempfile::TempDir,
-    ) {
-        let tokens = poll_once_tests::mock_token_cache(server).await;
+    fn setup() -> (Config, tempfile::TempDir) {
         let storage = tempfile::tempdir().unwrap();
         write_fixture_delivery(storage.path(), DELIVERY);
-        let mut config = poll_once_tests::test_config_for_server(&server.uri());
+        let mut config = poll_once_tests::test_config();
         config.storage_dir = storage.path().to_path_buf();
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        (tokens, config, client, storage)
+        (config, storage)
     }
 
-    fn fail_n_times(path: &str, times: u64) -> wiremock::Mock {
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path(path))
-            .respond_with(wiremock::ResponseTemplate::new(502))
-            .up_to_n_times(times)
-    }
-
-    fn publish_ids(requests: &[wiremock::Request], path: &str) -> Vec<String> {
-        requests
+    fn publish_ids(calls: &[Call], endpoint: &str) -> Vec<String> {
+        calls
             .iter()
-            .filter(|req| req.url.path() == path)
-            .map(|req| {
-                req.url
-                    .query_pairs()
-                    .find(|(k, _)| k == "publish_id")
-                    .map(|(_, v)| v.into_owned())
+            .filter(|call| call.endpoint == endpoint)
+            .map(|call| {
+                call.query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("publish_id="))
+                    .map(str::to_owned)
                     .expect("every non-empty per-date chunk carries a publish_id")
             })
             .collect()
@@ -4914,29 +4571,24 @@ mod per_product_retry_tests {
     /// publish ran under a NEW `publish_id`, not the abandoned one.
     #[tokio::test]
     async fn a_transient_product_failure_is_retried_and_the_delivery_is_marked_processed() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, config, client, _storage) = setup(&server).await;
-        fail_n_times("/private/stanox-crs", 1).mount(&server).await;
-        fail_n_times("/private/schedule-calling-points-full", 1)
-            .mount(&server)
-            .await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
+        let (config, _storage) = setup();
+        sink.fail("stanox-crs", 1, Fail::Transient);
+        sink.fail("schedule-calling-points-full", 1, Fail::Transient);
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .expect("cycle");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
 
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
         assert!(state.partial.is_none());
-        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 2);
+        assert_eq!(sink.count("stanox-crs"), 2);
         assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
+            sink.count("schedule-reference-publishes"),
             1,
             "every product published (one after a retry), so the durable marker is written"
         );
-        let requests = server.received_requests().await.unwrap();
-        let ids = publish_ids(&requests, "/private/schedule-calling-points-full");
+        let requests = sink.calls();
+        let ids = publish_ids(&requests, "schedule-calling-points-full");
         assert_eq!(
             ids.len(),
             usize::try_from(config.forward_publish_days + 2).unwrap(),
@@ -4955,58 +4607,50 @@ mod per_product_retry_tests {
     /// marks the delivery processed and writes the durable marker.
     #[tokio::test]
     async fn a_persistent_failure_leaves_the_delivery_unmarked_and_only_it_is_redone_next_cycle() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, config, client, _storage) = setup(&server).await;
-        fail_n_times("/private/tiploc-crs", u64::MAX)
-            .mount(&server)
-            .await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
+        let (config, _storage) = setup();
+        sink.fail("tiploc-crs", u64::MAX, Fail::Transient);
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 1");
 
         assert_eq!(state.last_processed_delivery, None);
         assert_eq!(
-            posts_to(&server, "/private/tiploc-crs").await,
+            sink.count("tiploc-crs"),
             config.publish_retry.attempts as usize
         );
-        assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
-            0
-        );
+        assert_eq!(sink.count("schedule-reference-publishes"), 0);
         let partial = state.partial.as_ref().expect("partial progress is kept");
         assert_eq!(partial.delivery, DELIVERY);
         assert!(!partial.published.contains(product::TIPLOC_CRS));
         assert!(partial.published.contains(product::STANOX_CRS));
 
         // `api`/the IdP recover.
-        server.reset().await;
-        let _ = poll_once_tests::mock_token_cache(&server).await;
-        mount_all_publishes_ok(&server).await;
+        sink.reset();
 
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 2");
 
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
         assert!(state.partial.is_none());
-        assert_eq!(posts_to(&server, "/private/tiploc-crs").await, 1);
+        assert_eq!(sink.count("tiploc-crs"), 1);
         for already_published in [
-            "/private/stanox-crs",
-            "/private/schedule-network-departures",
-            "/private/schedule-destination-departures",
-            "/private/schedule-calling-points-full",
+            "stanox-crs",
+            "schedule-network-departures",
+            "schedule-destination-departures",
+            "schedule-calling-points-full",
         ] {
             assert_eq!(
-                posts_to(&server, already_published).await,
+                sink.count(already_published),
                 0,
                 "{already_published} published in cycle 1 and must not be republished"
             );
         }
         assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
+            sink.count("schedule-reference-publishes"),
             1,
             "once every product has published, across cycles, the durable marker is written"
         );
@@ -5017,55 +4661,49 @@ mod per_product_retry_tests {
     /// its sibling's.
     #[tokio::test]
     async fn only_the_failed_per_date_product_is_republished_next_cycle() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, mut config, client, _storage) = setup(&server).await;
+        let sink = FakePublishSink::new();
+        let (mut config, _storage) = setup();
         config.publish_retry.attempts = 1;
-        fail_n_times("/private/schedule-calling-points-full", u64::MAX)
-            .mount(&server)
-            .await;
-        mount_all_publishes_ok(&server).await;
+        sink.fail("schedule-calling-points-full", u64::MAX, Fail::Transient);
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 1");
         assert_eq!(state.last_processed_delivery, None);
 
-        server.reset().await;
-        let _ = poll_once_tests::mock_token_cache(&server).await;
-        mount_all_publishes_ok(&server).await;
+        sink.reset();
 
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 2");
 
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
         assert_eq!(
-            posts_to(&server, "/private/schedule-calling-points-full").await,
+            sink.count("schedule-calling-points-full"),
             usize::try_from(config.forward_publish_days + 1).unwrap()
         );
-        assert_eq!(
-            posts_to(&server, "/private/schedule-destination-departures").await,
-            0
-        );
-        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 0);
+        assert_eq!(sink.count("schedule-destination-departures"), 0);
+        assert_eq!(sink.count("stanox-crs"), 0);
     }
 
-    /// Every distinct service date posted to `path`: from a row body's
-    /// `service_date` fields, or the `service_date` query parameter (an
-    /// empty publish, and every `schedule_services` request).
+    /// Every distinct service date written to `endpoint`: from a row's
+    /// `service_date` fields, or the `service_date` parameter (an empty
+    /// publish, and every `schedule_services` write).
     fn published_dates(
-        requests: &[wiremock::Request],
-        path: &str,
+        calls: &[Call],
+        endpoint: &str,
     ) -> std::collections::BTreeSet<chrono::NaiveDate> {
         let mut dates = std::collections::BTreeSet::new();
-        for req in requests.iter().filter(|req| req.url.path() == path) {
-            if let Some((_, date)) = req.url.query_pairs().find(|(k, _)| k == "service_date") {
-                dates.insert(date.parse().expect("service_date query is a date"));
-            }
-            if let Ok(serde_json::Value::Array(rows)) =
-                serde_json::from_slice::<serde_json::Value>(&req.body)
+        for call in calls.iter().filter(|call| call.endpoint == endpoint) {
+            if let Some(date) = call
+                .query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("service_date="))
             {
+                dates.insert(date.parse().expect("service_date is a date"));
+            }
+            if let serde_json::Value::Array(rows) = &call.body {
                 for row in rows {
                     if let Some(date) = row.get("service_date").and_then(|d| d.as_str()) {
                         dates.insert(date.parse().expect("row service_date is a date"));
@@ -5081,36 +4719,32 @@ mod per_product_retry_tests {
     /// today+30), and nothing past it.
     #[tokio::test]
     async fn the_per_date_products_are_published_through_the_whole_forward_window() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, config, client, _storage) = setup(&server).await;
+        let sink = FakePublishSink::new();
+        let (config, _storage) = setup();
         assert_eq!(config.forward_publish_days, 28);
-        mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .expect("cycle");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
 
         let today = london_local_date_now();
         let expected: std::collections::BTreeSet<chrono::NaiveDate> = (0..=28)
             .map(|offset| today + chrono::Duration::days(offset))
             .collect();
-        let requests = server.received_requests().await.unwrap();
-        for path in [
-            "/private/schedule-destination-departures",
-            "/private/schedule-calling-points-full",
-            "/private/schedule-services",
+        let requests = sink.calls();
+        for endpoint in [
+            "schedule-destination-departures",
+            "schedule-calling-points-full",
+            "schedule-services",
         ] {
-            assert_eq!(published_dates(&requests, path), expected, "{path}");
+            assert_eq!(published_dates(&requests, endpoint), expected, "{endpoint}");
         }
         // The far end has real rows, not just an empty clearing publish.
         let last = today + chrono::Duration::days(28);
         let far_rows = requests
             .iter()
-            .filter(|req| req.url.path() == "/private/schedule-calling-points-full")
-            .filter_map(|req| serde_json::from_slice::<serde_json::Value>(&req.body).ok())
-            .filter_map(|body| body.as_array().cloned())
+            .filter(|call| call.endpoint == "schedule-calling-points-full")
+            .filter_map(|call| call.body.as_array().cloned())
             .flatten()
             .filter(|row| row["service_date"] == last.to_string())
             .count();
@@ -5123,31 +4757,22 @@ mod per_product_retry_tests {
     /// The window is a setting: a shorter one publishes only its own dates.
     #[tokio::test]
     async fn a_configured_forward_window_bounds_the_published_dates() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, mut config, client, _storage) = setup(&server).await;
+        let sink = FakePublishSink::new();
+        let (mut config, _storage) = setup();
         config.forward_publish_days = 10;
-        mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .expect("cycle");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
 
         let today = london_local_date_now();
-        let requests = server.received_requests().await.unwrap();
-        let dates = published_dates(&requests, "/private/schedule-calling-points-full");
+        let requests = sink.calls();
+        let dates = published_dates(&requests, "schedule-calling-points-full");
         assert_eq!(dates.len(), 11);
         assert_eq!(dates.first(), Some(&today));
         assert_eq!(dates.last(), Some(&(today + chrono::Duration::days(10))));
     }
 
-    fn reject_always(path: &str, status: u16) -> wiremock::Mock {
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path(path))
-            .respond_with(wiremock::ResponseTemplate::new(status).set_body_string("bad data"))
-    }
-
-    /// DQ6/SCHED-1: a 422 from api is permanent for this delivery. It is
+    /// DQ6/SCHED-1: a refused product is permanent for this delivery. It is
     /// sent once (no in-cycle retries), the delivery is marked processed in
     /// memory so the next cycle does not redo it, the durable completion
     /// marker is NOT written, and the rejection is counted.
@@ -5156,26 +4781,23 @@ mod per_product_retry_tests {
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         let _guard = metrics::set_default_local_recorder(&recorder);
-        let server = wiremock::MockServer::start().await;
-        let (tokens, config, client, _storage) = setup(&server).await;
-        reject_always("/private/tiploc-crs", 422)
-            .mount(&server)
-            .await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
+        let (config, _storage) = setup();
+        sink.fail("tiploc-crs", u64::MAX, Fail::Rejected);
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 1");
 
         assert_eq!(
-            posts_to(&server, "/private/tiploc-crs").await,
+            sink.count("tiploc-crs"),
             1,
             "a rejection is not retried within the cycle"
         );
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
         assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
+            sink.count("schedule-reference-publishes"),
             0,
             "a rejected product means the delivery did not fully publish"
         );
@@ -5188,39 +4810,32 @@ mod per_product_retry_tests {
         );
 
         // The next cycle sees the delivery as processed: nothing is resent.
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 2");
-        assert_eq!(posts_to(&server, "/private/tiploc-crs").await, 1);
+        assert_eq!(sink.count("tiploc-crs"), 1);
     }
 
-    /// 400 and 413 are rejections too, and the per-date chunked products
-    /// keep the HTTP status through their error wrapping.
+    /// The per-date chunked products keep the rejection through their error
+    /// wrapping.
     #[tokio::test]
     async fn a_rejected_chunk_of_a_per_date_product_is_not_retried() {
-        for status in [400, 413] {
-            let server = wiremock::MockServer::start().await;
-            let (tokens, config, client, _storage) = setup(&server).await;
-            reject_always("/private/schedule-calling-points-full", status)
-                .mount(&server)
-                .await;
-            mount_all_publishes_ok(&server).await;
+        {
+            let status = "rejected";
+            let sink = FakePublishSink::new();
+            let (config, _storage) = setup();
+            sink.fail("schedule-calling-points-full", u64::MAX, Fail::Rejected);
 
             let mut state = PublishState::default();
-            poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-                .await
-                .expect("cycle");
+            poll_once(&sink, &config, &mut state).await.expect("cycle");
 
             assert_eq!(
-                posts_to(&server, "/private/schedule-calling-points-full").await,
+                sink.count("schedule-calling-points-full"),
                 usize::try_from(config.forward_publish_days + 1).unwrap(),
                 "{status}: one attempt per date, no retries"
             );
             assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
-            assert_eq!(
-                posts_to(&server, "/private/schedule-reference-publishes").await,
-                0
-            );
+            assert_eq!(sink.count("schedule-reference-publishes"), 0);
         }
     }
 
@@ -5229,48 +4844,38 @@ mod per_product_retry_tests {
     /// not the rejected product. The durable marker is still never written.
     #[tokio::test]
     async fn a_rejected_product_is_skipped_when_the_delivery_resumes() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, config, client, _storage) = setup(&server).await;
-        reject_always("/private/tiploc-crs", 422)
-            .mount(&server)
-            .await;
-        fail_n_times("/private/stanox-crs", u64::MAX)
-            .mount(&server)
-            .await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
+        let (config, _storage) = setup();
+        sink.fail("tiploc-crs", u64::MAX, Fail::Rejected);
+        sink.fail("stanox-crs", u64::MAX, Fail::Transient);
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 1");
         assert_eq!(state.last_processed_delivery, None);
 
-        server.reset().await;
-        let _ = poll_once_tests::mock_token_cache(&server).await;
-        mount_all_publishes_ok(&server).await;
+        sink.reset();
 
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
+        poll_once(&sink, &config, &mut state)
             .await
             .expect("cycle 2");
         assert_eq!(state.last_processed_delivery.as_deref(), Some(DELIVERY));
-        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 1);
+        assert_eq!(sink.count("stanox-crs"), 1);
         assert_eq!(
-            posts_to(&server, "/private/tiploc-crs").await,
+            sink.count("tiploc-crs"),
             0,
             "the rejected product is not resent for the same delivery"
         );
-        assert_eq!(
-            posts_to(&server, "/private/schedule-reference-publishes").await,
-            0
-        );
+        assert_eq!(sink.count("schedule-reference-publishes"), 0);
     }
 
     /// DQ11/PL-9: each line's population is published for today AND
     /// tomorrow, so the rail-day rollover finds the new day already there.
     #[tokio::test]
     async fn line_populations_are_published_for_today_and_tomorrow() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, mut config, client, _storage) = setup(&server).await;
+        let sink = FakePublishSink::new();
+        let (mut config, _storage) = setup();
         config.lines = common::config::LineCatalogue(vec![common::LineDefinition {
             id: "test-euston-line".to_string(),
             name: "Test".to_string(),
@@ -5294,22 +4899,16 @@ mod per_product_retry_tests {
             crs_aliases: std::collections::BTreeMap::new(),
             trunk_for: Vec::new(),
         }]);
-        mount_all_publishes_ok(&server).await;
 
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .expect("cycle");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
 
         let today = london_local_date_now();
-        let mut dates: Vec<String> = server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .filter(|req| req.url.path() == "/private/schedule-line-population")
-            .map(|req| {
-                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        let mut dates: Vec<String> = sink
+            .calls_to("schedule-line-population")
+            .into_iter()
+            .map(|call| {
+                let body = call.body;
                 assert_eq!(body["line_id"], "test-euston-line");
                 assert_eq!(
                     body["population"].as_array().map(Vec::len),
@@ -5334,9 +4933,8 @@ mod per_product_retry_tests {
     /// in full, not "resumed" with the old delivery's progress.
     #[tokio::test]
     async fn a_newer_delivery_does_not_inherit_a_partial_ones_progress() {
-        let server = wiremock::MockServer::start().await;
-        let (tokens, config, client, storage) = setup(&server).await;
-        mount_all_publishes_ok(&server).await;
+        let sink = FakePublishSink::new();
+        let (config, storage) = setup();
         write_fixture_delivery(storage.path(), "20260927T200045Z");
 
         let mut state = PublishState {
@@ -5347,15 +4945,13 @@ mod per_product_retry_tests {
                 rejected: HashSet::default(),
             }),
         };
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .expect("cycle");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
 
         assert_eq!(
             state.last_processed_delivery.as_deref(),
             Some("20260927T200045Z")
         );
-        assert_eq!(posts_to(&server, "/private/stanox-crs").await, 1);
+        assert_eq!(sink.count("stanox-crs"), 1);
     }
 }
 
@@ -5370,6 +4966,7 @@ mod per_product_retry_tests {
 /// date is allowed to clear the date.
 #[cfg(test)]
 mod chunked_publish_tests {
+    use super::sink::fake::{self, Fail, FakePublishSink};
     use super::*;
 
     fn rows(count: usize) -> Vec<serde_json::Value> {
@@ -5378,43 +4975,15 @@ mod chunked_publish_tests {
             .collect()
     }
 
-    async fn capture_posts(server: &wiremock::MockServer, path: &str) -> Vec<(usize, String)> {
-        server
-            .received_requests()
-            .await
-            .expect("wiremock records requests")
+    /// Every chunk written, as (rows, the chunk protocol's parameters).
+    fn capture_posts(sink: &FakePublishSink) -> Vec<(usize, String)> {
+        sink.calls_to(fake::CALLING_POINTS_FULL)
             .into_iter()
-            .filter(|req| req.url.path() == path)
-            .map(|req| {
-                let query = req.url.query().unwrap_or_default().to_string();
-                let body: Vec<serde_json::Value> =
-                    serde_json::from_slice(&req.body).expect("body is a JSON array");
-                (body.len(), query)
+            .map(|call| {
+                let rows = call.body.as_array().expect("rows are a JSON array").len();
+                (rows, call.query)
             })
             .collect()
-    }
-
-    #[test]
-    fn first_chunk_url_marks_only_the_chunk_that_may_clear_the_date() {
-        assert_eq!(
-            first_chunk_url("http://api:8080/private/schedule-calling-points-full", true),
-            "http://api:8080/private/schedule-calling-points-full?first_chunk=true"
-        );
-        assert_eq!(
-            first_chunk_url(
-                "http://api:8080/private/schedule-calling-points-full",
-                false
-            ),
-            "http://api:8080/private/schedule-calling-points-full?first_chunk=false"
-        );
-    }
-
-    #[test]
-    fn first_chunk_url_appends_to_a_url_that_already_has_a_query_string() {
-        assert_eq!(
-            first_chunk_url("http://api:8080/private/x?trace=1", true),
-            "http://api:8080/private/x?trace=1&first_chunk=true"
-        );
     }
 
     /// **The core contract test.** Several chunks per date, and exactly ONE of
@@ -5424,22 +4993,14 @@ mod chunked_publish_tests {
     /// chunk: a far worse bug than the oversized body this chunking prevents.
     #[tokio::test]
     async fn only_the_first_chunk_of_a_date_is_allowed_to_clear_that_date() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/private/chunked"))
-            .respond_with(wiremock::ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let url = format!("{}/private/chunked", server.uri());
+        let sink = FakePublishSink::new();
 
-        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(PUBLISH_CHUNK_ROWS * 2 + 1))
+        post_date_scoped_rows_in_chunks(&sink, &rows(PUBLISH_CHUNK_ROWS * 2 + 1))
             .await
             .expect("all chunks accepted");
 
-        let posts = capture_posts(&server, "/private/chunked").await;
-        assert_eq!(posts.len(), 3, "2*chunk+1 rows must be split into 3 POSTs");
+        let posts = capture_posts(&sink);
+        assert_eq!(posts.len(), 3, "2*chunk+1 rows must be split into 3 chunks");
         let (publish_id, posts) = one_publish_id(posts);
         assert_eq!(
             posts,
@@ -5509,26 +5070,18 @@ mod chunked_publish_tests {
         }
     }
 
-    /// A publish small enough to fit in one chunk is exactly one POST that is
+    /// A publish small enough to fit in one chunk is exactly one write that is
     /// both the first chunk (discards abandoned staged keys) and the last
     /// (deletes missing rows).
     #[tokio::test]
     async fn a_publish_that_fits_in_one_chunk_is_still_exactly_one_replacing_post() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/private/chunked"))
-            .respond_with(wiremock::ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let url = format!("{}/private/chunked", server.uri());
+        let sink = FakePublishSink::new();
 
-        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(10))
+        post_date_scoped_rows_in_chunks(&sink, &rows(10))
             .await
             .expect("accepted");
 
-        let (_, posts) = one_publish_id(capture_posts(&server, "/private/chunked").await);
+        let (_, posts) = one_publish_id(capture_posts(&sink));
         assert_eq!(
             posts,
             vec![(
@@ -5538,26 +5091,18 @@ mod chunked_publish_tests {
         );
     }
 
-    /// PL-14: an empty publish is exactly one POST that is both the first
+    /// PL-14: an empty publish is exactly one write that is both the first
     /// and the final chunk, with `total_rows=0` and its `service_date`, so
-    /// `api` clears the date's previous rows.
+    /// the sink clears the date's previous rows.
     #[tokio::test]
     async fn an_empty_publish_is_one_post_and_never_silently_skipped() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/private/chunked"))
-            .respond_with(wiremock::ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let url = format!("{}/private/chunked", server.uri());
+        let sink = FakePublishSink::new();
 
-        post_date_scoped_rows_in_chunks(&client, &url, &tokens, &[])
+        post_date_scoped_rows_in_chunks(&sink, &[])
             .await
             .expect("accepted");
 
-        let (_, posts) = one_publish_id(capture_posts(&server, "/private/chunked").await);
+        let (_, posts) = one_publish_id(capture_posts(&sink));
         assert_eq!(
             posts,
             vec![(
@@ -5573,13 +5118,10 @@ mod chunked_publish_tests {
     /// the failure is permanent for the delivery (not a clearing publish).
     #[tokio::test]
     async fn an_empty_publish_is_refused_when_the_whole_window_is_empty() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let url = format!("{}/private/chunked", server.uri());
+        let sink = FakePublishSink::new();
 
         let err = post_date_scoped_row_stream(
-            &test_http_sink(&client, &url, &tokens, FINAL_CHUNK_REQUEST_TIMEOUT),
+            &sink,
             DatedProduct::CallingPointsFull,
             std::iter::empty::<serde_json::Value>(),
             EmptyPublish::Refuse,
@@ -5587,7 +5129,7 @@ mod chunked_publish_tests {
         .await
         .expect_err("refused");
         assert!(err.downcast_ref::<RefusedToClear>().is_some());
-        assert!(capture_posts(&server, "/private/chunked").await.is_empty());
+        assert!(capture_posts(&sink).is_empty());
 
         let mut outcome = CycleOutcome::default();
         outcome.failed("schedule_calling_points_full/2026-09-27", &err);
@@ -5600,19 +5142,12 @@ mod chunked_publish_tests {
     /// the whole date from a `first_chunk=true` chunk.
     #[tokio::test]
     async fn a_failing_chunk_is_an_error_that_names_the_chunk() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/private/chunked"))
-            .respond_with(wiremock::ResponseTemplate::new(413))
-            .mount(&server)
-            .await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let url = format!("{}/private/chunked", server.uri());
+        let sink = FakePublishSink::new();
+        sink.fail(fake::CALLING_POINTS_FULL, u64::MAX, Fail::Rejected);
 
-        let err = post_date_scoped_rows_in_chunks(&client, &url, &tokens, &rows(5))
+        let err = post_date_scoped_rows_in_chunks(&sink, &rows(5))
             .await
-            .expect_err("a 413 must not be swallowed");
+            .expect_err("a rejection must not be swallowed");
         let message = format!("{err}");
         assert!(
             message.contains("chunk 1/1") && message.contains("first_chunk=true"),
@@ -5623,11 +5158,13 @@ mod chunked_publish_tests {
 
 /// 2026-09-27 incident: the in-cycle retry of a per-date publish whose final
 /// chunk timed out client-side started a whole new publish -- and a whole new
-/// server-side delete -- while `api` was still running the first one. Driven
+/// server-side delete -- while `api` was still running the first one (the
+/// HTTP sink, retired in release B; the db sink keeps the rule). Driven
 /// through the real [`publish_with_retry`] + [`post_date_scoped_row_stream`]
 /// pair the per-date publishers use.
 #[cfg(test)]
 mod final_chunk_retry_tests {
+    use super::sink::fake::{self, Fail, FakePublishSink};
     use super::*;
 
     const ATTEMPTS: u32 = 3;
@@ -5648,28 +5185,17 @@ mod final_chunk_retry_tests {
             .collect()
     }
 
-    /// Publishes 3 rows (one chunk, so it is also the final chunk) with
-    /// `final_response` as `api`'s answer to it, under the production retry
-    /// wrapper; returns the result and how many final chunks were `POSTed`.
-    async fn publish_against(
-        final_response: wiremock::ResponseTemplate,
-        final_chunk_timeout: Duration,
-    ) -> (anyhow::Result<()>, usize) {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/private/chunked"))
-            .and(wiremock::matchers::query_param("last_chunk", "true"))
-            .respond_with(final_response)
-            .mount(&server)
-            .await;
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
-        let url = format!("{}/private/chunked", server.uri());
+    /// Publishes 3 rows (one chunk, so it is also the final chunk), every
+    /// final chunk failing with `fail`, under the production retry wrapper;
+    /// returns the result and how many final chunks were sent.
+    async fn publish_against(fail: Fail) -> (anyhow::Result<()>, usize) {
+        let sink = FakePublishSink::new();
+        sink.fail_final_chunks(fake::CALLING_POINTS_FULL, u64::MAX, fail);
         let rows = rows(3);
 
         let result = publish_with_retry(&retry(), "test/2026-09-27", async || {
             post_date_scoped_row_stream(
-                &test_http_sink(&client, &url, &tokens, final_chunk_timeout),
+                &sink,
                 DatedProduct::CallingPointsFull,
                 rows.iter().cloned(),
                 EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
@@ -5678,39 +5204,20 @@ mod final_chunk_retry_tests {
         })
         .await;
 
-        let finals = server
-            .received_requests()
-            .await
-            .expect("wiremock records requests")
+        let finals = sink
+            .calls_to(fake::CALLING_POINTS_FULL)
             .iter()
-            .filter(|req| {
-                req.url.path() == "/private/chunked"
-                    && req
-                        .url
-                        .query()
-                        .unwrap_or_default()
-                        .contains("last_chunk=true")
-            })
+            .filter(|call| call.query.contains("last_chunk=true"))
             .count();
         (result, finals)
     }
 
-    #[test]
-    fn the_final_chunk_timeout_outlasts_apis_delete_statement_timeout() {
-        // api's PUBLISH_DELETE_STATEMENT_TIMEOUT is 120s.
-        const _: () = assert!(FINAL_CHUNK_REQUEST_TIMEOUT.as_secs() >= 120 + 30);
-        const _: () = assert!(FINAL_CHUNK_REQUEST_TIMEOUT.as_secs() > REQUEST_TIMEOUT.as_secs());
-    }
-
-    /// **The regression.** A client-side timeout on the final chunk is not
-    /// retried in-cycle: exactly one final chunk reaches `api`.
+    /// **The regression.** A final chunk whose delete timed out
+    /// (`SinkError::Timeout`; the retired HTTP sink's client-side timeout
+    /// too) is not retried in-cycle: exactly one final chunk is sent.
     #[tokio::test]
     async fn a_final_chunk_that_times_out_is_not_retried_within_the_cycle() {
-        let (result, finals) = publish_against(
-            wiremock::ResponseTemplate::new(200).set_delay(Duration::from_secs(2)),
-            Duration::from_millis(200),
-        )
-        .await;
+        let (result, finals) = publish_against(Fail::Timeout).await;
 
         let err = result.expect_err("the timed-out final chunk must fail the publish");
         assert!(
@@ -5720,48 +5227,13 @@ mod final_chunk_retry_tests {
         assert_eq!(finals, 1, "no in-cycle retry after a final-chunk timeout");
     }
 
-    /// The final chunk's own timeout, not the client's 30s default, applies
-    /// to it: a delete slower than `REQUEST_TIMEOUT` would be fine, which is
-    /// shown here in miniature with a client whose default is shorter than
-    /// the response.
-    #[tokio::test]
-    async fn the_final_chunk_uses_its_own_longer_timeout() {
-        let server = wiremock::MockServer::start().await;
-        let tokens = poll_once_tests::mock_token_cache(&server).await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/private/chunked"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200).set_delay(Duration::from_millis(500)),
-            )
-            .mount(&server)
-            .await;
-        let client = Client::builder()
-            .timeout(Duration::from_millis(100))
-            .build()
-            .unwrap();
-        let url = format!("{}/private/chunked", server.uri());
-
-        post_date_scoped_row_stream(
-            &test_http_sink(&client, &url, &tokens, Duration::from_secs(5)),
-            DatedProduct::CallingPointsFull,
-            rows(3).into_iter(),
-            EmptyPublish::Clear(chrono::NaiveDate::from_ymd_opt(2026, 9, 27).unwrap()),
-        )
-        .await
-        .expect("the final chunk waits past the client-wide timeout");
-    }
-
-    /// `api`'s 409 (another final chunk of the product is still deleting) and
-    /// 503 (the delete hit its statement timeout and rolled back) are not
+    /// `Busy` (another final chunk of the product is still deleting) is not
     /// retried in-cycle either.
     #[tokio::test]
-    async fn a_final_chunk_refused_with_409_or_503_is_not_retried_within_the_cycle() {
-        for status in [409, 503] {
-            let (result, finals) = publish_against(
-                wiremock::ResponseTemplate::new(status),
-                FINAL_CHUNK_REQUEST_TIMEOUT,
-            )
-            .await;
+    async fn a_final_chunk_refused_as_busy_is_not_retried_within_the_cycle() {
+        {
+            let status = "busy";
+            let (result, finals) = publish_against(Fail::Busy).await;
             let err = result.expect_err("a refused final chunk must fail the publish");
             assert!(
                 err.downcast_ref::<DeferToNextCycle>().is_some(),
@@ -5771,15 +5243,11 @@ mod final_chunk_retry_tests {
         }
     }
 
-    /// Unchanged: any other final-chunk failure (here a 502, as during an
-    /// `api` restart) is still retried in-cycle.
+    /// Unchanged: any other final-chunk failure (here a transient one, as
+    /// during a Postgres restart) is still retried in-cycle.
     #[tokio::test]
     async fn other_final_chunk_failures_are_still_retried_within_the_cycle() {
-        let (result, finals) = publish_against(
-            wiremock::ResponseTemplate::new(502),
-            FINAL_CHUNK_REQUEST_TIMEOUT,
-        )
-        .await;
+        let (result, finals) = publish_against(Fail::Transient).await;
         let err = result.expect_err("a persistently failing final chunk fails the publish");
         assert!(err.downcast_ref::<DeferToNextCycle>().is_none());
         assert_eq!(finals, ATTEMPTS as usize);
@@ -5896,8 +5364,9 @@ mod schedule_index_from_file_tests {
 /// tests leave a database with real data as they found it.
 #[cfg(test)]
 mod db_sink_tests {
-    use super::poll_once_retry_tests::{mount_all_publishes_ok, write_fixture_delivery};
-    use super::poll_once_tests::{http_sink, mock_token_cache, test_config_for_server};
+    use super::poll_once_retry_tests::write_fixture_delivery;
+    use super::poll_once_tests::test_config;
+    use super::sink::fake::{Call, FakePublishSink};
     use super::*;
 
     const DELIVERY: &str = "20260101T000000Z";
@@ -6028,14 +5497,14 @@ mod db_sink_tests {
     /// The fixture delivery plus an ALF file, and a config whose one line
     /// calls at Euston, so every product (fixed links and a line population
     /// with its train summaries included) is published.
-    fn delivery_and_config(root: &std::path::Path, base: &str) -> Config {
+    fn delivery_and_config(root: &std::path::Path) -> Config {
         write_fixture_delivery(root, DELIVERY);
         std::fs::write(
             root.join(DELIVERY).join("RJTTF942ALF.txt"),
             "M=WALK,O=EUS,D=WAT,T=25,S=0001,E=2359,P=4,R=0000001\n",
         )
         .unwrap();
-        let mut config = test_config_for_server(base);
+        let mut config = test_config();
         config.storage_dir = root.to_path_buf();
         config.lines = common::config::LineCatalogue(vec![common::LineDefinition {
             id: LINE_ID.to_string(),
@@ -6063,10 +5532,10 @@ mod db_sink_tests {
         config
     }
 
-    /// What the api's `/private` routes do with each request `HttpSink`
-    /// sent, in the order it sent them, through the same `ds_store` calls
-    /// (`crates/api/src/routes/ingest.rs`): the HTTP path, end to end, minus
-    /// axum.
+    /// What the api's retired `/private` routes did with each write, in
+    /// order, through the same `ds_store` calls (`crates/api/src/routes/ingest.rs`
+    /// before release B): the old HTTP path, end to end, minus axum and the
+    /// wire. `calls` come from a [`FakePublishSink`] run of the same cycle.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per route, mirroring the api's handlers"
@@ -6074,19 +5543,22 @@ mod db_sink_tests {
     async fn replay_like_the_api(
         pool: &sqlx::PgPool,
         lines: &[common::LineDefinition],
-        requests: Vec<wiremock::Request>,
+        calls: Vec<Call>,
     ) {
         use ds_store::schedule as store;
-        for request in requests {
-            if request.method.as_str() != "POST" || request.url.path() == "/token/" {
+        for call in calls {
+            if call.endpoint == sink::fake::LAST_PUBLISH {
                 continue;
             }
-            let query: std::collections::HashMap<String, String> =
-                request.url.query_pairs().into_owned().collect();
-            let param = |name: &str| query.get(name).map(String::as_str);
-            let body = &request.body;
-            match request.url.path() {
-                "/private/stanox-crs" => {
+            let query: std::collections::HashMap<&str, &str> = call
+                .query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .collect();
+            let param = |name: &str| query.get(name).copied();
+            let body = &serde_json::to_vec(&call.body).unwrap();
+            match call.endpoint {
+                "stanox-crs" => {
                     let records: Vec<common::StanoxCrsRecord> =
                         serde_json::from_slice(body).unwrap();
                     ds_store::reference::upsert_stanox_crs(pool, &records)
@@ -6097,7 +5569,7 @@ mod db_sink_tests {
                         .await
                         .unwrap();
                 }
-                "/private/tiploc-crs" => {
+                "tiploc-crs" => {
                     let records: Vec<common::TiplocCrsRecord> =
                         serde_json::from_slice(body).unwrap();
                     ds_store::reference::upsert_tiploc_crs(pool, &records)
@@ -6108,21 +5580,21 @@ mod db_sink_tests {
                         .await
                         .unwrap();
                 }
-                "/private/tiploc-locations" => {
+                "tiploc-locations" => {
                     let records: Vec<common::TiplocLocationRecord> =
                         serde_json::from_slice(body).unwrap();
                     ds_store::reference::replace_tiploc_locations(pool, &records)
                         .await
                         .unwrap();
                 }
-                "/private/fixed-links" => {
+                "fixed-links" => {
                     let records: Vec<common::FixedLinkRecord> =
                         serde_json::from_slice(body).unwrap();
                     ds_store::reference::upsert_fixed_links(pool, &records)
                         .await
                         .unwrap();
                 }
-                "/private/schedule-line-population" => {
+                "schedule-line-population" => {
                     #[derive(serde::Deserialize)]
                     struct Body {
                         line_id: String,
@@ -6141,15 +5613,14 @@ mod db_sink_tests {
                     .await
                     .unwrap();
                 }
-                "/private/schedule-network-departures" => {
+                "schedule-network-departures" => {
                     let rows: Vec<store::ScheduleNetworkDeparturesRow> =
                         serde_json::from_slice(body).unwrap();
                     store::upsert_schedule_network_departures(pool, &rows)
                         .await
                         .unwrap();
                 }
-                path @ ("/private/schedule-destination-departures"
-                | "/private/schedule-calling-points-full") => {
+                path @ ("schedule-destination-departures" | "schedule-calling-points-full") => {
                     let last_chunk = param("last_chunk") == Some("true");
                     let total_rows = param("total_rows").map(|n| n.parse().unwrap());
                     let part = store::SchedulePublishPart::new(
@@ -6197,7 +5668,7 @@ mod db_sink_tests {
                             .unwrap();
                     }
                 }
-                "/private/schedule-services" => {
+                "schedule-services" => {
                     let rows: Vec<store::services::ScheduleServiceRow> =
                         serde_json::from_slice(body).unwrap();
                     let date = param("service_date").unwrap().parse().unwrap();
@@ -6205,10 +5676,9 @@ mod db_sink_tests {
                         .await
                         .unwrap();
                 }
-                "/private/schedule-reference-publishes" => {
-                    let body: common::ingest::ScheduleReferencePublishRequest =
-                        serde_json::from_slice(body).unwrap();
-                    store::insert_schedule_reference_publish(pool, &body.delivery)
+                "schedule-reference-publishes" => {
+                    let delivery = call.body["delivery"].as_str().unwrap();
+                    store::insert_schedule_reference_publish(pool, delivery)
                         .await
                         .unwrap();
                 }
@@ -6229,10 +5699,11 @@ mod db_sink_tests {
 
     /// **Plan 2a.2's parity test.** One small CIF day -- both crosswalks,
     /// `tiploc_locations`, fixed links, a line population with its train
-    /// summaries, network departures, and eight dates each of destination
+    /// summaries, network departures, and the window's dates of destination
     /// departures, full calling points and service modes -- published
-    /// through `DbSink`, and again through `HttpSink` with each request
-    /// applied as the api applies it: the tables must come out identical.
+    /// through `DbSink`, and again through a recording sink with each write
+    /// applied as the retired api routes applied it: the tables must come
+    /// out identical.
     /// Also: the `db` sink writes the completion marker and the seed reads
     /// it back.
     #[tokio::test]
@@ -6247,15 +5718,7 @@ mod db_sink_tests {
         let pool = pool().await;
         let original = TableSnapshot::take(&pool).await;
         let root = tempfile::tempdir().unwrap();
-        let server = wiremock::MockServer::start().await;
-        let tokens = mock_token_cache(&server).await;
-        mount_all_publishes_ok(&server).await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/private/fixed-links"))
-            .respond_with(wiremock::ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        let config = delivery_and_config(root.path(), &server.uri());
+        let config = delivery_and_config(root.path());
 
         // Through the db sink.
         let db = DbSink::new(pool.clone(), &config.lines);
@@ -6271,23 +5734,20 @@ mod db_sink_tests {
         let through_db = TableSnapshot::comparable(&pool).await;
         original.restore(&pool).await;
 
-        // Through the http sink, applied as the api applies it.
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
+        // Through the recording sink, applied as the api's routes applied it.
+        let recorded = FakePublishSink::new();
         let mut state = PublishState::default();
-        poll_once(&http_sink(&client, &config, &tokens), &config, &mut state)
-            .await
-            .unwrap();
+        poll_once(&recorded, &config, &mut state).await.unwrap();
         assert!(state.partial.is_none(), "every product published");
-        let requests = server.received_requests().await.unwrap();
-        replay_like_the_api(&pool, &config.lines, requests).await;
-        let through_http = TableSnapshot::comparable(&pool).await;
+        replay_like_the_api(&pool, &config.lines, recorded.calls()).await;
+        let through_routes = TableSnapshot::comparable(&pool).await;
         original.restore(&pool).await;
         forget_marker(&pool).await;
 
         for (table, rows) in &through_db {
             assert!(!rows.is_empty(), "the fixture day publishes {table}");
         }
-        assert_eq!(through_db, through_http);
+        assert_eq!(through_db, through_routes);
     }
 
     fn calling_point_rows(date: chrono::NaiveDate, uid: &str) -> Vec<serde_json::Value> {
@@ -6352,8 +5812,8 @@ mod db_sink_tests {
         .await
     }
 
-    /// The chunk protocol's outcomes through the db sink, as the wiremock
-    /// tests pin them through the http sink: a publish replaces the date, an
+    /// The chunk protocol's outcomes through the db sink, as the fake-sink
+    /// tests pin them: a publish replaces the date, an
     /// empty publish clears it (PL-14), and a final chunk refused because
     /// another is still deleting (the api's 409) is `DeferToNextCycle` after
     /// exactly one attempt, leaving the date as it was.
