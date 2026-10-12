@@ -113,7 +113,7 @@ async fn login(
             tracing::error!(error = ?err, "OIDC discovery/authorize_url failed");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                "sign-in temporarily unavailable",
+                "login temporarily unavailable",
             )
                 .into_response();
         }
@@ -140,7 +140,7 @@ async fn login(
             return unavailable.into_response();
         }
         tracing::error!(error = ?err, "failed to store login state");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
     }
 
     let mut response = Redirect::temporary(url.as_str()).into_response();
@@ -203,7 +203,7 @@ async fn callback(
 ) -> Response {
     if let Some(error) = params.error {
         tracing::warn!(oidc_error = %error, "SSO server returned an error to the callback");
-        return (StatusCode::BAD_GATEWAY, "sign-in was not completed").into_response();
+        return (StatusCode::BAD_GATEWAY, "login was not completed").into_response();
     }
     let (Some(code), Some(state)) = (params.code, params.state) else {
         return (StatusCode::BAD_REQUEST, "missing code or state").into_response();
@@ -235,7 +235,7 @@ async fn callback(
                 return unavailable.into_response();
             }
             tracing::error!(error = ?err, "login state lookup failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
         }
     };
     if stored.csrf_state != state {
@@ -267,7 +267,7 @@ async fn callback(
                 return unavailable.into_response();
             }
             tracing::error!(error = ?err, "login state consumption failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
         }
     }
 
@@ -288,7 +288,7 @@ async fn callback(
         Ok(result) => result,
         Err(err) => {
             tracing::warn!(error = ?err, "OIDC code exchange failed");
-            return (StatusCode::BAD_GATEWAY, "sign-in failed").into_response();
+            return (StatusCode::BAD_GATEWAY, "login failed").into_response();
         }
     };
 
@@ -305,7 +305,7 @@ async fn callback(
                 return unavailable.into_response();
             }
             tracing::error!(error = ?err, "failed to upsert user");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
         }
     };
     if user.created {
@@ -334,7 +334,7 @@ async fn callback(
             return unavailable.into_response();
         }
         tracing::error!(error = ?err, "failed to create session");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+        return (StatusCode::INTERNAL_SERVER_ERROR, "login failed").into_response();
     }
 
     let max_age = app.config.session_ttl_days * 24 * 60 * 60;

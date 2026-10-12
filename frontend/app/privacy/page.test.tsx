@@ -29,7 +29,7 @@ describe('PrivacyPage retention copy', () => {
 
   it('mentions the 12-month push-subscription prune', () => {
     render();
-    expect(retentionText('Push notifications')).toMatch(/have not signed in .* for 12 months/);
+    expect(retentionText('Push notifications')).toMatch(/have not logged in .* for 12 months/);
   });
 
   it('states the 18-month travel-date limit for tracked trains, journeys and tickets', () => {
@@ -40,26 +40,26 @@ describe('PrivacyPage retention copy', () => {
 
   it('says nothing about inactive-account deletion while it is off (the default)', () => {
     render();
-    expect(retentionText('Your account')).not.toMatch(/do not sign in/);
+    expect(retentionText('Your account')).not.toMatch(/do not log in/);
   });
 
   it('states the 730-day inactive-account deletion once it is enabled', () => {
     render({ RETENTION_INACTIVE_ACCOUNT_DAYS: '730' });
-    expect(retentionText('Your account')).toMatch(/If you do not sign in for 24 months .* we delete your account/);
+    expect(retentionText('Your account')).toMatch(/If you do not log in for 24 months .* we delete your account/);
   });
 
   // docs/personal-data-retention.md: the SFTP server's 7/90/400-day log tiers.
   it('states the file-transfer server log tiers', () => {
     render();
     const text = retentionText('Connections to our file-transfer server');
-    expect(text).toMatch(/7 days for connections that never try to sign in/);
-    expect(text).toMatch(/90 days for failed sign-ins and blocked addresses/);
-    expect(text).toMatch(/400 days for successful sign-ins and file transfers/);
+    expect(text).toMatch(/7 days for connections that never try to log in/);
+    expect(text).toMatch(/90 days for failed logins and blocked addresses/);
+    expect(text).toMatch(/400 days for successful logins and file transfers/);
   });
 
   it('drops a limit that is switched off', () => {
     render({ RETENTION_STALE_PUSH_SUBSCRIPTION_DAYS: '0', RETENTION_PAST_TRAVEL_DAYS: '0' });
-    expect(retentionText('Push notifications')).not.toMatch(/have not signed in/);
+    expect(retentionText('Push notifications')).not.toMatch(/have not logged in/);
     expect(retentionText('Tickets')).not.toMatch(/travel date/);
   });
 });

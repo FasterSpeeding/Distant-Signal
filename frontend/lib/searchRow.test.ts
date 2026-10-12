@@ -68,7 +68,7 @@ describe('searchRowTime', () => {
   it('prefers the public departure and trims to HH:MM', () => {
     expect(searchRowTime(row({ publicDeparture: '08:20' }))).toBe('08:20');
     expect(searchRowTime(row({ publicDeparture: null, scheduled: '08:22:30' }))).toBe('08:22');
-    expect(searchRowTime(row({ scheduled: null }))).toBe('--:--');
+    expect(searchRowTime(row({ scheduled: null }))).toBeNull();
   });
 });
 

@@ -394,7 +394,7 @@ describe('advanced options', () => {
         new TripPlanError('results=options with 4 waypoints, 3 vias and maxChanges=6 is too large a search (...)', 400),
       ),
     ).toBe(true);
-    expect(isTooLargeSearchError(new TripPlanError('via: ZZZ is not a recognised station CRS code', 400))).toBe(false);
+    expect(isTooLargeSearchError(new TripPlanError('via: ZZZ is not a recognised station code', 400))).toBe(false);
   });
 
   it('collects the vias and no-result values for name lookup', () => {

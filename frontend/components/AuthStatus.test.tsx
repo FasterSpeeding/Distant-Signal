@@ -91,14 +91,14 @@ describe('AuthStatus', () => {
     expect(accountMenuName()).toBe('a');
   });
 
-  it('falls back to "Signed in" when both name and username are blank', () => {
+  it('falls back to "Logged in" when both name and username are blank', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: '', name: '' }} />);
-    expect(accountMenuName()).toBe('Signed in');
+    expect(accountMenuName()).toBe('Logged in');
   });
 
-  it('falls back to "Signed in" when both name and username are null', () => {
+  it('falls back to "Logged in" when both name and username are null', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: null, name: null }} />);
-    expect(accountMenuName()).toBe('Signed in');
+    expect(accountMenuName()).toBe('Logged in');
   });
 
   // Review §3.1.3: /chat was undiscoverable -- this is the account menu's

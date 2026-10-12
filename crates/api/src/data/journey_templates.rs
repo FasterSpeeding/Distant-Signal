@@ -119,13 +119,13 @@ pub fn validate_template_leg(
     // for the identical bug.
     if !is_three_letter_crs(origin_crs) {
         return Err(
-            "Enter a valid origin station. CRS codes are three letters, like WOK or EUS."
+            "Enter a valid origin station. Station codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
     if !is_three_letter_crs(destination_crs) {
         return Err(
-            "Enter a valid destination station. CRS codes are three letters, like WOK or \
+            "Enter a valid destination station. Station codes are three letters, like WOK or \
              EUS."
                 .to_string(),
         );
@@ -151,7 +151,7 @@ pub fn validate_template_leg(
     Ok(())
 }
 
-/// A real 3-letter CRS code, ASCII-alphabetic only, case-insensitive --
+/// A real 3-letter station code, ASCII-alphabetic only, case-insensitive --
 /// same check as `routes::trains::normalize_crs`/
 /// `journeys::is_three_letter_crs` (each module keeps its own private
 /// copy rather than reaching across the module boundary, matching this

@@ -183,7 +183,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       {!existingLine && (
         <Alert color="grape" variant="light">
           Creating a line needs a Distant Signal account. You&apos;ll be sent to log in when you save if you aren&apos;t
-          already signed in.
+          already logged in.
         </Alert>
       )}
       <TextInput label="Name" withAsterisk value={name} onChange={(event) => setName(event.currentTarget.value)} />

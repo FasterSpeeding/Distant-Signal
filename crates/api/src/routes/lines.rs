@@ -825,7 +825,7 @@ struct CreateLineRequest {
     destination_crs_filter: Vec<String>,
 }
 
-/// A real 3-letter CRS code, ASCII-alphabetic only, case-insensitive --
+/// A real 3-letter station code, ASCII-alphabetic only, case-insensitive --
 /// same check as `routes::trains::normalize_crs`/`journeys::is_three_letter_crs`/
 /// `journey_templates::is_three_letter_crs` (each module keeps its own
 /// private copy rather than reaching across the module boundary, matching
@@ -853,7 +853,7 @@ fn validate_station_crs_codes(stations: &[String]) -> Result<(), (StatusCode, St
     if let Some(bad) = stations.iter().find(|s| !is_three_letter_crs(s)) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("'{bad}' is not a valid 3-letter CRS code"),
+            format!("'{bad}' is not a valid 3-letter station code"),
         ));
     }
     Ok(())

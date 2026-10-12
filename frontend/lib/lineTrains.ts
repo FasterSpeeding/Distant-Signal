@@ -520,14 +520,15 @@ export function rankHubs(hubs: LineCatalogueStation[]): LineCatalogueStation[] {
     .map(({ hub }) => hub);
 }
 
-/** A timetable row's listed time (`HH:MM`) and its arrival at `to`. Here,
+/** A timetable row's listed time (`HH:MM`, `null` when it has none) and
+ * its arrival at `to`. Here,
  * not in the client component, so the server-rendered first page can call
  * it too. */
-export function timetableRowTimes(train: LineTimetableTrain): { time: string; arrival: string | undefined } {
+export function timetableRowTimes(train: LineTimetableTrain): { time: string | null; arrival: string | undefined } {
   const time = lineTimeMinute(train.time);
   const arrival = lineTimeMinute(train.arrival);
   return {
-    time: time === null ? '--:--' : formatClock(time),
+    time: time === null ? null : formatClock(time),
     arrival: arrival === null ? undefined : formatClock(arrival),
   };
 }

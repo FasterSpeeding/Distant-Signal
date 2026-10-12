@@ -10,6 +10,7 @@ import { LoginPromptModal } from './LoginPromptModal';
 import { searchTocs } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { NO_TIME } from '@/lib/dateFormat';
 import { searchRowDetails, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import { serviceNoun } from '@/lib/serviceMode';
 import { dayOffsetMarker } from '@/lib/serviceStatus';
@@ -411,7 +412,7 @@ function CandidateRowView({
   const nextDay = dayOffsetMarker(row.legDestinationArrivalDayOffset);
   const destination = train.destination?.name ?? train.destination?.crs;
   const spoken = [
-    destination ? `${time} to ${destination}` : time,
+    destination ? `${time ?? NO_TIME} to ${destination}` : (time ?? NO_TIME),
     arrival && `arriving ${arrival}${nextDay ? ` (${nextDay.spoken})` : ''}`,
   ]
     .filter(Boolean)

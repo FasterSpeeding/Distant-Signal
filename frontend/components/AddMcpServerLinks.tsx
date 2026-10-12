@@ -39,7 +39,7 @@ export function AddMcpServerLinks({
         <SectionTitle id={headingId}>Use Distant Signal in your own assistant</SectionTitle>
         <Text size="sm">
           Add Distant Signal to an AI assistant you already use, then ask it about live departures, disruptions and
-          journeys there. When the assistant first connects, you&apos;ll sign in with your Distant Signal account.
+          journeys there. When the assistant first connects, you&apos;ll log in with your Distant Signal account.
         </Text>
         {accessRestricted && (
           <Text size="sm" c="dimmed">
@@ -140,7 +140,7 @@ export function AddMcpServerLinks({
           </summary>
           <Text size="xs" c="dimmed" mt={4}>
             Your assistant logged in from a different local address than the one it registered with (localhost instead
-            of 127.0.0.1, or the other way round). Remove Distant Signal from the assistant, add it again, then sign in.
+            of 127.0.0.1, or the other way round). Remove Distant Signal from the assistant, add it again, then log in.
           </Text>
         </details>
       </Stack>
