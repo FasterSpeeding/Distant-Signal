@@ -1896,7 +1896,7 @@ mod tests {
                     peak.fetch_max(now, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     current.fetch_sub(1, Ordering::SeqCst);
-                    seen.lock().unwrap().push(id.to_string());
+                    seen.lock().unwrap().push(id.clone());
                     id.trim_start_matches('I').parse::<usize>().unwrap() % 2 == 1
                 })
                 .collect();

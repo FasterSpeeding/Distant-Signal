@@ -235,6 +235,10 @@ mod tests {
     /// plus `incidents_needing_extraction` selected.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p enricher sweep -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test code: one scenario, seed to assertions"
+    )]
     async fn the_sweep_query_returns_only_stale_live_incidents() {
         let pool = test_pool().await;
         let cleanup = "DELETE FROM incidents WHERE incident_id LIKE 'TEST-SWEEPQ-%'";
