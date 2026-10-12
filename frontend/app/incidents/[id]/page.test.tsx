@@ -181,9 +181,9 @@ describe('IncidentDetailPage', () => {
     vi.mocked(api.getIncident).mockResolvedValue(detail());
     renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
     // The arrow is decorative and aria-hidden: the name is just "Incident Archive".
-    const back = screen.getByRole('link', { name: 'Incidents' });
+    const back = screen.getByRole('link', { name: 'Back to incidents' });
     expect(back).toHaveAttribute('href', '/incidents');
-    expect(back.querySelector('[aria-hidden="true"]')).toHaveTextContent('←');
+    expect(back).not.toHaveTextContent('←');
   });
 
   // Review §3.3's "at-a-glance strip": the page previously rendered neither

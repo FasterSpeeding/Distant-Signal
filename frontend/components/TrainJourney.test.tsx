@@ -70,12 +70,12 @@ describe('TrainJourney', () => {
     renderWithMantine(
       <TrainJourney state={baseState({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' })} />,
     );
-    expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) → Woking \(WOK\)/))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) to Woking \(WOK\)/))).toBeInTheDocument();
   });
 
   it('falls back to the bare code, not "null", when a name did not resolve', () => {
     renderWithMantine(<TrainJourney state={baseState()} />);
-    expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
@@ -880,7 +880,7 @@ describe('TrainJourney suppressTrainUidHeading', () => {
         suppressTrainUidHeading
       />,
     );
-    expect(screen.getByText(byVisibleText(/WAT → WOK/))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     expect(screen.queryByText('UID C21373')).not.toBeInTheDocument();
   });
 

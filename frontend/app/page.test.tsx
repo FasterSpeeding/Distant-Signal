@@ -869,13 +869,13 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
       item({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' }),
     ]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByText(byVisibleText('London Waterloo (WAT) → Woking (WOK)'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('London Waterloo (WAT) to Woking (WOK)'))).toBeInTheDocument();
   });
 
   it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ pinOriginName: null, pinDestinationName: null })]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
@@ -1397,8 +1397,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('PAD → RDG'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
     expect(screen.getByText('from Family')).toBeInTheDocument();
     expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
   });
@@ -1410,7 +1410,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('PAD → RDG'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
   });
 
@@ -1448,14 +1448,14 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    const sharedRow = screen.getByText(byVisibleText('PAD → RDG')).closest('.mantine-Card-root');
+    const sharedRow = screen.getByText(byVisibleText('PAD to RDG')).closest('.mantine-Card-root');
     expect(sharedRow).not.toBeNull();
     expect(within(sharedRow as HTMLElement).getByText('from Family')).toBeInTheDocument();
     expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
 
     // ...and the caller's own row carries neither -- an unattributed row
     // must keep reading as "one I tracked myself".
-    const ownRow = screen.getByText(byVisibleText('WAT → WOK')).closest('.mantine-Card-root');
+    const ownRow = screen.getByText(byVisibleText('WAT to WOK')).closest('.mantine-Card-root');
     expect(within(ownRow as HTMLElement).queryByText(/^from /)).not.toBeInTheDocument();
     expect(within(ownRow as HTMLElement).queryByText(/^Shared by /)).not.toBeInTheDocument();
   });
@@ -1469,7 +1469,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getAllByText(byVisibleText('PAD → RDG'))).toHaveLength(1);
+    expect(screen.getAllByText(byVisibleText('PAD to RDG'))).toHaveLength(1);
     expect(screen.getByText('from Family')).toBeInTheDocument();
     expect(screen.getByText('from Commuters')).toBeInTheDocument();
   });
@@ -1493,7 +1493,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText(byVisibleText('PAD → RDG'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /PAD to RDG/ })).not.toBeInTheDocument();
     // Specifically never the owner-scoped by-id route, which 404s for
     // anyone but the train's owner.
@@ -1583,8 +1583,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    const rendered = screen.getAllByText(byVisibleText(/→ (WOK|RDG)$/)).map((el) => visibleText(el));
-    expect(rendered).toEqual(['WAT → WOK', 'PAD → RDG', 'KGX → RDG']);
+    const rendered = screen.getAllByText(byVisibleText(/ to (WOK|RDG)$/)).map((el) => visibleText(el));
+    expect(rendered).toEqual(['WAT to WOK', 'PAD to RDG', 'KGX to RDG']);
   });
 
   /** The home page labels a shared row by ROUTE, deliberately, where
@@ -1599,7 +1599,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText(byVisibleText('PAD → RDG'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
     expect(screen.queryByText('Morning commute')).not.toBeInTheDocument();
   });
 
@@ -1643,9 +1643,9 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText(byVisibleText('T4 → WOK'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('S1 → RDG'))).toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('S2 → RDG'))).not.toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('T4 to WOK'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('S1 to RDG'))).toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('S2 to RDG'))).not.toBeInTheDocument();
   });
 
   it('a caller with five of their own trains sees no shared rows here — "View all" is the way to them', async () => {
@@ -1660,8 +1660,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText(byVisibleText('T5 → WOK'))).toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('PAD → RDG'))).not.toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('T5 to WOK'))).toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
     expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
   });
@@ -1677,8 +1677,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('PAD → RDG'))).not.toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
     expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
   });
 
@@ -1688,7 +1688,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
     expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
   });
 
@@ -1700,7 +1700,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('WAT → WOK'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
     expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
   });
 
@@ -1720,7 +1720,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('PAD → RDG'))).not.toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
     expect(screen.queryByText('from Family')).not.toBeInTheDocument();
   });
 });

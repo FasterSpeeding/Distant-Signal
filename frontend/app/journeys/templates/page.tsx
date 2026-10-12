@@ -5,7 +5,6 @@ import { LoginLink } from '@/components/LoginLink';
 import { TextLink } from '@/components/TextLink';
 import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
-import { RouteText } from '@/components/RouteArrow';
 import type { JourneyTemplateListItem } from '@/lib/types';
 import type { Metadata } from 'next';
 
@@ -62,11 +61,11 @@ function TemplateCard({ template }: { template: JourneyTemplateListItem }) {
       <Group justify="space-between">
         <Stack gap={2}>
           <Anchor component={Link} href={`/journeys/templates/${template.id}`} fw={600}>
-            <RouteText>{title}</RouteText>
+            {title}
           </Anchor>
           {template.customName && (
             <Text size="sm" c="dimmed">
-              <RouteText>{route}</RouteText>
+              {route}
             </Text>
           )}
           <Text size="xs" c="dimmed">

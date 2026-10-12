@@ -5,7 +5,6 @@ import { JourneyProgress } from './JourneyProgress';
 import { JourneyTimeline, isGenuineCallingPoint, type JourneyEndpointNames } from './JourneyTimeline';
 import { formatTime } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
-import { RouteText } from './RouteArrow';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly, serviceNoun, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
 import type { TrainJourneyState } from '@/lib/types';
@@ -152,7 +151,7 @@ function TimetableOnlyMessage({
         )}
       </Group>
       <Text size="sm" c="dimmed">
-        <RouteText>{trackedTrainDisplayName(state)}</RouteText>
+        {trackedTrainDisplayName(state)}
       </Text>
       <Text size="sm">{TIMETABLE_ONLY_MESSAGE}. These are the scheduled times.</Text>
     </Stack>
@@ -181,7 +180,7 @@ function StatusMessage({
 
   const pinSummary = (
     <Text size="sm" c="dimmed">
-      <RouteText>{trackedTrainDisplayName(state)}</RouteText>
+      {trackedTrainDisplayName(state)}
     </Text>
   );
 

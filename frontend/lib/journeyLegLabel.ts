@@ -46,7 +46,7 @@ export function legEndpointName(
   return crsMatch(pinCrs, crs) ? pinName : null;
 }
 
-/** `"London Kings Cross (KGX) → York (YRK) · 16:00"`-shaped label for one
+/** `"London Kings Cross (KGX) to York (YRK) · 16:00"`-shaped label for one
  * leg (2026-09-22 UX review finding I16/2.7: "the card is about the
  * train, not the leg" -- this is the leg's own identity, meant to replace
  * a headcode as a card's primary title). The departure time comes from

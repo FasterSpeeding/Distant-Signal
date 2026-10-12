@@ -18,13 +18,13 @@ describe('trackedTrainDisplayName', () => {
 
   it('falls back to route + date + time when there is no custom name and a departure time is present', () => {
     expect(trackedTrainDisplayName(base)).toBe(
-      'London Kings Cross (KGX) → Edinburgh Waverley (EDB), 10 May 2026 · 14:32',
+      'London Kings Cross (KGX) to Edinburgh Waverley (EDB), 10 May 2026 · 14:32',
     );
   });
 
   it('degrades to date-only when pinScheduledDeparture is absent (TrackedTrainState has no such field)', () => {
     expect(trackedTrainDisplayName({ ...base, pinScheduledDeparture: undefined })).toBe(
-      'London Kings Cross (KGX) → Edinburgh Waverley (EDB), 10 May 2026',
+      'London Kings Cross (KGX) to Edinburgh Waverley (EDB), 10 May 2026',
     );
   });
 
@@ -41,12 +41,12 @@ describe('trackedTrainDisplayName', () => {
         pinOriginName: null,
         pinDestinationName: null,
       }),
-    ).toBe('KGX → EDB, 10 May 2026 · 14:32');
+    ).toBe('KGX to EDB, 10 May 2026 · 14:32');
   });
 
   it('an empty-string custom name is treated the same as null (defensive -- the backend never stores one, but this helper does not assume that)', () => {
     expect(trackedTrainDisplayName({ ...base, customName: '' })).toBe(
-      'London Kings Cross (KGX) → Edinburgh Waverley (EDB), 10 May 2026 · 14:32',
+      'London Kings Cross (KGX) to Edinburgh Waverley (EDB), 10 May 2026 · 14:32',
     );
   });
 });

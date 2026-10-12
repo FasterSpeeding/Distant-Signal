@@ -12,7 +12,8 @@ or heading. `--extracted` reads saved records instead (the unit tests).
 
 Fails (exit 1) on:
   - a banned character in any string the app holds: an em dash (an en
-    dash is for ranges) or an ellipsis (a spinner says "in progress");
+    dash is for ranges), an ellipsis (a spinner says "in progress") or an
+    arrow (routes and back links are words);
   - a banned phrase in a user-facing string: internal vocabulary (ingest,
     aggregator, full coverage, TOC, deployment, allowlist, localStorage,
     "this app"), "--", and marketing words;
@@ -165,6 +166,14 @@ BANNED_CHARACTERS: Sequence[tuple[re.Pattern[str], str]] = (
         (
             'an ellipsis "\u2026" (in-progress text is a plain word beside a'
             " spinner: LoadingText, ButtonSpinner)"
+        ),
+    ),
+    (
+        re.compile("[\u2190\u2192\u2197]"),
+        (
+            'an arrow "\u2192", "\u2190" or "\u2197" (a route says "KGX to YRK",'
+            ' a back link "Back to groups", and an external link uses'
+            " ExternalLinkIcon)"
         ),
     ),
 )

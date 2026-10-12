@@ -35,7 +35,7 @@ const FILTER_DEBOUNCE_MS = 250;
  * `destinationArrival` describe the TRAIN's own route -- for a
  * York->Newcastle leg riding a London->Edinburgh service they say
  * "KGX -> EDB", which is why every candidate used to render identically as
- * "19:00 · KGX → EDB" and the one decision this list exists to support
+ * "19:00 · KGX to EDB" and the one decision this list exists to support
  * could not be made from it. `stationCrs`/`legOriginCrs`,
  * `legDestinationCrs` and `legDestinationArrival` describe the
  * TRAVELLER's leg: where they get on, where they get off, and when. */

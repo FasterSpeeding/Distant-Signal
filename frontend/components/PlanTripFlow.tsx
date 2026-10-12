@@ -19,7 +19,6 @@ import { planPageSearch, type PlanFormInitial } from '@/lib/tripPlanUrl';
 import { getStationNames } from '@/lib/suggestions';
 import { groupLabels, useStationGroups } from '@/lib/stationGroups';
 import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
-import { RouteText } from './RouteArrow';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 import { apiRefusalMessage, describeFailure, failureFromResponse } from '@/lib/failure';
@@ -392,12 +391,10 @@ export function PlanTripFlow({
         );
         return (
           <Stack key={segmentIndex} gap="xs">
-            <Text fw={600}>
-              <RouteText>{segmentLabel}</RouteText>
-            </Text>
+            <Text fw={600}>{segmentLabel}</Text>
             {segment.itineraries.length === 0 && (
               <Alert color="yellow">
-                No route found for <RouteText>{segmentLabel}</RouteText>.
+                No route found for {segmentLabel}.
                 {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
                 {segment.noResultReason && hintFor(segment.noResultReason) && (
                   <Text size="sm" mt={4}>

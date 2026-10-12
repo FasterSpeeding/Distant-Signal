@@ -271,7 +271,7 @@ export function StationTimetable({
             phone column, and so would the link's hit area. */}
         <div>
           <TextLink href={`/trains?station=${crs.toUpperCase()}`} inline underline="always">
-            Search a different day or filter <span aria-hidden="true">→</span>
+            Search a different day or filter
           </TextLink>
         </div>
       </Flex>

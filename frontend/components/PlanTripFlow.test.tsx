@@ -128,9 +128,9 @@ describe('PlanTripFlow', () => {
     // above, this full string is unique: the itinerary line below embeds
     // it inside "08:00 ... 08:50", which is a DIFFERENT full string, not
     // an ambiguous substring match).
-    await screen.findByText(byVisibleText('EUS · London Euston → MKC · Milton Keynes Central'));
+    await screen.findByText(byVisibleText('EUS · London Euston to MKC · Milton Keynes Central'));
     // The itinerary's own leg summary line, same names.
-    await screen.findByText(byVisibleText('08:00 EUS · London Euston → MKC · Milton Keynes Central 08:50'));
+    await screen.findByText(byVisibleText('08:00 EUS · London Euston to MKC · Milton Keynes Central 08:50'));
   });
 
   it('falls back to bare codes in the segment heading/leg summary when no name resolves', async () => {
@@ -144,8 +144,8 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('EUS → MKC'));
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
+    await screen.findByText(byVisibleText('EUS to MKC'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
   });
 
   it('creates the journey via POST /api/Journeys after picking the only itinerary', async () => {
@@ -165,14 +165,14 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    // Not `findByText(byVisibleText(/EUS → MKC/))` -- that matches BOTH the segment
-    // heading ("EUS → MKC", `PlanTripFlow`'s own `<Text fw={600}>`) and
-    // `ItineraryOption`'s own leg summary line ("08:00 EUS → MKC 08:50"),
+    // Not `findByText(byVisibleText(/EUS to MKC/))` -- that matches BOTH the segment
+    // heading ("EUS to MKC", `PlanTripFlow`'s own `<Text fw={600}>`) and
+    // `ItineraryOption`'s own leg summary line ("08:00 EUS to MKC 08:50"),
     // which contains it as a substring; `findByText` throws
     // "Found multiple elements" for an ambiguous match rather than picking
     // one. The itinerary's own line is unique and still proves the plan
     // (and its one itinerary) rendered.
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
     // Not `getByRole('radio')` -- `PlanTripForm`'s own "Fastest"/"Compare
     // options" `SegmentedControl` also renders as a pair of `type="radio"`
     // inputs under the hood (Mantine's implementation, not a styling
@@ -260,7 +260,7 @@ describe('PlanTripFlow', () => {
     // the segment's own `EUS`/`MKC` heading (that's a separate `<Text>` line
     // above, from `TripPlanSegment.originCrs`/`destinationCrs`, which are
     // always non-null strings).
-    await screen.findByText(byVisibleText('08:00 ? → ? 08:50'));
+    await screen.findByText(byVisibleText('08:00 ? to ? 08:50'));
     const radios = screen.getAllByRole('radio');
     fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
@@ -307,7 +307,7 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'ZZZ' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('No route found for EUS → ZZZ.'));
+    await screen.findByText(byVisibleText('No route found for EUS to ZZZ.'));
   });
 
   it('says which constraint left a segment with no itineraries', async () => {
@@ -405,8 +405,8 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
-    await screen.findByText(byVisibleText('09:10 MKC → EDB 13:00'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
+    await screen.findByText(byVisibleText('09:10 MKC to EDB 13:00'));
     // Both segments' own single itinerary, the last two radios in DOM order
     // -- see the first test's own comment on why a bare `getByRole('radio')`
     // isn't usable here (the form's SegmentedControl radios come first).
@@ -506,7 +506,7 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'GLC' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('10:00 CRE → PRE 11:15'));
+    await screen.findByText(byVisibleText('10:00 CRE to PRE 11:15'));
     const radios = screen.getAllByRole('radio');
     fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
@@ -604,8 +604,8 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
-    await screen.findByText(byVisibleText('09:10 MKC → EDB 13:00'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
+    await screen.findByText(byVisibleText('09:10 MKC to EDB 13:00'));
     const radios = screen.getAllByRole('radio');
     fireEvent.click(radios[radios.length - 2]!);
     fireEvent.click(radios[radios.length - 1]!);
@@ -692,7 +692,7 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('EUS → MKC'));
+    await screen.findByText(byVisibleText('EUS to MKC'));
     if (shown) {
       expect(screen.getByText('Timetable may change')).toBeInTheDocument();
     } else {
@@ -714,7 +714,7 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
     const radios = screen.getAllByRole('radio');
     fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
@@ -774,8 +774,8 @@ describe('PlanTripFlow', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
     fireEvent.click(screen.getByText('Find routes'));
 
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
-    await screen.findByText(byVisibleText('09:10 MKC → EDB 13:00'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
+    await screen.findByText(byVisibleText('09:10 MKC to EDB 13:00'));
     const radios = screen.getAllByRole('radio');
     fireEvent.click(radios[radios.length - 2]!);
     fireEvent.click(radios[radios.length - 1]!);
@@ -813,7 +813,7 @@ describe('PlanTripFlow', () => {
 
     await screen.findByText('Find routes');
     expect(screen.queryByText('Searching')).not.toBeInTheDocument();
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
   });
 
   it('discards a stale plan response that resolves after a newer one', async () => {
@@ -869,7 +869,7 @@ describe('PlanTripFlow', () => {
     // slower) one -- the stale one must not clobber the newer result once
     // it finally resolves.
     resolveSecond({ ok: true, json: () => Promise.resolve(secondPlan) } as Response);
-    await screen.findByText(byVisibleText('CCC → DDD'));
+    await screen.findByText(byVisibleText('CCC to DDD'));
 
     // Flush the stale response's own `.then()`/`.finally()` chain (a real
     // `setTimeout(0)`, not `waitFor` -- there's nothing to poll for since
@@ -878,8 +878,8 @@ describe('PlanTripFlow', () => {
       resolveFirst({ ok: true, json: () => Promise.resolve(firstPlan) } as Response);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(screen.queryByText(byVisibleText('AAA → BBB'))).not.toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('CCC → DDD'))).toBeInTheDocument();
+    expect(screen.queryByText(byVisibleText('AAA to BBB'))).not.toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('CCC to DDD'))).toBeInTheDocument();
   });
 
   it('does not double-fetch GET /Trips/plan when the search button is clicked rapidly twice', async () => {
@@ -911,7 +911,7 @@ describe('PlanTripFlow', () => {
     await screen.findByText('Searching');
     resolveFetch({ ok: true, json: () => Promise.resolve(singleSegmentPlan) } as Response);
 
-    await screen.findByText(byVisibleText('08:00 EUS → MKC 08:50'));
+    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

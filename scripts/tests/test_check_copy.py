@@ -156,6 +156,13 @@ class BannedCharacters(unittest.TestCase):
         self.assertTrue(findings(record(kind="attr", attr="placeholder", text="Ask…")))
         self.assertEqual(findings(record(text="Saving")), [])
 
+    def test_flags_arrows(self) -> None:
+        """Check that it flags route, back and external-link arrows."""
+        for text in ("KGX → YRK", "← Groups", "Docs ↗"):
+            messages = findings(record(kind="string", text=text))
+            self.assertTrue(any("arrow" in message for message in messages), text)
+        self.assertEqual(findings(record(text="KGX to YRK")), [])
+
     def test_skips_the_loggers_truncation_marker(self) -> None:
         """Check that it skips the logger's "[…]" marker."""
         self.assertEqual(

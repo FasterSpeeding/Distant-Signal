@@ -236,7 +236,7 @@ describe('LineTrainsResults', () => {
     const details = screen.getByText('Also running along part of this line (2)').closest('details');
     expect(details).not.toHaveAttribute('open');
     expect(
-      within(details as HTMLElement).getByText('CrossCountry · Manchester Piccadilly → Bournemouth'),
+      within(details as HTMLElement).getByText('CrossCountry · Manchester Piccadilly to Bournemouth'),
     ).toBeInTheDocument();
     expect(
       within(details as HTMLElement).getByRole('link', { name: /14:12 CrossCountry train to Bournemouth/ }),
@@ -249,7 +249,7 @@ describe('LineTrainsResults', () => {
     vi.mocked(api.getLineTrainsSummary).mockResolvedValue(summary());
     const { container } = await renderWithContainer();
     const desktop = container.querySelector('[data-hubs="desktop"]') as HTMLElement;
-    expect(within(desktop).getByRole('link', { name: 'Other trains at London Waterloo →' })).toHaveAttribute(
+    expect(within(desktop).getByRole('link', { name: 'Other trains at London Waterloo' })).toHaveAttribute(
       'href',
       '/stations/WAT#departures',
     );
@@ -259,11 +259,11 @@ describe('LineTrainsResults', () => {
         .getAllByRole('link')
         .map((a) => visibleText(a)),
     ).toEqual([
-      'Other trains at London Waterloo →',
-      'Other trains at Clapham Junction →',
-      'Other trains at Woking →',
-      'Other trains at Basingstoke →',
-      'Other trains at Weymouth →',
+      'Other trains at London Waterloo',
+      'Other trains at Clapham Junction',
+      'Other trains at Woking',
+      'Other trains at Basingstoke',
+      'Other trains at Weymouth',
     ]);
     expect(screen.queryByRole('link', { name: /Other trains at Winchester/ })).not.toBeInTheDocument();
   });
@@ -278,16 +278,16 @@ describe('LineTrainsResults', () => {
       .filter((a) => !details.contains(a))
       .map((a) => visibleText(a));
     expect(links).toEqual([
-      'Other trains at London Waterloo →',
-      'Other trains at Weymouth →',
-      'Other trains at Clapham Junction →',
+      'Other trains at London Waterloo',
+      'Other trains at Weymouth',
+      'Other trains at Clapham Junction',
     ]);
     expect(within(details).getByText('More stations (2)')).toBeInTheDocument();
     expect(
       within(details)
         .getAllByRole('link')
         .map((a) => visibleText(a)),
-    ).toEqual(['Other trains at Woking →', 'Other trains at Basingstoke →']);
+    ).toEqual(['Other trains at Woking', 'Other trains at Basingstoke']);
   });
 
   it('links the full day’s timetable with the current direction and the window’s start', async () => {
@@ -434,12 +434,12 @@ describe('LineTrainsResults', () => {
       }),
     );
     await render({ view: 'routes' });
-    const summaryEl = screen.getByText('London Waterloo → Weymouth, fast').closest('summary') as HTMLElement;
+    const summaryEl = screen.getByText('London Waterloo to Weymouth, fast').closest('summary') as HTMLElement;
     expect(visibleText(summaryEl)).toBe(
-      'London Waterloo → Weymouth, fast · every 30 min · xx:05, xx:35 · show 3 trains',
+      'London Waterloo to Weymouth, fast · every 30 min · xx:05, xx:35 · show 3 trains',
     );
     expect(summaryEl.closest('details')).not.toHaveAttribute('open');
-    expect(screen.getByText('London Waterloo → Weymouth, stopping')).toBeInTheDocument();
+    expect(screen.getByText('London Waterloo to Weymouth, stopping')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'By route' })).toHaveAttribute('aria-current', 'page');
   });
 

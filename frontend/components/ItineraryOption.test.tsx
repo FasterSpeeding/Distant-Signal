@@ -32,7 +32,7 @@ describe('ItineraryOption', () => {
   it('renders a train leg summary and allows selection', () => {
     const onSelect = vi.fn();
     renderWithMantine(<ItineraryOption itinerary={trainItinerary} selected={false} onSelect={onSelect} />);
-    expect(screen.getByText(byVisibleText(/08:00 EUS → MKC 08:50/))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/08:00 EUS to MKC 08:50/))).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio'));
     expect(onSelect).toHaveBeenCalled();
   });
@@ -68,7 +68,7 @@ describe('ItineraryOption', () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText(byVisibleText(/08:00 EUS → MKC 08:50 · 12 min late/))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/08:00 EUS to MKC 08:50 · 12 min late/))).toBeInTheDocument();
     expect(screen.queryByText('Live data says this route may no longer work')).not.toBeInTheDocument();
     unmount();
 
@@ -79,7 +79,7 @@ describe('ItineraryOption', () => {
         onSelect={vi.fn()}
       />,
     );
-    expect(screen.getByText(byVisibleText(/08:00 EUS → MKC 08:50 · 3 min early/))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(/08:00 EUS to MKC 08:50 · 3 min early/))).toBeInTheDocument();
     early.unmount();
 
     renderWithMantine(
@@ -119,7 +119,7 @@ describe('ItineraryOption', () => {
       <ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,
     );
     expect(
-      screen.getByText(byVisibleText('08:00 EUS · London Euston → MKC · Milton Keynes Central 08:50')),
+      screen.getByText(byVisibleText('08:00 EUS · London Euston to MKC · Milton Keynes Central 08:50')),
     ).toBeInTheDocument();
   });
 
@@ -137,24 +137,24 @@ describe('ItineraryOption', () => {
       />,
     );
     expect(
-      screen.getByText(byVisibleText('Tube EUS · London Euston → KGX · London Kings Cross, 5 min')),
+      screen.getByText(byVisibleText('Tube EUS · London Euston to KGX · London Kings Cross, 5 min')),
     ).toBeInTheDocument();
   });
 
   it('falls back to bare codes for an end whose name did not resolve, without mixing forms', () => {
     // Only EUS resolved -- per `codeRouteLabel`'s own "never mix" rule
     // (mirroring `routeLabel`'s), BOTH ends must render as bare codes
-    // rather than "EUS · London Euston → MKC".
+    // rather than "EUS · London Euston to MKC".
     const stationNames = new Map([['EUS', 'London Euston']]);
     renderWithMantine(
       <ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} stationNames={stationNames} />,
     );
-    expect(screen.getByText(byVisibleText('08:00 EUS → MKC 08:50'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('08:00 EUS to MKC 08:50'))).toBeInTheDocument();
   });
 
   it('renders bare codes when stationNames is omitted (default empty map)', () => {
     renderWithMantine(<ItineraryOption itinerary={trainItinerary} selected={false} onSelect={vi.fn()} />);
-    expect(screen.getByText(byVisibleText('08:00 EUS → MKC 08:50'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('08:00 EUS to MKC 08:50'))).toBeInTheDocument();
   });
 });
 

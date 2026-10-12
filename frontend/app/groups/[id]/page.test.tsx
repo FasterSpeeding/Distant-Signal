@@ -302,9 +302,9 @@ describe('GroupDetailPage', () => {
 
     renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
     // The arrow is decorative and aria-hidden: the name is just "Groups".
-    const back = screen.getByRole('link', { name: 'Groups' });
+    const back = screen.getByRole('link', { name: 'Back to groups' });
     expect(back).toHaveAttribute('href', '/groups');
-    expect(back.querySelector('[aria-hidden="true"]')).toHaveTextContent('←');
+    expect(back).not.toHaveTextContent('←');
   });
 
   // Review §3.2.5: nothing marked which row in the member list was the
@@ -852,7 +852,7 @@ describe('GroupDetailPage', () => {
       ]);
       await renderAsViewer('user-other', 'member');
 
-      expect(screen.getByText(byVisibleText(/Woking \(WOK\) → London Waterloo \(WAT\)/))).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/Woking \(WOK\) to London Waterloo \(WAT\)/))).toBeInTheDocument();
       expect(screen.queryByText(/\+0 more leg/)).not.toBeInTheDocument();
       expect(screen.getByText(/Scotland trip \(\+2 more legs\)/)).toBeInTheDocument();
     });

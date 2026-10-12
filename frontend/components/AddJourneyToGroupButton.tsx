@@ -6,7 +6,6 @@ import { Alert, Button, Modal, Select, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
-import { RouteText } from './RouteArrow';
 import type { JourneyListItem } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { LoadingText } from '@/components/LoadingText';
@@ -20,7 +19,7 @@ import { LoadingText } from '@/components/LoadingText';
  * (`groups::add_journey_to_group` is idempotent) but offering it again in
  * the picker would be confusing.
  *
- * Display name is computed inline (`j.customName ?? "<origin> → <destination>"`,
+ * Display name is computed inline (`j.customName ?? "<origin> to <destination>"`,
  * falling back to `'Untitled journey'` when neither CRS is set) rather than
  * via a shared `journeyDisplayName` helper -- no such module exists in this
  * codebase (`JourneyListItem`, from `lib/types.ts`, has no
@@ -110,10 +109,8 @@ export function AddJourneyToGroupButton({
               value: String(j.id),
               label:
                 j.customName ??
-                (j.originCrs && j.destinationCrs ? `${j.originCrs} → ${j.destinationCrs}` : 'Untitled journey'),
+                (j.originCrs && j.destinationCrs ? `${j.originCrs} to ${j.destinationCrs}` : 'Untitled journey'),
             }))}
-            // Route arrows read as "to" in the list (`RouteText`).
-            renderOption={({ option }) => <RouteText>{option.label}</RouteText>}
             value={selected}
             onChange={setSelected}
           />

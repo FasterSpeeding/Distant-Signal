@@ -6,7 +6,6 @@ import { Alert, Button, Modal, Select, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginLink } from './LoginLink';
-import { RouteText } from './RouteArrow';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrackedTrainListItem } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
@@ -101,8 +100,6 @@ export function AddTrainToGroupButton({
             label="Tracked train"
             placeholder="Pick one"
             data={trains.map((t) => ({ value: String(t.id), label: trackedTrainDisplayName(t) }))}
-            // Route arrows read as "to" in the list (`RouteText`).
-            renderOption={({ option }) => <RouteText>{option.label}</RouteText>}
             value={selected}
             onChange={setSelected}
           />

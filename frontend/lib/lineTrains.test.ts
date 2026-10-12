@@ -158,8 +158,8 @@ describe('shared group and hubs', () => {
       (code) => ({ XC: 'CrossCountry', GW: 'Great Western Railway' })[code] ?? code,
     );
     expect(groups.map((g) => [g.operator, g.route, g.trains.map((t) => t.uid)])).toEqual([
-      ['CrossCountry', 'Manchester Piccadilly → Bournemouth', ['X1', 'X2']],
-      ['Great Western Railway', 'Cardiff Central → Portsmouth Harbour', ['G1']],
+      ['CrossCountry', 'Manchester Piccadilly to Bournemouth', ['X1', 'X2']],
+      ['Great Western Railway', 'Cardiff Central to Portsmouth Harbour', ['G1']],
     ]);
   });
 
@@ -230,9 +230,9 @@ describe('pattern grouping', () => {
       }),
     ]);
     expect(groups.map((g) => [g.route, g.kind, g.frequency, g.trains.length])).toEqual([
-      ['London Waterloo → Weymouth', 'fast', 'every 30 min · xx:05, xx:35', 3],
-      ['London Waterloo → Weymouth', 'stopping', '1 train', 1],
-      ['London Waterloo → Southampton Central', null, '1 train', 1],
+      ['London Waterloo to Weymouth', 'fast', 'every 30 min · xx:05, xx:35', 3],
+      ['London Waterloo to Weymouth', 'stopping', '1 train', 1],
+      ['London Waterloo to Southampton Central', null, '1 train', 1],
     ]);
   });
 });

@@ -49,6 +49,10 @@ const BANNED_CHARACTERS = [
     '\\u2026',
     'No ellipsis "\u2026" in UI copy: in-progress text is a plain word beside a spinner (LoadingText, ButtonSpinner).',
   ],
+  [
+    '[\\u2190\\u2192\\u2197]',
+    'No arrows in UI copy: a route reads "KGX to YRK", a back link "Back to groups"; an external link uses ExternalLinkIcon.',
+  ],
 ];
 const COPY_RULES = [
   {

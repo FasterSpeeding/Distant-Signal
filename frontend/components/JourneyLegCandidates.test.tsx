@@ -22,7 +22,7 @@ vi.mock('next/navigation', () => ({
 // covers "renders when present" and "omits when absent" without needing a
 // dedicated one-off response -- `null` on the first row also keeps every
 // pre-existing test below that asserts row 1's exact subtitle text
-// ('Train C11052 · BRI → PAD') true unchanged.
+// ('Train C11052 · BRI to PAD') true unchanged.
 const CANDIDATES_FIXTURE = {
   results: [
     {
@@ -146,7 +146,7 @@ describe('JourneyLegCandidates', () => {
   // name when one resolved. `CANDIDATES_FIXTURE`'s own rows have no
   // `destinationName`, so this uses a dedicated response rather than
   // mutating the shared fixture every other test in this file also relies
-  // on for its exact 'Train C11052 · BRI → PAD' text.
+  // on for its exact 'Train C11052 · BRI to PAD' text.
   it('prefers destinationName over the bare destinationCrs in the train route subtitle', async () => {
     vi.stubGlobal(
       'fetch',

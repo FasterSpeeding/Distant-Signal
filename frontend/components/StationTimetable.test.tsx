@@ -415,8 +415,7 @@ describe('StationTimetable', () => {
 
     const link = screen.getByRole('link', { name: 'Search a different day or filter' });
     expect(link).toHaveAttribute('href', '/trains?station=RDG');
-    // The trailing arrow is still on screen, but aria-hidden.
-    expect(link.querySelector('[aria-hidden="true"]')).toHaveTextContent('→');
+    expect(link).not.toHaveTextContent('→');
   });
 
   it('notes that trains terminating at this station will not appear, without claiming the operator is unknown', async () => {
