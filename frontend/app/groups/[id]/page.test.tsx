@@ -702,7 +702,7 @@ describe('GroupDetailPage', () => {
       expect(screen.getByRole('heading', { name: 'Shared custom lines' })).toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'My Commute' })).toHaveAttribute('href', '/lines/custom-my-commute');
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
-      expect(screen.getByText('Severe Delays')).toBeInTheDocument();
+      expect(screen.getByText('Severe delays')).toBeInTheDocument();
     });
 
     it('still renders the row when no status has been computed for the line yet', async () => {
@@ -745,7 +745,7 @@ describe('GroupDetailPage', () => {
       vi.mocked(getLineStatus).mockResolvedValue([report()]);
       await renderAsViewer(SHARER, 'member');
 
-      expectShrinkGuarded(screen.getByText('Severe Delays'));
+      expectShrinkGuarded(screen.getByText('Severe delays'));
       expectShrinkGuarded(screen.getByRole('button', { name: 'Stop sharing' }));
     });
 

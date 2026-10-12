@@ -40,7 +40,7 @@ describe('OperatorStatusCard', () => {
 
   it('renders the worst status badge', () => {
     renderWithMantine(<OperatorStatusCard operator={operator} pinned={false} />);
-    expect(screen.getByText('Minor Delays')).toBeInTheDocument();
+    expect(screen.getByText('Minor delays')).toBeInTheDocument();
   });
 
   it('renders the reason', () => {

@@ -424,7 +424,7 @@ describe('IssueList', () => {
     // The two badges classify the row — they must sit in boxes that refuse
     // to shrink, rather than truncating to "MINOR DEL…" / a circled letter.
     // They now use class-based layout from app/globals.css instead of inline styles.
-    expect(within(control).getByText('Minor Delays').closest('.issueRow__badge')).not.toBeNull();
+    expect(within(control).getByText('Minor delays').closest('.issueRow__badge')).not.toBeNull();
     expect(within(control).getByText('National Rail incidents').closest('.issueRow__meta')).not.toBeNull();
     // The description is the element that gives way instead.
     expect(description).toHaveClass('issueRow__reason');

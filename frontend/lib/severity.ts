@@ -120,6 +120,14 @@ export function severityLabel(severity: number): string {
   return SEVERITY_TABLE[severity]?.label ?? 'Unknown';
 }
 
+/** The status as a badge shows it, in sentence case like every other
+ * badge: "Minor delays", "Part suspended". The official Title Case name
+ * (`severityLabel`) is for running text that names the status. */
+export function severityBadgeLabel(severity: number): string {
+  const label = severityLabel(severity);
+  return label.charAt(0) + label.slice(1).toLowerCase();
+}
+
 /** Higher rank = more severe. Unknown severities rank alongside `informational`. */
 export function severityRank(severity: number): number {
   const entry = SEVERITY_TABLE[severity];

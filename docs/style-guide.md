@@ -104,9 +104,10 @@ list-row titles 500.
 
 - Heading level and visual size are set separately. Pick the level for the
   outline; the size follows from it (see [Heading rules](#heading-rules)).
-- Badges keep Mantine's uppercase only for the severity `StatusBadge`.
-  Every other badge gets `tt="none"`: "12 min late", "Not stopping at your
-  station", "Planned work", "AI summary". There is deliberately no
+- Every badge is sentence case with `tt="none"`, the severity
+  `StatusBadge` included ("Minor delays", via `severityBadgeLabel`):
+  "12 min late", "Not stopping at your station", "Planned work", "AI
+  summary". There is deliberately no
   theme-level Badge default (`lib/theme.ts` explains why).
 - At most three badges in a row. Lines, operators and stations an item
   affects are dimmed text, operators by name, not pills. Don't badge what
@@ -199,7 +200,7 @@ list-row titles 500.
   for the primary action, light for secondary, default for neutral, red
   filled for destructive (text via `autoContrast`). Icon buttons are
   `ActionIcon` subtle or outline with 16px SVGs.
-- **StatusBadge**: filled, uppercase, severity colour; text colour by
+- **StatusBadge**: filled, sentence case ("Part suspended"), severity colour; text colour by
   `autoContrast` at threshold 0.179; gray and blue use `light-dark()` so
   dark mode gets white.
 - **PlatformBadge**: light, sentence case. Unchanged gray; changed blue with
@@ -321,8 +322,10 @@ Second person ("your trains"), and "we" or "Distant Signal" for the site,
 never "this app".
 
 - Sentence case for every heading, nav label, button, badge and page
-  title. The only Title Case is an official status name: "Good Service",
-  "Minor Delays", "Part Suspended" (`lib/severity.ts`).
+  title. The only Title Case is an official status name named in running
+  text: "7 more lines are not at Good Service" (`severityLabel` in
+  `lib/severity.ts`). On a badge the same status
+  is sentence case ("Good service", `severityBadgeLabel`).
 - A page's h1 is its nav label: Status, Lines, Stations, Trains,
   Incidents.
 - Helper text is one line. If the detail matters, put it behind a "How

@@ -989,7 +989,7 @@ describe('DashboardPage -- pinned station line-coverage distinction', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(screen.getByText('Good service')).toBeInTheDocument();
     expect(screen.queryByText('Not tracked')).not.toBeInTheDocument();
   });
 
@@ -1181,7 +1181,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
     const row = screen
       .getByText('An Implausibly Long Custom Line Name Chosen To Threaten This Row’s Layout')
       .closest('.mantine-Card-root') as HTMLElement;
-    expect(within(row).getByText('Severe Delays')).toBeInTheDocument();
+    expect(within(row).getByText('Severe delays')).toBeInTheDocument();
     expectNoUnguardedNowrapBadges(container);
   });
 });

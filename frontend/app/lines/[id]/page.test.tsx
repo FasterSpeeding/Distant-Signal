@@ -206,7 +206,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
   it('renders the computed status, not the no-status state, when a status row exists', async () => {
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
     await renderPage();
-    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(screen.getByText('Good service')).toBeInTheDocument();
     expect(screen.queryByText('No status yet')).not.toBeInTheDocument();
     expect(screen.queryByText(/No status has been computed for this line yet/)).not.toBeInTheDocument();
     await screen.findByText('Not enough sampled data yet for this line.');

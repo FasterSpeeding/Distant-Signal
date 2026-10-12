@@ -103,7 +103,7 @@ function ariaSort(field: SortField, sort: SortState | null): 'ascending' | 'desc
  * problems. */
 const NO_DATA_STATUS_RANK = -1;
 
-/** The "NO DATA" badge's tooltip reason (Task 3.4.1). Mirrors the numeric
+/** The "No data" badge's tooltip reason (Task 3.4.1). Mirrors the numeric
  * columns' own `representative ? sampleUnavailableReason(representative) :
  * <plain dash>` shape immediately below for the same reason -- `worst` and
  * `representative` are both derived from the same possibly-absent
@@ -346,7 +346,7 @@ export function AllLinesTable({
     // AND-combined with the other three filters, same posture: a
     // severity-group filter answers a different question (what state is
     // the line in right now) than operator/country/name do. `row.worst` is
-    // `undefined` for a line with no computed status at all ("NO DATA" in
+    // `undefined` for a line with no computed status at all ("No data" in
     // the table below) -- such a row cannot match any specific bucket, and
     // is only ever visible under "All statuses".
     if (statusGroupFilter) {
@@ -620,11 +620,11 @@ export function AllLinesTable({
                     // ellipsis truncation, the same fix `/lines/[id]`'s own
                     // "No status yet" badge and `StatusBadge` itself already
                     // rely on (see app/globals.css's `[data-status-badge]`
-                    // rule) -- otherwise "NO DATA" clips to "N…" in this same
+                    // rule) -- otherwise "No data" clips to "N…" in this same
                     // table at narrow widths.
                     <Tooltip label={noStatusReason(representative)}>
                       <Badge tt="none" color="gray" variant="outline" data-status-badge>
-                        NO DATA
+                        No data
                       </Badge>
                     </Tooltip>
                   )}

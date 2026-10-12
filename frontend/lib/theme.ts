@@ -185,14 +185,11 @@ export const theme = createTheme({
   // including the shallow-merge caveat: a `Drawer` that passes
   // `closeButtonProps` at all replaces this object wholesale.
   //
-  // No `Badge` default here, deliberately: the style guide's rule is not
-  // "never uppercase" but "sentence case for phrases and values with
-  // units" (`tt="none"` per call site), while the severity `StatusBadge`
-  // keeps Mantine's uppercase. A theme-wide `tt: 'none'` would also flip
-  // every short label and raw token (group roles, CRS/operator codes,
-  // "Real-Time") with no one choosing it, and a new badge would inherit
-  // whichever case the theme happened to say rather than the one its
-  // label needs.
+  // No `Badge` default here, deliberately: every badge is sentence case,
+  // the severity `StatusBadge` included ("Minor delays"), and each one
+  // says so itself with `tt="none"` so the case is visible at the call
+  // site and a new badge's author chooses it rather than inheriting
+  // whatever the theme happens to say.
   components: {
     Modal: {
       defaultProps: {

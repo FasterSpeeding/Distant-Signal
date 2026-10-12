@@ -32,7 +32,7 @@ describe('LineStatusCard', () => {
 
   it('renders the worst status badge', () => {
     renderWithMantine(<LineStatusCard report={report} />);
-    expect(screen.getByText('Minor Delays')).toBeInTheDocument();
+    expect(screen.getByText('Minor delays')).toBeInTheDocument();
   });
 
   it('renders the status reason', () => {
@@ -57,7 +57,7 @@ describe('LineStatusCard', () => {
         }}
       />,
     );
-    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(screen.getByText('Good service')).toBeInTheDocument();
     expect(document.querySelector('[data-upcoming]')?.textContent).toBe(
       'Upcoming: Sun 11 Oct, Industrial action on Sunday 11 October',
     );
@@ -65,7 +65,7 @@ describe('LineStatusCard', () => {
 
   it('renders a Good Service badge when there are no statuses', () => {
     renderWithMantine(<LineStatusCard report={{ ...report, lineStatuses: [] }} />);
-    expect(screen.getByText('Good Service')).toBeInTheDocument();
+    expect(screen.getByText('Good service')).toBeInTheDocument();
   });
 
   it('picks the more severe status when statusSeverity is not monotonic with severity', () => {

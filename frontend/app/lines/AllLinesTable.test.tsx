@@ -321,10 +321,15 @@ describe('AllLinesTable', () => {
 // whose report just has an empty `lineStatuses`; see `worstStatus`, which
 // never itself returns undefined for a real report).
 describe('AllLinesTable "NO DATA" status badge', () => {
-  it('renders a grey "NO DATA" badge, with a reason tooltip, for a line with no report at all', async () => {
+  it('renders a grey "No data" badge, with a reason tooltip, for a line with no report at all', async () => {
     renderTable();
     const row = screen.getByText('South Western').closest('tr')!;
-    expect(within(row).getByText('NO DATA')).toBeInTheDocument();
+    // The numeric cells' en dashes also read "No data" (visually hidden).
+    const badgeRoot = within(row)
+      .getAllByText('No data')
+      .map((el) => el.closest('.mantine-Badge-root'))
+      .find((el) => el !== null)!;
+    expect(badgeRoot).toBeInTheDocument();
 
     // Mantine `Tooltip` binds its hover listeners to the wrapped child's
     // own root node -- `Badge` renders its visible text in a nested
@@ -334,7 +339,6 @@ describe('AllLinesTable "NO DATA" status badge', () => {
     // `Tooltip`+`Badge` repro; every other Tooltip+`Text` pair elsewhere in
     // this file doesn't hit this because `Text` itself is the wrapped
     // root, with no further nesting).
-    const badgeRoot = within(row).getByText('NO DATA').closest('.mantine-Badge-root')!;
     fireEvent.mouseEnter(badgeRoot);
     expect(await screen.findByRole('tooltip')).toHaveTextContent('No status has been computed for this line yet.');
   });
@@ -489,7 +493,7 @@ describe('AllLinesTable responsive columns', () => {
 
   it('renders the full status label, never an ellipsized stub', () => {
     renderMobileTable();
-    expect(screen.getByText('Severe Delays')).toBeInTheDocument();
+    expect(screen.getByText('Severe delays')).toBeInTheDocument();
   });
 
   it('hides the numeric columns below the sm breakpoint', () => {
