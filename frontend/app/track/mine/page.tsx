@@ -3,7 +3,7 @@ import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
 import { ReliabilityDigest } from '@/components/ReliabilityDigest';
@@ -110,7 +110,7 @@ export default async function MyTrackedTrainsPage() {
             pre-hydration visitor sees this sentence even though it can
             never run the client-only AutoOpenLoginPrompt modal below,
             which stays as progressive enhancement on top of it. */}
-        <LoginLink underline="always">Log in to see the trains and tickets you&apos;re tracking</LoginLink>
+        <LoginControl underline="always">Log in to see the trains and tickets you&apos;re tracking</LoginControl>
         <AutoOpenLoginPrompt>Log in to see the trains and tickets you&apos;re tracking.</AutoOpenLoginPrompt>
       </Stack>
     );

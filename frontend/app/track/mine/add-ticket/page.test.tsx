@@ -34,7 +34,7 @@ describe('AddTicketPage', () => {
     expect(screen.queryByRole('combobox', { name: 'Operator (optional)' })).not.toBeInTheDocument();
   });
 
-  it('not logged in: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
+  it('not logged in: also renders a server-rendered LoginControl, not just the client-only modal', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(session(false));
     renderWithMantine(await AddTicketPage());
 

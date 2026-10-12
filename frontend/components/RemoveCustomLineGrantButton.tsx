@@ -1,12 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Modal, Text, Group } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** Stops sharing a custom line with a group -- the member who shared it
  * (always the line's owner), or any `admin`/`owner`, may click this (the
@@ -30,62 +24,20 @@ export function RemoveCustomLineGrantButton({
   lineId: string;
   lineName: string;
 }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [removing, setRemoving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleRemove() {
-    setRemoving(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/groups/${groupId}/lines/custom/${encodeURIComponent(lineId)}`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) {
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('remove', 'this line from the group', response));
-        }
-        setRemoving(false);
-        return;
-      }
-      close();
-      router.refresh();
-    } catch {
-      setError(describeFailure('remove', 'this line from the group'));
-      setRemoving(false);
-    }
-  }
-
   return (
-    <>
-      <Button variant="subtle" color="red" size="xs" onClick={open}>
-        Stop sharing
-      </Button>
-      <Modal opened={opened} onClose={close} title="Stop sharing this line with the group?">
-        <Text size="sm">
-          Group members will no longer be able to see {lineName}. The line itself isn&apos;t deleted or changed.
-        </Text>
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to stop sharing this line</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={removing}>
-            Cancel
-          </Button>
-          <Button
-            color="red"
-            onClick={handleRemove}
-            loading={removing}
-            aria-label="Confirm stop sharing line with group"
-          >
-            Stop sharing
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Stop sharing"
+      actionName="stop sharing line"
+      title="Stop sharing this line with the group?"
+      request={() =>
+        fetch(`/api/groups/${groupId}/lines/custom/${encodeURIComponent(lineId)}`, {
+          method: 'DELETE',
+        })
+      }
+      failure={['remove', 'this line from the group']}
+      loginPrompt="Log in to stop sharing this line"
+    >
+      {`Group members will no longer be able to see ${lineName}. The line itself isn't deleted or changed.`}
+    </ConfirmActionButton>
   );
 }

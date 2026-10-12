@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ActionIcon, Button, Card, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { CheckIcon } from './CheckIcon';
 import { ShareIcon } from './ShareIcon';
 import { formatDate } from '@/lib/dateFormat';
@@ -177,7 +177,9 @@ export function GroupInviteLinkCard({
           </Text>
         )}
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to manage this invite link</LoginLink>}
+        {needsLoginState.needsLogin && (
+          <LoginControl underline="always">Log in to manage this invite link</LoginControl>
+        )}
         <Group gap="xs">
           <Button variant="default" size="xs" onClick={regenerate} loading={busy}>
             Regenerate

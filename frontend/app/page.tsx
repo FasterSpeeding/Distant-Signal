@@ -17,7 +17,7 @@ import {
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
@@ -302,7 +302,7 @@ export default async function DashboardPage() {
               wait for a failed pin click the way PinToggle does elsewhere.
               §Policy's Tier-2 "proactive where session is already fetched"
               refinement. */}
-          <LoginLink underline="always">Log in to pin your lines, stations and operators</LoginLink>
+          <LoginControl underline="always">Log in to pin your lines, stations and operators</LoginControl>
         </Group>
       </Stack>
     );

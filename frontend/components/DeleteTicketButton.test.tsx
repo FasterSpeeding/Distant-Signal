@@ -33,8 +33,8 @@ describe('DeleteTicketButton', () => {
 
     renderWithMantine(<DeleteTicketButton ticketId={5} />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete ticket' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete ticket' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Train/tickets/5', { method: 'DELETE' });
@@ -48,8 +48,8 @@ describe('DeleteTicketButton', () => {
 
     renderWithMantine(<DeleteTicketButton ticketId={5} />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete ticket' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete ticket' }));
 
     await waitFor(() => {
       expect(screen.getByText("Couldn't delete this ticket. It may have been removed.")).toBeInTheDocument();
@@ -67,8 +67,8 @@ describe('DeleteTicketButton', () => {
 
     renderWithMantine(<DeleteTicketButton ticketId={5} />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete ticket' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete ticket' }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to delete this ticket' });
     expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine');

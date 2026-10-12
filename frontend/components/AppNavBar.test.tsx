@@ -6,7 +6,7 @@ import { AppNavBar } from './AppNavBar';
 import { PLAN_JOURNEY_DESTINATION, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
-// LoginLink / AccountMenu / AppNavDrawer all reach for App Router hooks
+// LoginControl / AccountMenu / AppNavDrawer all reach for App Router hooks
 // that throw outside a real Next.js tree -- same stub as the rest of this
 // directory's tests.
 // Mutable so the active-state cases below can put the visitor on a page.
@@ -221,7 +221,7 @@ describe('AppNavBar', () => {
 
 // I4 regression guard (2026-09-17 whole-branch review): commit 5fcc5686
 // fixed the auth Suspense fallback's colour to match the resolved
-// `<LoginLink>`'s (both render the literal string "Log in", and the
+// `<LoginControl>`'s (both render the literal string "Log in", and the
 // boundary is identical on every route, so a mismatch here is purely a
 // function of streaming timing, not anything route-specific) and added a
 // regression test pinning the two equal -- that test lived in
@@ -229,7 +229,7 @@ describe('AppNavBar', () => {
 // when the nav bar was extracted into this file. The fallback itself also
 // silently reverted to `c="dimmed"` in the same rewrite.
 describe('auth Suspense fallback colour', () => {
-  it("uses the same colour token LoginLink/TextLink resolve to ('anchor'), not a separate grey", () => {
+  it("uses the same colour token LoginControl/TextLink resolve to ('anchor'), not a separate grey", () => {
     // Source-text comparison, not a rendered-DOM one: `AuthStatus` never
     // actually suspends in a test (it takes an already-resolved `session`
     // prop), so the only way to observe this Suspense boundary's fallback

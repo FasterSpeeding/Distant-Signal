@@ -24,13 +24,13 @@ describe('ChatPage', () => {
   it('renders a login prompt for an unauthenticated visitor', async () => {
     vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'unauthenticated' });
     renderWithMantine(await ChatPage());
-    // Two matches now: the server-rendered LoginLink sentence and the
+    // Two matches now: the server-rendered LoginControl sentence and the
     // AutoOpenLoginPrompt modal's own copy of it -- see the dedicated
-    // LoginLink assertion below for the inline one specifically.
+    // LoginControl assertion below for the inline one specifically.
     expect(screen.getAllByText(/Log in to ask about live departures/).length).toBeGreaterThan(0);
   });
 
-  it('unauthenticated: also renders a server-rendered LoginLink, not just the client-only modal', async () => {
+  it('unauthenticated: also renders a server-rendered LoginControl, not just the client-only modal', async () => {
     vi.mocked(api.getChatbotAccess).mockResolvedValue({ status: 'unauthenticated' });
     renderWithMantine(await ChatPage());
     const link = screen.getByRole('link', {

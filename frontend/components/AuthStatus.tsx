@@ -1,4 +1,4 @@
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { AccountMenu } from './AccountMenu';
 import { accountMenuDestinations } from '@/lib/navLinks';
 import type { SessionInfo } from '@/lib/types';
@@ -9,7 +9,7 @@ import type { SessionInfo } from '@/lib/types';
  * `getSession()` call the whole nav makes. That is the same
  * fetch-above/render-below split `DataFreshnessInfo` uses for its own
  * `freshness` prop, and the same one this component in turn applies to
- * `AccountMenu` below. Only the interactive leaves (`LoginLink`,
+ * `AccountMenu` below. Only the interactive leaves (`LoginControl`,
  * `AccountMenu`) need `'use client'`; the branch between them is a
  * server-side decision, so it stays here.
  *
@@ -39,7 +39,7 @@ export function AuthStatus({
   chatAllowed?: boolean;
 }) {
   if (!session.authenticated) {
-    // `size="sm"` (14px), not `LoginLink`'s own Mantine-`Text`-default 16px:
+    // `size="sm"` (14px), not `LoginControl`'s own Mantine-`Text`-default 16px:
     // review §2.16 named this as one leg of "auth controls are
     // inconsistently sized" (a 16px "Log in" beside a ~12px "Log out"), and
     // 14px is where the OTHER leg -- "Log out", now a `Menu.Item` inside
@@ -49,7 +49,7 @@ export function AuthStatus({
     // traces to). Converging here, rather than bumping "Log out" up to
     // match a 16px "Log in", keeps the footer's own text-link-styled
     // control (`OpenDataAttribution.tsx`) at the same size too.
-    return <LoginLink size="sm">Log in</LoginLink>;
+    return <LoginControl size="sm">Log in</LoginControl>;
   }
 
   // `?.trim() ||`, not `??`: an identity provider with no name on file for

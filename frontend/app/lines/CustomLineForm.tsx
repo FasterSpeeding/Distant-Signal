@@ -359,7 +359,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           and `/lines/[id]/edit` share. */}
       {existingLine && (
         <Group justify="center">
-          <DeleteLineButton id={existingLine.id} trigger="link" />
+          <DeleteLineButton id={existingLine.id} />
         </Group>
       )}
     </Stack>

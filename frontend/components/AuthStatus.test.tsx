@@ -4,7 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import { AuthStatus } from './AuthStatus';
 import type { SessionInfo } from '@/lib/types';
 
-// `LoginLink` calls usePathname()/useSearchParams() and `AccountMenu`
+// `LoginControl` calls usePathname()/useSearchParams() and `AccountMenu`
 // (via useLogout) calls useRouter(), all of which throw "invariant
 // expected app router to be mounted" outside a real Next.js App Router
 // tree (as in these unit tests) — same stub PinToggle.test.tsx uses.

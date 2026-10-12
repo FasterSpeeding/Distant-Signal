@@ -23,7 +23,7 @@ describe('DeleteLineButton', () => {
   it('does not call DELETE until the confirmation modal is confirmed', () => {
     const fetchMock = vi.mocked(fetch);
     renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -32,9 +32,9 @@ describe('DeleteLineButton', () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
     renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete line' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete line' }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/lines/custom-my-commute', { method: 'DELETE' });
@@ -47,9 +47,9 @@ describe('DeleteLineButton', () => {
     fetchMock.mockResolvedValue(new Response('custom line not found', { status: 404 }));
 
     renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete line' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete line' }));
 
     await waitFor(() => {
       expect(screen.getByText("Couldn't delete this line. It may have been removed.")).toBeInTheDocument();
@@ -66,24 +66,13 @@ describe('DeleteLineButton', () => {
     fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
 
     renderWithMantine(<DeleteLineButton id="custom-my-commute" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete line' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete line' }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to delete a line' });
     expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Flines%2Fcustom-my-commute');
     expect(screen.queryByText('no session')).not.toBeInTheDocument();
     expect(pushMock).not.toHaveBeenCalled();
-  });
-
-  // Task 3.4.11: CustomLineForm's edit-mode footer wants a quieter text
-  // link rather than the detail page's heading-row `Button` -- same modal,
-  // same delete flow, different trigger.
-  it('renders a "Delete line" text trigger when trigger="link", opening the same modal', async () => {
-    renderWithMantine(<DeleteLineButton id="custom-my-commute" trigger="link" />);
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }));
-    expect(await screen.findByText('Delete this line?')).toBeInTheDocument();
   });
 });

@@ -288,7 +288,7 @@ export function AppNavBar({
             </Group>
             {/* This boundary is load-bearing and has nothing to do with
                 data fetching: the anonymous branch of `AuthStatus` is
-                `LoginLink`, which calls `useSearchParams()` (via
+                `LoginControl`, which calls `useSearchParams()` (via
                 `useLoginHref`, to carry a `return_to` through the OIDC
                 redirect). On a statically prerendered route that call
                 must sit under a `<Suspense>` or `next build` fails the
@@ -302,7 +302,7 @@ export function AppNavBar({
                 the containment has to live here, where both paths pass
                 through it. */}
             {/* `c="var(--mantine-color-anchor)"`, matching the resolved
-                `<LoginLink>`'s own colour (via `TextLink`) -- not
+                `<LoginControl>`'s own colour (via `TextLink`) -- not
                 `c="dimmed"`. Both render the exact same "Log in" string,
                 and this boundary is identical on every route, so a
                 mismatch here reads as the same text flipping colour

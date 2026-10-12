@@ -1,12 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Group, Modal, Text } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** Deletes a journey template the caller owns
  * (`DELETE /JourneyTemplates/{id}`). Every journey this template ever
@@ -23,55 +17,17 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
  * the list (Task 7) and the detail page (Task 8) and the detail page
  * itself is gone after a successful delete. */
 export function DeleteJourneyTemplateButton({ templateId }: { templateId: number }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleDelete() {
-    setDeleting(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/JourneyTemplates/${templateId}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('delete', 'this template', response));
-        }
-        setDeleting(false);
-        return;
-      }
-      router.push('/journeys/templates');
-    } catch {
-      setError(describeFailure('delete', 'this template'));
-      setDeleting(false);
-    }
-  }
-
   return (
-    <>
-      <Button variant="outline" color="red" size="xs" onClick={open}>
-        Delete template
-      </Button>
-      <Modal opened={opened} onClose={close} title="Delete this template?">
-        <Text>
-          This cannot be undone. Only the reusable template is deleted, not any journeys you&apos;ve already run from
-          it.
-        </Text>
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to delete this template</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={deleting}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleDelete} loading={deleting} aria-label="Confirm delete template">
-            Delete template
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Delete template"
+      actionName="delete template"
+      title="Delete this template?"
+      request={() => fetch(`/api/JourneyTemplates/${templateId}`, { method: 'DELETE' })}
+      failure={['delete', 'this template']}
+      loginPrompt="Log in to delete this template"
+      onSuccess={(router) => router.push('/journeys/templates')}
+    >
+      This cannot be undone. Only the reusable template is deleted, not any journeys you&apos;ve already run from it.
+    </ConfirmActionButton>
   );
 }

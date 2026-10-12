@@ -8,7 +8,7 @@ import {
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from '@/lib/api';
-import { LoginButton } from '@/components/LoginButton';
+import { LoginControl } from '@/components/LoginControl';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -79,8 +79,8 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
  * token to a group preview (works whether or not the visitor is logged in
  * -- `getGroupJoinPreview` hits the backend's unauthenticated preview
  * route), then either shows the explicit Join button (already
- * authenticated) or a login button. `LoginButton` (review §2.16 -- this
- * used to be `LoginLink`, an underlined text link with far less visual
+ * authenticated) or a login button. `LoginControl` (review §2.16 -- this
+ * used to be `LoginControl`, an underlined text link with far less visual
  * weight than the filled `JoinGroupButton` the authenticated branch below
  * renders, on the one page an invitee reaches *by definition* anonymous)
  * needs no extra plumbing to preserve this token through the OIDC redirect:
@@ -186,7 +186,9 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
       {session.authenticated ? (
         <JoinGroupButton token={token} groupId={preview.groupId} />
       ) : (
-        <LoginButton title="Log in (needs a Distant Signal account)">Log in to join {preview.groupName}</LoginButton>
+        <LoginControl variant="button" title="Log in (needs a Distant Signal account)">
+          Log in to join {preview.groupName}
+        </LoginControl>
       )}
     </Stack>
   );
