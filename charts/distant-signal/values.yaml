@@ -3230,8 +3230,8 @@ enricher:
       # -- LLM_BATCH_SWEEP_INTERVAL_SECS: the sweep's interval in `batch`
       # and `batch-only`. Empty: 120 (batch) or 300 (batch-only).
       sweepIntervalSecs: ""
-      # -- LLM_SWEEP_MODE (mode `normal` only): `sync` (default; one
-      # incident at a time, as the stream loop) or `batch` (the hourly
+      # -- LLM_SWEEP_MODE (mode `normal` only): `sync` (default; up to
+      # LLM_MAX_IN_FLIGHT incidents at a time) or `batch` (the hourly
       # sweep submits Claude Message Batches at half price; results usually
       # within an hour, at most 24 h). The stream loop and reclaim stay
       # synchronous.

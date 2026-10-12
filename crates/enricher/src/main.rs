@@ -232,6 +232,7 @@ async fn run() -> anyhow::Result<()> {
         in_flight: InFlight::default(),
         carry_forward_noops: config.carry_forward_semantic_noops,
         batch: batch_settings,
+        sweep_concurrency: sweep_concurrency(config.provider.llm_max_in_flight),
     });
     if enricher.carry_forward_noops {
         tracing::info!(
@@ -347,6 +348,17 @@ struct Enricher {
     /// `LLM_MODE=batch`/`batch-only`, or `LLM_SWEEP_MODE=batch` (default
     /// off): the sweep submits Message Batches (`batch.rs`).
     batch: Option<batch::BatchSettings>,
+    /// How many incidents the synchronous sweep extracts at once
+    /// ([`sweep_concurrency`]).
+    sweep_concurrency: usize,
+}
+
+/// The synchronous sweep's concurrency: `LLM_MAX_IN_FLIGHT` (3 in prod), or
+/// one incident at a time when it is unset, as before. The same setting caps
+/// the HTTP attempts across all three loops (`LlmClient`'s `in_flight`
+/// semaphore), so running more incidents than that would only queue them.
+fn sweep_concurrency(max_in_flight: Option<usize>) -> usize {
+    max_in_flight.unwrap_or(1).max(1)
 }
 
 impl Enricher {
@@ -645,21 +657,49 @@ async fn sweep_loop(enricher: Arc<Enricher>, interval_secs: u64) {
     }
 }
 
-/// Processes one sweep's worth of incident ids; returns how many were
-/// skipped because another loop was already processing them.
+/// Processes one sweep's worth of incident ids, up to
+/// `enricher.sweep_concurrency` at once; returns how many were skipped
+/// because another loop was already processing them.
+///
+/// Each incident goes through `process_exclusive` exactly as before: the
+/// same `InFlight` claim (so a concurrent stream/reclaim attempt and the
+/// sweep never overlap on one incident), the same per-text backoff, metrics
+/// and per-incident error handling (a failure is logged and left for the
+/// next sweep, never stopping the others). The LLM client's `in_flight`
+/// semaphore still caps the HTTP attempts across all loops, and each call
+/// keeps its own 429/gateway retry budget.
 async fn sweep_ids(enricher: &Enricher, ids: &[String]) -> usize {
-    let mut skipped = 0;
-    for id in ids {
-        if enricher
-            .process_exclusive(id, latency::Path::Sweep)
-            .await
-            .is_none()
-        {
-            record_in_flight_skip("sweep", id);
-            skipped += 1;
-        }
+    // Collected first: a closure inside the stream's type trips the
+    // compiler's `Send` inference for the spawned sweep loop.
+    let attempts: Vec<_> = ids.iter().map(|id| sweep_one(enricher, id)).collect();
+    count_concurrently(attempts, enricher.sweep_concurrency).await
+}
+
+/// One sweep attempt; `true` when it was skipped as in flight elsewhere.
+async fn sweep_one(enricher: &Enricher, incident_id: &str) -> bool {
+    if enricher
+        .process_exclusive(incident_id, latency::Path::Sweep)
+        .await
+        .is_none()
+    {
+        record_in_flight_skip("sweep", incident_id);
+        true
+    } else {
+        false
     }
-    skipped
+}
+
+/// Runs `futures` in order, at most `limit` at once, and counts the `true`s.
+async fn count_concurrently<Fut>(futures: Vec<Fut>, limit: usize) -> usize
+where
+    Fut: Future<Output = bool>,
+{
+    use futures_util::StreamExt as _;
+    let results: Vec<bool> = futures_util::stream::iter(futures)
+        .buffer_unordered(limit.max(1))
+        .collect()
+        .await;
+    results.into_iter().filter(|hit| *hit).count()
 }
 
 /// Records one LLM call's duration and outcome. `call` names the call site
@@ -1400,6 +1440,7 @@ mod tests {
             in_flight: InFlight::default(),
             carry_forward_noops,
             batch: None,
+            sweep_concurrency: 1,
         }
     }
 
@@ -1787,6 +1828,11 @@ mod tests {
 
     /// Mounts a one-period answer for all three passes.
     async fn mount_flat_extraction(server: &MockServer) {
+        mount_flat_extraction_delayed(server, Duration::ZERO).await;
+    }
+
+    /// [`mount_flat_extraction`], each answer `delay` late.
+    async fn mount_flat_extraction_delayed(server: &MockServer, delay: Duration) {
         let answers = [
             (
                 "incident_extraction",
@@ -1810,11 +1856,155 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/chat/completions"))
                 .and(body_string_contains(schema))
-                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "choices": [{ "message": { "content": content.to_string() } }]
-                })))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({
+                            "choices": [{ "message": { "content": content.to_string() } }]
+                        }))
+                        .set_delay(delay),
+                )
                 .mount(server)
                 .await;
+        }
+    }
+
+    #[test]
+    fn sweep_concurrency_is_llm_max_in_flight_or_one() {
+        assert_eq!(sweep_concurrency(None), 1);
+        assert_eq!(sweep_concurrency(Some(0)), 1);
+        assert_eq!(sweep_concurrency(Some(3)), 3);
+    }
+
+    /// The sweep's driver runs every attempt, never more than `limit` at
+    /// once, and does reach `limit` when there is enough work.
+    #[tokio::test]
+    async fn count_concurrently_caps_and_fills_the_limit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for (count, limit) in [(10, 3), (2, 3), (5, 1)] {
+            let ids: Vec<String> = (0..count).map(|i| format!("I{i}")).collect();
+            let (current, peak, seen) = (
+                AtomicUsize::new(0),
+                AtomicUsize::new(0),
+                Mutex::new(Vec::new()),
+            );
+            let (current, peak, seen) = (&current, &peak, &seen);
+            let attempts: Vec<_> = ids
+                .iter()
+                .map(|id| async move {
+                    let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    current.fetch_sub(1, Ordering::SeqCst);
+                    seen.lock().unwrap().push(id.to_string());
+                    id.trim_start_matches('I').parse::<usize>().unwrap() % 2 == 1
+                })
+                .collect();
+            let odd = count_concurrently(attempts, limit).await;
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                limit.min(count),
+                "{count} ids, limit {limit}"
+            );
+            let mut seen = seen.lock().unwrap().clone();
+            seen.sort();
+            let mut want = ids.clone();
+            want.sort();
+            assert_eq!(seen, want, "every id runs exactly once");
+            assert_eq!(odd, count / 2, "the trues are counted");
+        }
+    }
+
+    /// With concurrency, a busy incident is still skipped (no DB, no LLM)
+    /// and the others are still attempted and released.
+    #[tokio::test]
+    async fn concurrent_sweep_still_skips_in_flight_incidents() {
+        let server = MockServer::start().await;
+        let mut enricher = test_enricher(unreachable_pool(), &server, "m@v", false);
+        enricher.sweep_concurrency = 3;
+        let _claim = enricher.in_flight.try_claim("B").unwrap();
+        let ids: Vec<String> = ["A", "B", "C", "D"].map(str::to_string).to_vec();
+        assert_eq!(sweep_ids(&enricher, &ids).await, 1);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        for id in ["A", "C", "D"] {
+            assert!(
+                enricher.in_flight.try_claim(id).is_some(),
+                "{id} was released"
+            );
+        }
+    }
+
+    /// With a real DB: a burst of stale incidents is extracted
+    /// `LLM_MAX_IN_FLIGHT` at a time (never more), every one written; an
+    /// incident already in flight elsewhere is skipped. Counts claims rather
+    /// than wall-clock time, so a loaded CI runner can't flake it.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p enricher concurrent_sweep -- --ignored --test-threads=1`"]
+    async fn concurrent_sweep_extracts_a_burst_in_parallel() {
+        let pool = test_pool().await;
+        let ids: Vec<String> = (0..6)
+            .map(|i| format!("TEST-ENRICHER-CONCURRENT-SWEEP-{i}"))
+            .collect();
+        let busy = "TEST-ENRICHER-CONCURRENT-SWEEP-BUSY";
+        for (i, id) in ids.iter().enumerate() {
+            seed_incident(&pool, id, &format!("Signal failure {i}"), "Lines closed.").await;
+        }
+        seed_incident(&pool, busy, "Points failure", "Lines closed.").await;
+        let server = MockServer::start().await;
+        let delay = Duration::from_millis(400);
+        mount_flat_extraction_delayed(&server, delay).await;
+        let model_version = "test-model@periods-v2";
+        let mut enricher = test_enricher(pool.clone(), &server, model_version, false);
+        enricher.llm = enricher.llm.with_provider_policy(llm::ProviderPolicy {
+            max_in_flight: Some(3),
+            ..llm::ProviderPolicy::default()
+        });
+        enricher.sweep_concurrency = sweep_concurrency(Some(3));
+        let claim = enricher.in_flight.try_claim(busy).unwrap();
+
+        let mut all = ids.clone();
+        all.push(busy.to_string());
+        // Samples how many incidents hold an `InFlight` claim (the busy
+        // one included) while the sweep runs.
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let watch = async {
+            let mut peak = 0;
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                peak = peak.max(enricher.in_flight.ids.lock().unwrap().len());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            peak
+        };
+        let sweep = async {
+            let skipped = sweep_ids(&enricher, &all).await;
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            skipped
+        };
+        let (skipped, peak) = tokio::join!(sweep, watch);
+        drop(claim);
+
+        assert_eq!(skipped, 1, "only the in-flight incident is skipped");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            3 * ids.len()
+        );
+        for id in &ids {
+            let (hash, version): (Option<String>, Option<String>) = sqlx::query_as(
+                "SELECT source_text_hash, extraction_model_version FROM incidents \
+                 WHERE incident_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(hash.is_some(), "{id} was written");
+            assert_eq!(version.as_deref(), Some(model_version));
+        }
+        // Each extraction takes at least 3 x 400 ms, so the 10 ms sampler
+        // sees three at once (plus the busy claim), and never more.
+        assert_eq!(peak, 3 + 1, "three sweep extractions at once, plus busy");
+
+        for id in ids.iter().map(String::as_str).chain([busy]) {
+            cleanup_incident(&pool, id).await;
         }
     }
 

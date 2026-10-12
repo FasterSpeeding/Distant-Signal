@@ -301,8 +301,8 @@ impl AnthropicConfig {
 /// set the sweep's behaviour themselves.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum SweepMode {
-    /// One incident at a time through the synchronous API, like the stream
-    /// loop (the default; the only mode before 2026-10).
+    /// Through the synchronous API, up to `LLM_MAX_IN_FLIGHT` incidents at
+    /// once (one when unset) -- the default; the only mode before 2026-10.
     #[default]
     Sync,
     /// Through the Claude Message Batches API (half price, results within

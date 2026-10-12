@@ -228,6 +228,24 @@ label on `enricher_extraction_rerun_total` and
 `enricher_extraction_churn_total` (`edit_class`). It applies on every path
 (stream, reclaim, sweep, and the batch preflight) and to both providers.
 
+## The synchronous sweep
+
+The sweep's synchronous extractions (`LLM_SWEEP_MODE=sync`, a batch-mode
+sweep below `LLM_BATCH_MIN_ITEMS`, and `LLM_MODE=batch` below the minimum)
+run up to `LLM_MAX_IN_FLIGHT` incidents at once (3 in prod), not one after
+another. Unset, they still run one at a time. In the tuning study a
+44-incident burst took about 9 minutes serially and takes about 3 at three
+at once.
+
+Nothing else changes per incident. Each one still takes the same
+`InFlight` claim, so the stream loop, reclaim and the sweep never extract
+the same incident at once. It still goes through the same preflight, the
+per-text backoff, metrics and error handling: a failure is logged and the
+incident is retried later, and the rest of the sweep carries on. HTTP
+requests stay capped at `LLM_MAX_IN_FLIGHT` across all three loops. Each
+call keeps its own `LLM_RATE_LIMIT_RETRIES` / `LLM_GATEWAY_RETRIES` budget;
+a 429 waits its `retry-after` without holding a request slot.
+
 ## LLM modes
 
 `LLM_MODE` (chart `enricher.llm.batch.mode`) decides where extractions run.
