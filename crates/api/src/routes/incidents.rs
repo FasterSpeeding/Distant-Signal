@@ -23,12 +23,18 @@ use serde_json::{Value, json};
 
 use crate::app::{App, Router};
 use crate::auth::OptionalAuthenticatedUser;
+use crate::data::config::LineCatalogue;
 use crate::data::custom_lines;
 use crate::data::queries;
+use crate::data::recently_cleared::{self, ExpectedEnd, Placement};
 
 pub fn router() -> Router {
     Router::new()
         .route("/incidents", axum::routing::get(search_incidents))
+        .route(
+            "/incidents/recently-cleared",
+            axum::routing::get(get_recently_cleared),
+        )
         .route("/incidents/{incidentId}", axum::routing::get(get_incident))
 }
 
@@ -340,6 +346,127 @@ async fn search_incidents(
     Ok(Json(json!({
         "results": page.results.iter().map(incident_summary_json).collect::<Vec<Value>>(),
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
+    })))
+}
+
+/// `GET /public/incidents/recently-cleared` query: at most one of a
+/// catalogue `line` id or a `station` code; neither is every item (the
+/// status page).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecentlyClearedParams {
+    line: Option<String>,
+    station: Option<String>,
+}
+
+/// Where the caller wants items from (`recently_cleared::Placement`). A
+/// line must be a catalogue line (`affected_lines` holds only those): an
+/// unknown, TfL or custom id is a `400`, as on `GET /public/incidents`. A
+/// station is placed through every catalogue line that calls there (as
+/// `GET /StopPoint/{crs}/Disruption` places live disruptions) plus its own
+/// code in `affected_stations`.
+fn recently_cleared_placement(
+    params: &RecentlyClearedParams,
+    lines: &LineCatalogue,
+) -> Result<Placement, (StatusCode, String)> {
+    let non_empty = |raw: &Option<String>| {
+        raw.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    match (non_empty(&params.line), non_empty(&params.station)) {
+        (Some(_), Some(_)) => Err((
+            StatusCode::BAD_REQUEST,
+            "use either line or station, not both".to_string(),
+        )),
+        (Some(line_id), None) => {
+            if lines.iter().any(|line| line.id == line_id) {
+                Ok(Placement::Matching {
+                    line_ids: vec![line_id],
+                    station: None,
+                })
+            } else {
+                Err((StatusCode::BAD_REQUEST, "unknown line".to_string()))
+            }
+        }
+        (None, Some(station)) => {
+            if station.len() != 3 || !station.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "station must be a three-letter station code".to_string(),
+                ));
+            }
+            let crs = station.to_ascii_uppercase();
+            Ok(Placement::Matching {
+                line_ids: lines
+                    .iter()
+                    .filter(|line| line.has_station(&crs))
+                    .map(|line| line.id.clone())
+                    .collect(),
+                station: Some(crs),
+            })
+        }
+        (None, None) => Ok(Placement::Everywhere),
+    }
+}
+
+/// One item of `GET /public/incidents/recently-cleared`; see
+/// docs/api-changelog.md (2026-10-12) for the shape. `affectedLines` names
+/// catalogue lines only (all `affected_lines` can hold), so no private
+/// custom line can appear.
+fn recently_cleared_json(
+    row: &recently_cleared::RecentlyClearedRow,
+    lines: &LineCatalogue,
+) -> Value {
+    let expected = match (
+        row.prior_summary.as_deref(),
+        row.prior_description.as_deref(),
+        row.prior_recorded_at,
+    ) {
+        (Some(summary), Some(description), Some(published_at)) => {
+            recently_cleared::expected_end(summary, description, published_at, row.cleared_at)
+        }
+        _ => None,
+    };
+    json!({
+        "incidentId": row.incident_id,
+        "summary": row.summary,
+        "description": row.description,
+        "operators": row.operators,
+        "affectedLines": row
+            .affected_lines
+            .iter()
+            .filter_map(|id| lines.iter().find(|line| &line.id == id))
+            .map(|line| json!({ "id": line.id, "name": line.name }))
+            .collect::<Vec<_>>(),
+        "clearedAt": row.cleared_at.to_rfc3339(),
+        "lastListedAt": row.fetched_at.to_rfc3339(),
+        "expectedUntil": match expected {
+            Some(ExpectedEnd::At(at)) => Some(at.to_rfc3339()),
+            _ => None,
+        },
+        "expectedUntilEndOfDay": expected == Some(ExpectedEnd::EndOfDay),
+    })
+}
+
+/// `GET /public/incidents/recently-cleared`: cleared incidents the feed
+/// still lists, cleared since today's 02:00, newest clear first
+/// (`data::recently_cleared`). Info only: nothing here changes a line's
+/// status. Unauthenticated and the same for every caller.
+async fn get_recently_cleared(
+    State(app): State<App>,
+    Query(params): Query<RecentlyClearedParams>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let placement = recently_cleared_placement(&params, &app.config.lines)?;
+    let rows = recently_cleared::recently_cleared(&app.database, chrono::Utc::now(), &placement)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(json!({
+        "results": rows
+            .iter()
+            .map(|row| recently_cleared_json(row, &app.config.lines))
+            .collect::<Vec<Value>>(),
     })))
 }
 
@@ -658,6 +785,150 @@ mod tests {
         );
     }
 
+    fn catalogue() -> LineCatalogue {
+        let line = |id: &str, name: &str, stations: &[&str]| common::LineDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            mode: "train".to_string(),
+            category: "main".to_string(),
+            operators: vec!["SW".to_string()],
+            stations: stations
+                .iter()
+                .map(|crs| common::Station {
+                    crs: (*crs).to_string(),
+                    tiploc: None,
+                    role: "principal".to_string(),
+                    segment: None,
+                })
+                .collect(),
+            sample_stations: vec![],
+            match_keywords: vec![],
+            excluded_keywords: vec![],
+            severity_overrides: std::collections::HashMap::new(),
+            destination_crs_filter: vec![],
+            headcode_prefixes: vec![],
+            full_coverage_enabled: false,
+            pass_through: Vec::new(),
+            crs_aliases: std::collections::BTreeMap::new(),
+            trunk_for: Vec::new(),
+        };
+        LineCatalogue(vec![
+            line("swml", "South West Main Line", &["WAT", "WOK"]),
+            line("portsmouth", "Portsmouth Direct", &["WOK", "GLD", "PMS"]),
+        ])
+    }
+
+    fn params(line: Option<&str>, station: Option<&str>) -> RecentlyClearedParams {
+        RecentlyClearedParams {
+            line: line.map(str::to_string),
+            station: station.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn recently_cleared_placement_by_line_station_or_everywhere() {
+        let lines = catalogue();
+        assert_eq!(
+            recently_cleared_placement(&params(None, None), &lines),
+            Ok(Placement::Everywhere)
+        );
+        assert_eq!(
+            recently_cleared_placement(&params(Some(" "), Some("")), &lines),
+            Ok(Placement::Everywhere)
+        );
+        assert_eq!(
+            recently_cleared_placement(&params(Some("swml"), None), &lines),
+            Ok(Placement::Matching {
+                line_ids: vec!["swml".to_string()],
+                station: None
+            })
+        );
+        assert_eq!(
+            recently_cleared_placement(&params(None, Some("wok")), &lines),
+            Ok(Placement::Matching {
+                line_ids: vec!["swml".to_string(), "portsmouth".to_string()],
+                station: Some("WOK".to_string())
+            }),
+            "every catalogue line through the station, and the code itself"
+        );
+        assert_eq!(
+            recently_cleared_placement(&params(None, Some("ZZZ")), &lines),
+            Ok(Placement::Matching {
+                line_ids: vec![],
+                station: Some("ZZZ".to_string())
+            })
+        );
+        for bad in [
+            params(Some("tfl-victoria"), None),
+            params(Some("custom-mine"), None),
+            params(None, Some("WOKI")),
+            params(None, Some("W1K")),
+            params(Some("swml"), Some("WOK")),
+        ] {
+            assert_eq!(
+                recently_cleared_placement(&bad, &lines).map_err(|(status, _)| status),
+                Err(StatusCode::BAD_REQUEST),
+                "{bad:?}"
+            );
+        }
+    }
+
+    fn cleared_row(prior_summary: Option<&str>) -> recently_cleared::RecentlyClearedRow {
+        recently_cleared::RecentlyClearedRow {
+            incident_id: "0071A58B".to_string(),
+            summary: "CLEARED: Residual disruption between Brockenhurst and Bournemouth"
+                .to_string(),
+            description: "<p>Disruption has now ended.</p>".to_string(),
+            operators: vec!["SW".to_string()],
+            affected_lines: vec!["portsmouth".to_string(), "not-in-catalogue".to_string()],
+            cleared_at: Utc.with_ymd_and_hms(2026, 10, 2, 20, 26, 0).unwrap(),
+            fetched_at: Utc.with_ymd_and_hms(2026, 10, 2, 22, 55, 0).unwrap(),
+            prior_summary: prior_summary.map(str::to_string),
+            prior_description: prior_summary.map(|_| "<p>Trains may be delayed.</p>".to_string()),
+            prior_recorded_at: prior_summary
+                .map(|_| Utc.with_ymd_and_hms(2026, 10, 2, 19, 0, 0).unwrap()),
+        }
+    }
+
+    #[test]
+    fn recently_cleared_renders_the_clear_and_the_stated_end() {
+        let lines = catalogue();
+        let json = recently_cleared_json(
+            &cleared_row(Some("Residual disruption expected until 22:30")),
+            &lines,
+        );
+        assert_eq!(json["incidentId"], "0071A58B");
+        assert_eq!(json["description"], "<p>Disruption has now ended.</p>");
+        assert_eq!(json["clearedAt"], "2026-10-02T20:26:00+00:00");
+        assert_eq!(json["lastListedAt"], "2026-10-02T22:55:00+00:00");
+        assert_eq!(
+            json["expectedUntil"], "2026-10-02T21:30:00+00:00",
+            "22:30 BST"
+        );
+        assert_eq!(json["expectedUntilEndOfDay"], false);
+        assert_eq!(
+            json["affectedLines"],
+            serde_json::json!([{ "id": "portsmouth", "name": "Portsmouth Direct" }]),
+            "catalogue lines only, by name"
+        );
+
+        let json = recently_cleared_json(
+            &cleared_row(Some("Disruption expected until the end of the day")),
+            &lines,
+        );
+        assert!(json["expectedUntil"].is_null());
+        assert_eq!(json["expectedUntilEndOfDay"], true);
+
+        for row in [
+            cleared_row(None),
+            cleared_row(Some("Signal failure at Woking")),
+        ] {
+            let json = recently_cleared_json(&row, &lines);
+            assert!(json["expectedUntil"].is_null(), "an explicit null");
+            assert_eq!(json["expectedUntilEndOfDay"], false);
+        }
+    }
+
     #[test]
     fn knowledgebase_source_matches_the_exact_format_correction_1_verified() {
         assert_eq!(
@@ -969,6 +1240,106 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("cleanup fixture line_status row");
+    }
+
+    /// The route end to end: placement by line and station, and only the
+    /// listed cleared rows. The window itself is
+    /// `data::recently_cleared::db_tests`'.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                recently_cleared -- --ignored --test-threads=1`"]
+    async fn recently_cleared_route_places_items_by_line_and_station() {
+        let pool = connect().await;
+        let delete_history = "DELETE FROM incident_history WHERE incident_id LIKE 'route-test-%'";
+        sqlx::query(delete_history)
+            .execute(&pool)
+            .await
+            .expect("cleanup history");
+        delete_fixtures(&pool).await;
+        let matcher = common::matcher::LineMatcher::new(&[]);
+        let cleared = |id: &str, summary: &str| common::IncidentMessage {
+            incident_id: id.to_string(),
+            summary: summary.to_string(),
+            description: format!("<p>{summary}.</p>"),
+            operators: vec!["VT".to_string()],
+            affected_stations: vec![],
+            priority: 2,
+            validity: vec![],
+            is_planned: false,
+            is_cleared: true,
+        };
+        let batch = vec![
+            cleared("route-test-cleared-1", "CLEARED: Disruption at Woking"),
+            cleared("route-test-cleared-2", "CLEARED: Disruption elsewhere"),
+        ];
+        ds_store::incidents::apply_snapshot(
+            &pool,
+            &matcher,
+            &batch,
+            ds_store::incidents::RowHeartbeat::On,
+        )
+        .await
+        .expect("apply snapshot");
+        sqlx::query(
+            "UPDATE incidents SET affected_lines = '{test-line}' \
+              WHERE incident_id = 'route-test-cleared-1'",
+        )
+        .execute(&pool)
+        .await
+        .expect("place one on the line");
+
+        let ids = |body: &str| -> Vec<String> {
+            let json: Value = serde_json::from_str(body).unwrap();
+            json["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["incidentId"].as_str())
+                .filter(|id| id.starts_with("route-test-"))
+                .map(str::to_string)
+                .collect()
+        };
+        for (uri, expected) in [
+            (
+                "/incidents/recently-cleared?line=test-line",
+                vec!["route-test-cleared-1"],
+            ),
+            (
+                "/incidents/recently-cleared?station=WOK",
+                vec!["route-test-cleared-1"],
+            ),
+            ("/incidents/recently-cleared?station=PAD", vec![]),
+        ] {
+            let (status, body) = get(&pool, vec![fixture_line()], uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+            assert_eq!(ids(&body), expected, "{uri}");
+        }
+        let (status, body) = get(&pool, vec![fixture_line()], "/incidents/recently-cleared").await;
+        assert_eq!(status, StatusCode::OK);
+        let mut all = ids(&body);
+        all.sort();
+        assert_eq!(all, vec!["route-test-cleared-1", "route-test-cleared-2"]);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        let item = json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["incidentId"] == "route-test-cleared-1")
+            .unwrap();
+        assert_eq!(item["affectedLines"][0]["name"], "Test Line");
+
+        let (status, _) = get(
+            &pool,
+            vec![fixture_line()],
+            "/incidents/recently-cleared?line=nope",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        sqlx::query(delete_history)
+            .execute(&pool)
+            .await
+            .expect("cleanup history");
+        delete_fixtures(&pool).await;
     }
 
     fn fixture_line() -> common::LineDefinition {

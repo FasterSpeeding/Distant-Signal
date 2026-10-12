@@ -3,6 +3,54 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-12: recently cleared incidents
+
+New endpoint, additive only: `GET /public/incidents/recently-cleared`.
+Unauthenticated; the same body for every caller.
+
+It lists National Rail incidents that the National Rail Knowledgebase has
+cleared but still lists, cleared since 02:00 UK time today, newest clear
+first. These are for information only: a cleared incident never affects a
+line's status. The feed purges cleared incidents nightly at about 23:00
+UTC, so the list is usually empty overnight.
+
+Query parameters (at most one):
+
+| Parameter | Meaning |
+| --- | --- |
+| `line` | A catalogue line ID. Incidents whose matched lines include it. An unknown, TfL or custom line ID is a `400` (`unknown line`). |
+| `station` | A 3-letter station code (any case). Incidents matched to any catalogue line that calls there, as `GET /StopPoint/{crs}/Disruption` places live disruptions. Anything else is a `400`. |
+| neither | Every recently cleared incident. |
+
+Both at once is a `400` (`use either line or station, not both`); so is
+any other parameter.
+
+Response: `{"results": [item, ...]}`, each item:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `incidentId` | string | As in `GET /public/incidents/{incidentId}`. |
+| `summary` | string | The clearing summary as published, often `CLEARED: ...`. |
+| `description` | string | The clearing text as published (HTML, usually "... has now ended"). |
+| `operators` | string[] | ATOC codes. |
+| `affectedLines` | `{id, name}[]` | The catalogue lines it was matched to. |
+| `clearedAt` | RFC 3339 | When DS first saw it cleared (the first history row of its current cleared run; a reopen starts a new one). |
+| `lastListedAt` | RFC 3339 | When the feed last listed it. |
+| `expectedUntil` | RFC 3339 or `null` | The end time the last uncleared text stated ("Disruption is expected until 22:30"), as an instant. Show it only while it is still in the future: then the incident cleared early. |
+| `expectedUntilEndOfDay` | boolean | The last uncleared text, published the same rail day, said "expected until the end of the day" (or "of service"). |
+
+The stated end is read from the text with a pattern over the
+Knowledgebase's own wording, not the AI summary. An end on a later day
+("until 04:00 on Tuesday 8 September") is not reported.
+
+Example: `{"results": [{"incidentId": "0071A58BD9B04B06B365FFBE1E02CD94",
+"summary": "CLEARED: Residual disruption between Brockenhurst and
+Bournemouth", "description": "<p>Disruption ... has now ended.</p>",
+"operators": ["SW"], "affectedLines": [{"id": "swr-south-west-main",
+"name": "South West Main Line"}], "clearedAt": "2026-10-02T21:26:00+00:00",
+"lastListedAt": "2026-10-02T22:55:12+00:00", "expectedUntil":
+"2026-10-02T21:30:00+00:00", "expectedUntilEndOfDay": false}]}`
+
 ## 2026-10-10: no em dashes in API-written text
 
 No shape changes. Text the API and aggregator write themselves no longer

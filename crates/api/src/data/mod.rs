@@ -26,6 +26,7 @@ pub mod notifier_forward_queue;
 pub mod operators;
 pub mod preferences;
 pub mod queries;
+pub mod recently_cleared;
 pub mod reconciliation;
 pub mod reference;
 pub mod retention;
