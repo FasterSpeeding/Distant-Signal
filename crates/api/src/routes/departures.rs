@@ -99,7 +99,7 @@ async fn get_station_departures(
         Some(code) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                format!("callingAt must be a 3-letter CRS code, got: {code:?}"),
+                format!("callingAt must be a 3-letter station code, got: {code:?}"),
             ));
         }
     };

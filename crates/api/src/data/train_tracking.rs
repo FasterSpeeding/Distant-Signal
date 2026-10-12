@@ -55,7 +55,7 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
     }
     if !crate::routes::is_crs_code(&pin.origin_crs) {
         return Err(
-            "That doesn't look like a station code. CRS codes are three letters, like WOK \
+            "That doesn't look like a station code. Station codes are three letters, like WOK \
              or EUS."
                 .to_string(),
         );
@@ -83,7 +83,7 @@ pub fn validate_pin(pin: &TrackPinRequest, now: DateTime<Utc>) -> Result<(), Str
         && !crate::routes::is_crs_code(crs)
     {
         return Err(
-            "That doesn't look like a destination station code. CRS codes are three \
+            "That doesn't look like a destination station code. Station codes are three \
              letters, like WOK or EUS."
                 .to_string(),
         );
@@ -504,7 +504,7 @@ pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
         && crs.len() != 3
     {
         return Err(
-            "That doesn't look like a station code. CRS codes are three letters, like WOK \
+            "That doesn't look like a station code. Station codes are three letters, like WOK \
              or EUS."
                 .to_string(),
         );
@@ -513,7 +513,7 @@ pub fn validate_ticket_entry(entry: &TicketEntryRequest) -> Result<(), String> {
         && crs.len() != 3
     {
         return Err(
-            "That doesn't look like a destination station code. CRS codes are three \
+            "That doesn't look like a destination station code. Station codes are three \
              letters, like WOK or EUS."
                 .to_string(),
         );

@@ -4469,17 +4469,14 @@ mod db_tests {
 
         // 400s, consistent with waypoints and the avoid lists.
         for (query, needle) in [
-            ("&via=ZZQ", "not a recognised station CRS code"),
+            ("&via=ZZQ", "not a recognised station code"),
             ("&via=ZVA", "the origin"),
             ("&via=ZVC", "the destination"),
             ("&via=ZVP&avoid=ZVP", "also in avoid"),
             ("&via=ZVP,ZVP", "twice in a row"),
             ("&via=ZVP,ZVX,ZVP,ZVX", "too many via"),
             // OR choices (2026-10-07).
-            (
-                "&via=ZZQ%7CZVP",
-                "'ZZQ' is not a recognised station CRS code",
-            ),
+            ("&via=ZZQ%7CZVP", "'ZZQ' is not a recognised station code"),
             ("&via=group:NOPE", "not a known station group"),
             ("&via=ZVX%7CZVP&avoid=ZVX,ZVP", "every station of 'ZVX|ZVP'"),
             ("&via=ZVP%7CZVX,zvx%7Czvp", "twice in a row"),
@@ -4680,7 +4677,7 @@ mod db_tests {
         for (query, needle) in [
             (
                 "&waypoints=ZZQ%7CZG1",
-                "'ZZQ' is not a recognised station CRS code",
+                "'ZZQ' is not a recognised station code",
             ),
             ("&waypoints=group:NOPE", "not a known station group"),
             (

@@ -391,13 +391,11 @@ fn resolve_segment_tiplocs(
     let from_tiplocs = lookup(origin_crs);
     let to_tiplocs = lookup(destination_crs);
     if from_tiplocs.is_empty() {
-        return Err(format!(
-            "'{origin_crs}' is not a recognised station CRS code"
-        ));
+        return Err(format!("'{origin_crs}' is not a recognised station code"));
     }
     if to_tiplocs.is_empty() {
         return Err(format!(
-            "'{destination_crs}' is not a recognised station CRS code"
+            "'{destination_crs}' is not a recognised station code"
         ));
     }
     Ok((from_tiplocs, to_tiplocs))
@@ -950,9 +948,7 @@ pub fn build_restrictions(
             match interchange.crs_to_tiplocs.get(code) {
                 Some(found) if !found.is_empty() => tiplocs.extend(found.iter().cloned()),
                 _ => {
-                    return Err(format!(
-                        "{name}: '{code}' is not a recognised station CRS code"
-                    ));
+                    return Err(format!("{name}: '{code}' is not a recognised station code"));
                 }
             }
         }
@@ -1055,9 +1051,7 @@ pub fn build_vias(
             match interchange.crs_to_tiplocs.get(code) {
                 Some(found) if !found.is_empty() => tiplocs.extend(found.iter().cloned()),
                 _ => {
-                    return Err(format!(
-                        "via: '{code}' is not a recognised station CRS code"
-                    ));
+                    return Err(format!("via: '{code}' is not a recognised station code"));
                 }
             }
         }
@@ -1218,7 +1212,7 @@ fn resolve_code_tiplocs(interchange: &InterchangeData, code: &str) -> Result<Vec
         .cloned()
         .unwrap_or_default();
     if tiplocs.is_empty() {
-        return Err(format!("'{code}' is not a recognised station CRS code"));
+        return Err(format!("'{code}' is not a recognised station code"));
     }
     Ok(tiplocs)
 }
@@ -1362,7 +1356,7 @@ pub fn check_adjacent_waypoints(labels: &[String], codes: &[Vec<String>]) -> Res
 /// independent ordered lists; a via may fall in any segment. Each journey
 /// reports which leg passed each via ([`ViaSatisfied`]).
 ///
-/// Every segment's CRS codes are validated before any search, so a bad
+/// Every segment's Station codes are validated before any search, so a bad
 /// code is a 400 naming the first segment that has one. A waypoint equal to
 /// the origin, the destination or the waypoint before it is a 400 too, and
 /// so is a via equal to the origin or the destination.
@@ -4048,8 +4042,8 @@ mod tests {
         for (via, needle) in [
             ("EUS", "the origin"),
             ("MAN", "the destination"),
-            ("ZZZ", "not a recognised station CRS code"),
-            ("LON", "not a recognised station CRS code"),
+            ("ZZZ", "not a recognised station code"),
+            ("LON", "not a recognised station code"),
         ] {
             let err = plan_vias(
                 &connections,
