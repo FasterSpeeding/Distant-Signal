@@ -37,13 +37,10 @@ For local development, see `docker-compose.yml` (its header explains the
 `local.env` / `dev.env` modes). For a real deployment, see
 `charts/distant-signal/README.md` for the Helm chart.
 
-By default the local producers still POST to the api's `/private/*` routes.
-To run the ingest paths production moves to (an `ingest-writer`, and every
-producer writing Postgres or a Redis stream directly), append
-`:docker-compose.direct.yml` to `COMPOSE_FILE` in your `local.env` or
-`dev.env`; see that file's header and the comment beside `COMPOSE_FILE` in
-either `*.env.example`. That overlay becomes the default when ingest phase 5
-removes the HTTP paths (`docs/ingest-phase5-runbook.md`, step 5.3b).
+Local dev runs the ingest paths production runs: an `ingest-writer`, and
+every producer writing Postgres or a Redis stream directly (ingest phase 5,
+release B, removed the api's `/private/*` routes; see the "Ingest" note in
+`docker-compose.yml`'s header and `docs/ingest-phase5-runbook.md`).
 
 ## Scripts and their lint
 

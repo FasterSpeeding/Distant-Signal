@@ -122,6 +122,28 @@ services:
         - action: rebuild
           path: ./Cargo.lock
 
+  ingest-writer:
+    build:
+      args:
+        CARGO_PROFILE: debug
+    develop:
+      watch:
+        - action: rebuild
+          path: ./crates/ingest-writer
+        - action: rebuild
+          path: ./crates/ds-store
+        - action: rebuild
+          path: ./crates/common
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
+
+  api-maintenance:
+    build:
+      args:
+        CARGO_PROFILE: debug
+
   aggregator:
     build:
       args:

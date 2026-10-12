@@ -1,4 +1,5 @@
-# Local stack: postgres + redis + api + the four RDM pollers + poller-tfl +
+# Local stack: postgres + redis + api (+ api-maintenance) + ingest-writer +
+# the four RDM pollers + poller-tfl +
 # aggregator + notifier + enricher + the TRUST pipeline (movement-relay,
 # trust-consumer, full-coverage-consumer, trust-backlog-consumer) + the
 # schedule feed (schedule-sftp, schedule-ingest, schedule-reference) +
@@ -65,6 +66,22 @@
 # Data Marketplace endpoint or credential; see `local.env.example` for why
 # the RDM_*_BASE_URL placeholders are deliberately non-functional
 # (`*.example.invalid`).
+#
+# Ingest (release B, ingest phase 5: local dev mirrors production). No
+# producer calls the api: poller-incidents, poller-stations, trust-consumer,
+# trust-backlog-consumer, schedule-ingest and schedule-reference write the
+# local Postgres directly; poller-tocs, poller-tfl, poller-ldbws and
+# full-coverage-consumer XADD to their ds:ingest:* streams, which the
+# `ingest-writer` service applies; the readers (trust-consumer,
+# full-coverage-consumer, poller-ldbws) read Postgres. The api runs no
+# background loops (the writer and `api-maintenance` do). Everything
+# connects as the local superuser (POSTGRES_USER) and Redis's default user:
+# the per-service roles and Redis ACL users the chart demands are
+# render-time chart checks, not checks in the binaries, and CI's per-role
+# suites (scripts/test-postgres-roles.py --mode per-service) cover the
+# grants. A superuser also bypasses line_status's row policy for the writer.
+
+x-direct-database-url: &direct-database-url postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
 
 services:
   postgres:
@@ -111,15 +128,12 @@ services:
       BIND_URL: 0.0.0.0:8080
       INTERNAL_OAUTH_ISSUER_URL: ${INTERNAL_OAUTH_ISSUER_URL:?INTERNAL_OAUTH_ISSUER_URL must be set — see the internal-oauth section of local.env.example}
       INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_GROUP_INCIDENTS: ${INTERNAL_OAUTH_GROUP_INCIDENTS:-svc-poller-incidents}
-      INTERNAL_OAUTH_GROUP_STATIONS: ${INTERNAL_OAUTH_GROUP_STATIONS:-svc-poller-stations}
-      INTERNAL_OAUTH_GROUP_TOCS: ${INTERNAL_OAUTH_GROUP_TOCS:-svc-poller-tocs}
-      INTERNAL_OAUTH_GROUP_LDBWS: ${INTERNAL_OAUTH_GROUP_LDBWS:-svc-poller-ldbws}
-      INTERNAL_OAUTH_GROUP_TFL: ${INTERNAL_OAUTH_GROUP_TFL:-svc-poller-tfl}
-      INTERNAL_OAUTH_GROUP_TRUST_CONSUMER: ${INTERNAL_OAUTH_GROUP_TRUST_CONSUMER:-svc-trust-consumer}
-      INTERNAL_OAUTH_GROUP_SCHEDULE_INGEST: ${INTERNAL_OAUTH_GROUP_SCHEDULE_INGEST:-svc-schedule-ingest}
-      INTERNAL_OAUTH_GROUP_SCHEDULE_REFERENCE: ${INTERNAL_OAUTH_GROUP_SCHEDULE_REFERENCE:-svc-schedule-reference}
-      INTERNAL_OAUTH_GROUP_CORPUS: ${INTERNAL_OAUTH_GROUP_CORPUS:-svc-corpus-ingest}
+      # The Distant-Signal-MCP's group (its rate-limit budget): the api's
+      # only internal-token use since release B removed /private.
+      INTERNAL_OAUTH_GROUP_MCP: ${INTERNAL_OAUTH_GROUP_MCP:-srv-ds-mcp}
+      # The ingest-writer owns the train-domain loops and api-maintenance
+      # the user-data sweeps, as in production (ingest plan 1B.7).
+      API_BACKGROUND_LOOPS: "false"
       REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
@@ -170,6 +184,68 @@ services:
       retries: 10
       start_period: 5s
 
+  # The ingest-writer (crates/ingest-writer): the train-domain loops and
+  # the station-samples, full-coverage, tfl and reference streams, as the
+  # chart's `ingestWriter` does in production (ingest phase 5, step 5.3b:
+  # local dev mirrors production).
+  ingest-writer:
+    build:
+      context: .
+      dockerfile: docker/ingest-writer.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      # The api migrates at startup locally (there is no migrate Job); the
+      # writer's schema gate waits for it either way.
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No healthcheck: the image has no curl. /healthz and /livez are on
+    # port 8090 inside the container.
+    environment:
+      # crates/ingest-writer/src/config.rs
+      DATABASE_URL: *direct-database-url
+      REDIS_URL: redis://redis:6379
+      INGEST_WRITER_LOOPS: "true"
+      INGEST_WRITER_STREAMS: station-samples:apply,full-coverage:apply,tfl:apply,reference:apply
+      RUST_LOG: ${RUST_LOG:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+
+  # Production's hourly api-maintenance CronJob
+  # (templates/api-maintenance-cronjob.yaml), as a loop: one `maintenance`
+  # pass at start, then one an hour. A failed pass is logged and retried an
+  # hour later, as the CronJob would. Same image as the api (the build is
+  # cached), same retention variables and defaults.
+  api-maintenance:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      args:
+        CARGO_PROFILE: release
+    restart: unless-stopped
+    depends_on:
+      # The api migrates at startup locally.
+      api:
+        condition: service_healthy
+    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
+    command:
+      - |
+        while :; do
+          /usr/local/bin/maintenance || echo "maintenance pass failed; next try in an hour" >&2
+          sleep "$${MAINTENANCE_INTERVAL_SECS}"
+        done
+    environment:
+      # crates/api/src/bin/maintenance.rs
+      DATABASE_URL: *direct-database-url
+      MAINTENANCE_INTERVAL_SECS: ${MAINTENANCE_INTERVAL_SECS:-3600}
+      PAST_TRAVEL_RETENTION_DAYS: ${PAST_TRAVEL_RETENTION_DAYS:-548}
+      STALE_PUSH_SUBSCRIPTION_DAYS: ${STALE_PUSH_SUBSCRIPTION_DAYS:-365}
+      INACTIVE_ACCOUNT_RETENTION_DAYS: ${INACTIVE_ACCOUNT_RETENTION_DAYS:-0}
+      RUST_LOG: ${RUST_LOG:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+
   poller-incidents:
     build:
       context: .
@@ -178,25 +254,22 @@ services:
         CARGO_PROFILE: release
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      ingest-writer:
+        condition: service_started
     environment:
       # crates/poller-incidents/src/config.rs: Config. GAP: no confirmed
       # RDM endpoint path for this product — RDM_INCIDENTS_BASE_URL is a
       # placeholder until real account data resolves it (see
       # local.env.example).
+      # Writes Postgres and XADDs incident-text-changed itself.
+      DATABASE_URL: *direct-database-url
+      REDIS_URL: redis://redis:6379
       RDM_INCIDENTS_BASE_URL: ${RDM_INCIDENTS_BASE_URL}
       RDM_API_KEY: ${RDM_INCIDENTS_API_KEY}
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_INCIDENTS:?INTERNAL_OAUTH_USERNAME_INCIDENTS must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_INCIDENTS:?INTERNAL_OAUTH_PASSWORD_INCIDENTS must be set}
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_INCIDENTS:-300}
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      API_INGEST_URL: http://api:8080/private/incidents
 
   poller-stations:
     build:
@@ -206,26 +279,23 @@ services:
         CARGO_PROFILE: release
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      ingest-writer:
+        condition: service_started
     environment:
       # crates/poller-stations/src/config.rs: Config. GAP: exact JSON
       # field casing for this feed is unconfirmed (see schema.rs module
       # docs).
+      # Writes Postgres; the writer's CORPUS crosswalk loop rebuilds
+      # after a stations refresh.
+      DATABASE_URL: *direct-database-url
       RDM_STATIONS_BASE_URL: ${RDM_STATIONS_BASE_URL}
       RDM_API_KEY: ${RDM_STATIONS_API_KEY}
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_STATIONS:?INTERNAL_OAUTH_USERNAME_STATIONS must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_STATIONS:?INTERNAL_OAUTH_PASSWORD_STATIONS must be set}
       # Real-world cadence per RSPS5050 P-03-00 Rev A §6 is 86400s (24h);
       # shortened via dev.env for local verification of the poll loop.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_STATIONS:-86400}
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      API_INGEST_URL: http://api:8080/private/stations
 
   poller-tocs:
     build:
@@ -235,27 +305,23 @@ services:
         CARGO_PROFILE: release
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      ingest-writer:
+        condition: service_started
     environment:
       # crates/poller-tocs/src/config.rs: Config. GAP: no confirmed RDM
       # endpoint path for this product — RDM_TOCS_BASE_URL is a
       # placeholder until real account data resolves it (see
       # local.env.example).
+      # XADDs to ds:ingest:reference, applied by the writer.
+      REDIS_URL: redis://redis:6379
       RDM_TOCS_BASE_URL: ${RDM_TOCS_BASE_URL}
       RDM_API_KEY: ${RDM_TOCS_API_KEY}
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TOCS:?INTERNAL_OAUTH_USERNAME_TOCS must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TOCS:?INTERNAL_OAUTH_PASSWORD_TOCS must be set}
       # Real-world cadence per RSPS5050 P-03-00 Rev A §3 is 86400s (24h);
       # shortened via dev.env for local verification of the poll loop.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TOCS:-86400}
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      API_INGEST_URL: http://api:8080/private/tocs
 
   poller-ldbws:
     build:
@@ -265,29 +331,26 @@ services:
         CARGO_PROFILE: release
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      ingest-writer:
+        condition: service_started
     environment:
       # crates/poller-ldbws/src/config.rs: Config. GAP: RDM product-slug
       # segment is unconfirmed (two variants seen in research); GAP: this
       # feed's real rate limit is unconfirmed (see the implementation
       # plan's Global Constraints).
+      # XADDs to ds:ingest:station-samples, applied by the writer; its
+      # sample stations come from Postgres.
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: *direct-database-url
       LDBWS_BASE_URL: ${LDBWS_BASE_URL}
       RDM_API_KEY: ${LDBWS_API_KEY}
       NUM_ROWS: ${LDBWS_NUM_ROWS:-10}
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_LDBWS:?INTERNAL_OAUTH_USERNAME_LDBWS must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_LDBWS:?INTERNAL_OAUTH_PASSWORD_LDBWS must be set}
       # DESIGN.md §4 target cadence is 30-60s; 60 is the conservative end
       # given this feed's rate limit is unconfirmed.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_LDBWS:-60}
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      API_SAMPLE_STATIONS_URL: http://api:8080/private/sample-stations
-      API_INGEST_URL: http://api:8080/private/station-samples
 
   poller-tfl:
     build:
@@ -297,27 +360,23 @@ services:
         CARGO_PROFILE: release
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      ingest-writer:
+        condition: service_started
     environment:
       # crates/poller-tfl/src/config.rs: Config. No endpoint GAP here,
       # unlike the four RDM pollers — TfL's Unified API is public and
       # documented, so the base URL has a real default.
+      # XADDs to ds:ingest:tfl, applied by the writer.
+      REDIS_URL: redis://redis:6379
       TFL_BASE_URL: ${TFL_BASE_URL:-https://api.tfl.gov.uk}
       TFL_APP_KEY: ${TFL_APP_KEY:?TFL_APP_KEY must be set — see api-portal.tfl.gov.uk}
       TFL_MODES: ${TFL_MODES:-tube,dlr,overground,elizabeth-line,tram}
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TFL:?INTERNAL_OAUTH_USERNAME_TFL must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TFL:?INTERNAL_OAUTH_PASSWORD_TFL must be set}
       # TfL publishes no recommended cadence and offers no push or
       # conditional requests; 300s mirrors poller-incidents.
       POLL_INTERVAL_SECS: ${POLL_INTERVAL_SECS_TFL:-300}
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      API_INGEST_URL: http://api:8080/private/tfl-line-status
 
   aggregator:
     build:
@@ -405,22 +464,18 @@ services:
         CARGO_PROFILE: release
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      ingest-writer:
+        condition: service_started
     environment:
       # crates/trust-consumer/src/config.rs: Config. No Kafka settings:
       # movement-relay is the only Kafka client (Deploy C, PL-15a).
-      API_INGEST_URL: http://api:8080/private/train-events
-      FORWARD_SIGNALS_URL: http://api:8080/private/train-forward-signals
-      API_TRACKED_TRAINS_URL: http://api:8080/private/tracked-trains
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TRUST_CONSUMER:?INTERNAL_OAUTH_USERNAME_TRUST_CONSUMER must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TRUST_CONSUMER:?INTERNAL_OAUTH_PASSWORD_TRUST_CONSUMER must be set}
       # Matches docker/trust-consumer.Dockerfile's COPY of reference-data/
       # into the image, same pattern as aggregator's/api's own explicit
       # LINES_DIR: /app/lines above.
+      # Writes Postgres and reads its tracked trains and STANOX/CRS from
+      # it; subscription changes go through the writer's
+      # train_event_outbox loop.
+      DATABASE_URL: *direct-database-url
       STANOX_CRS_FILE: /app/reference-data/stanox-crs.csv
       REFERENCE_RELOAD_SECS: ${REFERENCE_RELOAD_SECS:-60}
       RETENTION_DAYS: ${RETENTION_DAYS_TRAIN_EVENTS:-90}
@@ -453,19 +508,13 @@ services:
         CARGO_PROFILE: release
     restart: unless-stopped
     depends_on:
-      api:
-        condition: service_healthy
+      ingest-writer:
+        condition: service_started
     environment:
       # crates/full-coverage-consumer/src/config.rs: Config
-      SCHEDULE_LINE_POPULATION_URL: http://api:8080/private/schedule-line-population
-      FULL_COVERAGE_STATS_URL: http://api:8080/private/full-coverage-stats
-      STATION_FULL_COVERAGE_STATS_URL: http://api:8080/private/station-full-coverage-samples
-      STANOX_CRS_URL: http://api:8080/private/stanox-crs
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_FULL_COVERAGE_CONSUMER:?INTERNAL_OAUTH_USERNAME_FULL_COVERAGE_CONSUMER must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_FULL_COVERAGE_CONSUMER:?INTERNAL_OAUTH_PASSWORD_FULL_COVERAGE_CONSUMER must be set}
+      # XADDs its stats to ds:ingest:full-coverage (applied by the
+      # writer) and reads its populations and STANOX/CRS from Postgres.
+      DATABASE_URL: *direct-database-url
       POPULATION_RELOAD_SECS: ${POPULATION_RELOAD_SECS:-300}
       STANOX_CRS_RELOAD_SECS: ${STANOX_CRS_RELOAD_SECS_FULL_COVERAGE:-3600}
       STATS_WRITE_INTERVAL_SECS: ${STATS_WRITE_INTERVAL_SECS:-60}
@@ -499,6 +548,7 @@ services:
     restart: unless-stopped
     depends_on:
       api:
+        # its schema gate waits for the api's migrations anyway
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -506,17 +556,13 @@ services:
       # crates/trust-backlog-consumer/src/config.rs: Config. No Kafka env
       # vars at all -- unlike trust-consumer/full-coverage-consumer, this
       # crate only ever speaks Redis Streams.
+      # Writes the backlog and reason codes to Postgres and reads
+      # STANOX/CRS from it.
+      DATABASE_URL: *direct-database-url
       REDIS_URL: redis://redis:6379
       REDIS_AUTOCLAIM_MIN_IDLE_SECS: ${REDIS_AUTOCLAIM_MIN_IDLE_SECS_TRUST_BACKLOG:-30}
       REDIS_GAP_CHECK_SECS: ${REDIS_GAP_CHECK_SECS_TRUST_BACKLOG:-60}
-      API_INGEST_URL: http://api:8080/private/trust-event-backlog
-      STANOX_CRS_URL: http://api:8080/private/stanox-crs
       STANOX_CRS_RELOAD_SECS: ${STANOX_CRS_RELOAD_SECS_TRUST_BACKLOG:-3600}
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_TRUST_BACKLOG_CONSUMER:?INTERNAL_OAUTH_USERNAME_TRUST_BACKLOG_CONSUMER must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_TRUST_BACKLOG_CONSUMER:?INTERNAL_OAUTH_PASSWORD_TRUST_BACKLOG_CONSUMER must be set}
       # Matches docker/trust-backlog-consumer.Dockerfile's COPY of
       # reference-data/ into the image, same pattern as trust-consumer's
       # own identical default -- no override needed here.
@@ -725,6 +771,8 @@ services:
       # can verify works without a real `docker compose config` run in
       # this sandbox -- so the two path segments are combined into one
       # operator-filled value instead of risking that.
+      # The feed markers and CORPUS loads go to Postgres.
+      DATABASE_URL: *direct-database-url
       WATCH_DIR: /data/schedule-feed/${SCHEDULE_FEED_DESTINATION_PATH:-incoming}
       STORAGE_DIR: /data/schedule-feed
       CHECK_TIMES: ${SCHEDULE_FEED_CHECK_TIMES:-22:00,22:30,23:00,23:30,00:00,00:30,01:00,01:30,16:00}
@@ -740,20 +788,12 @@ services:
       # the code's own default (2) happens to match what was set here.
       RETENTION_KEEP_DELIVERIES: ${RETENTION_KEEP_DELIVERIES:-2}
       STABILITY_CYCLES: ${SCHEDULE_FEED_STABILITY_CYCLES:-2}
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_SCHEDULE_INGEST:?INTERNAL_OAUTH_USERNAME_SCHEDULE_INGEST must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST:?INTERNAL_OAUTH_PASSWORD_SCHEDULE_INGEST must be set}
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
-      API_INGEST_URL: http://api:8080/private/schedule-feed-ingests
       # Network Rail CORPUS loads (crates/schedule-ingest/src/corpus.rs),
-      # off unless CORPUS_INGEST_ENABLED=true. The schedule-ingest user
-      # must also be in INTERNAL_OAUTH_GROUP_CORPUS.
+      # off unless CORPUS_INGEST_ENABLED=true.
       CORPUS_INGEST_ENABLED: ${CORPUS_INGEST_ENABLED:-false}
-      CORPUS_API_URL: http://api:8080/private/corpus-locations
     volumes:
       - schedule_feed_data:/data/schedule-feed
 
@@ -761,7 +801,8 @@ services:
   # Pod (charts/distant-signal/templates/schedulefeed-deployment.yaml's
   # `reference` container) -- reads whatever schedule-ingest above has
   # already verified and moved into storage_dir/<n>/, resolves a STANOX/CRS
-  # table from it, and POSTs that to api. See
+  # table and the other timetable products from it, and writes them to
+  # Postgres. See
   # crates/schedule-reference/src/main.rs's own header comment and
   # docs/superpowers/specs/2026-09-01-schedule-ingest-stanox-crs-table-design.md.
   # This service block was missing entirely from this file until now --
@@ -797,14 +838,10 @@ services:
     # never needs to join that group.
     environment:
       # crates/schedule-reference/src/config.rs: Config
+      # Every product goes to Postgres directly.
+      DATABASE_URL: *direct-database-url
       STORAGE_DIR: /data/schedule-feed
       POLL_INTERVAL_SECS: ${SCHEDULE_FEED_REFERENCE_POLL_INTERVAL_SECS:-1800}
-      API_INGEST_URL: http://api:8080/private/stanox-crs
-      INTERNAL_OAUTH_TOKEN_URL: ${INTERNAL_OAUTH_TOKEN_URL:?INTERNAL_OAUTH_TOKEN_URL must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_CLIENT_ID: ${INTERNAL_OAUTH_CLIENT_ID:?INTERNAL_OAUTH_CLIENT_ID must be set — see the internal-oauth section of local.env.example}
-      INTERNAL_OAUTH_SCOPE: ${INTERNAL_OAUTH_SCOPE:-groups}
-      INTERNAL_OAUTH_USERNAME: ${INTERNAL_OAUTH_USERNAME_SCHEDULE_REFERENCE:?INTERNAL_OAUTH_USERNAME_SCHEDULE_REFERENCE must be set}
-      INTERNAL_OAUTH_PASSWORD: ${INTERNAL_OAUTH_PASSWORD_SCHEDULE_REFERENCE:?INTERNAL_OAUTH_PASSWORD_SCHEDULE_REFERENCE must be set}
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
