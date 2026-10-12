@@ -120,9 +120,29 @@ list-row titles 500.
   section cards, `gap="xs"` or `"sm"` inside a card.
 - Radius: xs 2 · sm 4 · md 8 (default) · lg 16 · xl 32 px. Cards, buttons,
   inputs and alerts are 8px; badges are pills. Nothing overrides radius.
-- Elevation: borders do the work. `shadow="sm"` only on clickable cards
-  (`LineStatusCard`, the linked /status tiles). No coloured left-border
-  accents. Mantine drops shadows in dark mode.
+- Elevation: borders do the work. `shadow="sm"` only on a card that is
+  itself a link (`CardLink`, `LineStatusCard`, the linked /status tiles);
+  a card holding its own controls (`OperatorStatusCard`) is flat. No
+  coloured left-border accents (the open-leg card's is its one,
+  deliberate, non-colour-only exception; see Accessibility). Mantine drops
+  shadows in dark mode.
+
+### Design tokens
+
+`tokens` in `frontend/lib/theme.ts` names the app's own values on top of
+Mantine's theme. Spread them; don't repeat the numbers.
+
+| Token | Value | Use |
+| --- | --- | --- |
+| `tokens.card.static` | `withBorder` | A card that only holds content or its own controls |
+| `tokens.card.link` | `withBorder`, `shadow="sm"` | A card that is one link (`CardLink`, `LineStatusCard`) |
+| `tokens.statusTile` | padding lg, gap 4, value xl/700, label sm | A count over its label (`/status` top strip) |
+| `tokens.statusCard` | padding lg, title clamp 2, reason clamp 3 | `LineStatusCard`, `OperatorStatusCard` |
+| `tokens.iconButton.field` | 36px | An `ActionIcon` beside a 36px input (`CopyableLink`) |
+| `tokens.iconButton.pageAction` | 44px | Page-level pin and share (`PinToggle`, `ShareButton`, review §2.10) |
+
+A new shared value goes here first, with a comment saying where it is
+used, rather than as a literal in a component.
 
 ## Layout and page templates
 
@@ -192,6 +212,44 @@ list-row titles 500.
   tab)"; never write "↗" into link text. No text arrows on links: a back
   link says "Back to groups", a forward link says what it opens ("Next
   trains", "Full day's timetable").
+- **ConfirmActionButton** (`components/ConfirmActionButton.tsx`): every
+  "are you sure?" action (delete, remove, leave, stop tracking, promote,
+  demote). One trigger style: `size="xs"`, red outline for `tone="danger"`
+  (the default), default variant for a reversible `tone="neutral"` change.
+  The modal's confirm button is named "Confirm <actionName>" ("Confirm
+  delete ticket"), so it never shares a name with the trigger and still
+  contains its visible text. A 401 shows `loginPrompt` ("Log in to delete
+  this ticket") as a `LoginControl` link; any other failure reads through
+  `failureFromResponse`/`describeFailure`. The `Delete*Button`/`Remove*Button`
+  components are thin wrappers that pass the request, copy and
+  `onSuccess`. Never hand-roll a confirm `Modal`.
+- **LoginControl** (`components/LoginControl.tsx`): the one login link,
+  carrying `return_to` and `prefetch={false}`. `variant="link"` (default)
+  for "Log in to …" under a failed action or in the nav;
+  `variant="button"` for a page whose one anonymous action is logging in
+  (`/groups/join`, `/groups`, `/account`), followed by the LEG-1 consent
+  note.
+- **CardLink** (`components/CardLink.tsx`): a whole card that is one link
+  (home page rows, `/groups`, `/status` tiles). It takes
+  `tokens.card.link`; `[data-card-link]`/`[data-card]` in `globals.css`
+  keep the text its own colour, turn the border grape on hover and focus,
+  and draw the focus ring on the card. A heading link inside a card that
+  holds other controls is a plain `<Link data-card-link>` around just the
+  heading. Never `style={{ textDecoration: 'none', color: 'inherit' }}`.
+- **ButtonLink** (`components/ButtonLink.tsx`): an in-app link drawn as a
+  button ("Create a group", "Edit line", "Back to chat"). One `<a>`, never
+  a `<button>` inside a `<Link>`; usable from Server Components.
+- **CopyableLink** (`components/CopyableLink.tsx`) and **useShareOrCopy**:
+  every copy-to-clipboard value (invite and share links, the MCP server
+  URL and install commands, the connector URL). A read-only field, a 36px
+  outline `ActionIcon` ("Copy MCP server URL", or "Share invite link" with
+  `share`, which tries the Web Share API first), and a polite live region
+  reading "Copied." or "Couldn't copy. Select the text and copy it
+  yourself." `ShareButton` uses the same hook at the 44px page-action size.
+- **DelayBadge** (`components/DelayBadge.tsx`): the one delay badge, worded
+  by `lib/serviceStatus.ts` ("12 min late" orange, "3 min early" teal, "On
+  time" green). `DELAY_TONE_COLOR` is the one delay-to-colour table;
+  `JourneyProgress`'s stop markers read it too.
 - **Route text**: a route reads "KGX to YRK" on screen and to a screen
   reader alike. `lib/stationLabel.ts` (`routeLabel`, `codeRouteLabel`)
   joins the ends with "to", so its strings go straight into JSX, titles,
@@ -417,7 +475,9 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 - An empty table cell: words where there is room ("No data", "None"). In
   a narrow numeric column an en dash "–" keeps the column scannable; mark
   it `aria-hidden` with a visually hidden "No data" beside it
-  (`NO_VALUE` in `app/lines/AllLinesTable.tsx`).
+  (`NO_VALUE` in `app/lines/AllLinesTable.tsx`). A missing time on a
+  service row is the same en dash with a visually hidden "No time"
+  (`NO_TIME` in `lib/dateFormat.ts`), never "--:--".
 - No ellipsis "…" in copy. In-progress text is a plain word and a spinner
   ("Saving", "Loading trains"); a menu item that opens a dialog is just
   its action ("Delete line"); a select option is a noun ("Custom dates").
@@ -449,14 +509,67 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 ## Code conventions
 
 - Style with Mantine props and CSS variables (`var(--mantine-color-*)`,
-  `var(--mantine-spacing-*)`); app tokens are `--ds-*`.
+  `var(--mantine-spacing-*)`); app CSS tokens are `--ds-*`, app JS tokens
+  are `tokens` in `lib/theme.ts`.
+- **No inline `style` props.** ESLint's `react/forbid-dom-props` and
+  `react/forbid-component-props` reject `style` in `app/`, `components/`
+  and `lib/` (tests are exempt). In order of preference use: a shared
+  component; a Mantine style prop (`miw={0}`, `flex={1}`, `mt="auto"`,
+  `maw="70ch"`, `fz`, `lh`, `c`, `display`); a token; one of the small
+  helpers in `globals.css` (`.ds-nowrap`, `.ds-pre-wrap`,
+  `.ds-break-anywhere`, `.ds-plain-list`, `.ds-self-start`,
+  `.ds-pass-through`, `.ds-clickable`, `.ds-column`); or a named class
+  there. The allowlist is per line, an
+  `// eslint-disable-next-line react/forbid-component-props -- <why>` for a
+  value only known at render time that CSS can't express. Today there are
+  three, all in `JourneyProgress`: the stop counts as CSS variables, the
+  node-slot CSS variable, and each node circle's state-dependent size and
+  colours.
 - Global CSS in `app/globals.css`, as BEM-ish classes or `data-*` hooks
-  (`[data-text-link]`, `[data-status-badge]`).
+  (`[data-text-link]`, `[data-card-link]`, `[data-status-badge]`).
 - Theme config is one object in `lib/theme.ts`, shared by the app and tests.
 - Icons are hand-inlined 16px Feather-style SVGs (`stroke-width 2`,
   `currentColor`, `aria-hidden`); no icon library *(convention)*. No
   Unicode glyphs as functional icons.
 - Prettier 3: `printWidth: 120`, `singleQuote: true`.
+
+## Visual regression
+
+`frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
+Stations, a station, Trains, a train, Incidents and Account (logged in) at
+390 and 1366px, light and dark: 40 full-page images in
+`frontend/e2e/visual-baselines/`. It runs against the seeded e2e stack
+(`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
+(`visual`), which the ordinary e2e run skips.
+
+- **Deterministic.** The browser clock is fixed (2026-09-17T11:00Z, the
+  seed's day), reduced motion is on and animations, transitions and the
+  caret are off, and each shot waits for the network to go quiet and fonts
+  to load. Text tied to the server's own clock (freshness lines, "4 min
+  ago", date-and-time stamps, date and time inputs) is masked.
+- **Threshold.** A shot fails when more than 1% of its pixels differ by more
+  than Playwright's 0.2 colour tolerance. Font anti-aliasing between runs
+  moves a few dozen pixels at most.
+- **Always in the pinned container.** `scripts/visual-tests.py` runs the
+  spec inside the Playwright image matching the locked `@playwright/test`
+  (`mcr.microsoft.com/playwright:v<version>-noble`), locally and in CI, so
+  fonts and rendering match. Outside it every image differs.
+- **CI.** The `frontend-e2e` job runs it after the e2e specs, on every PR
+  and push that touches `frontend/` (`scripts/paths-changed.py` decides,
+  and says "changed" when it can't tell). Failed runs upload the
+  expected, actual and diff images in the Playwright report artifact.
+
+To run it locally, start the api and `npm run build && npm run start` the
+frontend with the `frontend-e2e` job's environment, then
+`uv run scripts/visual-tests.py` (set `E2E_BASE_URL` and the job's other
+`E2E_*` variables). Diffs land in `frontend/test-results/`.
+
+To update the baselines after an intended visual change, run
+`uv run scripts/visual-tests.py --update -- --update-snapshots=all`, look at
+every changed image in `frontend/e2e/visual-baselines/`, and commit them
+with the change. A plain `--update` rewrites only the images over the
+threshold. Bumping `@playwright/test` changes the image, so regenerate them
+all then.
 
 ## Changes since the illustrated guide
 
@@ -482,3 +595,13 @@ Handled on other branches at the same time: `ScheduleRow` delay format and
 contrast, unlabelled loading skeletons, cookies/privacy heading levels, and
 Unicode glyph icons in `ShareJourneyLinkButton`, `GroupInviteLinkCard` and
 `JourneyProgress`.
+
+Round 2, phase 1 (12 Oct 2026): `ConfirmActionButton` replaces 15
+hand-copied confirm modals (promoting a member now confirms, like
+demoting); `LoginControl` merges `LoginLink` and `LoginButton`;
+`CardLink`, `ButtonLink` and `CopyableLink`/`useShareOrCopy` replace the
+copied link-card style, `<Link><Button>` nesting and five copy
+implementations; `DELAY_TONE_COLOR` is the one delay colour table; design
+tokens in `lib/theme.ts`; the inline `style` ban (99 to 3); visual
+regression screenshots in CI; "station code" and "log in" everywhere,
+including API error text; no "--:--".
