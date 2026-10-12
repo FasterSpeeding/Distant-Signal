@@ -157,10 +157,7 @@ async fn server_main() -> anyhow::Result<()> {
     data::corpus_crosswalk::init_fallback_from_env()?;
 
     // Permissive ORIGIN, deliberately non-credentialed. The four
-    // line-status endpoints and /public/health are intentionally public,
-    // and /private/* is gated by internal-service OAuth2
-    // (require_internal_oauth, crates/api/src/auth.rs) — a header check
-    // CORS doesn't bypass.
+    // line-status endpoints and /public/health are intentionally public.
     //
     // READ THIS BEFORE CHANGING THE TWO LINES BELOW. /public/* now also
     // carries cookie-based session auth (the `distant_signal_session` cookie, see
@@ -246,16 +243,14 @@ async fn server_main() -> anyhow::Result<()> {
         ))
         .build_pair();
 
-    // API-2: whole-request time limits, body reads included -- a short one
-    // for everything public, a longer one for the internal ingest routes
-    // (100 MB bodies, 120 s publish statements). The HTTP/1 header-read
-    // timeout is on the listener itself; see `api::edge`.
+    // API-2: a whole-request time limit, body reads included. The HTTP/1
+    // header-read timeout is on the listener itself; see `api::edge`.
     let edge_settings = api::edge::EdgeSettings::from_env()?;
     let rate_limit_settings = api::rate_limit::RateLimitSettings::from_env()?;
     tracing::info!(?rate_limit_settings, "api rate limits");
     // The MCP is recognised by an internal OAuth bearer verified with the
-    // same `AppState::internal_oauth_verifier` (and so the same JWKS cache)
-    // as /private/*; an empty INTERNAL_OAUTH_GROUP_MCP leaves this inert.
+    // `AppState::internal_oauth_verifier` (its JWKS cache); an empty
+    // INTERNAL_OAUTH_GROUP_MCP leaves this inert.
     let service_callers = api::rate_limit::ServiceCallerAuth::new(
         app.clone() as std::sync::Arc<dyn api::rate_limit::ServiceTokenCheck>,
         &app.config.internal_oauth_group_mcp,
@@ -282,9 +277,6 @@ async fn server_main() -> anyhow::Result<()> {
     tracing::info!(readiness_checks_db, "api readiness");
     let readiness =
         api::readiness::Readiness::new(app.database.clone(), shutdown.clone(), readiness_checks_db);
-    // Ingest phase 5, step 5.1: API_PRIVATE_ROUTES=false (default true)
-    // retires /private/* behind a counted 404. See `api::private_retired`.
-    let private_routes = api::private_retired::private_routes_from_env()?;
     let mut router = Router::new()
         .merge(routes::line_status::router())
         .merge(routes::train::router())
@@ -295,12 +287,7 @@ async fn server_main() -> anyhow::Result<()> {
             "/public",
             routes::public_router().merge(api::readiness::router(readiness)),
         )
-        .layer(edge_settings.public_timeout_layer())
-        .nest(
-            "/private",
-            routes::private_or_retired_router(app.clone(), private_routes)
-                .layer(edge_settings.private_timeout_layer()),
-        );
+        .layer(edge_settings.public_timeout_layer());
 
     // Unlike the other seven binaries, api's own PUBLIC listener stays up
     // either way -- metrics_enabled only decides whether requests are
@@ -314,24 +301,14 @@ async fn server_main() -> anyhow::Result<()> {
     if app.config.metrics_enabled {
         router = router.layer(metrics_layer);
         spawn_metrics_listener(app.config.metrics_port, metrics_handle);
-        data::queries::register_schedule_publish_metrics();
         routes::auth::register_user_metrics();
-        data::incident_removal::register_metrics();
         // Before the migrations, so a database that goes away while they
         // run (or right after) already shows as distant_signal_api_db_up 0.
         data::db_health::register_metrics();
-        data::trust_event_backlog::register_uid_inference_metrics();
         // Key routes' request series (and the graph-cache outcomes) at 0, so
         // a rare route's first request after a restart is visible to
         // increase()/rate(). See `api::route_metrics`.
-        // Retired /private routes (API_PRIVATE_ROUTES=false) get no request
-        // series; their counted 404s are pre-registered instead.
-        if private_routes {
-            api::route_metrics::register(&app.internal_oauth_routes);
-        } else {
-            api::route_metrics::register(&[]);
-            api::private_retired::register_metrics(&app.internal_oauth_routes);
-        }
+        api::route_metrics::register();
         tokio::spawn(data::db_health::probe_loop(app.database.clone()));
     }
 
@@ -356,7 +333,7 @@ async fn server_main() -> anyhow::Result<()> {
         ))
         .layer(cors)
         // Per-client-IP limits on login, /Trips/plan, /Train/by-uid and
-        // public writes; /private/* is exempt. See `api::rate_limit`.
+        // public writes. See `api::rate_limit`.
         .layer(axum::middleware::from_fn_with_state(
             rate_limiter,
             api::rate_limit::enforce,

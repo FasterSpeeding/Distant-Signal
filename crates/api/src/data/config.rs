@@ -11,10 +11,6 @@ fn parse_toml_path<T: DeserializeOwned>(path: &'_ str) -> Result<T> {
 }
 
 #[derive(Debug, clap::Parser)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "clap arguments: each bool is an independent on/off env setting, not a state machine"
-)]
 pub struct ServiceArguments {
     #[arg(short, long, env, default_value = "0.0.0.0:8080")]
     pub bind_url: String,
@@ -56,59 +52,15 @@ pub struct ServiceArguments {
     #[arg(long, env)]
     pub internal_oauth_client_id: String,
 
-    /// Required Authentik group name per real caller (Decision 3) --
-    /// gates which /private/* routes each caller's verified token may
-    /// reach. Not secret (a group name isn't confidential). Suggested
-    /// defaults only -- an operator's actual Authentik group names are
-    /// not mandated by this design.
-    #[arg(long, env, default_value = "svc-poller-incidents")]
-    pub internal_oauth_group_incidents: String,
-    #[arg(long, env, default_value = "svc-poller-stations")]
-    pub internal_oauth_group_stations: String,
-    #[arg(long, env, default_value = "svc-poller-tocs")]
-    pub internal_oauth_group_tocs: String,
-    #[arg(long, env, default_value = "svc-poller-ldbws")]
-    pub internal_oauth_group_ldbws: String,
-    #[arg(long, env, default_value = "svc-poller-tfl")]
-    pub internal_oauth_group_tfl: String,
-    #[arg(long, env, default_value = "svc-trust-consumer")]
-    pub internal_oauth_group_trust_consumer: String,
-    #[arg(long, env, default_value = "svc-schedule-ingest")]
-    pub internal_oauth_group_schedule_ingest: String,
-    #[arg(long, env, default_value = "svc-schedule-reference")]
-    pub internal_oauth_group_schedule_reference: String,
-    /// Gates every route the (now real, merged) `full-coverage-consumer`
-    /// producer surface uses: `POST /private/station-full-coverage-samples`
-    /// (per-station, `docs/superpowers/specs/2026-09-04-per-station-full-coverage-stats-design.md`
-    /// Open Question #4) and `POST /private/full-coverage-stats`
-    /// (per-line, this plan's own Task 6) -- one producer service, one
-    /// credential, both endpoints it writes to. See
-    /// docs/superpowers/specs/2026-09-04-option-b-live-consumer-design.md
-    /// Decision 5.
-    #[arg(long, env, default_value = "svc-full-coverage-consumer")]
-    pub internal_oauth_group_full_coverage: String,
-    /// Authentik group required to call `/private/trust-event-backlog`.
-    /// `trust-backlog-consumer`'s own service-account group.
-    #[arg(long, env, default_value = "svc-trust-backlog-consumer")]
-    pub internal_oauth_group_trust_backlog: String,
-    /// Gates `POST /private/corpus-locations` -- Network Rail CORPUS loads
-    /// from `schedule-ingest`'s CORPUS mode
-    /// (docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md).
-    /// Its own group rather than `internal_oauth_group_schedule_ingest`, so
-    /// replacing the whole location table is a grant made on purpose: the
-    /// schedule-ingest service account is added to this group in Authentik
-    /// when CORPUS ingest is enabled.
-    #[arg(long, env, default_value = "svc-corpus-ingest")]
-    pub internal_oauth_group_corpus: String,
     /// Authentik group of the Distant-Signal-MCP's service account (a
     /// separate service in its own namespace that calls the PUBLIC routes
-    /// in-cluster). Unlike the groups above it gates no `/private/*` route:
-    /// a verified token carrying it only moves that caller's rate-limited
+    /// in-cluster). It gates no route (the `/private` routes and their
+    /// per-producer groups went in release B, ingest phase 5): a verified
+    /// token carrying it only moves that caller's rate-limited
     /// public requests onto their own finite budget (`API_RATE_LIMIT_MCP_*`,
     /// keyed `svc:mcp`) instead of the per-IP one. See `crate::rate_limit`'s
     /// module doc. Empty turns the feature off: every bearer on a public
-    /// route is then ignored, as before this existed. Must not equal any
-    /// `/private/*` group (checked at startup).
+    /// route is then ignored, as before this existed.
     #[arg(long, env, default_value = "srv-ds-mcp")]
     pub internal_oauth_group_mcp: String,
     /// Authentik/SSO group (via the `groups` OIDC claim, already decoded
@@ -116,8 +68,8 @@ pub struct ServiceArguments {
     /// `crates/api/src/auth/oidc.rs` and `data::users::upsert_user`) that
     /// grants access to the embedded chatbot (`ChatbotAuthorizedUser`,
     /// `crates/api/src/auth.rs`). This is an END-USER access group, NOT one
-    /// of the `internal_oauth_group_*` fields above -- those gate
-    /// machine/service-account credentials on `/private/*` routes; this one
+    /// `internal_oauth_group_mcp` above -- that one identifies a
+    /// machine/service-account credential; this one
     /// gates a real person's own SSO session on `GET /public/chatbot/access`.
     /// Not secret (a group name isn't confidential). Suggested default only
     /// -- an operator's actual Authentik group name is not mandated by this
@@ -448,17 +400,6 @@ pub struct ServiceArguments {
     #[arg(long, env = "API_BACKGROUND_LOOPS", default_value_t = true, action = clap::ArgAction::Set)]
     pub background_loops: bool,
 
-    /// `POST /private/incidents`' row heartbeat (ingest architecture plan
-    /// 2c.6; `ds_store::incidents::RowHeartbeat`). **On by default**
-    /// (today's behaviour): every listed incident gets `fetched_at = NOW()`
-    /// on every poll, about 600k row updates a day. Off: only changed rows
-    /// are written and the display time comes from
-    /// `incident_feed_state.last_snapshot_at`. The chart renders it from
-    /// `pollers.incidents.ingest.rowHeartbeat`, the same value
-    /// poller-incidents' DB sink reads, so the two writers cannot disagree.
-    #[arg(long, env = "INCIDENTS_ROW_HEARTBEAT", default_value_t = true, action = clap::ArgAction::Set)]
-    pub incidents_row_heartbeat: bool,
-
     /// Personal-data retention (UK legal audit LEG-5, 2026-09-27): days
     /// after its travel date that a tracked train (with its attached
     /// tickets, notification state and group shares), a standalone ticket,
@@ -595,33 +536,14 @@ mod stored_group_allowlist_tests {
     }
 }
 
-/// The one invariant this crate cannot check at compile time and that has now
-/// been broken in production: **every `INTERNAL_OAUTH_GROUP_*` env var this
-/// `ServiceArguments` declares must also be set on the `api` container in
-/// `charts/distant-signal/templates/api-deployment.yaml`.**
-///
-/// This is the same class of declared-but-unwired bug that
-/// `crates/schedule-reference/src/config.rs`'s own `chart_env_wiring_tests`
-/// module exists to prevent, and it is dangerous for the same reason: every
-/// group field above carries a *suggested default*, so a var the chart forgets
-/// to set does NOT fail fast. clap is satisfied, `main` starts, and `api`
-/// silently enforces the crate's own suggested group name instead of the one
-/// the operator actually created in Authentik.
-///
-/// What that looks like in production: `require_internal_oauth` compares the
-/// caller's verified `groups` claim against the wrong name, so EVERY
-/// `/private/*` request from that one caller is rejected `403` -- forever, and
-/// only for that caller, so nothing else looks broken. That is exactly what
-/// happened to `INTERNAL_OAUTH_GROUP_TRUST_BACKLOG`: declared 2026-09-05
-/// alongside `/private/trust-event-backlog`, but never added to
-/// `api-deployment.yaml`, which wired the other 12 group vars. Every
-/// `POST /private/trust-event-backlog` from `trust-backlog-consumer` 403'd,
-/// and because that crate's backlog is a Redis queue it drains only on
-/// success, the observable symptom was an ever-growing Redis key -- not an
-/// error anyone was watching. `values.yaml`'s own comment still said "8 group
-/// fields" when the struct had 13, which is how far this had already drifted.
-///
-/// A test is what makes the next one impossible to ship.
+/// The chart and this `ServiceArguments` must agree on every
+/// `INTERNAL_OAUTH_GROUP_*` env var. Every group field carries a *suggested
+/// default*, so a var the chart forgets to set does not fail fast: clap is
+/// satisfied and the api silently uses the crate's own group name instead
+/// of the operator's (this happened to `INTERNAL_OAUTH_GROUP_TRUST_BACKLOG`
+/// in 2026-09). Since release B (ingest phase 5) removed the `/private`
+/// routes and their per-producer groups, `INTERNAL_OAUTH_GROUP_MCP` is the
+/// only one, and the api container must set exactly it.
 #[cfg(test)]
 mod chart_env_wiring_tests {
     use clap::CommandFactory;
@@ -664,10 +586,10 @@ mod chart_env_wiring_tests {
             .filter(|env| env.starts_with(GROUP_ENV_PREFIX))
             .map(str::to_string)
             .collect();
-        assert!(
-            declared.len() >= 12,
-            "sanity check: this ServiceArguments declares one {GROUP_ENV_PREFIX}* env var per \
-             real /private/* caller, plus the MCP's (12 as of 2026-10-08); got {declared:?}"
+        assert_eq!(
+            declared,
+            ["INTERNAL_OAUTH_GROUP_MCP"],
+            "release B (ingest phase 5) left only the MCP's {GROUP_ENV_PREFIX}* env var"
         );
 
         let missing: Vec<&String> = declared
@@ -680,9 +602,8 @@ mod chart_env_wiring_tests {
             "these {GROUP_ENV_PREFIX}* env vars are declared by crates/api/src/data/config.rs but \
              never set on the `api` container in \
              charts/distant-signal/templates/api-deployment.yaml, so under Helm api silently \
-             enforces this crate's own suggested group name instead of the operator's real \
-             Authentik group -- every /private/* request from the affected caller then 403s \
-             forever, with no startup failure and no error on api's side: {missing:?}"
+             uses this crate's own suggested group name instead of the operator's real \
+             Authentik group: {missing:?}"
         );
     }
 
@@ -792,25 +713,18 @@ mod chart_env_wiring_tests {
         );
     }
 
-    /// Plan 2c.6: `INCIDENTS_ROW_HEARTBEAT` defaults to true (today's
-    /// behaviour), takes an explicit value, and the chart can turn it off.
+    /// Release B (ingest phase 5): `INCIDENTS_ROW_HEARTBEAT` served only
+    /// `POST /private/incidents`, so the api neither declares it nor gets it
+    /// from the chart (poller-incidents still reads it).
     #[test]
-    fn incidents_row_heartbeat_default_on_and_the_env_name_is_stable() {
-        let command = ServiceArguments::command();
-        let arg = command
-            .get_arguments()
-            .find(|arg| arg.get_id() == "incidents_row_heartbeat")
-            .expect("incidents_row_heartbeat is declared");
-        assert_eq!(
-            arg.get_env().and_then(|env| env.to_str()),
-            Some("INCIDENTS_ROW_HEARTBEAT")
-        );
-        assert_eq!(arg.get_default_values(), ["true"]);
-        assert!(matches!(arg.get_action(), clap::ArgAction::Set));
+    fn incidents_row_heartbeat_is_gone_from_the_api() {
         assert!(
-            api_container_block().contains("- name: INCIDENTS_ROW_HEARTBEAT"),
-            "the chart renders INCIDENTS_ROW_HEARTBEAT (when pollers.incidents.ingest.rowHeartbeat is false)"
+            !ServiceArguments::command()
+                .get_arguments()
+                .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
+                .any(|env| env == "INCIDENTS_ROW_HEARTBEAT")
         );
+        assert!(!api_container_block().contains("- name: INCIDENTS_ROW_HEARTBEAT"));
     }
 
     #[test]

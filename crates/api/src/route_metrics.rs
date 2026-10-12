@@ -13,12 +13,12 @@
 //! each duration-histogram one carrying 14 more. So:
 //!
 //! - `distant_signal_http_requests_total` for [`KEY_PUBLIC_ROUTES`] (what
-//!   the frontend's main pages and the MCP call) and every `/private`
-//!   ingest route (the list `require_internal_oauth` authorises, so it
-//!   cannot drift), each × its own method × [`PRE_REGISTERED_STATUSES`]
-//!   (200, 500, 503): the success series rare-route queries count, and the
-//!   two 5xx codes the 5xx-ratio alerts and the 503 contract
-//!   (`crate::unavailable`) care about. About 60 routes × 3 = 180 series.
+//!   the frontend's main pages and the MCP call), each × its own method ×
+//!   [`PRE_REGISTERED_STATUSES`] (200, 500, 503): the success series
+//!   rare-route queries count, and the two 5xx codes the 5xx-ratio alerts
+//!   and the 503 contract (`crate::unavailable`) care about. 16 routes × 3
+//!   = 48 series. (The `/private` ingest routes were pre-registered too
+//!   until release B removed them, ingest phase 5.)
 //! - `distant_signal_http_requests_duration_seconds` only for the key public
 //!   routes' 200s: 16 × 14 = 224 series.
 //! - `distant_signal_api_trip_plan_graph_cache_total{result}` for `hit` and
@@ -62,18 +62,11 @@ pub const TRIP_PLAN_GRAPH_CACHE_METRIC: &str = "api_trip_plan_graph_cache_total"
 pub const TRIP_PLAN_GRAPH_CACHE_RESULTS: &[&str] = &["hit", "miss"];
 
 /// Every `(method, endpoint label)` whose request counter is registered:
-/// the key public routes, then each private route under `/private`.
-pub fn pre_registered_routes(
-    private_routes: &[(&'static str, Method, Vec<String>)],
-) -> Vec<(Method, String)> {
+/// the key public routes.
+pub fn pre_registered_routes() -> Vec<(Method, String)> {
     KEY_PUBLIC_ROUTES
         .iter()
         .map(|(method, path)| (method.clone(), (*path).to_string()))
-        .chain(
-            private_routes
-                .iter()
-                .map(|(path, method, _)| (method.clone(), format!("/private{path}"))),
-        )
         .collect()
 }
 
@@ -83,10 +76,10 @@ pub fn pre_registered_routes(
 /// The label order is `axum_prometheus`'s own (method, status, endpoint),
 /// so the layer's first real request increments these series rather than
 /// creating a second one.
-pub fn register(private_routes: &[(&'static str, Method, Vec<String>)]) {
+pub fn register() {
     let total = axum_prometheus::utils::requests_total_name();
     let duration = axum_prometheus::utils::requests_duration_name();
-    for (method, endpoint) in pre_registered_routes(private_routes) {
+    for (method, endpoint) in pre_registered_routes() {
         for status in PRE_REGISTERED_STATUSES {
             let labels = [
                 ("method", method.as_str().to_string()),
@@ -164,17 +157,6 @@ mod tests {
 
     use super::*;
 
-    /// Needs a Tokio context (the placeholder pool is built lazily).
-    fn private_routes() -> Vec<(&'static str, Method, Vec<String>)> {
-        crate::test_support::inert_app(
-            sqlx::postgres::PgPoolOptions::new()
-                .connect_lazy("postgres://nobody@127.0.0.1:1/none")
-                .unwrap(),
-        )
-        .internal_oauth_routes
-        .clone()
-    }
-
     fn render(f: impl FnOnce()) -> String {
         let recorder = PrometheusBuilder::new()
             .set_buckets(axum_prometheus::utils::SECONDS_DURATION_BUCKETS)
@@ -210,12 +192,11 @@ mod tests {
         assert!(!rendered.contains("quantile"), "{rendered}");
     }
 
-    #[tokio::test]
-    async fn every_pre_registered_series_renders_at_zero() {
-        let private = private_routes();
-        let rendered = render(|| register(&private));
+    #[test]
+    fn every_pre_registered_series_renders_at_zero() {
+        let rendered = render(register);
         let name = axum_prometheus::utils::requests_total_name();
-        for (method, endpoint) in pre_registered_routes(&private) {
+        for (method, endpoint) in pre_registered_routes() {
             for status in PRE_REGISTERED_STATUSES {
                 let line = format!(
                     "{name}{{method=\"{method}\",status=\"{status}\",endpoint=\"{endpoint}\"}} 0"
@@ -245,7 +226,7 @@ mod tests {
     #[test]
     fn the_first_real_request_increments_the_registered_series() {
         let rendered = render(|| {
-            register(&[]);
+            register();
             metrics::counter!(
                 axum_prometheus::utils::requests_total_name(),
                 &[
@@ -268,12 +249,12 @@ mod tests {
     }
 
     /// The bounded set: a few hundred series, not routes × every status.
-    #[tokio::test]
-    async fn the_set_stays_bounded() {
-        let routes = pre_registered_routes(&private_routes());
-        // 60 at the 2026-10-06 batch (16 key public + 44 private); the
-        // ceiling leaves room for new ingest routes without letting the set
-        // grow into routes x every status.
+    #[test]
+    fn the_set_stays_bounded() {
+        let routes = pre_registered_routes();
+        // 16 key public routes since release B removed the 34 private ones
+        // (ingest phase 5); the ceiling keeps the set from growing into
+        // routes x every status.
         assert!(routes.len() < 80, "{}", routes.len());
         assert!(routes.len() * PRE_REGISTERED_STATUSES.len() < 250);
     }
@@ -281,8 +262,7 @@ mod tests {
     /// Every pre-registered template is a real route of the server's router
     /// (composed as `main.rs` composes it): a renamed route would otherwise
     /// leave a dead 0 series behind. (The method is not checked here: a
-    /// layer runs outside a route's method dispatch. The private methods come
-    /// from the same list the auth middleware enforces.)
+    /// layer runs outside a route's method dispatch.)
     #[tokio::test]
     async fn route_templates_exist() {
         let app = crate::test_support::inert_app(
@@ -290,7 +270,6 @@ mod tests {
                 .connect_lazy("postgres://nobody@127.0.0.1:1/none")
                 .unwrap(),
         );
-        let private = app.internal_oauth_routes.clone();
         let seen = Arc::new(Mutex::new(None::<String>));
         let seen_in_layer = Arc::clone(&seen);
         let router: axum::Router = crate::app::Router::new()
@@ -300,7 +279,6 @@ mod tests {
             .merge(crate::routes::journey_templates::router())
             .merge(crate::routes::trips::router())
             .nest("/public", crate::routes::public_router())
-            .nest("/private", crate::routes::private_router(app.clone()))
             // Outermost on every route: records the match and answers at
             // once, so no handler or auth check runs.
             .layer(axum::middleware::from_fn(
@@ -316,7 +294,7 @@ mod tests {
                 },
             ))
             .with_state(app);
-        for (method, template) in pre_registered_routes(&private) {
+        for (method, template) in pre_registered_routes() {
             let concrete = template.replace('{', "x").replace('}', "");
             *seen.lock().unwrap() = None;
             let response = router

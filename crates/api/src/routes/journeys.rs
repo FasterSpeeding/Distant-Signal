@@ -1964,17 +1964,6 @@ mod db_tests {
             redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
-            internal_oauth_group_incidents: "svc-poller-incidents".to_string(),
-            internal_oauth_group_stations: "svc-poller-stations".to_string(),
-            internal_oauth_group_tocs: "svc-poller-tocs".to_string(),
-            internal_oauth_group_ldbws: "svc-poller-ldbws".to_string(),
-            internal_oauth_group_tfl: "svc-poller-tfl".to_string(),
-            internal_oauth_group_trust_consumer: "svc-trust-consumer".to_string(),
-            internal_oauth_group_schedule_ingest: "svc-schedule-ingest".to_string(),
-            internal_oauth_group_schedule_reference: "svc-schedule-reference".to_string(),
-            internal_oauth_group_full_coverage: "svc-full-coverage-consumer".to_string(),
-            internal_oauth_group_trust_backlog: "svc-trust-backlog-consumer".to_string(),
-            internal_oauth_group_corpus: "svc-corpus-ingest".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             chatbot_access: crate::data::config::ChatbotAccessMode::Group,
@@ -2000,7 +1989,6 @@ mod db_tests {
             backlog_match_sweep_interval_secs: 300,
             session_cleanup_interval_secs: 3600,
             background_loops: true,
-            incidents_row_heartbeat: true,
             past_travel_retention_days: 548,
             stale_push_subscription_days: 365,
             inactive_account_retention_days: 0,
@@ -2029,7 +2017,6 @@ mod db_tests {
                 "test-internal-oauth-client".to_string(),
             )
             .expect("construct placeholder internal-oauth verifier"),
-            internal_oauth_routes: Vec::new(),
             schedule_crs_line_index: std::collections::HashMap::new(),
         })
     }

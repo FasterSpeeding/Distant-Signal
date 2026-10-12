@@ -1,6 +1,6 @@
 //! `full_coverage_line_window_stats`: the windowed full-coverage history
-//! `full-coverage-consumer` posts (`POST /private/full-coverage-window-stats`),
-//! and the read-only loaders `compare_full_coverage --windows` uses.
+//! `full-coverage-consumer` streams to the ingest-writer, and the read-only
+//! loaders `compare_full_coverage --windows` uses.
 //! See docs/superpowers/specs/2026-09-27-full-coverage-windowed-stats-design.md
 //! section 7.
 
@@ -11,8 +11,7 @@ use sqlx::{PgPool, Row};
 
 // Moved to `ds_store::samples::full_coverage_window` (ingest architecture plan 1A.5).
 pub use ds_store::samples::full_coverage_window::{
-    BUCKET, InvalidWindowRow, bucket_start, last_full_coverage_window_stats_fetch,
-    upsert_full_coverage_window_stats, validate,
+    BUCKET, bucket_start, last_full_coverage_window_stats_fetch, upsert_full_coverage_window_stats,
 };
 
 /// One stored window bucket, as the comparison reads it back.

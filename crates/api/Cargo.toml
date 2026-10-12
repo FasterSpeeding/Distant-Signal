@@ -61,8 +61,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "nat
 schedule-query = { path = "../schedule-query" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde-inline-default = "1.0.1"
-# `raw_value`: `POST`/`GET /private/schedule-line-population` and
-# `GET /public/lines/{id}/trains` carry multi-MB population JSON through
+# `raw_value`: `GET /public/lines/{id}/trains` carries multi-MB population JSON through
 # `serde_json::value::RawValue` instead of building a `Value` tree -- see
 # `data::queries::upsert_schedule_line_population`'s doc comment.
 serde_json = { version = "1.0.149", features = ["raw_value"] }

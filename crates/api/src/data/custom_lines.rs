@@ -89,28 +89,6 @@ pub fn slugify(name: &str) -> String {
     format!("custom-{slug}")
 }
 
-pub async fn list_custom_lines(pool: &PgPool) -> Result<Vec<CustomLine>> {
-    let rows = sqlx::query(
-        "SELECT id, name, operators, stations, headcode_prefixes, destination_crs_filter \
-         FROM custom_lines ORDER BY created_at",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(CustomLine {
-                id: row.try_get("id")?,
-                name: row.try_get("name")?,
-                operators: row.try_get("operators")?,
-                stations: row.try_get("stations")?,
-                headcode_prefixes: row.try_get("headcode_prefixes")?,
-                destination_crs_filter: row.try_get("destination_crs_filter")?,
-            })
-        })
-        .collect()
-}
-
 /// Fetches one custom line by id, or `None` if no custom line has that id
 /// (including catalogue-line ids, which are never rows in this table). The
 /// second element of the tuple is the row's `user_id`. It's still typed
@@ -493,7 +471,7 @@ pub async fn owners_for_ids(
         .collect()
 }
 
-/// Caller-scoped variant of [`list_custom_lines`] -- used by `list_lines`
+/// Caller-scoped list of custom lines -- used by `list_lines`
 /// (`GET /public/lines`) once custom lines become private, so an
 /// authenticated caller sees only their own custom lines in the bulk list,
 /// never anyone else's. Deliberately a separate function rather than an

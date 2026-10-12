@@ -1,8 +1,4 @@
-use axum::extract::DefaultBodyLimit;
-use axum::middleware;
-
-use crate::app::{App, Router};
-use crate::auth::require_internal_oauth;
+use crate::app::Router;
 
 pub mod account;
 pub mod admin;
@@ -14,7 +10,6 @@ pub mod groups;
 pub mod health;
 pub mod history_retention;
 pub mod incidents;
-pub mod ingest;
 pub mod island_of_ireland;
 pub mod journey_templates;
 pub mod journeys;
@@ -28,7 +23,6 @@ pub mod operators;
 pub mod preferences;
 pub mod provisional;
 pub mod reference;
-pub mod samples;
 pub mod schedule_rows;
 pub mod stanox_crs;
 pub mod station_stats;
@@ -116,8 +110,7 @@ pub fn public_router() -> Router {
     // shape. Nesting them under `/public` like `health` would silently
     // break that compatibility. `main.rs` merges `line_status::router()`
     // directly onto the top-level router instead; it's still
-    // unauthenticated (no `require_internal_oauth` layer applied), just
-    // not routed through this particular function.
+    // unauthenticated, just not routed through this particular function.
     Router::new()
         .merge(health::router())
         .merge(freshness::router())
@@ -139,39 +132,4 @@ pub fn public_router() -> Router {
         .merge(departures::router())
         .merge(stanox_crs::router())
         .merge(trains::router())
-}
-
-/// Takes the app state directly (rather than picking it up later via
-/// `Router::with_state`) because the internal-auth layer needs a concrete
-/// token value at the point it's constructed: `axum::middleware::from_fn`
-/// fixes its handler's state to `()`, so a stateful check has to go through
-/// `from_fn_with_state`, which takes the state by value up front.
-/// What `main.rs` nests at `/private`: the ingest routes ([`private_router`])
-/// while `API_PRIVATE_ROUTES` is on (the default), else the counted-404
-/// fallback of [`crate::private_retired`] (ingest phase 5, step 5.1).
-pub fn private_or_retired_router(app: App, private_routes: bool) -> Router {
-    if private_routes {
-        private_router(app)
-    } else {
-        crate::private_retired::router()
-    }
-}
-
-pub fn private_router(app: App) -> Router {
-    Router::new()
-        .merge(ingest::router())
-        .merge(samples::router())
-        .layer(middleware::from_fn_with_state(app, require_internal_oauth))
-        // Axum's `Json` extractor enforces an implicit 2MB body-read limit
-        // unless overridden. `StationReference::accessibility` (see
-        // crates/common) is a `#[serde(flatten)]` passthrough that carries
-        // *every* unmodeled per-station field from the RDM feed verbatim
-        // (carParks, ticketBuying, lifts, transportLinks, address, ...),
-        // not just accessibility data — so the full ~2,600-station feed
-        // measures ~55MB raw, which is what actually surfaced as a 413 on
-        // poller-stations' ingest POST (a prior fix here that assumed
-        // ~20MB was itself too low; verified directly against the live RDM
-        // feed rather than guessed). 100MB leaves ~2x headroom over
-        // today's measured size for feed growth.
-        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
 }

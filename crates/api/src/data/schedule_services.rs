@@ -6,8 +6,9 @@
 //! delay or arrival. This module is the one place `api` learns a schedule's
 //! [`ServiceMode`]:
 //!
-//! * the write side, [`replace_for_date`], behind `POST /private/schedule-services`
-//!   (`schedule-reference`'s `publish_schedule_services`);
+//! * the write side, [`replace_for_date`] (`ds_store`), which
+//!   `schedule-reference` publishes through directly (the api's
+//!   `POST /private/schedule-services` went in release B, ingest phase 5);
 //! * the read side, [`modes_for`]/[`mode_for`], which every public surface
 //!   uses to add `serviceMode`/`liveTracking` (see [`ServiceModeFields`]).
 //!
@@ -222,7 +223,7 @@ pub async fn annotate_uid_rows(
 // `replace_for_date`) moved to `ds_store::schedule::services` (ingest
 // architecture plan 2a.2), so schedule-reference's `DbSink` publishes
 // exactly what this route does.
-pub use ds_store::schedule::services::{InvalidPublish, ScheduleServiceRow, replace_for_date};
+pub use ds_store::schedule::services::{ScheduleServiceRow, replace_for_date};
 
 /// The [`ServiceMode`] of every uid in `uids` that is NOT a train on
 /// `service_date`. A uid absent from the map is a train (no row, or a

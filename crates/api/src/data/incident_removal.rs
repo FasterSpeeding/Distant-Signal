@@ -1,11 +1,13 @@
 //! "Ended (no longer listed)": inferring that an incident has left RDM's
 //! Knowledgebase feed without RDM ever clearing it. The inference itself
 //! lives in `ds_store::incidents::removal` (see its module docs for the
-//! guard); this file keeps the shim and the DB tests that drive it through
-//! the api's write path and read it back through the api's readers
-//! (`queries::incident_by_id` stays in the api, spec §5.2).
+//! guard); this file keeps the DB tests that drive it through the api's
+//! former write path (a test fixture since release B removed
+//! `POST /private/incidents`, ingest phase 5) and read it back through the
+//! api's readers (`queries::incident_by_id` stays in the api, spec §5.2).
 
 // Moved to ds_store::incidents::removal (ingest architecture plan 1A.8)
+#[cfg(test)]
 pub use ds_store::incidents::removal::{
     INFERENCE_METRIC, Inference, MARKED_REMOVED_METRIC, MIN_INFERENCE_GAP_SECS, MISSES_TO_REMOVE,
     infer_removals, register_metrics,

@@ -10,9 +10,8 @@
 //! - an HTTP/1 header-read timeout on the connection itself ([`serve`]),
 //!   which is the only way to bound a slow-headers client, since no tower
 //!   layer runs until the headers have arrived;
-//! - a whole-request [`tower_http::timeout::TimeoutLayer`] per router
-//!   ([`EdgeSettings::public_timeout_layer`] and
-//!   [`EdgeSettings::private_timeout_layer`]), which bounds body reads too:
+//! - a whole-request [`tower_http::timeout::TimeoutLayer`]
+//!   ([`EdgeSettings::public_timeout_layer`]), which bounds body reads too:
 //!   every extractor that reads the body runs inside the handler future the
 //!   layer times;
 //! - HTTP/2 keep-alive pings, so a dead HTTP/2 peer's connection is closed.
@@ -46,13 +45,6 @@ pub struct EdgeSettings {
     #[arg(long, env = "API_REQUEST_TIMEOUT_SECS", default_value_t = 30)]
     pub request_timeout_secs: u64,
 
-    /// Whole-request time limit for the internal `/private/*` ingest
-    /// routes. Longer than the public one: they take up to 100 MB bodies,
-    /// and the final schedule publish chunk runs statements with a 120 s
-    /// timeout, which its caller waits up to 180 s for.
-    #[arg(long, env = "API_PRIVATE_REQUEST_TIMEOUT_SECS", default_value_t = 300)]
-    pub private_request_timeout_secs: u64,
-
     /// How long an HTTP/1 client has to send its complete request headers
     /// before the connection is closed.
     #[arg(long, env = "API_HEADER_READ_TIMEOUT_SECS", default_value_t = 10)]
@@ -69,8 +61,7 @@ pub struct EdgeSettings {
     /// background loops to stop and release their locks) before the process
     /// exits anyway. Must fit inside the pod's terminationGracePeriodSeconds
     /// after the `preStop` sleep; the chart checks that. A request still
-    /// running at the deadline is cut off, so a `/private` publish chunk
-    /// longer than this is retried by its producer as before.
+    /// running at the deadline is cut off.
     #[arg(long, env = "API_SHUTDOWN_DRAIN_SECS", default_value_t = 20)]
     pub shutdown_drain_secs: u64,
 }
@@ -79,7 +70,6 @@ impl Default for EdgeSettings {
     fn default() -> Self {
         Self {
             request_timeout_secs: 30,
-            private_request_timeout_secs: 300,
             header_read_timeout_secs: 10,
             unavailable_retry_after_secs: 30,
             shutdown_drain_secs: 20,
@@ -102,10 +92,6 @@ impl EdgeSettings {
     fn validate(&self) -> Result<()> {
         for (name, value) in [
             ("API_REQUEST_TIMEOUT_SECS", self.request_timeout_secs),
-            (
-                "API_PRIVATE_REQUEST_TIMEOUT_SECS",
-                self.private_request_timeout_secs,
-            ),
             (
                 "API_HEADER_READ_TIMEOUT_SECS",
                 self.header_read_timeout_secs,
@@ -137,13 +123,6 @@ impl EdgeSettings {
         TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(self.request_timeout_secs),
-        )
-    }
-
-    pub fn private_timeout_layer(&self) -> TimeoutLayer {
-        TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(self.private_request_timeout_secs),
         )
     }
 

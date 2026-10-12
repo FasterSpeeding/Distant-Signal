@@ -1,7 +1,7 @@
-//! Live query functions backing the ingestion endpoints.
-//!
-//! Each `upsert_*` function does a batch `INSERT ... ON CONFLICT DO UPDATE`
-//! against reference/incident data pushed by a poller. Deliberately uses
+//! The api's read queries, plus re-exports of the `ds_store` writes its
+//! tests seed fixtures with. The ingest write paths that backed the
+//! `/private` routes went in release B (ingest phase 5): the producers
+//! write through `ds_store` themselves. Deliberately uses
 //! runtime-checked `sqlx::query`/`sqlx::query_as` rather than the `query!`
 //! macro family: the macros need either a live database or a checked-in
 //! `.sqlx` query cache available at *compile* time, and pinning this crate
@@ -11,20 +11,23 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use common::{IncidentMessage, StationFullCoverageSample, StationSample};
+#[cfg(test)]
+use common::IncidentMessage;
+use common::{StationFullCoverageSample, StationSample};
 use sqlx::PgPool;
 
 // Moved to `ds_store::freshness` (ingest architecture plan 1A.3).
 pub use ds_store::freshness::normalize_code;
 
 // Moved to ds_store::incidents (ingest architecture plan 1A.8)
-pub use ds_store::incidents::{
-    INCIDENTS_WITHOUT_PLACE_METRIC, IncidentSnapshotOutcome, RowHeartbeat, load_station_gazetteer,
-};
+#[cfg(test)]
+pub use ds_store::incidents::{IncidentSnapshotOutcome, RowHeartbeat};
 
+/// Test fixture (release B removed the api's `POST /private/incidents`):
 /// [`upsert_incident_snapshot`] as an INCOMPLETE snapshot (it resets the
 /// "no longer listed" state of every incident it names, but never infers
 /// that an absent one has left the feed), with the row heartbeat on.
+#[cfg(test)]
 pub async fn upsert_incidents(
     pool: &PgPool,
     redis: &redis::Client,
@@ -43,12 +46,14 @@ pub async fn upsert_incidents(
     Ok(outcome.upserted)
 }
 
-/// One incident snapshot, the api's way (`POST /private/incidents`):
+/// Test fixture: one incident snapshot, the way the api's
+/// `POST /private/incidents` wrote it until release B (ingest phase 5):
 /// [`ds_store::incidents::apply_snapshot`], then the Redis
 /// `XADD incident-text-changed` of its text changes
 /// ([`common::incident_text_changed::publish`], best effort), then
 /// [`ds_store::incidents::removal::infer_removals`]. The split is plan task
 /// 2c.1; the order is unchanged (see [`upsert_incident_snapshot_with`]).
+#[cfg(test)]
 pub async fn upsert_incident_snapshot(
     pool: &PgPool,
     redis: &redis::Client,
@@ -75,6 +80,7 @@ pub async fn upsert_incident_snapshot(
 /// - only a fully written snapshot may say what is absent from it, so the
 ///   inference runs last (`apply_snapshot` returns an error on any chunk
 ///   failure, before it).
+#[cfg(test)]
 async fn upsert_incident_snapshot_with<F, Fut>(
     pool: &PgPool,
     line_matcher: &common::matcher::LineMatcher,
@@ -197,28 +203,15 @@ pub async fn tfl_line_summaries(pool: &PgPool) -> Result<Vec<TflLineSummaryRow>>
 }
 
 // Moved to `ds_store::freshness` (ingest architecture plan 1A.3).
-pub use ds_store::freshness::{data_freshness, last_tfl_line_status_fetch};
-
-// Moved to `ds_store::reference` (ingest architecture plan 1A.6).
-pub use ds_store::reference::upsert_tocs;
+pub use ds_store::freshness::data_freshness;
 
 // Moved to `ds_store::freshness` (ingest architecture plan 1A.3).
-pub use ds_store::freshness::{
-    last_incidents_fetch, last_station_full_coverage_samples_fetch, last_station_samples_fetch,
-    last_stations_fetch, last_tocs_fetch,
-};
-
-// Moved to ds_store::schedule (ingest architecture plan 1A.7).
-pub use ds_store::schedule::{
-    ScheduleFeedSource, insert_schedule_feed_ingest, insert_schedule_reference_publish,
-    last_completed_schedule_reference_publish, last_schedule_feed_fetch,
-};
+pub use ds_store::freshness::{last_incidents_fetch, last_station_full_coverage_samples_fetch};
 
 // Moved to `ds_store::reference` (ingest architecture plan 1A.6).
 pub use ds_store::reference::{
     list_stanox_crs, list_stanox_crs_for_crs, list_stanox_crs_for_crs_with, list_stanox_crs_with,
-    list_tiploc_crs, list_tiploc_crs_with, prune_stanox_crs_not_in, prune_tiploc_crs_not_in,
-    upsert_fixed_links, upsert_stanox_crs, upsert_tiploc_crs,
+    list_tiploc_crs, list_tiploc_crs_with, upsert_fixed_links, upsert_stanox_crs,
 };
 
 /// Every `fixed_links` row whose `from_crs` matches `crs` -- Phase 2's own
@@ -281,15 +274,10 @@ pub use ds_store::reference::{
 pub use ds_store::reference::is_bookable_crs;
 
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
-pub use ds_store::schedule::{
-    ConditionalPopulation, get_schedule_line_population, get_schedule_line_population_conditional,
-    upsert_schedule_line_population,
-};
+pub use ds_store::schedule::{get_schedule_line_population, upsert_schedule_line_population};
 
 // Moved to ds_store::schedule (ingest architecture plan 1A.10).
-pub use ds_store::schedule::{
-    get_overnight_schedule_line_population_entries, get_schedule_line_population_entries,
-};
+pub use ds_store::schedule::get_overnight_schedule_line_population_entries;
 
 /// One element of a line's population as `GET /public/lines/{id}/trains`
 /// needs it, projected by [`list_line_train_entries`].
@@ -783,12 +771,8 @@ pub struct CallingPointDeparturePage {
 
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
 pub use ds_store::schedule::{
-    SCHEDULE_PUBLISH_STAGED_MISMATCH_METRIC, ScheduleCallingPointsFullRow, SchedulePublishBusy,
-    SchedulePublishPart, finish_schedule_calling_points_full_publish_without_rows,
-    finish_schedule_destination_departures_publish_without_rows, is_statement_timeout,
-    register_schedule_publish_metrics, upsert_schedule_calling_points_full,
-    upsert_schedule_calling_points_full_publish_part, upsert_schedule_destination_departures,
-    upsert_schedule_destination_departures_publish_part,
+    ScheduleCallingPointsFullRow, upsert_schedule_calling_points_full,
+    upsert_schedule_destination_departures,
 };
 
 /// One `schedule_destination_departures` row for one `train_uid/service_date`,
@@ -1828,12 +1812,6 @@ pub async fn search_journey_leg_candidates(
         next_cursor,
     }))
 }
-
-// Moved to `ds_store::samples` (ingest architecture plan 1A.5).
-pub use ds_store::samples::upsert_full_coverage_line_stats;
-
-// Moved to `ds_store::freshness` (ingest architecture plan 1A.3).
-pub use ds_store::freshness::last_full_coverage_line_stats_fetch;
 
 const FULL_COVERAGE_LINE_STATS_COLUMNS: &str = "line_id, service_date, availability, total, delayed, cancelled, skipped, avg_delay_minutes, partial, cancelled_explicit, cancelled_presumed, pending, unobserved, stats_version";
 

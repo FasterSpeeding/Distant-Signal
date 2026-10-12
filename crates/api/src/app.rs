@@ -15,37 +15,19 @@ pub struct AppState {
     /// Deliberately a lazy `redis::Client`, NOT a live
     /// `redis::aio::ConnectionManager`. `Client::open` only parses the URL --
     /// it never opens a socket -- so an unreachable Redis cannot fail
-    /// `AppState::init` and crash-loop the whole public status API. The one
-    /// consumer (`data::queries::upsert_incidents`) connects at publish time
-    /// and already logs-and-continues on failure, and the enricher's hourly
-    /// sweep is the backstop for anything that misses the stream. A broken
-    /// enrichment path must never be able to take displayed status down.
+    /// `AppState::init` and crash-loop the whole public status API. Its one
+    /// consumer, `POST /private/incidents`' `XADD incident-text-changed`,
+    /// went in release B (ingest phase 5); poller-incidents publishes that
+    /// itself now. The client itself goes in step 5.4 of
+    /// docs/ingest-phase5-runbook.md.
     pub redis: redis::Client,
     /// OIDC relying-party client -- see `auth::oidc`'s module doc for why
     /// discovery is lazy (not performed here in `init`).
     pub oidc: OidcClient,
-    /// Verifies an incoming `/private/*` request's `Authorization: Bearer`
-    /// token against Authentik's JWKS -- see
-    /// `crate::auth::internal_oauth`.
+    /// Verifies the Distant-Signal-MCP's `Authorization: Bearer` service
+    /// token against Authentik's JWKS, for its own rate-limit budget
+    /// (`crate::rate_limit`) -- see `crate::auth::internal_oauth`.
     pub internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier,
-    /// (Route prefix, HTTP method, required group names), built once here
-    /// from config. The method dimension is load-bearing: `/stanox-crs`
-    /// has two legitimate callers with DIFFERENT methods --
-    /// `trust-consumer` only ever `GET`s it (a read-only reference
-    /// reload) and `schedule-reference` only ever `POST`s it (its
-    /// per-sequence write) -- so each caller gets its own `(prefix,
-    /// method)` entry with exactly its own group, never the other
-    /// caller's group. A single path-keyed-only table (no method
-    /// dimension) previously let EITHER caller's token authorize BOTH
-    /// methods on this route -- trust-consumer's read-only token could
-    /// `POST` (corrupt the reference table), and schedule-reference's
-    /// write token could `GET` (found in the internal-service `OAuth2`
-    /// security review). Every other route in this table happens to have
-    /// exactly one caller today, so its entry (or entries, for a caller
-    /// that legitimately uses both `GET` and `POST` on the same path)
-    /// carries only that caller's group regardless -- see
-    /// `build_internal_oauth_routes`.
-    pub internal_oauth_routes: Vec<(&'static str, axum::http::Method, Vec<String>)>,
     /// CRS -> candidate `line_ids`, built once here from `config.lines`
     /// (Decision 2 of
     /// docs/superpowers/specs/2026-09-05-schedule-first-train-tracking-design.md).
@@ -58,342 +40,11 @@ pub struct AppState {
     /// (same "load once, refresh only on process restart" posture as
     /// `schedule_crs_line_index` above).
     ///
-    /// `data::queries::upsert_incidents` runs it over every incoming
-    /// incident so `incidents.affected_lines` records the SAME line
-    /// attribution the aggregator computes for live status, rather than the
-    /// archive answering "which lines?" its own, different way. See
-    /// `common::matcher`'s module doc for the defect that came from the
-    /// latter.
+    /// `routes::incidents` checks a requested line filter against it; the
+    /// writers (poller-incidents, through `ds_store::incidents`) fill
+    /// `incidents.affected_lines` with the same matcher. See
+    /// `common::matcher`'s module doc.
     pub line_matcher: common::matcher::LineMatcher,
-}
-
-/// Builds `AppState::internal_oauth_routes` from config. Factored out of
-/// `AppState::init` so tests (`crate::auth`'s route-scoping test suite)
-/// can exercise the REAL production table -- not a hand-copied stand-in
-/// that could silently drift from it -- without needing every other part
-/// of `AppState::init` (a live database connection, etc.).
-///
-/// A blank group is dropped from its entry, so an entry whose only group is
-/// unset keeps its path in the table with no group at all: every caller is
-/// refused `403`, and a token that somehow carried an empty-string group
-/// matches nothing.
-pub(crate) fn build_internal_oauth_routes(
-    config: &ServiceArguments,
-) -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
-    let mut routes = internal_oauth_route_table(config);
-    for (_, _, groups) in &mut routes {
-        groups.retain(|group| !group.trim().is_empty());
-    }
-    routes
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "long but linear; splitting it would scatter its shared state across helpers"
-)]
-fn internal_oauth_route_table(
-    config: &ServiceArguments,
-) -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
-    use axum::http::Method;
-
-    vec![
-        (
-            "/incidents",
-            Method::GET,
-            vec![config.internal_oauth_group_incidents.clone()],
-        ),
-        (
-            "/incidents",
-            Method::POST,
-            vec![config.internal_oauth_group_incidents.clone()],
-        ),
-        (
-            "/stations",
-            Method::GET,
-            vec![config.internal_oauth_group_stations.clone()],
-        ),
-        (
-            "/stations",
-            Method::POST,
-            vec![config.internal_oauth_group_stations.clone()],
-        ),
-        (
-            "/tocs",
-            Method::GET,
-            vec![config.internal_oauth_group_tocs.clone()],
-        ),
-        (
-            "/tocs",
-            Method::POST,
-            vec![config.internal_oauth_group_tocs.clone()],
-        ),
-        (
-            "/station-samples",
-            Method::GET,
-            vec![config.internal_oauth_group_ldbws.clone()],
-        ),
-        (
-            "/station-samples",
-            Method::POST,
-            vec![config.internal_oauth_group_ldbws.clone()],
-        ),
-        // GET-only: `samples::router()` never wires a POST handler for
-        // this path at all.
-        (
-            "/sample-stations",
-            Method::GET,
-            vec![config.internal_oauth_group_ldbws.clone()],
-        ),
-        (
-            "/tfl-line-status",
-            Method::GET,
-            vec![config.internal_oauth_group_tfl.clone()],
-        ),
-        (
-            "/tfl-line-status",
-            Method::POST,
-            vec![config.internal_oauth_group_tfl.clone()],
-        ),
-        // POST-only: trust-consumer's per-poll-cycle event batch --
-        // `ingest::router()` never wires a GET handler for this path.
-        (
-            "/train-events",
-            Method::POST,
-            vec![config.internal_oauth_group_trust_consumer.clone()],
-        ),
-        // POST-only, same caller/group as /train-events: trust-consumer's
-        // notifier-forwarding queue signals (Task 17) -- ingest::router()
-        // never wires a GET handler for this path either.
-        (
-            "/train-forward-signals",
-            Method::POST,
-            vec![config.internal_oauth_group_trust_consumer.clone()],
-        ),
-        // GET-only: trust-consumer's periodic tracked-trains reload --
-        // `ingest::router()` never wires a POST handler for this path.
-        (
-            "/tracked-trains",
-            Method::GET,
-            vec![config.internal_oauth_group_trust_consumer.clone()],
-        ),
-        // POST-only: trust-backlog-consumer's per-cycle event batch --
-        // ingest::router() never wires a GET handler for this path,
-        // mirroring /train-events exactly (see that entry's own comment).
-        (
-            "/trust-event-backlog",
-            Method::POST,
-            vec![config.internal_oauth_group_trust_backlog.clone()],
-        ),
-        // POST-only, same caller/group as /trust-event-backlog:
-        // trust-backlog-consumer's TRUST reason codes.
-        (
-            "/train-reasons",
-            Method::POST,
-            vec![config.internal_oauth_group_trust_backlog.clone()],
-        ),
-        // POST-only: schedule-ingest's per-delivery marker. The GET that
-        // read it back had no caller and was deleted (2026-10-08, ingest
-        // phase 5 runbook Q9): schedule-ingest seeds its dedup from its own
-        // delivery scan, and its db sink reads the marker from Postgres.
-        //
-        // schedule-reference's read grant here was REMOVED (2026-09-25): it
-        // used to seed its restart dedup marker from this route, which was
-        // the bug -- this route reports when schedule-INGEST extracted a
-        // delivery, not whether schedule-reference ever published it. It now
-        // reads its own `/schedule-reference-publishes` marker instead (just
-        // below), so it has no business reading this route at all any more,
-        // and a grant no caller needs is a grant that should not exist. The
-        // only cost of revoking it is during the rolling deploy that lands
-        // this change: an old `reference` pod still GETting this route gets a
-        // 403, which `seed_last_processed_delivery` already handles as
-        // "fall back to first-run behavior" (a redundant republish of a
-        // delivery it had already published -- wasteful for one cycle, never
-        // data loss).
-        (
-            "/schedule-feed-ingests",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_ingest.clone()],
-        ),
-        // BOTH methods, ONE group -- schedule-reference reading back its own
-        // last write ("this producer reading back its own last write, not a
-        // second caller"): no other service writes or reads this marker.
-        //
-        // This route exists because seeding schedule-reference's restart
-        // dedup from /schedule-feed-ingests (schedule-INGEST's
-        // extraction-time record) made a restart mid-processing skip a
-        // delivery that had never actually been published. schedule-reference
-        // now writes its own completion marker here, once per delivery, only
-        // after every product for that delivery has published successfully.
-        // See crates/ds-store/migrations/20260925130000_schedule_reference_publishes.sql.
-        (
-            "/schedule-reference-publishes",
-            Method::GET,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        (
-            "/schedule-reference-publishes",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // Split by method, NOT a shared two-group entry: trust-consumer,
-        // full-coverage-consumer, and trust-backlog-consumer only ever GET
-        // (read-only reload), schedule-reference only ever POSTs (its
-        // write) -- see this field's own doc comment on
-        // `AppState::internal_oauth_routes` for why a merged entry here
-        // was the actual security gap this table's method dimension
-        // fixes.
-        //
-        // full-coverage-consumer's own group was missing here entirely
-        // until now, even though its config.rs has carried a
-        // stanox_crs_url since Deploy A -- confirmed live: its GET
-        // requests 403'd on a genuinely valid, correctly-scoped token
-        // (right group for every OTHER route it calls, e.g.
-        // /station-full-coverage-samples and /full-coverage-stats),
-        // because this one entry never listed its group as an accepted
-        // caller. trust-backlog-consumer's group was likewise missing --
-        // its hourly STANOX/CRS reference-table reload 403'd on an
-        // otherwise valid, correctly-scoped token for the same reason.
-        // All three GET callers share this entry (the `groups.iter().any`
-        // check in auth.rs) rather than getting split rows, since none
-        // is granted write access here -- only /stanox-crs POST (below,
-        // schedule-reference only) is a write.
-        (
-            "/stanox-crs",
-            Method::GET,
-            vec![
-                config.internal_oauth_group_trust_consumer.clone(),
-                config.internal_oauth_group_full_coverage.clone(),
-                config.internal_oauth_group_trust_backlog.clone(),
-            ],
-        ),
-        (
-            "/stanox-crs",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // POST-only, no GET pair -- same shape as
-        // /schedule-network-departures below, reusing schedule-reference's
-        // EXISTING writer credential (the same one /stanox-crs's own POST
-        // above already uses). Task 3's `trip_planning.rs` reads
-        // `tiploc_crs` straight off `api`'s own database via
-        // `queries::list_tiploc_crs`, not via a private ingest route, so
-        // there is no reader here needing its own GET entry -- see
-        // docs/superpowers/plans/2026-09-24-tiploc-crs-crosswalk-plan.md.
-        (
-            "/tiploc-crs",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // POST-only, schedule-reference's writer credential, like
-        // /tiploc-crs: the whole `tiploc_locations` table per delivery.
-        (
-            "/tiploc-locations",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // POST-only, one caller: schedule-ingest's CORPUS mode replacing
-        // the whole `corpus_locations` table. Its own group, not
-        // schedule-ingest's CIF group -- see
-        // `ServiceArguments::internal_oauth_group_corpus`.
-        (
-            "/corpus-locations",
-            Method::POST,
-            vec![config.internal_oauth_group_corpus.clone()],
-        ),
-        (
-            "/station-full-coverage-samples",
-            Method::POST,
-            vec![config.internal_oauth_group_full_coverage.clone()],
-        ),
-        // Also split by method: schedule-reference publishes (POST),
-        // full-coverage-consumer reads the real rows back (GET) -- same
-        // "different services, different groups" shape as /stanox-crs
-        // above, per Correction 2.
-        (
-            "/schedule-line-population",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        (
-            "/schedule-line-population",
-            Method::GET,
-            vec![config.internal_oauth_group_full_coverage.clone()],
-        ),
-        // POST-only: no GET pair, unlike /schedule-line-population -- see
-        // Corrections/Task 2's own note in
-        // docs/superpowers/plans/2026-09-04-whole-network-trip-search-plan.md.
-        // Reuses schedule-reference's EXISTING writer credential, the same one
-        // /stanox-crs and /schedule-line-population's own POST already use.
-        (
-            "/schedule-network-departures",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // POST-only, same as /schedule-network-departures directly above,
-        // and reusing schedule-reference's EXISTING writer credential --
-        // the same one /stanox-crs, /schedule-line-population and
-        // /schedule-network-departures already use. A fourth product from
-        // the same producer is not a fourth identity.
-        (
-            "/schedule-destination-departures",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // POST-only, same as /schedule-network-departures and
-        // /schedule-destination-departures above, and reusing
-        // schedule-reference's EXISTING writer credential -- no new config
-        // field needed. No GET pair: a GET-by-CRS read route for
-        // `fixed_links` belongs to Phase 2, not this ingestion task.
-        (
-            "/fixed-links",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // POST-only, Dynamic Trip Planning Phase 2's newest publish from
-        // this same producer -- the fifth route this producer's table
-        // wires overall (line-population, network-departures,
-        // destination-departures, fixed-links, and now this), though the
-        // FOURTH product built off the shared per-cycle `ScheduleIndex`
-        // specifically -- `fixed-links` above is ALF-derived and published
-        // via its own separate call, not through
-        // `publish_cif_derived_products`'s loop; see that function's own
-        // per-product ordinal comments in `schedule-reference/src/main.rs`.
-        // Reuses schedule-reference's EXISTING writer credential, same as
-        // every publish above. No GET pair: Task 3's
-        // `trip_planning::fetch_calling_points_for_date` reads this table
-        // directly from `api`'s own database, not via a private ingest
-        // route.
-        (
-            "/schedule-calling-points-full",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // The per-date service-mode publish (train/bus/ferry); same writer.
-        (
-            "/schedule-services",
-            Method::POST,
-            vec![config.internal_oauth_group_schedule_reference.clone()],
-        ),
-        // POST-only, full-coverage-consumer's per-line stats. Its read-back
-        // GET had no caller and was deleted (2026-10-08, ingest phase 5
-        // runbook Q9), as were the GETs of /full-coverage-window-stats and
-        // /station-full-coverage-samples.
-        (
-            "/full-coverage-stats",
-            Method::POST,
-            vec![config.internal_oauth_group_full_coverage.clone()],
-        ),
-        // The windowed stats of the same producer (2026-09-27): same group,
-        // POST-only, like /full-coverage-stats.
-        (
-            "/full-coverage-window-stats",
-            Method::POST,
-            vec![config.internal_oauth_group_full_coverage.clone()],
-        ),
-        // No island-of-Ireland routes: since ingest plan 3c.2 (D8) those
-        // pollers write only to their ds:ingest:ioi-{gtfs,nir,live} streams, and
-        // their /private routes were deleted (2026-10-08, runbook Q9).
-    ]
 }
 
 /// Dead-client detection (`client_connection_check_interval` and TCP
@@ -431,32 +82,6 @@ fn ensure_sso_and_internal_oauth_clients_differ(
     Ok(())
 }
 
-/// Startup guard: the MCP group (`internal_oauth_group_mcp`, which only buys
-/// a separate public rate-limit budget, see `crate::rate_limit`) must not be
-/// the same name as any group that grants a `/private/*` route. If it were,
-/// the one Authentik group handed to the MCP's service account would also
-/// open an ingest route, and conversely an ingest poller's token would earn
-/// the MCP budget. Empty (feature off) always passes.
-pub(crate) fn ensure_mcp_group_grants_no_private_route(
-    mcp_group: &str,
-    routes: &[(&'static str, axum::http::Method, Vec<String>)],
-) -> Result<()> {
-    let mcp_group = mcp_group.trim();
-    if mcp_group.is_empty() {
-        return Ok(());
-    }
-    if let Some((path, method, _)) = routes
-        .iter()
-        .find(|(_, _, groups)| groups.iter().any(|group| group.trim() == mcp_group))
-    {
-        anyhow::bail!(
-            "internal_oauth_group_mcp (INTERNAL_OAUTH_GROUP_MCP) is \"{mcp_group}\", which also \
-             grants {method} /private{path}; give the MCP's service account its own group"
-        );
-    }
-    Ok(())
-}
-
 /// Hand-rolled rather than `#[derive(Debug)]`. Two independent reasons:
 ///
 /// 1. `OidcClient` holds a `reqwest::Client` and a
@@ -488,7 +113,6 @@ impl std::fmt::Debug for AppState {
             .field("redis", &"redis::Client { .. }")
             .field("oidc", &"OidcClient { .. }")
             .field("internal_oauth_verifier", &"ServiceTokenVerifier { .. }")
-            .field("internal_oauth_routes", &self.internal_oauth_routes)
             .field("schedule_crs_line_index", &self.schedule_crs_line_index)
             .finish()
     }
@@ -498,10 +122,6 @@ pub type App = Arc<AppState>;
 pub type Router = axum::Router<App>;
 
 impl AppState {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "long but linear; splitting it would scatter its shared state across helpers"
-    )]
     pub async fn init() -> Result<App> {
         let config = ServiceArguments::parse();
 
@@ -617,7 +237,7 @@ impl AppState {
 
         // `sso_client_id` (a real human's own browser-based login, verified
         // by `OidcClient`/`openidconnect`'s ID-token verifier) and
-        // `internal_oauth_client_id` (the `aud` every verified `/private/*`
+        // `internal_oauth_client_id` (the `aud` every verified service
         // bearer token must carry, checked by `ServiceTokenVerifier::verify`
         // below) are two entirely separate identities by design --
         // `internal_oauth_issuer_url`'s own doc comment on `ServiceArguments`
@@ -643,57 +263,16 @@ impl AppState {
             &config.internal_oauth_client_id,
         )?;
 
-        // An empty required-group value must never silently become "any
-        // group matches" -- the same failure class the old shared-secret
-        // design guarded against for its own credential (see the startup
-        // guard this replaces, formerly against a now-deleted config
-        // field). issuer_url/client_id are guarded too: an empty
-        // issuer_url would make IssuerUrl::new("") fail inside
+        // An empty issuer_url would make IssuerUrl::new("") fail inside
         // ServiceTokenVerifier::new below anyway, but failing here first
-        // gives a clearer message naming the actual env var.
+        // gives a clearer message naming the actual env var; an empty
+        // client_id would accept any audience.
         for (name, value) in [
             (
                 "internal_oauth_issuer_url",
                 &config.internal_oauth_issuer_url,
             ),
             ("internal_oauth_client_id", &config.internal_oauth_client_id),
-            (
-                "internal_oauth_group_incidents",
-                &config.internal_oauth_group_incidents,
-            ),
-            (
-                "internal_oauth_group_stations",
-                &config.internal_oauth_group_stations,
-            ),
-            (
-                "internal_oauth_group_tocs",
-                &config.internal_oauth_group_tocs,
-            ),
-            (
-                "internal_oauth_group_ldbws",
-                &config.internal_oauth_group_ldbws,
-            ),
-            ("internal_oauth_group_tfl", &config.internal_oauth_group_tfl),
-            (
-                "internal_oauth_group_trust_consumer",
-                &config.internal_oauth_group_trust_consumer,
-            ),
-            (
-                "internal_oauth_group_schedule_ingest",
-                &config.internal_oauth_group_schedule_ingest,
-            ),
-            (
-                "internal_oauth_group_schedule_reference",
-                &config.internal_oauth_group_schedule_reference,
-            ),
-            (
-                "internal_oauth_group_full_coverage",
-                &config.internal_oauth_group_full_coverage,
-            ),
-            (
-                "internal_oauth_group_trust_backlog",
-                &config.internal_oauth_group_trust_backlog,
-            ),
         ] {
             ensure!(
                 !value.is_empty(),
@@ -702,12 +281,6 @@ impl AppState {
                 name.to_uppercase()
             );
         }
-
-        let internal_oauth_routes = build_internal_oauth_routes(&config);
-        ensure_mcp_group_grants_no_private_route(
-            &config.internal_oauth_group_mcp,
-            &internal_oauth_routes,
-        )?;
 
         let internal_oauth_verifier = crate::auth::internal_oauth::ServiceTokenVerifier::new(
             config.internal_oauth_issuer_url.clone(),
@@ -726,7 +299,6 @@ impl AppState {
             redis,
             oidc,
             internal_oauth_verifier,
-            internal_oauth_routes,
             schedule_crs_line_index,
             line_matcher,
         }))
@@ -756,40 +328,11 @@ mod internal_oauth_startup_guard_tests {
         assert!(err.to_string().contains("internal_oauth_client_id"));
     }
 
-    fn routes() -> Vec<(&'static str, axum::http::Method, Vec<String>)> {
-        vec![
-            (
-                "/tfl-line-status",
-                axum::http::Method::POST,
-                vec!["svc-poller-tfl".to_string()],
-            ),
-            (
-                "/stanox-crs",
-                axum::http::Method::GET,
-                vec!["svc-trust-consumer".to_string(), "svc-other".to_string()],
-            ),
-        ]
-    }
-
+    /// Release B (ingest phase 5) removed the `/private` routes and their
+    /// groups: `INTERNAL_OAUTH_GROUP_MCP` (default `srv-ds-mcp`) is the only
+    /// `INTERNAL_OAUTH_GROUP_*` left.
     #[test]
-    fn a_distinct_or_empty_mcp_group_passes() {
-        assert!(super::ensure_mcp_group_grants_no_private_route("srv-ds-mcp", &routes()).is_ok());
-        assert!(super::ensure_mcp_group_grants_no_private_route("", &routes()).is_ok());
-        assert!(super::ensure_mcp_group_grants_no_private_route("  ", &routes()).is_ok());
-    }
-
-    #[test]
-    fn an_mcp_group_that_also_grants_a_private_route_fails_loudly() {
-        let err = super::ensure_mcp_group_grants_no_private_route("svc-other", &routes())
-            .expect_err("a shared group must be rejected at startup");
-        assert!(err.to_string().contains("/private/stanox-crs"), "{err}");
-    }
-
-    /// The declared default MCP group is `srv-ds-mcp` and differs from every
-    /// other declared `INTERNAL_OAUTH_GROUP_*` default, so the default
-    /// configuration passes the startup guard.
-    #[test]
-    fn the_default_mcp_group_differs_from_every_private_group_default() {
+    fn the_mcp_group_is_the_only_internal_oauth_group() {
         use clap::CommandFactory;
         let command = super::ServiceArguments::command();
         let defaults: Vec<(String, String)> = command
@@ -801,20 +344,13 @@ mod internal_oauth_startup_guard_tests {
                     .then_some((env, default))
             })
             .collect();
-        let mcp = defaults
-            .iter()
-            .find(|(env, _)| env == "INTERNAL_OAUTH_GROUP_MCP")
-            .map(|(_, default)| default.clone())
-            .expect("INTERNAL_OAUTH_GROUP_MCP is declared");
-        assert_eq!(mcp, "srv-ds-mcp");
-        // 12 since the island-of-Ireland groups went with their routes
-        // (2026-10-08, ingest phase 5 runbook Q9).
-        assert!(defaults.len() >= 12, "{defaults:?}");
-        for (env, default) in &defaults {
-            if env != "INTERNAL_OAUTH_GROUP_MCP" {
-                assert_ne!(default, &mcp, "{env}");
-            }
-        }
+        assert_eq!(
+            defaults,
+            vec![(
+                "INTERNAL_OAUTH_GROUP_MCP".to_string(),
+                "srv-ds-mcp".to_string()
+            )]
+        );
     }
 }
 

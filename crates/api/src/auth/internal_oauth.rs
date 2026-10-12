@@ -1,5 +1,7 @@
 //! Verifies an internal-service `OAuth2` client-credentials access token
-//! (the `Authorization: Bearer` header on a `/private/*` request) against
+//! (the Distant-Signal-MCP's `Authorization: Bearer` header, for its own
+//! rate-limit budget, `crate::rate_limit`; the `/private` ingest routes it
+//! also guarded went in release B, ingest phase 5) against
 //! Authentik's JWKS, fetched via standard OIDC discovery and cached
 //! in-process. See
 //! docs/superpowers/specs/2026-09-02-internal-service-oauth2-design.md
@@ -61,8 +63,8 @@ impl Audience {
 /// The claims this design's route-scoping check reads off a verified
 /// client-credentials access token (Decision 3). `groups` defaults to
 /// empty when the claim is entirely absent from the token -- never
-/// treated as "unscoped/allow everything" (see the route-scoping check in
-/// `crate::auth::require_internal_oauth`, Task 5).
+/// treated as "unscoped/allow everything" (`crate::rate_limit` checks it
+/// for the MCP group).
 ///
 /// `nbf` ("not before") and `iat` ("issued at") are both optional per RFC
 /// 7519 -- Authentik's client-credentials tokens are observed to include
@@ -106,8 +108,8 @@ pub(crate) struct SignedJwt {
     pub payload: Vec<u8>,
 }
 
-/// Every failure mode collapses to one of these three -- `require_internal_oauth`
-/// (Task 5) maps all three to a `401`, deliberately not distinguishing
+/// Every failure mode collapses to one of these three -- callers treat all
+/// three alike (the rate limiter: not the MCP), deliberately not distinguishing
 /// which check failed to a caller that isn't yet a proven-valid identity
 /// (see the design doc's Error handling section).
 #[derive(Debug, PartialEq, Eq)]
@@ -136,7 +138,7 @@ pub enum VerifyError {
 /// document or the JWKS endpoint may take before `reqwest` gives up.
 /// Before this existed, `http_client` had NO timeout at all -- a hung
 /// Authentik (or a network partition to it) meant a request to any
-/// `/private/*` route carrying an unknown `kid` would hang the handling
+/// request carrying an unknown `kid` would hang the handling
 /// task indefinitely, one task per request, since `verify()` is on the
 /// hot path for every such request (see `UNKNOWN_KID_NEGATIVE_CACHE_TTL`
 /// below for the other half of that same amplification concern). 30s

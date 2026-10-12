@@ -4,12 +4,12 @@
 //!
 //! **Derivation.** `common::corpus_inference` (the same conservative rule
 //! `line-catalogue-validator` regenerates `reference-data/crs-tiploc.csv`
-//! with) runs over the whole current `corpus_locations`; [`write`] stores its
+//! with) runs over the whole current `corpus_locations`; `ds_store::corpus::crosswalk::write` stores its
 //! unambiguous keys whose CRS is a Knowledgebase station (`stations`; see
 //! [`corpus_inference::restrict_to_stations`]). That happens in the same
 //! transaction as every CORPUS load
-//! ([`crate::data::corpus::replace_corpus_locations`]), and
-//! ([`rebuild_if_stale`]) at startup and after every `stations` refresh
+//! (`ds_store::corpus::replace_corpus_locations`), and
+//! (`ds_store::corpus::crosswalk::rebuild_if_stale`) at startup and after every `stations` refresh
 //! when the stored build is older than the newest delivery, than this
 //! build's `RULES_VERSION`, or than the current set of `stations` CRS codes
 //! (tracked by a fingerprint in `corpus_crosswalk_build`). With no CORPUS
@@ -47,15 +47,10 @@
 
 // Moved to `ds_store::corpus` (ingest architecture plan 1A, wave 0): the
 // train lookups (`stop_delay`) read the flag too.
-pub use ds_store::corpus::{
-    FALLBACK_ENV, fallback_enabled, init_fallback_from_env, parse_fallback_flag,
-};
+pub use ds_store::corpus::{FALLBACK_ENV, fallback_enabled, init_fallback_from_env};
 
 // Moved to `ds_store::corpus::crosswalk` (ingest architecture plan 1A.6).
-pub use ds_store::corpus::crosswalk::{
-    BuildCounts, StationSet, corpus_rows, derive, load_corpus_locations, load_station_set,
-    rebuild_if_stale, write,
-};
+pub use ds_store::corpus::crosswalk::load_corpus_locations;
 
 #[cfg(test)]
 mod tests {

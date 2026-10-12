@@ -745,10 +745,9 @@ mod ticket_entry_tests {
 
 // Moved to ds_store::tracking (ingest architecture plan 1A.9)
 pub use ds_store::tracking::{
-    PendingBacklogPin, PendingSchedulePin, TrainEventsBatchOutcome, apply_schedule_match,
-    list_active_tracked_trains, list_pending_pins_for_backlog_match,
-    list_pending_pins_for_schedule_match, upsert_train_event, upsert_train_event_on,
-    upsert_train_events_batch, upsert_train_movement, upsert_train_movement_on,
+    PendingBacklogPin, PendingSchedulePin, apply_schedule_match, list_active_tracked_trains,
+    list_pending_pins_for_backlog_match, list_pending_pins_for_schedule_match, upsert_train_event,
+    upsert_train_event_on, upsert_train_movement, upsert_train_movement_on,
 };
 
 /// The public read-model for a tracked train, returned directly as JSON by

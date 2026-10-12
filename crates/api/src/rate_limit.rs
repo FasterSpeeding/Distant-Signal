@@ -27,8 +27,7 @@
 //! - every other public write (non-GET/HEAD/OPTIONS), with a generous
 //!   default, as a backstop for anonymous write amplification.
 //!
-//! `/private/*` (internal OAuth ingest) is never limited. A limited request
-//! gets `429 Too Many Requests` with `Retry-After`, and is counted in
+//! A limited request gets `429 Too Many Requests` with `Retry-After`, and is counted in
 //! `distant_signal_api_rate_limited_total{class,caller}`.
 //!
 //! ## Trusted service callers (the MCP)
@@ -36,7 +35,8 @@
 //! The Distant-Signal-MCP calls these public routes in-cluster, directly
 //! (not through the frontend), so it has no `X-Real-IP` and would otherwise
 //! share one small per-peer bucket for all of its users. It is recognised by
-//! the same internal OAuth machinery `/private/*` uses: an Authentik
+//! the internal OAuth machinery the `/private` ingest routes used until
+//! release B (ingest phase 5): an Authentik
 //! client-credentials JWT, verified against the cached JWKS by the api's one
 //! shared [`ServiceTokenVerifier`](crate::auth::internal_oauth::ServiceTokenVerifier),
 //! whose `groups` claim contains `INTERNAL_OAUTH_GROUP_MCP`. Such a request
@@ -157,9 +157,6 @@ impl std::fmt::Display for ClientKey {
 /// The limit class of a request, or `None` for an unlimited one.
 /// `path` is the full request path as the top-level router sees it.
 pub fn classify(method: &Method, path: &str) -> Option<LimitClass> {
-    if path == "/private" || path.starts_with("/private/") {
-        return None;
-    }
     if path == "/public/auth/login" || path == "/public/auth/callback" {
         return Some(LimitClass::Login);
     }
@@ -397,7 +394,7 @@ const PRUNE_EVERY: u64 = 4096;
 
 /// Verifies an internal OAuth bearer token. Implemented by
 /// [`AppState`](crate::app::AppState) (delegating to its one shared
-/// `internal_oauth_verifier`, so this path and `/private/*` share a single
+/// `internal_oauth_verifier`, so every check shares a single
 /// JWKS cache, negative-`kid` cache and refetch cooldown) and by
 /// `ServiceTokenVerifier` itself (tests).
 pub trait ServiceTokenCheck: Send + Sync + 'static {
@@ -754,12 +751,10 @@ mod tests {
                 "/lines",
                 post(|| async { "write" }).get(|| async { "read" }),
             );
-        let private = axum::Router::new().route("/ingest", post(|| async { "ingest" }));
         axum::Router::new()
             .route("/Trips/plan", get(|| async { "plan" }))
             .route("/Train/by-uid/{uid}/{date}", get(|| async { "train" }))
             .nest("/public", public)
-            .nest("/private", private)
             .layer(axum::middleware::from_fn_with_state(limiter, enforce))
     }
 
@@ -849,22 +844,6 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn private_routes_are_never_limited() {
-        let router = router(settings());
-        for _ in 0..10 {
-            let response = call(
-                &router,
-                "POST",
-                "/private/ingest",
-                Some("203.0.113.5"),
-                FRONTEND,
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::OK);
-        }
     }
 
     #[tokio::test]
@@ -1031,8 +1010,6 @@ mod tests {
             classify(&Method::DELETE, "/public/account"),
             Some(LimitClass::PublicWrite)
         );
-        assert_eq!(classify(&Method::POST, "/private/train-events"), None);
-        assert_eq!(classify(&Method::GET, "/private/stanox-crs"), None);
         assert_eq!(classify(&Method::GET, "/public/lines"), None);
         assert_eq!(
             classify(&Method::GET, "/Line/Mode/national-rail/Status"),
@@ -1158,7 +1135,7 @@ mod tests {
     }
 
     // --- Integration-style: a real ServiceTokenVerifier against a mock
-    // Authentik JWKS (the same test_support the /private suite uses). ---
+    // Authentik JWKS (`auth::internal_oauth::test_support`). ---
 
     use crate::auth::internal_oauth::test_support::{mock_authentik, sign_token, valid_claims};
 
@@ -1292,7 +1269,7 @@ mod tests {
         assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
-    /// Unlimited routes (public reads, /private) never look at the bearer.
+    /// Unlimited routes (public reads) never look at the bearer.
     #[tokio::test]
     async fn unlimited_routes_ignore_the_bearer() {
         let (_server, router) = mcp_router().await;
@@ -1300,9 +1277,6 @@ mod tests {
             let response = call_with_bearer(&router, "GET", uri, Some("junk"), MCP_POD).await;
             assert_eq!(response.status(), StatusCode::OK);
         }
-        let response =
-            call_with_bearer(&router, "POST", "/private/ingest", Some("junk"), MCP_POD).await;
-        assert_eq!(response.status(), StatusCode::OK);
     }
 
     /// With the feature off, even a valid MCP token is just anonymous.
