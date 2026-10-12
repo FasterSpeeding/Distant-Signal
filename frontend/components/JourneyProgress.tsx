@@ -5,6 +5,7 @@ import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
+import { DELAY_TONE_COLOR } from './DelayBadge';
 import { WarningIcon } from './WarningIcon';
 import { stopDisplayTime } from '@/lib/stopTimes';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
@@ -186,8 +187,9 @@ function nodeState(index: number, lastIndex: number, status: JourneyStatus | nul
 
 type DelayState = 'on-time' | 'late' | 'early' | 'unknown';
 
-/** Reuses `JourneyTimeline.tsx`'s exact three-way delay convention
- * (green/orange/teal) -- see its own `delayBadge` -- plus one honest
+/** Uses `DelayBadge`'s delay-to-colour table (`DELAY_TONE_COLOR`:
+ * green/orange/teal), so a marker and a badge for the same stop agree, plus
+ * one honest
  * addition this component needs that the badge never has to express: a
  * reached stop whose `delayMinutes` is `null` (no `scheduledArrival`/
  * `scheduledDeparture` to diff against). Defaulting that to "on time"
@@ -200,9 +202,9 @@ function delayState(delayMinutes: number | null): DelayState {
 }
 
 const DELAY_COLOR: Record<DelayState, string> = {
-  'on-time': 'green',
-  late: 'orange',
-  early: 'teal',
+  'on-time': DELAY_TONE_COLOR.onTime,
+  late: DELAY_TONE_COLOR.late,
+  early: DELAY_TONE_COLOR.early,
   unknown: 'gray',
 };
 

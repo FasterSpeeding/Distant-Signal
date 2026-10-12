@@ -1,6 +1,7 @@
 import { Badge, Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
+import { CardLink } from '@/components/CardLink';
+import { tokens } from '@/lib/theme';
 import { SectionTitle } from '@/components/SectionTitle';
-import Link from 'next/link';
 import type { Metadata } from 'next';
 import {
   ApiNotFoundError,
@@ -537,33 +538,31 @@ export default async function DashboardPage() {
             {pinnedStationEntries.map(({ crs, name, reports, coverage }) => {
               const representative = representativeStatusAcrossReports(reports);
               return (
-                <Link key={crs} href={`/stations/${crs}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                  <Card withBorder>
-                    <Stack gap={4}>
-                      <Group justify="space-between">
-                        <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
-                        {coverage === 'none' ? (
-                          <Badge tt="none" color="gray" variant="light">
-                            Not tracked
-                          </Badge>
-                        ) : (
-                          <StatusBadge severity={worstSeverityAcrossReports(reports)} />
-                        )}
-                      </Group>
+                <CardLink key={crs} href={`/stations/${crs}`}>
+                  <Stack gap={4}>
+                    <Group justify="space-between">
+                      <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
                       {coverage === 'none' ? (
-                        <Text size="xs" c="dimmed">
-                          Not covered by our line-status tracking yet.
-                        </Text>
+                        <Badge tt="none" color="gray" variant="light">
+                          Not tracked
+                        </Badge>
                       ) : (
-                        representative && (
-                          <Text size="xs" c="dimmed">
-                            {formatSampleSummary(representative)}
-                          </Text>
-                        )
+                        <StatusBadge severity={worstSeverityAcrossReports(reports)} />
                       )}
-                    </Stack>
-                  </Card>
-                </Link>
+                    </Group>
+                    {coverage === 'none' ? (
+                      <Text size="xs" c="dimmed">
+                        Not covered by our line-status tracking yet.
+                      </Text>
+                    ) : (
+                      representative && (
+                        <Text size="xs" c="dimmed">
+                          {formatSampleSummary(representative)}
+                        </Text>
+                      )
+                    )}
+                  </Stack>
+                </CardLink>
               );
             })}
           </Stack>
@@ -697,14 +696,12 @@ function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodService
           </Text>
           <Stack gap="xs">
             {worst.map((report) => (
-              <Link key={report.id} href={`/lines/${report.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-                <Card withBorder>
-                  <Group justify="space-between">
-                    <Text fw={600}>{report.name}</Text>
-                    <StatusBadge severity={worstStatus(report).statusSeverity} />
-                  </Group>
-                </Card>
-              </Link>
+              <CardLink key={report.id} href={`/lines/${report.id}`}>
+                <Group justify="space-between">
+                  <Text fw={600}>{report.name}</Text>
+                  <StatusBadge severity={worstStatus(report).statusSeverity} />
+                </Group>
+              </CardLink>
             ))}
           </Stack>
           {hidden > 0 && (
@@ -773,20 +770,19 @@ function SharedCustomLineSummaryRow({
 }) {
   const { line, groupNames } = row;
   return (
-    <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <Card withBorder>
-        <Stack gap={4}>
-          <StatusRow
-            title={line.lineName}
-            trailing={report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
-          />
-          <Group gap="xs" wrap="wrap">
-            {groupNames.map((groupName) => (
-              <Badge tt="none" key={groupName} variant="light" color="grape">
-                from {groupName}
-              </Badge>
-            ))}
-            {/* `grantedByName` is null when the sharer has no name or
+    <CardLink href={`/lines/${line.lineId}`}>
+      <Stack gap={4}>
+        <StatusRow
+          title={line.lineName}
+          trailing={report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
+        />
+        <Group gap="xs" wrap="wrap">
+          {groupNames.map((groupName) => (
+            <Badge tt="none" key={groupName} variant="light" color="grape">
+              from {groupName}
+            </Badge>
+          ))}
+          {/* `grantedByName` is null when the sharer has no name or
                 username on their account -- never their email, which is
                 not something to show the rest of a group
                 (`crates/api/src/data/users.rs`'s `MemberDisplay`). Then
@@ -795,13 +791,12 @@ function SharedCustomLineSummaryRow({
                 distinguishable rows -- never a raw user id, never an
                 email. Same `memberLabel` helper the shared-train row below
                 and `/groups/{id}` use, so none of them can drift. */}
-            <Text size="sm" c="dimmed">
-              Shared by {memberLabel(line.grantedByName, line.grantedByTag, MEMBER_PLACEHOLDER_INLINE)}
-            </Text>
-          </Group>
-        </Stack>
-      </Card>
-    </Link>
+          <Text size="sm" c="dimmed">
+            Shared by {memberLabel(line.grantedByName, line.grantedByTag, MEMBER_PLACEHOLDER_INLINE)}
+          </Text>
+        </Group>
+      </Stack>
+    </CardLink>
   );
 }
 
@@ -850,15 +845,14 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
     : formatDate(train.serviceDate);
   const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
 
-  const card = (
-    <Card withBorder>
-      <Stack gap={4}>
-        <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
-        <Text size="sm" c="dimmed">
-          {when}
-        </Text>
-        <Group gap="xs" wrap="wrap">
-          {/* One badge per group this train reached the caller through --
+  const content = (
+    <Stack gap={4}>
+      <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
+      <Text size="sm" c="dimmed">
+        {when}
+      </Text>
+      <Group gap="xs" wrap="wrap">
+        {/* One badge per group this train reached the caller through --
               a train shared into two of their groups is two tags, not an
               arbitrarily-picked one. `addedByName` is `null` when the
               sharer has neither a name nor a username on their account --
@@ -868,30 +862,23 @@ function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
               sharer's `addedByTag` so two such sharers don't read
               identically -- same helper and same wording /track/mine and
               /groups/{id} already use (`lib/memberLabel.ts`). */}
-          {groupNames.map((groupName) => (
-            <Badge tt="none" key={groupName} variant="light" color="grape">
-              from {groupName}
-            </Badge>
-          ))}
-          <Text size="sm" c="dimmed">
-            Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
-          </Text>
-        </Group>
-      </Stack>
-    </Card>
+        {groupNames.map((groupName) => (
+          <Badge tt="none" key={groupName} variant="light" color="grape">
+            from {groupName}
+          </Badge>
+        ))}
+        <Text size="sm" c="dimmed">
+          Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
+        </Text>
+      </Group>
+    </Stack>
   );
 
   // Whole-card link when there's somewhere to go, matching the own row
   // directly below; nothing inside the card is itself interactive, so
   // there's no nested-<a> problem of the kind /track/mine's richer row has
   // to work around.
-  return href ? (
-    <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
-      {card}
-    </Link>
-  ) : (
-    card
-  );
+  return href ? <CardLink href={href}>{content}</CardLink> : <Card {...tokens.card.static}>{content}</Card>;
 }
 
 // Home-page-local mirror of /track/mine's own row shape
@@ -915,20 +902,18 @@ function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
   const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
 
   return (
-    <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <Card withBorder>
-        <Stack gap={4}>
-          <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
-          <Text size="sm" c="dimmed">
-            {/* `pinScheduledDeparture` is `null` for an NR-primary
+    <CardLink href={href}>
+      <Stack gap={4}>
+        <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
+        <Text size="sm" c="dimmed">
+          {/* `pinScheduledDeparture` is `null` for an NR-primary
                 subscription whose train has no schedule data yet -- same
                 date-only degradation as /track/mine's own row. */}
-            {train.pinScheduledDeparture
-              ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
-              : formatDate(train.serviceDate)}
-          </Text>
-        </Stack>
-      </Card>
-    </Link>
+          {train.pinScheduledDeparture
+            ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
+            : formatDate(train.serviceDate)}
+        </Text>
+      </Stack>
+    </CardLink>
   );
 }

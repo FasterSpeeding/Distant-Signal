@@ -81,8 +81,8 @@ describe('GroupsPage', () => {
     vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 }]);
     renderWithMantine(await GroupsPage());
     const link = screen.getByRole('link', { name: /Family/ });
-    expect(link).toHaveAttribute('data-group-card-link', 'true');
-    expect(link.querySelector('[data-group-card]')).not.toBeNull();
+    expect(link).toHaveAttribute('data-card-link', 'true');
+    expect(link.querySelector('[data-card]')).not.toBeNull();
     expect(screen.getByText('›')).toBeInTheDocument();
   });
 });

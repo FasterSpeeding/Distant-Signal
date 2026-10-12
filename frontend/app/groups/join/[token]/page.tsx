@@ -1,5 +1,4 @@
-import { Alert, Button, Stack, Text, Title } from '@mantine/core';
-import Link from 'next/link';
+import { Alert, Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import {
   getGroup,
@@ -11,6 +10,7 @@ import {
 import { LoginControl } from '@/components/LoginControl';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { ButtonLink } from '@/components/ButtonLink';
 
 export const revalidate = 0;
 
@@ -163,14 +163,7 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
       <Stack p="lg" gap="md">
         <Title order={1}>You&apos;re already in {preview.groupName}</Title>
         <Text>No need to join again. You can open the group instead.</Text>
-        {/* Plain `<Link>` wrapping `Button`, not `component={Link}` on a
-            Mantine polymorphic prop -- this page is a Server Component,
-            and that pattern previously broke `next build`'s Server/Client
-            boundary check (see `app/lines/[id]/page.tsx`'s identical
-            comment on its own "Edit" link). */}
-        <Link href={`/groups/${preview.groupId}`} style={{ textDecoration: 'none' }}>
-          <Button>Open group</Button>
-        </Link>
+        <ButtonLink href={`/groups/${preview.groupId}`}>Open group</ButtonLink>
       </Stack>
     );
   }

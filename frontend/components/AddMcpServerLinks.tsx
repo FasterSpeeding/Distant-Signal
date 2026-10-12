@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
-import { ActionIcon, Button, Card, Group, List, ListItem, Stack, Text, TextInput, Title, Tooltip } from '@mantine/core';
+import { useId } from 'react';
+import { Button, Card, Group, List, ListItem, Stack, Text, Title } from '@mantine/core';
+import { CopyableLink } from './CopyableLink';
 import { TextLink } from './TextLink';
 import {
   claudeCodeCommand,
@@ -12,106 +13,6 @@ import {
   vscodeInstallLink,
 } from '@/lib/mcpInstallLinks';
 import { SectionTitle } from './SectionTitle';
-
-const COPIED_RESET_MS = 2000;
-
-/** Two overlapping rectangles, the conventional "copy" glyph. Inline SVG in
- * the house style of `InfoIcon.tsx`; decorative, since the button carries
- * its own `aria-label`. */
-function CopyIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="9" y="9" width="13" height="13" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
-
-type CopyState = 'idle' | 'copied' | 'failed';
-
-/** A read-only, labelled field with a copy button. The result is shown in
- * a `role="status"` line under the field, so it is both visible and
- * announced; the tooltip alone would only reach mouse users. */
-function CopyField({ label, value, description }: { label: string; value: string; description?: React.ReactNode }) {
-  const [state, setState] = useState<CopyState>('idle');
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current);
-    },
-    [],
-  );
-
-  async function copy() {
-    if (timer.current) clearTimeout(timer.current);
-    try {
-      // `navigator.clipboard` is missing outside a secure context; the
-      // throw lands in the catch below like any other failure.
-      await navigator.clipboard.writeText(value);
-      setState('copied');
-      timer.current = setTimeout(() => setState('idle'), COPIED_RESET_MS);
-    } catch {
-      setState('failed');
-    }
-  }
-
-  const copied = state === 'copied';
-  return (
-    <Stack gap={4} data-copy-field>
-      <TextInput
-        label={label}
-        description={description}
-        value={value}
-        readOnly
-        onFocus={(event) => event.currentTarget.select()}
-        styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}
-        rightSectionPointerEvents="all"
-        rightSection={
-          <Tooltip label={copied ? 'Copied' : `Copy ${label}`} withArrow>
-            <ActionIcon variant="subtle" color="gray" onClick={copy} aria-label={`Copy ${label}`}>
-              {copied ? <CheckIcon /> : <CopyIcon />}
-            </ActionIcon>
-          </Tooltip>
-        }
-      />
-      <Text role="status" aria-live="polite" size="xs" c={state === 'failed' ? 'var(--ds-color-error-text)' : 'dimmed'}>
-        {state === 'copied' && 'Copied.'}
-        {state === 'failed' && "Couldn't copy. Select the text and copy it yourself."}
-      </Text>
-    </Stack>
-  );
-}
 
 /** "Use Distant Signal in your own assistant": the MCP server URL plus the
  * documented way to add it to each assistant. Research and sources are in
@@ -147,7 +48,7 @@ export function AddMcpServerLinks({
           </Text>
         )}
 
-        <CopyField label="MCP server URL" value={endpoint} />
+        <CopyableLink monospace label="MCP server URL" value={endpoint} />
 
         <Stack gap="xs">
           <Title order={3} size="sm">
@@ -170,17 +71,20 @@ export function AddMcpServerLinks({
           <Title order={3} size="sm">
             Command line
           </Title>
-          <CopyField
+          <CopyableLink
+            monospace
             label="Claude Code command"
             value={claudeCodeCommand(endpoint)}
             description="Then run /mcp in Claude Code to log in."
           />
-          <CopyField
+          <CopyableLink
+            monospace
             label="Codex CLI command"
             value={codexCommand(endpoint)}
             description="Then run codex mcp login distant-signal to log in."
           />
-          <CopyField
+          <CopyableLink
+            monospace
             label="Gemini CLI command"
             value={geminiCommand(endpoint)}
             description="Then run /mcp auth distant-signal in Gemini CLI to log in."

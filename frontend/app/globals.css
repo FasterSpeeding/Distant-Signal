@@ -305,19 +305,33 @@ a[data-text-link]:focus-visible {
   text-decoration: underline;
 }
 
-/* `/groups`'s `GroupRow` (review §3.2.5) -- a bare `<Link>` wrapping a
-   `Card`, with nothing besides the cursor to say it was clickable. Same
-   data-attribute pattern as `a[data-text-link]` above: `data-group-card`
-   sits on the `Card` so its own `withBorder` border colour can transition,
-   and `data-group-card-link` on the wrapping `<a>` carries the
-   `:hover`/`:focus-visible` state down to it (an `<a>` has no border of its
-   own to change here). */
-a[data-group-card-link]:hover [data-group-card],
-a[data-group-card-link]:focus-visible [data-group-card] {
+/* `components/CardLink.tsx`: a `<Link data-card-link>` wrapping a
+   `<Card data-card>` (review §3.2.5: a card link used to be a bare `<a>`
+   with an inline `textDecoration: 'none'; color: 'inherit'` and nothing
+   besides the cursor to say it was clickable). The card keeps its own text
+   colour and no underline; its border turns to the link colour on hover
+   and keyboard focus, and the focus ring goes round the card (an inline
+   `<a>` around a block card draws a broken outline of its own).
+
+   A `data-card-link` anchor with no card inside (a heading link in a row
+   that holds other controls) gets the same reset and keeps the browser's
+   own focus ring. */
+a[data-card-link] {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+a[data-card-link]:hover [data-card],
+a[data-card-link]:focus-visible [data-card] {
   border-color: var(--mantine-color-anchor);
 }
 
-a[data-group-card-link]:focus-visible [data-group-card] {
+a[data-card-link]:focus-visible:has([data-card]) {
+  outline: none;
+}
+
+a[data-card-link]:focus-visible [data-card] {
   outline: 2px solid var(--mantine-color-anchor);
   outline-offset: 2px;
 }
@@ -1610,7 +1624,7 @@ a[data-text-link-tone='inherit'] {
    scheme too, where filled grape is left at its Mantine default (grape 8,
    white text 5.82:1 -- already compliant, see the comment above). The
    focus outline reuses `--mantine-color-anchor`, the same focus-ring
-   colour `a[data-group-card-link]:focus-visible` already uses. */
+   colour `a[data-card-link]:focus-visible` already uses. */
 .skip-link {
   position: absolute;
   left: -9999px;

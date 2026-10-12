@@ -289,7 +289,7 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
         <StatusRow
           align="flex-start"
           title={
-            <Link href={`/journeys/${journey.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Link href={`/journeys/${journey.id}`} data-card-link>
               <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
                 {title}
               </Text>
@@ -346,7 +346,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
         <StatusRow
           align="flex-start"
           title={
-            <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Link href={href} data-card-link>
               <Stack gap={4}>
                 <StatusRow title={displayName} trailing={<TrackedTrainStatusBadge train={train} />} />
                 {/* Task 3.6.8: `displayName` (`trackedTrainDisplayName`)
@@ -470,7 +470,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
           align="flex-start"
           title={
             href ? (
-              <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Link href={href} data-card-link>
                 {heading}
               </Link>
             ) : (

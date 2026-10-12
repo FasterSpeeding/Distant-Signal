@@ -227,7 +227,7 @@ export function AppNavBar({
                 `component` prop — a different, safe pattern. (Inside
                 `AppNavDrawer`, which IS a Client Component,
                 `component={Link}` is fine and is used.) */}
-            <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Link href="/" data-card-link>
               {/* `data-site-title` is a pure CSS hook for `globals.css`'s
                   `body[data-pride='true']` rules -- Mantine's `Text`
                   renders no stable class of its own to key off. */}

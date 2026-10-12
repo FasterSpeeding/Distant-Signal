@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, useSyncExternalStore, type SubmitEvent } f
 import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import { LoadingText } from '@/components/LoadingText';
 import Anthropic from '@anthropic-ai/sdk';
-import Link from 'next/link';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -15,6 +14,7 @@ import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
+import { ButtonLink } from '@/components/ButtonLink';
 
 interface ChatMessage {
   /** Stable per-panel id (FE-11): streamed events find their assistant turn
@@ -557,11 +557,9 @@ function TrainLegCard({ leg }: { leg: RenderedTrainLeg }) {
           {leg.operator ? ` · ${leg.operator}` : ''}
         </Text>
         {originCrs && (
-          <Link href={`/track?origin=${encodeURIComponent(originCrs)}`} style={{ textDecoration: 'none' }}>
-            <Button size="xs" variant="light">
-              Track this train
-            </Button>
-          </Link>
+          <ButtonLink href={`/track?origin=${encodeURIComponent(originCrs)}`} size="xs" variant="light">
+            Track this train
+          </ButtonLink>
         )}
       </Stack>
     </Card>

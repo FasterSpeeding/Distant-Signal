@@ -490,7 +490,7 @@ function SharedJourneyRow({
     <Card withBorder>
       <StatusRow
         title={
-          <Link href={`/journeys/${journey.journeyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Link href={`/journeys/${journey.journeyId}`} data-card-link>
             <Text fw={500}>{displayName}</Text>
           </Link>
         }
@@ -556,7 +556,7 @@ function SharedCustomLineRow({
       <StatusRow
         align="flex-start"
         title={
-          <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Link href={`/lines/${line.lineId}`} data-card-link>
             <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
               {line.lineName}
             </Text>

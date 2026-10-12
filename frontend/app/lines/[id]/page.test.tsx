@@ -159,7 +159,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
   it('a catalogue line (getCustomLine 404s) never shows Edit/Delete', async () => {
     vi.mocked(api.getCustomLine).mockRejectedValue(new ApiNotFoundError('not found'));
     await renderPage();
-    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit line' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete line' })).not.toBeInTheDocument();
     // Flushes the embedded trends Suspense boundary before the test ends,
     // rather than leaving it to resolve after -- same reason the two tests
@@ -170,7 +170,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
   it('a custom line the caller OWNS (isOwner: true) shows Edit/Delete', async () => {
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: true }));
     await renderPage();
-    expect(screen.getByRole('link', { name: 'Edit' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
+    expect(screen.getByRole('link', { name: 'Edit line' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
     expect(screen.getByRole('button', { name: 'Delete line' })).toBeInTheDocument();
     await screen.findByText('Not enough sampled data yet for this line.');
   });
@@ -183,7 +183,7 @@ describe('LineDetailPage Edit/Delete visibility', () => {
   it('a custom line SHARED with the caller (isOwner: false) shows neither Edit nor Delete', async () => {
     vi.mocked(api.getCustomLine).mockResolvedValue(customLine({ isOwner: false }));
     await renderPage();
-    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit line' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete line' })).not.toBeInTheDocument();
     expect(screen.getByText('Shared with you through a group. Only its owner can edit it.')).toBeInTheDocument();
     await screen.findByText('Not enough sampled data yet for this line.');
@@ -525,7 +525,7 @@ describe('LineDetailPage -- a line with no status row yet', () => {
     // Review §2.9: the raw TOML-enum token ("custom") must not reach the
     // page -- `categoryLabel()` maps it to a human label.
     expect(screen.getByText('Category: Custom line')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Edit' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
+    expect(screen.getByRole('link', { name: 'Edit line' })).toHaveAttribute('href', '/lines/custom-my-commute/edit');
     expect(screen.getByRole('button', { name: 'Delete line' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View history' })).toHaveAttribute(
       'href',
@@ -580,7 +580,7 @@ describe('LineDetailPage -- a line with no status row yet', () => {
     expect(notFound).not.toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
     expect(screen.getByText('Shared with you through a group. Only its owner can edit it.')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit line' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete line' })).not.toBeInTheDocument();
   });
 
@@ -599,7 +599,7 @@ describe('LineDetailPage -- a line with no status row yet', () => {
 
     expect(notFound).not.toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'South Western Main Line', level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit line' })).not.toBeInTheDocument();
   });
 
   // The other half of the fix: a genuinely nonexistent id, or someone
@@ -662,7 +662,7 @@ describe('LineDetailPage -- a line with no status row yet', () => {
     await renderPage();
 
     expect(notFound).toHaveBeenCalled();
-    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit line' })).not.toBeInTheDocument();
   });
 });
 
@@ -686,7 +686,7 @@ describe('LineDetailPage -- embedded fetches must not blank the page', () => {
     await renderPage();
     expect(screen.getByRole('heading', { name: 'My Commute', level: 1 })).toBeInTheDocument();
     // Failed closed: ownership could not be confirmed, so no owner controls.
-    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit line' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete line' })).not.toBeInTheDocument();
   });
 

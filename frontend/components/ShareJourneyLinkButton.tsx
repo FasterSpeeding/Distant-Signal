@@ -2,19 +2,15 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ActionIcon, Button, Group, Modal, Stack, Text, TextInput, Tooltip } from '@mantine/core';
+import { Button, Group, Modal, Stack, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
-import { CheckIcon } from './CheckIcon';
-import { ShareIcon } from './ShareIcon';
+import { CopyableLink } from './CopyableLink';
 import type { JourneyShareLink } from '@/lib/types';
 import { readShareLinkBody } from '@/lib/freshLinkToken';
 import { formatDate } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
-
-const COPIED_LABEL = 'Copied';
-const COPIED_TIMEOUT_MS = 2000;
 
 /** The journey-detail-page "unlisted link" control -- a deliberate hybrid
  * of two existing precedents, per the plan's Task 4 brief
@@ -63,7 +59,6 @@ export function ShareJourneyLinkButton({
 }) {
   const router = useRouter();
   const [opened, { open, close }] = useDisclosure(false);
-  const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
@@ -82,29 +77,9 @@ export function ShareJourneyLinkButton({
 
   function handleOpen() {
     setError(null);
-    setCopied(false);
     setBusy(false);
     needsLoginState.reset();
     open();
-  }
-
-  async function share() {
-    if (!url) return;
-    if (typeof navigator.share === 'function') {
-      try {
-        await navigator.share({ url, title: 'View my journey on Distant Signal' });
-        return;
-      } catch (err) {
-        if (err && typeof err === 'object' && 'name' in err && err.name === 'AbortError') return;
-      }
-    }
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), COPIED_TIMEOUT_MS);
-    } catch {
-      // No more to do -- see GroupInviteLinkCard's own identical fallback.
-    }
   }
 
   async function createOrRegenerate() {
@@ -190,18 +165,13 @@ export function ShareJourneyLinkButton({
       <Modal opened={opened} onClose={close} title="Share this journey">
         <Stack gap="xs">
           {url ? (
-            <Group gap="xs" wrap="nowrap">
-              {/* `aria-label`, not a visible `label`: the modal's own title
-                  already names this field for a sighted reader -- see
-                  `GroupInviteLinkCard`'s identical field for the same
-                  reasoning. */}
-              <TextInput value={url} readOnly aria-label="Share link" style={{ flexGrow: 1 }} />
-              <Tooltip label={copied ? COPIED_LABEL : 'Share this link'}>
-                <ActionIcon variant="outline" color="gray" onClick={share} aria-label="Share link" size={36}>
-                  {copied ? <CheckIcon /> : <ShareIcon />}
-                </ActionIcon>
-              </Tooltip>
-            </Group>
+            <CopyableLink
+              value={url}
+              label="Journey link"
+              hideLabel
+              share
+              shareTitle="View my journey on Distant Signal"
+            />
           ) : hasActiveLink ? (
             <Text size="sm" c="dimmed">
               A share link is active, but for security it can&apos;t be shown again. Regenerate to get a new link to

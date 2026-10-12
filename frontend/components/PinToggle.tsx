@@ -6,6 +6,7 @@ import { ActionIcon, Group, Text, Tooltip } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import type { Preferences } from '@/lib/types';
+import { tokens } from '@/lib/theme';
 
 /** Shown for any network failure in `toggle()` -- a rejected `fetch()`
  * (offline, DNS failure, the request aborted mid-flight, ...) on either the
@@ -183,7 +184,7 @@ export function PinToggle({
           // preset (`ActionIcon.css`), which only resizes the button box --
           // `StarIcon` below stays a fixed 16x16 SVG regardless, so the
           // glyph itself is unchanged.
-          size={44}
+          size={tokens.iconButton.pageAction}
         >
           <StarIcon filled={pinned} />
         </ActionIcon>

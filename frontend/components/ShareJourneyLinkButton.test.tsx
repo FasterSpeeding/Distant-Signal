@@ -40,7 +40,7 @@ describe('ShareJourneyLinkButton', () => {
     expect(await screen.findByRole('button', { name: 'Create link' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Revoke' })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Share link')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Journey link')).not.toBeInTheDocument();
     expect(screen.getByText('No active share link.')).toBeInTheDocument();
   });
 
@@ -90,10 +90,10 @@ describe('ShareJourneyLinkButton', () => {
     // is right after this POST, so the component shows it from the
     // response itself (and the button flips to Regenerate).
     await waitFor(() => expect(screen.getByRole('button', { name: 'Regenerate' })).toBeEnabled());
-    expect(screen.getByRole('textbox', { name: 'Share link' })).toHaveValue(`${ORIGIN}/journeys/shared/new`);
+    expect(screen.getByRole('textbox', { name: 'Journey link' })).toHaveValue(`${ORIGIN}/journeys/shared/new`);
     // The share action is an icon button named by its aria-label, with an
     // aria-hidden SVG rather than the old "⇪" text glyph.
-    const shareButton = screen.getByRole('button', { name: 'Share link' });
+    const shareButton = screen.getByRole('button', { name: 'Share journey link' });
     expect(shareButton.textContent).toBe('');
     expect(shareButton.querySelector('svg[data-icon="share"]')).toHaveAttribute('aria-hidden', 'true');
   });
@@ -127,7 +127,7 @@ describe('ShareJourneyLinkButton', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Manage shared link' }));
     expect(await screen.findByText(/can.t be shown again/)).toBeInTheDocument();
-    expect(screen.queryByRole('textbox', { name: 'Share link' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Journey link' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Revoke' })).toBeInTheDocument();
   });
 
