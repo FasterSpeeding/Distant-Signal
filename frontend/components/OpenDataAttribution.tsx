@@ -121,7 +121,7 @@ function ExternalLink({ href, children }: { href: string; children: ReactNode })
 export function OpenDataAttribution() {
   const legalLinks = legalPagesVisible() ? LEGAL_LINKS : [];
   return (
-    <Box component="footer" p="md" style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
+    <Box component="footer" p="md" className="siteFooter">
       <Text size="xs" c="dimmed">
         Powered by TfL Open Data
       </Text>

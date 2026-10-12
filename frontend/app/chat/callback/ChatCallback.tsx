@@ -246,7 +246,7 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
             </Group>
             <details>
               <summary>Show error details</summary>
-              <Text size="sm" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+              <Text size="sm" c="dimmed" className="ds-pre-wrap">
                 {state.message}
               </Text>
             </details>

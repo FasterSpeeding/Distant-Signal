@@ -84,7 +84,7 @@ export function StatusRow({
 }: StatusRowProps) {
   const titleNode =
     typeof title === 'string' || typeof title === 'number' ? (
-      <Text fw={500} lineClamp={titleLineClamp} style={{ minWidth: 0 }} data-status-row-title>
+      <Text fw={500} lineClamp={titleLineClamp} miw={0} data-status-row-title>
         {title}
       </Text>
     ) : (
@@ -101,7 +101,7 @@ export function StatusRow({
       data-wrap="nowrap"
       data-testid={dataTestId}
     >
-      <Box style={{ minWidth: 0, flexGrow: 1 }}>
+      <Box miw={0} flex="1 1 auto">
         {subtitle ? (
           <Stack gap={4}>
             {titleNode}
@@ -112,7 +112,7 @@ export function StatusRow({
         )}
       </Box>
       {trailing != null && trailing !== false && (
-        <Box style={{ flexShrink: 0 }} data-status-row-trailing>
+        <Box flex="none" data-status-row-trailing>
           {trailing}
         </Box>
       )}

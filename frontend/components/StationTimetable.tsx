@@ -250,7 +250,7 @@ export function StationTimetable({
         align={{ base: 'stretch', sm: 'flex-start' }}
         gap="sm"
       >
-        <Accordion keepMounted={false} onChange={handleChange} style={{ flexGrow: 1, minWidth: 0 }}>
+        <Accordion keepMounted={false} onChange={handleChange} flex="1 1 auto" miw={0}>
           <AccordionItem value="scheduled-departures">
             <AccordionControl>Scheduled departures</AccordionControl>
             <AccordionPanel>

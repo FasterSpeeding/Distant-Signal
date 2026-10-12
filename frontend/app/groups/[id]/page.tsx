@@ -557,7 +557,7 @@ function SharedCustomLineRow({
         align="flex-start"
         title={
           <Link href={`/lines/${line.lineId}`} data-card-link>
-            <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+            <Text fw={500} lineClamp={2} miw={0}>
               {line.lineName}
             </Text>
           </Link>

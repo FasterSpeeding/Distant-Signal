@@ -80,7 +80,7 @@ function SortChevron({ direction }: { direction: 'asc' | 'desc' | null }) {
 function SortGlyph({ field, sort }: { field: SortField; sort: SortState | null }) {
   const active = sort?.field === field;
   return (
-    <Text span size="xs" c="dimmed" aria-hidden style={{ marginInlineStart: 4, verticalAlign: 'middle' }}>
+    <Text span size="xs" c="dimmed" aria-hidden className="sortHeader__glyph">
       <SortChevron direction={active ? sort.direction : null} />
     </Text>
   );
@@ -415,7 +415,7 @@ export function AllLinesTable({
             placeholder="e.g. West Coast Main Line"
             value={nameQuery}
             onChange={(event) => setNameQuery(event.currentTarget.value)}
-            style={{ flex: '1 1 220px' }}
+            flex="1 1 220px"
           />
           <MultiSelect
             label="Filter by operator"
@@ -427,7 +427,7 @@ export function AllLinesTable({
             clearable
             clearButtonProps={{ 'aria-label': 'Clear operator filter' }}
             nothingFoundMessage={noOptionsFound('No matching operators')}
-            style={{ flex: '1 1 220px' }}
+            flex="1 1 220px"
           />
         </Group>
         <Stack gap={4}>
@@ -491,15 +491,7 @@ export function AllLinesTable({
           {sortedRows.length === 0
             ? `No lines are ${SEVERITY_GROUP_LABELS[statusGroupFilter]} right now. `
             : `${sortedRows.length} line${sortedRows.length === 1 ? '' : 's'} with ${SEVERITY_GROUP_LABELS[statusGroupFilter]}. `}
-          <UnstyledButton
-            onClick={() => setStatusGroupFilterAndUrl(null)}
-            style={{
-              color: 'var(--mantine-color-anchor)',
-              textDecoration: 'underline',
-              textUnderlineOffset: '0.2em',
-              fontSize: 'inherit',
-            }}
-          >
+          <UnstyledButton onClick={() => setStatusGroupFilterAndUrl(null)} className="textButton">
             Show all lines
           </UnstyledButton>
         </Text>
@@ -544,26 +536,26 @@ export function AllLinesTable({
                 longest of the four labels) can't wrap its own sort glyph
                 onto a second line, orphaning it away from the label it
                 belongs to. */}
-              <TableTh aria-sort={ariaSort('name', sort)} style={{ whiteSpace: 'nowrap' }}>
-                <UnstyledButton onClick={() => toggleSort('name')} style={{ fontWeight: 'inherit' }}>
+              <TableTh aria-sort={ariaSort('name', sort)} className="sortHeader">
+                <UnstyledButton onClick={() => toggleSort('name')} className="sortHeader__button">
                   Name
                   <SortGlyph field="name" sort={sort} />
                 </UnstyledButton>
               </TableTh>
-              <TableTh aria-sort={ariaSort('status', sort)} style={{ whiteSpace: 'nowrap' }}>
-                <UnstyledButton onClick={() => toggleSort('status')} style={{ fontWeight: 'inherit' }}>
+              <TableTh aria-sort={ariaSort('status', sort)} className="sortHeader">
+                <UnstyledButton onClick={() => toggleSort('status')} className="sortHeader__button">
                   Status
                   <SortGlyph field="status" sort={sort} />
                 </UnstyledButton>
               </TableTh>
-              <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
-                <UnstyledButton onClick={() => toggleSort('avgDelay')} style={{ fontWeight: 'inherit' }}>
+              <TableTh aria-sort={ariaSort('avgDelay', sort)} visibleFrom="sm" className="sortHeader">
+                <UnstyledButton onClick={() => toggleSort('avgDelay')} className="sortHeader__button">
                   Avg delay
                   <SortGlyph field="avgDelay" sort={sort} />
                 </UnstyledButton>
               </TableTh>
-              <TableTh aria-sort={ariaSort('cancelled', sort)} visibleFrom="sm" style={{ whiteSpace: 'nowrap' }}>
-                <UnstyledButton onClick={() => toggleSort('cancelled')} style={{ fontWeight: 'inherit' }}>
+              <TableTh aria-sort={ariaSort('cancelled', sort)} visibleFrom="sm" className="sortHeader">
+                <UnstyledButton onClick={() => toggleSort('cancelled')} className="sortHeader__button">
                   Cancelled
                   <SortGlyph field="cancelled" sort={sort} />
                 </UnstyledButton>

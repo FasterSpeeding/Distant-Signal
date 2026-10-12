@@ -9,6 +9,7 @@ import { UpcomingDisruptions } from './UpcomingDisruptions';
 import { runsNoTrains, worstStatus } from '@/lib/severity';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
 import type { LineStatusReport } from '@/lib/types';
+import { tokens } from '@/lib/theme';
 
 /** `showUpdated={false}` where the page states one "Updated" time for
  * every card (`/status`). */
@@ -16,7 +17,7 @@ export function LineStatusCard({ report, showUpdated = true }: { report: LineSta
   const worst = worstStatus(report);
   const representative = representativeStatus(report.lineStatuses);
   return (
-    <Card withBorder shadow="sm" padding="lg" component={Link} href={`/lines/${report.id}`}>
+    <Card {...tokens.card.link} padding={tokens.statusCard.padding} component={Link} href={`/lines/${report.id}`}>
       <Stack gap="xs">
         {/* `wrap="nowrap"` with the name allowed to shrink: with Group's
             default wrapping, a long line name pushed the badge onto its own
@@ -25,7 +26,7 @@ export function LineStatusCard({ report, showUpdated = true }: { report: LineSta
             as a plain DOM attribute (Mantine itself only exposes it as the
             `--group-wrap` CSS var) so tests can assert on it directly. */}
         <Group justify="space-between" wrap="nowrap" gap="xs" data-card-title-row data-wrap="nowrap">
-          <Text fw={600} lineClamp={2} style={{ minWidth: 0 }}>
+          <Text fw={600} lineClamp={tokens.statusCard.titleLineClamp} miw={0}>
             {report.name}
           </Text>
           {/* StatusBadge opts out of Mantine's ellipsis (see globals.css),
@@ -34,18 +35,9 @@ export function LineStatusCard({ report, showUpdated = true }: { report: LineSta
         </Group>
         {/* Three lines, not ten. These reasons run to whole paragraphs of
             machine-assembled text; the card's job is "is this line OK", and
-            the detail page carries the rest. `lineClamp` drives Mantine's own
-            clamp styling; the inline `-webkit-line-clamp` is set explicitly
-            too since Mantine wires the prop through a `--text-line-clamp`
-            CSS var (relying on its stylesheet) rather than an inline
-            property, and this makes the clamp verifiable without it. */}
-        <Text
-          size="sm"
-          c="dimmed"
-          lineClamp={3}
-          data-card-reason
-          style={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, overflow: 'hidden' }}
-        >
+            the detail page carries the rest. `lineClamp` is Mantine's own
+            clamp (a `--text-line-clamp` variable its stylesheet reads). */}
+        <Text size="sm" c="dimmed" lineClamp={tokens.statusCard.reasonLineClamp} data-card-reason>
           {worst.reason}
         </Text>
         {/* LEG-16: the worst status's severity and reason may have been

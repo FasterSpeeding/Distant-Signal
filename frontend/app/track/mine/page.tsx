@@ -290,7 +290,7 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
           align="flex-start"
           title={
             <Link href={`/journeys/${journey.id}`} data-card-link>
-              <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+              <Text fw={500} lineClamp={2} miw={0}>
                 {title}
               </Text>
             </Link>
@@ -389,7 +389,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
           }
         />
         {tickets.length > 0 && (
-          <Stack gap="md" pl="md" style={{ borderLeft: '2px solid var(--mantine-color-default-border)' }}>
+          <Stack gap="md" pl="md" className="attachedTickets">
             {tickets.map((ticket) => (
               <Stack key={ticket.id} gap={4}>
                 <TicketSummary ticket={ticket} />
@@ -458,7 +458,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
     : formatDate(train.serviceDate);
   const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
   const heading = (
-    <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+    <Text fw={500} lineClamp={2} miw={0}>
       {displayName}
     </Text>
   );

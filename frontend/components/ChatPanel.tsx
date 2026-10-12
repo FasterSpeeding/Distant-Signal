@@ -241,7 +241,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   }
 
   return (
-    <Stack gap="md" h="100%" style={{ flex: 1, minHeight: 0 }}>
+    <Stack gap="md" h="100%" flex={1} mih={0}>
       <AnthropicKeySettings />
       {shownError && (
         <ChatErrorAlert
@@ -250,7 +250,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
           signingIn={signingIn}
         />
       )}
-      <ScrollArea viewportRef={viewport} style={{ flex: 1 }} offsetScrollbars>
+      <ScrollArea viewportRef={viewport} flex={1} offsetScrollbars>
         <Stack gap="md" p="xs">
           {messages.length === 0 && (
             <Text c="dimmed" ta="center" mt="xl">
@@ -272,7 +272,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       <form onSubmit={handleSubmit}>
         <Group gap="xs" align="flex-end">
           <TextInput
-            style={{ flex: 1 }}
+            flex={1}
             placeholder="Ask about the next train or delays, or plan a journey"
             value={input}
             onChange={(event) => setInput(event.currentTarget.value)}
@@ -521,7 +521,7 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
           </Group>
         )}
         {message.content || isUser ? (
-          <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content}</Text>
+          <Text className="ds-pre-wrap">{message.content}</Text>
         ) : (
           <LoadingText>Writing a reply</LoadingText>
         )}

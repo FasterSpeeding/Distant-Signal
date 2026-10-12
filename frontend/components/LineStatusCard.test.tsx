@@ -163,7 +163,7 @@ describe('LineStatusCard', () => {
       <LineStatusCard report={{ ...report, lineStatuses: [{ ...report.lineStatuses[0]!, reason: wall }] }} />,
     );
     const reason = container.querySelector('[data-card-reason]') as HTMLElement;
-    expect(reason.style.getPropertyValue('-webkit-line-clamp')).toBe('3');
+    expect(reason.style.getPropertyValue('--text-line-clamp')).toBe('3');
   });
 
   it('keeps the status badge on the title row even when the name wraps', () => {

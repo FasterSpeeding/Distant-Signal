@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
+import { Box, Flex, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
@@ -466,6 +466,7 @@ export function JourneyProgress({
         data-journey-progress-scroll
         role="group"
         aria-label={ariaLabel}
+        // eslint-disable-next-line react/forbid-component-props -- stop counts known only at render time, as CSS variables
         style={{
           // Counts only -- every px measurement the diagram uses lives in
           // `.journeyProgressScroll`'s own custom properties in
@@ -480,6 +481,7 @@ export function JourneyProgress({
       >
         <Box
           className="journeyProgressLine"
+          // eslint-disable-next-line react/forbid-component-props -- hands the NODE_CIRCLE_SLOT constant to the stylesheet as a CSS variable
           style={{
             // Read back by `.journeyProgressLine::before`'s `top` in
             // globals.css, instead of that rule hardcoding half of
@@ -563,6 +565,7 @@ function JourneyProgressNode({
       data-node-state={state}
       data-delay-state={delay}
       aria-hidden="true"
+      // eslint-disable-next-line react/forbid-component-props -- size and colours come from the stop's state at render time (circleStyle)
       style={{
         width: diameter,
         height: diameter,
@@ -586,9 +589,9 @@ function JourneyProgressNode({
   );
 
   const circleSlot = (
-    <Box style={{ height: NODE_CIRCLE_SLOT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <Flex h={NODE_CIRCLE_SLOT} align="center" justify="center">
       {circle}
-    </Box>
+    </Flex>
   );
 
   // Not a color change (spec Decision 5's own stated reason: color alone
@@ -609,7 +612,9 @@ function JourneyProgressNode({
       <Box
         aria-hidden="true"
         data-may-have-arrived="true"
-        style={{ lineHeight: 1, display: 'flex', color: 'var(--mantine-color-yellow-light-color)' }}
+        lh={1}
+        display="flex"
+        c="var(--mantine-color-yellow-light-color)"
       >
         <WarningIcon size={12} />
       </Box>

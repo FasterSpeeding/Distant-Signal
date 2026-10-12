@@ -276,7 +276,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
         }}
       />
       {legs.map((leg, index) => (
-        <Stack key={leg.key} gap="xs" p="sm" style={{ border: '1px solid var(--mantine-color-gray-3)' }}>
+        <Stack key={leg.key} gap="xs" p="sm" className="templateLeg">
           <Group justify="space-between">
             <Text size="sm" fw={600}>
               Leg {index + 1}
