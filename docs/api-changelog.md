@@ -3,6 +3,31 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-12: the internal `/private/*` routes are removed (ingest release B)
+
+No public route changes. The internal ingest and internal-read routes
+under `/private/*` are deleted: every `/private/...` path now answers the
+ordinary `404` of an unknown route. They were never part of the public
+API: only DS's own producers called them, with an internal service
+token, and since release A (2026-10-10) every producer writes Postgres or
+a Redis stream directly and reads Postgres directly
+(docs/ingest-phase5-runbook.md).
+
+Removed: `/private/station-samples`, `/full-coverage-stats`,
+`/full-coverage-window-stats`, `/station-full-coverage-samples`,
+`/tfl-line-status`, `/incidents`, `/stations`, `/tocs`,
+`/schedule-calling-points-full`, `/schedule-destination-departures`,
+`/schedule-network-departures`, `/schedule-line-population`,
+`/schedule-services`, `/schedule-reference-publishes`,
+`/schedule-feed-ingests`, `/corpus-locations`, `/fixed-links`,
+`/tiploc-crs`, `/tiploc-locations`, `/stanox-crs` (the `/private` one;
+`/public/stanox-crs` stays), `/trust-event-backlog`, `/train-reasons`,
+`/train-events`, `/train-forward-signals`, `/tracked-trains` and
+`/sample-stations`.
+
+DS-MCP is unaffected: its `srv-ds-mcp` bearer token still buys its own
+rate-limit budget on the public routes.
+
 ## 2026-10-10: no em dashes in API-written text
 
 No shape changes. Text the API and aggregator write themselves no longer

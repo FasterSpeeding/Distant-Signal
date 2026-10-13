@@ -1010,6 +1010,12 @@ Rollback: `source=http`.
 
 ## Phase 5: remove `/private` and lock down
 
+**2026-10-12: release B is built** (5.1–5.3b: the `/private` routes, the
+producers' HTTP sinks and reads, the writer's `shadow` mode, the cutover
+alerts and the app role's publish-staging grants; not yet deployed). 5.4,
+5.4b's deletions, 5.5, the rest of 5.6 and 5.7 remain. See the runbook's
+"Release B" section.
+
 **Status (2026-10-08, batch 53): not started; the prep that changes no
 default is built.** 5.1's `API_PRIVATE_ROUTES` counted-404 fallback (default
 `true`: routes unchanged) and its alert, Q1's `(api|store)` alert rules,
