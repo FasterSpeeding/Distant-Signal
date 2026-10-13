@@ -361,7 +361,7 @@ struct RecentlyClearedParams {
 
 /// Where the caller wants items from (`recently_cleared::Placement`). A
 /// line must be a catalogue line (`affected_lines` holds only those): an
-/// unknown, TfL or custom id is a `400`, as on `GET /public/incidents`. A
+/// unknown, `tfl-` or `custom-` ID is a `400`, as on `GET /public/incidents`. A
 /// station is placed through every catalogue line that calls there (as
 /// `GET /StopPoint/{crs}/Disruption` places live disruptions) plus its own
 /// code in `affected_stations`.

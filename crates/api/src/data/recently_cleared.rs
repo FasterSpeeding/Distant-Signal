@@ -112,9 +112,16 @@ fn plain_text(html: &str) -> String {
     out.replace("&nbsp;", " ")
 }
 
-/// A clock time in `text`'s first stated end: `Some(Some((h, m)))`, end of
-/// day `Some(None)`, nothing `None`.
-fn stated_end(text: &str) -> Option<Option<(u32, u32)>> {
+/// What a text states as its end, before it is placed in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stated {
+    /// A London wall-clock hour and minute.
+    Clock(u32, u32),
+    EndOfDay,
+}
+
+/// `text`'s first stated end, if any.
+fn stated_end(text: &str) -> Option<Stated> {
     for captures in EXPECTED_UNTIL.captures_iter(text) {
         let whole = captures.get(0)?;
         if LATER_DAY.is_match(&text[whole.end()..]) {
@@ -130,9 +137,9 @@ fn stated_end(text: &str) -> Option<Option<(u32, u32)>> {
                 if hour > 23 || minute > 59 {
                     continue;
                 }
-                return Some(Some((hour, minute)));
+                return Some(Stated::Clock(hour, minute));
             }
-            _ => return Some(None),
+            _ => return Some(Stated::EndOfDay),
         }
     }
     None
@@ -155,7 +162,7 @@ pub fn expected_end(
     cleared_at: DateTime<Utc>,
 ) -> Option<ExpectedEnd> {
     let stated = stated_end(summary).or_else(|| stated_end(&plain_text(description)))?;
-    let Some((hour, minute)) = stated else {
+    let Stated::Clock(hour, minute) = stated else {
         let same_rail_day = common::rail_day::current_rail_day(published_at)
             == common::rail_day::current_rail_day(cleared_at);
         return same_rail_day.then_some(ExpectedEnd::EndOfDay);
@@ -270,42 +277,45 @@ mod tests {
         for (text, expected) in [
             (
                 "Residual disruption between Brockenhurst and Bournemouth expected until 22:30",
-                Some(Some((22, 30))),
+                Some(Stated::Clock(22, 30)),
             ),
-            ("Disruption is expected until 22:30.", Some(Some((22, 30)))),
+            (
+                "Disruption is expected until 22:30.",
+                Some(Stated::Clock(22, 30)),
+            ),
             (
                 "Lines reopened: disruption between Redhill and Guildford expected until the end of the day",
-                Some(None),
+                Some(Stated::EndOfDay),
             ),
             (
                 "Disruption between Leeds and York expected until the end of service",
-                Some(None),
+                Some(Stated::EndOfDay),
             ),
             (
                 "Disruption is expected until approximately 15:00.",
-                Some(Some((15, 0))),
+                Some(Stated::Clock(15, 0)),
             ),
             (
                 "This is expected to continue until 18:45.",
-                Some(Some((18, 45))),
+                Some(Stated::Clock(18, 45)),
             ),
             (
                 "This may cause disruption until 19.30.",
-                Some(Some((19, 30))),
+                Some(Stated::Clock(19, 30)),
             ),
             (
                 "No trains between Liskeard and Looe until approximately 21:30",
-                Some(Some((21, 30))),
+                Some(Stated::Clock(21, 30)),
             ),
             (
                 "These alterations are expected to be in place until the end of the day.",
-                Some(None),
+                Some(Stated::EndOfDay),
             ),
             (
                 "Reduced Mildmay line service until the end of the day",
-                Some(None),
+                Some(Stated::EndOfDay),
             ),
-            ("DISRUPTION EXPECTED UNTIL 07:00", Some(Some((7, 0)))),
+            ("DISRUPTION EXPECTED UNTIL 07:00", Some(Stated::Clock(7, 0))),
         ] {
             assert_eq!(stated_end(text), expected, "{text}");
         }
@@ -331,7 +341,7 @@ mod tests {
     fn a_later_day_end_is_skipped_for_a_same_day_one() {
         assert_eq!(
             stated_end("Expected until 04:00 on Tuesday. Disruption is expected until 23:00."),
-            Some(Some((23, 0)))
+            Some(Stated::Clock(23, 0))
         );
     }
 
