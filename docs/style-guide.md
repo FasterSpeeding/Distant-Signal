@@ -439,7 +439,7 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 | Minutes | number, space, "min" | "4 min late", "Avg delay 2.5 min" |
 | Relative time | `lib/relativeTime.ts` | "just now", "4 min ago", "3 hr ago", "2 days ago" |
 | Clock time | 24-hour, UK time | "08:42" |
-| Date | `lib/dateFormat.ts`, D MMM YYYY | "9 Oct 2026" |
+| Date | `lib/dateFormat.ts`, D MMM YYYY; three-letter months ("Sep", never en-GB Intl's "Sept") | "9 Oct 2026", "17 Sep 2026" |
 | Date pickers | `valueFormat="D MMM YYYY"` on every `DatePickerInput` | "9 Oct 2026" |
 | 24-hour hint | Once per form, on its first time field (`clockHint`) | "24-hour clock, e.g. 19:00." |
 
@@ -546,7 +546,8 @@ Stations, a station, Trains, a train, Incidents and Account (logged in) at
   seed's day), reduced motion is on and animations, transitions and the
   caret are off, and each shot waits for the network to go quiet and fonts
   to load. Text tied to the server's own clock (freshness lines, "4 min
-  ago", date-and-time stamps, date and time inputs) is masked.
+  ago", date-and-time stamps, date and time inputs, the trains date hint)
+  is masked.
 - **Threshold.** A shot fails when more than 1% of its pixels differ by more
   than Playwright's 0.2 colour tolerance. Font anti-aliasing between runs
   moves a few dozen pixels at most.

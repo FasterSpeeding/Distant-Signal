@@ -1,10 +1,41 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { formatDate, formatDateTime, formatLocalDateTime, formatTime, londonDayKey } from './dateFormat';
+import {
+  formatDate,
+  formatDateTime,
+  formatLocalDateTime,
+  formatShortDate,
+  formatTime,
+  formatWeekdayShortDate,
+  londonDayKey,
+} from './dateFormat';
 
 describe('formatDate', () => {
   it('renders an unambiguous UK date, never M/D/YYYY', () => {
     expect(formatDate('2026-05-10T00:00:00Z')).toBe('10 May 2026');
     expect(formatDate('2026-10-11T00:00:00Z')).toBe('11 Oct 2026');
+  });
+
+  it('abbreviates every month to three letters, so September is "Sep", not "Sept"', () => {
+    const months = Array.from({ length: 12 }, (_, i) => formatDate(new Date(Date.UTC(2026, i, 17, 11))));
+    expect(months).toEqual([
+      '17 Jan 2026',
+      '17 Feb 2026',
+      '17 Mar 2026',
+      '17 Apr 2026',
+      '17 May 2026',
+      '17 Jun 2026',
+      '17 Jul 2026',
+      '17 Aug 2026',
+      '17 Sep 2026',
+      '17 Oct 2026',
+      '17 Nov 2026',
+      '17 Dec 2026',
+    ]);
+  });
+
+  it('uses the London calendar day', () => {
+    // 23:30 UTC on 30 Sep is 00:30 on 1 Oct in British Summer Time.
+    expect(formatDate('2026-09-30T23:30:00Z')).toBe('1 Oct 2026');
   });
 
   it('is independent of the runtime locale and timezone', () => {
@@ -20,6 +51,20 @@ describe('formatDate', () => {
 describe('formatDateTime', () => {
   it('renders a 24-hour UK date-time with no seconds', () => {
     expect(formatDateTime('2026-08-19T18:56:01Z')).toBe('19 Aug 2026, 19:56');
+    expect(formatDateTime('2026-09-29T08:40:00Z')).toBe('29 Sep 2026, 09:40');
+    expect(formatDateTime('2026-12-01T00:05:00Z')).toBe('1 Dec 2026, 00:05');
+  });
+});
+
+describe('formatShortDate', () => {
+  it('renders day and month with no year', () => {
+    expect(formatShortDate('2026-09-15T11:00:00Z')).toBe('15 Sep');
+  });
+});
+
+describe('formatWeekdayShortDate', () => {
+  it('renders a short weekday, day and month', () => {
+    expect(formatWeekdayShortDate('2026-09-17T11:00:00Z')).toBe('Thu 17 Sep');
   });
 });
 

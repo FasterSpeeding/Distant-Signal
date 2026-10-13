@@ -338,7 +338,7 @@ a[data-card-link]:focus-visible [data-card] {
 
 /* The pride flags' stripe gradients, defined once. Every flag-shaped
    surface reads these: the bar above the page (`body::before`), the bar
-   under the nav (`nav::after`), the gradient site title, and
+   under the nav (`.siteNav::after`), the gradient site title, and
    `components/PrideToggle.tsx`'s button swatch, so the stripes can't drift
    apart between them. Per-flag notes (designer, source of the hex values,
    stripe proportions) sit beside each flag's `body::before` rule below.
@@ -517,13 +517,13 @@ body[data-pride='lesbian']::before {
 }
 
 /* A second bar bracketing the *bottom* of the nav (in addition to the one
-   above the whole page). `nav`'s `position: relative` (needed so this
+   above the whole page). `.siteNav`'s `position: relative` (needed so this
    absolute bar has something to anchor to) lives with the always-on
-   background-theming rules further down this file, which also need it --
-   it's unconditional there, so nothing extra is needed here. Runs the
+   dashed divider further down this file, which also needs it -- it's
+   unconditional there, so nothing extra is needed here. Runs the
    shimmer in reverse so the two bars visibly move opposite directions
    rather than reading as one bar duplicated. */
-body[data-pride='rainbow'] nav::after {
+body[data-pride='rainbow'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -534,7 +534,7 @@ body[data-pride='rainbow'] nav::after {
   background-size: 200% 100%;
 }
 
-body[data-pride='trans'] nav::after {
+body[data-pride='trans'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -545,7 +545,7 @@ body[data-pride='trans'] nav::after {
   background-size: 200% 100%;
 }
 
-body[data-pride='nonbinary'] nav::after {
+body[data-pride='nonbinary'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -556,7 +556,7 @@ body[data-pride='nonbinary'] nav::after {
   background-size: 200% 100%;
 }
 
-body[data-pride='bisexual'] nav::after {
+body[data-pride='bisexual'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -567,7 +567,7 @@ body[data-pride='bisexual'] nav::after {
   background-size: 200% 100%;
 }
 
-body[data-pride='pansexual'] nav::after {
+body[data-pride='pansexual'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -578,7 +578,7 @@ body[data-pride='pansexual'] nav::after {
   background-size: 200% 100%;
 }
 
-body[data-pride='asexual'] nav::after {
+body[data-pride='asexual'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -589,7 +589,7 @@ body[data-pride='asexual'] nav::after {
   background-size: 200% 100%;
 }
 
-body[data-pride='sapphic'] nav::after {
+body[data-pride='sapphic'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -600,7 +600,7 @@ body[data-pride='sapphic'] nav::after {
   background-size: 200% 100%;
 }
 
-body[data-pride='lesbian'] nav::after {
+body[data-pride='lesbian'] .siteNav::after {
   content: '';
   position: absolute;
   left: 0;
@@ -612,14 +612,14 @@ body[data-pride='lesbian'] nav::after {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  body[data-pride='rainbow'] nav::after,
-  body[data-pride='trans'] nav::after,
-  body[data-pride='nonbinary'] nav::after,
-  body[data-pride='bisexual'] nav::after,
-  body[data-pride='pansexual'] nav::after,
-  body[data-pride='asexual'] nav::after,
-  body[data-pride='sapphic'] nav::after,
-  body[data-pride='lesbian'] nav::after {
+  body[data-pride='rainbow'] .siteNav::after,
+  body[data-pride='trans'] .siteNav::after,
+  body[data-pride='nonbinary'] .siteNav::after,
+  body[data-pride='bisexual'] .siteNav::after,
+  body[data-pride='pansexual'] .siteNav::after,
+  body[data-pride='asexual'] .siteNav::after,
+  body[data-pride='sapphic'] .siteNav::after,
+  body[data-pride='lesbian'] .siteNav::after {
     animation: pride-shimmer 6s linear infinite reverse;
   }
 }
@@ -1137,13 +1137,13 @@ body[data-pride='lesbian'] {
   );
 }
 
-/* `nav` needs a positioning context for the dashed divider below, and the
-   pride bar's `nav::after` above needs one too -- previously scoped to
-   `body[data-pride='...'] nav` since those were the only consumers. Now that
-   the always-on divider below needs it too, it's unconditional; harmless
-   when pride is off, since nothing else here depends on nav's static
-   position. */
-nav {
+/* The main nav bar (`AppNavBar`'s `.siteNav`) needs a positioning context
+   for the dashed divider below and the pride bar's `.siteNav::after` above.
+   Both are scoped to `.siteNav`, not bare `nav`: the footer's "Site
+   information" links, the station page's "On this page" links and the line
+   pages' direction switches are `nav` landmarks too, and a bare `nav::before`
+   drew the dashed rule through their last row of links. */
+.siteNav {
   position: relative;
 }
 
@@ -1152,7 +1152,7 @@ nav {
    directly -- see the note above `body[data-pride='rainbow']::before` earlier
    in this file for why a separate layer beats fighting inline-style
    specificity). Positioned at `bottom: 2px` (inside the nav box) rather
-   than nav::after's `bottom: -3px` (outside it, used by the pride bar) so
+   than `.siteNav::after`'s `bottom: -3px` (outside it, used by the pride bar) so
    the two never overlap when pride is on -- each gets its own band.
 
    `background-image` + explicit `background-size: 36px 100%` +
@@ -1168,7 +1168,7 @@ nav {
    small regardless of nav width, so there is nothing left for either engine
    to accumulate error over. Verified this renders identically in Chromium
    and Firefox at both desktop and mobile widths. */
-nav::before {
+.siteNav::before {
   content: '';
   position: absolute;
   left: 0;

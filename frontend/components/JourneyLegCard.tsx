@@ -170,7 +170,7 @@ export function JourneyLegCard({
     // same conclusion from opposite ends): this used to interpolate raw
     // CRS codes and a raw ISO `serviceDate` ("YRK -> NCL, 2026-09-22")
     // while the matched card one row down rendered "London Kings Cross
-    // (KGX) -> York (YRK), 22 Sept 2026" -- two date formats and two
+    // (KGX) -> York (YRK), 22 Sep 2026" -- two date formats and two
     // naming conventions on the same page. `routeLabel`/`formatDate` are
     // the shared formatters both `TrainJourney` and `/track/mine` already
     // use. Unlike the matched card there is no `journeyStops` to read

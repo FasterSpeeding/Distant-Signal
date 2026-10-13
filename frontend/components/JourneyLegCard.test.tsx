@@ -280,8 +280,8 @@ describe('JourneyLegCard', () => {
     );
     // 2026-09-22 UX review finding 2.9: "YRK to NCL, 2026-09-22" (a raw ISO
     // date) is gone -- the open leg now uses the same `formatDate` the
-    // matched card's own title does ("22 Sept 2026", not "2026-09-22").
-    const title = screen.getByText(byVisibleText('YRK to NCL, 22 Sept 2026'));
+    // matched card's own title does ("22 Sep 2026", not "2026-09-22").
+    const title = screen.getByText(byVisibleText('YRK to NCL, 22 Sep 2026'));
     expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
     // The "needs action" card is tinted in grape, the app's action colour,
     // not blue (reserved for planned/changed arrangements).
@@ -435,7 +435,7 @@ describe('JourneyLegCard (open leg)', () => {
     await settleCandidates();
 
     expect(
-      screen.getByText(byVisibleText('London Kings Cross (KGX) to Edinburgh (EDB), 22 Sept 2026')),
+      screen.getByText(byVisibleText('London Kings Cross (KGX) to Edinburgh (EDB), 22 Sep 2026')),
     ).toBeInTheDocument();
     expect(screen.queryByText(byVisibleText(/KGX to EDB/))).not.toBeInTheDocument();
   });
@@ -448,7 +448,7 @@ describe('JourneyLegCard (open leg)', () => {
     renderWithMantine(<JourneyLegCard journeyId={1} isOwner isOnlyLeg={false} leg={openLeg()} />);
     await settleCandidates();
 
-    expect(screen.getByText(byVisibleText('KGX to EDB, 22 Sept 2026'))).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText('KGX to EDB, 22 Sep 2026'))).toBeInTheDocument();
   });
 
   it('shows the persisted search window back to the user, and an Edit search link for the owner', async () => {

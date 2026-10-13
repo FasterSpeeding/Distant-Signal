@@ -75,7 +75,7 @@ describe('GroupInviteLinkCard', () => {
         origin={ORIGIN}
       />,
     );
-    expect(screen.getByText('Expires 24 Sept 2026.')).toBeInTheDocument();
+    expect(screen.getByText('Expires 24 Sep 2026.')).toBeInTheDocument();
   });
 
   it('says nothing about expiry when there is no active link', () => {

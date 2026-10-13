@@ -59,12 +59,16 @@ const SCHEMES = ['light', 'dark'] as const;
  *    A railway time on its own ("10:00") or a date on its own is fixture
  *    data and stays visible;
  *  - date and time inputs: the trains and incidents search forms default
- *    to the server's today. */
+ *    to the server's today;
+ *  - the trains date field's hint ("Search a day from 6 Oct 2026 to 20 Oct
+ *    2026."): the searchable range is the server's, around its own today,
+ *    while the browser's today is FIXED_NOW. */
 function volatile(page: Page) {
   return [
     page.getByText(/\b(updated|last updated|fetched)\b.*\d/i),
     page.getByText(/\b\d+ (min|hr|days?) ago\b|\bjust now\b/),
     page.getByText(/\b\d{1,2} [A-Z][a-z]{2,3} \d{4}, \d{1,2}:\d{2}\b/),
+    page.getByText(/^(Search (a|a different|a later|an earlier) day\b|Only .* can be searched\.)/),
     page.locator('.mantine-DatePickerInput-input, .mantine-TimeInput-input, input[type="date"], input[type="time"]'),
   ];
 }

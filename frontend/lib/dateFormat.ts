@@ -29,30 +29,55 @@
  * `Intl.DateTimeFormat` is comparatively expensive and these are called
  * once per rendered row. (`formatLocalDateTime` deliberately is not — see
  * its own comment.) */
-const DATE = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Europe/London',
-  dateStyle: 'medium',
-});
+/** The style guide's three-letter months: D MMM YYYY, "17 Sep 2026".
+ *
+ * Not `month: 'short'` or `dateStyle: 'medium'`: since ICU 72 (Node 20 and
+ * current browsers) en-GB abbreviates September as "Sept", so those printed
+ * "17 Sept 2026" next to "17 Oct 2026" and the date pickers' dayjs-made
+ * "17 Sep 2026". `Intl` supplies the London calendar fields as numbers and
+ * the month is named here. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
-/** "15 Sep" -- for a chart axis tick, where `formatDate`'s "10 May 2026" is
- * too wide to repeat across a dozen-plus ticks and a bare ISO bucket key
- * ("2026-09-15") is what the trend charts printed before (review [OH]
- * §3.3/I10: "the rest of the app prints '15 Sep' style"). No year: an axis
- * never spans more than a year of history (`resolveRange`'s own ceilings),
- * so it would only ever repeat the same value on every tick. */
-const SHORT_DATE = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Europe/London',
+/** Numeric calendar fields, a short weekday and a 24-hour time, with no
+ * `timeZone` (`formatLocalDateTime` adds none; the London formatter below
+ * adds Europe/London). Seconds are left out: on a status timestamp they are
+ * noise, since the aggregator recomputes every few minutes. */
+const FIELD_OPTIONS: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: 'numeric',
   day: 'numeric',
-  month: 'short',
-});
+  weekday: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+};
 
-/** No `timeStyle: 'medium'`: seconds on a status timestamp are noise — the
- * aggregator recomputes every few minutes. */
-const DATE_TIME = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Europe/London',
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
+const LONDON_FIELDS = new Intl.DateTimeFormat('en-GB', { ...FIELD_OPTIONS, timeZone: 'Europe/London' });
+
+interface DateFields {
+  /** "17 Sep" */
+  dayMonth: string;
+  year: string;
+  /** "Thu" */
+  weekday: string;
+  /** "08:42" */
+  time: string;
+}
+
+function fields(format: Intl.DateTimeFormat, date: Date): DateFields {
+  const parts = format.formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
+  return {
+    dayMonth: `${Number(part('day'))} ${MONTHS[Number(part('month')) - 1]}`,
+    year: part('year'),
+    weekday: part('weekday'),
+    time: `${part('hour')}:${part('minute')}`,
+  };
+}
+
+function london(value: string | Date): DateFields {
+  return fields(LONDON_FIELDS, asDate(value));
+}
 
 const TIME = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Europe/London',
@@ -75,17 +100,31 @@ function asDate(value: string | Date): Date {
 
 /** "10 May 2026" */
 export function formatDate(value: string | Date): string {
-  return DATE.format(asDate(value));
+  const { dayMonth, year } = london(value);
+  return `${dayMonth} ${year}`;
 }
 
-/** "15 Sep" -- see `SHORT_DATE`'s own doc comment above. */
+/** "15 Sep" -- for a chart axis tick, where `formatDate`'s "10 May 2026" is
+ * too wide to repeat across a dozen-plus ticks and a bare ISO bucket key
+ * ("2026-09-15") is what the trend charts printed before (review [OH]
+ * §3.3/I10: "the rest of the app prints '15 Sep' style"). No year: an axis
+ * never spans more than a year of history (`resolveRange`'s own ceilings),
+ * so it would only ever repeat the same value on every tick. */
 export function formatShortDate(value: string | Date): string {
-  return SHORT_DATE.format(asDate(value));
+  return london(value).dayMonth;
+}
+
+/** "Sun 11 Oct" -- a short date with its weekday, for upcoming disruption
+ * notes (`lib/upcoming.ts`). */
+export function formatWeekdayShortDate(value: string | Date): string {
+  const { weekday, dayMonth } = london(value);
+  return `${weekday} ${dayMonth}`;
 }
 
 /** "19 Aug 2026, 19:56" */
 export function formatDateTime(value: string | Date): string {
-  return DATE_TIME.format(asDate(value));
+  const { dayMonth, year, time } = london(value);
+  return `${dayMonth} ${year}, ${time}`;
 }
 
 /** "19 Aug 2026, 19:56" in **the host's own timezone** — `formatDateTime`'s
@@ -111,7 +150,7 @@ export function formatDateTime(value: string | Date): string {
  * mount. Nothing else should call this directly.
  *
  * Constructed per call rather than hoisted to a module-level constant like
- * the four above: a constant would capture the host zone at module-load
+ * `LONDON_FIELDS` above: a constant would capture the host zone at module-load
  * time, which on the server is the container's UTC, cached process-wide for
  * every subsequent render — and it would make the local path untestable,
  * since a test that flips `process.env.TZ` could never observe the change
@@ -121,10 +160,8 @@ export function formatDateTime(value: string | Date): string {
  *
  * See docs/superpowers/specs/2026-09-02-client-local-timezone-display-research.md. */
 export function formatLocalDateTime(value: string | Date): string {
-  return new Intl.DateTimeFormat('en-GB', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(asDate(value));
+  const { dayMonth, year, time } = fields(new Intl.DateTimeFormat('en-GB', FIELD_OPTIONS), asDate(value));
+  return `${dayMonth} ${year}, ${time}`;
 }
 
 /** "19:56" */
