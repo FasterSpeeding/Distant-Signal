@@ -38,6 +38,7 @@ import type {
   DelayRepayEstimateResponse,
   TicketListItem,
   IncidentDetail,
+  RecentlyClearedIncident,
   StationOperatorSampleStats,
   StationAccessibilityData,
   GroupSummary,
@@ -1091,6 +1092,23 @@ export async function getIncident(incidentId: string): Promise<IncidentDetail> {
     cache: 'no-store',
     ...(await cookieForwardInit()),
   });
+}
+
+/** Where `getRecentlyCleared` looks: one catalogue line, one station, or
+ * everywhere (`{}`). */
+export type RecentlyClearedScope = { line: string } | { station: string } | Record<string, never>;
+
+/** `GET /public/incidents/recently-cleared`: incidents National Rail has
+ * cleared but still lists, newest clear first. Public and the same for
+ * everyone, so no cookie is forwarded. */
+export async function getRecentlyCleared(scope: RecentlyClearedScope): Promise<RecentlyClearedIncident[]> {
+  const params = new URLSearchParams();
+  if ('line' in scope) params.set('line', scope.line);
+  if ('station' in scope) params.set('station', scope.station);
+  const query = params.toString();
+  const url = `${baseUrl()}/public/incidents/recently-cleared${query ? `?${query}` : ''}`;
+  const body = await fetchJson<{ results: RecentlyClearedIncident[] }>(url, { cache: 'no-store' });
+  return body.results;
 }
 
 /** `GET /public/groups` -- the current user's own groups. `null` on a

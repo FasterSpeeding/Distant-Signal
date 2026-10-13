@@ -304,7 +304,7 @@ describe('JourneyDetailPage title (M18)', () => {
     await screen.findAllByText(/No scheduled trains match this window\./);
 
     expect(
-      screen.getByRole('heading', { level: 1, name: 'London Kings Cross (KGX) to Edinburgh (EDB), 22 Sept 2026' }),
+      screen.getByRole('heading', { level: 1, name: 'London Kings Cross (KGX) to Edinburgh (EDB), 22 Sep 2026' }),
     ).toBeInTheDocument();
     expect(screen.queryByText('Tracked journey')).not.toBeInTheDocument();
   });
@@ -319,7 +319,7 @@ describe('JourneyDetailPage title (M18)', () => {
     renderWithMantine(await JourneyDetailPage({ params: Promise.resolve({ id: '1' }) }));
     await screen.findAllByText(/No scheduled trains match this window\./);
 
-    expect(screen.getByRole('heading', { level: 1, name: 'KGX to EDB, 22 Sept 2026' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'KGX to EDB, 22 Sep 2026' })).toBeInTheDocument();
   });
 
   it('still prefers a real customName over the computed default', async () => {
@@ -352,7 +352,7 @@ describe('JourneyDetailPage title (M18)', () => {
     renderWithMantine(await JourneyDetailPage({ params: Promise.resolve({ id: '1' }) }));
     await screen.findAllByText(/No scheduled trains match this window\./);
 
-    expect(screen.getByRole('heading', { level: 1, name: 'KGX to NCL, 22 Sept 2026' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'KGX to NCL, 22 Sep 2026' })).toBeInTheDocument();
   });
 });
 

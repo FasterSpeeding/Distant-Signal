@@ -11,6 +11,7 @@ import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
 import { IssueList } from '@/components/IssueList';
 import { UpcomingDisruptions } from '@/components/UpcomingDisruptions';
+import { RecentlyCleared } from '@/components/RecentlyCleared';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
 import { LineDefinitionTooltip } from '@/components/LineDefinitionTooltip';
 import { ShareButton } from '@/components/ShareButton';
@@ -362,6 +363,12 @@ export default async function LineDetailPage({
   // alike simply 404s") -- skip the panel for both, for the same reason.
   const showTrainsPanel = !isCustom && !isTflLine;
 
+  // Recently cleared incidents are placed by the catalogue lines they were
+  // matched to, so only a catalogue line has any (a TfL or custom id is a
+  // 400 from the api). The `custom-` check covers a custom line whose
+  // `getCustomLine` lookup failed and so reads as `isCustom = false`.
+  const showRecentlyCleared = showTrainsPanel && !id.startsWith('custom-');
+
   // A tooltip showing stations/operators is a nice-to-have, not core page
   // functionality — if this fails for any reason, just don't show it
   // rather than breaking the whole page over it. Works for both catalogue
@@ -540,6 +547,13 @@ export default async function LineDetailPage({
             <IssueList items={statusResult.report.tflStatus.map((status) => ({ status }))} now={now} />
           </Stack>
         )}
+      {/* Info only, never part of the status above; hidden when empty.
+          Its own Suspense boundary so its fetch never holds up the page. */}
+      {showRecentlyCleared && (
+        <Suspense fallback={null}>
+          <RecentlyCleared scope={{ line: id }} now={now} />
+        </Suspense>
+      )}
       {/* Skipped entirely (no heading, no fetch) for a TfL line or a custom
           line -- both guarantee a 404 from `getLineTrains` (see
           `isTflLine`/`showTrainsPanel` above), so there is nothing honest

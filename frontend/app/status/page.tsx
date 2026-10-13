@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Badge, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
@@ -17,6 +18,7 @@ import {
 import { TextLink } from '@/components/TextLink';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { LastUpdated } from '@/components/LastUpdated';
+import { RecentlyCleared } from '@/components/RecentlyCleared';
 import type { LineStatusReport } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { CardLink } from '@/components/CardLink';
@@ -70,6 +72,11 @@ export default async function NetworkStatusPage() {
   ].filter((mode): mode is string => mode !== null);
   const modesDescription = activeModes.length > 0 ? activeModes.join(' and ') : 'National Rail and TfL';
 
+  // One timestamp per request, so the "Was expected until" check agrees
+  // between SSR and hydration.
+  // eslint-disable-next-line react-hooks/purity -- server component: one timestamp per request, passed down so SSR and hydration agree
+  const now = Date.now();
+
   return (
     <Stack p="lg" gap="xl">
       <Stack gap="xs">
@@ -103,6 +110,12 @@ export default async function NetworkStatusPage() {
       </SimpleGrid>
 
       <WorstLinesSection worstFirst={overview.worstFirst} />
+
+      {/* Info only: cleared incidents never count towards the tiles above.
+          Hidden when empty. */}
+      <Suspense fallback={null}>
+        <RecentlyCleared scope={{}} now={now} showLines />
+      </Suspense>
 
       <Stack gap="md">
         <SectionTitle>By mode</SectionTitle>

@@ -90,6 +90,27 @@ export interface IncidentSummary {
   sourceRemovedAt?: string | null;
 }
 
+/** One item of `GET /public/incidents/recently-cleared` (docs/api-changelog.md,
+ * 2026-10-12): an incident National Rail has cleared but still lists,
+ * cleared since 02:00 today. For information only: it never affects a
+ * line's status. */
+export interface RecentlyClearedIncident {
+  incidentId: string;
+  /** The clearing summary as published, often starting "CLEARED:". */
+  summary: string;
+  /** The clearing text as published (HTML). */
+  description: string;
+  operators: string[];
+  affectedLines: IncidentLineRef[];
+  clearedAt: string; // RFC3339
+  lastListedAt: string; // RFC3339
+  /** The end time the last live text stated, or null. Shown only while it
+   * is still in the future. */
+  expectedUntil: string | null;
+  /** The last live text said "expected until the end of the day". */
+  expectedUntilEndOfDay: boolean;
+}
+
 export interface IncidentSearchResponse {
   results: IncidentSummary[];
   nextCursor: string | null;

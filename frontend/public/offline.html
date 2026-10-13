@@ -229,15 +229,34 @@
             return days + (days === 1 ? ' day ago' : ' days ago');
           }
 
-          var exact = lastDate.toLocaleString('en-GB', {
+          // Same shape as lib/dateFormat.ts's formatDateTime ("29 Sep 2026,
+          // 09:40"): the month is named here because en-GB's short
+          // September is "Sept".
+          var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          var parts = {};
+          new Intl.DateTimeFormat('en-GB', {
             timeZone: 'Europe/London',
             day: 'numeric',
-            month: 'short',
+            month: 'numeric',
             year: 'numeric',
             hour: '2-digit',
             minute: '2-digit',
             hourCycle: 'h23',
-          });
+          })
+            .formatToParts(lastDate)
+            .forEach(function (p) {
+              parts[p.type] = p.value;
+            });
+          var exact =
+            Number(parts.day) +
+            ' ' +
+            MONTHS[Number(parts.month) - 1] +
+            ' ' +
+            parts.year +
+            ', ' +
+            parts.hour +
+            ':' +
+            parts.minute;
           messageEl.title = 'Last connected ' + exact + ' (UK time)';
 
           function render() {

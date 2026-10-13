@@ -269,7 +269,7 @@ export default async function MyTrackedTrainsPage() {
  * Route and date go through `routeLabel`/`formatDate`, the same two
  * helpers the tracked-train rows below already use: a journey row printing
  * "KGX → YRK, 2026-09-22" directly above a train row printing "London
- * Kings Cross (KGX) → York (YRK), 22 Sept 2026" would be a fresh instance
+ * Kings Cross (KGX) → York (YRK), 22 Sep 2026" would be a fresh instance
  * of the review's own P5 in the one list where both formats are visible at
  * once. `GET /Journeys/mine` grew `serviceDate`/`originName`/
  * `destinationName` for exactly this.

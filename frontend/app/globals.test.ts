@@ -564,7 +564,7 @@ describe('background theming', () => {
     'paints every %s flag surface from its one --ds-pride variable',
     (mode) => {
       expect(css).toMatch(new RegExp(`--ds-pride-${mode}: linear-gradient\\(\\s*to right,\\s*#`));
-      for (const selector of [`::before`, ` nav::after`, ` \\[data-site-title\\]`]) {
+      for (const selector of [`::before`, ` \\.siteNav::after`, ` \\[data-site-title\\]`]) {
         const rule = new RegExp(`body\\[data-pride='${mode}'\\]${selector}\\s*\\{[^}]*\\}`).exec(css);
         expect(rule, selector).not.toBeNull();
         expect(rule![0]).toContain(`background: var(--ds-pride-${mode});`);
@@ -581,13 +581,19 @@ describe('background theming', () => {
     // stayed pride-only under either mode's selector.
     expect(css).not.toMatch(/body\[data-pride='rainbow'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
     expect(css).not.toMatch(/body\[data-pride='trans'\]\s*nav\s*\{\s*position:\s*relative;\s*\}/);
-    const rule = /\bnav\s*\{\s*position:\s*relative;\s*\}/.exec(css);
+    const rule = /\.siteNav\s*\{\s*position:\s*relative;\s*\}/.exec(css);
     expect(rule).not.toBeNull();
   });
 
+  it('draws the nav rules on the main nav only, not on every nav landmark', () => {
+    // A bare `nav::before` also drew the dashed rule through the footer's
+    // "Site information" links and the station page's "On this page" links.
+    expect(css).not.toMatch(/(^|[\s,])nav(::before|::after)?\s*[{,]/m);
+  });
+
   it('keeps the always-on dashed nav divider clear of the pride bar band so the two never overlap', () => {
-    const divider = /nav::before\s*\{[^}]*\}/.exec(css);
-    const prideBar = /body\[data-pride='rainbow'\]\s*nav::after\s*\{[^}]*\}/.exec(css);
+    const divider = /\.siteNav::before\s*\{[^}]*\}/.exec(css);
+    const prideBar = /body\[data-pride='rainbow'\]\s*\.siteNav::after\s*\{[^}]*\}/.exec(css);
     expect(divider).not.toBeNull();
     expect(prideBar).not.toBeNull();
 

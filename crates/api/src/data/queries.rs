@@ -8317,6 +8317,47 @@ mod incident_snapshot_db_tests {
         reset(&pool).await;
     }
 
+    /// 2026-10-12: a reopen (cleared to uncleared) is published even with
+    /// no text change. RDM sometimes publishes the live text while the
+    /// incident is still flagged cleared (the enricher skips it then), and
+    /// flips the flag one poll later; without this publish the reopened
+    /// incident waited for the enricher's hourly sweep.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_snapshot_db_tests -- --ignored --test-threads=1`"]
+    async fn a_reopen_with_unchanged_text_is_published() {
+        let pool = test_pool().await;
+        for heartbeat in [RowHeartbeat::On, RowHeartbeat::Off] {
+            reset(&pool).await;
+            let live = incident("REOPEN", "Disruption between Woking and Guildford");
+            let cleared = IncidentMessage {
+                is_cleared: true,
+                ..live.clone()
+            };
+            let (published, _) = snapshot(&pool, std::slice::from_ref(&cleared), heartbeat).await;
+            assert!(published.is_some(), "{heartbeat:?}: new, so published");
+            let (published, _) = snapshot(&pool, std::slice::from_ref(&cleared), heartbeat).await;
+            assert_eq!(
+                published, None,
+                "{heartbeat:?}: unchanged and still cleared"
+            );
+
+            let (published, _) = snapshot(&pool, std::slice::from_ref(&live), heartbeat).await;
+            assert_eq!(
+                published.map(|at| at.ids),
+                Some(vec![live.incident_id.clone()]),
+                "{heartbeat:?}: the flag-only reopen is published"
+            );
+
+            let (published, _) = snapshot(&pool, std::slice::from_ref(&cleared), heartbeat).await;
+            assert_eq!(
+                published, None,
+                "{heartbeat:?}: a flag-only clear is not (the enricher skips cleared incidents)"
+            );
+        }
+        reset(&pool).await;
+    }
+
     /// `(raw incidents.fetched_at, incident_by_id's, search_incidents')`
     /// for one of this module's rows.
     async fn fetched_ats(
