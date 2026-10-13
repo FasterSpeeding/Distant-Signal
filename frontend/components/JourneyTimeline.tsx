@@ -13,7 +13,7 @@ import {
 import { formatTime } from '@/lib/dateFormat';
 import { DelayBadge } from './DelayBadge';
 import { PlatformBadge } from './PlatformBadge';
-import Link from 'next/link';
+import { TextLink } from './TextLink';
 import {
   isPassingPoint,
   isRoadOrWaterStop,
@@ -374,9 +374,9 @@ function JourneyStopRow({
             {/* A bus stop or ferry terminal has no station page of its own:
                 it links to the station it belongs to, when it has one. */}
             {isRoadOrWaterStop(stop) && stop.parentCrs ? (
-              <Link href={`/stations/${stop.parentCrs}`} style={{ color: 'inherit' }}>
+              <TextLink href={`/stations/${stop.parentCrs}`} underline="always" inline>
                 {label}
-              </Link>
+              </TextLink>
             ) : (
               label
             )}

@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getTrackedTrainById, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { TrainJourneyPanel } from '@/components/TrainJourneyPanel';
 import { TicketPanel } from '@/components/TicketPanel';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { TrackedTrainOwnerControls } from '@/components/TrackedTrainOwnerControls';
 import { LastUpdated } from '@/components/LastUpdated';
 import { REFRESH_INTERVAL_MS } from '@/lib/refresh';
@@ -47,7 +47,7 @@ export default async function TrackedTrainByIdPage({ params }: { params: Promise
               train's own identifier) to a visitor who isn't logged in as
               its owner. */}
           <Title order={1}>Log in to see this tracked train</Title>
-          <LoginLink underline="always">Log in to view this tracked train</LoginLink>
+          <LoginControl underline="always">Log in to view this tracked train</LoginControl>
         </Stack>
       );
     }

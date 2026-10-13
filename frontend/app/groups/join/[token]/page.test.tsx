@@ -77,12 +77,12 @@ describe('JoinGroupPage', () => {
   // login step here -- used to be an underlined text link where the
   // authenticated branch (the case above) shows a filled `Button`. It's now
   // promoted to the same filled treatment.
-  it('renders the anonymous login action as a filled button, not a plain text link', async () => {
+  it('renders the anonymous login action as a filled button-styled link, not a plain text link', async () => {
     vi.mocked(getGroupJoinPreview).mockResolvedValue({ groupId: 'grp-1', groupName: 'Family', memberCount: 3 });
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue({ authenticated: false, id: null, username: null, name: null });
 
     renderWithMantine(await JoinGroupPage({ params: Promise.resolve({ token: 'tok123' }) }));
-    expect(await screen.findByRole('button', { name: 'Log in to join Family' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Log in to join Family' })).toHaveClass('mantine-Button-root');
   });
 
   it('shows the explicit Join button when already authenticated', async () => {
@@ -145,7 +145,7 @@ describe('JoinGroupPage', () => {
 
       renderWithMantine(await JoinGroupPage({ params: Promise.resolve({ token: 'tok123' }) }));
       expect(vi.mocked(getGroup)).not.toHaveBeenCalled();
-      expect(screen.getByRole('button', { name: 'Log in to join Family' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Log in to join Family' })).toBeInTheDocument();
     });
 
     it('falls back to the ordinary Join button on a lapsed-session race (ApiUnauthorizedError)', async () => {

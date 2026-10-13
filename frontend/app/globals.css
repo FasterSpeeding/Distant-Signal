@@ -305,19 +305,33 @@ a[data-text-link]:focus-visible {
   text-decoration: underline;
 }
 
-/* `/groups`'s `GroupRow` (review §3.2.5) -- a bare `<Link>` wrapping a
-   `Card`, with nothing besides the cursor to say it was clickable. Same
-   data-attribute pattern as `a[data-text-link]` above: `data-group-card`
-   sits on the `Card` so its own `withBorder` border colour can transition,
-   and `data-group-card-link` on the wrapping `<a>` carries the
-   `:hover`/`:focus-visible` state down to it (an `<a>` has no border of its
-   own to change here). */
-a[data-group-card-link]:hover [data-group-card],
-a[data-group-card-link]:focus-visible [data-group-card] {
+/* `components/CardLink.tsx`: a `<Link data-card-link>` wrapping a
+   `<Card data-card>` (review §3.2.5: a card link used to be a bare `<a>`
+   with an inline `textDecoration: 'none'; color: 'inherit'` and nothing
+   besides the cursor to say it was clickable). The card keeps its own text
+   colour and no underline; its border turns to the link colour on hover
+   and keyboard focus, and the focus ring goes round the card (an inline
+   `<a>` around a block card draws a broken outline of its own).
+
+   A `data-card-link` anchor with no card inside (a heading link in a row
+   that holds other controls) gets the same reset and keeps the browser's
+   own focus ring. */
+a[data-card-link] {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+a[data-card-link]:hover [data-card],
+a[data-card-link]:focus-visible [data-card] {
   border-color: var(--mantine-color-anchor);
 }
 
-a[data-group-card-link]:focus-visible [data-group-card] {
+a[data-card-link]:focus-visible:has([data-card]) {
+  outline: none;
+}
+
+a[data-card-link]:focus-visible [data-card] {
   outline: 2px solid var(--mantine-color-anchor);
   outline-offset: 2px;
 }
@@ -1610,7 +1624,7 @@ a[data-text-link-tone='inherit'] {
    scheme too, where filled grape is left at its Mantine default (grape 8,
    white text 5.82:1 -- already compliant, see the comment above). The
    focus outline reuses `--mantine-color-anchor`, the same focus-ring
-   colour `a[data-group-card-link]:focus-visible` already uses. */
+   colour `a[data-card-link]:focus-visible` already uses. */
 .skip-link {
   position: absolute;
   left: -9999px;
@@ -1719,4 +1733,213 @@ a[data-text-link-tone='inherit'] {
   [data-counter-tiles] > :last-child:nth-child(odd) {
     grid-column: 1 / -1;
   }
+}
+
+/* ---------------------------------------------------------------------
+   Styles that used to be inline `style={{...}}` props. ESLint bans those
+   (`react/forbid-dom-props`, `react/forbid-component-props`; see
+   docs/style-guide.md, "Code conventions"): a component reaches for a
+   Mantine style prop first (`miw`, `maw`, `flex`, `mt`, `c`, `lh`,
+   `display`), then one of the small helpers below for a property Mantine
+   has no prop for, then a named class of its own here.
+   --------------------------------------------------------------------- */
+
+/* Helpers, one property each (or one well-known reset). */
+.ds-nowrap {
+  white-space: nowrap;
+}
+
+.ds-pre-wrap {
+  white-space: pre-wrap;
+}
+
+.ds-break-anywhere {
+  overflow-wrap: anywhere;
+}
+
+.ds-plain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ds-self-start {
+  align-self: flex-start;
+}
+
+/* A label laid over a drop zone, so the click lands on the zone. */
+.ds-pass-through {
+  pointer-events: none;
+}
+
+.ds-clickable {
+  cursor: pointer;
+}
+
+/* The nav bar's bottom rule and the footer's top rule
+   (`AppNavBar`, `OpenDataAttribution`). */
+.siteNav {
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.siteFooter {
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+/* `ExternalLinkIcon` sits on the text baseline's x-height. */
+svg[data-icon='external-link'] {
+  vertical-align: -0.1em;
+}
+
+/* `/lines` table: sortable column headers and the "Show all lines" text
+   button beside the filter summary. */
+.sortHeader {
+  white-space: nowrap;
+}
+
+.sortHeader__button {
+  font-weight: inherit;
+}
+
+.sortHeader__glyph {
+  margin-inline-start: 4px;
+  vertical-align: middle;
+}
+
+.textButton {
+  color: var(--mantine-color-anchor);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  font-size: inherit;
+}
+
+/* `IncidentSearchForm` result rows: the summary link and its date wrap
+   tightly, and a long unbroken summary breaks rather than overflowing. */
+.incidentRow__head {
+  row-gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* `/track/mine`: a train's attached tickets hang off it on an indented
+   rule. */
+.attachedTickets {
+  border-inline-start: 2px solid var(--mantine-color-default-border);
+}
+
+/* `EditJourneyTemplateForm`: one bordered block per leg. */
+.templateLeg {
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+}
+
+/* `ConnectivityMonitor`'s "Reconnecting" notice. zIndex 300 sits below
+   DataFreshnessInfo's tooltip (400) and Mantine's Modal, so it never covers
+   something the visitor opened (design spec Decision 8). Review §2.16:
+   capped at 480px (the app's narrow-form width) and floored at the
+   viewport minus a 16px gutter each side, so on a 390px phone it neither
+   shrinks to a four-line wrap nor touches the screen edges. */
+.connectivityBanner {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  width: min(calc(100vw - 32px), 480px);
+}
+
+/* `JourneyLegCard`'s open leg ("Needs a train picked"): border, tint, bold
+   title and glyph, so it isn't marked by colour alone. The glyph uses the
+   light variant's text colour, measured AA on this same `grape-light`
+   surface in both schemes. */
+.openLegCard {
+  border-left-width: 4px;
+  border-left-color: var(--mantine-color-grape-filled);
+  background-color: var(--mantine-color-grape-light);
+}
+
+.openLegCard__icon {
+  color: var(--mantine-color-grape-light-color);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* `StationAccessibilitySection`: Yes/No with its tick or cross, and the
+   real `<ul>` it uses for a list value (the two declarations Mantine's own
+   List root sets). */
+.availabilityValue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.availabilityIcon {
+  display: inline-flex;
+}
+
+.availabilityIcon svg {
+  flex-shrink: 0;
+}
+
+.accessibilityList {
+  margin: 0;
+  padding-inline-start: var(--mantine-spacing-lg);
+  list-style-position: outside;
+}
+
+/* `OperatorStatusCard` is a column, so its footer (`mt="auto"`) sits on
+   the card's bottom edge whatever the text above it wrapped to (review
+   M6). */
+.ds-column {
+  display: flex;
+  flex-direction: column;
+}
+
+/* `PrideToggle`'s swatch: a 16x4 strip of the flag, from the same
+   `--ds-pride-*` variables the page and nav bars read. */
+.prideToggle {
+  position: relative;
+  display: inline-flex;
+}
+
+.prideSwatch {
+  display: inline-block;
+  width: 16px;
+  height: 4px;
+  border-radius: 1px;
+}
+
+.prideSwatch[data-flag='off'] {
+  height: 16px;
+}
+
+.prideSwatch[data-flag='rainbow'] {
+  background: var(--ds-pride-rainbow);
+}
+
+.prideSwatch[data-flag='trans'] {
+  background: var(--ds-pride-trans);
+}
+
+.prideSwatch[data-flag='nonbinary'] {
+  background: var(--ds-pride-nonbinary);
+}
+
+.prideSwatch[data-flag='bisexual'] {
+  background: var(--ds-pride-bisexual);
+}
+
+.prideSwatch[data-flag='pansexual'] {
+  background: var(--ds-pride-pansexual);
+}
+
+.prideSwatch[data-flag='asexual'] {
+  background: var(--ds-pride-asexual);
+}
+
+.prideSwatch[data-flag='sapphic'] {
+  background: var(--ds-pride-sapphic);
+}
+
+.prideSwatch[data-flag='lesbian'] {
+  background: var(--ds-pride-lesbian);
 }

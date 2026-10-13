@@ -286,8 +286,7 @@ describe('JourneyLegCard', () => {
     // The "needs action" card is tinted in grape, the app's action colour,
     // not blue (reserved for planned/changed arrangements).
     const card = title.closest<HTMLElement>('[data-needs-action]');
-    expect(card?.style.backgroundColor).toBe('var(--mantine-color-grape-light)');
-    expect(card?.style.borderLeftColor).toBe('var(--mantine-color-grape-filled)');
+    expect(card).toHaveClass('openLegCard');
     // The old unconditional "Searching…" copy is gone: `JourneyLegCandidates`
     // now owns its own state text (its match-count line).
     expect(screen.queryByText('Searching for a train to track — pick one below.')).not.toBeInTheDocument();
@@ -574,7 +573,7 @@ describe('JourneyLegCard (open leg)', () => {
     await settleCandidates();
 
     const card = container.querySelector('.mantine-Card-root');
-    expect(card).toHaveStyle({ borderLeftWidth: '4px' });
+    expect(card).toHaveClass('openLegCard');
   });
 
   it('accents the non-owner "waiting for the owner" card the same way', () => {
@@ -583,7 +582,7 @@ describe('JourneyLegCard (open leg)', () => {
     );
 
     const card = container.querySelector('.mantine-Card-root');
-    expect(card).toHaveStyle({ borderLeftWidth: '4px' });
+    expect(card).toHaveClass('openLegCard');
     expect(screen.getByText('Waiting for the owner to pick a train.')).toBeInTheDocument();
   });
 });

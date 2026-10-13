@@ -1,5 +1,4 @@
-import { Alert, Button, Stack, Text, Title } from '@mantine/core';
-import Link from 'next/link';
+import { Alert, Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import {
   getGroup,
@@ -8,9 +7,10 @@ import {
   ApiNotFoundError,
   ApiUnauthorizedError,
 } from '@/lib/api';
-import { LoginButton } from '@/components/LoginButton';
+import { LoginControl } from '@/components/LoginControl';
 import { JoinGroupButton } from '@/components/JoinGroupButton';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { ButtonLink } from '@/components/ButtonLink';
 
 export const revalidate = 0;
 
@@ -79,8 +79,8 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
  * token to a group preview (works whether or not the visitor is logged in
  * -- `getGroupJoinPreview` hits the backend's unauthenticated preview
  * route), then either shows the explicit Join button (already
- * authenticated) or a login button. `LoginButton` (review §2.16 -- this
- * used to be `LoginLink`, an underlined text link with far less visual
+ * authenticated) or a login button. `LoginControl` (review §2.16 -- this
+ * used to be `LoginControl`, an underlined text link with far less visual
  * weight than the filled `JoinGroupButton` the authenticated branch below
  * renders, on the one page an invitee reaches *by definition* anonymous)
  * needs no extra plumbing to preserve this token through the OIDC redirect:
@@ -163,14 +163,7 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
       <Stack p="lg" gap="md">
         <Title order={1}>You&apos;re already in {preview.groupName}</Title>
         <Text>No need to join again. You can open the group instead.</Text>
-        {/* Plain `<Link>` wrapping `Button`, not `component={Link}` on a
-            Mantine polymorphic prop -- this page is a Server Component,
-            and that pattern previously broke `next build`'s Server/Client
-            boundary check (see `app/lines/[id]/page.tsx`'s identical
-            comment on its own "Edit" link). */}
-        <Link href={`/groups/${preview.groupId}`} style={{ textDecoration: 'none' }}>
-          <Button>Open group</Button>
-        </Link>
+        <ButtonLink href={`/groups/${preview.groupId}`}>Open group</ButtonLink>
       </Stack>
     );
   }
@@ -186,7 +179,9 @@ export default async function JoinGroupPage({ params }: { params: Promise<{ toke
       {session.authenticated ? (
         <JoinGroupButton token={token} groupId={preview.groupId} />
       ) : (
-        <LoginButton title="Log in (needs a Distant Signal account)">Log in to join {preview.groupName}</LoginButton>
+        <LoginControl variant="button" title="Log in (needs a Distant Signal account)">
+          Log in to join {preview.groupName}
+        </LoginControl>
       )}
     </Stack>
   );

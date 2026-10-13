@@ -221,14 +221,16 @@ describe('TicketEntryForm', () => {
     // source of truth -- this is testing the pass-through, not owning the
     // wording itself.
     mockDefaultResponse(
-      new Response("That doesn't look like a station code. CRS codes are three letters, like WOK or EUS.", {
+      new Response("That doesn't look like a station code. Station codes are three letters, like WOK or EUS.", {
         status: 400,
       }),
     );
     openForm();
     fireEvent.click(screen.getByRole('button', { name: 'Save ticket' }));
     expect(
-      await screen.findByText("That doesn't look like a station code. CRS codes are three letters, like WOK or EUS."),
+      await screen.findByText(
+        "That doesn't look like a station code. Station codes are three letters, like WOK or EUS.",
+      ),
     ).toBeInTheDocument();
   });
 

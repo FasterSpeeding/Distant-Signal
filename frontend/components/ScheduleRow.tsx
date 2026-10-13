@@ -125,7 +125,7 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
             }
           : undefined
       }
-      style={{ cursor: clickable ? 'pointer' : 'default' }}
+      {...(clickable && { className: 'ds-clickable' })}
     >
       <StatusRow title={title} trailing={trailing} />
     </Box>

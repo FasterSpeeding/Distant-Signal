@@ -7,7 +7,7 @@ import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
@@ -316,7 +316,7 @@ export function AddJourneyLegButton({
             />
           )}
           {error && <Alert color="red">{error}</Alert>}
-          {needsLoginState.needsLogin && <LoginLink underline="always">Log in to add a leg</LoginLink>}
+          {needsLoginState.needsLogin && <LoginControl underline="always">Log in to add a leg</LoginControl>}
           <Button onClick={handleSubmit} disabled={!isValid} loading={submitting}>
             Add leg
           </Button>

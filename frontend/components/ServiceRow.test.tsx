@@ -57,6 +57,19 @@ describe('ServiceRow', () => {
     expect(screen.queryByText('+1')).not.toBeInTheDocument();
   });
 
+  it('shows an aria-hidden en dash and says "No time" for a row without a time', () => {
+    renderRow({ timeOverride: null });
+    const link = screen.getByRole('link');
+    expect(within(link).getByText('–')).toHaveAttribute('aria-hidden', 'true');
+    expect(link).toHaveTextContent('No time');
+    expect(link).not.toHaveTextContent('--');
+  });
+
+  it('names a row without a time "No time" in the destination link when the row has actions', () => {
+    renderRow({ timeOverride: null, actions: <button type="button">Track this train</button> });
+    expect(screen.getByRole('link')).toHaveTextContent('No time to Weymouth');
+  });
+
   it('shows the details line', () => {
     renderRow({ details: 'From Reading · South Western Railway (SW)' });
     expect(screen.getByRole('link')).toHaveTextContent('From Reading · South Western Railway (SW)');

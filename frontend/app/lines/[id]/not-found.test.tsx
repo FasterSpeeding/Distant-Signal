@@ -17,7 +17,7 @@ vi.mock('@/lib/api', async () => {
   // override and hit the real (unmocked) network call instead.
   return { ...actual, getSessionOrLoggedOut: vi.fn() };
 });
-// LoginLink calls usePathname()/useSearchParams() -- same workaround every
+// LoginControl calls usePathname()/useSearchParams() -- same workaround every
 // other test rendering it uses.
 vi.mock('next/navigation', () => ({
   usePathname: () => '/lines/some-id/edit',

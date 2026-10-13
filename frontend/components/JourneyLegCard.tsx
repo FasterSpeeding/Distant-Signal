@@ -202,19 +202,11 @@ export function JourneyLegCard({
       // or changed arrangements -- docs/style-guide.md "Semantic roles").
       // The glyph uses the light variant's text colour, which is measured
       // AA against this same `grape-light` surface in both schemes.
-      <Card
-        withBorder
-        data-needs-action
-        style={{
-          borderLeftWidth: 4,
-          borderLeftColor: 'var(--mantine-color-grape-filled)',
-          backgroundColor: 'var(--mantine-color-grape-light)',
-        }}
-      >
+      <Card withBorder data-needs-action className="openLegCard">
         <Stack gap="sm">
           <Group justify="space-between" align="flex-start" wrap="wrap" gap="xs">
             <Group gap="xs" wrap="nowrap" align="flex-start">
-              <span style={{ color: 'var(--mantine-color-grape-light-color)', flexShrink: 0, marginTop: 2 }}>
+              <span className="openLegCard__icon">
                 <AlertIcon />
               </span>
               <Text fw={700}>{header}</Text>

@@ -16,7 +16,8 @@ Fails (exit 1) on:
     arrow (routes and back links are words);
   - a banned phrase in a user-facing string: internal vocabulary (ingest,
     aggregator, full coverage, TOC, deployment, allowlist, localStorage,
-    "this app"), "--", and marketing words;
+    "this app"), the wrong terms ("sign in", "CRS"), "--", "--:--" and
+    marketing words;
   - a Title Case h1 or h2 (a `Title` of order 1 or 2, or a `SectionTitle`
     of order 2), outside the proper nouns and official status names below;
   - a meta description over 160 characters;
@@ -140,6 +141,18 @@ BANNED: Sequence[tuple[re.Pattern[str], str]] = (
         '"allowlist" (internal vocabulary)',
     ),
     (re.compile(r"\blocalStorage\b"), '"localStorage" (say "saved in this browser")'),
+    (re.compile(r"\bCRS\b"), '"CRS" or "CRS code" (say "station code")'),
+    (
+        re.compile(r"\bsign(s|ed|ing)?[- ]?ins?\b", re.IGNORECASE),
+        '"sign in" or "signed in" (say "log in", "logged in" or "login")',
+    ),
+    (
+        re.compile(r"--:--"),
+        (
+            '"--:--" (leave the time out: an aria-hidden en dash "\u2013" with a'
+            ' visually hidden "No time")'
+        ),
+    ),
     (
         re.compile(
             r"\b(" + "|".join(re.escape(word) for word in MARKETING) + r")\b",

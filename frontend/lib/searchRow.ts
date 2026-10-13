@@ -33,9 +33,10 @@ export function searchRowSummary(row: TrainSearchResult, known?: LineTrainSummar
 }
 
 /** The row's time at the searched station, `HH:MM`: the public departure,
- * else the working one. */
-export function searchRowTime(row: Pick<TrainSearchResult, 'publicDeparture' | 'scheduled'>): string {
-  return (row.publicDeparture ?? row.scheduled ?? '--:--').slice(0, 5);
+ * else the working one. `null` when the row has neither. */
+export function searchRowTime(row: Pick<TrainSearchResult, 'publicDeparture' | 'scheduled'>): string | null {
+  const time = row.publicDeparture ?? row.scheduled;
+  return time ? time.slice(0, 5) : null;
 }
 
 /** The row's dimmed second line: where the train comes from ("Starts

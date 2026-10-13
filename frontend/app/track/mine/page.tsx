@@ -3,7 +3,7 @@ import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { TicketSummary } from '@/components/TicketSummary';
 import { ReliabilityDigest } from '@/components/ReliabilityDigest';
@@ -110,7 +110,7 @@ export default async function MyTrackedTrainsPage() {
             pre-hydration visitor sees this sentence even though it can
             never run the client-only AutoOpenLoginPrompt modal below,
             which stays as progressive enhancement on top of it. */}
-        <LoginLink underline="always">Log in to see the trains and tickets you&apos;re tracking</LoginLink>
+        <LoginControl underline="always">Log in to see the trains and tickets you&apos;re tracking</LoginControl>
         <AutoOpenLoginPrompt>Log in to see the trains and tickets you&apos;re tracking.</AutoOpenLoginPrompt>
       </Stack>
     );
@@ -289,8 +289,8 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
         <StatusRow
           align="flex-start"
           title={
-            <Link href={`/journeys/${journey.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-              <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+            <Link href={`/journeys/${journey.id}`} data-card-link>
+              <Text fw={500} lineClamp={2} miw={0}>
                 {title}
               </Text>
             </Link>
@@ -346,7 +346,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
         <StatusRow
           align="flex-start"
           title={
-            <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Link href={href} data-card-link>
               <Stack gap={4}>
                 <StatusRow title={displayName} trailing={<TrackedTrainStatusBadge train={train} />} />
                 {/* Task 3.6.8: `displayName` (`trackedTrainDisplayName`)
@@ -389,7 +389,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
           }
         />
         {tickets.length > 0 && (
-          <Stack gap="md" pl="md" style={{ borderLeft: '2px solid var(--mantine-color-default-border)' }}>
+          <Stack gap="md" pl="md" className="attachedTickets">
             {tickets.map((ticket) => (
               <Stack key={ticket.id} gap={4}>
                 <TicketSummary ticket={ticket} />
@@ -458,7 +458,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
     : formatDate(train.serviceDate);
   const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
   const heading = (
-    <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+    <Text fw={500} lineClamp={2} miw={0}>
       {displayName}
     </Text>
   );
@@ -470,7 +470,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
           align="flex-start"
           title={
             href ? (
-              <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Link href={href} data-card-link>
                 {heading}
               </Link>
             ) : (

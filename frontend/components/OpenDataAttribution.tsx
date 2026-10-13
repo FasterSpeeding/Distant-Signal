@@ -121,7 +121,7 @@ function ExternalLink({ href, children }: { href: string; children: ReactNode })
 export function OpenDataAttribution() {
   const legalLinks = legalPagesVisible() ? LEGAL_LINKS : [];
   return (
-    <Box component="footer" p="md" style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
+    <Box component="footer" p="md" className="siteFooter">
       <Text size="xs" c="dimmed">
         Powered by TfL Open Data
       </Text>
@@ -280,7 +280,7 @@ export const DATA_SOURCES: readonly DataSource[] = [
     // OGL v3's default, as for the delay attribution glossary.
     id: 'network-rail-corpus',
     title: 'Network Rail (CORPUS location codes)',
-    use: 'Used during development to check the station codes (CRS and TIPLOC) in our line catalogue. Not shown on this site.',
+    use: 'Used during development to check the station and timing point codes in our line catalogue. Not shown on this site.',
     statement: (
       <>
         Contains information of Network Rail Infrastructure Limited licensed under the{' '}

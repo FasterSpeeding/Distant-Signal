@@ -121,7 +121,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     );
   });
 
-  it('null (not logged in): also renders a server-rendered LoginLink, not just the client-only modal', async () => {
+  it('null (not logged in): also renders a server-rendered LoginControl, not just the client-only modal', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
     renderWithMantine(await MyTrackedTrainsPage());
@@ -168,8 +168,8 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
     renderWithMantine(await MyTrackedTrainsPage());
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete ticket' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete ticket' }));
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith('/api/Train/tickets/9', { method: 'DELETE' });

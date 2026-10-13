@@ -1,19 +1,10 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Anchor, Button, Modal, Text, Group } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** Deletes via the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
- * The confirm button inside the modal carries `aria-label="Confirm delete"`
- * so it has a distinct accessible name from this component's own trigger
- * button once both are simultaneously in the DOM (both read "Delete" as
- * their visible text, matching typical confirm-dialog UX).
+ * The confirm step is `ConfirmActionButton`'s.
  *
  * `delete_line` requires `AuthenticatedUser` (`crates/api/src/routes/lines.rs`),
  * and `/lines/[id]/page.tsx` now only renders this button for the line's
@@ -26,70 +17,22 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
  * specifically and show a login prompt, never the raw backend rejection
  * text this used to fall through to.
  *
- * `trigger` (Task 3.4.11): `'button'` (default) is the existing red
- * outline `Button` this always rendered, used on the line detail page's
- * heading row. `'link'` is a plain, less prominent text link for
- * `CustomLineForm.tsx`'s edit mode, which had no way to delete a line at
- * all short of navigating back to the detail page -- same modal, same
- * `handleDelete`, just a quieter trigger appropriate to a form's footer
- * rather than a page heading. */
-export function DeleteLineButton({ id, trigger = 'button' }: { id: string; trigger?: 'button' | 'link' }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleDelete() {
-    setDeleting(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/lines/${id}`, { method: 'DELETE' });
-      if (!response.ok) {
-        // A 401's body is the backend's plain-text rejection -- never
-        // shown to the user as-is (see this component's own doc comment).
-        // Every other non-ok status still falls through to the generic
-        // error text, unchanged from before.
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('delete', 'this line', response));
-        }
-        setDeleting(false);
-        return;
-      }
-      router.push('/lines');
-    } catch {
-      setError(describeFailure('delete', 'this line'));
-      setDeleting(false);
-    }
-  }
-
+ * Used on the line page's heading row and in `CustomLineForm`'s edit-mode
+ * footer (Task 3.4.11), with the same trigger in both: the app has one
+ * confirm-trigger style. */
+export function DeleteLineButton({ id }: { id: string }) {
   return (
-    <>
-      {trigger === 'link' ? (
-        <Anchor component="button" type="button" c="red" onClick={open}>
-          Delete line
-        </Anchor>
-      ) : (
-        <Button variant="outline" color="red" size="xs" onClick={open}>
-          Delete
-        </Button>
-      )}
-      <Modal opened={opened} onClose={close} title="Delete this line?">
-        <Text>This cannot be undone.</Text>
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to delete a line</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={deleting}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleDelete} loading={deleting} aria-label="Confirm delete">
-            Delete
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Delete line"
+      confirmLabel="Delete"
+      actionName="delete line"
+      title="Delete this line?"
+      request={() => fetch(`/api/lines/${id}`, { method: 'DELETE' })}
+      failure={['delete', 'this line']}
+      loginPrompt="Log in to delete a line"
+      onSuccess={(router) => router.push('/lines')}
+    >
+      This cannot be undone.
+    </ConfirmActionButton>
   );
 }

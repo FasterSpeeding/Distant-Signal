@@ -198,7 +198,7 @@ export function AppNavBar({
     // every page already applies its own `p="lg"`, and Container's
     // default `md` inline padding on top of that is 40px of gutter on a
     // 390px screen.
-    <Box component="nav" aria-label="Main" style={{ borderBottom: '1px solid var(--mantine-color-default-border)' }}>
+    <Box component="nav" aria-label="Main" className="siteNav">
       <Container size="lg" px={0}>
         {/* `gap="xs"` on a `space-between` row is not about spacing --
             nothing normally sits at the gap -- it is the MINIMUM the two
@@ -227,7 +227,7 @@ export function AppNavBar({
                 `component` prop — a different, safe pattern. (Inside
                 `AppNavDrawer`, which IS a Client Component,
                 `component={Link}` is fine and is used.) */}
-            <Link href="/" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Link href="/" data-card-link>
               {/* `data-site-title` is a pure CSS hook for `globals.css`'s
                   `body[data-pride='true']` rules -- Mantine's `Text`
                   renders no stable class of its own to key off. */}
@@ -288,7 +288,7 @@ export function AppNavBar({
             </Group>
             {/* This boundary is load-bearing and has nothing to do with
                 data fetching: the anonymous branch of `AuthStatus` is
-                `LoginLink`, which calls `useSearchParams()` (via
+                `LoginControl`, which calls `useSearchParams()` (via
                 `useLoginHref`, to carry a `return_to` through the OIDC
                 redirect). On a statically prerendered route that call
                 must sit under a `<Suspense>` or `next build` fails the
@@ -302,7 +302,7 @@ export function AppNavBar({
                 the containment has to live here, where both paths pass
                 through it. */}
             {/* `c="var(--mantine-color-anchor)"`, matching the resolved
-                `<LoginLink>`'s own colour (via `TextLink`) -- not
+                `<LoginControl>`'s own colour (via `TextLink`) -- not
                 `c="dimmed"`. Both render the exact same "Log in" string,
                 and this boundary is identical on every route, so a
                 mismatch here reads as the same text flipping colour

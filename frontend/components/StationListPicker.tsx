@@ -226,12 +226,12 @@ export function StationListPicker({
         })}
       />
       {values.length > 0 && (
-        <Stack component="ol" gap={4} aria-label={label} id={listId} m={0} p={0} style={{ listStyle: 'none' }}>
+        <Stack component="ol" gap={4} aria-label={label} id={listId} className="ds-plain-list">
           {values.map((code, index) => {
             const name = label_(code);
             return (
               <Group component="li" key={`${index}:${code}`} gap="xs" wrap="nowrap" justify="space-between">
-                <Text size="sm" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+                <Text size="sm" miw={0} className="ds-break-anywhere">
                   {ordered && (
                     <Text span c="dimmed" size="sm" mr={6}>
                       {index + 1}.

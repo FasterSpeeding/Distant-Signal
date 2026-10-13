@@ -148,3 +148,8 @@ export function londonDayKey(value: string | Date): string {
  * next to `formatLocalDateTime` output, which is already the viewer's own
  * zone and needs no such disclaimer. */
 export const TIMES_IN_UK_LOCAL_TIME = 'Times in UK local time';
+
+/** What a screen reader hears, or a link says, in place of a train's time
+ * when the timetable gives none. On screen a narrow time column shows an
+ * `aria-hidden` en dash beside it instead (`ServiceRow`). */
+export const NO_TIME = 'No time';

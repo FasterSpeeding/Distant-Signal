@@ -1,12 +1,13 @@
-import { Badge, Button, Card, Group, Stack, Text, Title } from '@mantine/core';
-import Link from 'next/link';
+import { Badge, Group, Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { getMyGroups } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
-import { LoginButton } from '@/components/LoginButton';
+import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import type { GroupSummary } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { ButtonLink } from '@/components/ButtonLink';
+import { CardLink } from '@/components/CardLink';
 
 // See app/page.tsx's own `revalidate = 0` comment: no dynamic segment on
 // this route, so without this Next.js tries to prerender it during `next
@@ -70,12 +71,14 @@ export default async function GroupsPage() {
             never run the client-only AutoOpenLoginPrompt modal below,
             which stays as progressive enhancement on top of it.
 
-            A filled `LoginButton`, not the underlined `LoginLink` text this
+            A filled `LoginControl`, not the underlined `LoginControl` text this
             used to be (review §2.16) -- the only action an anonymous
             visitor can take on this route had markedly less visual weight
             than the "Create group" `TextLink` an authenticated visitor sees
             in its place. */}
-        <LoginButton title="Log in (needs a Distant Signal account)">Log in to see your groups</LoginButton>
+        <LoginControl variant="button" title="Log in (needs a Distant Signal account)">
+          Log in to see your groups
+        </LoginControl>
         <AutoOpenLoginPrompt>Log in to see your groups.</AutoOpenLoginPrompt>
       </Stack>
     );
@@ -107,9 +110,7 @@ export default async function GroupsPage() {
             You&apos;re not in any groups yet. Create one to share journeys and custom lines with other people, or ask a
             group member to send you their invite link if you&apos;re joining an existing one.
           </Text>
-          <Link href="/groups/new" style={{ textDecoration: 'none' }}>
-            <Button>Create a group</Button>
-          </Link>
+          <ButtonLink href="/groups/new">Create a group</ButtonLink>
         </Stack>
       ) : (
         <Stack gap="xs">
@@ -123,39 +124,24 @@ export default async function GroupsPage() {
 }
 
 function GroupRow({ group }: { group: GroupSummary }) {
-  // Plain <Link> wrapping the Card, not `component={Link}` on the Mantine
-  // polymorphic prop -- this is a Server Component, and passing `Link` as
-  // a value into a Mantine `component` prop from one previously broke
-  // `next build`'s Server/Client boundary check (see `app/layout.tsx`'s
-  // own comment on its nav-bar `<Link>` for the same reasoning).
-  //
-  // Review §3.2.5: this used to be a bare link -- `textDecoration: 'none';
-  // color: 'inherit'` -- with nothing telling a visitor it was clickable at
-  // all besides the cursor. `data-group-card-link`/`data-group-card`
-  // (styled in `app/globals.css`, mirroring `a[data-text-link]`'s own
-  // data-attribute pattern above) add a hover/focus border change and a
-  // trailing chevron; the chevron is a plain text glyph rather than an
-  // icon-library import, matching `GroupInviteLinkCard`'s own "⇪"/"✓"
-  // precedent (`@tabler/icons-react` isn't a project dependency -- see
-  // `components/InfoIcon.tsx`'s doc comment for the same check).
+  // `CardLink` (review §3.2.5): a hover/focus border change marks the
+  // whole card as the link, and the trailing chevron is decoration.
   return (
-    <Link href={`/groups/${group.id}`} style={{ textDecoration: 'none', color: 'inherit' }} data-group-card-link>
-      <Card withBorder data-group-card>
-        <Group justify="space-between" wrap="nowrap">
-          <Text fw={500}>{group.name}</Text>
-          <Group gap="xs" wrap="nowrap">
-            <Badge tt="none" variant="light">
-              {group.memberCount} member{group.memberCount === 1 ? '' : 's'}
-            </Badge>
-            <Badge tt="none" variant="outline">
-              {group.role}
-            </Badge>
-            <Text aria-hidden c="dimmed">
-              ›
-            </Text>
-          </Group>
+    <CardLink href={`/groups/${group.id}`}>
+      <Group justify="space-between" wrap="nowrap">
+        <Text fw={500}>{group.name}</Text>
+        <Group gap="xs" wrap="nowrap">
+          <Badge tt="none" variant="light">
+            {group.memberCount} member{group.memberCount === 1 ? '' : 's'}
+          </Badge>
+          <Badge tt="none" variant="outline">
+            {group.role}
+          </Badge>
+          <Text aria-hidden c="dimmed">
+            ›
+          </Text>
         </Group>
-      </Card>
-    </Link>
+      </Group>
+    </CardLink>
   );
 }

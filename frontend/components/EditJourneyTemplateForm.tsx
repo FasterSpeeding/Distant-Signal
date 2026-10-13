@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button, Chip, Group, SegmentedControl, Stack, Switch, Text, TextInput } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
 import type { JourneyTemplateDetail, PutJourneyTemplateRequest, TemplateLegRequest } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
@@ -276,7 +276,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
         }}
       />
       {legs.map((leg, index) => (
-        <Stack key={leg.key} gap="xs" p="sm" style={{ border: '1px solid var(--mantine-color-gray-3)' }}>
+        <Stack key={leg.key} gap="xs" p="sm" className="templateLeg">
           <Group justify="space-between">
             <Text size="sm" fw={600}>
               Leg {index + 1}
@@ -353,7 +353,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
       </Button>
       {error && <Alert color="red">{error}</Alert>}
       {saved && <Alert color="green">Saved.</Alert>}
-      {needsLoginState.needsLogin && <LoginLink underline="always">Log in to save changes</LoginLink>}
+      {needsLoginState.needsLogin && <LoginControl underline="always">Log in to save changes</LoginControl>}
       <Button onClick={handleSave} disabled={!isValid} loading={submitting}>
         Save changes
       </Button>

@@ -34,12 +34,12 @@ interface StorageItem {
 const COOKIES: readonly StorageItem[] = [
   {
     name: 'distant_signal_session',
-    purpose: 'Keeps you signed in. Only sent over HTTPS and not readable by scripts.',
+    purpose: 'Keeps you logged in. Only sent over HTTPS and not readable by scripts.',
     lasts: '14 days, or until you sign out.',
   },
   {
     name: 'distant_signal_login',
-    purpose: 'Protects the sign-in process from forgery while you sign in.',
+    purpose: 'Protects the login process from forgery while you log in.',
     lasts: 'A few minutes.',
   },
 ];
@@ -69,7 +69,7 @@ const LOCAL_STORAGE: readonly StorageItem[] = [
   },
   {
     name: 'ds-mcp-oauth:*',
-    purpose: 'Only if you use the AI chat: the sign-in details that let the chat look up rail data for you.',
+    purpose: 'Only if you use the AI chat: the login details that let the chat look up rail data for you.',
     lasts: 'Until you log out, delete your account, or clear it.',
   },
 ];

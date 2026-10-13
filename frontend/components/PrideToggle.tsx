@@ -30,13 +30,6 @@ const NEXT_MODE: Record<PrideMode, PrideMode> = {
   lesbian: 'off',
 };
 
-/** The button's striped swatch: the same `--ds-pride-*` gradient
- * `globals.css` paints the flag bars and site title with, so there is one
- * copy of each flag's stripes. */
-function swatchGradient(mode: Exclude<PrideMode, 'off'>): string {
-  return `var(--ds-pride-${mode})`;
-}
-
 const SPARKLES: Record<Exclude<PrideMode, 'off'>, [string, string, string]> = {
   rainbow: ['✨', '💖', '✨'],
   trans: ['🩵', '🩷', '✨'],
@@ -130,7 +123,7 @@ export function PrideToggle() {
   const displayedMode = mounted ? mode : 'off';
 
   return (
-    <span style={{ position: 'relative', display: 'inline-flex' }}>
+    <span className="prideToggle">
       <ActionIcon
         variant="outline"
         onClick={() =>
@@ -143,19 +136,9 @@ export function PrideToggle() {
         aria-pressed={displayedMode !== 'off'}
         aria-label={`Pride mode: ${displayedMode}. Click to toggle.`}
       >
-        {displayedMode === 'off' ? (
-          <span style={{ width: '16px', height: '16px' }} />
-        ) : (
-          <span
-            style={{
-              display: 'inline-block',
-              width: '16px',
-              height: '4px',
-              background: swatchGradient(displayedMode),
-              borderRadius: '1px',
-            }}
-          />
-        )}
+        {/* The flag strip (or an empty 16px square while off): one
+            `.prideSwatch[data-flag]` rule per flag in globals.css. */}
+        <span className="prideSwatch" data-flag={displayedMode} />
       </ActionIcon>
       {/* Decorative only (`aria-hidden`): a scatter of sparkles that float
        * around the button once a pride mode is on. `globals.css`'s

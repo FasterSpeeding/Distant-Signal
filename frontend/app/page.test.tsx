@@ -23,7 +23,7 @@ vi.mock('next/headers', () => ({
   cookies: async () => ({ toString: () => '', get: () => undefined }),
 }));
 
-// The anonymous branch's login nudge is now LoginLink (Task 1), which calls
+// The anonymous branch's login nudge is now LoginControl (Task 1), which calls
 // usePathname()/useSearchParams() -- same stub AuthStatus.test.tsx and
 // TicketPanel.test.tsx use for the same reason. `useRouter` is stubbed too,
 // as of the "Your Operators" section (Task 13): `OperatorStatusCard`

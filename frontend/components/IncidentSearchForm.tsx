@@ -542,11 +542,11 @@ export function IncidentSearchForm({
                * precisely because it DOES lower that intrinsic minimum,
                * which is the whole point here; same choice, same reason, as
                * `.journeyProgressLabel` in `app/globals.css`. */}
-              <Group style={{ rowGap: 2, overflowWrap: 'anywhere' }}>
+              <Group className="incidentRow__head">
                 <TextLink href={`/incidents/${encodeURIComponent(row.incidentId)}`} underline="always">
                   {row.summary}
                 </TextLink>
-                <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap', marginInlineStart: 'auto' }}>
+                <Text size="xs" c="dimmed" ms="auto" className="ds-nowrap">
                   {formatDateTime(row.firstSeenAt)}
                 </Text>
               </Group>

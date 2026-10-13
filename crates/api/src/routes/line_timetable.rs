@@ -57,7 +57,7 @@ pub(crate) fn parse_crs(name: &str, raw: Option<&str>) -> Result<Option<String>,
         Ok(Some(raw.to_ascii_uppercase()))
     } else {
         Err(format!(
-            "invalid {name} {raw:?}: use a station's three-letter CRS code"
+            "invalid {name} {raw:?}: use a three-letter station code"
         ))
     }
 }

@@ -1,11 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Group, List, Modal, Stack, Text, TextInput } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
+import { List, Text, TextInput } from '@mantine/core';
+import { ConfirmActionButton } from './ConfirmActionButton';
 import { clearBrowserAccountData } from '@/lib/browserAccountData';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** The phrase the visitor types to confirm, and the exact value `DELETE
  * /public/account` requires in its `confirm` body field
@@ -21,56 +19,35 @@ export const DELETE_ACCOUNT_CONFIRMATION = 'delete my account';
  * the response; this clears browser-only data and moves to
  * `/account/deleted`. */
 export function DeleteAccountButton() {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
   const [typed, setTyped] = useState('');
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   const confirmed = typed.trim().toLowerCase() === DELETE_ACCOUNT_CONFIRMATION;
 
-  function handleClose() {
-    if (deleting) return;
-    setTyped('');
-    setError(null);
-    close();
-  }
-
-  async function handleDelete() {
-    if (!confirmed) return;
-    setDeleting(true);
-    setError(null);
-    try {
-      const response = await fetch('/api/account', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: DELETE_ACCOUNT_CONFIRMATION }),
-      });
-      if (!response.ok) {
-        if (response.status === 401) {
-          setError('Your session has expired. Log in again, then delete your account.');
-        } else {
-          setError(await failureFromResponse('delete', 'your account', response));
-        }
-        setDeleting(false);
-        return;
-      }
-      clearBrowserAccountData();
-      router.push('/account/deleted');
-      router.refresh();
-    } catch {
-      setError(`${describeFailure('delete', 'your account')} Nothing was deleted.`);
-      setDeleting(false);
-    }
-  }
-
   return (
-    <>
-      <Button color="red" variant="outline" onClick={open}>
-        Delete my account
-      </Button>
-      <Modal opened={opened} onClose={handleClose} title="Delete your account?">
-        <Stack gap="sm">
+    <ConfirmActionButton
+      label="Delete my account"
+      confirmLabel="Delete my account permanently"
+      actionName="delete my account permanently"
+      title="Delete your account?"
+      request={() =>
+        fetch('/api/account', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirm: DELETE_ACCOUNT_CONFIRMATION }),
+        })
+      }
+      failure={['delete', 'your account']}
+      unauthorizedMessage="Your session has expired. Log in again, then delete your account."
+      networkFailureNote="Nothing was deleted."
+      confirmDisabled={!confirmed}
+      onCancel={() => setTyped('')}
+      onSuccess={(router) => {
+        clearBrowserAccountData();
+        router.push('/account/deleted');
+        router.refresh();
+      }}
+    >
+      {(busy) => (
+        <>
           <Text>This permanently deletes your Distant Signal account and everything in it:</Text>
           <List size="sm" spacing={4}>
             <List.Item>tracked trains, tickets, journeys and journey templates</List.Item>
@@ -96,23 +73,10 @@ export function DeleteAccountButton() {
             value={typed}
             onChange={(event) => setTyped(event.currentTarget.value)}
             autoComplete="off"
-            disabled={deleting}
+            disabled={busy}
           />
-          {error && (
-            <Text c="var(--ds-color-error-text)" role="alert">
-              {error}
-            </Text>
-          )}
-          <Group justify="end" mt="xs">
-            <Button variant="default" onClick={handleClose} disabled={deleting}>
-              Cancel
-            </Button>
-            <Button color="red" onClick={handleDelete} loading={deleting} disabled={!confirmed}>
-              Delete my account permanently
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-    </>
+        </>
+      )}
+    </ConfirmActionButton>
   );
 }

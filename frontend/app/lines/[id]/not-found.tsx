@@ -1,6 +1,6 @@
 import { Group, Stack, Title, Text } from '@mantine/core';
 import { TextLink } from '@/components/TextLink';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { getSessionOrLoggedOut } from '@/lib/api';
 
 // Task 3.4.10: an async Server Component, same as any other route file --
@@ -42,7 +42,7 @@ export default async function LineNotFound() {
         <TextLink href="/" underline="always">
           Go to the home page
         </TextLink>
-        {isAnonymous && <LoginLink underline="always">Log in</LoginLink>}
+        {isAnonymous && <LoginControl underline="always">Log in</LoginControl>}
       </Group>
     </Stack>
   );

@@ -2,7 +2,7 @@ import { Stack, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getJourney, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { JourneyDetailView } from '@/components/JourneyDetailView';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import type { Metadata } from 'next';
@@ -48,7 +48,7 @@ export default async function JourneyDetailPage({ params }: { params: Promise<{ 
       return (
         <Stack p="lg" gap="md">
           <Title order={1}>Log in to see this tracked journey</Title>
-          <LoginLink underline="always">Log in to view this journey</LoginLink>
+          <LoginControl underline="always">Log in to view this journey</LoginControl>
         </Stack>
       );
     }

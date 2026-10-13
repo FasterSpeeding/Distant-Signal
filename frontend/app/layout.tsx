@@ -308,7 +308,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   `max-width: 1140px` then clamps exactly like the nav's,
                   with `margin-inline: auto` centering the clamped box --
                   matching the nav Container's box on every route. */}
-                <Container id="main-content" component="main" size="lg" px={0} w="100%" style={{ flex: 1 }}>
+                <Container id="main-content" component="main" size="lg" px={0} w="100%" flex={1}>
                   {children}
                 </Container>
                 <OpenDataAttribution />

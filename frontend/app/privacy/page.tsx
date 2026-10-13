@@ -57,20 +57,20 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
   return [
     {
       title: 'Your account',
-      what: 'The ID our sign-in service gives you, your display name and username, the access groups needed to decide which features you can use, and when you signed up and last signed in.',
+      what: 'The ID our login service gives you, your display name and username, the access groups needed to decide which features you can use, and when you signed up and last logged in.',
       why: 'To create and run your account.',
       basis: CONTRACT,
       retention:
         retention.inactiveAccountDays > 0
-          ? `Until you delete your account. If you do not sign in for ${describeRetentionDays(retention.inactiveAccountDays)} (and have no active session), we delete your account and everything in it automatically. We do not hold your email address, so we cannot warn you first.`
+          ? `Until you delete your account. If you do not log in for ${describeRetentionDays(retention.inactiveAccountDays)} (and have no active session), we delete your account and everything in it automatically. We do not hold your email address, so we cannot warn you first.`
           : 'Until you delete your account.',
     },
     {
-      title: 'Sign-in sessions',
-      what: 'A hashed session token and its expiry, and short-lived sign-in state (a one-time code verifier and security values).',
-      why: 'To keep you signed in, and to protect sign-in from forgery.',
+      title: 'Login sessions',
+      what: 'A hashed session token and its expiry, and short-lived login state (a one-time code verifier and security values).',
+      why: 'To keep you logged in, and to protect logging in from forgery.',
       basis: `${CONTRACT} ${LEGITIMATE_INTERESTS}`,
-      retention: 'Sessions expire after 14 days and are then deleted. Sign-in state is deleted after 15 minutes.',
+      retention: 'Sessions expire after 14 days and are then deleted. Login state is deleted after 15 minutes.',
     },
     {
       title: 'Saved lines, stations, operators and custom lines',
@@ -114,7 +114,7 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       basis: CONTRACT,
       retention: `Until you turn notifications off, your browser's push service tells us the address no longer works, you have more than 20 devices registered (the oldest is removed)${
         retention.stalePushSubscriptionDays > 0
-          ? `, you have not signed in (and your browser has not renewed the address) for ${describeRetentionDays(retention.stalePushSubscriptionDays)}`
+          ? `, you have not logged in (and your browser has not renewed the address) for ${describeRetentionDays(retention.stalePushSubscriptionDays)}`
           : ''
       }, or you delete your account.`,
     },
@@ -127,10 +127,10 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
     },
     {
       title: 'Technical logs and IP addresses',
-      what: 'Your IP address, the pages you request and when, handled by our network provider (Cloudflare), our servers and our sign-in service.',
+      what: 'Your IP address, the pages you request and when, handled by our network provider (Cloudflare), our servers and our login service.',
       why: 'To keep the service secure, prevent abuse and fix faults.',
       basis: LEGITIMATE_INTERESTS,
-      retention: `Server logs are rotated within days. Our sign-in service keeps its event logs for ${LEGAL_CONFIG.SSO_LOG_RETENTION}. Cloudflare keeps its logs under its own policy.`,
+      retention: `Server logs are rotated within days. Our login service keeps its event logs for ${LEGAL_CONFIG.SSO_LOG_RETENTION}. Cloudflare keeps its logs under its own policy.`,
     },
     {
       title: 'Connections to our file-transfer server',
@@ -138,7 +138,7 @@ function dataCategories(retention: RetentionPolicy): readonly DataCategory[] {
       why: 'To secure that server against break-in attempts, and to show which files we received from our supplier and when.',
       basis: LEGITIMATE_INTERESTS,
       retention:
-        "7 days for connections that never try to sign in, 90 days for failed sign-ins and blocked addresses, and 400 days for successful sign-ins and file transfers (in practice, only our supplier's).",
+        "7 days for connections that never try to log in, 90 days for failed logins and blocked addresses, and 400 days for successful logins and file transfers (in practice, only our supplier's).",
     },
     {
       title: 'Backups',
@@ -166,7 +166,7 @@ export default function PrivacyPage() {
 
       <LegalSection title="What we collect, why, and for how long">
         <Text>
-          You can look at live rail information without an account. We only hold personal data about you if you sign in,
+          You can look at live rail information without an account. We only hold personal data about you if you log in,
           or in the technical logs every website produces.
         </Text>
         {categories.map((category) => (
@@ -208,7 +208,7 @@ export default function PrivacyPage() {
             behalf.
           </ListItem>
           <ListItem>
-            Discord, if you sign in with Discord. Discord is a separate controller and its own privacy policy applies.
+            Discord, if you log in with Discord. Discord is a separate controller and its own privacy policy applies.
           </ListItem>
           <ListItem>
             Your browser&apos;s push service (such as Google, Mozilla or Apple), if you turn on notifications. It
@@ -218,8 +218,8 @@ export default function PrivacyPage() {
           <ListItem>Members of groups you join, and anyone you give a share link to (see above).</ListItem>
         </List>
         <Text>
-          Our sign-in service, database, backups and incident AI model all run on infrastructure we operate ourselves.
-          We do not sell your data or use it for advertising.
+          Our login service, database, backups and incident AI model all run on infrastructure we operate ourselves. We
+          do not sell your data or use it for advertising.
         </Text>
       </LegalSection>
 
@@ -250,7 +250,7 @@ export default function PrivacyPage() {
             access in Discord&apos;s settings.
           </ListItem>
           <ListItem>
-            For anything else, or if you cannot sign in, email <ContactEmail />. We reply within one month.
+            For anything else, or if you cannot log in, email <ContactEmail />. We reply within one month.
           </ListItem>
         </List>
         <Text>

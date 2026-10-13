@@ -1,6 +1,6 @@
 import { Alert, Card, List, ListItem, Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
-import { CopyConnectorUrl } from '@/components/CopyConnectorUrl';
+import { CopyableLink } from '@/components/CopyableLink';
 import { InfoIcon } from '@/components/InfoIcon';
 import { TextLink } from '@/components/TextLink';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
@@ -29,16 +29,12 @@ export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPT
  * inlined by Next at `next build` -- in Server Components too -- and the
  * image is built without it. Blank in any deployment where railMcp isn't
  * enabled; this page still renders then, with a placeholder. */
-function connectorUrl(): string {
+/** The connector URL, or `null` where this deployment runs no MCP server. */
+function connectorUrl(): string | null {
   const publicUrl = runtimeRailMcpPublicUrl();
-  return publicUrl ? mcpEndpointUrl(publicUrl) : '(not available on this site)';
+  return publicUrl ? mcpEndpointUrl(publicUrl) : null;
 }
 
-/** Two overlapping rectangles -- the conventional "copy" glyph, in the
- * same inline-SVG house style as `components/InfoIcon.tsx` (`@tabler/
- * icons-react` isn't a project dependency). Decorative: the accessible
- * name for the button it sits in comes from that button's own
- * `aria-label`, not from this glyph. */
 /** Option C's instructional page (embedded-chatbot-shared-foundation-and-
  * option-c plan, Task 9; the dual-mode design's Decision 6): the connector
  * URL plus static instructions mirroring the documented Claude.ai flow.
@@ -98,10 +94,17 @@ export default function ConnectClaudePage() {
               Click the <strong>+</strong> button, then <strong>Add custom connector</strong>.
             </ListItem>
             <ListItem>
-              {/* The URL gets its own line; see CopyConnectorUrl for why it's a
-                  client component. */}
+              {/* The URL gets its own line, as a copyable field: it's long
+                  enough that selecting it by hand is fiddly on a phone. */}
               <Text span>Enter this URL:</Text>
-              <CopyConnectorUrl url={url} />
+              {url ? (
+                <CopyableLink value={url} label="Connector URL" hideLabel />
+              ) : (
+                <Text span c="dimmed">
+                  {' '}
+                  (not available on this site)
+                </Text>
+              )}
             </ListItem>
             <ListItem>
               Choose Connect. Log in with your Distant Signal account when asked, and Claude finishes the connection.

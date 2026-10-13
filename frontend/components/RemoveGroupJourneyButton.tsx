@@ -1,12 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Modal, Text, Group } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** Removes a shared journey from a group -- the sharer, or any `admin`/
  * `owner`, may click this (the backend enforces which via
@@ -14,52 +8,15 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
  * `RemoveGroupTrainButton.tsx` verbatim -- see that component's own doc
  * comment for the full reasoning, which applies here unchanged. */
 export function RemoveGroupJourneyButton({ groupId, journeyId }: { groupId: string; journeyId: number }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [removing, setRemoving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleRemove() {
-    setRemoving(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/groups/${groupId}/journeys/${journeyId}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('remove', 'this journey from the group', response));
-        }
-        setRemoving(false);
-        return;
-      }
-      close();
-      router.refresh();
-    } catch {
-      setError(describeFailure('remove', 'this journey from the group'));
-      setRemoving(false);
-    }
-  }
-
   return (
-    <>
-      <Button variant="subtle" color="red" size="xs" onClick={open}>
-        Remove from group
-      </Button>
-      <Modal opened={opened} onClose={close} title="Remove this journey from the group?">
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to remove this journey</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={removing}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleRemove} loading={removing} aria-label="Confirm remove journey from group">
-            Remove
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Remove from group"
+      confirmLabel="Remove"
+      actionName="remove journey from group"
+      title="Remove this journey from the group?"
+      request={() => fetch(`/api/groups/${groupId}/journeys/${journeyId}`, { method: 'DELETE' })}
+      failure={['remove', 'this journey from the group']}
+      loginPrompt="Log in to remove this journey"
+    />
   );
 }

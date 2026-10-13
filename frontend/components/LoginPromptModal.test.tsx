@@ -36,7 +36,7 @@ describe('LoginPromptModal', () => {
     mockUseSearchParams.mockReturnValue(new URLSearchParams(''));
   });
 
-  it('disables next/link prefetch on its own Log in link -- same side-effecting-backend-endpoint reasoning as LoginLink.tsx', () => {
+  it('disables next/link prefetch on its own Log in link -- same side-effecting-backend-endpoint reasoning as LoginControl.tsx', () => {
     renderWithMantine(
       <LoginPromptModal opened={true} onClose={vi.fn()}>
         Log in to pin this line.

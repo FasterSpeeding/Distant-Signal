@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Modal, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import type { CreateJourneyTemplateRequest, CreateJourneyTemplateResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 
@@ -89,7 +89,7 @@ export function SaveAsTemplateButton({ journeyId }: { journeyId: number }) {
             onChange={(event) => setCustomName(event.currentTarget.value)}
           />
           {error && <Alert color="red">{error}</Alert>}
-          {needsLoginState.needsLogin && <LoginLink underline="always">Log in to save a template</LoginLink>}
+          {needsLoginState.needsLogin && <LoginControl underline="always">Log in to save a template</LoginControl>}
           <Button onClick={handleSubmit} loading={submitting}>
             Save as template
           </Button>

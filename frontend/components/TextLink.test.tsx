@@ -29,7 +29,7 @@ vi.mock('next/link', () => ({
 }));
 
 describe('TextLink', () => {
-  it('forwards an explicit prefetch={false} through to next/link (regression: LoginLink relies on this to stop a real, side-effecting backend request from firing on mere link visibility)', () => {
+  it('forwards an explicit prefetch={false} through to next/link (regression: LoginControl relies on this to stop a real, side-effecting backend request from firing on mere link visibility)', () => {
     renderWithMantine(
       <TextLink href="/api/auth/login?return_to=%2F" prefetch={false}>
         Log in

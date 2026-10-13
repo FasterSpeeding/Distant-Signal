@@ -88,7 +88,7 @@ function WaypointField({
   const parts = [help, shown].filter((part): part is string => part !== null);
   return (
     <Autocomplete
-      style={{ flex: 1 }}
+      flex={1}
       label={first ? 'Call at (optional, in order)' : undefined}
       description={parts.length > 0 ? parts.join(' ') : undefined}
       placeholder="Station name or code"
@@ -348,7 +348,7 @@ export function PlanTripForm({
           </ActionIcon>
         </Group>
       ))}
-      <Button variant="subtle" leftSection={<PlusIcon />} onClick={addWaypoint} style={{ alignSelf: 'flex-start' }}>
+      <Button variant="subtle" leftSection={<PlusIcon />} onClick={addWaypoint} className="ds-self-start">
         Add a stop to call at
       </Button>
       {/* London's today, not `new Date()` (the browser's): a visitor ahead

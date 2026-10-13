@@ -580,20 +580,20 @@ pub fn validate_window_leg(
     // character check. `str::len` counts UTF-8 bytes, so a single
     // multi-byte character (e.g. "é" is 2 bytes, plenty of 3-byte
     // characters exist too) could pass this check while being nowhere
-    // near a real 3-letter CRS code. Fixed to match
+    // near a real 3-letter station code. Fixed to match
     // `routes::trains::normalize_crs`'s own check -- the established
     // convention for validating a CRS code everywhere else in this
     // codebase -- three ASCII alphabetic characters, case-insensitive
     // (normalization to uppercase happens downstream, same as there).
     if !is_three_letter_crs(origin_crs) {
         return Err(
-            "Enter a valid origin station. CRS codes are three letters, like WOK or EUS."
+            "Enter a valid origin station. Station codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
     if !is_three_letter_crs(destination_crs) {
         return Err(
-            "Enter a valid destination station. CRS codes are three letters, like WOK or \
+            "Enter a valid destination station. Station codes are three letters, like WOK or \
              EUS."
                 .to_string(),
         );
@@ -633,7 +633,7 @@ pub fn validate_window_leg(
     Ok(())
 }
 
-/// A real 3-letter CRS code, ASCII-alphabetic only, case-insensitive --
+/// A real 3-letter station code, ASCII-alphabetic only, case-insensitive --
 /// same check as `routes::trains::normalize_crs` (that helper is private
 /// to `routes/trains.rs`, so this is a small duplicate rather than a
 /// cross-module reach). Deliberately a byte-length-agnostic character
@@ -647,7 +647,7 @@ fn is_three_letter_crs(crs: &str) -> bool {
 /// User-facing validation for a `knownTrain`-mode leg's OPTIONAL
 /// origin/destination overrides -- same check-and-message posture as
 /// [`validate_window_leg`]/`journey_templates::validate_template_leg`
-/// already take for a manually-typed CRS field (a real 3-letter CRS code
+/// already take for a manually-typed CRS field (a real 3-letter station code
 /// once trimmed), just applied to two `Option<&str>` fields instead of two
 /// required `&str` fields: either, both, or neither may be `Some`, and each
 /// supplied one is checked independently.
@@ -679,13 +679,13 @@ pub fn validate_known_train_overrides(
     // [`is_three_letter_crs`] helper for consistency.
     if origin_crs.is_some_and(|origin_crs| !is_three_letter_crs(origin_crs)) {
         return Err(
-            "Enter a valid origin station. CRS codes are three letters, like WOK or EUS."
+            "Enter a valid origin station. Station codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }
     if destination_crs.is_some_and(|destination_crs| !is_three_letter_crs(destination_crs)) {
         return Err(
-            "Enter a valid destination station. CRS codes are three letters, like WOK or EUS."
+            "Enter a valid destination station. Station codes are three letters, like WOK or EUS."
                 .to_string(),
         );
     }

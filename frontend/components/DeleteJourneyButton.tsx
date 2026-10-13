@@ -1,12 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Group, Modal, Text } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** Direct, one-click "delete this journey" action on `/journeys/[id]`
  * (feature request: "journeys should be mutable ... you should be able to
@@ -53,52 +47,17 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
  * same "back to my trains & journeys" destination this page's own
  * existing back-link already points to. */
 export function DeleteJourneyButton({ journeyId }: { journeyId: number }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleDelete() {
-    setDeleting(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/Journeys/${journeyId}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('delete', 'this journey', response));
-        }
-        setDeleting(false);
-        return;
-      }
-      router.push('/track/mine');
-    } catch {
-      setError(describeFailure('delete', 'this journey'));
-      setDeleting(false);
-    }
-  }
-
   return (
-    <>
-      <Button variant="outline" color="red" size="xs" onClick={open}>
-        Delete journey
-      </Button>
-      <Modal opened={opened} onClose={close} title="Delete this journey?">
-        <Text>This removes every leg on this journey. This cannot be undone.</Text>
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to delete this journey</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={deleting}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleDelete} loading={deleting} aria-label="Confirm delete journey">
-            Delete journey
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Delete journey"
+      actionName="delete journey"
+      title="Delete this journey?"
+      request={() => fetch(`/api/Journeys/${journeyId}`, { method: 'DELETE' })}
+      failure={['delete', 'this journey']}
+      loginPrompt="Log in to delete this journey"
+      onSuccess={(router) => router.push('/track/mine')}
+    >
+      This removes every leg on this journey. This cannot be undone.
+    </ConfirmActionButton>
   );
 }

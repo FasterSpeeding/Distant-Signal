@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, useSyncExternalStore, type SubmitEvent } f
 import { Alert, Button, Card, Code, Group, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
 import { LoadingText } from '@/components/LoadingText';
 import Anthropic from '@anthropic-ai/sdk';
-import Link from 'next/link';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { OAuthError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -15,6 +14,7 @@ import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
 import { AnthropicKeySettings } from './AnthropicKeySettings';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
+import { ButtonLink } from '@/components/ButtonLink';
 
 interface ChatMessage {
   /** Stable per-panel id (FE-11): streamed events find their assistant turn
@@ -241,7 +241,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
   }
 
   return (
-    <Stack gap="md" h="100%" style={{ flex: 1, minHeight: 0 }}>
+    <Stack gap="md" h="100%" flex={1} mih={0}>
       <AnthropicKeySettings />
       {shownError && (
         <ChatErrorAlert
@@ -250,7 +250,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
           signingIn={signingIn}
         />
       )}
-      <ScrollArea viewportRef={viewport} style={{ flex: 1 }} offsetScrollbars>
+      <ScrollArea viewportRef={viewport} flex={1} offsetScrollbars>
         <Stack gap="md" p="xs">
           {messages.length === 0 && (
             <Text c="dimmed" ta="center" mt="xl">
@@ -272,7 +272,7 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
       <form onSubmit={handleSubmit}>
         <Group gap="xs" align="flex-end">
           <TextInput
-            style={{ flex: 1 }}
+            flex={1}
             placeholder="Ask about the next train or delays, or plan a journey"
             value={input}
             onChange={(event) => setInput(event.currentTarget.value)}
@@ -521,7 +521,7 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
           </Group>
         )}
         {message.content || isUser ? (
-          <Text style={{ whiteSpace: 'pre-wrap' }}>{message.content}</Text>
+          <Text className="ds-pre-wrap">{message.content}</Text>
         ) : (
           <LoadingText>Writing a reply</LoadingText>
         )}
@@ -557,11 +557,9 @@ function TrainLegCard({ leg }: { leg: RenderedTrainLeg }) {
           {leg.operator ? ` · ${leg.operator}` : ''}
         </Text>
         {originCrs && (
-          <Link href={`/track?origin=${encodeURIComponent(originCrs)}`} style={{ textDecoration: 'none' }}>
-            <Button size="xs" variant="light">
-              Track this train
-            </Button>
-          </Link>
+          <ButtonLink href={`/track?origin=${encodeURIComponent(originCrs)}`} size="xs" variant="light">
+            Track this train
+          </ButtonLink>
         )}
       </Stack>
     </Card>

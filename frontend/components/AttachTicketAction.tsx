@@ -95,7 +95,7 @@ export function AttachTicketAction({ ticketId, trains }: { ticketId: number; tra
         value={selected}
         onChange={setSelected}
         size="xs"
-        style={{ minWidth: 240 }}
+        miw={240}
         searchable
         nothingFoundMessage={noOptionsFound('No matching tracked trains')}
       />

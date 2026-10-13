@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, TextInput, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Imperative escape hatch for `TrackedTrainRowMenu` -- see
@@ -24,7 +24,7 @@ export interface RenameTrainButtonHandle {
  * `/public/` prefix inserted, same as `DeleteTrainButton`.
  *
  * Closely modeled on `DeleteTrainButton.tsx`: same button → confirm-modal →
- * fetch → `router.refresh()` shape, same `useNeedsLogin`/`LoginLink` `401`
+ * fetch → `router.refresh()` shape, same `useNeedsLogin`/`LoginControl` `401`
  * handling, same generic-error-message fallback for any other non-`ok`
  * status. Unlike `DeleteTrainButton`, this is never destructive in a way
  * that leaves the page's own subject gone, so it always `router.refresh()`s
@@ -126,7 +126,9 @@ export const RenameTrainButton = forwardRef<
           data-autofocus
         />
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to rename this tracked train</LoginLink>}
+        {needsLoginState.needsLogin && (
+          <LoginControl underline="always">Log in to rename this tracked train</LoginControl>
+        )}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={saving}>
             Cancel

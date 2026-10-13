@@ -1232,7 +1232,7 @@ export function TrackTrainForm({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row);
                 }}
-                style={{ cursor: 'pointer' }}
+                className="ds-clickable"
               >
                 <Text size="sm">
                   {/* Public time shown; `row.scheduled` (WTT) stays the
@@ -1508,7 +1508,7 @@ export function TrackTrainForm({
                 // Same reasoning as the Origin field above -- a cleared
                 // departure is validated by `handleSubmit` itself now, not by
                 // native `required` constraint validation.
-                style={{ flexGrow: 1 }}
+                flex="1 1 auto"
               />
               {/* `@mantine/dates`' own `presets` prop (9.5.2) only ever assigns a
                 *date* (`DatePickerPreset['value']` is a bare `DateStringValue`,
@@ -1525,7 +1525,7 @@ export function TrackTrainForm({
                 host zone (2026-09-26 review, finding M8). */}
               <Button
                 variant="default"
-                style={{ flexShrink: 0 }}
+                flex="none"
                 onClick={() => setScheduledDeparture(nowInLondon().format('YYYY-MM-DD HH:mm:ss'))}
               >
                 Now
