@@ -264,8 +264,8 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.description).toBe('A journey on 22 Sept 2026, on time.');
-    expect(metadata.openGraph?.description).toBe('A journey on 22 Sept 2026, on time.');
+    expect(metadata.description).toBe('A journey on 22 Sep 2026, on time.');
+    expect(metadata.openGraph?.description).toBe('A journey on 22 Sep 2026, on time.');
   });
 
   it('describes a delayed journey without quoting the exact delay figure', async () => {
@@ -279,7 +279,7 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.description).toBe('A journey on 22 Sept 2026, running delayed.');
+    expect(metadata.description).toBe('A journey on 22 Sep 2026, running delayed.');
     expect(metadata.description).not.toMatch(/47/);
     expect(metadata.description).not.toMatch(/m late/);
   });
@@ -293,7 +293,7 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.description).toBe('A journey on 22 Sept 2026, cancelled.');
+    expect(metadata.description).toBe('A journey on 22 Sep 2026, cancelled.');
   });
 
   it('describes an unmatched leg as still needing a train picked', async () => {
@@ -303,7 +303,7 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.description).toBe('A journey on 22 Sept 2026, still needs a train picked.');
+    expect(metadata.description).toBe('A journey on 22 Sep 2026, still needs a train picked.');
   });
 
   // Never leaks the bearer token (or the journey's own internal numeric id)

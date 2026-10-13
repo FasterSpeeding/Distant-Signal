@@ -3,22 +3,10 @@
  * that have not started yet. Network time, so Europe/London throughout,
  * like `dateFormat`. */
 import type { UpcomingDisruption } from './types';
-import { formatTime } from './dateFormat';
-
-/** "Sun 11 Oct" */
-const DAY = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'Europe/London',
-  weekday: 'short',
-  day: 'numeric',
-  month: 'short',
-});
+import { formatTime, formatWeekdayShortDate as day } from './dateFormat';
 
 function isLondonMidnight(iso: string): boolean {
   return formatTime(iso) === '00:00';
-}
-
-function day(value: Date | string): string {
-  return DAY.format(value instanceof Date ? value : new Date(value));
 }
 
 /** When an upcoming disruption happens, in UK local time.

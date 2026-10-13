@@ -110,7 +110,7 @@ describe('offline.html last-connected line', () => {
     expect(message.textContent).toBe(
       'Distant Signal needs a connection to show current line status. Last connected 4 min ago.',
     );
-    expect(message.title).toBe('Last connected 29 Sept 2026, 09:40 (UK time)');
+    expect(message.title).toBe('Last connected 29 Sep 2026, 09:40 (UK time)');
   });
 
   it('uses hours and days for older loads', () => {

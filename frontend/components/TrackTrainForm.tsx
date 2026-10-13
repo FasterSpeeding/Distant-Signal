@@ -1409,7 +1409,7 @@ export function TrackTrainForm({
               label="Date"
               // Review §2.2/M13: `windowServiceDate` is seeded with today's
               // real date above (not `null`), so this now shows an actual
-              // value ("22 Sept 2026") the way pin-mode's own default
+              // value ("22 Sep 2026") the way pin-mode's own default
               // departure does -- "Today" stays only as the placeholder for
               // if the field is ever cleared back to empty.
               placeholder="Today"
