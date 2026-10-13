@@ -7,7 +7,7 @@ import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import type { MaterializeTemplateRequest, MaterializeTemplateResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 
@@ -102,7 +102,7 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
             error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
           />
           {error && <Alert color="red">{error}</Alert>}
-          {needsLoginState.needsLogin && <LoginLink underline="always">Log in to run this template</LoginLink>}
+          {needsLoginState.needsLogin && <LoginControl underline="always">Log in to run this template</LoginControl>}
           <Button onClick={handleSubmit} disabled={!serviceDateValid} loading={submitting}>
             Create journey
           </Button>

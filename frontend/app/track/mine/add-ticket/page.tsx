@@ -1,7 +1,7 @@
 import { Stack, Text, Title } from '@mantine/core';
 import { getSessionOrLoggedOut } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '../AutoOpenLoginPrompt';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { TicketEntryForm } from '@/components/TicketEntryForm';
 import type { Metadata } from 'next';
@@ -47,7 +47,7 @@ export default async function AddTicketPage() {
             pre-hydration visitor sees this sentence even though it can
             never run the client-only AutoOpenLoginPrompt modal below,
             which stays as progressive enhancement on top of it. */}
-        <LoginLink underline="always">Log in to add a ticket</LoginLink>
+        <LoginControl underline="always">Log in to add a ticket</LoginControl>
         <AutoOpenLoginPrompt>Log in to add a ticket.</AutoOpenLoginPrompt>
       </Stack>
     );

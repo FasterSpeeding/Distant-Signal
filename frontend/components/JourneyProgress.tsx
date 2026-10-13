@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Box, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
+import { Box, Flex, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
+import { DELAY_TONE_COLOR } from './DelayBadge';
 import { WarningIcon } from './WarningIcon';
 import { stopDisplayTime } from '@/lib/stopTimes';
 import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
@@ -186,8 +187,9 @@ function nodeState(index: number, lastIndex: number, status: JourneyStatus | nul
 
 type DelayState = 'on-time' | 'late' | 'early' | 'unknown';
 
-/** Reuses `JourneyTimeline.tsx`'s exact three-way delay convention
- * (green/orange/teal) -- see its own `delayBadge` -- plus one honest
+/** Uses `DelayBadge`'s delay-to-colour table (`DELAY_TONE_COLOR`:
+ * green/orange/teal), so a marker and a badge for the same stop agree, plus
+ * one honest
  * addition this component needs that the badge never has to express: a
  * reached stop whose `delayMinutes` is `null` (no `scheduledArrival`/
  * `scheduledDeparture` to diff against). Defaulting that to "on time"
@@ -200,9 +202,9 @@ function delayState(delayMinutes: number | null): DelayState {
 }
 
 const DELAY_COLOR: Record<DelayState, string> = {
-  'on-time': 'green',
-  late: 'orange',
-  early: 'teal',
+  'on-time': DELAY_TONE_COLOR.onTime,
+  late: DELAY_TONE_COLOR.late,
+  early: DELAY_TONE_COLOR.early,
   unknown: 'gray',
 };
 
@@ -464,6 +466,7 @@ export function JourneyProgress({
         data-journey-progress-scroll
         role="group"
         aria-label={ariaLabel}
+        // eslint-disable-next-line react/forbid-component-props -- stop counts known only at render time, as CSS variables
         style={{
           // Counts only -- every px measurement the diagram uses lives in
           // `.journeyProgressScroll`'s own custom properties in
@@ -478,6 +481,7 @@ export function JourneyProgress({
       >
         <Box
           className="journeyProgressLine"
+          // eslint-disable-next-line react/forbid-component-props -- hands the NODE_CIRCLE_SLOT constant to the stylesheet as a CSS variable
           style={{
             // Read back by `.journeyProgressLine::before`'s `top` in
             // globals.css, instead of that rule hardcoding half of
@@ -561,6 +565,7 @@ function JourneyProgressNode({
       data-node-state={state}
       data-delay-state={delay}
       aria-hidden="true"
+      // eslint-disable-next-line react/forbid-component-props -- size and colours come from the stop's state at render time (circleStyle)
       style={{
         width: diameter,
         height: diameter,
@@ -584,9 +589,9 @@ function JourneyProgressNode({
   );
 
   const circleSlot = (
-    <Box style={{ height: NODE_CIRCLE_SLOT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <Flex h={NODE_CIRCLE_SLOT} align="center" justify="center">
       {circle}
-    </Box>
+    </Flex>
   );
 
   // Not a color change (spec Decision 5's own stated reason: color alone
@@ -607,7 +612,9 @@ function JourneyProgressNode({
       <Box
         aria-hidden="true"
         data-may-have-arrived="true"
-        style={{ lineHeight: 1, display: 'flex', color: 'var(--mantine-color-yellow-light-color)' }}
+        lh={1}
+        display="flex"
+        c="var(--mantine-color-yellow-light-color)"
       >
         <WarningIcon size={12} />
       </Box>

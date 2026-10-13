@@ -95,14 +95,7 @@ export function JourneyStatusBadge({ legs }: { legs: JourneyLegDetail[] }) {
       );
     }
     return (
-      <Badge
-        component="a"
-        href={`#leg-${firstUnmatchedLegId}`}
-        color={COLOR.unmatched}
-        variant="light"
-        tt="none"
-        style={{ cursor: 'pointer' }}
-      >
+      <Badge component="a" href={`#leg-${firstUnmatchedLegId}`} color={COLOR.unmatched} variant="light" tt="none">
         {label}
       </Badge>
     );

@@ -2,7 +2,7 @@ import { Button, Card, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import { getSessionOrLoggedOut } from '@/lib/api';
-import { LoginButton } from '@/components/LoginButton';
+import { LoginControl } from '@/components/LoginControl';
 import { DeleteAccountButton } from '@/components/DeleteAccountButton';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -28,7 +28,9 @@ export default async function AccountPage() {
       <Stack p="lg" gap="md" maw={640}>
         <Title order={1}>Account &amp; data</Title>
         <Text>Log in to download your data or delete your account.</Text>
-        <LoginButton title="Log in (needs a Distant Signal account)">Log in</LoginButton>
+        <LoginControl variant="button" title="Log in (needs a Distant Signal account)">
+          Log in
+        </LoginControl>
       </Stack>
     );
   }

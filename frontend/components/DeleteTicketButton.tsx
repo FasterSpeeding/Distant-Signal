@@ -1,12 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Modal, Text, Group } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** Deletes via the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * -- this is a Client Component and cannot reach the `api` service directly.
@@ -14,12 +8,9 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
  * backend's `DELETE /Train/tickets/{ticketId}`
  * (`crates/api/src/routes/train.rs::delete_ticket`) with no `/public/`
  * prefix inserted -- see that proxy's own `resolveTargetPath` comment.
- * Closely modeled on `DeleteTrainButton.tsx` (same confirm-modal shape,
- * same distinct `aria-label="Confirm delete"` naming rationale for the two
- * same-text "Delete" buttons, same `useNeedsLogin`/`LoginLink` `401`
- * handling, same generic-error-message fallback for any other non-`ok`
- * status) -- but calls `router.refresh()` on success, never
- * `router.push(...)`.
+ * The confirm step, the 401 login prompt and the failure copy are
+ * `ConfirmActionButton`'s. Unlike `DeleteTrainButton` it keeps the default
+ * `router.refresh()` on success, never `router.push(...)`.
  *
  * This is a deliberate divergence from `DeleteTrainButton`: deleting a
  * tracked train removes the entire subject of the page it's rendered on,
@@ -47,52 +38,16 @@ import { describeFailure, failureFromResponse } from '@/lib/failure';
  * confirm modals open at once. Not a new risk this component introduces --
  * no per-row action in this codebase guards against that today. */
 export function DeleteTicketButton({ ticketId }: { ticketId: number }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleDelete() {
-    setDeleting(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/Train/tickets/${ticketId}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('delete', 'this ticket', response));
-        }
-        setDeleting(false);
-        return;
-      }
-      router.refresh();
-    } catch {
-      setError(describeFailure('delete', 'this ticket'));
-      setDeleting(false);
-    }
-  }
-
   return (
-    <>
-      <Button variant="outline" color="red" size="xs" onClick={open}>
-        Delete
-      </Button>
-      <Modal opened={opened} onClose={close} title="Delete this ticket?">
-        <Text>This cannot be undone.</Text>
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to delete this ticket</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={deleting}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleDelete} loading={deleting} aria-label="Confirm delete">
-            Delete
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Delete"
+      actionName="delete ticket"
+      title="Delete this ticket?"
+      request={() => fetch(`/api/Train/tickets/${ticketId}`, { method: 'DELETE' })}
+      failure={['delete', 'this ticket']}
+      loginPrompt="Log in to delete this ticket"
+    >
+      This cannot be undone.
+    </ConfirmActionButton>
   );
 }

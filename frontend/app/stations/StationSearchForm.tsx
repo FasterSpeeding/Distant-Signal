@@ -180,13 +180,7 @@ export function StationSearchForm() {
             </Text>
           )}
           {nearby.status === 'success' && nearby.stations.length > 0 && (
-            <Stack
-              component="ul"
-              gap={4}
-              role="list"
-              aria-label="Nearby stations"
-              style={{ listStyle: 'none', margin: 0, padding: 0 }}
-            >
+            <Stack component="ul" gap={4} role="list" aria-label="Nearby stations" className="ds-plain-list">
               {nearby.stations.map((station) => (
                 <li key={station.code}>
                   <UnstyledButton onClick={() => goToStation(station.code)} disabled={isPending}>

@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import {
   Alert,
   Autocomplete,
@@ -25,6 +24,7 @@ import { LoginPromptModal } from '@/components/LoginPromptModal';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
 import type { CustomLineDetail } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ButtonLink } from '@/components/ButtonLink';
 
 /** Posts to the same-origin `/api/*` proxy (see `app/api/[...path]/route.ts`)
  * — this is a Client Component and cannot reach the `api` service directly.
@@ -183,7 +183,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       {!existingLine && (
         <Alert color="grape" variant="light">
           Creating a line needs a Distant Signal account. You&apos;ll be sent to log in when you save if you aren&apos;t
-          already signed in.
+          already logged in.
         </Alert>
       )}
       <TextInput label="Name" withAsterisk value={name} onChange={(event) => setName(event.currentTarget.value)} />
@@ -328,18 +328,12 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
       {cancelHref ? (
         // Paired actions sit on one right-aligned row so the secondary
         // reads as a peer of the primary rather than an afterthought
-        // beneath a 480px-wide button. Plain `<Link>` wrapping `Button`,
-        // not `component={Link}` on a Mantine polymorphic prop — that
-        // pattern previously broke `next build`'s Server/Client boundary
-        // check (see the comment in `app/layout.tsx`). `type="button"`
-        // keeps Cancel inert should this ever be wrapped in a real
-        // `<form>`.
+        // beneath a 480px-wide button. Cancel is a `ButtonLink`: one
+        // `<a>` drawn as a button, not a `<button>` nested in a link.
         <Group justify="flex-end">
-          <Link href={cancelHref} style={{ textDecoration: 'none' }}>
-            <Button type="button" variant="default">
-              Cancel
-            </Button>
-          </Link>
+          <ButtonLink href={cancelHref} variant="default">
+            Cancel
+          </ButtonLink>
           <Button onClick={handleSubmit} loading={submitting}>
             {existingLine ? 'Save changes' : 'Create line'}
           </Button>
@@ -359,7 +353,7 @@ export function CustomLineForm({ existingLine, cancelHref }: { existingLine?: Cu
           and `/lines/[id]/edit` share. */}
       {existingLine && (
         <Group justify="center">
-          <DeleteLineButton id={existingLine.id} trigger="link" />
+          <DeleteLineButton id={existingLine.id} />
         </Group>
       )}
     </Stack>

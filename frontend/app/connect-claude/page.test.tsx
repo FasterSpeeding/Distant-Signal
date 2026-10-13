@@ -34,7 +34,7 @@ describe('/connect-claude', () => {
     renderWithMantine(ConnectClaudePage());
     expect(screen.getByText(/Customize/)).toBeInTheDocument();
     expect(screen.getByText(/Add custom connector/i)).toBeInTheDocument();
-    expect(screen.getByText('https://mcp.example.com/mcp')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Connector URL' })).toHaveValue('https://mcp.example.com/mcp');
     expect(screen.queryByRole('button', { name: 'Log in' })).not.toBeInTheDocument();
   });
 
@@ -49,7 +49,7 @@ describe('/connect-claude', () => {
   it('shows the /mcp endpoint, not the bare origin, even when the configured URL has a trailing slash', () => {
     vi.stubEnv('NEXT_PUBLIC_RAILMCP_PUBLIC_URL', 'https://mcp.example.com/');
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByText('https://mcp.example.com/mcp')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Connector URL' })).toHaveValue('https://mcp.example.com/mcp');
     expect(screen.queryByText('https://mcp.example.com/')).not.toBeInTheDocument();
   });
 
@@ -63,6 +63,7 @@ describe('/connect-claude', () => {
     vi.unstubAllEnvs();
     renderWithMantine(ConnectClaudePage());
     expect(screen.getByText('(not available on this site)')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy connector URL' })).not.toBeInTheDocument();
   });
 
   // Review §3.1.6.
@@ -112,8 +113,9 @@ describe('/connect-claude', () => {
     expect(within(section).getAllByRole('listitem')).toHaveLength(4);
   });
 
-  it('lets the long connector URL wrap instead of running off a phone-width screen', () => {
+  it('puts the long connector URL in a field that can shrink, so it never runs off a phone-width screen', () => {
     renderWithMantine(ConnectClaudePage());
-    expect(screen.getByText('https://mcp.example.com/mcp')).toHaveStyle({ wordBreak: 'break-all' });
+    const field = screen.getByRole('textbox', { name: 'Connector URL' }).closest('.mantine-TextInput-root');
+    expect(field).toHaveStyle({ minWidth: '0rem', flex: '1 1 0%' });
   });
 });

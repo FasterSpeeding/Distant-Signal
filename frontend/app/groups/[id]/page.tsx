@@ -28,7 +28,7 @@ import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton'
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
@@ -106,7 +106,7 @@ export default async function GroupDetailPage({ params }: { params: Promise<{ id
       return (
         <Stack p="lg" gap="md">
           <Title order={1}>Group</Title>
-          <LoginLink underline="always">Log in to view this group</LoginLink>
+          <LoginControl underline="always">Log in to view this group</LoginControl>
         </Stack>
       );
     }
@@ -384,7 +384,9 @@ function MemberRow({
             an admin can only be demoted, and the owner's own row gets
             neither (they're a permanent owner -- the backend refuses both
             directions against it). */}
-        {viewerIsOwner && member.role === 'member' && <PromoteMemberButton groupId={groupId} userId={member.userId} />}
+        {viewerIsOwner && member.role === 'member' && (
+          <PromoteMemberButton groupId={groupId} userId={member.userId} name={label} />
+        )}
         {viewerIsOwner && member.role === 'admin' && (
           <DemoteMemberButton groupId={groupId} userId={member.userId} name={label} />
         )}
@@ -488,7 +490,7 @@ function SharedJourneyRow({
     <Card withBorder>
       <StatusRow
         title={
-          <Link href={`/journeys/${journey.journeyId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Link href={`/journeys/${journey.journeyId}`} data-card-link>
             <Text fw={500}>{displayName}</Text>
           </Link>
         }
@@ -554,8 +556,8 @@ function SharedCustomLineRow({
       <StatusRow
         align="flex-start"
         title={
-          <Link href={`/lines/${line.lineId}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-            <Text fw={500} lineClamp={2} style={{ minWidth: 0 }}>
+          <Link href={`/lines/${line.lineId}`} data-card-link>
+            <Text fw={500} lineClamp={2} miw={0}>
               {line.lineName}
             </Text>
           </Link>

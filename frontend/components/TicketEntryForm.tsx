@@ -416,7 +416,7 @@ export function TicketEntryForm({
            * nothing to report through the existing error path. */
         }}
       >
-        <Group gap="xs" justify="center" style={{ pointerEvents: 'none' }}>
+        <Group gap="xs" justify="center" className="ds-pass-through">
           <Text size="sm" fw={500}>
             Drop a ticket file here
           </Text>
@@ -618,7 +618,7 @@ function UploadPanel({
            * design of the drop area itself." */
         }}
       >
-        <Stack gap={4} align="center" style={{ pointerEvents: 'none' }}>
+        <Stack gap={4} align="center" className="ds-pass-through">
           <Text size="sm" fw={500}>
             {kind === 'pkpass' ? 'Apple Wallet .pkpass file' : 'PDF e-ticket'}
           </Text>
@@ -634,7 +634,7 @@ function UploadPanel({
             {/* Always reachable, per Decision 2's table -- the manual form
                 is right there and always usable regardless of why the
                 upload failed. */}
-            <Button variant="subtle" size="xs" onClick={onFallback} style={{ alignSelf: 'flex-start' }}>
+            <Button variant="subtle" size="xs" onClick={onFallback} className="ds-self-start">
               or fill in the details manually
             </Button>
           </Stack>

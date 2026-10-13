@@ -8,7 +8,7 @@ import { DeleteTrainButton, type DeleteTrainButtonHandle } from './DeleteTrainBu
 
 /** Task 3.6.7's `/track/mine` row overflow-kebab, extracted into its own
  * Client Component rather than inlined in `app/track/mine/page.tsx`
- * (a Server Component): `RenameTrainButton`/`DeleteTrainButton`'s `trigger`
+ * (a Server Component): `RenameTrainButton`'s `trigger`
  * prop is a function that returns JSX (`(onClick) => <Menu.Item .../>`),
  * and a function value can never cross the Server->Client boundary as a
  * prop -- only the two buttons' OTHER props (`trackingId`, `customName`,
@@ -17,8 +17,8 @@ import { DeleteTrainButton, type DeleteTrainButtonHandle } from './DeleteTrainBu
  * serializable value.
  *
  * `RenameTrainButton`/`DeleteTrainButton` are rendered OUTSIDE `<Menu>`
- * entirely (as siblings below it), controlled via `ref` rather than the
- * `trigger` prop each still accepts -- the `Menu.Item`s inside
+ * entirely (as siblings below it), controlled via `ref` rather than a
+ * trigger (`RenameTrainButton`'s `trigger`, `DeleteTrainButton`'s `hideTrigger`) -- the `Menu.Item`s inside
  * `<Menu.Dropdown>` are plain, local, and just call `.current?.open()`.
  *
  * This is a deliberate fix, not the original shape: `trigger` alone (both
@@ -84,7 +84,7 @@ export function TrackedTrainRowMenu({
         trackingId={trackingId}
         sharedGroupCount={sharedGroupCount}
         afterDelete="refresh"
-        trigger={() => null}
+        hideTrigger
       />
     </>
   );

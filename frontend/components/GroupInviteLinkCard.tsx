@@ -2,11 +2,10 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ActionIcon, Button, Card, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
+import { Button, Card, Group, Stack, Text } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { CheckIcon } from './CheckIcon';
-import { ShareIcon } from './ShareIcon';
+import { LoginControl } from './LoginControl';
+import { CopyableLink } from './CopyableLink';
 import { formatDate } from '@/lib/dateFormat';
 import type { GroupInviteLink } from '@/lib/types';
 import { freshTokenFromResponse } from '@/lib/freshLinkToken';
@@ -20,8 +19,6 @@ import { describeFailure } from '@/lib/failure';
  * page) than the one it's rendered on. `admin`/`owner`-only: the caller
  * (Task 12's page) never renders this for a plain `member` at all,
  * matching `inviteLink` being `null` in that case on the wire already. */
-const COPIED_LABEL = 'Copied';
-const COPIED_TIMEOUT_MS = 2000;
 
 export function GroupInviteLinkCard({
   groupId,
@@ -44,7 +41,6 @@ export function GroupInviteLinkCard({
   origin: string;
 }) {
   const router = useRouter();
-  const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
@@ -57,25 +53,6 @@ export function GroupInviteLinkCard({
   const token = freshToken ?? inviteLink?.token ?? null;
   const url = token ? `${origin}/groups/join/${token}` : null;
   const hasActiveLink = inviteLink !== null || freshToken !== null;
-
-  async function share() {
-    if (!url) return;
-    if (typeof navigator.share === 'function') {
-      try {
-        await navigator.share({ url, title: 'Join my group on Distant Signal' });
-        return;
-      } catch (err) {
-        if (err && typeof err === 'object' && 'name' in err && err.name === 'AbortError') return;
-      }
-    }
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), COPIED_TIMEOUT_MS);
-    } catch {
-      // No more to do -- see ShareButton.tsx's own identical fallback.
-    }
-  }
 
   async function regenerate() {
     setBusy(true);
@@ -130,31 +107,7 @@ export function GroupInviteLinkCard({
       <Stack gap="xs">
         <Text fw={500}>Invite link</Text>
         {url ? (
-          <Group gap="xs" wrap="nowrap">
-            {/* `aria-label` rather than a visible `label`: the "Invite
-                link" heading above already names this field for a sighted
-                reader, and repeating it as a Mantine `label` would put the
-                same words on screen twice. Without it the field has no
-                accessible name at all (axe `label`, critical) -- a screen
-                reader reaching it announces only the URL's characters, with
-                nothing saying what the URL is. */}
-            <TextInput value={url} readOnly aria-label="Invite link" style={{ flexGrow: 1 }} />
-            <Tooltip label={copied ? COPIED_LABEL : 'Share this link'}>
-              {/* Mantine's default `md` ActionIcon (28px) is a hair under
-                  the review's §2.10 recommendation. Sized to 36px here
-                  (rather than 44px, like `ShareButton`/`PinToggle`'s
-                  primary-action floor) to match the adjacent `TextInput`'s
-                  own default height, since this sits flush against it in a
-                  `nowrap` `Group` -- still comfortably above the 24px
-                  minimum. The children are fixed 16px `aria-hidden` SVGs
-                  (`ShareIcon`/`CheckIcon`, not the "⇪"/"✓" text glyphs they
-                  replaced), so they don't grow with the box; the button's
-                  `aria-label` is its accessible name. */}
-              <ActionIcon variant="outline" color="gray" onClick={share} aria-label="Share invite link" size={36}>
-                {copied ? <CheckIcon /> : <ShareIcon />}
-              </ActionIcon>
-            </Tooltip>
-          </Group>
+          <CopyableLink value={url} label="Invite link" hideLabel share shareTitle="Join my group on Distant Signal" />
         ) : hasActiveLink ? (
           <Text size="sm" c="dimmed">
             An invite link is active, but for security it can&apos;t be shown again. Regenerate to get a new link to
@@ -177,7 +130,9 @@ export function GroupInviteLinkCard({
           </Text>
         )}
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to manage this invite link</LoginLink>}
+        {needsLoginState.needsLogin && (
+          <LoginControl underline="always">Log in to manage this invite link</LoginControl>
+        )}
         <Group gap="xs">
           <Button variant="default" size="xs" onClick={regenerate} loading={busy}>
             Regenerate

@@ -1,6 +1,6 @@
 import { Divider, Group, Stack } from '@mantine/core';
 import { getSessionOrLoggedOut, getTicketsForTrackedTrain, getDelayRepayEstimate } from '@/lib/api';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { TicketEntryForm } from './TicketEntryForm';
 import { DelayRepayEstimate } from './DelayRepayEstimate';
 import { TicketSummary } from './TicketSummary';
@@ -53,7 +53,7 @@ export async function TicketPanel({ trackingId }: { trackingId: number }) {
     // Rendered directly, matching the established local convention for
     // this exact "inline TextLink to /api/auth/login" login nudge (see
     // PinToggle.tsx and TrackTrainForm.tsx).
-    return <LoginLink underline="always">Log in to attach a ticket to this journey</LoginLink>;
+    return <LoginControl underline="always">Log in to attach a ticket to this journey</LoginControl>;
   }
 
   const tickets = await getTicketsForTrackedTrain(trackingId);

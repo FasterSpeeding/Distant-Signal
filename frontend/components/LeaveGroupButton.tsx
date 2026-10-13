@@ -1,12 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Modal, Text, Group } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** Self-removal, always allowed for any member (spec §3) -- unlike
  * `RemoveMemberButton`, this targets the CURRENT user's own id, so it
@@ -46,62 +40,20 @@ export function LeaveGroupButton({
   willDeleteGroup?: boolean;
   nextOwnerLabel?: string | null;
 }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [leaving, setLeaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleLeave() {
-    setLeaving(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/groups/${groupId}/members/${currentUserId}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('leave', 'this group', response));
-        }
-        setLeaving(false);
-        return;
-      }
-      router.push('/groups');
-    } catch {
-      setError(describeFailure('leave', 'this group'));
-      setLeaving(false);
-    }
-  }
-
   return (
-    <>
-      <Button variant="outline" color="red" onClick={open}>
-        Leave group
-      </Button>
-      <Modal opened={opened} onClose={close} title="Leave this group?">
-        {willDeleteGroup ? (
-          <Text>
-            You&apos;re the only member, so leaving deletes this group, its shared trains and its invite link.
-          </Text>
-        ) : (
-          <Text>
-            You&apos;ll lose access to every train shared in this group, and any trains you&apos;ve shared into it will
-            be removed for everyone else too.
-            {nextOwnerLabel && ` ${nextOwnerLabel} will become the new owner.`}
-          </Text>
-        )}
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to leave this group</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={leaving}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleLeave} loading={leaving} aria-label="Confirm leave group">
-            Leave
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Leave group"
+      confirmLabel="Leave"
+      actionName="leave group"
+      title="Leave this group?"
+      request={() => fetch(`/api/groups/${groupId}/members/${currentUserId}`, { method: 'DELETE' })}
+      failure={['leave', 'this group']}
+      loginPrompt="Log in to leave this group"
+      onSuccess={(router) => router.push('/groups')}
+    >
+      {willDeleteGroup
+        ? "You're the only member, so leaving deletes this group, its shared trains and its invite link."
+        : `You'll lose access to every train shared in this group, and any trains you've shared into it will be removed for everyone else too.${nextOwnerLabel ? ` ${nextOwnerLabel} will become the new owner.` : ''}`}
+    </ConfirmActionButton>
   );
 }

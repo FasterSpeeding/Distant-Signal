@@ -66,7 +66,7 @@ describe('StatusRow', () => {
     it('gives a string title minWidth: 0 so it is the side that shrinks', () => {
       renderWithMantine(<StatusRow title="A very long line name that could overflow" trailing={<Badge>Bad</Badge>} />);
       const title = screen.getByText('A very long line name that could overflow');
-      expect(title.style.minWidth).toBe('0');
+      expect(title.style.minWidth).toBe('0rem');
     });
 
     it('gives the trailing wrapper flexShrink: 0 so a badge cannot be crushed', () => {

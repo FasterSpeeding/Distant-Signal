@@ -72,7 +72,7 @@ export function TextLink({
   // Left `undefined` by default -- Mantine's own `Text` default (`md`,
   // 16px) is what every existing call site was already implicitly getting,
   // so adding this prop must not change any of them. `AuthStatus`'s
-  // `LoginLink` is the one call site that now sets this explicitly, to
+  // `LoginControl` is the one call site that now sets this explicitly, to
   // `'sm'` (14px) -- the size the shared chrome's other text-link-styled
   // controls converge on (review §2.16 "auth controls are inconsistently
   // sized"): `sm` is Mantine's own font-size floor before `xs` (12px, which
@@ -93,8 +93,8 @@ export function TextLink({
   rel?: string;
   // Passed straight through to `next/link`'s own `prefetch` prop.
   // Deliberately omitted (left `undefined`, i.e. Next's own default) for
-  // every ordinary in-app page link -- only `LoginLink` overrides this to
-  // `false`. See `LoginLink.tsx`'s own doc comment for why: its href is
+  // every ordinary in-app page link -- only `LoginControl` overrides this to
+  // `false`. See `LoginControl.tsx`'s own doc comment for why: its href is
   // never a real page, so letting Next prefetch it fires a real,
   // side-effecting request with no user interaction at all.
   prefetch?: boolean;

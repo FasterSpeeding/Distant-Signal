@@ -128,6 +128,41 @@ class BannedPhrases(unittest.TestCase):
         self.assertTrue(findings(record(text="National Rail TOCs")))
         self.assertEqual(findings(record(text="Click the stop button.")), [])
 
+    def test_flags_sign_in_wording(self) -> None:
+        """Check that it flags "sign in" wording but not "log in" or "design in"."""
+        for text in (
+            "Sign in to save",
+            "You're signed in.",
+            "Sign-in sessions",
+            "after signing in",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    any('"sign in"' in m for m in findings(record(text=text)))
+                )
+        for text in (
+            "Log in to save",
+            "You're logged in.",
+            "Login sessions",
+            "A design in grape.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(findings(record(text=text)), [])
+
+    def test_flags_crs_but_not_station_code(self) -> None:
+        """Check that it flags "CRS" and "CRS code" but not "station code" or "crs"."""
+        self.assertTrue(
+            any('"CRS"' in m for m in findings(record(text="Enter a CRS code")))
+        )
+        self.assertEqual(findings(record(text="Enter a station code")), [])
+        self.assertEqual(
+            findings(record(kind="string", attr="href", text="/stations/crs")), []
+        )
+
+    def test_flags_the_old_time_placeholder(self) -> None:
+        """Check that it flags the "--:--" time placeholder."""
+        self.assertTrue(any('"--:--"' in m for m in findings(record(text="--:--"))))
+
 
 class BannedCharacters(unittest.TestCase):
     """Typographic tells, in every string the app holds."""

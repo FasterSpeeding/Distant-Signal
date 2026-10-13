@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Modal, Select, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import type { TrackedTrainListItem } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
@@ -105,7 +105,7 @@ export function AddTrainToGroupButton({
           />
         )}
         {error && <Alert color="red">{error}</Alert>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to share a train</LoginLink>}
+        {needsLoginState.needsLogin && <LoginControl underline="always">Log in to share a train</LoginControl>}
         <Button mt="md" onClick={handleAdd} disabled={!selected} loading={submitting}>
           Add to group
         </Button>

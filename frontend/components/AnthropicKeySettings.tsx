@@ -63,7 +63,7 @@ export function AnthropicKeySettings() {
           placeholder="sk-ant-..."
           value={input}
           onChange={(e) => setInput(e.currentTarget.value)}
-          style={{ flex: 1 }}
+          flex={1}
         />
         <Button onClick={handleSave} disabled={!input.trim()}>
           Save

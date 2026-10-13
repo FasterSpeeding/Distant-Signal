@@ -28,6 +28,26 @@ Removed: `/private/station-samples`, `/full-coverage-stats`,
 DS-MCP is unaffected: its `srv-ds-mcp` bearer token still buys its own
 rate-limit budget on the public routes.
 
+## 2026-10-12: "station code" and "login" in API error text
+
+No shape changes or status code changes. Error bodies the API writes
+use the site's terms (docs/style-guide.md, "Terminology"):
+
+- Station code validation errors say "station code" instead of "CRS
+  code": "Station codes are three letters, like WOK or EUS." (pins,
+  track-by-UID, tickets, journeys, journey templates); "{field} must be
+  a 3-letter station code" (`/public/trains/search`, `callingAt` on
+  departures); "'XYZ' is not a valid 3-letter station code" (custom
+  lines); "use a three-letter station code" (line timetable `from`/`to`);
+  "'XYZ' is not a recognised station code" (trip planning, including
+  `via:` errors).
+- The plain-text error bodies of `/public/auth/login` and
+  `/public/auth/callback` say "login failed", "login was not completed"
+  and "login temporarily unavailable" instead of "sign-in ...".
+
+A client matching on the old wording ("CRS code", "sign-in") must
+match the new text.
+
 ## 2026-10-10: no em dashes in API-written text
 
 No shape changes. Text the API and aggregator write themselves no longer

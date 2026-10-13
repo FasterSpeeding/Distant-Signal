@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Modal, Select, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import type { LineSummary } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { LoadingText } from '@/components/LoadingText';
@@ -111,7 +111,7 @@ export function AddCustomLineToGroupButton({ groupId, excludeLineIds }: { groupI
           />
         )}
         {error && <Alert color="red">{error}</Alert>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to share a line</LoginLink>}
+        {needsLoginState.needsLogin && <LoginControl underline="always">Log in to share a line</LoginControl>}
         <Button mt="md" onClick={handleAdd} disabled={!selected} loading={submitting}>
           Share with group
         </Button>

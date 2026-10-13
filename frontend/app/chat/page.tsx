@@ -1,7 +1,7 @@
 import { Stack, Text, Title } from '@mantine/core';
 import { getChatbotAccess } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '@/app/track/mine/AutoOpenLoginPrompt';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { ChatPanel } from '@/components/ChatPanel';
 import { AddMcpServerLinks } from '@/components/AddMcpServerLinks';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
@@ -19,7 +19,7 @@ export const revalidate = 0;
  * Gates on `getChatbotAccess()`'s three states before ever mounting
  * `ChatPanel`: `unauthenticated` reuses `AutoOpenLoginPrompt` (the same
  * modal-login-prompt convention `/track/mine` already established, not the
- * plain `LoginLink` this plan's own Task 5 sketch predates -- that page
+ * plain `LoginControl` this plan's own Task 5 sketch predates -- that page
  * confirmed obsolete this session); `forbidden` is a real, logged-in,
  * non-allowlisted user, per the dual-mode design's own Error handling
  * section ("a logged-in-but-not-allowlisted user... gets a plain 'not
@@ -50,7 +50,7 @@ export default async function ChatPage() {
             branch needs it -- the `forbidden` branch below already has
             real server-rendered content of its own, and the success
             branch is real content too. */}
-        <LoginLink underline="always">Log in to ask about live departures, disruptions and journeys</LoginLink>
+        <LoginControl underline="always">Log in to ask about live departures, disruptions and journeys</LoginControl>
         <AutoOpenLoginPrompt>Log in to ask about live departures, disruptions and journeys.</AutoOpenLoginPrompt>
       </Stack>
     );

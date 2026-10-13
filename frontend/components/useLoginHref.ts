@@ -3,7 +3,7 @@
 import { usePathname, useSearchParams } from 'next/navigation';
 
 /** Builds the `/api/auth/login?return_to=...` href from the current page's
- * path + query string. Extracted out of `LoginLink.tsx` (see that file's own
+ * path + query string. Extracted out of `LoginControl.tsx` (see that file's own
  * doc comment on why a URL fragment can never be captured this way) so
  * `LoginPromptModal` doesn't duplicate or reimplement this three-line
  * calculation — see

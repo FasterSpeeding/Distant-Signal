@@ -184,7 +184,7 @@ const SEARCH_WINDOW_BACKWARD_DAYS: i64 = 7;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TrainSearchParams {
-    /// Required. A 3-letter CRS code; the search is keyed on ANY station a
+    /// Required. A 3-letter station code; the search is keyed on ANY station a
     /// train calls at -- boarding or alighting, including where it starts
     /// or ends -- not just where it departs from or terminates.
     station: String,
@@ -279,7 +279,7 @@ pub fn router() -> Router {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TrainResolveParams {
-    /// Required. The board's own station, a 3-letter CRS code.
+    /// Required. The board's own station, a 3-letter station code.
     station: String,
     /// Required, `"YYYY-MM-DD"`: the London-local calendar date of `time`
     /// at `station` -- NOT necessarily the train's CIF service date (a
@@ -562,7 +562,7 @@ fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)>
     if trimmed.len() != 3 || !trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("{label} must be a 3-letter CRS code"),
+            format!("{label} must be a 3-letter station code"),
         ));
     }
     Ok(trimmed.to_ascii_uppercase())

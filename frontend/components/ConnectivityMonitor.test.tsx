@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
@@ -217,6 +219,8 @@ describe('ConnectivityMonitor', () => {
     // The width is set on the fixed-position wrapper `<div>`, one ancestor
     // up from the `Notification` itself (the element carrying `role="status"`).
     const wrapper = status.parentElement;
-    expect(wrapper).toHaveStyle({ width: 'min(calc(100vw - 32px), 480px)' });
+    expect(wrapper).toHaveClass('connectivityBanner');
+    const css = readFileSync(join(__dirname, '..', 'app', 'globals.css'), 'utf8');
+    expect(css).toMatch(/\.connectivityBanner \{[^}]*width: min\(calc\(100vw - 32px\), 480px\);/);
   });
 });

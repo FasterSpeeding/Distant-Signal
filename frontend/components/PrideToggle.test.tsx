@@ -27,11 +27,11 @@ describe('PrideToggle', () => {
       expect(screen.getByLabelText(`Pride mode: ${mode}. Click to toggle.`)).toBeInTheDocument();
       expect(button).toHaveAttribute('aria-pressed', 'true');
       expect(document.body.dataset.pride).toBe(mode);
-      // Verify swatch is rendered (a span with background gradient)
-      const swatch = button.querySelector<HTMLElement>('span[style*="background"]');
+      // The swatch names its flag; the one copy of the flag's stripes
+      // (`.prideSwatch[data-flag]` -> `--ds-pride-*`) lives in globals.css.
+      const swatch = button.querySelector<HTMLElement>('span.prideSwatch:not([data-flag="off"])');
       expect(swatch).toBeInTheDocument();
-      // The one copy of the flag's stripes lives in globals.css.
-      expect(swatch!.getAttribute('style')).toContain(`var(--ds-pride-${mode})`);
+      expect(swatch!.dataset.flag).toBe(mode);
       expect(container.querySelector('.prideSparkles')).toBeInTheDocument();
     }
 
@@ -48,15 +48,15 @@ describe('PrideToggle', () => {
 
     fireEvent.click(button); // -> rainbow
     expect(screen.getByLabelText('Pride mode: rainbow. Click to toggle.')).toBeInTheDocument();
-    let swatch = button.querySelector('span[style*="background"]') as HTMLElement;
+    let swatch = button.querySelector('span.prideSwatch:not([data-flag="off"])') as HTMLElement;
     expect(swatch).toBeInTheDocument();
-    const rainbowBg = swatch.style.background;
+    const rainbowBg = swatch.dataset.flag;
 
     fireEvent.click(button); // -> trans
     expect(screen.getByLabelText('Pride mode: trans. Click to toggle.')).toBeInTheDocument();
-    swatch = button.querySelector('span[style*="background"]') as HTMLElement;
+    swatch = button.querySelector('span.prideSwatch:not([data-flag="off"])') as HTMLElement;
     expect(swatch).toBeInTheDocument();
-    const transBg = swatch.style.background;
+    const transBg = swatch.dataset.flag;
 
     // Different modes should have different gradients
     expect(rainbowBg).not.toBe(transBg);
@@ -71,7 +71,7 @@ describe('PrideToggle', () => {
     fireEvent.click(button);
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: nonbinary. Click to toggle.')).toBeInTheDocument();
-    let swatch = button.querySelector('span[style*="background"]');
+    let swatch = button.querySelector('span.prideSwatch:not([data-flag="off"])');
     expect(swatch).toBeInTheDocument();
     const nonbinarySparkles = container.querySelectorAll('.prideSparkle');
     expect(nonbinarySparkles).toHaveLength(3);
@@ -80,7 +80,7 @@ describe('PrideToggle', () => {
     // -> bisexual
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: bisexual. Click to toggle.')).toBeInTheDocument();
-    swatch = button.querySelector('span[style*="background"]');
+    swatch = button.querySelector('span.prideSwatch:not([data-flag="off"])');
     expect(swatch).toBeInTheDocument();
     const bisexualSparkles = container.querySelectorAll('.prideSparkle');
     expect(Array.from(bisexualSparkles).map((s) => s.textContent)).toEqual(['💗', '💜', '💙']);
@@ -88,7 +88,7 @@ describe('PrideToggle', () => {
     // -> pansexual
     fireEvent.click(button);
     expect(screen.getByLabelText('Pride mode: pansexual. Click to toggle.')).toBeInTheDocument();
-    swatch = button.querySelector('span[style*="background"]');
+    swatch = button.querySelector('span.prideSwatch:not([data-flag="off"])');
     expect(swatch).toBeInTheDocument();
     const pansexualSparkles = container.querySelectorAll('.prideSparkle');
     expect(Array.from(pansexualSparkles).map((s) => s.textContent)).toEqual(['💗', '💛', '💙']);
@@ -131,7 +131,7 @@ describe('PrideToggle', () => {
     expect(html).not.toContain('🏳️‍🌈');
     expect(html).not.toContain('🏳️‍⚧️');
     // Verify swatch is rendered instead
-    expect(container.querySelector('span[style*="background"]')).not.toBeInTheDocument(); // off mode has no swatch
+    expect(container.querySelector('span.prideSwatch:not([data-flag="off"])')).not.toBeInTheDocument(); // off mode has no swatch
   });
 
   it('all nine modes render distinct visible swatches', () => {
@@ -142,9 +142,9 @@ describe('PrideToggle', () => {
 
     for (const _mode of modes) {
       fireEvent.click(button);
-      const swatch = button.querySelector('span[style*="background"]') as HTMLElement;
+      const swatch = button.querySelector('span.prideSwatch:not([data-flag="off"])') as HTMLElement;
       expect(swatch).toBeInTheDocument();
-      const gradient = swatch.style.background;
+      const gradient = swatch.dataset.flag ?? '';
       expect(gradient).toBeTruthy();
       gradients.add(gradient);
     }

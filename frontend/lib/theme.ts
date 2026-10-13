@@ -203,3 +203,46 @@ export const theme = createTheme({
     },
   },
 });
+
+/** The app's own design tokens, on top of Mantine's palette, spacing and
+ * radius above. Components spread these rather than repeating the values,
+ * so a card, tile or icon button can't drift into a one-off look. See
+ * docs/style-guide.md, "Spacing, radius and elevation".
+ *
+ * `as const` so each value narrows to the literal Mantine prop type it is
+ * spread into (`shadow: 'sm'`, not `string`). */
+export const tokens = {
+  /** Card elevation. Borders do the work; a shadow marks a card the whole
+   * of which is a link (`CardLink`, `LineStatusCard`, a linked status
+   * tile). A card that only holds content, or holds its own controls
+   * (`OperatorStatusCard`), stays flat. Mantine drops shadows in dark
+   * mode, so the border carries the edge there. */
+  card: {
+    static: { withBorder: true },
+    link: { withBorder: true, shadow: 'sm' },
+  },
+  /** A status tile: a big count over its label (`/status`'s top strip).
+   * The tile is a `card.link` when it links somewhere, and `card.static`
+   * (dimmed) when its count is zero and there is nothing to drill into. */
+  statusTile: {
+    padding: 'lg',
+    gap: 4,
+    valueSize: 'xl',
+    valueWeight: 700,
+    labelSize: 'sm',
+  },
+  /** Status cards (`LineStatusCard`, `OperatorStatusCard`): roomy padding,
+   * a two-line title and a three-line reason. */
+  statusCard: {
+    padding: 'lg',
+    titleLineClamp: 2,
+    reasonLineClamp: 3,
+  },
+  /** `ActionIcon` sizes, in px. `field` sits flush beside a 36px input
+   * (`CopyableLink`); `pageAction` is the 44px touch target for the two
+   * actions a returning visitor taps most, pin and share (review §2.10). */
+  iconButton: {
+    field: 36,
+    pageAction: 44,
+  },
+} as const;

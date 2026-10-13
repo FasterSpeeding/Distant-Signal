@@ -148,7 +148,7 @@ export default async function TrackPage({
           to preserve the way `/lines/new`'s own comment protects. */}
       <Text size="sm" c="dimmed">
         Tracking a train needs a Distant Signal account. You&apos;ll be sent to log in when you save if you aren&apos;t
-        already signed in.
+        already logged in.
       </Text>
       <TrackTrainForm
         initialOrigin={originParam?.toUpperCase()}

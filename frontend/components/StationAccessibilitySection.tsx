@@ -7,6 +7,7 @@ import {
   AccordionItem,
   AccordionPanel,
   Badge,
+  Box,
   Code,
   Group,
   Stack,
@@ -153,11 +154,10 @@ const INLINE_ITEM_THRESHOLD = 3;
  * body-text contrast guarantee rather than inherit an unaudited colour. */
 function AvailabilityIcon({ available }: { available: boolean }) {
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        color: available ? 'var(--ds-color-good-icon)' : 'var(--ds-color-bad-icon)',
-      }}
+    <Box
+      component="span"
+      className="availabilityIcon"
+      c={available ? 'var(--ds-color-good-icon)' : 'var(--ds-color-bad-icon)'}
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -170,7 +170,6 @@ function AvailabilityIcon({ available }: { available: boolean }) {
         strokeLinecap="round"
         strokeLinejoin="round"
         aria-hidden="true"
-        style={{ flexShrink: 0 }}
       >
         {available ? (
           <polyline points="20 6 9 17 4 12" />
@@ -181,7 +180,7 @@ function AvailabilityIcon({ available }: { available: boolean }) {
           </>
         )}
       </svg>
-    </span>
+    </Box>
   );
 }
 
@@ -279,7 +278,7 @@ function AccessibilityNodeView({
       if (node.kind === 'text' && (node.text === 'Yes' || node.text === 'No')) {
         const available = node.text === 'Yes';
         return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span className="availabilityValue">
             <AvailabilityIcon available={available} />
             <Text size="sm" span>
               {node.text}
@@ -372,13 +371,7 @@ function AccessibilityNodeView({
         // can produce -- `Text` is a `<p>`, rich text is a `<div>` -- is
         // flow content, which is not valid inside phrasing content. The two
         // declarations below are what Mantine's own List root sets.
-        <ul
-          style={{
-            margin: 0,
-            paddingInlineStart: 'var(--mantine-spacing-lg)',
-            listStylePosition: 'outside',
-          }}
-        >
+        <ul className="accessibilityList">
           {node.items.map((item, index) => (
             <li key={index}>
               <AccessibilityNodeView node={item} path={path} />
@@ -607,7 +600,7 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
     // is a single text column already, so one wrapper does the job the
     // design asks for without touching every `Text`/`Typography` site
     // individually.
-    <Stack gap="xs" style={{ maxWidth: '70ch' }}>
+    <Stack gap="xs" maw="70ch">
       <SectionTitle>Accessibility &amp; facilities</SectionTitle>
       {result.coverage === 'unavailable' && (
         <Text c="dimmed">We don&apos;t have station reference data for this station yet.</Text>
