@@ -1,9 +1,8 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
-import { Badge, Stack, Title, Text, Group, Button, Paper } from '@mantine/core';
+import { Badge, Stack, Title, Text, Group, Paper } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { LoadingText } from '@/components/LoadingText';
-import Link from 'next/link';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getLineStatus, getCustomLine, getLineDefinition, getAllLines, getAllTocs } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
@@ -26,6 +25,7 @@ import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 import { LineTrainsResults } from './LineTrainsResults';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { ButtonLink } from '@/components/ButtonLink';
 
 /** `Suspense` fallback for both "Recent trends" boundaries below (review
  * §2.11). Sized to the *empty* state both `HalfHourlyTrendsResults` and
@@ -449,16 +449,9 @@ export default async function LineDetailPage({
               never-render-a-control-that-can-only-fail half. */}
           {isCustom && viewerOwnsLine && (
             <>
-              {/* Plain `<Link>` wrapping `Button`, not `component={Link}`
-                  on a Mantine polymorphic prop — this page is a Server
-                  Component, and that pattern previously broke
-                  `next build`'s Server/Client boundary check (see
-                  LineStatusCard's fix). */}
-              <Link href={`/lines/${id}/edit`} style={{ textDecoration: 'none' }}>
-                <Button variant="outline" size="xs">
-                  Edit
-                </Button>
-              </Link>
+              <ButtonLink href={`/lines/${id}/edit`} variant="outline" size="xs">
+                Edit line
+              </ButtonLink>
               <DeleteLineButton id={id} />
             </>
           )}

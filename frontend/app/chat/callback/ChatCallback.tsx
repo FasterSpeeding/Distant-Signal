@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { Alert, Button, Loader, Group, Stack, Text, Title } from '@mantine/core';
 import { auth, type AuthResult } from '@modelcontextprotocol/sdk/client/auth.js';
 import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
 import { describeFailure } from '@/lib/failure';
+import { ButtonLink } from '@/components/ButtonLink';
 
 /** Plain exclamation-in-a-circle, in the same inline-SVG house style as
  * `components/InfoIcon.tsx` (`@tabler/icons-react` is not a project
@@ -240,13 +240,13 @@ export function ChatCallback({ serverUrl }: { serverUrl: string | undefined }) {
                   Reconnect
                 </Button>
               )}
-              <Link href="/chat" style={{ textDecoration: 'none' }}>
-                <Button variant={serverUrl ? 'default' : 'filled'}>Back to chat</Button>
-              </Link>
+              <ButtonLink href="/chat" variant={serverUrl ? 'default' : 'filled'}>
+                Back to chat
+              </ButtonLink>
             </Group>
             <details>
               <summary>Show error details</summary>
-              <Text size="sm" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+              <Text size="sm" c="dimmed" className="ds-pre-wrap">
                 {state.message}
               </Text>
             </details>

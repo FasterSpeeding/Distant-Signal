@@ -39,6 +39,9 @@ const NODE_SCRIPT_FILES = [
 // selector plus the rule it enforces; `no-restricted-syntax` takes them all
 // at once, so a file-scoped override has to repeat the whole list.
 const FAILURE_COPY = /Something went wrong|Please try again|Could not |Request failed/;
+// Terminology (docs/style-guide.md, "Terminology"): "log in", not "sign in";
+// "station code", not "CRS". scripts/check-copy.py holds the same bans.
+const TERMINOLOGY_COPY = /\b[Ss]ign(ed|ing|s)?[- ]?ins?\b|\bCRS\b/;
 /** [character as a regex escape, why] */
 const BANNED_CHARACTERS = [
   [
@@ -76,6 +79,14 @@ const COPY_RULES = [
     message: 'Failures read "Couldn\'t load this train. Try again." Use describeFailure() from lib/failure.ts.',
   },
   {
+    selector: `JSXText[value=${String(TERMINOLOGY_COPY)}]`,
+    message: 'Say "log in" / "logged in" (not "sign in") and "station code" (not "CRS").',
+  },
+  {
+    selector: `JSXAttribute > Literal[value=${String(TERMINOLOGY_COPY)}]`,
+    message: 'Say "log in" / "logged in" (not "sign in") and "station code" (not "CRS").',
+  },
+  {
     selector: 'JSXText[value=/!\\s*$/]',
     message: 'No exclamation marks in UI text: terse and factual, like a departure board.',
   },
@@ -84,6 +95,8 @@ const COPY_RULES = [
     message: 'Give every DatePickerInput valueFormat="D MMM YYYY" so dates read "9 Oct 2026".',
   },
 ];
+const INLINE_STYLE_MESSAGE =
+  'No inline style props: use a Mantine style prop, a token from lib/theme.ts, a shared component or a class in app/globals.css (docs/style-guide.md, "Code conventions").';
 const DATE_FORMAT_RULE = {
   selector: 'CallExpression[callee.property.name=/^toLocale(Date|Time)?String$/]',
   message:
@@ -171,6 +184,26 @@ const eslintConfig = defineConfig([
   {
     files: ['lib/dateFormat.ts'],
     rules: { 'no-restricted-syntax': ['error', ...COPY_RULES] },
+  },
+
+  // No inline `style` props in the app (docs/style-guide.md, "Code
+  // conventions"): a copied `style={{...}}` is how one-off looks crept in
+  // before (99 of them by the 9 Oct 2026 audit). Use a Mantine style prop
+  // (`miw`, `flex`, `mt`, `c`...), a token from lib/theme.ts, a shared
+  // component (CardLink, ButtonLink...) or a class in app/globals.css.
+  //
+  // The allowlist is per line, not per file, so it can't grow silently:
+  // `// eslint-disable-next-line react/forbid-component-props -- <why>`
+  // where a value is computed at render time and CSS can't express it
+  // (JourneyProgress's stop counts and node circles). The style guide
+  // lists every current exception.
+  {
+    files: ['app/**/*.tsx', 'components/**/*.tsx', 'lib/**/*.tsx'],
+    ignores: TEST_FILES,
+    rules: {
+      'react/forbid-dom-props': ['error', { forbid: [{ propName: 'style', message: INLINE_STYLE_MESSAGE }] }],
+      'react/forbid-component-props': ['error', { forbid: [{ propName: 'style', message: INLINE_STYLE_MESSAGE }] }],
+    },
   },
 
   // TypeScript: `import type` for type-only imports, which

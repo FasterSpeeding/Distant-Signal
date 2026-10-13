@@ -18,7 +18,7 @@ async function openAndType(text: string) {
 }
 
 function confirmButton() {
-  return screen.getByRole('button', { name: 'Delete my account permanently' });
+  return screen.getByRole('button', { name: 'Confirm delete my account permanently' });
 }
 
 describe('DeleteAccountButton', () => {

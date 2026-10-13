@@ -340,7 +340,7 @@ fn take_output(
         });
         return Err(None);
     };
-    let BatchOutcome::Succeeded { usage, content } = outcome else {
+    let BatchOutcome::Succeeded { usage, content, .. } = outcome else {
         if let BatchOutcome::Errored { kind, message } = &outcome {
             tracing::warn!(
                 call = call.label(),
@@ -1455,6 +1455,7 @@ mod tests {
             retry_backoff: crate::RetryBackoff::default(),
             in_flight: crate::InFlight::default(),
             carry_forward_noops: false,
+            sweep_concurrency: 1,
             batch: None,
         };
         poll_once(&enricher, 100).await;

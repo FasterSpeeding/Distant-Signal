@@ -89,7 +89,7 @@ export default async function JourneysNewPage() {
       </Text>
       <Text size="sm" c="dimmed">
         Tracking a journey needs a Distant Signal account. You&apos;ll be sent to log in when you save if you
-        aren&apos;t already signed in. Just looking for routes?{' '}
+        aren&apos;t already logged in. Just looking for routes?{' '}
         <TextLink href={PLAN_JOURNEY_DESTINATION.href} underline="always" inline>
           Plan a journey
         </TextLink>{' '}

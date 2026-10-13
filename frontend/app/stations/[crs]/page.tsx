@@ -244,13 +244,7 @@ export default async function StationDisruptionPage({ params }: { params: Promis
         </Group>
       </Group>
 
-      <Group
-        component="nav"
-        aria-label="On this page"
-        gap="sm"
-        c="dimmed"
-        style={{ fontSize: 'var(--mantine-font-size-sm)' }}
-      >
+      <Group component="nav" aria-label="On this page" gap="sm" c="dimmed" fz="sm">
         <TextLink href="#disruptions" underline="always" inline>
           Disruptions
         </TextLink>
@@ -300,7 +294,7 @@ export default async function StationDisruptionPage({ params }: { params: Promis
                 const representative = representativeStatus(report.lineStatuses);
                 return (
                   <Group key={report.id} justify="space-between" wrap="nowrap" gap="sm">
-                    <Stack gap={0} style={{ minWidth: 0 }}>
+                    <Stack gap={0} miw={0}>
                       <TextLink href={`/lines/${report.id}`}>{report.name}</TextLink>
                       <Text size="xs" c="dimmed">
                         {formatSampleSummary(representative)}

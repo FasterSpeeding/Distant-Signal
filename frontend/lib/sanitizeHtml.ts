@@ -198,7 +198,6 @@ const EXTERNAL_LINK_SVG_ATTRS: Record<string, string> = {
   'stroke-linejoin': 'round',
   'aria-hidden': 'true',
   'data-icon': 'external-link',
-  style: 'vertical-align: -0.1em;',
 };
 
 const EXTERNAL_LINK_SVG_SHAPES: [string, Record<string, string>][] = [

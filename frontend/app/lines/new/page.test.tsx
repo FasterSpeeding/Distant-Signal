@@ -7,7 +7,7 @@ import NewCustomLinePage from './page';
 // at the top of its component body -- throws outside a real Next.js App
 // Router tree. Same workaround CustomLineForm.test.tsx's own top-of-file
 // mock uses; usePathname/useSearchParams are included too since a real
-// 401 on this page would mount LoginLink, which needs them, even though
+// 401 on this page would mount LoginControl, which needs them, even though
 // no test below exercises that path (CustomLineForm.test.tsx already
 // covers 401 handling directly).
 vi.mock('next/navigation', () => ({

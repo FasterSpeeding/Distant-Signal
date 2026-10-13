@@ -1,7 +1,7 @@
 import { Anchor, Card, Group, Stack, Text, Title } from '@mantine/core';
 import Link from 'next/link';
 import { getMyJourneyTemplates } from '@/lib/api';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
@@ -25,7 +25,7 @@ export default async function JourneyTemplatesPage() {
     return (
       <Stack p="lg" gap="md">
         <Title order={1}>Your journey templates</Title>
-        <LoginLink underline="always">Log in to see your journey templates</LoginLink>
+        <LoginControl underline="always">Log in to see your journey templates</LoginControl>
       </Stack>
     );
   }

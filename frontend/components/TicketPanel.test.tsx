@@ -110,8 +110,8 @@ describe('TicketPanel', () => {
 
     renderWithMantine(await TicketPanel({ trackingId: 1 }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm delete ticket' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete ticket' }));
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith('/api/Train/tickets/7', { method: 'DELETE' });

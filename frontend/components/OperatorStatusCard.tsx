@@ -8,6 +8,7 @@ import { TextLink } from './TextLink';
 import { formatOperatorSampleSummary } from '@/lib/operatorStats';
 import { isGoodSeverity } from '@/lib/severity';
 import type { OperatorSummary } from '@/lib/types';
+import { tokens } from '@/lib/theme';
 
 /** The "Worst of N lines · {name}" qualifier under the reason text (2026-09-22
  * UX review [OH] §2.3/I11): a rollup's reason is one line's own text
@@ -113,10 +114,10 @@ export function OperatorStatusCard({
     dedupedLineId !== undefined && operator.worstLineId !== undefined && dedupedLineId === operator.worstLineId;
 
   return (
-    <Card withBorder shadow="sm" padding="lg" style={{ display: 'flex', flexDirection: 'column' }}>
-      <Stack gap="xs" style={{ flexGrow: 1 }}>
+    <Card {...tokens.card.static} padding={tokens.statusCard.padding} className="ds-column">
+      <Stack gap="xs" flex="1 1 auto">
         <Group justify="space-between" wrap="nowrap" gap="xs" data-card-title-row>
-          <Text fw={600} lineClamp={2} style={{ minWidth: 0 }}>
+          <Text fw={600} lineClamp={tokens.statusCard.titleLineClamp} miw={0}>
             {operator.name}
           </Text>
           <StatusBadge severity={operator.worstSeverity} />
@@ -131,13 +132,7 @@ export function OperatorStatusCard({
           </Text>
         ) : (
           <>
-            <Text
-              size="sm"
-              c="dimmed"
-              lineClamp={3}
-              data-card-reason
-              style={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, overflow: 'hidden' }}
-            >
+            <Text size="sm" c="dimmed" lineClamp={tokens.statusCard.reasonLineClamp} data-card-reason>
               {operator.reason || 'No current disruption reported.'}
             </Text>
             <RollupScopeLine operator={operator} />
@@ -151,8 +146,8 @@ export function OperatorStatusCard({
             without it the footer (and the pin star inside it) drifted
             vertically between cards in the same row, sitting at different
             heights depending on how much text was above it (review M6). */}
-        <Group justify="space-between" align="center" wrap="nowrap" data-card-footer style={{ marginTop: 'auto' }}>
-          <Group gap="md" wrap="nowrap" style={{ minWidth: 0 }}>
+        <Group justify="space-between" align="center" wrap="nowrap" data-card-footer mt="auto">
+          <Group gap="md" wrap="nowrap" miw={0}>
             {operator.computedAt ? (
               <LastUpdated timestamp={operator.computedAt} />
             ) : (

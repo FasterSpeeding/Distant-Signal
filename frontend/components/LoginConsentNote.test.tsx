@@ -3,7 +3,7 @@ import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { LoginConsentNote, LoginConsentProvider } from './LoginConsentNote';
 import { LoginPromptModal } from './LoginPromptModal';
-import { LoginButton } from './LoginButton';
+import { LoginControl } from './LoginControl';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/groups',
@@ -42,7 +42,7 @@ describe('LoginConsentNote', () => {
         <LoginPromptModal opened onClose={() => {}}>
           Log in to continue.
         </LoginPromptModal>
-        <LoginButton>Log in to join</LoginButton>
+        <LoginControl variant="button">Log in to join</LoginControl>
       </LoginConsentProvider>,
     );
     expect(document.querySelectorAll('[data-login-consent]')).toHaveLength(2);

@@ -4,7 +4,7 @@ import { renderWithMantine } from '@/test/render';
 import { AuthStatus } from './AuthStatus';
 import type { SessionInfo } from '@/lib/types';
 
-// `LoginLink` calls usePathname()/useSearchParams() and `AccountMenu`
+// `LoginControl` calls usePathname()/useSearchParams() and `AccountMenu`
 // (via useLogout) calls useRouter(), all of which throw "invariant
 // expected app router to be mounted" outside a real Next.js App Router
 // tree (as in these unit tests) — same stub PinToggle.test.tsx uses.
@@ -91,14 +91,14 @@ describe('AuthStatus', () => {
     expect(accountMenuName()).toBe('a');
   });
 
-  it('falls back to "Signed in" when both name and username are blank', () => {
+  it('falls back to "Logged in" when both name and username are blank', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: '', name: '' }} />);
-    expect(accountMenuName()).toBe('Signed in');
+    expect(accountMenuName()).toBe('Logged in');
   });
 
-  it('falls back to "Signed in" when both name and username are null', () => {
+  it('falls back to "Logged in" when both name and username are null', () => {
     renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: null, name: null }} />);
-    expect(accountMenuName()).toBe('Signed in');
+    expect(accountMenuName()).toBe('Logged in');
   });
 
   // Review §3.1.3: /chat was undiscoverable -- this is the account menu's

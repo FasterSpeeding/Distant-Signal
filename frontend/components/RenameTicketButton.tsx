@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Modal, Text, TextInput, Group } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** Renames or clears a ticket's `customName` -- identical shape to
@@ -82,7 +82,7 @@ export function RenameTicketButton({
           data-autofocus
         />
         {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to rename this ticket</LoginLink>}
+        {needsLoginState.needsLogin && <LoginControl underline="always">Log in to rename this ticket</LoginControl>}
         <Group justify="end" mt="md">
           <Button variant="default" onClick={close} disabled={saving}>
             Cancel

@@ -29,7 +29,7 @@ const redirectMock = vi.fn((url: string) => {
 });
 // usePathname()/useSearchParams() stubbed for the same reason as
 // AuthStatus.test.tsx/TicketPanel.test.tsx -- the login-error branch now
-// renders LoginLink (Task 1).
+// renders LoginControl (Task 1).
 vi.mock('next/navigation', () => ({
   notFound: () => notFoundMock(),
   redirect: (url: string) => redirectMock(url),

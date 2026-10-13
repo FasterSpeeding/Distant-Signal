@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Alert, Button, Modal, Select } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 
@@ -92,7 +92,7 @@ export function ShareJourneyButton({ journeyId }: { journeyId: number }) {
         />
         {addedGroupName && <Alert color="green">Added to {addedGroupName}.</Alert>}
         {error && <Alert color="red">{error}</Alert>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to share this journey</LoginLink>}
+        {needsLoginState.needsLogin && <LoginControl underline="always">Log in to share this journey</LoginControl>}
         <Button mt="md" onClick={handleShare} disabled={!selected} loading={submitting}>
           Share
         </Button>

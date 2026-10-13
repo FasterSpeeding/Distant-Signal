@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Group, Modal, Stack, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { ButtonSpinner } from '@/components/LoadingText';
 
@@ -24,7 +24,7 @@ import { ButtonSpinner } from '@/components/LoadingText';
  *
  * Unlike `CreateGroupForm` (which navigates to the brand-new group), this
  * stays put and `router.refresh()`es -- the page it's on is already the
- * right page, it just needs the new name. Uses `LoginLink` rather than
+ * right page, it just needs the new name. Uses `LoginControl` rather than
  * `CreateGroupForm`'s `LoginPromptModal` for the 401 case: a modal on top
  * of this component's own modal would be a modal stack, so the prompt is
  * rendered inline alongside the error, matching `RemoveMemberButton` and
@@ -96,7 +96,7 @@ export function RenameGroupButton({ groupId, currentName }: { groupId: string; c
               {error}
             </Alert>
           )}
-          {needsLoginState.needsLogin && <LoginLink underline="always">Log in to rename this group</LoginLink>}
+          {needsLoginState.needsLogin && <LoginControl underline="always">Log in to rename this group</LoginControl>}
           <Group justify="end">
             <Button variant="default" onClick={close} disabled={submitting}>
               Cancel

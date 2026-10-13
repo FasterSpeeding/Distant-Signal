@@ -31,10 +31,10 @@ describe('GroupsPage', () => {
   // filled button so the anonymous visitor's one action here has the same
   // visual weight as the "Create group" action an authenticated visitor
   // sees in its place.
-  it('renders the login action as a filled button, not a plain text link', async () => {
+  it('renders the login action as a filled button-styled link, not a plain text link', async () => {
     vi.mocked(getMyGroups).mockResolvedValue(null);
     renderWithMantine(await GroupsPage());
-    expect(screen.getByRole('button', { name: 'Log in to see your groups' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Log in to see your groups' })).toHaveClass('mantine-Button-root');
   });
 
   // Review §3.2.8, deliberately on top of Task 1.1's root-cause `<main>`
@@ -81,8 +81,8 @@ describe('GroupsPage', () => {
     vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 }]);
     renderWithMantine(await GroupsPage());
     const link = screen.getByRole('link', { name: /Family/ });
-    expect(link).toHaveAttribute('data-group-card-link', 'true');
-    expect(link.querySelector('[data-group-card]')).not.toBeNull();
+    expect(link).toHaveAttribute('data-card-link', 'true');
+    expect(link.querySelector('[data-card]')).not.toBeNull();
     expect(screen.getByText('›')).toBeInTheDocument();
   });
 });

@@ -135,26 +135,8 @@ export function ConnectivityMonitor({
     <ConnectivityContext.Provider value={{ disconnected }}>
       {children}
       {disconnected && (
-        // zIndex 300 sits below DataFreshnessInfo's tooltip (400) and
-        // below Mantine's Modal, so this never covers something the
-        // visitor deliberately opened. Design spec Decision 8.
-        <div
-          style={{
-            position: 'fixed',
-            bottom: 16,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 300,
-            // Review §2.16: the fixed-width-less `Notification` below
-            // shrinks with the viewport with nothing stopping it, down to
-            // ~200px on a 390px phone -- narrow enough that the body text
-            // wraps onto four lines. Capped at 480px (matching the app's
-            // other narrow-form `maw`, e.g. `CustomLineForm`'s), floored at
-            // the viewport width minus a 16px gutter on each side so it
-            // never touches the screen edges.
-            width: 'min(calc(100vw - 32px), 480px)',
-          }}
-        >
+        // Placement and width: `.connectivityBanner` in globals.css.
+        <div className="connectivityBanner">
           {/* Copy is otherwise connectivity-neutral on purpose: it is true
               whether the visitor's own device is offline or the backend is
               unreachable, so there is one message and no branching on

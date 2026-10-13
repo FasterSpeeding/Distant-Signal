@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { getJourneyTemplate, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { DeleteJourneyTemplateButton } from '@/components/DeleteJourneyTemplateButton';
 import { EditJourneyTemplateForm } from '@/components/EditJourneyTemplateForm';
-import { LoginLink } from '@/components/LoginLink';
+import { LoginControl } from '@/components/LoginControl';
 import { RunTemplateNowButton } from '@/components/RunTemplateNowButton';
 import { TextLink } from '@/components/TextLink';
 import type { Metadata } from 'next';
@@ -34,7 +34,7 @@ export default async function JourneyTemplateDetailPage({ params }: { params: Pr
       return (
         <Stack p="lg" gap="md">
           <Title order={1}>Log in to see this journey template</Title>
-          <LoginLink underline="always">Log in to view this template</LoginLink>
+          <LoginControl underline="always">Log in to view this template</LoginControl>
         </Stack>
       );
     }

@@ -1,12 +1,6 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Button, Group, Modal, Text } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
-import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { ConfirmActionButton } from './ConfirmActionButton';
 
 /** 2026-09-22 UX review finding I14/2.4: a leg created WITHOUT a search
  * window (a direct `pin`/`knownTrain` pick) has no persisted window to
@@ -54,60 +48,19 @@ export function RemoveJourneyLegButton({
   legId: number;
   isOnlyLeg: boolean;
 }) {
-  const router = useRouter();
-  const [opened, { open, close }] = useDisclosure(false);
-  const [removing, setRemoving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const needsLoginState = useNeedsLogin();
-
-  async function handleRemove() {
-    setRemoving(true);
-    setError(null);
-    needsLoginState.reset();
-    try {
-      const response = await fetch(`/api/Journeys/${journeyId}/legs/${legId}`, { method: 'DELETE' });
-      if (!response.ok) {
-        if (response.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(await failureFromResponse('remove', 'this leg', response));
-        }
-        setRemoving(false);
-        return;
-      }
-      if (isOnlyLeg) {
-        router.push('/track/mine');
-      } else {
-        router.refresh();
-      }
-    } catch {
-      setError(describeFailure('remove', 'this leg'));
-      setRemoving(false);
-    }
-  }
-
   return (
-    <>
-      <Button variant="outline" color="red" size="xs" onClick={open}>
-        Remove leg
-      </Button>
-      <Modal opened={opened} onClose={close} title="Remove this leg?">
-        <Text>
-          {isOnlyLeg
-            ? 'This is the only leg on this journey, so removing it deletes the whole journey. This cannot be undone.'
-            : "This cannot be undone. You can add a new leg afterwards if you'd rather pick a different train."}
-        </Text>
-        {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
-        {needsLoginState.needsLogin && <LoginLink underline="always">Log in to remove this leg</LoginLink>}
-        <Group justify="end" mt="md">
-          <Button variant="default" onClick={close} disabled={removing}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleRemove} loading={removing} aria-label="Confirm remove leg">
-            Remove leg
-          </Button>
-        </Group>
-      </Modal>
-    </>
+    <ConfirmActionButton
+      label="Remove leg"
+      actionName="remove leg"
+      title="Remove this leg?"
+      request={() => fetch(`/api/Journeys/${journeyId}/legs/${legId}`, { method: 'DELETE' })}
+      failure={['remove', 'this leg']}
+      loginPrompt="Log in to remove this leg"
+      onSuccess={(router) => (isOnlyLeg ? router.push('/track/mine') : router.refresh())}
+    >
+      {isOnlyLeg
+        ? 'This is the only leg on this journey, so removing it deletes the whole journey. This cannot be undone.'
+        : "This cannot be undone. You can add a new leg afterwards if you'd rather pick a different train."}
+    </ConfirmActionButton>
   );
 }

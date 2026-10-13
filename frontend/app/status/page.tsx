@@ -1,7 +1,6 @@
 import { Suspense } from 'react';
 import { Badge, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
-import Link from 'next/link';
 import type { Metadata } from 'next';
 import { getLineStatusForMode } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
@@ -22,6 +21,8 @@ import { LastUpdated } from '@/components/LastUpdated';
 import { RecentlyCleared } from '@/components/RecentlyCleared';
 import type { LineStatusReport } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { CardLink } from '@/components/CardLink';
+import { tokens } from '@/lib/theme';
 
 // Same rationale as every other dynamic route in this app (see
 // app/lines/page.tsx's own comment): without this, `next build` treats the
@@ -154,13 +155,11 @@ export default async function NetworkStatusPage() {
  * 2026-09-22 UX review §2.1: every tile was a `next/link` styled
  * `textDecoration: 'none'; color: 'inherit'` with no hover cue, no focus
  * ring, no chevron and no link colour -- five identical white cards on the
- * one page whose entire purpose is drill-down. `data-group-card-link`/
- * `data-group-card` reuse `/groups`' own established card-as-link idiom
- * (`app/globals.css`): a hover/focus border-colour change plus a visible
- * focus outline on the anchor itself, since Mantine's own focus ring only
- * ever applies to Mantine interactive components, not a bare `<a>`. §2.2's
- * colour cue (a coloured left rail matching `StatusBadge`'s own palette for
- * this bucket) rides along on the same `Card`. */
+ * one page whose entire purpose is drill-down. `CardLink` gives each
+ * tile the app's card-as-link treatment (`app/globals.css`): a hover/focus
+ * border-colour change plus a visible focus ring, since Mantine's own focus
+ * ring only ever applies to Mantine interactive components, not a bare
+ * `<a>`. Sizes come from `tokens.statusTile`. */
 function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: number }) {
   const label = SEVERITY_GROUP_LABELS[group];
 
@@ -171,12 +170,12 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
   // per §2.1's own recommendation).
   if (count === 0) {
     return (
-      <Card withBorder padding="lg" data-group-card>
-        <Stack gap={4} align="center">
-          <Text size="xl" fw={700} c="dimmed">
+      <Card {...tokens.card.static} padding={tokens.statusTile.padding} data-status-tile>
+        <Stack gap={tokens.statusTile.gap} align="center">
+          <Text size={tokens.statusTile.valueSize} fw={tokens.statusTile.valueWeight} c="dimmed">
             0
           </Text>
-          <Text size="sm" c="dimmed" ta="center">
+          <Text size={tokens.statusTile.labelSize} c="dimmed" ta="center">
             {label}
           </Text>
         </Stack>
@@ -185,30 +184,27 @@ function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: nu
   }
 
   return (
-    <Link
+    <CardLink
       href={`/lines?statusGroup=${group}`}
-      style={{ textDecoration: 'none', color: 'inherit' }}
-      data-group-card-link
-      aria-label={`${count} line${count === 1 ? '' : 's'} with ${label}, view in Lines`}
+      padding={tokens.statusTile.padding}
+      ariaLabel={`${count} line${count === 1 ? '' : 's'} with ${label}, view in Lines`}
     >
-      <Card withBorder shadow="sm" padding="lg" data-group-card>
-        <Stack gap={4} align="center">
-          <Text size="xl" fw={700}>
-            {count}
-          </Text>
-          <Text size="sm" c="dimmed" ta="center">
-            {label}
-          </Text>
-          {/* `aria-hidden`: the link's own `aria-label` above already states
+      <Stack gap={tokens.statusTile.gap} align="center">
+        <Text size={tokens.statusTile.valueSize} fw={tokens.statusTile.valueWeight}>
+          {count}
+        </Text>
+        <Text size={tokens.statusTile.labelSize} c="dimmed" ta="center">
+          {label}
+        </Text>
+        {/* `aria-hidden`: the link's own `aria-label` above already states
               the destination in full for assistive tech; this is the
               sighted-only visual affordance (grape link text + chevron)
               matching the app's established "this goes somewhere" cue. */}
-          <Text size="xs" c="var(--mantine-color-anchor)" aria-hidden>
-            View lines <span aria-hidden="true">›</span>
-          </Text>
-        </Stack>
-      </Card>
-    </Link>
+        <Text size="xs" c="var(--mantine-color-anchor)" aria-hidden>
+          View lines <span aria-hidden="true">›</span>
+        </Text>
+      </Stack>
+    </CardLink>
   );
 }
 

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Button } from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
-import { LoginLink } from './LoginLink';
+import { LoginControl } from './LoginControl';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** The confirm page's explicit "Join" action (spec §2.3: "Confirm-before-
@@ -62,7 +62,7 @@ export function JoinGroupButton({ token, groupId }: { token: string; groupId: st
     <>
       {error && <Alert color="red">{error}</Alert>}
       {needsLoginState.needsLogin ? (
-        <LoginLink underline="always">Log in to join this group</LoginLink>
+        <LoginControl underline="always">Log in to join this group</LoginControl>
       ) : (
         <Button onClick={handleJoin} loading={joining}>
           Join group
