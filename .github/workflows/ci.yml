@@ -531,7 +531,9 @@ jobs:
       # test: the schema gate and every db-source query as the role.
       # ingest-writer's line_status_rls test (plan 3c.3) runs above, as the
       # writer, reading DATABASE_URL_WRITER/_AGGREGATOR/_API itself.
-      # ds-store's schedule_publish_diff_tests run as schedule_reference:
+      # ds-store's schedule::publish tests run as schedule_reference (the
+      # other suites seed schedule products as the owner,
+      # MIGRATION_DATABASE_URL; ds_store::test_support::schedule_fixture_pool):
       # since release B the app role (and so the api role) no longer holds
       # the *_publish_keys tables or analyze_publish_keys (db-grants.yaml
       # app_revokes).
@@ -541,8 +543,8 @@ jobs:
           uv run --no-sync scripts/test-postgres-roles.py --mode per-service -- sh -c '
             skip="--skip corpus::db_tests --skip crosswalk::db_tests --skip freshness::db_tests --skip line_timetable::db_tests --skip reads::db_tests"
             DATABASE_URL="$DATABASE_URL_API" cargo test -p api -- --ignored --test-threads=1 $skip &&
-            DATABASE_URL="$DATABASE_URL_API" cargo test -p ds-store -- --ignored --test-threads=1 $skip --skip schedule_publish_diff_tests &&
-            DATABASE_URL="$DATABASE_URL_SCHEDULE_REFERENCE" cargo test -p ds-store schedule_publish_diff_tests -- --ignored --test-threads=1 &&
+            DATABASE_URL="$DATABASE_URL_API" cargo test -p ds-store -- --ignored --test-threads=1 $skip --skip schedule::publish:: &&
+            DATABASE_URL="$DATABASE_URL_SCHEDULE_REFERENCE" cargo test -p ds-store schedule::publish:: -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_AGGREGATOR" cargo test -p aggregator -- --ignored --test-threads=1 $skip &&
             DATABASE_URL="$DATABASE_URL_NOTIFIER" cargo test -p notifier -- --ignored --test-threads=1 $skip &&
             DATABASE_URL="$DATABASE_URL_WRITER" cargo test -p ingest-writer -- --ignored --test-threads=1 &&

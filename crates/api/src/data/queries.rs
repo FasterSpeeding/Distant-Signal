@@ -770,10 +770,31 @@ pub struct CallingPointDeparturePage {
 }
 
 // Moved to ds_store::schedule (ingest architecture plan 1A.7).
-pub use ds_store::schedule::{
-    ScheduleCallingPointsFullRow, upsert_schedule_calling_points_full,
-    upsert_schedule_destination_departures,
-};
+pub use ds_store::schedule::ScheduleCallingPointsFullRow;
+
+/// Test fixtures: `ds_store::schedule::upsert_schedule_calling_points_full`
+/// through [`ds_store::test_support::schedule_fixture_pool`]. The publish
+/// path's staging tables are schedule-reference's (and the owner's) only
+/// since release B, so a run as the api's own role seeds as the owner.
+#[cfg(test)]
+pub async fn upsert_schedule_calling_points_full(
+    pool: &PgPool,
+    rows: &[ScheduleCallingPointsFullRow],
+) -> Result<u64> {
+    let fixtures = ds_store::test_support::schedule_fixture_pool(pool).await;
+    ds_store::schedule::upsert_schedule_calling_points_full(&fixtures, rows).await
+}
+
+/// Test fixtures: `ds_store::schedule::upsert_schedule_destination_departures`,
+/// seeded as [`upsert_schedule_calling_points_full`] is.
+#[cfg(test)]
+pub async fn upsert_schedule_destination_departures(
+    pool: &PgPool,
+    rows: &[ScheduleDestinationDeparturesRow],
+) -> Result<u64> {
+    let fixtures = ds_store::test_support::schedule_fixture_pool(pool).await;
+    ds_store::schedule::upsert_schedule_destination_departures(&fixtures, rows).await
+}
 
 /// One `schedule_destination_departures` row for one `train_uid/service_date`,
 /// used to reconstruct a scheduled stop list when `trains.calling_points`
