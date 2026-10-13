@@ -42,9 +42,31 @@ describe('searchDateDescription', () => {
     );
   });
 
-  it('uses the singular for one day and never goes negative', () => {
+  it('uses the singular for one day', () => {
+    expect(searchDateDescription({ minDate: '2026-10-07', maxDate: '2026-10-09' }, TODAY)).toBe(
+      'Search a different day, up to 1 day back and 1 day ahead.',
+    );
+  });
+
+  it('leaves out a direction the range does not reach, never "0 days"', () => {
+    expect(searchDateDescription({ minDate: TODAY, maxDate: '2026-10-15' }, TODAY)).toBe(
+      'Search a later day, up to 7 days ahead.',
+    );
+    expect(searchDateDescription({ minDate: '2026-10-01', maxDate: TODAY }, TODAY)).toBe(
+      'Search an earlier day, up to 7 days back.',
+    );
+    expect(searchDateDescription({ minDate: TODAY, maxDate: TODAY }, TODAY)).toBe('Only today can be searched.');
+  });
+
+  it('names the dates when today is outside the range (the browser and server clocks disagree)', () => {
     expect(searchDateDescription({ minDate: '2026-10-09', maxDate: '2026-10-09' }, TODAY)).toBe(
-      'Search a different day, up to 0 days back and 1 day ahead.',
+      'Only 9 Oct 2026 can be searched.',
+    );
+    expect(searchDateDescription({ minDate: '2026-10-06', maxDate: '2026-10-20' }, '2026-09-17')).toBe(
+      'Search a day from 6 Oct 2026 to 20 Oct 2026.',
+    );
+    expect(searchDateDescription({ minDate: '2026-09-01', maxDate: '2026-09-07' }, TODAY)).toBe(
+      'Search a day from 1 Sep 2026 to 7 Sep 2026.',
     );
   });
 });

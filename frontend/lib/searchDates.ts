@@ -1,5 +1,6 @@
 import dayjs from 'dayjs';
 import type { TrainSearchDates } from './types';
+import { formatDate } from './dateFormat';
 
 /** The `/trains` date picker's bounds when `GET /public/trains/search/dates`
  * could not be read: the API's own static window
@@ -39,12 +40,34 @@ function dayCount(days: number): string {
 
 /** The date field's description for `bounds`, relative to `today`:
  * "up to a week either side of today" for the fallback window, otherwise
- * how far back and ahead it reaches. */
+ * how far back and ahead it reaches, leaving out a direction it doesn't
+ * reach at all (never "up to 0 days back").
+ *
+ * `today` is the browser's London day and `bounds` the server's, so the two
+ * can disagree: a browser clock that is wrong, or a page left open past
+ * midnight. When `today` falls outside `bounds` a count relative to it
+ * would be wrong, so the range reads as dates ("5 Oct 2026 to 19 Oct
+ * 2026"). */
 export function searchDateDescription(bounds: DateBounds, today: string): string {
-  const back = Math.max(0, dayjs(today).diff(dayjs(bounds.minDate), 'day'));
-  const ahead = Math.max(0, dayjs(bounds.maxDate).diff(dayjs(today), 'day'));
+  if (today < bounds.minDate || today > bounds.maxDate) {
+    if (bounds.minDate === bounds.maxDate) {
+      return `Only ${formatDate(bounds.minDate)} can be searched.`;
+    }
+    return `Search a day from ${formatDate(bounds.minDate)} to ${formatDate(bounds.maxDate)}.`;
+  }
+  const back = dayjs(today).diff(dayjs(bounds.minDate), 'day');
+  const ahead = dayjs(bounds.maxDate).diff(dayjs(today), 'day');
   if (back === FALLBACK_SEARCH_WINDOW_DAYS && ahead === FALLBACK_SEARCH_WINDOW_DAYS) {
     return 'Search a different day, up to a week either side of today.';
+  }
+  if (back === 0 && ahead === 0) {
+    return 'Only today can be searched.';
+  }
+  if (back === 0) {
+    return `Search a later day, up to ${dayCount(ahead)} ahead.`;
+  }
+  if (ahead === 0) {
+    return `Search an earlier day, up to ${dayCount(back)} back.`;
   }
   return `Search a different day, up to ${dayCount(back)} back and ${dayCount(ahead)} ahead.`;
 }
