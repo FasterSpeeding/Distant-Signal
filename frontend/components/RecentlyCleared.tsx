@@ -41,12 +41,14 @@ export function RecentlyClearedList({
   if (items.length === 0) return null;
   return (
     <Section>
-      <Stack gap="md" component="ul" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+      <Stack gap="md" component="ul" className="ds-plain-list">
         {items.map((item) => {
           const expected = wasExpectedUntil(item, now);
           return (
             <Stack gap={4} component="li" key={item.incidentId}>
-              <TextLink href={`/incidents/${encodeURIComponent(item.incidentId)}`}>{clearedTitle(item.summary)}</TextLink>
+              <TextLink href={`/incidents/${encodeURIComponent(item.incidentId)}`}>
+                {clearedTitle(item.summary)}
+              </TextLink>
               <Text size="xs" c="dimmed">
                 Cleared {formatTime(item.clearedAt)}
                 {expected !== null && ` · ${expected}`}

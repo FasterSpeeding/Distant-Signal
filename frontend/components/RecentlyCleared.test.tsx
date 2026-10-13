@@ -32,10 +32,9 @@ describe('RecentlyClearedList', () => {
   it('shows the title, the clear time, the end it beat and the clearing text', () => {
     renderWithMantine(<RecentlyClearedList items={[item()]} now={NOW} />);
     const section = screen.getByRole('region', { name: 'Recently cleared' });
-    expect(within(section).getByRole('link', { name: 'Residual disruption between Brockenhurst and Bournemouth' })).toHaveAttribute(
-      'href',
-      '/incidents/0071A58B',
-    );
+    expect(
+      within(section).getByRole('link', { name: 'Residual disruption between Brockenhurst and Bournemouth' }),
+    ).toHaveAttribute('href', '/incidents/0071A58B');
     expect(within(section).getByText('Cleared 21:26 · Was expected until 22:30')).toBeInTheDocument();
     expect(within(section).getByText(/has now ended/)).toBeInTheDocument();
     expect(within(section).queryByText(/South West Main Line/)).toBeNull();
