@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Stack, Title, Text, Group, Divider } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { notFound } from 'next/navigation';
@@ -20,6 +21,7 @@ import { StationAccessibilitySection } from '@/components/StationAccessibilitySe
 import { StationTimetable } from '@/components/StationTimetable';
 import { TextLink } from '@/components/TextLink';
 import { NationalRailCredit } from '@/components/NationalRailCredit';
+import { RecentlyCleared } from '@/components/RecentlyCleared';
 import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
 import { dedupeStationIssues } from '@/lib/stationIssues';
 import { representativeStatus, formatSampleSummary } from '@/lib/sampleStats';
@@ -313,6 +315,12 @@ export default async function StationDisruptionPage({ params }: { params: Promis
             <IssueList items={items} now={now} subject="station" />
           </>
         )}
+
+        {/* Info only, placed through the same lines as the disruptions
+            above; hidden when empty. */}
+        <Suspense fallback={null}>
+          <RecentlyCleared scope={{ station: crs }} now={now} showLines />
+        </Suspense>
       </Stack>
 
       {/* Sample stats by operator -- an independent block from the
