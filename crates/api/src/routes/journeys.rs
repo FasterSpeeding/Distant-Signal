@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
+use crate::auth::delegated::{DelegatedOrSessionUser, DeleteScope, ReadScope};
 use crate::data::{journeys, schedule_matching, train_tracking, unlisted_links};
+use crate::routes::journey_itinerary::RouteError;
 
 /// The `resource_type` discriminator this file passes to every
 /// `crate::data::unlisted_links` call -- routing-layer wiring only, kept out
@@ -51,6 +53,13 @@ pub fn router() -> Router {
     Router::new()
         .route("/Journeys", axum::routing::post(post_journey))
         .route("/Journeys/mine", axum::routing::get(get_my_journeys))
+        // A literal segment, like `mine` and `shared` (spec 2026-10-14
+        // §5.8). The four routes a delegated client may reach are pinned in
+        // `crate::auth::delegated::DELEGATED_ROUTES`.
+        .route(
+            "/Journeys/itinerary",
+            axum::routing::post(super::journey_itinerary::post_itinerary),
+        )
         // Ahead of `/Journeys/{journey_id}` -- pure documentation, since
         // `matchit` already resolves a literal segment ahead of a
         // same-position dynamic one regardless of registration order (see
@@ -1014,14 +1023,19 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
     }
 }
 
+/// `GET /Journeys/mine`. Also a delegated route (`journeys:read`, spec
+/// 2026-10-14 §5.8), with the same response; errors then follow the
+/// delegated JSON contract.
 async fn get_my_journeys(
     State(app): State<App>,
-    user: AuthenticatedUser,
-) -> Result<Json<Vec<journeys::JourneyListItem>>, (StatusCode, String)> {
-    let rows = journeys::list_journeys_for_user(&app.database, &user.id)
-        .await
-        .map_err(internal_error("list journeys"))?;
-    Ok(Json(rows))
+    user: DelegatedOrSessionUser<ReadScope>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match journeys::list_journeys_for_user(&app.database, &user.user_id).await {
+        Ok(rows) => Json(rows).into_response(),
+        Err(err) => RouteError::from(internal_error("list journeys")(err))
+            .render(user.is_delegated(), "bad_request"),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1031,6 +1045,9 @@ struct JourneyDetailResponse {
     custom_name: Option<String>,
     created_at: DateTime<Utc>,
     legs: Vec<JourneyLegDetailResponse>,
+    /// `'web'`, or the delegated client that saved it (spec 2026-10-14
+    /// §5.8).
+    created_via: String,
     /// Whether the CALLER owns this journey, as opposed to reading it via a
     /// group it's been shared into (`journey_readable_by`). The frontend
     /// gates every owner-only action (share-to-group button, unmatched-leg
@@ -1131,27 +1148,54 @@ struct LegSkipResponse {
 /// caller who does not own the resource can still read it, and it must
 /// stay that way -- deliberately -- while every other handler in this
 /// file keeps the ownership-only gate.
+///
+/// **Delegated callers** (`journeys:read`, spec 2026-10-14 §5.8) read only
+/// journeys they own: group sharing is Phase 3's `journeys:read_shared`,
+/// so `journey_readable_by` is not used for them, and a journey shared
+/// with them answers 404 like any other. `shareLink` is always `null` for
+/// them: a live share link is a credential.
 async fn get_journey(
     State(app): State<App>,
-    user: AuthenticatedUser,
+    user: DelegatedOrSessionUser<ReadScope>,
     Path(journey_id): Path<i64>,
-) -> Result<Json<JourneyDetailResponse>, (StatusCode, String)> {
-    let readable = journeys::journey_readable_by(&app.database, journey_id, &user.id)
-        .await
-        .map_err(internal_error("check journey readability"))?;
-    if !readable {
-        return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let delegated = user.is_delegated();
+    match get_journey_inner(&app, &user, journey_id).await {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => RouteError::from(err).render(delegated, "bad_request"),
+    }
+}
+
+async fn get_journey_inner(
+    app: &App,
+    user: &DelegatedOrSessionUser<ReadScope>,
+    journey_id: i64,
+) -> Result<JourneyDetailResponse, (StatusCode, String)> {
+    let not_found = || (StatusCode::NOT_FOUND, "no journey with that id".to_string());
+    if !user.is_delegated() {
+        let readable = journeys::journey_readable_by(&app.database, journey_id, &user.user_id)
+            .await
+            .map_err(internal_error("check journey readability"))?;
+        if !readable {
+            return Err(not_found());
+        }
     }
 
     let summary = journeys::get_journey_summary(&app.database, journey_id)
         .await
         .map_err(internal_error("read journey"))?
-        .ok_or((StatusCode::NOT_FOUND, "no journey with that id".to_string()))?;
-    let is_owner = summary.user_id == user.id;
+        .ok_or_else(not_found)?;
+    let is_owner = summary.user_id == user.user_id;
+    if user.is_delegated() && !is_owner {
+        return Err(not_found());
+    }
 
-    Ok(Json(
-        build_journey_detail_response(&app, journey_id, is_owner).await?,
-    ))
+    let mut response = build_journey_detail_response(app, journey_id, is_owner).await?;
+    if user.is_delegated() {
+        response.share_link = None;
+    }
+    Ok(response)
 }
 
 /// `POST /Journeys/{journeyId}/share-link` -- owner-only (folds `AND
@@ -1524,6 +1568,7 @@ async fn build_journey_detail_response(
         id: summary.id,
         custom_name: summary.custom_name,
         created_at: summary.created_at,
+        created_via: summary.created_via,
         legs,
         is_owner,
         share_link,
@@ -1901,18 +1946,79 @@ async fn delete_journey_leg(
 /// own `WHERE ... AND user_id = $N`, 404-never-403 for "doesn't exist" or
 /// "isn't yours" (see that function's own doc comment for the full
 /// cascade/no-orphan-rows reasoning), `204 No Content` on success.
+///
+/// **Delegated callers** (`journeys:delete`, spec 2026-10-14 §5.5a, D-9)
+/// may delete only a journey they own, that their client created
+/// (`created_via`), that is not shared into a group or through an active
+/// link, and only [`crate::auth::delegated::DelegatedAuth::daily_delete_limit`]
+/// times in 24 hours: 404 `not_found`, 409 `journey_shared` or 429
+/// `daily_limit` otherwise. Each delete leaves a `delegated_deletions` row
+/// (30 days) that the Connected apps page lists. The cookie path is
+/// unchanged.
 async fn delete_journey(
     State(app): State<App>,
-    user: AuthenticatedUser,
+    user: DelegatedOrSessionUser<DeleteScope>,
     Path(journey_id): Path<i64>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let deleted = journeys::delete_journey(&app.database, journey_id, &user.id)
-        .await
-        .map_err(internal_error("delete journey"))?;
-    if !deleted {
-        return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
-    }
-    Ok(StatusCode::NO_CONTENT)
+) -> axum::response::Response {
+    use crate::auth::delegated::Via;
+    use crate::data::delegated::DelegatedDeleteOutcome;
+    use axum::response::IntoResponse;
+    let not_found = || {
+        RouteError::coded(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no journey with that id",
+        )
+    };
+    let Via::Delegated { client, grant_id } = &user.via else {
+        return match journeys::delete_journey(&app.database, journey_id, &user.user_id).await {
+            Ok(true) => StatusCode::NO_CONTENT.into_response(),
+            Ok(false) => not_found().render(false, "bad_request"),
+            Err(err) => {
+                RouteError::from(internal_error("delete journey")(err)).render(false, "bad_request")
+            }
+        };
+    };
+    let outcome = crate::data::delegated::delete_journey_delegated(
+        &app.database,
+        journey_id,
+        &user.user_id,
+        &client.name,
+        *grant_id,
+        app.delegated.daily_delete_limit,
+    )
+    .await;
+    let error = match outcome {
+        Ok(DelegatedDeleteOutcome::Deleted) => {
+            tracing::warn!(
+                audit = true,
+                event = "delegated_delete",
+                client = %client.name,
+                user_id = %user.user_id,
+                grant_id,
+                journey_id,
+                "a delegated client deleted a journey"
+            );
+            return StatusCode::NO_CONTENT.into_response();
+        }
+        Ok(DelegatedDeleteOutcome::NotFound) => not_found(),
+        Ok(DelegatedDeleteOutcome::Shared) => RouteError::coded(
+            StatusCode::CONFLICT,
+            "journey_shared",
+            "This journey is shared, so it can only be deleted in Distant Signal.",
+        ),
+        Ok(DelegatedDeleteOutcome::DailyLimit { retry_after_secs }) => RouteError::Coded {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "daily_limit",
+            message: format!(
+                "{} journeys were deleted this way in the last 24 hours, which is the daily limit.",
+                app.delegated.daily_delete_limit
+            ),
+            retry_after_secs: Some(retry_after_secs),
+        },
+        Err(err) => RouteError::from(internal_error("delete journey")(err)),
+    };
+    error.render(true, "bad_request")
 }
 
 /// Scaffolding copied verbatim from `routes::train::db_tests` (same

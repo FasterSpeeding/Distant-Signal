@@ -1196,7 +1196,7 @@ pub async fn delete_leg(
 ///
 /// Scoped per `(template_id, service_date)`, not per template: skipping
 /// today must never suppress tomorrow's occurrence of the same commute.
-async fn record_template_occurrence_skips(
+pub(crate) async fn record_template_occurrence_skips(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     journey_id: i64,
 ) -> anyhow::Result<()> {
@@ -1307,6 +1307,10 @@ pub struct JourneyListItem {
     pub id: i64,
     pub custom_name: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// `'web'`, or the delegated client that saved the journey (spec
+    /// 2026-10-14 §5.8). A delegated client may delete only its own
+    /// (§5.5a), so its list needs this.
+    pub created_via: String,
     pub leg_id: i64,
     pub origin_crs: Option<String>,
     pub destination_crs: Option<String>,
@@ -1394,7 +1398,7 @@ pub async fn list_journeys_for_user(
 ) -> anyhow::Result<Vec<JourneyListItem>> {
     let rows = sqlx::query_as::<_, JourneyListItem>(
         "WITH recent AS ( \
-             SELECT j.id, j.custom_name, j.created_at FROM journeys j \
+             SELECT j.id, j.custom_name, j.created_at, j.created_via FROM journeys j \
              WHERE j.user_id = $1 \
                AND EXISTS (SELECT 1 FROM journey_legs l WHERE l.journey_id = j.id) \
              ORDER BY j.created_at DESC, j.id DESC \
@@ -1417,7 +1421,7 @@ pub async fn list_journeys_for_user(
              LEFT JOIN trains tr ON tr.id = ts.trains_id \
              WHERE jl.journey_id IN (SELECT id FROM recent) \
          ) \
-         SELECT r.id, r.custom_name, r.created_at, \
+         SELECT r.id, r.custom_name, r.created_at, r.created_via, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
                 so.name AS origin_name, sd.name AS destination_name, rl.match_mode, \
                 rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes, \
@@ -1443,6 +1447,9 @@ pub struct JourneySummaryRow {
     pub custom_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub user_id: String,
+    /// `'web'`, or the delegated client that saved it
+    /// (`crate::auth::delegated`, migration `20261014200000`).
+    pub created_via: String,
 }
 
 /// Unscoped journey summary fetch -- `journey_id` alone, no `user_id`
@@ -1460,7 +1467,7 @@ pub async fn get_journey_summary(
     journey_id: i64,
 ) -> anyhow::Result<Option<JourneySummaryRow>> {
     let row = sqlx::query_as::<_, JourneySummaryRow>(
-        "SELECT id, custom_name, created_at, user_id FROM journeys WHERE id = $1",
+        "SELECT id, custom_name, created_at, user_id, created_via FROM journeys WHERE id = $1",
     )
     .bind(journey_id)
     .fetch_optional(pool)
@@ -1545,6 +1552,96 @@ pub async fn list_legs_for_journey(
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+/// One leg of `POST /Journeys/itinerary`, validated and resolved to its
+/// shared `trains` row by the route.
+#[derive(Debug, Clone)]
+pub struct ItineraryLeg {
+    pub trains_id: i64,
+    pub service_date: NaiveDate,
+    /// The leg's own boarding and alighting points, as for
+    /// [`create_journey_with_known_train_leg`]'s overrides.
+    pub origin_crs: Option<String>,
+    pub destination_crs: Option<String>,
+}
+
+/// Creates a journey and every one of its `knownTrain` legs on `tx`, the
+/// caller's transaction, so `POST /Journeys/itinerary` is all or nothing
+/// (spec 2026-10-14 §5.8, replacing `PlanTripFlow`'s one-request-per-leg
+/// loop). Each leg is built exactly as [`create_journey_with_known_train_leg`]
+/// builds its one leg. `created_via` is `'web'` or the delegated client's
+/// name. Returns the journey id and `(leg_id, tracking_id)` per leg, in
+/// order.
+pub async fn create_journey_from_itinerary(
+    tx: &mut sqlx::PgConnection,
+    user_id: &str,
+    custom_name: Option<&str>,
+    created_via: &str,
+    legs: &[ItineraryLeg],
+) -> anyhow::Result<(i64, Vec<(i64, i64)>)> {
+    let (journey_id,): (i64,) = sqlx::query_as(
+        "INSERT INTO journeys (user_id, custom_name, created_via) VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(user_id)
+    .bind(custom_name)
+    .bind(created_via)
+    .fetch_one(&mut *tx)
+    .await?;
+    let mut created = Vec::with_capacity(legs.len());
+    for (index, leg) in legs.iter().enumerate() {
+        let tracking_id = crate::data::train_tracking::create_subscription_for_train(
+            &mut *tx,
+            leg.trains_id,
+            user_id,
+        )
+        .await?;
+        let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
+        )
+        .bind(tracking_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
+        let origin_crs = leg.origin_crs.clone().or(pin_origin_crs);
+        let destination_crs = leg.destination_crs.clone().or(pin_destination_crs);
+        let leg_id = insert_leg(
+            &mut *tx,
+            journey_id,
+            i32::try_from(index + 1)?,
+            origin_crs.as_deref(),
+            destination_crs.as_deref(),
+            leg.service_date,
+            Some(tracking_id),
+            "manual",
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await?;
+        created.push((leg_id, tracking_id));
+    }
+    Ok((journey_id, created))
+}
+
+/// Journeys `user_id` saved through `created_via` in the last 24 hours, for
+/// a delegated client's daily cap (spec 2026-10-14 §5.10, D-2), and the
+/// oldest one's creation time (when the window next frees a slot).
+pub async fn count_journeys_created_via_last_day(
+    pool: &PgPool,
+    user_id: &str,
+    created_via: &str,
+) -> anyhow::Result<(i64, Option<DateTime<Utc>>)> {
+    Ok(sqlx::query_as(
+        "SELECT COUNT(*), MIN(created_at) FROM journeys \
+         WHERE user_id = $1 AND created_via = $2 AND created_at > now() - INTERVAL '24 hours'",
+    )
+    .bind(user_id)
+    .bind(created_via)
+    .fetch_one(pool)
+    .await?)
 }
 
 #[cfg(test)]

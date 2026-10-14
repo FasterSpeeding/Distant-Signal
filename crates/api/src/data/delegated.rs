@@ -12,6 +12,9 @@ use sqlx::PgPool;
 pub const CONFIRMATION_TTL_MINUTES: i64 = 10;
 /// How long a `delegated_deletions` row is kept (§5.5a).
 pub const DELETION_RETENTION_DAYS: i64 = 30;
+/// How long a revoked grant row is kept, as the record of when and why the
+/// access ended (§5.11), before the sweep deletes it.
+pub const REVOKED_GRANT_RETENTION_DAYS: i64 = 90;
 /// How long an `Idempotency-Key` is remembered (§5.8).
 pub const IDEMPOTENCY_RETENTION_HOURS: i64 = 24;
 /// How long the "an app was connected" banner shows (§5.3).
@@ -255,6 +258,193 @@ pub async fn create_grant(
     Ok(CreateGrantOutcome::Created(grant))
 }
 
+/// What [`claim_idempotency_key`] found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IdempotencyClaim {
+    /// The key is new (or older than 24 hours): go ahead, and
+    /// [`record_idempotent_response`] on the same transaction.
+    Fresh,
+    /// The same key and the same request: answer with this stored response.
+    Replay(serde_json::Value),
+    /// The same key with a different request: 409 `idempotency_conflict`.
+    Conflict,
+}
+
+/// Claims `(user_id, key)` on the caller's transaction (spec 2026-10-14
+/// §5.8). The row is inserted now and its response filled in by
+/// [`record_idempotent_response`] before the same transaction commits, so a
+/// concurrent request with the same key waits on the insert and then sees
+/// the finished response; a rolled-back attempt leaves no key behind.
+pub async fn claim_idempotency_key(
+    tx: &mut sqlx::PgConnection,
+    user_id: &str,
+    key: &str,
+    request_hash: &str,
+) -> Result<IdempotencyClaim> {
+    sqlx::query(
+        "DELETE FROM journey_idempotency_keys \
+         WHERE user_id = $1 AND idempotency_key = $2 \
+           AND created_at < now() - make_interval(hours => $3)",
+    )
+    .bind(user_id)
+    .bind(key)
+    .bind(i32::try_from(IDEMPOTENCY_RETENTION_HOURS)?)
+    .execute(&mut *tx)
+    .await?;
+    let inserted: Option<i32> = sqlx::query_scalar(
+        "INSERT INTO journey_idempotency_keys (user_id, idempotency_key, request_hash) \
+         VALUES ($1, $2, $3) ON CONFLICT (user_id, idempotency_key) DO NOTHING RETURNING 1",
+    )
+    .bind(user_id)
+    .bind(key)
+    .bind(request_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if inserted.is_some() {
+        return Ok(IdempotencyClaim::Fresh);
+    }
+    let existing: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT request_hash, response FROM journey_idempotency_keys \
+         WHERE user_id = $1 AND idempotency_key = $2",
+    )
+    .bind(user_id)
+    .bind(key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    Ok(match existing {
+        Some((hash, Some(response))) if hash == request_hash => IdempotencyClaim::Replay(response),
+        // A different body, or (unreachable while claim and response commit
+        // together) a row with no response yet.
+        _ => IdempotencyClaim::Conflict,
+    })
+}
+
+/// Stores the response for a key [`claim_idempotency_key`] claimed.
+pub async fn record_idempotent_response(
+    tx: &mut sqlx::PgConnection,
+    user_id: &str,
+    key: &str,
+    response: &serde_json::Value,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE journey_idempotency_keys SET response = $3 \
+         WHERE user_id = $1 AND idempotency_key = $2",
+    )
+    .bind(user_id)
+    .bind(key)
+    .bind(response)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+/// What [`delete_journey_delegated`] did (spec 2026-10-14 §5.5a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DelegatedDeleteOutcome {
+    /// Deleted, and recorded in `delegated_deletions`.
+    Deleted,
+    /// Not the caller's, or not created by this client: 404 `not_found`.
+    NotFound,
+    /// Shared into a group or through an active link: 409 `journey_shared`.
+    Shared,
+    /// The user's delegated deletes in the last 24 hours reached the cap:
+    /// 429 `daily_limit`, retry after this many seconds.
+    DailyLimit { retry_after_secs: i64 },
+}
+
+/// A delegated delete under rules 1 to 4 of §5.5a, in one transaction: the
+/// journey row is locked, ownership, `created_via` and "not shared" are
+/// checked under that lock, the user's deletes in the last 24 hours are
+/// counted (under a per-user advisory lock, so two concurrent deletes
+/// cannot both pass the cap), and the delete runs exactly as
+/// `journeys::delete_journey` does (template tombstone included), with a
+/// `delegated_deletions` row recording what went.
+pub async fn delete_journey_delegated(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+    client: &str,
+    grant_id: i64,
+    daily_limit: i64,
+) -> Result<DelegatedDeleteOutcome> {
+    let mut tx = pool.begin().await?;
+    let row: Option<(Option<String>, String)> = sqlx::query_as(
+        "SELECT custom_name, created_via FROM journeys WHERE id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(journey_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((custom_name, created_via)) = row else {
+        return Ok(DelegatedDeleteOutcome::NotFound);
+    };
+    if created_via != client {
+        return Ok(DelegatedDeleteOutcome::NotFound);
+    }
+    let shared: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM group_journeys WHERE journey_id = $1) \
+             OR EXISTS (SELECT 1 FROM unlisted_links \
+                        WHERE resource_type = 'journey' AND resource_id = $1::text \
+                          AND revoked_at IS NULL \
+                          AND (expires_at IS NULL OR expires_at > now()))",
+    )
+    .bind(journey_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if shared {
+        return Ok(DelegatedDeleteOutcome::Shared);
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('delegated_delete:' || $1, 0))")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    let (recent, oldest): (i64, Option<DateTime<Utc>>) = sqlx::query_as(
+        "SELECT COUNT(*), MIN(deleted_at) FROM delegated_deletions \
+         WHERE user_id = $1 AND deleted_at > now() - INTERVAL '24 hours'",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if recent >= daily_limit {
+        let frees_at = oldest.map_or_else(Utc::now, |oldest| oldest + chrono::Duration::hours(24));
+        let retry_after_secs = (frees_at - Utc::now()).num_seconds().max(1);
+        return Ok(DelegatedDeleteOutcome::DailyLimit { retry_after_secs });
+    }
+    let legs: serde_json::Value = sqlx::query_scalar(
+        "SELECT COALESCE(jsonb_agg(jsonb_build_object( \
+             'serviceDate', jl.service_date, 'originCrs', jl.origin_crs, \
+             'destinationCrs', jl.destination_crs, 'trainUid', tr.train_uid) \
+             ORDER BY jl.leg_order), '[]'::jsonb) \
+         FROM journey_legs jl \
+         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+         LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         WHERE jl.journey_id = $1",
+    )
+    .bind(journey_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let summary = serde_json::json!({ "customName": custom_name, "legs": legs });
+    crate::data::journeys::record_template_occurrence_skips(&mut tx, journey_id).await?;
+    sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
+        .bind(journey_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO delegated_deletions (user_id, client, grant_id, journey_id, summary) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(user_id)
+    .bind(client)
+    .bind(grant_id)
+    .bind(journey_id)
+    .bind(&summary)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(DelegatedDeleteOutcome::Deleted)
+}
+
 /// A delegated delete, as the Connected apps page lists it.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -284,6 +474,7 @@ pub async fn recent_deletions(pool: &PgPool, user_id: &str) -> Result<Vec<Deleti
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SweepOutcome {
     pub inactive_grants: u64,
+    pub revoked_grants_purged: u64,
     pub deletions_purged: u64,
     pub idempotency_keys_purged: u64,
     pub confirmations_purged: u64,
@@ -292,6 +483,7 @@ pub struct SweepOutcome {
 impl SweepOutcome {
     pub fn total(self) -> u64 {
         self.inactive_grants
+            + self.revoked_grants_purged
             + self.deletions_purged
             + self.idempotency_keys_purged
             + self.confirmations_purged
@@ -299,8 +491,9 @@ impl SweepOutcome {
 }
 
 /// The hourly pass (§5.3, §5.5a): grants unused for `idle_days` are
-/// revoked (`inactive`), `delegated_deletions` rows past 30 days, expired
-/// idempotency keys and confirmation tokens are deleted. Idempotent.
+/// revoked (`inactive`); grants revoked more than 90 days ago,
+/// `delegated_deletions` rows past 30 days, expired idempotency keys and
+/// confirmation tokens are deleted. Idempotent.
 pub async fn sweep(pool: &PgPool, now: DateTime<Utc>, idle_days: i64) -> Result<SweepOutcome> {
     let inactive_grants = sqlx::query(
         "UPDATE delegated_grants SET revoked_at = $1, revoked_reason = 'inactive' \
@@ -309,6 +502,15 @@ pub async fn sweep(pool: &PgPool, now: DateTime<Utc>, idle_days: i64) -> Result<
     )
     .bind(now)
     .bind(i32::try_from(idle_days)?)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    let revoked_grants_purged = sqlx::query(
+        "DELETE FROM delegated_grants \
+         WHERE revoked_at IS NOT NULL AND revoked_at < $1 - make_interval(days => $2)",
+    )
+    .bind(now)
+    .bind(i32::try_from(REVOKED_GRANT_RETENTION_DAYS)?)
     .execute(pool)
     .await?
     .rows_affected();
@@ -336,10 +538,54 @@ pub async fn sweep(pool: &PgPool, now: DateTime<Utc>, idle_days: i64) -> Result<
             .rows_affected();
     Ok(SweepOutcome {
         inactive_grants,
+        revoked_grants_purged,
         deletions_purged,
         idempotency_keys_purged,
         confirmations_purged,
     })
+}
+
+/// [`sweep`] with [`crate::auth::delegated::GRANT_IDLE_DAYS`], logged, and
+/// the `delegated_grants_active` gauge refreshed. Shared by the api's
+/// hourly loop and the `maintenance` binary. `None` when the sweep failed
+/// (already logged), for the binary's exit status.
+pub async fn run_sweep(pool: &PgPool, now: DateTime<Utc>) -> Option<SweepOutcome> {
+    let outcome = match sweep(pool, now, crate::auth::delegated::GRANT_IDLE_DAYS).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!(error = ?err, "delegated-access sweep failed; will retry next interval");
+            return None;
+        }
+    };
+    if outcome.inactive_grants > 0 {
+        tracing::warn!(
+            audit = true,
+            event = "delegated_grant_revoked",
+            reason = RevokeReason::Inactive.as_str(),
+            count = outcome.inactive_grants,
+            "grants unused for 90 days were revoked"
+        );
+    }
+    if outcome.total() > 0 {
+        tracing::info!(?outcome, "delegated-access sweep pruned expired rows");
+    }
+    match active_grants_by_client(pool).await {
+        Ok(rows) => {
+            for (client, count) in rows {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a grant count is far below 2^52"
+                )]
+                metrics::gauge!(
+                    common::metrics::metric_name("api_delegated_grants_active"),
+                    "client" => client
+                )
+                .set(count as f64);
+            }
+        }
+        Err(err) => tracing::warn!(error = ?err, "could not count active grants"),
+    }
+    Some(outcome)
 }
 
 /// Active grants per client, for `distant_signal_api_delegated_grants_active`.
