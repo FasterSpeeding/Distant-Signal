@@ -24,6 +24,13 @@
 //! leaves the file where it is and the next cycle tries again; loading the
 //! same file twice is idempotent, so a restart at any point
 //! is safe without persisted state.
+//!
+//! A cycle that cannot scan `watch_dir`, or read or load a stable file,
+//! counts [`FAILURES_METRIC`] by `stage`. That backs the prompt
+//! `DistantSignalCorpusLoadFailing` alert, kept apart from "no new file
+//! yet": CORPUS arrives every couple of weeks to monthly, so a quiet
+//! `watch_dir` is normal and only `DistantSignalCorpusStale` (weeks)
+//! covers it.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -43,6 +50,12 @@ use crate::sink::{CorpusLoadRequest, IngestSink};
 pub(crate) const REJECTED_METRIC: &str = "schedule_feed_corpus_rejected_total";
 const LAST_LOAD_METRIC: &str = "schedule_feed_corpus_last_load_delivered_at_seconds";
 const ROWS_METRIC: &str = "schedule_feed_corpus_rows";
+/// Counts CORPUS cycles that failed to scan `watch_dir` (`stage="scan"`),
+/// read a stable file (`"read"`) or load it into Postgres (`"load"`). Each
+/// is retried next cycle. `DistantSignalCorpusLoadFailing` reads it.
+const FAILURES_METRIC: &str = "schedule_feed_corpus_failures_total";
+/// Every `stage` label value of [`FAILURES_METRIC`].
+const FAILURE_STAGES: [&str; 3] = ["scan", "read", "load"];
 
 /// Subdirectory of `storage_dir` that processed files are moved into.
 const ARCHIVE_DIR: &str = "corpus";
@@ -83,10 +96,20 @@ impl CorpusState {
     }
 }
 
-/// Registers the metrics at 0 so the alert's `increase()` sees the first
-/// rejection.
+/// Registers the counters at 0 so the alerts' `increase()` sees the first
+/// rejection or failure.
 pub(crate) fn register_metrics() {
     metrics::counter!(common::metrics::metric_name(REJECTED_METRIC)).increment(0);
+    for stage in FAILURE_STAGES {
+        metrics::counter!(common::metrics::metric_name(FAILURES_METRIC), "stage" => stage)
+            .increment(0);
+    }
+}
+
+/// Counts one failed CORPUS cycle at `stage` (one of [`FAILURE_STAGES`]).
+fn count_failure(stage: &'static str) {
+    debug_assert!(FAILURE_STAGES.contains(&stage), "unknown stage {stage}");
+    metrics::counter!(common::metrics::metric_name(FAILURES_METRIC), "stage" => stage).increment(1);
 }
 
 /// Gunzips `compressed`, refusing more than `max_bytes` of output.
@@ -300,7 +323,7 @@ pub(crate) async fn run_corpus_cycle(
     stability_cycles: u32,
     state: &mut CorpusState,
 ) -> anyhow::Result<()> {
-    let snapshot = scan_incoming(watch_dir)?;
+    let snapshot = scan_incoming(watch_dir).inspect_err(|_| count_failure("scan"))?;
     let just_stabilized = state.tracker.observe(&snapshot, stability_cycles);
     state.known_stable.extend(just_stabilized);
     state
@@ -339,6 +362,7 @@ pub(crate) async fn run_corpus_cycle(
         }
         Err(err) => {
             tracing::error!(error = %err, file = %name, "failed to read CORPUS file; retrying next cycle");
+            count_failure("read");
             return Ok(());
         }
     };
@@ -370,6 +394,7 @@ pub(crate) async fn run_corpus_cycle(
         // Every failure is retried, a rejection too (as before the sink):
         // the file stays in watch_dir.
         tracing::error!(error = %err, file = %name, "CORPUS load failed; retrying next cycle");
+        count_failure("load");
         return Ok(());
     }
     tracing::info!(file = %name, delivered_at = %delivered_at, rows = locations.len(), "loaded CORPUS extract");
