@@ -707,7 +707,9 @@ def check_transit_producer(c: Checker) -> None:
     refreshed = by_name(
         c.docs(
             *TRANSIT_ON,
-            *sets("pollerTransitSchedule.networks.metrolink.timetableRefresh=2026-10-15"),
+            *sets(
+                "pollerTransitSchedule.networks.metrolink.timetableRefresh=2026-10-15"
+            ),
         )
     )
     refreshed_env = env((containers(refreshed.get(name, {})) or [{}])[0])
