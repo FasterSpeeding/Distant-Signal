@@ -29,6 +29,10 @@ const SEVERITY_TABLE: Record<number, { label: string; group: SeverityGroup }> = 
   24: { label: 'Issues Reported', group: 'mild' },
   25: { label: 'No Issues', group: 'good' },
   26: { label: 'Information', group: 'informational' },
+  // A transit line with nothing published (crates/common Severity::
+  // NoReportedDisruption, transit spec §10.2): not "Good Service", since DS
+  // cannot observe a tram network's service.
+  27: { label: 'No Reported Disruption', group: 'good' },
 };
 
 /** Statuses under which the whole line runs no trains: a delay or

@@ -151,7 +151,7 @@ export interface LineStatus {
   statusSeverity: number;
   statusSeverityDescription: string;
   reason: string;
-  dataQuality: 'knowledgebase' | 'ldbws-inferred' | 'trust-inferred' | 'planned' | 'tfl';
+  dataQuality: 'knowledgebase' | 'ldbws-inferred' | 'trust-inferred' | 'planned' | 'tfl' | 'transit';
   validityPeriods: ValidityPeriod[];
   disruption?: Disruption;
   sampleStats?: SampleStats;

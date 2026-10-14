@@ -57,6 +57,7 @@ const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
   'trust-inferred': 'Network Rail train reports',
   planned: 'Planned',
   tfl: 'TfL',
+  transit: 'Published disruptions',
 };
 
 function formatValiditySummary(status: LineStatus, now: number): string {

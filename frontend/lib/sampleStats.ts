@@ -76,6 +76,9 @@ export function sampleUnavailableReason(status: SampleStatsCarrier): string | nu
   if (status.dataQuality === 'tfl') {
     return "Not measured by Distant Signal. The status is TfL's own.";
   }
+  if (status.dataQuality === 'transit') {
+    return 'Not measured by Distant Signal. The status comes from published disruptions.';
+  }
   if (status.sampleAvailability.state === 'no-coverage') {
     return 'No live departure data received for this line yet.';
   }

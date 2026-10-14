@@ -169,6 +169,13 @@ describe('severityGroup', () => {
     expect(severityGroup(26)).toBe('informational'); // Information
   });
 
+  it('counts a transit line with nothing published as good, worded as such', () => {
+    expect(severityLabel(27)).toBe('No Reported Disruption');
+    expect(severityBadgeLabel(27)).toBe('No reported disruption');
+    expect(severityGroup(27)).toBe('good');
+    expect(isGoodSeverity(27)).toBe(true);
+  });
+
   it('falls back to informational for an unrecognized value, matching severityRank', () => {
     expect(severityGroup(999)).toBe('informational');
   });
