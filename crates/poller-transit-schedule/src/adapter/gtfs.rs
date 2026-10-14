@@ -481,6 +481,12 @@ fn read_stops<R: Read + Seek>(
         );
         out.station_of.insert(id.clone(), station);
     }
+    // A stop with no parent whose id is another platform's station (BODS
+    // 2026-10-14: `9400ZZMASLE`, Sale, beside platforms of `940GZZMASLE`)
+    // is that station: a call there is a call at the station, and it gets
+    // no platform row of its own.
+    let stations: BTreeSet<String> = out.stations.keys().cloned().collect();
+    out.platforms.retain(|id, _| !stations.contains(id));
     Ok(out)
 }
 
@@ -931,6 +937,39 @@ mod tests {
         assert_eq!(model.stops.len(), 4);
         assert_eq!(model.stops[0].stop_id, "9400ZZMAAAA");
         assert_eq!(model.stops[0].name, "Aaa");
+    }
+
+    #[test]
+    fn a_parentless_stop_named_like_a_station_is_that_station() {
+        let stops = format!("{STOPS}9400ZZMABBB,Bbb (Manchester Metrolink),53.2,-2.2,0,\n");
+        let stop_times = STOP_TIMES.replace(
+            "T2,10:20:00,10:20:00,9400ZZMABBB1",
+            "T2,10:20:00,10:20:00,9400ZZMABBB",
+        );
+        let bytes = zip(&[
+            ("agency.txt", AGENCY),
+            ("routes.txt", ROUTES),
+            (
+                "trips.txt",
+                "route_id,service_id,trip_id,trip_headsign,direction_id\n\
+                 R1,S,T1,,0\nR1,S,T2,,0\n",
+            ),
+            ("stop_times.txt", &stop_times),
+            ("stops.txt", &stops),
+            ("calendar.txt", CALENDAR),
+        ]);
+        let model = parse(Cursor::new(bytes), &metrolink(), &options("2026-10-15")).unwrap();
+        let ids: Vec<&str> = model.stops.iter().map(|s| s.stop_id.as_str()).collect();
+        // One row per id: the station, not a platform as well.
+        assert_eq!(
+            ids,
+            ["9400ZZMAAAA", "9400ZZMABBB", "9400ZZMAAAA1", "9400ZZMABBB1"]
+        );
+        assert_eq!(model.stops[1].kind, StopKind::Station);
+        assert_eq!(
+            model.lines[0].directions[0].stations,
+            ["9400ZZMAAAA", "9400ZZMABBB"]
+        );
     }
 
     #[test]
