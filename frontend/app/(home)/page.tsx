@@ -1,6 +1,5 @@
-import { Badge, Stack, Title, SimpleGrid, Text, Group, Card } from '@mantine/core';
+import { Badge, Stack, Title, SimpleGrid, Text, Group } from '@mantine/core';
 import { CardLink } from '@/components/CardLink';
-import { tokens } from '@/lib/theme';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import {
@@ -24,18 +23,20 @@ import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { StatusBadge } from '@/components/StatusBadge';
-import { StatusRow } from '@/components/StatusRow';
-import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
-import { formatDate, formatTime } from '@/lib/dateFormat';
-import { routeLabel } from '@/lib/stationLabel';
 import { loadPinnedTramLines } from '@/lib/transit';
 import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/sharedCustomLines';
-import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
-import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
-import type { LineStatus, LineStatusReport, Preferences, TrackedTrainListItem } from '@/lib/types';
+import { mergeSharedTrains } from '@/lib/sharedTrains';
+import type { LineStatus, LineStatusReport, Preferences } from '@/lib/types';
 import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
+import { notGoodServiceSummary, RightNowModule } from './RightNowModule';
+import {
+  SharedCustomLineSummaryRow,
+  SharedTrainSummaryRow,
+  TrackedTrainSummaryRow,
+  type TrackedTrainRow,
+} from './TrackedTrainRows';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
 // dynamic routes for the same `revalidate = 0` rationale: without it,
@@ -127,39 +128,6 @@ function representativeStatusAcrossReports(reports: LineStatusReport[]): LineSta
   const withFullCoverage = perReportRepresentatives.find((s) => s?.fullCoverageStats);
   const withStats = withFullCoverage ?? perReportRepresentatives.find((s) => s?.sampleStats);
   return withStats ?? reports[0]?.lineStatuses[0];
-}
-
-/** How many affected lines the "Right now" module renders as cards. Named
- * rather than inlined into the `.slice()` because the module now also tells
- * the reader how many affected lines it is NOT showing, and a literal `5`
- * sitting in one place and a hand-written "5" in the copy somewhere else is
- * exactly how that number goes stale. Nothing outside this module reads it:
- * the overflow count is derived as `count - worst.length` (see
- * `RightNowModule`), not recomputed from this constant, so the rendered
- * card count and the "N more" figure cannot disagree even if the slice
- * changes. */
-const RIGHT_NOW_LIMIT = 5;
-
-/** Anonymous-visitor "right now" widget data (§Home page redesign). Built
- * entirely from `allReports`, already fetched unconditionally by this page
- * for the pinned-lines section -- no new endpoint. Excludes
- * `MERGED_TFL_LINE_IDS` the same way `pinnedLineReports` already does,
- * since those ids are folded into their National Rail counterpart's row
- * everywhere a line list is built directly from reports rather than from
- * `/public/lines` -- counting them separately would double-count the same
- * real-world line. */
-function notGoodServiceSummary(reports: LineStatusReport[]) {
-  const affected = reports
-    .filter((report) => !MERGED_TFL_LINE_IDS.includes(report.id))
-    .filter((report) => severityRank(worstStatus(report).statusSeverity) > severityRank(10))
-    // Same worst-first-then-alphabetical sort the pinned section already
-    // uses (§Home page redesign: "same sort the pinned section already
-    // does").
-    .sort((a, b) => {
-      const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
-      return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
-    });
-  return { count: affected.length, worst: affected.slice(0, RIGHT_NOW_LIMIT) };
 }
 
 export default async function DashboardPage() {
@@ -657,257 +625,5 @@ export default async function DashboardPage() {
         </Stack>
       )}
     </Stack>
-  );
-}
-
-// Local, not a new file under `components/`: it is used twice, in one file
-// (the anonymous branch and, as of Task 7, the authenticated branch with
-// zero pinned lines), and both uses are server-rendered. A new shared
-// component would be the right call only if a third page wanted it. Moved
-// verbatim out of the anonymous branch's inline JSX -- this extraction step
-// is not meant to restyle anything.
-function RightNowModule({ summary }: { summary: ReturnType<typeof notGoodServiceSummary> }) {
-  const { count, worst } = summary;
-  // Derived from what was actually rendered, not from RIGHT_NOW_LIMIT: the
-  // heading above states the true total while the list below is capped, so
-  // for a bad morning it read "12 lines not at Good Service right now:"
-  // over five cards and simply stopped -- the remaining seven were
-  // unreachable and unmentioned. Same family of problem as a "Load more"
-  // button that vanishes without saying why (see
-  // `components/LoadMoreControl.tsx`), but a fixed truncation rather than
-  // pagination, so the fix is an overflow line plus a way out, not a
-  // button.
-  const hidden = count - worst.length;
-  return (
-    <Stack gap="md">
-      <SectionTitle>Right now</SectionTitle>
-      {count === 0 ? (
-        <Text>Every line is running a Good Service.</Text>
-      ) : (
-        <>
-          <Text>
-            {count} line{count === 1 ? '' : 's'} not at Good Service right now:
-          </Text>
-          <Stack gap="xs">
-            {worst.map((report) => (
-              <CardLink key={report.id} href={`/lines/${report.id}`}>
-                <Group justify="space-between">
-                  <Text fw={600}>{report.name}</Text>
-                  <StatusBadge severity={worstStatus(report).statusSeverity} />
-                </Group>
-              </CardLink>
-            ))}
-          </Stack>
-          {hidden > 0 && (
-            // `/lines` has no status filter and no filter query params at
-            // all today -- `AllLinesTable` holds its operator/country/sort
-            // state in `useState`, and `app/lines/page.tsx` takes no
-            // `searchParams` -- so this cannot hand the destination the
-            // "not at Good Service" context the way `/incidents` links can
-            // hand over their filters. It links to the full list anyway:
-            // every affected line is reachable and status-badged there (its
-            // Status column can be sorted worst-first, though that takes two
-            // clicks -- `toggleSort` starts a fresh column at `asc`, and
-            // `severityRank` ranks Good Service lowest), which beats the
-            // remaining lines being counted and then unreachable. The copy
-            // promises the full list, not a filtered view.
-            //
-            // "the first N", not "the N most disrupted": the sort ranks by
-            // `severityRank`'s five groups and tiebreaks alphabetically, so
-            // two lines in the same group are ordered by name -- a Suspended
-            // line can sit below a Rail Replacement one. "First" is what the
-            // module can actually promise.
-            //
-            // Deliberately reuses this page's existing label for `/lines`
-            // ("Browse all lines", beside the anonymous intro and the "Your
-            // Lines" heading) rather than inventing a second name for the
-            // same destination on the same page.
-            // `inline`/`underline="always"`: this link sits in the flow of
-            // a sentence rather than in a nav or beside a heading, so (a)
-            // colour must not be the only thing marking it (WCAG 1.4.1) and
-            // (b) it must render as a `<span>`, not `TextLink`'s default
-            // `<p>`, or the rest of the sentence gets forced onto its own
-            // line. See TextLink's own doc comment.
-            <Text size="sm" c="dimmed">
-              Showing the first {worst.length}. {hidden} more {hidden === 1 ? 'line is' : 'lines are'} not at Good
-              Service.{' '}
-              <TextLink href="/lines" underline="always" inline>
-                Browse all lines
-              </TextLink>
-            </Text>
-          )}
-        </>
-      )}
-    </Stack>
-  );
-}
-
-/** One custom line a fellow group member has shared with the caller.
- *
- * View-only by construction: the whole card is a link to `/lines/{lineId}`
- * and there is no pin toggle, no edit and no un-share control anywhere on
- * it. A grant conveys read access and nothing else -- only the line's
- * owner can change or delete it, and only the owner (or a group
- * `admin`/`owner`, from the group's own page) can stop the sharing.
- *
- * The "from {group}" grape `Badge` is the same tag `/track/mine` already
- * uses for a group-shared train, deliberately worded and coloured
- * identically so the two surfaces read as one convention. One badge per
- * group this line reached the caller through -- a line shared into two of
- * their groups is two tags, not an arbitrarily-picked one. */
-function SharedCustomLineSummaryRow({
-  row,
-  report,
-}: {
-  row: MergedSharedCustomLine;
-  report: LineStatusReport | undefined;
-}) {
-  const { line, groupNames } = row;
-  return (
-    <CardLink href={`/lines/${line.lineId}`}>
-      <Stack gap={4}>
-        <StatusRow
-          title={line.lineName}
-          trailing={report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
-        />
-        <Group gap="xs" wrap="wrap">
-          {groupNames.map((groupName) => (
-            <Badge tt="none" key={groupName} variant="light" color="grape">
-              from {groupName}
-            </Badge>
-          ))}
-          {/* `grantedByName` is null when the sharer has no name or
-                username on their account -- never their email, which is
-                not something to show the rest of a group
-                (`crates/api/src/data/users.rs`'s `MemberDisplay`). Then
-                "a member", suffixed with the opaque tag the backend sends
-                in its place so an IdP that can name nobody still yields
-                distinguishable rows -- never a raw user id, never an
-                email. Same `memberLabel` helper the shared-train row below
-                and `/groups/{id}` use, so none of them can drift. */}
-          <Text size="sm" c="dimmed">
-            Shared by {memberLabel(line.grantedByName, line.grantedByTag, MEMBER_PLACEHOLDER_INLINE)}
-          </Text>
-        </Group>
-      </Stack>
-    </CardLink>
-  );
-}
-
-/** One row of the "Your Tracked Trains" section: either a train the caller
- * tracked themselves, or one another member shared into a group they
- * belong to. A discriminated union rather than one widened row type, so
- * the shared half can never accidentally be handed to the own-row
- * component (which links to the owner-scoped `/train/by-id/{id}` route) or
- * vice versa. */
-type TrackedTrainRow = { kind: 'own'; train: TrackedTrainListItem } | { kind: 'shared'; row: MergedSharedTrain };
-
-/** A train another member shared into a group the caller belongs to,
- * rendered in the same list as the caller's own summary rows above.
- * Home-page-local sibling of `TrackedTrainSummaryRow` below, and a trimmed
- * mirror of /track/mine's own `SharedTrainListRow` -- same tags, same
- * wording, same linking rule.
- *
- * Deliberately NOT `TrackedTrainSummaryRow` with extra props: the caller
- * doesn't own this train, so none of an own row's affordances apply. There
- * is no rename (`POST /Train/{id}/name` is owner-scoped), no ticket data
- * (spec §4 forbids a shared train ever carrying any) and no delete -- and
- * the home page's own rows carry none of those controls either, so the
- * distinction that actually matters here is the LINK: an own row falls back
- * to `/train/by-id/{id}`, which is owner-scoped and 404s for anyone else.
- *
- * So this row links exactly when a `trainUid` is known, and renders plain
- * text otherwise -- a deliberately weaker test than the own row's
- * `resolutionStatus === 'resolved' && trainUid`, because `trainUid` is
- * populated well before the status reaches `resolved` and
- * `/train/{uid}/{date}` is public and unscoped. Same reasoning
- * /track/mine's shared row states at length. */
-function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
-  const { train, groupNames } = row;
-  // `routeLabel`, not `trackedTrainDisplayName`: this page's own rows
-  // (`TrackedTrainSummaryRow` below) label by route too, so using the
-  // sharer's `customName` here would make the two halves of one list
-  // disagree about what a row's heading even is. /track/mine, whose own
-  // rows DO show a custom name, shows it for shared rows for the same
-  // consistency reason.
-  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
-  // Same date-only degradation as the own row below, for the same reason:
-  // a pin with no schedule data yet has no departure time, and `Invalid
-  // Date` is never an acceptable label.
-  const when = train.pinScheduledDeparture
-    ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
-    : formatDate(train.serviceDate);
-  const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
-
-  const content = (
-    <Stack gap={4}>
-      <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
-      <Text size="sm" c="dimmed">
-        {when}
-      </Text>
-      <Group gap="xs" wrap="wrap">
-        {/* One badge per group this train reached the caller through --
-              a train shared into two of their groups is two tags, not an
-              arbitrarily-picked one. `addedByName` is `null` when the
-              sharer has neither a name nor a username on their account --
-              never their email, which is not something to show the rest of
-              a group (`crates/api/src/data/users.rs`'s `display_label`).
-              "a member" then, never a raw user id, suffixed with the
-              sharer's `addedByTag` so two such sharers don't read
-              identically -- same helper and same wording /track/mine and
-              /groups/{id} already use (`lib/memberLabel.ts`). */}
-        {groupNames.map((groupName) => (
-          <Badge tt="none" key={groupName} variant="light" color="grape">
-            from {groupName}
-          </Badge>
-        ))}
-        <Text size="sm" c="dimmed">
-          Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
-        </Text>
-      </Group>
-    </Stack>
-  );
-
-  // Whole-card link when there's somewhere to go, matching the own row
-  // directly below; nothing inside the card is itself interactive, so
-  // there's no nested-<a> problem of the kind /track/mine's richer row has
-  // to work around.
-  return href ? <CardLink href={href}>{content}</CardLink> : <Card {...tokens.card.static}>{content}</Card>;
-}
-
-// Home-page-local mirror of /track/mine's own row shape
-// (frontend/app/track/mine/page.tsx's TrackedTrainListRow) -- same fields,
-// same resolutionStatus-vs-status+delayMinutes branching. The badge itself
-// is shared (`TrackedTrainStatusBadge`, review §2.9) rather than
-// re-derived per page: both this row and /groups/[id]'s shared-train card
-// render off the same component now, so the two pages can't drift on
-// status wording the way they used to.
-function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
-  // Canonical, shareable URL once resolved; the by-id detail route
-  // otherwise -- same logic as /track/mine's own row. The
-  // resolved-with-null-trainUid fallback is defensive: the backend's own
-  // resolution invariant means this shouldn't happen, but this component
-  // doesn't assume it.
-  const href =
-    train.resolutionStatus === 'resolved' && train.trainUid
-      ? `/train/${train.trainUid}/${train.serviceDate}`
-      : `/train/by-id/${train.id}`;
-
-  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
-
-  return (
-    <CardLink href={href}>
-      <Stack gap={4}>
-        <StatusRow title={route} trailing={<TrackedTrainStatusBadge train={train} />} />
-        <Text size="sm" c="dimmed">
-          {/* `pinScheduledDeparture` is `null` for an NR-primary
-                subscription whose train has no schedule data yet -- same
-                date-only degradation as /track/mine's own row. */}
-          {train.pinScheduledDeparture
-            ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
-            : formatDate(train.serviceDate)}
-        </Text>
-      </Stack>
-    </CardLink>
   );
 }
