@@ -985,6 +985,109 @@ mod tests {
 
     const FRONTEND: &str = "10.42.0.9:40000";
 
+    /// A request [`crate::auth::delegated::gate`] verified as delegated:
+    /// the extension it leaves for this middleware.
+    fn delegated_request(
+        sub: &str,
+        scope: crate::auth::delegated::Scope,
+    ) -> axum::http::Request<Body> {
+        use crate::auth::delegated::{ClientConfig, DelegatedToken, Scope};
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/Journeys/itinerary")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(FRONTEND.parse::<SocketAddr>().unwrap()));
+        request.extensions_mut().insert(DelegatedToken {
+            client: Arc::new(ClientConfig {
+                name: "ds-mcp".to_string(),
+                display_name: "Assistant".to_string(),
+                issuer_url: "https://sso.example/application/o/distant-signal-api/".to_string(),
+                audience: "distant-signal-api".to_string(),
+                max_scopes: Scope::ALL.to_vec(),
+                enabled: true,
+                service_group: String::new(),
+            }),
+            client_index: 0,
+            sub: sub.to_string(),
+            scopes: vec![scope],
+            iat: 0,
+            jti: None,
+            route_scope: scope,
+            audit: Arc::default(),
+        });
+        request
+    }
+
+    #[tokio::test]
+    async fn delegated_requests_use_the_user_and_client_buckets() {
+        use crate::auth::delegated::Scope;
+        let router = axum::Router::new()
+            .route("/Journeys/itinerary", post(|| async { "saved" }))
+            .layer(axum::middleware::from_fn_with_state(
+                RateLimiter::new(RateLimitSettings {
+                    delegated_write_per_minute: 1,
+                    delegated_write_burst: 2,
+                    delegated_client_multiplier: 2,
+                    ..RateLimitSettings::default()
+                }),
+                enforce,
+            ));
+        for _ in 0..2 {
+            let response = router
+                .clone()
+                .oneshot(delegated_request("alice", Scope::JourneysWrite))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        // Alice's own bucket is spent: the delegated JSON 429.
+        let response = router
+            .clone()
+            .oneshot(delegated_request("alice", Scope::JourneysWrite))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key(header::RETRY_AFTER));
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "rate_limited");
+        // Bob has his own bucket, but the client's ceiling (2 x 2) is now
+        // reached after two of his.
+        for _ in 0..2 {
+            let response = router
+                .clone()
+                .oneshot(delegated_request("bob", Scope::JourneysWrite))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let response = router
+            .clone()
+            .oneshot(delegated_request("carol", Scope::JourneysWrite))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "the per-client ceiling bounds every user together"
+        );
+    }
+
+    #[test]
+    fn delegated_bucket_keys_never_hold_the_sub() {
+        let key = ClientKey::DelegatedUser {
+            client: 0,
+            user: sub_digest("a4022ea6-secret-sub"),
+        };
+        assert!(!key.to_string().contains("a4022ea6"));
+        assert_eq!(ClientKey::DelegatedClient(3).to_string(), "svc:3-delegated");
+    }
+
     #[tokio::test]
     async fn hitting_the_limit_returns_429_with_retry_after() {
         let router = router(settings());
@@ -1534,6 +1637,7 @@ mod chart_env_wiring_tests {
         for command in [
             super::RateLimitSettings::command(),
             crate::edge::EdgeSettings::command(),
+            crate::auth::delegated::DelegatedSettings::command(),
         ] {
             declared.extend(
                 command
