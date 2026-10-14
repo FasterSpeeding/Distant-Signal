@@ -12,7 +12,7 @@
 //!   LDBWS-sample-derived output (and, with `--windows`, the windowed
 //!   full-coverage stats) for one or all lines.
 //! - `src/bin/corpus_compare.rs` -- read-only CORPUS report.
-//! - `src/bin/maintenance.rs` -- the api-maintenance CronJob's pass.
+//! - `src/bin/maintenance.rs` -- the hourly `api-maintenance` pass.
 //!
 //! The binaries that WROTE outside the api's grants (`backfill_trains`,
 //! `backfill_incident_lines`, `backfill_line_train_summaries`,
