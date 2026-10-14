@@ -3,6 +3,58 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-14: transit networks (Manchester Metrolink), scheduled only
+
+New endpoints, additive only, under `/public/transit`, for transit networks
+that are neither National Rail nor TfL (Manchester Metrolink first).
+Unauthenticated, read-only, the same body for every caller.
+
+**Dark until enabled.** A network is served only once the operator lists
+it (`API_TRANSIT_NETWORKS`). Until then every route for it answers `404`
+and `GET /public/transit/networks` returns `{"networks": []}`. Metrolink
+is not listed by default.
+
+**Scheduled, never live.** Boards and timetables come from the published
+timetable. Their bodies carry `"realtime": false` and `"kind":
+"scheduled"`, and no row has an expected time, delay, cancellation or
+status. A scheduled tram is not one known to be running.
+
+Path segments: `{network}` and `{line}` are local IDs (`metrolink`,
+`blue`); `{stop}` is a station's NaPTAN code (`9400ZZMAPIC`). Bodies give a
+line's public ID, `<network>:<line>` (`metrolink:blue`); that form in a
+path is a `404`.
+
+| Route | Returns | Cache |
+| --- | --- | --- |
+| `GET /public/transit/networks` | `{"networks": [{id, name, mode, attribution, feedVersion, horizonFrom, horizonTo, timetableAsOf, situationsAsOf}]}` | 300 s |
+| `GET /public/transit/{network}` | the network as above, plus `lines: [{id, lineId, name, colour}]` | 60 s |
+| `GET /public/transit/{network}/lines/{line}` | `{id, lineId, name, colour, directions: [{direction, headsign, stations: [{id, name}]}]}`; `direction` is `outbound` or `inbound` | 300 s |
+| `GET /public/transit/{network}/lines/{line}/timetable` | `{date, direction, stations: [{id, name}], trips: [{tripId, headsign, times}], outsideHorizon, realtime, kind}`; `times` has one `HH:MM` or `null` per station | 300 s |
+| `GET /public/transit/{network}/stops` | `{"stops": [{id, name, lat, lon, lines, railLinks}]}`; `lines` are public line IDs; `railLinks: [{crs, tiploc, kind, note}]`, `kind` `interchange` or `nearby` | 3600 s |
+| `GET /public/transit/{network}/stops/{stop}` | a stop as above, plus `platforms: [{id, indicator}]` | 300 s |
+| `GET /public/transit/{network}/stops/{stop}/departures` | `{date, departures, nextCursor, outsideHorizon, realtime, kind}` | 60 s |
+
+Timetable parameters: `date` (`YYYY-MM-DD`, default today), `direction`
+(default `outbound`), `from` and `to` (`HH:MM`, default the three hours
+from the start of the last hour). A bad value is a `400`.
+
+Departures parameters: `date` (default today), `after` (`HH:MM`, default
+now today, else midnight), `limit` (default 20, at most 100), `cursor`
+(a previous page's `nextCursor`). Each departure: `scheduledDeparture`
+(RFC 3339 UK time), `tripId`, `line` (`{id, lineId, name, colour}`, or
+`null` for a replacement bus), `destination`, `platformId`, `platform`
+(the platform's indicator, such as "To Ashton", or `null`),
+`replacementBus`. A departure after midnight from the previous day's
+timetable is listed on the day it departs. A date outside the stored
+timetable (about 60 days) gives no departures and `"outsideHorizon":
+true`, not "no service".
+
+**Attribution.** `attribution` is `{licence, text}`. For Metrolink:
+"Contains public sector information licensed under the Open Government
+Licence v3.0. Timetables and disruptions: Bus Open Data Service
+(Department for Transport). Stops: NaPTAN (Department for Transport)."
+Show it wherever the data is shown.
+
 ## 2026-10-12: recently cleared incidents
 
 New endpoint, additive only: `GET /public/incidents/recently-cleared`.
