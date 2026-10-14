@@ -1,8 +1,11 @@
 # ds-mcp delegated access to a user's Distant Signal journeys (2026-10-14)
 
-**Status: design proposal, not approved.** This is a design and security
-review written so the user can decide whether to build the feature. Nothing
-here is implemented, and no code was changed to write it.
+**Status: design approved in direction (2026-10-14), not implemented. A dev
+Authentik spike passed on 2026-10-14 (§9.5).** The
+user answered the main open questions on 2026-10-14. Section 0a records
+those decisions, and the rest of the document has been updated to match.
+The questions still open are in section 8. Nothing here is implemented, and
+no code was changed to write it.
 
 Requested by the user. The aim: a user who plans a trip with the
 Distant-Signal-MCP server's (ds-mcp's) `plan_journey` tool can save the
@@ -13,6 +16,7 @@ other people have shared with them through groups.
 ## Contents
 
 0. Summary and recommendation
+0a. Decisions (2026-10-14)
 1. Goal and non-goals
 2. What exists today (verified)
 3. Why the 2026-09-29 bridge was removed, and the constraints that follow
@@ -21,7 +25,7 @@ other people have shared with them through groups.
 6. Threat model
 7. Phased plan
 8. Open questions for the user
-9. Things to verify on the real Authentik before Phase 1
+9. Authentik spike runbook (before Phase 1)
 
 ## 0. Summary and recommendation
 
@@ -71,14 +75,49 @@ The main risks are in section 6. In short:
   every user who has granted access, within the granted scopes, until the
   grants are revoked or the secret is rotated.
 - **Prompt injection.** Data that ends up in the model's context could steer
-  it into saving or reading.
+  it into saving, reading or deleting.
 - **Privacy in Phase 3.** Group reads would send other people's journeys to
   an LLM vendor.
 
-The design limits each of these. Scopes are narrow and there is no delete.
-Every save goes through an itinerary reference held by ds-mcp. There are
-per-user caps and a DS-side kill switch. Group reads need an opt-in on each
-group.
+The design limits each of these:
+
+- Scopes are narrow.
+- Delete reaches only journeys this client created and that are not shared
+  (§5.5a).
+- Every save goes through an itinerary reference held by ds-mcp.
+- There are per-user caps and a DS-side kill switch.
+- Group reads need an opt-in on each group.
+
+## 0a. Decisions (2026-10-14)
+
+The user answered the main open questions from the first version of this
+spec:
+
+| # | Question | Decision | Where |
+|---|---|---|---|
+| D-1 | Approach | **D2**: token exchange into `distant-signal-api`, gated by a DS-side grant. Option A (authorization code) stays as the fallback | §4, §5 |
+| D-2 | Save journeys | Yes. Only through an `itineraryRef`, with a cap of **50 per user per day** | §5.5, §5.10, §5.14 |
+| D-3 | List and read own journeys | Yes (`journeys:read`) | §5.5 |
+| D-4 | Read group journeys | Yes (`journeys:read_shared`), behind the **per-group opt-in, off by default**. Stays in Phase 3 | §5.13 |
+| D-5 | Delete own journeys | Yes, as a **new scope, `journeys:delete`**. It is owner-only and audited, and it carries one safeguard against deletes caused by prompt injection, chosen in this revision: **delete only journeys this client created, and only when they are not shared** | §5.5a |
+| D-6 | Grant expiry | The grant **expires after 90 days unused** | §5.3 |
+| D-7 | Authentik logout | Revokes the **grant**, not just the live tokens | §5.9 |
+| D-8 | Creating a grant | **Revised later on 2026-10-14:** a valid DS session is enough. Its lifetime follows the SSO configuration, with no forced re-login and no time window. The 10-minute window first proposed here was rejected. Compensating controls are a confirmation step, a push notification and a banner | §5.3 |
+
+**Second round (later on 2026-10-14):**
+
+| # | Question | Decision | Where |
+|---|---|---|---|
+| D-9 | Delete rule | Confirmed as built: delegated delete reaches only unshared journeys this client created | §5.5a |
+| D-10 | Grant granularity | One grant per user, covering every MCP client connected to ds-mcp | §5.14 |
+| D-11 | Limits and audit | The proposed limits are accepted: 50 saves and 20 deletes a day; per minute 10 writes, 60 reads and 5 deletes; a per-client ceiling at 20 times the per-user limit. Audit retention as proposed, with no extra audit table | §5.10, §5.11 |
+| D-12 | DS-only logout | The grant is **kept** | §5.9 |
+| D-8 (revised) | Creating a grant | A valid DS session is enough, and its lifetime follows the SSO configuration. The user's words: "10-min is too recent, we should consider that users may be logged in and keeping a long-running session dependent on sso config instead of constantly re-logging in." No `max_age` and no `authenticated_at`. Compensating controls are in §5.3, and the threat-model change is T6b | §5.3, §6 |
+
+Decision D-7 replaces the first version's recommendation to keep the grant
+across an Authentik logout. The cost is accepted: after any Authentik
+logout, the user grants access again on the Connected-apps page before the
+assistant can save. Signing back in to Claude alone is no longer enough.
 
 ## 1. Goal and non-goals
 
@@ -87,13 +126,18 @@ Goal:
 - A ds-mcp tool saves an itinerary that `plan_journey` returned into the
   calling user's DS account, as a tracked journey.
 - A ds-mcp tool lists that user's saved journeys and reads one.
+- A ds-mcp tool deletes a journey that the assistant saved (D-5, §5.5a).
 - Later: read the journeys that groups share with that user.
 
 Non-goals:
 
-- Any other DS write through ds-mcp: deleting journeys, share links,
-  group management, preferences, the account, train pins outside a journey,
-  or journey templates.
+- Any other DS write through ds-mcp:
+  - deleting journeys created in the web app, or journeys that are shared;
+  - share links;
+  - group management;
+  - preferences or the account;
+  - train pins outside a journey;
+  - journey templates.
 - Making DS a general OAuth platform for third-party apps. The grant table
   is generic enough to admit a second client later, but this spec
   registers only ds-mcp.
@@ -325,7 +369,7 @@ and scope, and maps `sub` to `users.id`.
 `distant-signal-mcp` as the `subject_token` at the `distant-signal-api`
 provider's token endpoint. It authenticates with that provider's client
 credentials and receives a short DS-audience token. In delegation mode the
-token carries an `act` claim naming ds-mcp.
+token carries an `act` claim naming ds-mcp. (The dev spike found that Authentik 2026.8 sets `act` only for its own `Actor` objects, so DS does not rely on it; see §9.5.)
 
 **Assessment**
 
@@ -450,7 +494,7 @@ User ──OAuth──> ds-mcp ──(own Authentik login, refresh token encrypt
                   │
                   │ 3. Authorization: Bearer <DS-audience JWT>  (in-cluster)
                   v
-                 DS api ── verify iss/aud/exp/act/scope ── delegated_grants row
+                 DS api ── verify iss/aud/exp/scope ── delegated_grants row
                            (user_id = sub, client = ds-mcp, active, scopes)
                            ── handler runs as that user
 ```
@@ -459,8 +503,8 @@ The user creates the grant once, in DS:
 
 1. ds-mcp's first save returns a tool message with a link to
    `https://<ds>/account/connected-apps/ds-mcp`.
-2. The user logs in to DS if needed. That creates their DS user row if this
-   is their first visit.
+2. The user logs in to DS if they have no session. That creates their DS
+   user row if this is their first visit.
 3. The user sees what ds-mcp will be able to do and presses **Allow**.
 4. The user goes back to the chat.
 
@@ -482,8 +526,8 @@ DS's dev blueprint gains a matching entry.
   working, because DS does not rely on this provider's back-channel logout
   (§5.9).
 - Signing key: RS256, the same certificate as the others.
-- Scope mappings: `ds-journeys-read`, `ds-journeys-write` and (Phase 3)
-  `ds-journeys-read-shared`. Each emits its scope name into the token's
+- Scope mappings: `ds-journeys-read`, `ds-journeys-write`,
+  `ds-journeys-delete` and (Phase 3) `ds-journeys-read-shared`. Each emits its scope name into the token's
   `scope` claim, or into a `ds_scopes` claim if Authentik does not put
   `scope` on access tokens (section 9).
 - No `groups` claim is needed. DS does not authorize delegated callers by
@@ -497,8 +541,7 @@ delegatedClients:
   - name: ds-mcp                 # the grant table's `client` value, shown in the UI as "Distant Signal assistant (MCP)"
     issuerUrl: https://sso.cursed.solutions/application/o/distant-signal-api/
     audience: distant-signal-api
-    actor: distant-signal-mcp    # required `act.sub`/`act.client_id` when delegation mode is used
-    maxScopes: [journeys:read, journeys:write]
+    maxScopes: [journeys:read, journeys:write, journeys:delete]   # + journeys:read_shared in Phase 3
     enabled: true                # the kill switch
 ```
 
@@ -522,7 +565,7 @@ CREATE TABLE delegated_grants (
     not_before      TIMESTAMPTZ NOT NULL DEFAULT now(),  -- tokens issued earlier are refused
     last_used_at    TIMESTAMPTZ,
     revoked_at      TIMESTAMPTZ,
-    revoked_reason  TEXT                      -- user | admin | backchannel | inactive | client_disabled
+    revoked_reason  TEXT                      -- user | admin | backchannel | client_logout | inactive | client_disabled
 );
 CREATE UNIQUE INDEX delegated_grants_one_active
     ON delegated_grants (user_id, client) WHERE revoked_at IS NULL;
@@ -550,9 +593,85 @@ The frontend adds a page at `/account/connected-apps/[client]`. It shows a
 plain explanation, the scopes as sentences, and Allow and Cancel buttons.
 The same list also appears under Account/Preferences.
 
-**Unused grants expire after 90 days** (proposed). A maintenance pass marks
-grants whose `last_used_at` (or, if never used, `created_at`) is older than
-90 days as revoked with reason `inactive`. See open question 7.
+**Creating a grant needs a valid DS session, and nothing more (D-8, as
+revised on 2026-10-14).**
+
+- How long a DS session lasts is governed by the SSO configuration and
+  `SESSION_TTL_DAYS`, not by this feature. There is no forced re-login, no
+  `max_age`, and no `sessions.authenticated_at` column.
+- The user's reason: people stay logged in on long-running sessions that
+  follow the SSO configuration, and should not be made to keep logging in
+  again.
+
+**An optional step-up was considered and rejected for Phase 1.** It would
+have been a configurable maximum login age, off by default, enforced
+through `max_age` and `auth_time`.
+
+- It needs the same `oidc.rs` and session-schema work as the dropped
+  10-minute rule, all for a switch nobody plans to turn on.
+- Its protection is weak where it matters. A thief holding a session cookie
+  usually holds the browser too, and Authentik's own session in that
+  browser would satisfy a silent `max_age` round trip, unless `prompt=login`
+  is also forced.
+- It stays available as a later option (Phase 4) if the risk assessment
+  below changes.
+
+**Why a cookie-only grant is acceptable.** A grant names one client
+(ds-mcp), and DS honours it only for tokens that Authentik minted from
+**the same user's own ds-mcp login** (§5.4, §5.7). So someone who steals a
+DS session cookie and creates a grant has, by doing so, only enabled the
+victim's own assistant. To use the grant, they would also need the victim's
+Claude or ds-mcp connection.
+
+- With the cookie alone they can already do more directly, in the web app:
+  read and delete every journey, create share links and manage groups.
+- What the grant adds is **persistence**. It outlives the stolen session
+  and "log out other sessions" (which keeps grants). It is still limited to
+  the assistant, ends at the next Authentik logout (D-7), and ends after
+  90 days unused.
+
+**Compensating controls**
+
+1. **An explicit confirmation step.**
+   - `GET /account/connected-apps/{client}` renders the consent page. It
+     shows the signed-in username, the client's name, and each scope as a
+     sentence.
+   - Rendering it issues a single-use confirmation token that is bound to
+     the session and the client, valid for 10 minutes, and stored hashed.
+   - The POST must carry that token. Without it, the answer is 403
+     `confirmation_required`.
+   - The page sends `frame-ancestors 'none'` against clickjacking.
+   - The token does not stop a cookie thief, who can render the page too.
+     It does make every grant the result of a rendered page and a deliberate
+     click, never a single blind request.
+2. **Notices when a grant is created.** DS stores no email address, so it
+   cannot send email. Instead:
+   - Each of the user's existing web-push subscriptions gets a push
+     notification: "Distant Signal assistant can now save and read your
+     journeys. Not you? Disconnect it in Connected apps." This uses the
+     notifier's existing VAPID push path, through a new
+     `grant_created` push-queue item.
+   - Every DS page shows a dismissible banner for 7 days after a grant is
+     created, linking to Connected apps.
+   - The Connected-apps list shows each grant's creation time and last-used
+     time.
+3. **Revocation that is easy to find.** Disconnect sits on the same page as
+   the notice. It needs no re-login and takes effect on the next request
+   (§5.9).
+4. **Audit.** `event=delegated_grant_created` is logged with the user, the
+   client, the scopes and a hash of the session ID, so a grant can be traced
+   to the session that created it.
+
+**Unused grants expire after 90 days (D-6).** An hourly maintenance pass,
+in the api's existing maintenance loop, marks grants as revoked with reason
+`inactive` when `last_used_at` is older than 90 days, or, for a grant never
+used, when `created_at` is.
+
+- The extractor also checks `last_used_at` directly, so an expired grant is
+  refused even before the sweep runs.
+- There is no absolute expiry for a grant in use. With D-7, any Authentik
+  logout already ends the grant, so a grant in daily use is still renewed
+  through a fresh consent every time the user logs out of Authentik.
 
 **Account export and deletion.** `GET /account/export` includes the user's
 grants. `DELETE /account` cascades.
@@ -601,6 +720,7 @@ grants. `DELETE /account` cascades.
 |---|---|---|
 | `journeys:read` | `GET /Journeys/mine`; `GET /Journeys/{id}` for journeys **the user owns** | 1 |
 | `journeys:write` | Create a journey from an itinerary (`POST /Journeys/itinerary`, §5.8). Does **not** include delete, leg edits on existing journeys, train re-picks, or share links | 1 |
+| `journeys:delete` | `DELETE /Journeys/{id}` for a journey the user owns **that this client created and that is not shared** (§5.5a) | 1 |
 | `journeys:read_shared` | `GET /groups/shared-journeys`; `GET /Journeys/{id}` through group membership, only for groups that opted in (§5.13) | 3 |
 
 DS computes the effective scopes per request as the intersection of three
@@ -610,9 +730,78 @@ sets, and each route asks for one scope:
 - the grant's `scopes`;
 - the client's `maxScopes`.
 
-There is deliberately no delete scope in v1 (open question 5). A model that
-is acting on injected text should not be able to destroy data. There is
-also no share-link scope: minting a public URL is an exfiltration channel.
+There is still no share-link scope, because minting a public URL is an
+exfiltration channel.
+
+### 5.5a The delete scope (D-5)
+
+**Rules.** A delegated `DELETE /Journeys/{id}` succeeds only when all of the
+following hold:
+
+1. The caller owns the journey: `user_id = token.sub`, folded into the
+   `WHERE` clause, as every write route already does.
+2. The journey was created by this client: `journeys.created_via = <client
+   name>`.
+3. The journey is not shared. There is no `group_journeys` row for it and
+   no active unlisted share link.
+4. The per-user delete limit has not been reached (§5.10).
+
+When rules 1 or 2 fail, the response is 404 `not_found`, so the assistant
+cannot learn about journeys it cannot delete. When rule 3 fails, it is
+409 `journey_shared`, with a message telling the user to delete the
+journey in Distant Signal. The handler then runs the existing
+`data::journeys::delete_journey`, including its template-occurrence
+tombstone, unchanged, inside a transaction that re-checks rules 2 and 3.
+
+**Why "created by this client" rather than soft delete or an undo
+window.** All three options soften prompt-injected deletes. This one is the
+smallest, and the only one that cannot leak.
+
+- **Worst case.** At worst, injected text makes the model delete journeys
+  the assistant itself saved. Those are re-creatable from a new
+  `plan_journey`, and none of them is shared with anyone. Journeys the user
+  built by hand in the web app, journeys from templates, and anything
+  shared with a group or through a link are out of reach.
+- **Soft delete would cost far more.** A `deleted_at` column would have to
+  be honoured by every reader of `journeys`, about 100 query sites today:
+  - 36 in the notifier;
+  - 25 in `data/journeys.rs`;
+  - 13 in `data/groups.rs`;
+  - 12 in `data/journey_templates.rs`;
+  - more in retention, account and train.
+
+  Every one that was missed would be a privacy or notification bug:
+  - a "deleted" journey still shown to a group;
+  - one still sending delay alerts;
+  - one still resolving through its share link.
+
+  That is a large, permanent cost to every future journey query, imposed
+  for a feature of the assistant.
+- **An undo window has the same problem, or a worse one.** A plain undo
+  window is soft delete with a timer. A snapshot-and-recreate variant
+  would bring a journey back with new ids, losing its tracking state,
+  group shares and share link.
+- **The cost of this choice.** The assistant cannot tidy journeys the user
+  made in the web app. That is a deliberate limit, and the user still
+  deletes those in DS.
+
+**Audit.** Every delegated delete writes a `delegated_deletions` row, kept
+for 30 days and deleted by the maintenance pass after that. The row holds:
+
+- `user_id`, `client`, `grant_id`, `journey_id`, `deleted_at`;
+- a small `summary` JSON: the custom name, the legs' service date, CRS
+  pair and train UID.
+
+The Connected-apps page lists these as "Recently deleted by the assistant",
+so the user can see what happened and re-save a journey by hand. This
+gives a durable trail beyond Loki's 7 days without soft-deleting the
+journey itself. Each delete also logs `audit=true event=delegated_delete`
+at WARN.
+
+**On the ds-mcp side,** `delete_journey { id }` carries the MCP annotation
+`destructiveHint: true`, so clients that support confirmations ask the user
+first. Its description tells the model to delete only when the user asked
+for it in this conversation. Neither is a security boundary; rules 1–4 are.
 
 ### 5.6 Token lifetimes and refresh
 
@@ -637,12 +826,21 @@ for 90 days is expired by DS anyway.
 **Verifier.** A third `ServiceTokenVerifier` instance is built for each
 delegated client. It reuses the type: JWKS cache, negative `kid` cache,
 global refresh cooldown, clock-skew leeway. Its claims struct adds `scope`
-or `ds_scopes`, `act`, `iat` and `jti`. The checks:
+`iat` and `jti`. The checks:
 
 1. Signature, `iss`, `aud`, `exp` and `nbf`, as now.
 2. `iat` is present.
-3. `act` names the client's `actor`, if delegation mode is in use.
+3. The route's scope is in the `scope` claim. The spike (S4) showed that
+   Authentik issues tokens with `scope=""` when asked for no scope.
 4. The `typ` header is not `logout+jwt`.
+
+There is no `act` check. The spike (S3) showed that Authentik sets `act`
+only for an internal Authentik `Actor` object. The client is identified by
+the token's issuer and audience instead: only ds-mcp holds the
+`distant-signal-api` secret, and that provider trusts only
+`distant-signal-mcp` subject tokens (S6, S7). Exchanged tokens carry no
+`sid`, and their `auth_time` is the time of the exchange, so DS never uses
+either.
 
 **Rate-limit middleware first.**
 
@@ -685,7 +883,7 @@ Delegated { client, grant_id, jti } }`:
 
 - **`AuthenticatedUser` is not modified.** It still reads only the cookie.
   Every route that is not explicitly moved to the new extractor (groups,
-  account, preferences, auth, admin, share links, delete, templates,
+  account, preferences, auth, admin, share links, leg deletes, templates,
   `/Train`) cannot be reached with a delegated bearer, by construction.
   - A test lists the routes that use the new extractor and fails when the
     list changes, as `router_builds_without_panicking` already guards
@@ -707,19 +905,20 @@ Delegated { client, grant_id, jti } }`:
 - **Reachability.** ds-mcp reaches the api in-cluster; the api's NetworkPolicy
   already narrows extra-namespace ingress to the MCP pod (`4068cbff`). If
   `ingress.api.enabled` exposes the api publicly, delegated bearers would
-  also be accepted there. Open question 10 asks whether to refuse delegated
+  also be accepted there. Open question 2 asks whether to refuse delegated
   bearers on public ingress.
 
 ### 5.8 Which routes gain bearer auth
 
 | Route | Today | Delegated scope | Phase | Notes |
 |---|---|---|---|---|
-| `POST /Journeys/itinerary` (**new**) | — | `journeys:write` | 1 | Creates a journey and 1–8 `knownTrain` legs in **one transaction**. Optional `customName`. Requires an `Idempotency-Key` header from delegated callers; the key is remembered per user for 24 h and a repeat returns the original response. Checks the train-pin cap and the journey cap. Also available with a cookie, so `PlanTripFlow` can drop its non-atomic loop (open question 11) |
+| `POST /Journeys/itinerary` (**new**) | — | `journeys:write` | 1 | Creates a journey and 1–8 `knownTrain` legs in **one transaction**. Optional `customName`. Requires an `Idempotency-Key` header from delegated callers; the key is remembered per user for 24 h and a repeat returns the original response. Checks the train-pin cap and the journey cap. Also available with a cookie, so `PlanTripFlow` can drop its non-atomic loop (open question 3) |
 | `GET /Journeys/mine` | cookie | `journeys:read` | 1 | Unchanged response |
 | `GET /Journeys/{id}` | cookie (`journey_readable_by`) | `journeys:read` (own only) / `journeys:read_shared` | 1 / 3 | For a delegated caller without `read_shared`, ownership only. `shareLink` is always `null` for a delegated caller |
+| `DELETE /Journeys/{id}` | cookie, owner | `journeys:delete` | 1 | Delegated callers: only journeys this client created that are not shared (§5.5a). The cookie path is unchanged |
 | `GET /groups/shared-journeys` | cookie | `journeys:read_shared` | 3 | Filtered to groups that opted in |
 | `POST /Journeys`, `POST /Journeys/{id}/legs` | cookie | **none** | — | Superseded for delegated callers by the atomic route |
-| `DELETE /Journeys/...`, share-link routes, candidates and train picks, every `/groups` write, `/account`, `/preferences`, `/auth`, `/admin`, templates, `/Train/*` | cookie | **never** | — | |
+| `DELETE /Journeys/{id}/legs/{leg}`, share-link routes, candidates and train picks, every `/groups` write, `/account`, `/preferences`, `/auth`, `/admin`, templates, `/Train/*` | cookie | **never** | — | |
 
 `journeys` gains a `created_via TEXT NOT NULL DEFAULT 'web'` column holding
 `'web'` or the client name. The journey page shows "Saved by Distant Signal
@@ -727,32 +926,54 @@ assistant", and the user's list can filter on it.
 
 ### 5.9 Revocation
 
-From the DS side, every path is instant on the next request, because the
-grant row is checked on every request:
+From the DS side, every path takes effect on the next request, because the
+extractor checks the grant row on every request:
 
 | Trigger | DS action | ds-mcp effect |
 |---|---|---|
-| User presses **Disconnect** on Connected apps | `revoked_at = now()`, reason `user` | Next DS call: 403 `delegation_not_granted`, and the tool tells the user how to grant again |
-| Admin `POST /admin/users/revoke-sessions` | Also revokes every grant for the user, reason `admin`. An admin revoke is a security action and should cut the assistant too | as above |
-| Authentik back-channel logout on `distant-signal` (user logged out of Authentik, deactivated, or session deleted) | Already sets `sessions_invalidated_at`. Through §5.7 step 2.3, every outstanding DS-audience token stops working at once. The grant is **kept** | ds-mcp's own back-channel logout (`distant-signal-mcp` provider) fires for the same session and runs `revokeAllForSub`, so ds-mcp can no longer exchange. After the user signs in to Claude again, saving works without another DS consent. This follows R1: an ordinary logout should not undo a deliberate grant |
-| Deactivated user | as above. Authentik also refuses exchanges and refreshes for an inactive user (to verify, §9) | |
-| User "log out other sessions" | Sets `sessions_invalidated_at`, so outstanding DS-audience tokens die. The grant is kept | Re-exchanges and carries on. Disconnect is the control for cutting the assistant |
+| User presses **Disconnect** on Connected apps | `revoked_at = now()`, reason `user` | The next DS call gets 403 `delegation_not_granted`, and the tool tells the user how to grant again |
+| Admin `POST /admin/users/revoke-sessions` | Also revokes every grant for the user, reason `admin` | as above |
+| **Authentik logout, path 1** (D-7): Authentik back-channel logout on **`distant-signal`**. The user logged out of Authentik, was deactivated, or had a session deleted, in an Authentik session that had logged in to DS | Already sets `sessions_invalidated_at` and deletes the sessions. **Now also revokes every active grant for the user**, reason `backchannel`, in the same transaction | ds-mcp's own back-channel logout usually fires for the same session as well. In any case the next DS call gets 403, and the user must grant again |
+| **Authentik logout, path 2** (D-7): Authentik back-channel logout on **`distant-signal-mcp` only**. The ended session had logged in to ds-mcp but never to DS, so DS gets no notification of its own | ds-mcp's back-channel handler, before `revokeAllForSub`, calls **`POST /delegated-grants/revoke {sub}`** with its existing `srv-ds-mcp` client-credentials token. DS revokes that user's grant **for this client only**, reason `client_logout` | ds-mcp retries the call with backoff (a Redis-backed outbox, up to 24 h) if DS is unavailable. In the meantime the grant cannot be used anyway, because ds-mcp has no subject token left |
+| Deactivated user | Path 1 or path 2. Authentik also refuses exchanges for an inactive user (spike step S9) | |
+| User "log out other sessions" in DS | Sets `sessions_invalidated_at`, so outstanding DS-audience tokens die. The grant is **kept**: this is not an Authentik logout | Re-exchanges and carries on |
+| DS `POST /auth/logout` | Ends the DS session only. DS does not call Authentik's end-session endpoint, so Authentik sends no notification. The grant is **kept** (D-12) | |
 | Account deletion | Cascades | |
 | Client disabled (`enabled: false`) or removed from `DELEGATED_CLIENTS` | Every delegated request for it gets 401 | The kill switch for a ds-mcp compromise |
-| 90 days unused | reason `inactive` | |
+| 90 days unused (D-6) | reason `inactive` | |
 | Grant re-created after a revoke | New row with `not_before = now()`, so tokens minted before the new consent are refused | |
 
-DS does **not** set a back-channel logout URI on the `distant-signal-api`
-provider. That provider's 5-minute tokens would make Authentik's
-notification unreliable (§2.3: it sends only while an access token is
-unexpired), and DS already learns about the same sessions through its own
-provider's notification.
+**`POST /delegated-grants/revoke`** is the first DS route keyed on the
+internal service identity. Until now, `srv-ds-mcp` only selected a
+rate-limit budget.
 
-**From the ds-mcp side.** A `disconnect_distant_signal` tool (Phase 2) calls
-`DELETE /account/connected-apps/ds-mcp`. That route is cookie-only, so this
-would need a dedicated delegated route with its own scope. **Recommendation:
-don't build it.** The tool should return the Connected-apps link instead, so
-that revocation always happens in DS's own UI.
+- It sits in the generic DS layer. Each `DELEGATED_CLIENTS` entry gains a
+  `serviceGroup` (`srv-ds-mcp`), and a verified internal token in that group
+  may revoke grants **of that client only**.
+- It can only revoke: no create, no read, and no response that shows
+  whether a grant existed (always 204).
+- A leaked `srv-ds-mcp` credential could therefore at worst revoke ds-mcp
+  users' grants. That is a denial of service the holder could cause anyway
+  by not serving requests.
+- No new shared secret is involved (R5), and nothing in it is specific to
+  MCP (R6).
+
+**Whether Authentik session expiry counts.** An Authentik session that
+simply expires, as opposed to an explicit logout, may or may not send a
+back-channel notification. Spike step S10 finds out. If it does not, the
+grant outlives that session, and only DS's own notifications, Disconnect
+and the 90-day expiry end it. That is acceptable: no token can be minted
+without ds-mcp's subject token, and that token dies with ds-mcp's own grant.
+
+DS does **not** set a back-channel logout URI on the `distant-signal-api`
+provider. Its 5-minute exchanged tokens are not tied to a browser session,
+so Authentik would have nothing to notify about. Paths 1 and 2 cover the
+same events.
+
+**Revoking from the ds-mcp side by the user's choice.** ds-mcp gets no
+"disconnect" tool. Its tools return the Connected-apps link instead, so that
+a user's deliberate revocation always happens in DS's own UI. Path 2 is for
+logout events only.
 
 ### 5.10 Rate limits: per user and per service
 
@@ -762,15 +983,19 @@ that revocation always happens in DS's own UI.
   pass:
   - `user:<sub>` per class:
     - `delegated_write`: suggested 10/min, burst 5;
-    - `delegated_read`: suggested 60/min, burst 20.
+    - `delegated_read`: suggested 60/min, burst 20;
+    - `delegated_delete`: suggested 5/min, burst 3.
   - `svc:<client>-delegated` per class: an aggregate ceiling for the whole
     client, suggested 20 times the per-user limit. This bounds a runaway
     loop across many users, or a compromised client.
 - Delegated requests never use `svc:mcp` or the per-IP buckets.
-- **Daily per-user creation cap** for delegated callers: at most 50
-  journeys per rolling 24 h with `created_via = <client>`. This is a
-  database count, alongside the existing `MAX_JOURNEYS_PER_USER`. GCRA in
-  memory per pod cannot express a daily cap.
+- **Daily per-user creation cap (D-2):** at most **50** journeys per
+  rolling 24 h with `created_via = <client>`. This is a database count,
+  alongside the existing `MAX_JOURNEYS_PER_USER`. GCRA in memory per pod
+  cannot express a daily cap. Over the cap, the response is 429
+  `daily_limit`.
+- **Daily per-user delete cap:** at most **20** delegated deletes per
+  rolling 24 h, counted from `delegated_deletions`. Accepted (D-11).
 - **Metrics:**
   - `distant_signal_api_delegated_requests_total{client,route,status}`;
   - `..._delegated_rejected_total{client,reason}`;
@@ -796,7 +1021,7 @@ DS logs the following:
   - Loki keeps logs for only 7 days, so the lasting record is in the
     database: `created_via` on journeys, and `created_at`, `last_used_at`
     and `revoked_*` on grants.
-  - Whether to add a `delegated_audit` table is open question 9.
+  - No separate `delegated_audit` table (D-11).
 
 ds-mcp logs one line per DS-backed tool call: tool, a hash of the `sub`, the
 MCP client ID, the DS status and the `Idempotency-Key`. It never logs tokens
@@ -852,11 +1077,14 @@ are the real risks:
    - Mitigations:
      - writes need a reference to an itinerary that `plan_journey` returned
        to *this* user (§5.14), so injected text cannot invent a journey;
-     - there is no delete and no share-link scope;
+     - delete reaches only unshared journeys this client created, with a
+       30-day record of each deletion (§5.5a);
+     - there is no share-link scope;
      - per-user caps;
      - ds-mcp marks `save_journey` with MCP tool annotations
        (`readOnlyHint: false`, `destructiveHint: false`,
-       `idempotentHint: true`), and clients may ask the user to confirm.
+       `idempotentHint: true`), and `delete_journey` with
+       `destructiveHint: true`, so clients may ask the user to confirm.
    - Reads leak only to the model the user is already talking to. ds-mcp
      has no tool that sends data anywhere else.
 
@@ -876,7 +1104,7 @@ The group's member list shows a short notice when it is on.
 - A new helper, `journey_readable_by_delegate`, is kept separate from
   `journey_readable_by` so the cookie path's query is not touched.
 - Responses for shared journeys omit `customName` unless the owner opted
-  in. Treat this as open question 4.
+  in. See open question 1.
 - ds-mcp passes shared data to the model inside a clearly marked "untrusted
   content from other users" block.
 - A read through a group logs `group_id` in its audit line.
@@ -897,7 +1125,12 @@ The group's member list shows a short notice when it is on.
   - The model never supplies train UIDs, so it cannot fabricate or alter
     an itinerary, and the lack of an existence check on `knownTrain` (§2.1)
     stops mattering.
-- **`list_my_journeys`** and **`get_my_journey { id }`**: plain reads.
+- **`list_my_journeys`** and **`get_my_journey { id }`**: plain reads. The
+  list marks which journeys the assistant saved, so the model knows which
+  ones `delete_journey` can remove.
+- **`delete_journey { id }`** (Phase 1, `journeys:delete`): sends
+  `DELETE /Journeys/{id}`. A 409 `journey_shared` or a 404 becomes a tool
+  message saying that journey can only be deleted in Distant Signal.
 - **Phase 3: `list_shared_journeys`.**
 - **Phase 0: `get_shared_journey { link }`** (section 7).
 
@@ -909,7 +1142,8 @@ The group's member list shows a short notice when it is on.
 | 401 | Exchange again once, then report "sign in again" |
 | 403 `delegation_not_granted` | Return the Connected-apps link |
 | 403 `insufficient_scope` | Return the link and name the missing scope |
-| 429 | Pass on `Retry-After` |
+| 409 `journey_shared` | "Shared journeys can only be deleted in Distant Signal", with a link to the journey |
+| 429 | Pass on `Retry-After`; for `daily_limit`, say when the 24 h window frees up |
 
 **Token storage, and the blast radius of a Redis leak**
 
@@ -936,11 +1170,15 @@ What each kind of leak gives an attacker:
     `/userinfo` for up to 14 days.
 - **All of the above plus the client secrets (full ds-mcp compromise):**
   - The attacker can act as every user who has an active DS grant, within
-    `journeys:read`/`journeys:write`.
-  - They can read the users' journeys and create junk journeys, up to
-    50 per user per day.
-  - They cannot delete, share, touch groups or the account, or log in to
-    DS.
+    `journeys:read`, `journeys:write` and `journeys:delete`.
+  - They can read the users' journeys, and create junk journeys up to 50
+    per user per day.
+  - They can delete journeys the assistant saved that are not shared, up
+    to 20 per user per day. Each deletion leaves a 30-day
+    `delegated_deletions` record from which the user, or an operator, can
+    rebuild it.
+  - They cannot delete web-created or shared journeys, share anything,
+    touch groups or the account, or log in to DS.
   - Containment:
     1. set `enabled: false` (immediate);
     2. rotate the `distant-signal-api` secret in Authentik;
@@ -953,8 +1191,8 @@ What each kind of leak gives an attacker:
   user has connected (Claude.ai, Claude Code, the in-app chat) can use it.
 - Revoking access for one MCP client alone happens in ds-mcp: revoke that
   client's MCP tokens.
-- See open question 2 for whether ds-mcp should ask again for each MCP
-  client.
+- ds-mcp does not ask again when a new MCP client first uses the grant
+  (D-10).
 
 ### 5.15 Error contract (DS → ds-mcp)
 
@@ -968,9 +1206,11 @@ convention, and the codes are stable:
 | 401 | `invalid_token` | Bad, expired, or issued before `not_before` or session invalidation |
 | 403 | `delegation_not_granted` | No active grant (also covers "no DS account") |
 | 403 | `insufficient_scope` | |
-| 404 | `not_found` | Not owned or not readable. Never 403, matching the existing posture |
+| 403 | `confirmation_required` | Cookie-only grant creation without a valid confirmation token from the consent page (§5.3) |
+| 404 | `not_found` | Not owned or not readable, or, for a delegated delete, not created by this client. Never 403, matching the existing posture |
 | 409 | `idempotency_conflict` | Same key, different body |
-| 429 | `rate_limited` | With `Retry-After` |
+| 409 | `journey_shared` | Delegated delete of a journey that has a group share or an active link |
+| 429 | `rate_limited` / `daily_limit` | With `Retry-After` |
 
 ## 6. Threat model
 
@@ -981,16 +1221,20 @@ convention, and the codes are stable:
 | T1 | A DS-audience token leaks (ds-mcp log, memory dump) | M/L | 5-minute life; narrow scopes; held in memory only; never logged; grant revoke is instant | Up to 5 min of read and capped create for one user |
 | T2 | ds-mcp Redis is dumped, without the keys | M/L | Hashed MCP tokens; encrypted refresh and subject tokens with AAD | Personal data in `itineraryRef` for up to 1 h |
 | T3 | Redis plus encryption keys | L/M | The client secret is still needed for exchange or refresh | 14-day `/userinfo` exposure per subject token |
-| T4 | Full ds-mcp compromise (keys and secrets) | L/H | Scopes without delete or share; per-user daily cap; per-client aggregate limit; kill switch; `created_via` for cleanup; grant list visible to users | Reads and capped writes for granted users until the kill switch |
+| T4 | Full ds-mcp compromise (keys and secrets) | L/H | No share scope; delete limited to unshared journeys the client created; per-user daily caps (50 saves, 20 deletes); per-client aggregate limit; kill switch; `created_via` and `delegated_deletions` for cleanup; grant list visible to users | Reads, capped saves and capped deletes of assistant-saved journeys for granted users until the kill switch |
 | T5 | A user's Claude account or MCP token is stolen | M/M | This is the capability the feature intends, bounded by scopes and caps; the user can revoke in DS or ds-mcp | Same as T4 for that one user |
-| T6 | Prompt injection makes the model save or read | M/L | `itineraryRef` only (no free-form legs); no delete or share; idempotency; caps; tool annotations; untrusted-content marking | Unwanted extra journeys; the user's own data shown to their own model |
+| T6 | Prompt injection makes the model save or read | M/L | `itineraryRef` only (no free-form legs); no share scope; idempotency; caps; tool annotations; untrusted-content marking | Unwanted extra journeys; the user's own data shown to their own model |
+| T6a | Prompt injection makes the model delete | M/M | Delete only unshared journeys this client created (404 or 409 otherwise); `destructiveHint`; 20/day cap; 30-day `delegated_deletions` record shown on Connected apps | Loss of assistant-saved, unshared journeys; recoverable by re-saving from the record |
+| T6b | **A stolen DS session cookie (or XSS, or an unattended signed-in browser) creates a grant.** With D-8 as revised, a valid session is enough | M/L | The grant is usable only by tokens minted from the victim's own ds-mcp login (§5.4), so the attacker gains nothing without the victim's Claude or ds-mcp connection as well; confirmation token from a rendered page; `frame-ancestors 'none'`; push notification and 7-day banner; one-click Disconnect; ends at the next Authentik logout (D-7) and after 90 days unused | Persistence of the victim's own assistant access beyond the stolen session, until the user notices, logs out of Authentik, or 90 days pass. The cookie alone already gives more direct access in the web app |
 | T7 | ds-mcp mixes up users | L/H | Token chosen only from the verified principal; cache keyed by `sub`; concurrency test; DS enforces `token.sub` | — |
 | T8 | Another token type is accepted as delegated (SSO ID token, `distant-signal-mcp` token, `srv-*`, logout token) | L/H | Distinct `iss`/`aud` per verifier; startup guard on pairwise distinctness; `typ` check; scope claim required | — |
-| T9 | Another Authentik client exchanges its tokens into `distant-signal-api` | L/H | Federation trusts only `distant-signal-mcp`; only ds-mcp holds the client secret; `act` check; a grant is still required | Depends on Authentik configuration (§9) |
+| T9 | Another Authentik client exchanges its tokens into `distant-signal-api` | L/H | Federation trusts only `distant-signal-mcp`; only ds-mcp holds the client secret; a grant is still required. Dev spike S6 and S7: foreign subject tokens and clients were refused | Production configuration must match §9.6 |
 | T10 | CSRF creates or revokes a grant | L/M | Strict same-origin, SameSite=Lax, POST/DELETE only, scopes from the body, no GET side effects | XSS on DS could create a grant (an XSS can already do worse) |
 | T11 | Account-linking CSRF (A fallback only) | M/H | `state` bound to the principal and CSRF cookie; `sub` equality for Authentik users; "linked as" confirmation | — |
 | T12 | The cookie path is weakened (a bearer through the proxy, mixed credentials, a delegated caller reaching admin or groups) | L/H | Proxy strips `Authorization` (tested); 400 on mixed; `AuthenticatedUser` unchanged; route list pinned by a test; no `groups` on a delegated principal | — |
 | T13 | Mid-lifetime revocation missed by local JWT checks | M/M | Grant lookup per request; `iat` checked against `not_before` and `sessions_invalidated_at` | — |
+| T13a | An Authentik logout fails to revoke the grant (D-7) | M/L | Path 1 (DS back-channel) plus path 2 (ds-mcp → `POST /delegated-grants/revoke`, with outbox retry); subject token gone either way | If a session expiring is not notified (S10), the grant lasts until Disconnect or the 90-day expiry, with no subject token to use it |
+| T13b | A leaked `srv-ds-mcp` credential is used to revoke grants | L/L | The route only revokes, only for its own client, and reveals nothing | Users re-grant |
 | T14 | Flood of writes or reads | M/L | Per-user and per-client GCRA; daily DB cap; the existing journey and pin caps | Per-pod limiter state (as today) |
 | T15 | Enumerating other users' journeys | L/M | 404-not-403; ownership in `WHERE`; read-shared only on opted-in groups | — |
 | T16 | Phase 0: a share token ends up in transcripts or logs | M/L | The user chose to paste it; ds-mcp redacts it in logs; 30-day TTL; the owner can revoke or regenerate | Anyone the transcript reaches can read that journey until it expires |
@@ -1021,143 +1265,387 @@ convention, and the codes are stable:
     it is not brute-forceable (256-bit hashed tokens), but every call runs
     `build_journey_detail_response`.
 
-**Phase 1a: Authentik spike, about a day.**
+**Phase 1a: the Authentik spike, about a day of work plus Ranma's
+production steps.**
 
-- Run every item in section 9 against a dev Authentik 2026.8 with the
-  blueprint.
-- Decide between exchange (D2) and the A fallback for launch.
+- Section 9 is the runbook.
+- At the end, record the result of each exit criterion (§9.4) in this spec
+  as a dated note, and confirm D2 or switch to the A fallback.
+- **Dev part done on 2026-10-14:** D2 confirmed (§9.5). What remains is
+  Ranma's production work (§9.6).
 
 **Phase 1b: DS.**
 
-1. `DELEGATED_CLIENTS` config, the verifiers, the startup guard extension.
-2. Rate-limiter issuer routing and the delegated buckets.
-3. The `delegated_grants` migration and data module.
-4. Connected-apps routes and frontend pages, plus account export.
-5. The `DelegatedOrSessionUser` extractor, the error contract, audit lines
-   and metrics.
-6. `POST /Journeys/itinerary`, which is atomic and idempotent, with
-   `created_via`.
-7. Opt `GET /Journeys/mine` and `GET /Journeys/{id}` (own only) into the
-   extractor.
-8. Revocation hooks: admin revoke and `iat` against
-   `sessions_invalidated_at`.
-9. Tests:
-   - the route list is pinned;
-   - mixed credentials get 400;
-   - the proxy strips `Authorization`;
-   - every wrong-token type is rejected;
-   - revocation takes effect on the next request;
-   - scope intersection.
-10. Chart values, `docs/session-revocation.md` and a new
+1. **Configuration.** `DELEGATED_CLIENTS` (with `serviceGroup`), the
+   verifiers, and the startup guard extended to every client ID and issuer.
+2. **Rate limiter.** Issuer routing, and the delegated buckets for read,
+   write and delete.
+3. **Migrations.**
+   - `delegated_grants`;
+   - `delegated_deletions`;
+   - `journeys.created_via`;
+   - a table of hashed, single-use grant confirmation tokens.
+4. **Compensating controls for D-8.**
+   - The confirmation token issued by the consent page, and
+     `frame-ancestors 'none'`.
+   - A `grant_created` push-queue item, sent through the notifier's
+     existing web-push path.
+   - The 7-day banner.
+5. **Connected-apps routes and frontend pages.**
+   - List, create (session plus confirmation token) and revoke.
+   - "Recently deleted by the assistant".
+   - Account export.
+6. **The extractor.** `DelegatedOrSessionUser`, the error contract, audit
+   lines and metrics.
+7. **Routes.**
+   - `POST /Journeys/itinerary`: atomic and idempotent, with
+     `created_via` and the 50/day cap.
+   - `GET /Journeys/mine` and `GET /Journeys/{id}` (own journeys only),
+     moved to the extractor.
+   - **`DELETE /Journeys/{id}` for delegated callers**, under the §5.5a
+     rules, with `delegated_deletions` and the 20/day cap.
+8. **Revocation.**
+   - Admin revoke and back-channel logout revoke grants (path 1).
+   - `POST /delegated-grants/revoke` for the client's service identity
+     (path 2).
+   - `iat` checked against `sessions_invalidated_at`.
+   - The 90-day sweep (D-6) and the 30-day purge of `delegated_deletions`.
+9. **Tests.**
+   - The route list is pinned.
+   - Mixed credentials get 400.
+   - The proxy strips `Authorization`.
+   - Every wrong-token type is rejected.
+   - Revocation takes effect on the next request.
+   - Scope intersection.
+   - Delete matrix: web-created gives 404, shared gives 409, created by
+     this client and unshared gives 204.
+   - A POST without a confirmation token, or with a reused or expired
+     one, gives 403.
+   - Creating a grant enqueues the push notification.
+10. **Documentation.** Chart values, `docs/session-revocation.md`, and a new
     `docs/connected-apps.md`.
 
 **Phase 1c: ds-mcp.**
 
-1. The exchange client and the subject token kept encrypted.
+1. The exchange client, and the subject token stored encrypted with
+   AAD = `sub`.
 2. An in-memory DS token cache.
 3. `itineraryRef` in `plan_journey`.
-4. `save_journey`, `list_my_journeys`, `get_my_journey`.
+4. `save_journey`, `list_my_journeys`, `get_my_journey` and
+   **`delete_journey`**.
 5. Error mapping.
-6. A two-user concurrency test.
+6. The back-channel handler calls `POST /delegated-grants/revoke`, through
+   a Redis outbox that retries for up to 24 h.
+7. A two-user concurrency test.
 
-**Ranma-Config.**
-
-- The `distant-signal-api` provider.
-- The secret for ds-mcp.
-- DS chart values.
+**Ranma-Config.** The Authentik objects in §9.1 (O1–O4), the secret for
+ds-mcp, and the DS chart values. This work can be done only by the Ranma
+session, because the live Authentik configuration lives there.
 
 **Phase 2: polish.**
 
-- "Saved by assistant" in the DS UI and a filter.
-- A per-user daily cap set from real usage.
+- "Saved by assistant" in the DS UI, and a filter.
+- Caps tuned from real usage.
 - Dashboard panels and alerts.
-- The 90-day inactive-grant sweep.
 - Optionally move `PlanTripFlow` to the atomic route.
 
-**Phase 3: group reads.**
+**Phase 3: group reads (D-4).**
 
-- `allow_assistant_reads` on groups, with UI.
-- `journeys:read_shared`.
+- `allow_assistant_reads` on groups, off by default, with UI.
+- `journeys:read_shared` added to `maxScopes` and to the Authentik scope
+  mappings.
 - `journey_readable_by_delegate`.
 - ds-mcp `list_shared_journeys`, with untrusted-content marking.
 - A privacy-page update.
 
 **Phase 4, only if needed.**
 
-- The A-fallback flow for non-Authentik ds-mcp identities.
-- A delete scope, if the user asks for one (open question 5).
+- The A-fallback flow for ds-mcp identities that do not come from
+  Authentik.
+- An optional step-up before creating a grant (a maximum login age through
+  `max_age` and `auth_time`, off by default), if the T6b assessment changes
+  (§5.3).
 
 ## 8. Open questions for the user
 
-1. **Option.** Approve D2 (token exchange, a DS-side grant, A as fallback)?
-   Or choose plain A, which is a well-established flow with one more
-   per-user secret in ds-mcp and an extra login hop, over relying on
-   Authentik 2026.8's newer exchange support?
-2. **Granularity.**
-   - The proposal: one DS grant per user for ds-mcp, shared by all of that
-     user's MCP clients.
-   - Should ds-mcp also ask before a *new* MCP client (for example a newly
-     added Claude Code) first uses it?
-3. **Logout semantics.**
-   - The proposal: an Authentik logout kills outstanding DS tokens and
-     ds-mcp's session, but keeps the DS grant, so signing back in to Claude
-     restores saving without asking for consent again.
-   - Or should any Authentik logout also revoke the grant?
-4. **Group reads.**
-   - A per-group opt-in, off by default, and toggled by owners and admins
-     only?
-   - Should journey names from other members be redacted even then?
-   - Or is Phase 3 not wanted at all?
-5. **Delete.** Keep journeys undeletable through the assistant for good, or
-   add a `journeys:delete` scope later, perhaps limited to journeys with
-   `created_via = ds-mcp`?
-6. **Limits.** Are 10 writes/min and 50 journeys/day per user, and 60
-   reads/min, acceptable starting values?
-7. **Grant expiry.** Should grants that go unused for 90 days expire? Or
-   should every grant have an absolute expiry, such as one year, even when
-   in use?
-8. **Step-up.** Should creating a grant require a recent DS login
-   (`prompt=login`, or a session younger than 10 minutes)?
-9. **Audit retention.** Is 7 days of Loki plus the database columns enough,
-   or should there be a `delegated_audit` table with longer retention?
-10. **Exposure.** Should DS refuse delegated bearers when the api is
-    reached through a public ingress (`ingress.api.enabled`), so they work
-    in-cluster only?
-11. **Atomic save for the web.** Should the frontend's `PlanTripFlow` move to
-    `POST /Journeys/itinerary` as well, which fixes its partial-commit case?
-12. **Privacy and terms.** Who updates the privacy page to cover connected
-    apps and the processing of journey data by a third-party LLM?
-13. **Spec index.** `docs/superpowers/README.md` has no rows for specs
-    after 2026-10-06. Should this spec be added to the index, along with
-    the other recent ones, in a separate pass?
+**Answered on 2026-10-14** (section 0a):
 
-## 9. Things to verify on the real Authentik before Phase 1
+- First round:
+  - the approach (D2, with A as fallback);
+  - the scopes: save with a 50/day cap, read own, read group through a
+    per-group opt-in that is off by default, and delete own;
+  - 90-day expiry when unused;
+  - Authentik logout revokes the grant.
+- Second round:
+  - delete limited to unshared journeys the assistant created, as built in
+    §5.5a (D-9);
+  - one grant per user covering every MCP client (D-10);
+  - the proposed limits, and audit retention with no extra table (D-11);
+  - the grant is kept on a DS-only logout (D-12);
+  - D-8 revised: a valid DS session is enough to create a grant.
 
-The ds-mcp-side facts come from the Ranma-Config spec and Authentik's docs.
-None of these items has been tested on a live instance.
+**Still open:**
 
-1. **Token exchange setup.**
-   - How a provider is configured to accept `subject_token`s from another
-     provider (federation, trusted issuers).
-   - That it **refuses** subject tokens from any other provider.
-   - Which client authenticates the request.
-2. **Delegation mode.** Whether the issued token carries `act`, and what
-   identifies ds-mcp in it.
-3. **Scopes.** Whether exchanged and auth-code access tokens carry a `scope`
-   claim, or whether a custom mapping must emit `ds_scopes`. Whether the
-   exchange request can narrow the scopes.
-4. **`sub`.** That the exchanged token's `sub` equals the subject token's
-   `sub` and DS's `users.id`, for a local user and for a Discord-sourced
-   user.
-5. **Lifetime.** That exchanged tokens use the target provider's
-   `access_token_validity` (5 min), not the subject token's.
-6. **Inactive users.** That an exchange for a deactivated user, or with a
-   revoked subject token, fails.
-7. **Session effects.** Whether deleting an Authentik session revokes the
-   `distant-signal-mcp` access token used as the subject. This bears on
-   whether exchange stops at once after logout, or only once ds-mcp's
-   back-channel logout drops the stored token.
-8. **Fallback A.** Explicit consent flow, custom scopes on the consent
-   screen, and whether RFC 8707 `resource` is supported (expected: no).
-9. **`iat` and `jti`.** That `iat` and `jti` are present on exchanged
-   tokens.
+1. **Group-read details** (Phase 3). Can only owners and admins toggle
+   `allow_assistant_reads`? And should other members' journey names be
+   redacted even in groups that opted in?
+2. **Public ingress.** Should DS refuse delegated bearers when the api is
+   reached through a public ingress (`ingress.api.enabled`)?
+3. **The web planner.** Should `PlanTripFlow` move to
+   `POST /Journeys/itinerary`?
+4. **Privacy page.** Who updates the privacy page to cover connected apps
+   and processing by a third-party LLM?
+5. **Spec index.** `docs/superpowers/README.md` has no rows for specs after
+   2026-10-06. Should it be brought up to date in a separate pass?
+
+## 9. Authentik spike runbook (before Phase 1)
+
+The facts this design takes from Authentik come from the Ranma-Config spec
+and Authentik's docs. This runbook checks them on a real instance.
+
+- **[DS]** steps run against the dev Authentik in this repository:
+  `docker-compose.authentik.yml`, `ghcr.io/goauthentik/server:2026.8.0`,
+  with blueprints in `authentik-blueprints/`.
+- **[Ranma]** steps change or test the production Authentik
+  (`https://sso.cursed.solutions`, 2026.8.1). Its configuration lives in
+  Ranma-Config (`clusters/mine-bringer/apps/authentik.yaml`), not in this
+  repository, so only the Ranma session may do them.
+- **[ds-mcp]** steps need ds-mcp's code or credentials.
+
+Field names below follow Authentik's documentation. The blueprint author
+confirms each one against the 2026.8 model source before relying on it
+(item S0).
+
+### 9.1 Authentik objects
+
+| Id | Object (blueprint model) | Settings | Dev [DS] | Prod [Ranma] |
+|---|---|---|---|---|
+| O1 | 4 scope mappings (`authentik_providers_oauth2.scopemapping`) | Names `ds-journeys-read`, `ds-journeys-write`, `ds-journeys-delete`, `ds-journeys-read-shared`, with `scope_name` `journeys:read`, `journeys:write`, `journeys:delete`, `journeys:read_shared`. Each has a consent-screen `description` written as a sentence ("Save journeys to your Distant Signal account"). The expression is `return {}` if S4 shows that the access token's `scope` claim lists the granted scopes. Otherwise it is a distinct claim per scope, for example `return {"ds_scope_journeys_write": True}`. Distinct keys are needed because mappings that return the same key overwrite one another | yes | yes (`read_shared` can wait until Phase 3) |
+| O2 | Provider `distant-signal-api` (`authentik_providers_oauth2.oauth2provider`) | `client_type: confidential`; `client_id: distant-signal-api`; `client_secret` from the sealed Secret; `grant_types: [token_exchange]` (the spike also enables `authorization_code` and `refresh_token` to test fallback A, and production enables them only if A is chosen); `access_token_validity: minutes=5`; `refresh_token_validity: days=30` (A only); `sub_mode: hashed_user_id`, with a comment saying it must match `distant-signal` and `distant-signal-mcp`; `issuer_mode: per_provider`; `signing_key`: the RSA certificate the other providers use; `property_mappings`: O1 (plus `openid` for A); the token-exchange trust list (`jwt_federation_providers`, confirmed against the 2026.8.0 source and on dev) set to `[distant-signal-mcp]` only; `authorization_flow: default-provider-authorization-explicit-consent` (consent matters for A); `invalidation_flow: default-provider-invalidation-flow`; `redirect_uris` (A only), strict: `https://ds-mcp.cursed.solutions/oauth/distant-signal-api/callback`; **no** `logout_uri` | yes | yes |
+| O3 | Application `distant-signal-api` (`authentik_core.application`) | Provider O2. A policy binding to `distant-signal-chatbot-users`, the same as the `distant-signal-mcp` application | yes | yes |
+| O4 | Secret | Ranma-Config seals `ds-mcp-secret` / `distant-signal-api-client-secret` (namespace `ds-mcp`), plus the Authentik copy, in the same way as `authentik-client-secret` | fixed dev value | yes |
+| O5 | Spike only: provider and application `ds-spike-rogue` | A confidential client using authorization code, used to prove that foreign tokens cannot be exchanged. Delete it after the spike | yes | yes, then delete |
+| O6 | Spike only: test users | `spike-local` (local, in `distant-signal-chatbot-users`); `spike-nogroup` (not in the group). In production only, `spike-discord` (from the Discord source), if a test Discord account is available | yes (local users) | yes, then delete |
+| — | Existing `distant-signal` and `distant-signal-mcp` providers | **No change.** Only record their `sub_mode` (expected `hashed_user_id`) and access-token validity (14 days) | check | check |
+
+### 9.2 Test steps
+
+Wherever a step obtains a `distant-signal-mcp` access token, use an
+authorization-code flow with PKCE as `spike-local`, with that provider's
+dev credentials, or with ds-mcp in production. A small local script in the
+session scratchpad, or `curl`, is enough. Decode JWTs locally and never
+paste them anywhere.
+
+| Step | Who | Action | Expected / record |
+|---|---|---|---|
+| S0 | DS (dev), Ranma (prod) | Apply O1–O6. Confirm each field name against the 2026.8 model, and check that the blueprint applies without serializer errors | Blueprint applied; the `distant-signal-api` discovery document and JWKS are served |
+| S1 | DS | Log in as `spike-local` to `distant-signal` and to `distant-signal-mcp`, then compare `sub` | Equal. Record `sub_mode` on both |
+| S2 | DS | Exchange: `POST /application/o/token/` with `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token=<distant-signal-mcp AT>`, `subject_token_type=urn:ietf:params:oauth:token-type:access_token`, `requested_token_type=urn:ietf:params:oauth:token-type:access_token`, `scope=journeys:read journeys:write journeys:delete`, and Basic auth as `distant-signal-api` | 200 and an RS256 JWT. Record `iss`, `aud` (= `distant-signal-api`), `sub` (= S1), `iat`, `exp`, `jti`, `azp`, the scope claims and `act` |
+| S3 | DS | Delegation mode: repeat S2 with the actor parameters the Authentik docs give for on-behalf-of | The token carries `act` identifying ds-mcp. Record its exact shape for the `actor` setting in `DELEGATED_CLIENTS`. If there is no `act`, D2 still works and DS identifies the client by `aud` alone |
+| S4 | DS | Scopes: request only `journeys:read`, then a scope that is not mapped | The first token shows only that scope. The second gets an error or has the scope dropped. Decide the O1 expression style from this |
+| S5 | — | **Removed** with the revised D-8 (no `max_age`). If the optional Phase 4 step-up is ever built, restore this step: check that `max_age=600` forces a credential prompt and refreshes `auth_time` | — |
+| S6 | DS | Foreign subject tokens: exchange (as in S2) a `ds-spike-rogue` access token, a `distant-signal` access token, and a `srv-ds-mcp` client-credentials token | **All refused.** If any succeeds, the trust list is not working: stop and treat D2 as blocked (§9.4) |
+| S7 | DS | Wrong requesting client: do S2 authenticated as `ds-spike-rogue`, and as `distant-signal-mcp` | No token with `aud = distant-signal-api` is issued |
+| S8 | DS | Group policy: obtain a subject token as `spike-local`, remove the user from `distant-signal-chatbot-users`, then exchange | Record whether the application's binding is checked at exchange. Either result is acceptable, because the DS grant gates use, but the result goes in the spec |
+| S9 | DS | Inactive or revoked subject: (a) deactivate `spike-local` and exchange with an earlier subject token; (b) revoke a subject token at `distant-signal-mcp`'s revocation endpoint and exchange | Both refused |
+| S10 | DS (dev), Ranma (prod) | Session end: (a) log out of Authentik in a browser session that has logged in to both DS and ds-mcp; (b) delete one session from the admin UI; (c) let a session expire (set a short session duration on a test flow) | (a) and (b): both back-channel calls fire (worker log), and a subject token from that session can no longer be exchanged. (c): record whether a notification is sent. This fixes the residual risk for T13a |
+| S11 | DS | Lifetime | Exchanged token `exp - iat = 300`, whatever the subject token's 14 days |
+| S12 | DS | Fallback A: authorization code with PKCE against `distant-signal-api`, with the explicit-consent flow | The consent screen lists the O1 descriptions. Refresh rotates the refresh token, and a reused refresh token is refused. A `resource` parameter (RFC 8707) is ignored or refused; record which |
+| S13 | DS | Verification on the DS side: run a captured S2 token, and a captured `distant-signal` token, through a scratch harness that uses DS's `ServiceTokenVerifier` with the `distant-signal-api` issuer and audience | The S2 token verifies. The SSO token is refused (`iss`/`aud`) |
+| S14 | Ranma | Repeat S1, S2, S6, S9 and S10 on production, plus S1 and S2 for `spike-discord`. §9.6 step 3 is the minimum | Same results as on dev |
+| S15 | Ranma, DS | Clean-up: delete O5 and O6 everywhere, and keep O1–O4 | Only the intended objects remain |
+
+### 9.3 What each side owns
+
+- **DS session.**
+  - The dev blueprint entries (O1–O3, O5, O6) in `authentik-blueprints/`.
+    These are committed only once the spike passes; the dev values are not
+    secrets.
+  - S0–S13 on dev.
+  - Recording the results in this spec.
+- **Ranma session.**
+  - Every production Authentik object (O1–O4, and the temporary O5 and
+    O6).
+  - The sealed secret.
+  - The production steps in §9.6.
+  - S15.
+- **ds-mcp session.** Nothing is needed for the spike itself, beyond
+  production S2 using ds-mcp's real `distant-signal-mcp` client if the Ranma
+  session prefers that to a test client. The exchange client is Phase 1c
+  work.
+
+### 9.4 Exit criteria
+
+| Result | Decision |
+|---|---|
+| S2, S6, S7, S9 and S11 pass | **D2 confirmed.** Build Phase 1 as specified |
+| S6 or S7 fails (foreign subject tokens or clients accepted) | D2 is blocked: exchange cannot be limited to ds-mcp. **Switch to fallback A** (S12 must pass), and keep every DS-side design unchanged |
+| S3 gives no `act` | Accepted. DS identifies the client by `aud`, and drops the `actor` check. **This happened on dev** (§9.5) |
+| S4 shows no scope claim on the token | DS uses the per-scope claims (O1 fallback). If there are none at all, DS uses grant scopes ∩ `maxScopes` only, and records that in the spec |
+| S10(c): no notification on expiry | Accept and record the T13a residual risk |
+| S1 or S14: `sub` differs anywhere | Stop. Fix `sub_mode` before going further, because the identity mapping depends on it |
+
+### 9.5 Dev spike results (2026-10-14)
+
+**Verdict: D2 is viable. Every gating step passed (S2, S6, S7, S9, S11), so
+there is no need to fall back to A.** One adjustment follows: DS does not
+check `act`, because no `act` claim appears without an Authentik "Actor"
+object (S3).
+
+**Environment**
+
+- The image `docker-compose.authentik.yml` pins:
+  `ghcr.io/goauthentik/server:2026.8.0`, amd64 manifest
+  `sha256:21000ceb…0da0`, with Postgres 16-alpine at the same digest.
+- The compose file could not be used as it stands, for two reasons. This
+  workspace has Podman with no compose provider, and Podman runs as a
+  remote service that cannot bind-mount the session scratchpad. So the
+  same images and environment were started by hand, on a private Podman
+  network, with Authentik published on `127.0.0.1:19480`. Blueprints were
+  copied into a named volume.
+- The repository's `authentik-blueprints/oauth2-client.yaml` was loaded
+  alongside a throwaway spike blueprint. It applied cleanly
+  (`distant-signal-dev`, `hashed_user_id`, `authorization_code`).
+- The spike blueprint modelled the three providers with a `spike-` prefix:
+  - `spike-distant-signal` (14-day tokens, back-channel logout);
+  - `spike-distant-signal-mcp` (14-day tokens, refresh, back-channel
+    logout);
+  - `spike-distant-signal-api` (O2: 5 minutes, token exchange, federation
+    trusting `spike-distant-signal-mcp`, explicit consent, the four O1
+    mappings).
+- It also created the rogue provider (O5), the test users (O6), and
+  application bindings to `distant-signal-chatbot-users`.
+- Logins and consent were driven through Authentik's flow-executor API.
+  A local HTTP listener recorded the back-channel logout POSTs.
+- Everything was torn down afterwards (containers, volumes, network).
+  Nothing touched production, and the spike scripts were left in the
+  session scratchpad, not this repository.
+
+The 2026.8.0 source in the image confirmed several details beyond the docs:
+
+- The trust list field is `jwt_federation_providers`
+  (`providers/oauth2/models.py`).
+- Exchange is implemented in `providers/oauth2/token/token_exchange.py`.
+- Subject tokens are looked up as live `AccessToken` rows and then
+  signature-checked (`token/base_fed.py`).
+- `audience` must name a provider that federates with the requesting one,
+  and `resource` (RFC 8707) is refused with `invalid_target`.
+- Requested scopes are clamped to the target provider's scope mappings.
+- The application's policy bindings are evaluated at exchange time.
+- `act` is set only for an `actor_token` that resolves to an Authentik
+  `Actor`.
+- Exchanged tokens are written with `auth_time = now` and no session.
+
+| Step | Result | Evidence |
+|---|---|---|
+| S0 | **Pass** | Both blueprints applied with no serializer errors. The field names used in §9.1 are right, the federation field included (`jwt_federation_providers: [<mcp pk>]`). Discovery is served for all three providers. Discovery's `grant_types_supported` does **not** list token exchange, even though it works (cosmetic) |
+| S1 | **Pass** | `sub` is `a4022ea6…65de` in the DS and ds-mcp access tokens, and in both ID tokens. All providers are `hashed_user_id` |
+| S2 | **Pass** | `client=spike-distant-signal-api` with `subject_token=<mcp AT>` gives 200 and an RS256 JWT, with `typ: JWT` and a `kid`. Claims: `iss=…/application/o/spike-distant-signal-api/`, `aud=azp=spike-distant-signal-api`, `sub` unchanged, `scope="journeys:delete journeys:read journeys:write"`, `jti` present, **no `sid`**, and `auth_time` = **time of the exchange**. Response: `issued_token_type=…:access_token`, `expires_in=300`. `subject_token_type=…:jwt` works too. The variant with `client=spike-distant-signal-mcp` and `audience=spike-distant-signal-api` also works and gives the same claims (see the note below) |
+| S3 | **No `act`** (accepted) | No `actor_token` means no `act` claim. Using the user's own ds-mcp token as `actor_token` gives 400 `invalid_grant`: actors must be Authentik `Actor` objects. **Decision:** DS identifies the client by `iss`/`aud` and the federation setting, and drops the `act` check (§5.7) |
+| S4 | **Pass** | The `scope` claim is present, so O1's `return {}` is enough, and the per-scope claim fallback is not needed. Asking for `journeys:read` gives exactly that. An unknown scope is silently dropped. An **empty `scope` still issues a token with `scope=""`**, so DS must refuse tokens that lack the route's scope (as §5.5's intersection already does) |
+| S5 | **Removed** | D-8 as revised has no `max_age` |
+| S6 | **Pass** | Each of these is refused with 400 `invalid_grant`: a rogue access token, a DS SSO access token, a ds-mcp ID token, a DS ID token, an already-exchanged `distant-signal-api` token, and a tampered ds-mcp token. Not run: a `srv-ds-mcp` client-credentials token, because no service account was set up. It is issued by `distant-signal-internal`, which is not in the federation list, and so takes the same refusal path as the DS SSO token |
+| S7 | **Pass** | `client=rogue`, `audience=api`: 400 `invalid_target`. `client=rogue` with no audience: `invalid_grant`. `client=DS` (no exchange grant): `invalid_grant`. `client=api` with a wrong secret: `invalid_client`. `client=mcp` targeting itself: `invalid_grant` |
+| S8 | **Binding enforced** | Removing `spike-local` from `distant-signal-chatbot-users` makes the next exchange fail with 400 `invalid_grant`. Adding the user back makes it succeed again. Group membership is checked at every exchange |
+| S9 | **Pass** | (a) Deactivating the user makes exchange fail, and **after reactivating, the same subject token still fails**, because deactivation deletes the sessions and with them the tokens. A fresh login works. (b) Revoking the ds-mcp access token at `/application/o/revoke/` makes exchange fail |
+| S10 | **Pass** ((c) not run) | (a) A user logout (invalidation flow) sends back-channel POSTs to both `/ds` and `/mcp`, and the logged-out session's ds-mcp token can no longer be exchanged. The window also caught notifications that S9's deactivation had queued and delivered late, on this heavily loaded host. (b) An admin deleting the sessions gives exactly one `/ds` and one `/mcp` POST, with logout-token claims `iss`, `aud`, `iat`, `exp`, `jti`, `events`, `sub` and `sid`, after which exchange fails. **Exchanged tokens carry no `sid` and outlive the session for up to 5 minutes.** That is why §5.7 checks `iat` against `sessions_invalidated_at`, and path 1 and path 2 revoke the grant. (c) Session expiry was not run, and the T13a residual risk stands as written |
+| S11 | **Pass** | The exchanged token has `exp − iat = 300` and `expires_in = 300`. The subject token has 1,209,600 (14 days) |
+| S12 | **Pass** | Fallback A works: authorization code with PKCE and the explicit-consent flow. The consent challenge lists the O1 descriptions ("Read your saved journeys"). Refresh rotates the refresh token, and reusing the old one gives 400 `invalid_grant`. Auth-code tokens carry `sid` and the real `auth_time`. `resource` on `/authorize` is ignored, and on exchange it is refused (`invalid_target`) |
+| S13 | **Pass (equivalent harness)** | The checks `ServiceTokenVerifier` makes (RS256 against the provider JWKS, exact `iss`, `aud` contains the client, `exp` with 60 s leeway) were re-implemented with PyJWT and run against live tokens. The exchanged token verifies, and the DS SSO and ds-mcp login tokens are rejected (`InvalidIssuerError`). The Rust type itself was not compiled into a scratch harness, because the host's load average was 80–100 and building `crates/api` was not practical. Its unit tests already cover the same claim checks |
+
+**Which client authenticates the exchange.** Both shapes work:
+
+- (i) ds-mcp authenticates as `distant-signal-api`, the API provider trusts
+  `distant-signal-mcp`, and ds-mcp holds both client secrets.
+- (ii) ds-mcp authenticates as `distant-signal-mcp`, with
+  `audience=distant-signal-api`. This adds the exchange grant to ds-mcp's
+  login provider, and needs no second secret.
+
+**Recommendation: (i), as specified.** The separate `distant-signal-api`
+secret is an Authentik-side kill switch for delegated access alone.
+Rotating it stops every exchange while ds-mcp's logins keep working. It
+also leaves the production `distant-signal-mcp` provider unchanged.
+
+**What changes in §5 as a result**
+
+- DS drops the `actor`/`act` check.
+- DS requires the route's scope in the token's `scope` claim. A token with
+  an empty scope is never enough.
+- Since exchanged tokens have no `sid` and their `auth_time` is the
+  exchange time, DS uses `iat` for the `not_before` and
+  `sessions_invalidated_at` comparisons (as specified), never `auth_time`.
+
+**Remaining production steps for Ranma** are in §9.6.
+
+### 9.6 Production steps for Ranma (exact)
+
+Order matters: each step depends on the previous one. None of these has
+been done.
+
+1. **Seal the client secret.**
+   - Generate a 64-character random secret.
+   - Seal it twice, as with `distant-signal-mcp`: as `ds-mcp-secret` /
+     `distant-signal-api-client-secret` in namespace `ds-mcp`, and as the
+     Authentik-side copy.
+2. **Add the blueprint entries** to `clusters/mine-bringer/apps/authentik.yaml`,
+   gated on the secret env var being non-empty, like `srv-ds-mcp`:
+   - **O1:** `authentik_providers_oauth2.scopemapping` × 3 (Phase 1):
+     - `ds-journeys-read` / `scope_name: journeys:read` / description
+       "Read your saved journeys";
+     - `ds-journeys-write` / `journeys:write` / "Save journeys to your
+       Distant Signal account";
+     - `ds-journeys-delete` / `journeys:delete` / "Delete journeys the
+       assistant saved";
+     - all with `expression: return {}`.
+     - Add `ds-journeys-read-shared` / `journeys:read_shared` only for
+       Phase 3.
+   - **O2:** `authentik_providers_oauth2.oauth2provider`
+     `distant-signal-api`:
+     - `client_type: confidential`, `client_id: distant-signal-api`,
+       `client_secret: !Env …`;
+     - `grant_types: ["urn:ietf:params:oauth:grant-type:token-exchange"]`
+       only (do not add `authorization_code` or `refresh_token` unless
+       fallback A is ever chosen);
+     - `access_token_validity: minutes=5`;
+     - `sub_mode: hashed_user_id`, with a comment that it must match
+       `distant-signal` and `distant-signal-mcp`;
+     - `jwt_federation_providers: [!Find [authentik_providers_oauth2.oauth2provider, [client_id, distant-signal-mcp]]]`;
+     - `signing_key`: the same RSA certificate as the other providers;
+     - `authorization_flow`: `default-provider-authorization-explicit-consent`
+       and `invalidation_flow`: `default-provider-invalidation-flow`, both
+       required by the serializer;
+     - `property_mappings`: the three O1 mappings;
+     - `redirect_uris: []`;
+     - no `logout_uri`.
+   - **O3:** `authentik_core.application` `distant-signal-api`, with
+     provider O2, plus an `authentik_policies.policybinding` from that
+     application to the group `distant-signal-chatbot-users`.
+     - The application is **required**: Authentik refuses an exchange whose
+       target provider has no application (`target_without_application`).
+     - The binding mirrors `distant-signal-mcp`'s binding, and S8 showed it
+       being enforced at every exchange.
+   - **No change** to `distant-signal-mcp` or `distant-signal`.
+3. **Smoke test on production** (S14, shortened), with a temporary test
+   user in `distant-signal-chatbot-users`:
+   1. Obtain a `distant-signal-mcp` access token, through ds-mcp's login or
+      a one-off authorization-code run.
+   2. `POST https://sso.cursed.solutions/application/o/token/`, with Basic
+      auth `distant-signal-api:<secret>` and the form fields
+      `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
+      `subject_token=<AT>`,
+      `subject_token_type=urn:ietf:params:oauth:token-type:access_token`
+      and `scope=journeys:read journeys:write journeys:delete`.
+   3. Expect 200 and a JWT with `iss=https://sso.cursed.solutions/application/o/distant-signal-api/`,
+      `aud=distant-signal-api`, the same `sub` as the subject token, and
+      `exp − iat = 300`.
+   4. Repeat with a `distant-signal` (DS SSO) access token as the subject.
+      Expect 400 `invalid_grant`.
+   5. Deactivate the test user and repeat step 2. Expect 400.
+   6. Delete the test user.
+   7. Record the results as a dated note in §9.5. Paste no tokens anywhere.
+4. **Hand over to the DS and ds-mcp sessions:**
+   - the issuer URL `https://sso.cursed.solutions/application/o/distant-signal-api/`;
+   - the audience `distant-signal-api`;
+   - the secret's location for ds-mcp.
+
+   DS's chart then sets `api.delegatedClients[0]` (§5.2) without `actor`.
