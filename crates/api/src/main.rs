@@ -283,6 +283,10 @@ async fn server_main() -> anyhow::Result<()> {
         .merge(routes::journeys::router())
         .merge(routes::journey_templates::router())
         .merge(routes::trips::router())
+        // `POST /delegated-grants/revoke`: a delegated client's service
+        // identity revokes a user's grant on logout (spec 2026-10-14 §5.9).
+        // Root-mounted, so the frontend proxy never reaches it.
+        .merge(routes::connected_apps::service_router())
         .nest(
             "/public",
             routes::public_router().merge(api::readiness::router(readiness)),

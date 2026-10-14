@@ -4,6 +4,7 @@ pub mod account;
 pub mod admin;
 pub mod auth;
 pub mod chatbot;
+pub mod connected_apps;
 pub mod departures;
 pub mod freshness;
 pub mod groups;
@@ -128,6 +129,7 @@ pub fn public_router() -> Router {
         .merge(auth::router())
         .merge(admin::router())
         .merge(account::router())
+        .merge(connected_apps::router())
         .merge(groups::router())
         .merge(chatbot::router())
         .merge(station_stats::router())
