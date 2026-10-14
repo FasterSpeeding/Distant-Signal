@@ -170,12 +170,10 @@ export const TRACKED_TRAINS_DESTINATION: NavDestination = {
 export const GROUPS_DESTINATION: NavDestination = { href: '/groups', label: 'Groups' };
 
 /** Review §3.1.3: `/chat` was undiscoverable -- reachable only by typing
- * the URL directly, with no nav entry pointing an allow-listed user at it.
- * Visible only when `getChatbotAccess()` (fetched alongside the session in
- * `app/layout.tsx`'s own `NavBarWithSession`, in the same `<Suspense>`
- * boundary) actually resolves to `'allowed'` -- a non-allow-listed logged-in
- * visitor gets the explained dead-end at `/chat` itself (Task 3.1.2), not a
- * nav item pointing at it. */
+ * the URL directly. Listed for every logged-in visitor, like
+ * `GROUPS_DESTINATION`: the chat is open to every account (since
+ * 2026-10-14), and a logged-out visitor would only meet a login prompt
+ * there. */
 export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Ask about trains' };
 
 /** The account page: download your data, delete your account (UK legal
@@ -198,11 +196,7 @@ export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'A
  * links to it for desktop visitors. */
 export const TRANSIT_DESTINATION: NavDestination = { href: '/transit', label: 'Trams' };
 
-export function navDrawerDestinations(
-  authenticated: boolean,
-  chatAllowed: boolean,
-  transitOn = false,
-): NavDestination[] {
+export function navDrawerDestinations(authenticated: boolean, transitOn = false): NavDestination[] {
   return [
     // Planning sits straight after tracking: they are the two ways to start
     // a journey. Trams follow the National Rail lines.
@@ -214,25 +208,13 @@ export function navDrawerDestinations(
           : [destination],
     ),
     TRACKED_TRAINS_DESTINATION,
-    ...(authenticated ? [GROUPS_DESTINATION] : []),
-    ...(chatAllowed ? [CHAT_DESTINATION] : []),
-    ...(authenticated ? [ACCOUNT_DESTINATION] : []),
+    ...(authenticated ? [GROUPS_DESTINATION, CHAT_DESTINATION, ACCOUNT_DESTINATION] : []),
   ];
 }
 
 /** What the avatar-keyed account menu lists (above "Log out", which the
  * menu adds itself because it is an action, not a destination). Only ever
- * rendered for an authenticated visitor, so the always-on entries are
- * unconditional; `CHAT_DESTINATION` is appended only for an allow-listed
- * caller (`chatAllowed`) -- `getChatbotAccess()` already implies
- * authentication (it fails closed to `'forbidden'`, never `'allowed'`, for
- * an anonymous caller), so this never renders Chat for a logged-out
- * visitor. */
-export function accountMenuDestinations(chatAllowed: boolean): NavDestination[] {
-  return [
-    TRACKED_TRAINS_DESTINATION,
-    GROUPS_DESTINATION,
-    ...(chatAllowed ? [CHAT_DESTINATION] : []),
-    ACCOUNT_DESTINATION,
-  ];
+ * rendered for an authenticated visitor, so every entry is unconditional. */
+export function accountMenuDestinations(): NavDestination[] {
+  return [TRACKED_TRAINS_DESTINATION, GROUPS_DESTINATION, CHAT_DESTINATION, ACCOUNT_DESTINATION];
 }

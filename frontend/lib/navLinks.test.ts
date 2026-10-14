@@ -15,12 +15,12 @@ import {
 
 describe('TRANSIT_DESTINATION', () => {
   it('is hidden while no transit network is served (the default)', () => {
-    expect(navDrawerDestinations(false, false).map((d) => d.href)).not.toContain('/transit');
-    expect(navDrawerDestinations(true, true, false).map((d) => d.href)).not.toContain('/transit');
+    expect(navDrawerDestinations(false).map((d) => d.href)).not.toContain('/transit');
+    expect(navDrawerDestinations(true, false).map((d) => d.href)).not.toContain('/transit');
   });
 
   it('follows Lines in the drawer once a network is served, and never joins the inline bar', () => {
-    const hrefs = navDrawerDestinations(false, false, true).map((d) => d.href);
+    const hrefs = navDrawerDestinations(false, true).map((d) => d.href);
     expect(hrefs[hrefs.indexOf('/lines') + 1]).toBe(TRANSIT_DESTINATION.href);
     expect(TRANSIT_DESTINATION.label).toBe('Trams');
     expect(PRIMARY_NAV_DESTINATIONS).not.toContain(TRANSIT_DESTINATION);
@@ -37,7 +37,7 @@ describe('TRACK_JOURNEY_DESTINATION', () => {
   });
 
   it('is included in the drawer, for every visitor', () => {
-    const hrefs = navDrawerDestinations(false, false).map((d) => d.href);
+    const hrefs = navDrawerDestinations(false).map((d) => d.href);
     expect(hrefs).toContain(TRACK_JOURNEY_DESTINATION.href);
   });
 });
@@ -53,7 +53,7 @@ describe('PLAN_JOURNEY_DESTINATION', () => {
 
   it('sits straight after "Track a Journey" in the drawer, signed in or not', () => {
     for (const authenticated of [false, true]) {
-      const drawer = navDrawerDestinations(authenticated, false);
+      const drawer = navDrawerDestinations(authenticated);
       const trackIndex = drawer.indexOf(TRACK_JOURNEY_DESTINATION);
       expect(trackIndex).toBeGreaterThanOrEqual(0);
       expect(drawer[trackIndex + 1]).toBe(PLAN_JOURNEY_DESTINATION);
@@ -73,49 +73,27 @@ describe('isActiveNavHref', () => {
 });
 
 describe('navDrawerDestinations', () => {
-  it('excludes Groups and Chat for an anonymous visitor', () => {
-    const hrefs = navDrawerDestinations(false, false).map((d) => d.href);
+  it('excludes Groups, Chat and the account page for an anonymous visitor', () => {
+    const hrefs = navDrawerDestinations(false).map((d) => d.href);
     expect(hrefs).not.toContain(GROUPS_DESTINATION.href);
     expect(hrefs).not.toContain(CHAT_DESTINATION.href);
     expect(hrefs).not.toContain(ACCOUNT_DESTINATION.href);
   });
 
-  it('includes the account page for an authenticated visitor', () => {
-    expect(navDrawerDestinations(true, false).map((d) => d.href)).toContain(ACCOUNT_DESTINATION.href);
-  });
-
-  it('includes Groups but not Chat for an authenticated, non-allow-listed visitor', () => {
-    const hrefs = navDrawerDestinations(true, false).map((d) => d.href);
-    expect(hrefs).toContain(GROUPS_DESTINATION.href);
-    expect(hrefs).not.toContain(CHAT_DESTINATION.href);
-  });
-
   // Review §3.1.3: /chat was reachable only by typing the URL directly --
-  // this is the fix, on the one nav surface a phone ever sees.
-  it('includes Chat once getChatbotAccess() resolves to "allowed"', () => {
-    const hrefs = navDrawerDestinations(true, true).map((d) => d.href);
+  // this is the fix, on the one nav surface a phone ever sees. Every
+  // logged-in visitor gets it: the chat has no access group any more.
+  it('includes Groups, Chat and the account page for every authenticated visitor', () => {
+    const hrefs = navDrawerDestinations(true).map((d) => d.href);
+    expect(hrefs).toContain(GROUPS_DESTINATION.href);
     expect(hrefs).toContain(CHAT_DESTINATION.href);
-  });
-
-  it('never offers Chat to a logged-out visitor, even if chatAllowed were somehow true', () => {
-    // Defensive: getChatbotAccess() itself never returns 'allowed' for an
-    // unauthenticated caller, but this function doesn't rely on that
-    // invariant holding elsewhere -- `authenticated` still gates Groups
-    // independently.
-    const hrefs = navDrawerDestinations(false, true).map((d) => d.href);
-    expect(hrefs).toContain(CHAT_DESTINATION.href);
-    expect(hrefs).not.toContain(GROUPS_DESTINATION.href);
+    expect(hrefs).toContain(ACCOUNT_DESTINATION.href);
   });
 });
 
 describe('accountMenuDestinations', () => {
-  it('always offers My Trains & Tickets and Groups', () => {
-    const hrefs = accountMenuDestinations(false).map((d) => d.href);
-    expect(hrefs).toEqual([TRACKED_TRAINS_DESTINATION.href, GROUPS_DESTINATION.href, ACCOUNT_DESTINATION.href]);
-  });
-
-  it('appends Chat only when allow-listed', () => {
-    const hrefs = accountMenuDestinations(true).map((d) => d.href);
+  it('offers My Trains & Tickets, Groups, Chat and the account page', () => {
+    const hrefs = accountMenuDestinations().map((d) => d.href);
     expect(hrefs).toEqual([
       TRACKED_TRAINS_DESTINATION.href,
       GROUPS_DESTINATION.href,

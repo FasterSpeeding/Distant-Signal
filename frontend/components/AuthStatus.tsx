@@ -26,18 +26,7 @@ import type { SessionInfo } from '@/lib/types';
  * in the accessibility tree (the avatar's `aria-label`) and still
  * on-screen (its initials, and in full as the open menu's label); it is
  * only the always-on run of bar text that went away. */
-export function AuthStatus({
-  session,
-  chatAllowed = false,
-}: {
-  session: SessionInfo;
-  /** Review §3.1.3 -- whether `getChatbotAccess()` resolved to
-   * `'allowed'`, threaded through from `app/layout.tsx` via
-   * `AppNavBar`/`AuthStatus` down to the account menu's own destination
-   * list. Defaults to `false` for the same "not confirmed yet" reason
-   * `AppNavBar`'s own `chatAllowed` prop does. */
-  chatAllowed?: boolean;
-}) {
+export function AuthStatus({ session }: { session: SessionInfo }) {
   if (!session.authenticated) {
     // `size="sm"` (14px), not `LoginControl`'s own Mantine-`Text`-default 16px:
     // review §2.16 named this as one leg of "auth controls are
@@ -64,5 +53,5 @@ export function AuthStatus({
   // Name, else the user's own username (the app holds no email address to
   // fall back to). Self-view only: this is the signed-in user's own label.
   const label = session.name?.trim() || session.username?.trim() || 'Logged in';
-  return <AccountMenu label={label} destinations={accountMenuDestinations(chatAllowed)} />;
+  return <AccountMenu label={label} destinations={accountMenuDestinations()} />;
 }

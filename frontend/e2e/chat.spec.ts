@@ -3,9 +3,9 @@ import { test, expect, type Page } from '@playwright/test';
 // Like every other spec in this directory, this drives the REAL app
 // through `playwright.config.ts`'s own `webServer` (a real `next dev`) or
 // a real deployed target (`E2E_BASE_URL`) -- it does not stand up its own
-// mock backend. `/chat`'s own server-side gate (`getChatbotAccess()`,
+// mock backend. `/chat`'s own server-side gate (`getSessionOrLoggedOut()`,
 // `frontend/app/chat/page.tsx`) still needs a real, reachable `api`
-// service with an authenticated, allowlisted session to ever mount
+// service with an authenticated session to ever mount
 // `ChatPanel` at all -- exactly the same constraint every other page this
 // suite drives already has (`app/page.tsx`'s own `getPreferences()` call,
 // for one). What THIS spec adds on top of a working `api`/session is
@@ -17,11 +17,11 @@ import { test, expect, type Page } from '@playwright/test';
 // is narrower coverage than the deleted `orchestrator/test/chat.test.ts`
 // suite, not a like-for-like replacement.
 //
-// That "authenticated, allowlisted session" this file's own comment above
+// That "authenticated session" this file's own comment above
 // requires was never actually established here (unlike every other
 // logged-in spec in this directory) -- discovered running this suite for
 // real in CI (.github/workflows/ci.yml's `frontend-e2e` job): without a
-// session cookie, `getChatbotAccess()` returns 'unauthenticated' and
+// session cookie, the session lookup comes back logged out and
 // `/chat` renders its "Sign in to ask about..." prompt instead of
 // `ChatPanel`, so every test here timed out waiting for the (never
 // rendered) message input. `sessionState`/`SESSION_COOKIE` below are
@@ -102,10 +102,7 @@ async function mockMcpHandshake(page: Page) {
 }
 
 test.describe('/chat, mocked network', () => {
-  test.skip(
-    !SESSION_COOKIE,
-    'set E2E_SESSION_COOKIE to a raw distant_signal_session value for a chatbot-allowlisted user',
-  );
+  test.skip(!SESSION_COOKIE, 'set E2E_SESSION_COOKIE to a raw distant_signal_session value for a logged-in user');
   test.use({ storageState: SESSION_COOKIE ? sessionState(SESSION_COOKIE) : undefined });
 
   test.beforeEach(async ({ page }) => {

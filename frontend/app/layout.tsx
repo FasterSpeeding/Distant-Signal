@@ -13,7 +13,6 @@ import { legalPagesPublished } from '@/lib/legal';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
 import {
-  getChatbotAccess,
   getDataFreshness,
   getMyGroups,
   getSessionOrLoggedOut,
@@ -125,32 +124,13 @@ export const viewport: Viewport = {
 // Unlike the freshness fetch above, this deliberately keeps its
 // `<Suspense>`: it is not a connectivity oracle, and nothing sibling to
 // it needs to read its outcome.
-// Review §3.1.3: `/chat` was reachable only by typing the URL directly --
-// nothing in the nav pointed an allow-listed user at it. Fetched
-// concurrently with `session` (both are independent reads of the same
-// in-cluster `api` service) rather than as a second sequential round trip,
-// and inside the SAME `<Suspense>` boundary as the session check below, so
-// this doesn't add a third wait of its own on top of the one the nav
-// already streams past first paint. `getChatbotAccess()` never throws (it
-// already fails closed to `'forbidden'` on any ambiguous or failed
-// response -- see `lib/api.ts`), so unlike `session` this needs no
-// `.catch()` of its own.
+// The nav's "Ask about trains" (/chat) entry follows the session alone:
+// every logged-in user gets the chat, so it needs no request of its own.
 async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
   // `getTransitNetworks()` never throws ([] on failure) and is cached for
   // five minutes, so the "Trams" entry costs no round trip on most renders.
-  const [session, chatAccess, transitNetworks] = await Promise.all([
-    getSessionOrLoggedOut(),
-    getChatbotAccess(),
-    getTransitNetworks(),
-  ]);
-  return (
-    <AppNavBar
-      session={session}
-      freshness={freshness}
-      chatAllowed={chatAccess.status === 'allowed'}
-      transitOn={transitNetworks.length > 0}
-    />
-  );
+  const [session, transitNetworks] = await Promise.all([getSessionOrLoggedOut(), getTransitNetworks()]);
+  return <AppNavBar session={session} freshness={freshness} transitOn={transitNetworks.length > 0} />;
 }
 
 /** Because the call below is awaited before RootLayout emits any HTML, an
