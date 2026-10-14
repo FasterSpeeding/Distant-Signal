@@ -3,8 +3,8 @@ import { impactTypeLabel, IMPACT_TYPE_LABELS } from './impactType';
 
 describe('impactTypeLabel', () => {
   it('returns the correct label for each known value', () => {
-    expect(impactTypeLabel('rail_replacement_bus')).toBe('Rail Replacement Bus');
-    expect(impactTypeLabel('no_scheduled_service')).toBe('No Scheduled Service');
+    expect(impactTypeLabel('rail_replacement_bus')).toBe('Rail replacement bus');
+    expect(impactTypeLabel('no_scheduled_service')).toBe('No scheduled service');
     expect(impactTypeLabel('diversion')).toBe('Diversion');
   });
 

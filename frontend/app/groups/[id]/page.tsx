@@ -1,4 +1,4 @@
-import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import {
@@ -32,7 +32,7 @@ import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { worstStatus } from '@/lib/severity';
-import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
+import { groupRoleLabel, memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import type { GroupCustomLine, GroupJourney, GroupMember, GroupTrain, LineStatusReport } from '@/lib/types';
 import type { Metadata } from 'next';
@@ -371,9 +371,9 @@ function MemberRow({
             (you)
           </Text>
         )}
-        <Badge tt="none" variant="outline">
-          {member.role}
-        </Badge>
+        <Text c="dimmed" size="sm">
+          {groupRoleLabel(member.role)}
+        </Text>
       </Group>
       <Group gap="xs" wrap="nowrap" className="groupMemberRow__actions">
         {/* `viewerIsOwner`, not `canManage`: `promote_member` and

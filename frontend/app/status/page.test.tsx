@@ -46,7 +46,7 @@ describe('NetworkStatusPage', () => {
     ]);
     renderWithMantine(await NetworkStatusPage());
 
-    const link = screen.getByRole('link', { name: '1 line with Severe Disruption, view in Lines' });
+    const link = screen.getByRole('link', { name: '1 line with severe disruption, view in Lines' });
     expect(link).toHaveAttribute('href', '/lines?statusGroup=severe');
   });
 
@@ -58,10 +58,10 @@ describe('NetworkStatusPage', () => {
 
     // Only 'severe' is nonzero here -- the other four groups' tiles must not
     // be links at all (2026-09-22 UX review §2.1's own recommendation).
-    expect(screen.queryByRole('link', { name: /Good Service/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /Informational/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /Planned/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /Minor Disruption/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /good service/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /informational/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /planned/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /minor disruption/i })).not.toBeInTheDocument();
     // "0" appears once per zero-count tile (four of the five groups).
     expect(screen.getAllByText('0')).toHaveLength(4);
     // One page-level "Updated" line, not one per card as well.
@@ -73,19 +73,9 @@ describe('NetworkStatusPage', () => {
       report({ id: 'a', name: 'A', lineStatuses: [status({ statusSeverity: 2 })] }), // severe
     ]);
     renderWithMantine(await NetworkStatusPage());
-    const labels = screen
-      .getAllByText(/Good Service|Informational|Planned|Minor Disruption|Severe Disruption/)
-      // Both the tile's own label and (for the affected line) `StatusBadge`'s
-      // uppercase text match this pattern -- keep only the tile labels,
-      // identified by NOT being all-uppercase (StatusBadge renders
-      // upper-cased text via CSS, but the DOM text content itself is
-      // whatever `severityLabel` returns, so filter on the tile's known
-      // exact label set instead).
-      .filter((el) =>
-        ['Good Service', 'Informational', 'Planned', 'Minor Disruption', 'Severe Disruption'].includes(el.textContent),
-      );
-    expect(labels[0]).toHaveTextContent('Severe Disruption');
-    expect(labels[labels.length - 1]).toHaveTextContent('Good Service');
+    // The tile labels, in sentence case like every label (round 2).
+    const labels = [...document.querySelectorAll('[data-status-tile] .statusTile__label')].map((el) => el.textContent);
+    expect(labels).toEqual(['Severe disruption', 'Minor disruption', 'Planned', 'Informational', 'Good service']);
   });
 
   it('shows the good-service empty state when nothing is affected', async () => {
@@ -136,28 +126,25 @@ describe('NetworkStatusPage', () => {
     expect(screen.getByText('1 line tracked across National Rail right now.')).toBeInTheDocument();
   });
 
-  it('shows "No lines tracked" for an empty mode instead of a green "All Good Service" badge (regression: 2026-09-22 UX review §2.3)', async () => {
+  it('shows "No lines tracked" for an empty mode, with no badge (regression: 2026-09-22 UX review §2.3)', async () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'a', name: 'A', modeName: 'national-rail', lineStatuses: [status({ statusSeverity: 10 })] }),
     ]);
     renderWithMantine(await NetworkStatusPage());
-    expect(screen.getByText('No lines tracked.')).toBeInTheDocument();
-    expect(screen.queryByText('All Good Service')).toBeInTheDocument(); // National Rail's own card, unaffected
+    const empty = screen.getByText('No lines tracked.').closest('.mantine-Card-root')!;
+    expect(empty.querySelector('[data-status-badge]')).toBeNull();
+    // National Rail's own card, unaffected: a Good service badge and a sentence.
+    expect(screen.getByText('1 line, all running normally.')).toBeInTheDocument();
   });
 
-  it('colours the "N affected" badge by the worst severity in the slice, not a fixed yellow (regression: 2026-09-22 UX review §2.3)', async () => {
+  it('badges a mode with the worst severity in the slice, and counts the affected lines in words (regression: 2026-09-22 UX review §2.3)', async () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([
       report({ id: 'a', name: 'A', modeName: 'national-rail', lineStatuses: [status({ statusSeverity: 9 })] }), // mild
       report({ id: 'b', name: 'B', modeName: 'national-rail', lineStatuses: [status({ statusSeverity: 2 })] }), // severe
     ]);
     renderWithMantine(await NetworkStatusPage());
-    const badge = screen.getByText('2 affected');
-    // `Badge`'s colour is expressed as CSS custom properties on the root
-    // element (Mantine v7) -- `--badge-color` reflects the `color` prop
-    // passed in.
-    expect(badge.closest('.mantine-Badge-root')).toHaveStyle({
-      '--badge-color': 'var(--mantine-color-red-light-color)',
-    });
+    const card = screen.getByText('2 of 2 lines affected.').closest('.mantine-Card-root')!;
+    expect(card.querySelector('[data-status-badge]')).toHaveTextContent('Suspended');
   });
 
   it('shows a last-updated line under the subtitle when there is real data (regression: 2026-09-22 UX review §2.5, "right now" with no timestamp)', async () => {

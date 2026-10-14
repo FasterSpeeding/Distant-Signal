@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_DESTINATION,
   accountMenuDestinations,
@@ -7,19 +7,20 @@ import {
   isActiveNavHref,
   navDrawerDestinations,
   PLAN_JOURNEY_DESTINATION,
+  PREFERENCES_DESTINATION,
   PRIMARY_NAV_DESTINATIONS,
-  TRACK_JOURNEY_DESTINATION,
-  TRACKED_TRAINS_DESTINATION,
+  TRACK_DESTINATION,
+  TRACK_JOURNEY_HREF,
   TRANSIT_DESTINATION,
 } from './navLinks';
 
 describe('TRANSIT_DESTINATION', () => {
-  it('is hidden while no transit network is served (the default)', () => {
+  it('is in the drawer only while a network is served', () => {
     expect(navDrawerDestinations(false).map((d) => d.href)).not.toContain('/transit');
     expect(navDrawerDestinations(true, false).map((d) => d.href)).not.toContain('/transit');
   });
 
-  it('follows Lines in the drawer once a network is served, and never joins the inline bar', () => {
+  it('sits straight after Lines, and never in the bar', () => {
     const hrefs = navDrawerDestinations(false, true).map((d) => d.href);
     expect(hrefs[hrefs.indexOf('/lines') + 1]).toBe(TRANSIT_DESTINATION.href);
     expect(TRANSIT_DESTINATION.label).toBe('Trams');
@@ -27,78 +28,100 @@ describe('TRANSIT_DESTINATION', () => {
   });
 });
 
-describe('TRACK_JOURNEY_DESTINATION', () => {
-  it('points at the /journeys/new creation flow', () => {
-    expect(TRACK_JOURNEY_DESTINATION.href).toBe('/journeys/new');
+describe('the bar', () => {
+  it('has one Track entry, first, then Plan a journey, then the browse pages', () => {
+    expect(PRIMARY_NAV_DESTINATIONS.map((d) => d.label)).toEqual([
+      'Track',
+      'Plan a journey',
+      'Status',
+      'Lines',
+      'Operators',
+      'Stations',
+      'Incidents',
+    ]);
+    expect(PRIMARY_NAV_DESTINATIONS[0]).toBe(TRACK_DESTINATION);
+    expect(PRIMARY_NAV_DESTINATIONS[1]).toBe(PLAN_JOURNEY_DESTINATION);
   });
 
-  it('leads PRIMARY_NAV_DESTINATIONS, ahead of Status -- the main way to start tracking something', () => {
-    expect(PRIMARY_NAV_DESTINATIONS[0]).toBe(TRACK_JOURNEY_DESTINATION);
+  it('sends Track to the Track page, and starts new journeys on /journeys/new', () => {
+    expect(TRACK_DESTINATION.href).toBe('/track/mine');
+    expect(TRACK_JOURNEY_HREF).toBe('/journeys/new');
   });
 
-  it('is included in the drawer, for every visitor', () => {
-    const hrefs = navDrawerDestinations(false).map((d) => d.href);
-    expect(hrefs).toContain(TRACK_JOURNEY_DESTINATION.href);
-  });
-});
-
-describe('PLAN_JOURNEY_DESTINATION', () => {
-  it('points at the /plan page', () => {
-    expect(PLAN_JOURNEY_DESTINATION).toEqual({ href: '/plan', label: 'Plan a journey' });
-  });
-
-  it('is not one of the always-inline primary links: the bar adds it itself, from lg up', () => {
-    expect(PRIMARY_NAV_DESTINATIONS).not.toContain(PLAN_JOURNEY_DESTINATION);
-  });
-
-  it('sits straight after "Track a Journey" in the drawer, signed in or not', () => {
-    for (const authenticated of [false, true]) {
-      const drawer = navDrawerDestinations(authenticated);
-      const trackIndex = drawer.indexOf(TRACK_JOURNEY_DESTINATION);
-      expect(trackIndex).toBeGreaterThanOrEqual(0);
-      expect(drawer[trackIndex + 1]).toBe(PLAN_JOURNEY_DESTINATION);
-      expect(drawer.filter((d) => d.href === '/plan')).toHaveLength(1);
+  it('lists no tracking page twice', () => {
+    const hrefs = PRIMARY_NAV_DESTINATIONS.map((d) => d.href);
+    for (const href of ['/trains', '/journeys/new', '/track']) {
+      expect(hrefs).not.toContain(href);
     }
   });
 });
 
 describe('isActiveNavHref', () => {
-  it('matches the exact path only', () => {
-    expect(isActiveNavHref('/plan', '/plan')).toBe(true);
+  it('matches a plain href exactly, never as a prefix', () => {
+    expect(isActiveNavHref('/plan', PLAN_JOURNEY_DESTINATION)).toBe(true);
     expect(isActiveNavHref('/journeys/new', '/plan')).toBe(false);
     expect(isActiveNavHref('/lines/abc', '/lines')).toBe(false);
     expect(isActiveNavHref('/lines', '/')).toBe(false);
     expect(isActiveNavHref(null, '/plan')).toBe(false);
   });
+
+  it('marks Track current on every tracking page', () => {
+    for (const path of [
+      '/track/mine',
+      '/track',
+      '/track/mine/add-ticket',
+      '/trains',
+      '/journeys/new',
+      '/journeys/42',
+      '/journeys/templates',
+    ]) {
+      expect(isActiveNavHref(path, TRACK_DESTINATION), path).toBe(true);
+    }
+    expect(isActiveNavHref('/trainsx', TRACK_DESTINATION)).toBe(false);
+    expect(isActiveNavHref('/plan', TRACK_DESTINATION)).toBe(false);
+    expect(isActiveNavHref('/train/W12345/2026-09-17', TRACK_DESTINATION)).toBe(false);
+  });
+
+  it('marks Status current on the network history page', () => {
+    const status = PRIMARY_NAV_DESTINATIONS.find((d) => d.href === '/status')!;
+    expect(isActiveNavHref('/network/history', status)).toBe(true);
+  });
 });
 
 describe('navDrawerDestinations', () => {
-  it('excludes Groups, Chat and the account page for an anonymous visitor', () => {
+  it('carries every primary destination and Preferences for anyone', () => {
+    const hrefs = navDrawerDestinations(false).map((d) => d.href);
+    expect(hrefs).toEqual([...PRIMARY_NAV_DESTINATIONS.map((d) => d.href), PREFERENCES_DESTINATION.href]);
+  });
+
+  it('omits Groups, Chat and Account for a logged-out visitor', () => {
     const hrefs = navDrawerDestinations(false).map((d) => d.href);
     expect(hrefs).not.toContain(GROUPS_DESTINATION.href);
     expect(hrefs).not.toContain(CHAT_DESTINATION.href);
     expect(hrefs).not.toContain(ACCOUNT_DESTINATION.href);
   });
 
-  // Review §3.1.3: /chat was reachable only by typing the URL directly --
-  // this is the fix, on the one nav surface a phone ever sees. Every
-  // logged-in visitor gets it: the chat has no access group any more.
-  it('includes Groups, Chat and the account page for every authenticated visitor', () => {
+  // Every logged-in visitor gets Chat: it has no access group any more.
+  it('adds Groups, Chat and Account when logged in, with Preferences last', () => {
     const hrefs = navDrawerDestinations(true).map((d) => d.href);
     expect(hrefs).toContain(GROUPS_DESTINATION.href);
     expect(hrefs).toContain(CHAT_DESTINATION.href);
     expect(hrefs).toContain(ACCOUNT_DESTINATION.href);
+    expect(hrefs.at(-1)).toBe(PREFERENCES_DESTINATION.href);
   });
 });
 
 describe('accountMenuDestinations', () => {
-  it('offers My Trains & Tickets, Groups, Chat and the account page', () => {
-    const hrefs = accountMenuDestinations().map((d) => d.href);
-    expect(hrefs).toEqual([
-      TRACKED_TRAINS_DESTINATION.href,
+  it('offers Groups, Chat, Account and Preferences', () => {
+    expect(accountMenuDestinations().map((d) => d.href)).toEqual([
       GROUPS_DESTINATION.href,
       CHAT_DESTINATION.href,
       ACCOUNT_DESTINATION.href,
+      PREFERENCES_DESTINATION.href,
     ]);
+  });
+
+  it('no longer carries the tracking page, which is in the bar for everyone', () => {
+    expect(accountMenuDestinations().map((d) => d.href)).not.toContain(TRACK_DESTINATION.href);
   });
 });

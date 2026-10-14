@@ -1,3 +1,4 @@
+import type { GroupRole } from './types';
 /** How this app names another user to you: the group member list, the
  * "Shared by ..." credit on a group-shared train, a group's owner.
  *
@@ -49,4 +50,11 @@ export function memberLabel(
   if (name) return name;
   const tag = displayTag?.trim();
   return tag ? `${placeholder} (#${tag})` : placeholder;
+}
+
+/** A group role as shown beside a group or a member: "Owner", "Member".
+ * Plain dimmed text, not a badge (round 2): a role is a fact about the
+ * person, not a state. */
+export function groupRoleLabel(role: GroupRole): string {
+  return role.charAt(0).toUpperCase() + role.slice(1);
 }

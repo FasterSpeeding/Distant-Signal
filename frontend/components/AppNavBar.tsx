@@ -4,16 +4,10 @@ import { Box, Container, Group, Text } from '@mantine/core';
 import { AppNavDrawer } from './AppNavDrawer';
 import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
-import { PrideModeApplier } from './PrideToggle';
+import { PrideModeApplier } from './PrideMode';
 import { PrimaryNavLink } from './PrimaryNavLink';
-import { ThemeToggle } from './ThemeToggle';
-import {
-  navDrawerDestinations,
-  PLAN_JOURNEY_DESTINATION,
-  PRIMARY_NAV_DESTINATIONS,
-  TRACK_JOURNEY_DESTINATION,
-  TRACKED_TRAINS_DESTINATION,
-} from '@/lib/navLinks';
+import { Wordmark } from './Wordmark';
+import { navDrawerDestinations, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 /** The site header, lifted out of `app/layout.tsx` so the whole bar can
@@ -21,8 +15,8 @@ import type { DataFreshness, SessionInfo } from '@/lib/types';
  * `'use client'`): it takes both the session and the freshness as already
  * resolved props and makes no fetch of its own, so the single
  * `getSession()` call stays in the layout, inside a `<Suspense>`
- * boundary. Its interactive parts (`AppNavDrawer`, `ThemeToggle`,
- * `PrideToggle`, `DataFreshnessInfo`, `AuthStatus`'s leaves) are imported
+ * boundary. Its interactive parts (`AppNavDrawer`,
+ * `PrideModeApplier`, `DataFreshnessInfo`, `AuthStatus`'s leaves) are imported
  * and rendered as plain JSX elements — Client Component children of a
  * Server Component, the safe direction across the boundary.
  *
@@ -89,88 +83,24 @@ const BAR_MIN_HEIGHT = 60;
  * both engines, so a regression fails a test rather than shipping. */
 const NAV_BREAKPOINT = 'md';
 
-/** Where `PLAN_JOURNEY_DESTINATION` joins the inline bar. `lg` (1200px) is
- * where the 1140px container stops growing, so the bar's available width
- * is the same 1100px at every viewport from here up -- one measurement
- * covers them all. Below it (992-1199px) the bar has no room for another
- * label; see the slack table below. */
-const PLAN_LINK_BREAKPOINT = 'lg';
-
 // A note on the gaps below, because they were measured rather than
 // picked, and because the obvious way to write them does not work.
 //
-// With a flat `gap="lg"` (20px) on everything, the bar measured 355px of
-// content inside the 350px available at 390px wide in Chromium -- so the
-// phone bar wrapped to two rows by FIVE pixels, while Firefox's narrower
-// text fitted the same markup on one. That is the same font-metric trap
-// as the 1440px defect this whole component exists to fix, five pixels
-// instead of twelve.
+// A responsive `gap={{ base: 'xs', md: 'lg' }}` silently does nothing:
+// Mantine's `Group` types `gap` as a plain `MantineSpacing` and feeds it
+// straight into `--group-gap: var(--mantine-spacing-<value>)`, so an object
+// renders as `var(--mantine-spacing-[object Object])` and falls back to the
+// stylesheet default with no type error. So the gaps are flat ("xs", 10px)
+// and the SHAPE carries the responsiveness: the icon controls are their own
+// tight group.
 //
-// The natural fix -- a responsive `gap={{ base: 'xs', md: 'lg' }}` --
-// silently does not work: Mantine's `Group` types `gap` as a plain
-// `MantineSpacing`, not a `StyleProp<MantineSpacing>`, and feeds it
-// straight into `--group-gap: var(--mantine-spacing-<value>)`. An object
-// stringifies, so the rendered variable is
-// `var(--mantine-spacing-[object Object])` -- an invalid reference that
-// falls back to the stylesheet default with no type error, no console
-// warning and no visual clue beyond "the gap is not what you asked for".
-// Verified against the running app before it was replaced by what is
-// below. (`Box` style props such as `px` DO take responsive objects;
-// `Group`'s own `gap` is the exception, and it is the one that matters
-// here.)
-//
-// So the gaps are flat, and the SHAPE carries the responsiveness
-// instead: the icon cluster is its own tight group.
-//
-// The links no longer keep the 20px ("lg") they originally had -- see the
-// next paragraph for why that changed.
-//
-// `TRACK_JOURNEY_DESTINATION` (lib/navLinks.ts), added as a new, always-
-// inline primary destination, broke the single-row invariant this whole
-// component exists to hold: measured against a real rendered bar in BOTH
-// engines, the anonymous bar (the binding case -- see below) wrapped at
-// BOTH 992px and 1440px, not just the narrower one, and at 992px it wrapped
-// badly enough that individual multi-word labels' own text broke onto two
-// lines (flex-shrink squeezing each TextLink below its natural width)
-// rather than the cleaner "whole bar splits into two rows" failure mode
-// this file's history otherwise describes. Fixing it took two changes
-// together, neither sufficient alone (verified by re-measuring after each):
-// both link-cluster `gap`s below dropped from "lg"/"md" to "xs" (this
-// component), and four of `PRIMARY_NAV_DESTINATIONS`' labels were shortened
-// (lib/navLinks.ts's own comment on that array has the full rationale for
-// which ones and why the rest were left alone).
-//
-// THE slack figures for this layout, measured in one pass against a live
-// backend in Chromium (the wider-measuring engine), quoted here and
-// nowhere else so there is one copy to keep true. The binding case is the
-// ANONYMOUS bar: it is the widest arrangement, because it still carries
-// "My Trains & Tickets" inline where an authenticated visitor reaches it
-// through the account menu.
-//
-//   viewport   available   used (anon)   slack (anon)   slack (logged in)
-//   992px          952px        922px           30px               189px
-//   1440px        1100px        922px          178px               337px
-//
-// (Firefox's narrower text metrics measured a slightly larger slack at
-// both widths -- 34px/182px at 992px/1440px -- consistent with this file's
-// long-standing "Chromium is the tighter engine" pattern; not reproduced
-// here to avoid a second table nobody will remember to update.) Below
-// `md` the primary links are hidden in favour of the burger/drawer, so the
-// figures above -- not a 390px row -- are the ones this change touched;
-// the phone bar's own slack is unaffected by any of it.
-//
-// Every row is a single row -- that is asserted, not assumed, by
-// e2e/nav.spec.ts in both engines.
-//
-// `PLAN_JOURNEY_DESTINATION` (2026-10-06): re-measured against a rendered
-// bar (Chromium and Firefox) before adding it, the anonymous bar had
-// drifted to ~1px of slack at 992px and ~33px at 1024px -- other entries
-// had grown since the table above was taken -- and ~149px at 1100px of
-// available width. "Plan a Journey" plus its gap costs ~115px, so it can
-// only go inline from `PLAN_LINK_BREAKPOINT` up, where it leaves a ~30px
-// margin (the same working margin quoted above). Between `md` and that
-// breakpoint it is reached from the pages that start a journey instead;
-// below `md` the drawer lists it.
+// The bar must stay one row from `md` (992px) up, logged in or out, in
+// Chromium and Firefox; `e2e/nav.spec.ts` asserts it. Round 2 (Oct 2026)
+// merged four tracking entries into one "Track" and moved the theme toggle
+// to /account/preferences, which bought back enough width for "Plan a
+// journey" to sit inline at every width from `md` up. The anonymous bar is
+// the binding case only through its "Log in" link; logged in, the account
+// menu avatar is narrower.
 
 export function AppNavBar({
   session,
@@ -224,62 +154,22 @@ export function AppNavBar({
                 `AppNavDrawer`, which IS a Client Component,
                 `component={Link}` is fine and is used.) */}
             <Link href="/" data-card-link>
-              {/* `data-site-title` is a pure CSS hook for `globals.css`'s
-                  `body[data-pride='true']` rules -- Mantine's `Text`
-                  renders no stable class of its own to key off. */}
-              <Text fw={700} data-site-title>
-                Distant Signal
-              </Text>
+              <Wordmark />
             </Link>
           </Group>
-          {/* Both `gap="xs"` here (this Group, between its three
-              clusters, and the primary-links Group nested inside it,
-              between each link) were "md"/"lg" respectively until
-              `TRACK_JOURNEY_DESTINATION` was added to
-              `PRIMARY_NAV_DESTINATIONS`: seven flat "lg" (20px) gaps
-              between eight links was real, visible breathing room this
-              bar could afford while it had 40-190px of slack to spare, but
-              an eighth primary destination cost more width than that
-              slack could cover -- see the gap note above this component
-              for the before/after measurements. Tightening these two gaps
-              to "xs" (10px) recovers real width without touching any
-              label; it was combined with (not a substitute for)
-              shortening four of `PRIMARY_NAV_DESTINATIONS`' own labels,
-              which recovers more width than gaps alone could -- see that
-              array's own comment. */}
+          {/* `gap="xs"` here and between the links: see the gap note
+              above this component. */}
           <Group gap="xs" wrap="nowrap">
             <Group gap="xs" wrap="nowrap" visibleFrom={NAV_BREAKPOINT}>
-              {PRIMARY_NAV_DESTINATIONS.flatMap((destination) => [
-                <PrimaryNavLink key={destination.href} {...destination} />,
-                // Straight after "Track a Journey", wide screens only --
-                // see `PLAN_LINK_BREAKPOINT`.
-                ...(destination === TRACK_JOURNEY_DESTINATION
-                  ? [
-                      <Box key={PLAN_JOURNEY_DESTINATION.href} visibleFrom={PLAN_LINK_BREAKPOINT}>
-                        <PrimaryNavLink {...PLAN_JOURNEY_DESTINATION} />
-                      </Box>,
-                    ]
-                  : []),
-              ])}
-              {/* Inline for anonymous visitors only. It is deliberately
-                  always-reachable (see `TRACKED_TRAINS_DESTINATION`'s own
-                  doc comment for the decision and the spec that reversed
-                  an earlier one), and an anonymous visitor has no account
-                  menu to reach it through — so dropping it from the bar
-                  wholesale would have quietly un-done that decision for
-                  every logged-out desktop visitor. A logged-in visitor
-                  gets it in the account menu instead, which is part of
-                  what buys the authenticated bar its missing 12px. */}
-              {!session.authenticated && <PrimaryNavLink {...TRACKED_TRAINS_DESTINATION} />}
+              {PRIMARY_NAV_DESTINATIONS.map((destination) => (
+                <PrimaryNavLink key={destination.href} {...destination} />
+              ))}
             </Group>
-            {/* The three always-on icon controls, grouped tightly: they
-                are one cluster of same-sized square buttons rather than
-                three unrelated items, and the 30px this saves over
-                spacing them like links is most of the phone bar's
-                remaining slack. */}
+            {/* The always-on controls: the freshness readout, plus the
+                pride flag applier, which renders nothing. The theme and
+                pride controls themselves live on /account/preferences. */}
             <Group gap="xs" wrap="nowrap">
               <DataFreshnessInfo freshness={freshness} />
-              <ThemeToggle />
               <PrideModeApplier />
             </Group>
             {/* This boundary is load-bearing and has nothing to do with

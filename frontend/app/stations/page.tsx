@@ -2,7 +2,7 @@ import { Group, Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { StationSearchForm } from './StationSearchForm';
 import { TextLink } from '@/components/TextLink';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -34,7 +34,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Stations';
 const METADATA_DESCRIPTION = 'Look up a UK station for disruptions, departures, delays and accessibility.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 /** review §3.5.13: the plan's own cheapest option for a page that was
  * otherwise empty below the search form -- a handful of major termini as

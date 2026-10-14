@@ -225,10 +225,11 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   // first-paint DOM for an anonymous visitor -- and is where the Mantine
   // close-button `button-name` defect lived -- so it is audited here rather
   // than treated as "logged-in only".
-  ['/track/mine (anonymous login prompt)', '/track/mine'],
+  ['/track/mine (anonymous)', '/track/mine'],
   ['/track/mine/add-ticket (anonymous login prompt)', '/track/mine/add-ticket'],
   ['/groups (anonymous login prompt)', '/groups'],
   ['/chat (anonymous login prompt)', '/chat'],
+  ['/account/preferences', '/account/preferences'],
   ['/attribution', '/attribution'],
   // The draft legal pages 404 unless the server has LEGAL_PAGES_PREVIEW or
   // LEGAL_PAGES_PUBLISHED on (frontend/lib/legal.ts). CI sets

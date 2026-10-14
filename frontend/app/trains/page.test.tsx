@@ -56,7 +56,7 @@ describe('TrainsPage', () => {
   // plain TextInput time fields, which have no listbox.
   it('renders the title and the search form', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
-    expect(screen.getByRole('heading', { name: 'Trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Find a train' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
   });
 
@@ -193,7 +193,7 @@ describe('TrainsPage', () => {
 
 describe('metadata', () => {
   it('titles the page after its own heading, suffixed with the site name', () => {
-    expect(metadata.title).toBe('Trains');
+    expect(metadata.title).toBe('Find a train');
   });
 
   it('describes network-wide scheduled-train search rather than inheriting the generic site description', () => {
@@ -207,13 +207,13 @@ describe('metadata', () => {
     // mirror is asserted against literals rather than against
     // `metadata.title`/`.description`.
     expect(metadata.openGraph).toMatchObject({
-      title: 'Trains · Distant Signal',
+      title: 'Find a train · Distant Signal',
       description: 'Search UK trains by station and date, then open one for its live status or track it.',
       type: 'website',
     });
     expect(metadata.twitter).toMatchObject({
       card: 'summary_large_image',
-      title: 'Trains · Distant Signal',
+      title: 'Find a train · Distant Signal',
       description: 'Search UK trains by station and date, then open one for its live status or track it.',
     });
   });

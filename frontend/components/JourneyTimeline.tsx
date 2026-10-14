@@ -1,5 +1,4 @@
 import {
-  Badge,
   Group,
   Table,
   TableScrollContainer,
@@ -22,6 +21,7 @@ import {
   stopDisplayTime,
 } from '@/lib/stopTimes';
 import type { JourneyStop } from '@/lib/types';
+import { StateBadge } from './StateBadge';
 
 /** The tracked pin's origin/destination display names (Task 3.6.2) --
  * always derivable from `TrainJourneyState.pinOriginCrs`/`pinOriginName`/
@@ -382,16 +382,16 @@ function JourneyStopRow({
             )}
           </Text>
           {isSkippedOnLeg && (
-            <Badge color="red" variant="light" size="sm" tt="none">
+            <StateBadge tone="critical" size="sm">
               Skipped
-            </Badge>
+            </StateBadge>
           )}
           {/* "Set down only" / "Pick up only" / "Request stop": text, not
               colour, carries the meaning. */}
           {directionLabels.map((directionLabel) => (
-            <Badge key={directionLabel} color="gray" variant="light" size="sm" tt="none">
+            <StateBadge key={directionLabel} tone="neutral" size="sm">
               {directionLabel}
-            </Badge>
+            </StateBadge>
           ))}
         </Group>
         {isLegDestination && (
