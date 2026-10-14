@@ -1,4 +1,4 @@
-import { Badge, Stack, Title, SimpleGrid, Text, Group } from '@mantine/core';
+import { Stack, Title, SimpleGrid, Text, Group } from '@mantine/core';
 import { CardLink } from '@/components/CardLink';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
@@ -22,6 +22,7 @@ import { LoginControl } from '@/components/LoginControl';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { StateBadge } from '@/components/StateBadge';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
@@ -505,9 +506,7 @@ export default async function DashboardPage() {
                     <Group justify="space-between">
                       <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
                       {coverage === 'none' ? (
-                        <Badge tt="none" color="gray" variant="light">
-                          Not tracked
-                        </Badge>
+                        <StateBadge tone="neutral">Not tracked</StateBadge>
                       ) : (
                         <StatusBadge severity={worstSeverityAcrossReports(reports)} />
                       )}

@@ -4,7 +4,6 @@ import { useEffect, useId, useState, type SubmitEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   Alert,
-  Badge,
   Box,
   Button,
   Grid,
@@ -20,6 +19,7 @@ import {
 import { DatePickerInput } from '@mantine/dates';
 import { londonCalendarDay, londonDayEndIso, londonDayStartIso, nowInLondon } from '@/lib/londonWallClock';
 import { IncidentStateBadge } from './IncidentStateBadge';
+import { StateBadge } from './StateBadge';
 import { LoadMoreControl } from './LoadMoreControl';
 import { TextLink } from './TextLink';
 import { formatDateTime } from '@/lib/dateFormat';
@@ -554,11 +554,7 @@ export function IncidentSearchForm({
                   and needs no badge) and the incident's state. What it
                   affects is plain dimmed text, operators by name. */}
               <Group gap="xs">
-                {row.isPlanned && (
-                  <Badge color="blue" tt="none">
-                    Planned work
-                  </Badge>
-                )}
+                {row.isPlanned && <StateBadge tone="planned">Planned work</StateBadge>}
                 <IncidentStateBadge isCleared={row.isCleared} sourceRemovedAt={row.sourceRemovedAt} />
               </Group>
               {affectsSummary(row, tocNamesByCode, lineNamesById) && (

@@ -1,5 +1,6 @@
-import { Badge, Card, Group, Stack, Text } from '@mantine/core';
+import { Card, Group, Stack, Text } from '@mantine/core';
 import { CardLink } from '@/components/CardLink';
+import { StateBadge } from '@/components/StateBadge';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
@@ -22,7 +23,7 @@ import type { LineStatusReport, TrackedTrainListItem } from '@/lib/types';
  * owner can change or delete it, and only the owner (or a group
  * `admin`/`owner`, from the group's own page) can stop the sharing.
  *
- * The "from {group}" grape `Badge` is the same tag `/track/mine` already
+ * The "From {group}" `StateBadge` (action tone) is the same tag `/track/mine` already
  * uses for a group-shared train, deliberately worded and coloured
  * identically so the two surfaces read as one convention. One badge per
  * group this line reached the caller through -- a line shared into two of
@@ -44,9 +45,9 @@ export function SharedCustomLineSummaryRow({
         />
         <Group gap="xs" wrap="wrap">
           {groupNames.map((groupName) => (
-            <Badge tt="none" key={groupName} variant="light" color="grape">
-              from {groupName}
-            </Badge>
+            <StateBadge key={groupName} tone="action">
+              From {groupName}
+            </StateBadge>
           ))}
           {/* `grantedByName` is null when the sharer has no name or
                 username on their account -- never their email, which is
@@ -129,9 +130,9 @@ export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
               identically -- same helper and same wording /track/mine and
               /groups/{id} already use (`lib/memberLabel.ts`). */}
         {groupNames.map((groupName) => (
-          <Badge tt="none" key={groupName} variant="light" color="grape">
-            from {groupName}
-          </Badge>
+          <StateBadge key={groupName} tone="action">
+            From {groupName}
+          </StateBadge>
         ))}
         <Text size="sm" c="dimmed">
           Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
