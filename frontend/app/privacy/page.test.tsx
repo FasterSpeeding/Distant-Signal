@@ -64,6 +64,28 @@ describe('PrivacyPage retention copy', () => {
   });
 });
 
+// The 2026-10-14 delegated-access spec: scopes, expiry, revocation and the
+// 7-day log and 30-day deletion-history retention.
+describe('PrivacyPage assistant connection', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('states what the assistant can do, how to disconnect and what is kept', () => {
+    vi.stubEnv('LEGAL_PAGES_PREVIEW', 'true');
+    renderWithMantine(<PrivacyPage />);
+    const text = retentionText('Connecting your AI assistant');
+    expect(text).toMatch(/delete only journeys it saved itself that are not shared/);
+    expect(text).toMatch(/only if a group owner or admin has turned this on/);
+    expect(text).toMatch(/journey names are hidden from it/);
+    expect(text).toMatch(/Connected apps/);
+    expect(text).toMatch(/90 days without use/);
+    expect(text).toMatch(/log out of our login service/);
+    expect(text).toMatch(/keep these logs for 7 days/);
+    expect(text).toMatch(/for 30 days/);
+  });
+});
+
 describe('PrivacyPage external links', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
