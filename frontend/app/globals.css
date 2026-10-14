@@ -1570,23 +1570,60 @@ a[data-text-link-tone='inherit'] {
   }
 }
 
-/* Task 3.4.2 (`app/lines/AllLinesTable.tsx`): on a phone, 125 rows is a
-   long scroll, and the "Find a line"/operator filters scrolling off the
-   top meant scrolling all the way back up just to change either one.
-   Sticky only below `sm` -- above it the whole table is short enough
-   relative to the viewport that pinning the filters buys nothing and
-   would just eat vertical space permanently. `--mantine-color-body`
-   (not transparent) so table rows scrolling underneath don't show through
-   the sticky bar, and a `z-index` above ordinary content but below the
-   skip link/modals. */
-@media (max-width: $mantine-breakpoint-sm) {
+/* `app/lines/LinesFilterBar.tsx`: the one-row search and "Filters" bar
+   above the lines table. Sticky at every width so search is always in
+   reach (Task 3.4.2 made it sticky on phones only, but then it was the
+   whole ~300px filter block, a third of a 390x844 screen). Bled out over
+   the page's `lg` side padding so the stuck rule spans the content edge to
+   edge, and its own vertical padding is cancelled in flow so it sits where
+   the old controls did. Transparent in normal flow: a solid `--mantine-color-body` box at
+   the top of the page sat visibly on the `body` colour wash in the light
+   scheme. Gets the body colour and a bottom rule only once it is stuck
+   (`data-stuck`, set by an IntersectionObserver), where rows scroll under
+   it. `z-index` above table content, below Mantine's popovers and the
+   skip link. */
+.linesFilterBar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: calc(var(--mantine-spacing-xs) * -1) calc(var(--mantine-spacing-lg) * -1);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-lg);
+  border-bottom: 1px solid transparent;
+}
+
+/* Absolutely positioned so it adds no Stack gap; it stays at its static
+   position, the top of the bar, which is what the observer watches. */
+.linesFilterBarSentinel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.linesFilterBar[data-stuck] {
+  background-color: var(--mantine-color-body);
+  border-bottom-color: var(--mantine-color-default-border);
+}
+
+@media (prefers-reduced-motion: no-preference) {
   .linesFilterBar {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background-color: var(--mantine-color-body);
-    padding-block: var(--mantine-spacing-xs);
+    transition:
+      background-color 120ms ease,
+      border-color 120ms ease;
   }
+}
+
+/* The phone filters sheet (`LinesFilterBar`'s bottom `Drawer`): rounded
+   top corners so it reads as a sheet, only as tall as its contents (capped
+   so the page stays visible behind it), and clear of the home indicator.
+   Doubled class to outrank Mantine's own `height` rule for the drawer
+   content, which only takes named sizes. */
+.linesFilterSheet.linesFilterSheet {
+  height: auto;
+  border-top-left-radius: var(--mantine-radius-lg);
+  border-top-right-radius: var(--mantine-radius-lg);
+  max-height: 85dvh;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* `app/lines/AllLinesTable.tsx`'s `TableScrollContainer` (review 2026-09-22
