@@ -194,7 +194,7 @@ used, rather than as a literal in a component.
 | Token | Width | What changes |
 | --- | --- | --- |
 | xs | 36em · 576px | Group header actions and member rows stack; standalone-page buttons go full width |
-| sm | 48em · 768px | Issue rows stack and clamp to 2 lines; the /lines filters open as a bottom sheet instead of a popover; journey-progress slots shrink 56→44px |
+| sm | 48em · 768px | Issue rows stack and clamp to 2 lines; the /lines filters open as a bottom sheet instead of a popover and its table cells drop to 6px side padding; journey-progress slots shrink 56→44px |
 | md | 62em · 992px | Nav links move from the bar into the drawer |
 | lg / xl | 75em / 88em | No custom behaviour |
 
@@ -280,8 +280,11 @@ used, rather than as a literal in a component.
   and a bottom `Drawer` below it, both a dialog named "Filters" ending in
   "Clear filters" and "Show *n* lines". The bar is transparent until it
   sticks, then gets the body colour and a bottom rule. Filter state lives
-  in the URL through `history.replaceState`, not `router.replace`. Not
-  hide-on-scroll.
+  in the URL through `history.replaceState`, not `router.replace`, and
+  the tab title names what is filtered (`Lines: Great Western Railway,
+  "west"`). Not hide-on-scroll. The table's column headers stick under
+  the bar (`stickyHeader`), so the table sits in no scroll container: it
+  has to fit a phone on its own, with names that wrap anywhere.
 - **Form fields**: Mantine `TextInput`/`Autocomplete`: label 14/500,
   description xs dimmed, error in `--mantine-color-error`.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence
