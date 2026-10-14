@@ -226,6 +226,25 @@ function noOptionsFound(label: string) {
   );
 }
 
+/** The browser tab title for the current filters, or `null` when nothing
+ * is filtered. Status first (what the dashboard tiles link to), then
+ * operators by name (style guide: operators appear by name, never code),
+ * then the search text in quotes. */
+export function filteredTitle(
+  statusGroup: SeverityGroup | null,
+  operatorNames: readonly string[],
+  query: string,
+): string | null {
+  const parts: string[] = [];
+  if (statusGroup) parts.push(SEVERITY_GROUP_LABELS[statusGroup]);
+  const [onlyOperator] = operatorNames;
+  if (operatorNames.length > 1) parts.push(`${operatorNames.length} operators`);
+  else if (onlyOperator) parts.push(onlyOperator);
+  const trimmed = query.trim();
+  if (trimmed) parts.push(`"${trimmed}"`);
+  return parts.length > 0 ? `Lines: ${parts.join(', ')}` : null;
+}
+
 export function AllLinesTable({
   lines,
   reports,
@@ -328,17 +347,19 @@ export function AllLinesTable({
   // so clearing the filter restores EXACTLY what the server rendered
   // rather than a hand-rolled guess at it.
   const unfilteredTitleRef = useRef<string | null>(null);
+  const nameByCode = useMemo(() => new Map(tocs.map((toc) => [toc.code, toc.name])), [tocs]);
+  const title = filteredTitle(
+    statusGroupFilter,
+    selectedOperators.map((code) => nameByCode.get(code) ?? code),
+    nameQuery,
+  );
   useEffect(() => {
     unfilteredTitleRef.current ??= document.title;
-    document.title = statusGroupFilter
-      ? fullTitle(`Lines: ${SEVERITY_GROUP_LABELS[statusGroupFilter]}`)
-      : unfilteredTitleRef.current;
-  }, [statusGroupFilter]);
+    document.title = title ? fullTitle(title) : unfilteredTitleRef.current;
+  }, [title]);
 
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
   const pinnedSet = useMemo(() => new Set(pinnedLineIds), [pinnedLineIds]);
-  const nameByCode = useMemo(() => new Map(tocs.map((toc) => [toc.code, toc.name])), [tocs]);
-
   // `label` carries both the code and the name (not just the code, with
   // the name relegated to a separate renderOption) so Mantine's default
   // label-based dropdown filter can match a search on either -- the

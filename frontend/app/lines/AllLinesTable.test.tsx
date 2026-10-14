@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { AllLinesTable, expandOperatorForFiltering, linesFilterUrl } from './AllLinesTable';
+import { AllLinesTable, expandOperatorForFiltering, filteredTitle, linesFilterUrl } from './AllLinesTable';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 // `PinToggle` (rendered per row below) unconditionally renders
@@ -998,5 +998,35 @@ describe('linesFilterUrl', () => {
     expect(
       linesFilterUrl('https://example.test/lines?statusGroup=severe', { query: '', operators: [], statusGroup: null }),
     ).toBe('/lines');
+  });
+});
+
+describe('filteredTitle', () => {
+  it('is null when nothing is filtered', () => {
+    expect(filteredTitle(null, [], '  ')).toBeNull();
+  });
+
+  it('names status, then operators, then the search', () => {
+    expect(filteredTitle('severe', ['Great Western Railway'], ' west ')).toBe(
+      'Lines: Severe Disruption, Great Western Railway, "west"',
+    );
+  });
+
+  it('counts operators past one', () => {
+    expect(filteredTitle(null, ['Avanti West Coast', 'Great Western Railway'], '')).toBe('Lines: 2 operators');
+  });
+});
+
+describe('AllLinesTable tab title and header', () => {
+  it('reflects the search and operator filter in the tab title, by operator name', () => {
+    document.title = 'Lines · Distant Signal';
+    renderTable();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Find a line' }), { target: { value: 'west' } });
+    expect(document.title).toBe('Lines: "west" · Distant Signal');
+    fireEvent.click(getOperatorInput());
+    fireEvent.click(screen.getByRole('option', { name: 'GW - Great Western Railway' }));
+    expect(document.title).toBe('Lines: Great Western Railway, "west" · Distant Signal');
+    fireEvent.click(screen.getByRole('button', { name: 'Show all lines' }));
+    expect(document.title).toBe('Lines · Distant Signal');
   });
 });
