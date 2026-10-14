@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { PRIDE_MODE_OPTIONS, PrideModeApplier, PrideModeSelect, parseStoredMode } from './PrideMode';
+import { PrideModeApplier, PrideModeSelect } from './PrideMode';
+import { PRIDE_MODE_OPTIONS } from '@/lib/prideMode';
 
 describe('PrideModeSelect', () => {
   beforeEach(() => {
@@ -46,16 +47,6 @@ describe('PrideModeSelect', () => {
     localStorage.setItem('pride-mode', 'sapphic');
     renderWithMantine(<PrideModeSelect />);
     expect(screen.getByRole('combobox', { name: /Pride flag/ })).toHaveValue('sapphic');
-  });
-});
-
-describe('parseStoredMode', () => {
-  it('maps the old boolean value to rainbow and anything unknown to off', () => {
-    expect(parseStoredMode('true')).toBe('rainbow');
-    expect(parseStoredMode('false')).toBe('off');
-    expect(parseStoredMode(null)).toBe('off');
-    expect(parseStoredMode('bogus')).toBe('off');
-    expect(parseStoredMode('trans')).toBe('trans');
   });
 });
 
