@@ -63,27 +63,6 @@ pub struct ServiceArguments {
     /// route is then ignored, as before this existed.
     #[arg(long, env, default_value = "srv-ds-mcp")]
     pub internal_oauth_group_mcp: String,
-    /// Authentik/SSO group (via the `groups` OIDC claim, already decoded
-    /// into `AuthenticatedUser.groups` on every login -- see
-    /// `crates/api/src/auth/oidc.rs` and `data::users::upsert_user`) that
-    /// grants access to the embedded chatbot (`ChatbotAuthorizedUser`,
-    /// `crates/api/src/auth.rs`). This is an END-USER access group, NOT one
-    /// `internal_oauth_group_mcp` above -- that one identifies a
-    /// machine/service-account credential; this one
-    /// gates a real person's own SSO session on `GET /public/chatbot/access`.
-    /// Not secret (a group name isn't confidential). Suggested default only
-    /// -- an operator's actual Authentik group name is not mandated by this
-    /// design. Supersedes the former per-user `chatbot_allowed_users` DB
-    /// allowlist (dropped; see the migration removing it).
-    ///
-    /// Only consulted when `chatbot_access` is [`ChatbotAccessMode::Group`]
-    /// (the default). In that mode an empty value means NOBODY gets the
-    /// chatbot (no stored group is ever blank), exactly as before
-    /// `chatbot_access` existed; use `CHATBOT_ACCESS=authenticated`, not an
-    /// empty group, to open it to every logged-in user.
-    #[arg(long, env, default_value = "distant-signal-chatbot-users")]
-    pub chatbot_access_group: String,
-
     /// The transit networks the `/public/transit` routes serve
     /// (`API_TRANSIT_NETWORKS`, comma-separated; chart
     /// `api.transitNetworks`). EMPTY BY DEFAULT: every `/public/transit`
@@ -97,17 +76,9 @@ pub struct ServiceArguments {
     )]
     pub transit_networks: Vec<String>,
 
-    /// Who gets the embedded chatbot (`/chat`, `GET /public/chatbot/access`):
-    /// `group` (the default) -- only logged-in users in
-    /// `chatbot_access_group`; `authenticated` -- every logged-in user,
-    /// whatever their groups. Logged-out requests are refused (`401`) in both
-    /// modes. A deploy-time switch so the ungating ships dark and is flipped
-    /// together with distant-signal-mcp's own ungating.
-    #[arg(long, env, value_enum, default_value_t = ChatbotAccessMode::Group)]
-    pub chatbot_access: ChatbotAccessMode,
-
-    /// Authentik/SSO end-user group (read from the same `groups` OIDC claim
-    /// as `chatbot_access_group`) whose members may call the admin
+    /// Authentik/SSO end-user group (read from the `groups` OIDC claim,
+    /// already decoded into `AuthenticatedUser.groups` on every login) whose
+    /// members may call the admin
     /// session-revocation endpoint, `POST /public/admin/users/revoke-sessions`
     /// (`routes::admin`). EMPTY BY DEFAULT, and empty means the feature is
     /// off: nobody is an admin and that endpoint answers `403` to everyone.
@@ -446,36 +417,11 @@ pub struct ServiceArguments {
     pub inactive_account_retention_days: i64,
 }
 
-/// `ServiceArguments::chatbot_access`: who gets the embedded chatbot.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum ChatbotAccessMode {
-    /// Only logged-in users in `ServiceArguments::chatbot_access_group`.
-    #[default]
-    Group,
-    /// Every logged-in user; `chatbot_access_group` is ignored.
-    Authenticated,
-}
-
-impl ChatbotAccessMode {
-    /// The wire/env spelling, also returned by `GET /public/chatbot/access`
-    /// so the frontend can word its access notes to match.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ChatbotAccessMode::Group => "group",
-            ChatbotAccessMode::Authenticated => "authenticated",
-        }
-    }
-}
-
 /// LEG-6 (UK GDPR data minimisation): `users.groups` keeps only the `IdP`
 /// groups something reads, not every group the SSO user belongs to (the
 /// production `IdP` maps unrelated groups such as `grafana-access` into the
 /// claim). The groups read are:
 ///
-/// - `chatbot_access_group` (the `/chat` gate), only while `chatbot_access`
-///   is `group` -- in `authenticated` mode nothing reads it, so it is not
-///   kept (switching back to `group` then takes effect per user at their
-///   next login, like any other group change);
 /// - `admin_group`, when set (admin session revocation);
 /// - any extra groups listed (comma-separated) in [`STORED_GROUPS_EXTRA_ENV`].
 ///   None by default: the `distant-signal-mcp` adapter used to read
@@ -493,24 +439,15 @@ impl ServiceArguments {
     pub fn stored_group_allowlist(&self) -> Vec<String> {
         let extra = std::env::var(STORED_GROUPS_EXTRA_ENV)
             .unwrap_or_else(|_| DEFAULT_STORED_GROUPS_EXTRA.to_string());
-        let chatbot_group = match self.chatbot_access {
-            ChatbotAccessMode::Group => self.chatbot_access_group.as_str(),
-            ChatbotAccessMode::Authenticated => "",
-        };
-        stored_group_allowlist(chatbot_group, &self.admin_group, &extra)
+        stored_group_allowlist(&self.admin_group, &extra)
     }
 }
 
 /// [`ServiceArguments::stored_group_allowlist`] without the environment.
 /// Blank entries are dropped, so an empty `admin_group` allows nothing.
-pub fn stored_group_allowlist(
-    chatbot_access_group: &str,
-    admin_group: &str,
-    extra: &str,
-) -> Vec<String> {
+pub fn stored_group_allowlist(admin_group: &str, extra: &str) -> Vec<String> {
     let mut allowed: Vec<String> = Vec::new();
-    for group in [chatbot_access_group, admin_group]
-        .into_iter()
+    for group in std::iter::once(admin_group)
         .chain(extra.split(','))
         .map(str::trim)
         .filter(|group| !group.is_empty())
@@ -527,24 +464,25 @@ mod stored_group_allowlist_tests {
     use super::stored_group_allowlist;
 
     #[test]
-    fn includes_the_chatbot_admin_and_extra_groups() {
+    fn includes_the_admin_and_extra_groups() {
         assert_eq!(
-            stored_group_allowlist("chat", "admins", "mcp-users, mcp-live-boards"),
-            ["chat", "admins", "mcp-users", "mcp-live-boards"]
+            stored_group_allowlist("admins", "mcp-users, mcp-live-boards"),
+            ["admins", "mcp-users", "mcp-live-boards"]
         );
     }
 
     #[test]
-    fn an_empty_admin_group_or_extra_list_allows_nothing_extra() {
-        assert_eq!(stored_group_allowlist("chat", "", ""), ["chat"]);
-        assert_eq!(stored_group_allowlist("chat", "  ", " , "), ["chat"]);
+    fn an_empty_admin_group_and_extra_list_allow_nothing() {
+        assert!(stored_group_allowlist("", "").is_empty());
+        assert!(stored_group_allowlist("  ", " , ").is_empty());
+        assert_eq!(stored_group_allowlist("", "x"), ["x"]);
     }
 
     #[test]
     fn duplicates_are_listed_once() {
         assert_eq!(
-            stored_group_allowlist("chat", "chat", "chat,x"),
-            ["chat", "x"]
+            stored_group_allowlist("admins", "admins,x"),
+            ["admins", "x"]
         );
     }
 }
@@ -564,8 +502,6 @@ mod chart_env_wiring_tests {
     use super::ServiceArguments;
 
     /// Prefix shared by every machine-credential group field above.
-    /// Deliberately NOT matched against `CHATBOT_ACCESS_GROUP`, which is an
-    /// end-user SSO group, not one of these -- see its own doc comment.
     const GROUP_ENV_PREFIX: &str = "INTERNAL_OAUTH_GROUP_";
 
     /// The `api` container's own slice of the api Deployment template. Scoped
@@ -652,45 +588,27 @@ mod chart_env_wiring_tests {
         );
     }
 
-    /// `CHATBOT_ACCESS` has a safe default (`group`), so an unwired var would
-    /// not fail -- it would just make the coordinated ungating impossible to
-    /// flip from values.yaml. Also pins the chart's default to `group`.
+    /// The embedded chatbot's `CHATBOT_ACCESS`/`CHATBOT_ACCESS_GROUP` gate
+    /// was removed on 2026-10-14: every logged-in user gets `/chat`. Neither
+    /// var may come back on either side.
     #[test]
-    fn chatbot_access_is_set_on_the_charts_api_container() {
+    fn the_removed_chatbot_access_vars_stay_removed() {
         let block = api_container_block();
-        let declared = ServiceArguments::command()
+        let declared: Vec<String> = ServiceArguments::command()
             .get_arguments()
             .filter_map(|arg| arg.get_env().and_then(|env| env.to_str()))
-            .any(|env| env == "CHATBOT_ACCESS");
-        assert!(declared, "config.rs must still declare CHATBOT_ACCESS");
-        assert!(
-            block.contains("- name: CHATBOT_ACCESS\n"),
-            "CHATBOT_ACCESS is declared by crates/api/src/data/config.rs but never set on the \
-             `api` container in charts/distant-signal/templates/api-deployment.yaml"
-        );
-        let values = std::fs::read_to_string(
-            common::manifest_dir!().join("../../charts/distant-signal/values.yaml"),
-        )
-        .expect("read values.yaml");
-        assert!(
-            values.contains("\n  chatbotAccess: group\n"),
-            "api.chatbotAccess must default to `group` so shipping this code changes nothing"
-        );
-    }
-
-    #[test]
-    fn chatbot_access_parses_both_modes_and_defaults_to_group() {
-        use super::ChatbotAccessMode;
-        use clap::ValueEnum;
-        assert_eq!(ChatbotAccessMode::default(), ChatbotAccessMode::Group);
-        for mode in ChatbotAccessMode::value_variants() {
-            assert_eq!(
-                ChatbotAccessMode::from_str(mode.as_str(), false),
-                Ok(*mode),
-                "as_str must match the clap/env spelling"
+            .map(str::to_string)
+            .collect();
+        for env in ["CHATBOT_ACCESS", "CHATBOT_ACCESS_GROUP"] {
+            assert!(
+                !declared.iter().any(|d| d == env),
+                "config.rs declares the removed {env} again"
+            );
+            assert!(
+                !block.contains(&format!("- name: {env}\n")),
+                "the api container still sets the removed {env}"
             );
         }
-        assert!(ChatbotAccessMode::from_str("", false).is_err());
     }
 
     /// Narrower cousin of the two tests above, for the four sweep-cadence

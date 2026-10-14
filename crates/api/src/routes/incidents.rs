@@ -959,7 +959,7 @@ mod db_tests {
     /// `test_app` -- this codebase's convention is one small
     /// per-route-test-module copy of this fixture builder, not a shared
     /// helper (grepped: `stanox_crs.rs`, `departures.rs`,
-    /// `station_stats.rs`, `trains.rs`, `chatbot.rs`, `groups.rs`,
+    /// `station_stats.rs`, `trains.rs`, `groups.rs`,
     /// `ingest.rs`, `train.rs` each define their own).
     fn test_app(pool: PgPool, lines: Vec<common::LineDefinition>) -> App {
         let config = ServiceArguments {
@@ -971,9 +971,7 @@ mod db_tests {
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
-            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             transit_networks: Vec::new(),
-            chatbot_access: crate::data::config::ChatbotAccessMode::Group,
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),

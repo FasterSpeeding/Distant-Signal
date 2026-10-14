@@ -1093,6 +1093,36 @@ jobs:
             --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
             > /dev/null
 
+      # api.chatbotAccess / api.chatbotAccessGroup were removed on 2026-10-14
+      # (/chat is open to every logged-in user). Without them the api renders
+      # no CHATBOT_ACCESS* env var; a values file that still sets either one
+      # fails the render, naming the key.
+      - name: helm template (removed chatbot access values)
+        run: |
+          set -euo pipefail
+          base=(
+            -f charts/distant-signal/ci/ingest-prereqs.yaml
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+          out=$(render)
+          if grep -q 'name: CHATBOT_ACCESS' <<<"${out}"; then fail "no CHATBOT_ACCESS* env var may render"; fi
+          for key in chatbotAccess chatbotAccessGroup; do
+            # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+            if err=$(render --set "api.${key}=x" 2>&1 >/dev/null); then fail "api.${key} rendered"; fi
+            grep -qF "api.${key}: removed on 2026-10-14" <<<"${err}" || fail "the failure must name api.${key}: ${err}"
+          done
+
       # Release B (ingest phase 5, docs/ingest-phase5-runbook.md): every
       # producer has only its db or stream sink and every internal reader
       # its direct read; no /private URL, internal OAuth credential,
