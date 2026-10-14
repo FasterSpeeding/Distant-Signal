@@ -609,7 +609,7 @@ where
             "operation" => "post_rejected"
         )
         .increment(1);
-        if let Err(reject_err) = feed.reject_batch(&err.to_string()).await {
+        if let Err(reject_err) = feed.reject_batch(&format!("{err:#}")).await {
             tracing::error!(error = ?reject_err, "failed to handle the rejected batch; it stays pending");
         }
         return Cycle::Failed;
