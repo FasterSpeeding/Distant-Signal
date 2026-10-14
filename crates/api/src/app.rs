@@ -45,6 +45,9 @@ pub struct AppState {
     /// `incidents.affected_lines` with the same matcher. See
     /// `common::matcher`'s module doc.
     pub line_matcher: common::matcher::LineMatcher,
+    /// Delegated access: the registered clients and their verifiers
+    /// (`crate::auth::delegated`). `Default` is inert.
+    pub delegated: Arc<crate::auth::delegated::DelegatedAuth>,
 }
 
 /// Dead-client detection (`client_connection_check_interval` and TCP
@@ -114,6 +117,7 @@ impl std::fmt::Debug for AppState {
             .field("oidc", &"OidcClient { .. }")
             .field("internal_oauth_verifier", &"ServiceTokenVerifier { .. }")
             .field("schedule_crs_line_index", &self.schedule_crs_line_index)
+            .field("delegated", &self.delegated)
             .finish()
     }
 }
@@ -293,6 +297,24 @@ impl AppState {
 
         let line_matcher = common::matcher::LineMatcher::new(&config.lines);
 
+        // Delegated access (docs/connected-apps.md): an empty
+        // DELEGATED_CLIENTS (the default) leaves it inert. The startup guard
+        // extends the two-client rule above to every delegated audience and
+        // issuer (spec §5.2).
+        let delegated_settings = crate::auth::delegated::DelegatedSettings::from_env()?;
+        let delegated_clients = crate::auth::delegated::parse_clients(&delegated_settings.clients)?;
+        crate::auth::delegated::ensure_audiences_and_issuers_distinct(
+            &config.sso_client_id,
+            &config.sso_issuer_url,
+            &config.internal_oauth_client_id,
+            &config.internal_oauth_issuer_url,
+            &delegated_clients,
+        )?;
+        let delegated = Arc::new(crate::auth::delegated::DelegatedAuth::from_settings(
+            &delegated_settings,
+            delegated_clients,
+        )?);
+
         Ok(Arc::new(Self {
             config,
             database: db,
@@ -301,6 +323,7 @@ impl AppState {
             internal_oauth_verifier,
             schedule_crs_line_index,
             line_matcher,
+            delegated,
         }))
     }
 }

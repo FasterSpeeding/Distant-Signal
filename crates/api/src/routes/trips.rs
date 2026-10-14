@@ -2090,6 +2090,7 @@ mod db_tests {
                 "test-internal-oauth-client".to_string(),
             )
             .expect("construct placeholder internal-oauth verifier"),
+            delegated: Arc::default(),
             schedule_crs_line_index: std::collections::HashMap::new(),
         })
     }

@@ -116,6 +116,7 @@ pub(crate) fn inert_app(pool: PgPool) -> crate::app::App {
             "test-internal-oauth-client".to_string(),
         )
         .expect("construct placeholder internal-oauth verifier"),
+        delegated: std::sync::Arc::default(),
         schedule_crs_line_index: std::collections::HashMap::new(),
     })
 }

@@ -10,6 +10,7 @@
 //! own budget.
 
 pub mod backchannel_logout;
+pub mod delegated;
 pub mod internal_oauth;
 pub mod oidc;
 

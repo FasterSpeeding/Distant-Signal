@@ -338,8 +338,42 @@ async fn server_main() -> anyhow::Result<()> {
             rate_limiter,
             api::rate_limit::enforce,
         ))
+        // Delegated access, ahead of the rate limiter: routes a delegated
+        // bearer to its client's verifier (D-14: only on the delegated
+        // listener). Inert while DELEGATED_CLIENTS is empty. See
+        // `api::auth::delegated`.
+        .layer(axum::middleware::from_fn_with_state(
+            app.delegated.clone(),
+            api::auth::delegated::gate,
+        ))
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .with_state(app.clone());
+    // The delegated listener's copy of the router: the same routes, with
+    // every request marked as having arrived there. Only that mark lets
+    // `gate` accept a delegated bearer; the public listener never sets it.
+    let delegated_listener = app.delegated.listen_addr().map(|addr| {
+        (
+            addr.to_string(),
+            router
+                .clone()
+                .layer(axum::Extension(api::auth::delegated::Ingress::Delegated)),
+        )
+    });
+    if let Some((addr, _)) = &delegated_listener {
+        tracing::info!(
+            listen_addr = %addr,
+            clients = ?app.delegated,
+            "delegated access enabled: delegated bearers are accepted only on this listener"
+        );
+    } else if app.delegated.is_inert() {
+        tracing::info!("DELEGATED_CLIENTS is empty: delegated access is off");
+    } else {
+        tracing::warn!(
+            clients = ?app.delegated,
+            "every delegated client is disabled: delegated bearers are refused and the \
+             delegated listener is not bound"
+        );
+    }
 
     // Report the admin group at startup (not secret): an empty value means
     // the admin session-revocation endpoint refuses everyone.
@@ -415,6 +449,13 @@ async fn server_main() -> anyhow::Result<()> {
         || spawn_background_loops(&app, &loops_shutdown),
         |loops| async move {
             let listener = tokio::net::TcpListener::bind(&bind_url).await?;
+            let delegated = match delegated_listener {
+                Some((addr, delegated_router)) => Some((
+                    tokio::net::TcpListener::bind(&addr).await?,
+                    delegated_router,
+                )),
+                None => None,
+            };
             // Installed only now: until the listener is up, SIGTERM keeps
             // its default action, so a pod stopped mid-migration or at the
             // schema gate exits at once.
@@ -427,6 +468,7 @@ async fn server_main() -> anyhow::Result<()> {
             serve_until_shutdown(
                 listener,
                 router,
+                delegated,
                 header_read_timeout,
                 &shutdown,
                 drain_deadline,
@@ -445,6 +487,7 @@ async fn server_main() -> anyhow::Result<()> {
 async fn serve_until_shutdown(
     listener: tokio::net::TcpListener,
     router: axum::Router,
+    delegated: Option<(tokio::net::TcpListener, axum::Router)>,
     header_read_timeout: std::time::Duration,
     shutdown: &api::shutdown::ShutdownSignal,
     drain_deadline: std::time::Duration,
@@ -461,7 +504,22 @@ async fn serve_until_shutdown(
             tracing::info!("background loops stopped; their locks are released");
         }
     };
-    let (served, ()) = tokio::join!(
+    // The delegated listener (when bound) drains alongside the public one.
+    let serve_delegated = async {
+        match delegated {
+            Some((listener, router)) => api::edge::serve_with_shutdown(
+                listener,
+                router,
+                header_read_timeout,
+                shutdown.triggered(),
+                drain_deadline,
+            )
+            .await
+            .map(drop),
+            None => Ok(()),
+        }
+    };
+    let (served, served_delegated, ()) = tokio::join!(
         api::edge::serve_with_shutdown(
             listener,
             router,
@@ -469,9 +527,11 @@ async fn serve_until_shutdown(
             shutdown.triggered(),
             drain_deadline,
         ),
+        serve_delegated,
         stop_loops,
     );
     served?;
+    served_delegated?;
     tracing::info!("api shut down");
     Ok(())
 }

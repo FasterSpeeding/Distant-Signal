@@ -68,6 +68,27 @@
 //! never looks at `Authorization`, so the two cannot collide: an MCP request
 //! is still anonymous as far as every handler is concerned.
 //!
+//! ## Delegated callers (a registered client acting for a user)
+//!
+//! A delegated token (docs/connected-apps.md) is routed by its issuer and
+//! audience in `crate::auth::delegated::gate`, which runs before this
+//! middleware, verifies it with that client's verifier and leaves a
+//! [`DelegatedToken`](crate::auth::delegated::DelegatedToken) in the
+//! request's extensions. Such a request never reaches the internal-token
+//! path below (so it is no longer a `401` there) and never uses the
+//! per-IP or `svc:mcp` buckets. It is charged to two buckets of its class
+//! (`delegated_read`, `delegated_write`, `delegated_delete`), and both
+//! must pass (spec §5.10, D-11):
+//!
+//! - the user's (`user:<client>/<sub hash>`): by default 60/min burst 20
+//!   reads, 10/min burst 5 writes, 5/min burst 3 deletes;
+//! - the client's (`svc:<client>-delegated`): the same times
+//!   `API_RATE_LIMIT_DELEGATED_CLIENT_MULTIPLIER` (20), a ceiling for a
+//!   runaway loop across many users or a compromised client.
+//!
+//! The daily caps (50 saves, 20 deletes) are database counts in the
+//! handlers, not here: GCRA in memory per pod cannot express a day.
+//!
 //! The algorithm is GCRA (a token bucket kept as one timestamp per key):
 //! `per_minute` sustained, `burst` at once. State is per pod, in memory.
 
@@ -97,6 +118,12 @@ pub enum LimitClass {
     TripPlan,
     TrainByUid,
     PublicWrite,
+    /// A verified delegated request on a read route.
+    DelegatedRead,
+    /// ... on the itinerary save route.
+    DelegatedWrite,
+    /// ... on the delete route.
+    DelegatedDelete,
 }
 
 impl LimitClass {
@@ -106,6 +133,9 @@ impl LimitClass {
             LimitClass::TripPlan => "trip_plan",
             LimitClass::TrainByUid => "train_by_uid",
             LimitClass::PublicWrite => "public_write",
+            LimitClass::DelegatedRead => "delegated_read",
+            LimitClass::DelegatedWrite => "delegated_write",
+            LimitClass::DelegatedDelete => "delegated_delete",
         }
     }
 }
@@ -118,6 +148,10 @@ pub enum Caller {
     /// The Distant-Signal-MCP, proven by an internal OAuth token: one
     /// bucket for the whole service.
     Mcp,
+    /// A delegated client acting for one user: that user's bucket.
+    DelegatedUser,
+    /// A delegated client: its ceiling across every user.
+    DelegatedClient,
 }
 
 impl Caller {
@@ -125,6 +159,8 @@ impl Caller {
         match self {
             Caller::Public => "public",
             Caller::Mcp => "mcp",
+            Caller::DelegatedUser => "delegated_user",
+            Caller::DelegatedClient => "delegated_client",
         }
     }
 }
@@ -134,6 +170,14 @@ impl Caller {
 pub enum ClientKey {
     Ip(IpAddr),
     Service(Caller),
+    /// A delegated client's user: the client's index in `DELEGATED_CLIENTS`
+    /// and a 64-bit digest of the `sub` (the key never holds the `sub`).
+    DelegatedUser {
+        client: u16,
+        user: u64,
+    },
+    /// A delegated client, across all its users.
+    DelegatedClient(u16),
 }
 
 impl ClientKey {
@@ -141,6 +185,8 @@ impl ClientKey {
         match self {
             ClientKey::Ip(_) => Caller::Public,
             ClientKey::Service(caller) => caller,
+            ClientKey::DelegatedUser { .. } => Caller::DelegatedUser,
+            ClientKey::DelegatedClient(_) => Caller::DelegatedClient,
         }
     }
 }
@@ -150,6 +196,8 @@ impl std::fmt::Display for ClientKey {
         match self {
             ClientKey::Ip(ip) => write!(f, "{ip}"),
             ClientKey::Service(caller) => write!(f, "svc:{}", caller.label()),
+            ClientKey::DelegatedUser { client, user } => write!(f, "user:{client}/{user:016x}"),
+            ClientKey::DelegatedClient(client) => write!(f, "svc:{client}-delegated"),
         }
     }
 }
@@ -251,6 +299,51 @@ pub struct RateLimitSettings {
         default_value_t = 200
     )]
     pub mcp_public_write_burst: u32,
+
+    /// Delegated budgets (spec §5.10, D-11), per user; the client's ceiling
+    /// is these times `delegated_client_multiplier`.
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_DELEGATED_READ_PER_MINUTE",
+        default_value_t = 60
+    )]
+    pub delegated_read_per_minute: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_DELEGATED_READ_BURST",
+        default_value_t = 20
+    )]
+    pub delegated_read_burst: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_DELEGATED_WRITE_PER_MINUTE",
+        default_value_t = 10
+    )]
+    pub delegated_write_per_minute: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_DELEGATED_WRITE_BURST",
+        default_value_t = 5
+    )]
+    pub delegated_write_burst: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_DELEGATED_DELETE_PER_MINUTE",
+        default_value_t = 5
+    )]
+    pub delegated_delete_per_minute: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_DELEGATED_DELETE_BURST",
+        default_value_t = 3
+    )]
+    pub delegated_delete_burst: u32,
+    #[arg(
+        long,
+        env = "API_RATE_LIMIT_DELEGATED_CLIENT_MULTIPLIER",
+        default_value_t = 20
+    )]
+    pub delegated_client_multiplier: u32,
 }
 
 impl Default for RateLimitSettings {
@@ -274,6 +367,13 @@ impl Default for RateLimitSettings {
             mcp_train_by_uid_burst: 200,
             mcp_public_write_per_minute: 600,
             mcp_public_write_burst: 200,
+            delegated_read_per_minute: 60,
+            delegated_read_burst: 20,
+            delegated_write_per_minute: 10,
+            delegated_write_burst: 5,
+            delegated_delete_per_minute: 5,
+            delegated_delete_burst: 3,
+            delegated_client_multiplier: 20,
         }
     }
 }
@@ -336,21 +436,49 @@ impl RateLimitSettings {
                 class.label()
             );
         }
+        for (class, (per_minute, burst)) in [
+            (
+                LimitClass::DelegatedRead,
+                (self.delegated_read_per_minute, self.delegated_read_burst),
+            ),
+            (
+                LimitClass::DelegatedWrite,
+                (self.delegated_write_per_minute, self.delegated_write_burst),
+            ),
+            (
+                LimitClass::DelegatedDelete,
+                (
+                    self.delegated_delete_per_minute,
+                    self.delegated_delete_burst,
+                ),
+            ),
+        ] {
+            ensure!(
+                per_minute > 0 && burst > 0,
+                "the {} rate limit needs a per-minute rate and a burst of at least 1",
+                class.label()
+            );
+        }
+        ensure!(
+            self.delegated_client_multiplier > 0,
+            "API_RATE_LIMIT_DELEGATED_CLIENT_MULTIPLIER must be at least 1"
+        );
         Ok(())
     }
 
     fn quota(&self, class: LimitClass, caller: Caller) -> Quota {
         let (per_minute, burst) = match (caller, class) {
             (_, LimitClass::Login) => (self.login_per_minute, self.login_burst),
-            (Caller::Public, LimitClass::TripPlan) => {
-                (self.trip_plan_per_minute, self.trip_plan_burst)
+            (_, LimitClass::DelegatedRead) => {
+                (self.delegated_read_per_minute, self.delegated_read_burst)
             }
-            (Caller::Public, LimitClass::TrainByUid) => {
-                (self.train_by_uid_per_minute, self.train_by_uid_burst)
+            (_, LimitClass::DelegatedWrite) => {
+                (self.delegated_write_per_minute, self.delegated_write_burst)
             }
-            (Caller::Public, LimitClass::PublicWrite) => {
-                (self.public_write_per_minute, self.public_write_burst)
-            }
+            (_, LimitClass::DelegatedDelete) => (
+                self.delegated_delete_per_minute,
+                self.delegated_delete_burst,
+            ),
             (Caller::Mcp, LimitClass::TripPlan) => {
                 (self.mcp_trip_plan_per_minute, self.mcp_trip_plan_burst)
             }
@@ -362,7 +490,28 @@ impl RateLimitSettings {
                 self.mcp_public_write_per_minute,
                 self.mcp_public_write_burst,
             ),
+            // Delegated callers are only ever charged delegated classes
+            // (`enforce`); the public quota is the conservative answer.
+            (
+                Caller::Public | Caller::DelegatedUser | Caller::DelegatedClient,
+                LimitClass::TripPlan,
+            ) => (self.trip_plan_per_minute, self.trip_plan_burst),
+            (
+                Caller::Public | Caller::DelegatedUser | Caller::DelegatedClient,
+                LimitClass::TrainByUid,
+            ) => (self.train_by_uid_per_minute, self.train_by_uid_burst),
+            (
+                Caller::Public | Caller::DelegatedUser | Caller::DelegatedClient,
+                LimitClass::PublicWrite,
+            ) => (self.public_write_per_minute, self.public_write_burst),
         };
+        // The client's ceiling across all its users (spec §5.10).
+        if caller == Caller::DelegatedClient {
+            return Quota::new(
+                per_minute.saturating_mul(self.delegated_client_multiplier),
+                burst.saturating_mul(self.delegated_client_multiplier),
+            );
+        }
         Quota::new(per_minute, burst)
     }
 }
@@ -659,6 +808,31 @@ pub async fn enforce(
     if !limiter.settings.enabled {
         return next.run(request).await;
     }
+    if let Some(delegated) = request
+        .extensions()
+        .get::<crate::auth::delegated::DelegatedToken>()
+    {
+        let class = delegated_class(delegated);
+        let user = ClientKey::DelegatedUser {
+            client: delegated.client_index,
+            user: sub_digest(&delegated.sub),
+        };
+        let client = ClientKey::DelegatedClient(delegated.client_index);
+        let now = Instant::now();
+        for key in [user, client] {
+            if let Err(retry_after) = limiter.check_at(class, key, now) {
+                metrics::counter!(
+                    common::metrics::metric_name("api_rate_limited_total"),
+                    "class" => class.label(),
+                    "caller" => key.caller().label()
+                )
+                .increment(1);
+                tracing::debug!(%key, class = class.label(), "delegated caller rate limited");
+                return delegated_too_many_requests(retry_after);
+            }
+        }
+        return next.run(request).await;
+    }
     let Some(class) = classify(request.method(), request.uri().path()) else {
         return next.run(request).await;
     };
@@ -696,6 +870,39 @@ pub async fn enforce(
             too_many_requests(retry_after)
         }
     }
+}
+
+/// A delegated request's class, from the scope its route needs.
+fn delegated_class(token: &crate::auth::delegated::DelegatedToken) -> LimitClass {
+    use crate::auth::delegated::Scope;
+    match token.route_scope {
+        Scope::JourneysRead => LimitClass::DelegatedRead,
+        Scope::JourneysWrite => LimitClass::DelegatedWrite,
+        Scope::JourneysDelete => LimitClass::DelegatedDelete,
+    }
+}
+
+/// A 64-bit digest of a `sub`, so a bucket key never holds the `sub`.
+fn sub_digest(sub: &str) -> u64 {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(sub.as_bytes());
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes)
+}
+
+/// The delegated error contract's 429 (spec §5.15): JSON, `rate_limited`.
+fn delegated_too_many_requests(retry_after: Duration) -> Response {
+    let secs = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
+    let mut response = crate::auth::delegated::error_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+        "too many requests; please slow down",
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(secs.max(1)));
+    response
 }
 
 fn too_many_requests(retry_after: Duration) -> Response {

@@ -272,6 +272,7 @@ mod session_revocation_db_tests {
                 "test-internal-oauth-client".to_string(),
             )
             .expect("construct placeholder internal-oauth verifier"),
+            delegated: std::sync::Arc::default(),
             schedule_crs_line_index: std::collections::HashMap::new(),
         })
     }
