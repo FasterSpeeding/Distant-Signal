@@ -1786,6 +1786,39 @@ svg[data-icon='external-link'] {
   list-style-position: outside;
 }
 
+/* The station accessibility key facts (`StationAccessibilitySection`): a
+   definition list, term over value on a phone and term beside value from
+   `xs` up. Each pair is one `<div>` so a long value wraps under its own
+   column. Terms are dimmed small text, values the body text. */
+.keyFacts {
+  margin: 0;
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  font-size: var(--mantine-font-size-sm);
+  line-height: var(--mantine-line-height-sm);
+}
+
+.keyFacts > div {
+  display: grid;
+  gap: 2px;
+}
+
+.keyFacts dt {
+  color: var(--mantine-color-dimmed);
+}
+
+.keyFacts dd {
+  margin: 0;
+  font-weight: 500;
+}
+
+@media (min-width: 36em) {
+  .keyFacts > div {
+    grid-template-columns: 12rem minmax(0, 1fr);
+    gap: var(--mantine-spacing-md);
+  }
+}
+
 /* `OperatorStatusCard` is a column, so its footer (`mt="auto"`) sits on
    the card's bottom edge whatever the text above it wrapped to (review
    M6). */
