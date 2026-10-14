@@ -42,7 +42,7 @@ use tokio::task::JoinHandle;
 
 use crate::envelope::{
     EncodedEntry, EnvelopeError, SchemaId, field, format_produced_at, parse_produced_at,
-    split_snapshot,
+    split_snapshot, split_snapshot_capped,
 };
 use crate::producer::{NotWritten, Producer, last_produced_at};
 use crate::{budget, metrics};
@@ -133,6 +133,70 @@ impl Snapshot {
         self.parts.extend(parts);
         self.rows.push((schema.name().to_owned(), rows.len()));
         Ok(())
+    }
+
+    /// Encodes `rows` as parts of batch `<produced_at>/<label>` (keys
+    /// `<schema name>:<produced_at>/<label>:<i>/<n>`), each wrapped by `wrap`
+    /// and each part's encoded body at most `max_part_bytes`: the rows per
+    /// part start at `rows_per_part` and are halved until every part fits
+    /// (transit spec §7.2: 64 KiB timetable parts). `label` keeps the keys
+    /// of several calls with one schema in one snapshot apart (the
+    /// timetable's kinds). An empty `rows` adds nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`EnvelopeError::TooLarge`] (with `limit: max_part_bytes`, counted as
+    /// `reason="oversize"`) when one row alone does not fit, or a row that
+    /// does not serialize.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Snapshot::add's arguments plus the label, the cap and the wrapper"
+    )]
+    pub fn add_capped<T, F>(
+        &mut self,
+        stream: &str,
+        schema: &SchemaId,
+        producer: &str,
+        produced_at: DateTime<Utc>,
+        label: &str,
+        rows: &[T],
+        rows_per_part: usize,
+        max_part_bytes: usize,
+        wrap: F,
+    ) -> Result<(), EnvelopeError>
+    where
+        F: Fn(&[T]) -> Result<Box<serde_json::value::RawValue>, serde_json::Error>,
+    {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let batch = format!("{}/{label}", format_produced_at(produced_at));
+        let parts = split_snapshot_capped(
+            schema,
+            producer,
+            produced_at,
+            &batch,
+            rows,
+            rows_per_part,
+            max_part_bytes,
+            wrap,
+        )
+        .inspect_err(|err| {
+            if matches!(err, EnvelopeError::TooLarge { .. }) {
+                metrics::record_oversize(stream);
+            }
+        })?;
+        self.parts.extend(parts);
+        self.rows
+            .push((format!("{}/{label}", schema.name()), rows.len()));
+        Ok(())
+    }
+
+    /// Adds one already encoded entry (a manifest that must follow the
+    /// parts, such as the transit timetable's commit).
+    pub fn push(&mut self, entry: EncodedEntry, rows: usize) {
+        self.rows.push((entry.schema.name().to_owned(), rows));
+        self.parts.push(entry);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -580,6 +644,116 @@ mod tests {
                 .any(|(name, value)| *name == field::PRODUCED_AT
                     && value.as_slice() == b"2026-10-08T12:00:00.123Z")
         );
+    }
+
+    /// Incompressible-ish text: hex digits from a xorshift.
+    fn noise(seed: u64, len: usize) -> String {
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x0100_0000_01B3);
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                char::from(b"0123456789abcdef"[usize::try_from(x % 16).unwrap()])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn capped_parts_fit_the_cap_and_keep_their_keys() {
+        const CAP: usize = 64 * 1024;
+        let produced_at = "2026-10-14T03:00:00Z".parse().unwrap();
+        let schema = SchemaId::new("transit-timetable", 1).unwrap();
+        // 600 rows of 1 KiB of hex: about 600 KiB of JSON, 300 KiB gzipped.
+        let rows: Vec<String> = (0..600).map(|i| noise(i, 1024)).collect();
+        let wrap = |chunk: &[String]| {
+            serde_json::value::to_raw_value(&serde_json::json!({"kind": "trips", "rows": chunk}))
+        };
+        let mut snapshot = Snapshot::new();
+        snapshot
+            .add_capped(
+                "s",
+                &schema,
+                "p/pod",
+                produced_at,
+                "trips",
+                &rows,
+                1500,
+                CAP,
+                wrap,
+            )
+            .unwrap();
+        let parts = snapshot.parts();
+        assert!(parts.len() >= 5, "{} parts", parts.len());
+        assert!(parts.iter().all(|p| p.body_len <= CAP));
+        let n = parts.len();
+        let first = decode(&parts[0]);
+        assert_eq!(
+            first.key,
+            format!("transit-timetable:2026-10-14T03:00:00.000Z/trips:1/{n}")
+        );
+        assert_eq!(
+            first.batch.as_ref().unwrap().batch,
+            "2026-10-14T03:00:00.000Z/trips"
+        );
+        let body: serde_json::Value = first.payload_as().unwrap();
+        assert_eq!(body["kind"], "trips");
+        assert_eq!(
+            snapshot.rows(),
+            [("transit-timetable/trips".to_owned(), 600)]
+        );
+        // Deterministic: a re-encode gives the same keys and bytes.
+        let mut again = Snapshot::new();
+        again
+            .add_capped(
+                "s",
+                &schema,
+                "p/pod",
+                produced_at,
+                "trips",
+                &rows,
+                1500,
+                CAP,
+                wrap,
+            )
+            .unwrap();
+        assert_eq!(again.parts(), snapshot.parts());
+
+        // One row over the cap is an error, not a loop.
+        let huge = vec![noise(9, 200 * 1024)];
+        let err = Snapshot::new()
+            .add_capped(
+                "s",
+                &schema,
+                "p/pod",
+                produced_at,
+                "trips",
+                &huge,
+                1500,
+                CAP,
+                wrap,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, EnvelopeError::TooLarge { limit: CAP, encoded } if encoded > CAP),
+            "{err:?}"
+        );
+        // Nothing for no rows.
+        let mut empty = Snapshot::new();
+        empty
+            .add_capped::<String, _>(
+                "s",
+                &schema,
+                "p/pod",
+                produced_at,
+                "trips",
+                &[],
+                1500,
+                CAP,
+                wrap,
+            )
+            .unwrap();
+        assert!(empty.is_empty());
     }
 
     #[test]
