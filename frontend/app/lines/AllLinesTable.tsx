@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Badge,
   Box,
@@ -9,7 +9,6 @@ import {
   Group,
   Stack,
   Table,
-  TableScrollContainer,
   TableThead,
   TableTbody,
   TableTr,
@@ -224,6 +223,23 @@ function noOptionsFound(label: string) {
       {label}
     </Box>
   );
+}
+
+/** A line name with a line-break opportunity after every "/". Names like
+ * "West Wales Line (Swansea/Carmarthen - Milford Haven/Fishguard/Pembroke
+ * Dock)" have no spaces around the slashes, so "Haven/Fishguard/Pembroke"
+ * was one 212px unbreakable word that set the Name column's minimum width
+ * and pushed the table past a 390px screen. */
+export function breakableLineName(name: string): ReactNode {
+  const parts = name.split('/');
+  if (parts.length === 1) return name;
+  return parts.map((part, index) => (
+    <Fragment key={index}>
+      {index > 0 && '/'}
+      {index > 0 && <wbr />}
+      {part}
+    </Fragment>
+  ));
 }
 
 /** The browser tab title for the current filters, or `null` when nothing
@@ -508,7 +524,7 @@ export function AllLinesTable({
   }
 
   return (
-    <Stack gap="md">
+    <Stack gap="md" className="linesTableRoot">
       <LinesFilterBar
         query={nameQuery}
         onQueryChange={setNameQuery}
@@ -601,31 +617,22 @@ export function AllLinesTable({
           </UnstyledButton>
         </Text>
       )}
-      {/* `TableScrollContainer` (same pattern, same `minWidth`, as
-          `components/JourneyTimeline.tsx`): from the `sm` breakpoint up
-          this table is five columns (Name, Status, Avg delay, Cancelled,
-          Pin), and the Status column's badge deliberately doesn't truncate
-          (see the `data-status-badge` comment below, Task 3.4.1), so a
-          real minimum width is genuinely needed there. Below `sm` only
-          Name + Status + Pin are visible (Avg delay/Cancelled fold into
-          the Name cell's own sub-line instead -- see the `hiddenFrom="sm"`
-          summary line below), which fits comfortably under 390px on its
-          own; the same flat `420px` floor applied there anyway forced a
-          390px viewport into an unsignalled ~30px sideways scroll that hid
-          the Pin column entirely (2026-09-22 UX review §3.1 -- this is the
-          "TableScrollContainer is the right tool for a genuinely wide
-          table, the wrong tool for a table 30px too wide" case). The
-          `linesTableScroll` class (app/globals.css) overrides this
-          component's own `--table-min-width` CSS variable back down below
-          `sm`, `!important` because Mantine sets that variable via this
-          exact element's own inline `style` (from the `minWidth` prop),
-          which an ordinary external rule cannot outrank. Scoping the
-          scroll to the table itself (rather than removing it outright)
-          still keeps the rest of the page fixed at every width, matching
-          e2e/nav.spec.ts's `hasHorizontalOverflow` regression check (Task
-          1.2), which asserts nothing on the page scrolls sideways. */}
-      <TableScrollContainer minWidth={420} className="linesTableScroll">
-        <Table>
+      {/* No `TableScrollContainer` (2026-10-14): its `overflow-x: auto` made
+          a scroll container, which stops the sticky header below from
+          sticking to the page. It isn't needed either. From `sm` up the
+          content is at least 728px wide, well over the 420px five columns
+          need, and below `sm` the table is three columns (Avg delay and
+          Cancelled fold into the Name cell's sub-line, see `hiddenFrom`
+          below) that fit even a 320px screen once long names can wrap
+          (`breakableLineName`, and `.linesNameCell`/`.linesTableWrap` in
+          app/globals.css), so the page itself never scrolls sideways
+          (e2e/nav.spec.ts's `hasHorizontalOverflow`).
+
+          `stickyHeader`: the column headings stick under the sticky search
+          bar, offset by the bar's own height (`--lines-filter-bar-height`,
+          which also sizes the bar, so the two can't drift apart). */}
+      <Box className="linesTableWrap">
+        <Table stickyHeader stickyHeaderOffset="var(--lines-filter-bar-height)">
           {/* Flat `TableThead`/`TableTr`/... named exports, not the
               `Table.Thead` dot-notation compound API -- kept consistent with
               the rest of this codebase's Table usage even though this is a
@@ -682,13 +689,13 @@ export function AllLinesTable({
           <TableTbody>
             {sortedRows.map(({ line, worst, stats, cancelledPct, representative }) => (
               <TableTr key={line.id}>
-                <TableTd>
+                <TableTd className="linesNameCell">
                   {/* Task 3.4.8: at narrow widths a wrapped two-line name read
                     as two separate stacked list items rather than one
                     wrapped link, at Mantine `Text`'s default (looser)
                     line-height. */}
                   <TextLink href={`/lines/${line.id}`} lh={1.3}>
-                    {line.name}
+                    {breakableLineName(line.name)}
                   </TextLink>
                   {/* At 390px five columns cannot all fit, and the one that
                     was losing was Status — the page's whole point — while
@@ -756,7 +763,7 @@ export function AllLinesTable({
             ))}
           </TableTbody>
         </Table>
-      </TableScrollContainer>
+      </Box>
     </Stack>
   );
 }

@@ -1581,11 +1581,20 @@ a[data-text-link-tone='inherit'] {
    scheme. Gets the body colour and a bottom rule only once it is stuck
    (`data-stuck`, set by an IntersectionObserver), where rows scroll under
    it. `z-index` above table content, below Mantine's popovers and the
-   skip link. */
+   skip link, and above the table's own sticky header (Mantine gives that
+   `z-index: 3`). Its height is fixed to `--lines-filter-bar-height` (one
+   36px input row, its padding and the 1px rule) so the table header can
+   stick exactly underneath it. */
+.linesTableRoot {
+  --lines-filter-bar-height: calc(2.25rem + 2 * var(--mantine-spacing-xs) + 1px);
+}
+
 .linesFilterBar {
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 4;
+  box-sizing: border-box;
+  height: var(--lines-filter-bar-height);
   margin: calc(var(--mantine-spacing-xs) * -1) calc(var(--mantine-spacing-lg) * -1);
   padding: var(--mantine-spacing-xs) var(--mantine-spacing-lg);
   border-bottom: 1px solid transparent;
@@ -1633,20 +1642,40 @@ a[data-text-link-tone='inherit'] {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* `app/lines/AllLinesTable.tsx`'s `TableScrollContainer` (review 2026-09-22
-   §3.1). Mantine's own `minWidth` prop sets `--table-min-width` as an
-   INLINE style on this exact element (`TableScrollContainer.tsx`'s
-   `varsResolver`), so an ordinary external rule targeting the same
-   variable on the same element can never win against it -- only
-   `!important` outranks a plain inline style. `420px` is the width five
-   columns (Name/Status/Avg Delay/Cancelled/Pin) genuinely need from `sm`
-   up; below `sm` only three columns are visible (Avg Delay/Cancelled fold
-   into the Name cell's own sub-line), which fit under 390px on their own,
-   so the floor is dropped back to nothing rather than forcing an
-   unsignalled ~30px sideways scroll that hid the Pin column entirely. */
+/* `app/lines/AllLinesTable.tsx`'s table at phone width (three columns:
+   Name, Status, Pin). The table must fit the screen with no scroll
+   container around it: any `overflow-x` other than `visible`/`clip` would
+   pin the sticky header to that container instead of the page.
+
+   - Cell padding is 6px a side instead of 10px, so the Status badge (it
+     never wraps or truncates) and the 44px pin button leave the name as
+     much room as they can. Desktop keeps Mantine's spacing.
+   - The name sets no minimum width. Its longest word used to set it
+     ("Northumberland" alone is 127px, "Haven/Fishguard/Pembroke" was
+     212px before `breakableLineName`), which pushed the 390px table to
+     434px and the Pin column off screen. `overflow-wrap: anywhere` drops
+     the name's minimum width to almost nothing, but because the name
+     column still takes all the width the other two leave, a word only
+     breaks when it is wider than that whole column (under ~360px). Not
+     `hyphens: auto`: it also re-breaks ordinary wrapped names and the
+     sub-line ("re-ceived") at every width. */
+.linesNameCell {
+  overflow-wrap: anywhere;
+}
+
+/* Mantine paints every sticky header cell with the body colour, which drew
+   a white strip over the light theme's top wash while the table sat in its
+   normal place (the same bug the search bar had). Transparent until the
+   search bar is stuck; from then on the header is either directly under
+   the bar or stuck to it, and body-coloured like it. Browsers without
+   `:has()` keep Mantine's always-painted header. */
+.linesTableRoot:has(.linesFilterBar:not([data-stuck])) .linesTableWrap thead th {
+  background-color: transparent;
+}
+
 @media (max-width: $mantine-breakpoint-sm) {
-  .linesTableScroll {
-    --table-min-width: 0px !important;
+  .linesTableWrap :is(th, td) {
+    padding-inline: 0.375rem;
   }
 }
 

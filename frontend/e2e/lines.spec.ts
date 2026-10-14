@@ -66,6 +66,42 @@ for (const [label, viewport] of [
   });
 }
 
+for (const width of [320, 360, 390]) {
+  test(`at ${width}px the table fits the screen with the Pin column visible`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto('/lines');
+    const fit = await page.locator('table').evaluate((table) => ({
+      table: table.getBoundingClientRect().width,
+      wrapper: table.parentElement!.clientWidth,
+      page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    }));
+    expect(fit.table).toBeLessThanOrEqual(fit.wrapper + 1);
+    expect(fit.page).toBeLessThanOrEqual(1);
+    await expect(page.getByRole('columnheader', { name: 'Pin' })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('row').nth(1).getByRole('button').last()).toBeInViewport({ ratio: 1 });
+  });
+}
+
+test('the column headers stick under the search bar', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/lines');
+  await scrollDown(page, 1500);
+  const { barBottom, headTop } = await page.evaluate(() => ({
+    barBottom: document.querySelector('.linesFilterBar')!.getBoundingClientRect().bottom,
+    headTop: document.querySelector('thead')!.getBoundingClientRect().top,
+  }));
+  expect(Math.abs(headTop - barBottom)).toBeLessThan(1);
+  await expect(page.getByRole('columnheader', { name: /Name/ })).toBeInViewport();
+});
+
+test('the tab title follows the search', async ({ page }) => {
+  await page.goto('/lines');
+  await page.getByRole('textbox', { name: 'Find a line' }).fill('main');
+  await expect(page).toHaveTitle('Lines: "main" · Distant Signal');
+  await page.getByRole('button', { name: 'Clear search' }).click();
+  await expect(page).toHaveTitle('Lines · Distant Signal');
+});
+
 test('on a phone the filters are a bottom sheet, not a popover', async ({ page }) => {
   await page.setViewportSize(PHONE);
   await page.goto('/lines');

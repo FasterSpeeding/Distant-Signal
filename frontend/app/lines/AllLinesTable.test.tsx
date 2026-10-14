@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { AllLinesTable, expandOperatorForFiltering, filteredTitle, linesFilterUrl } from './AllLinesTable';
+import {
+  AllLinesTable,
+  breakableLineName,
+  expandOperatorForFiltering,
+  filteredTitle,
+  linesFilterUrl,
+} from './AllLinesTable';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 // `PinToggle` (rendered per row below) unconditionally renders
@@ -1017,6 +1023,19 @@ describe('filteredTitle', () => {
   });
 });
 
+describe('breakableLineName', () => {
+  it('adds a break opportunity after each slash and keeps the text', () => {
+    renderWithMantine(<span data-testid="name">{breakableLineName('Milford Haven/Fishguard/Pembroke')}</span>);
+    const name = screen.getByTestId('name');
+    expect(name).toHaveTextContent('Milford Haven/Fishguard/Pembroke');
+    expect(name.querySelectorAll('wbr')).toHaveLength(2);
+  });
+
+  it('leaves a name without slashes alone', () => {
+    expect(breakableLineName('Airedale Line')).toBe('Airedale Line');
+  });
+});
+
 describe('AllLinesTable tab title and header', () => {
   it('reflects the search and operator filter in the tab title, by operator name', () => {
     document.title = 'Lines · Distant Signal';
@@ -1028,5 +1047,12 @@ describe('AllLinesTable tab title and header', () => {
     expect(document.title).toBe('Lines: Great Western Railway, "west" · Distant Signal');
     fireEvent.click(screen.getByRole('button', { name: 'Show all lines' }));
     expect(document.title).toBe('Lines · Distant Signal');
+  });
+
+  it('makes the column headers sticky, under the search bar', () => {
+    renderTable();
+    const thead = screen.getAllByRole('rowgroup')[0]!;
+    expect(thead.tagName).toBe('THEAD');
+    expect(thead).toHaveAttribute('data-sticky');
   });
 });
