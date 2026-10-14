@@ -44,6 +44,13 @@ const PAGES: [name: string, path: string][] = [
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
   ['incidents', '/incidents'],
   ['account', '/account'],
+  // Tram pages (the seed's metrolink network; API_TRANSIT_NETWORKS in the
+  // frontend-e2e job). Dated, so the board and timetable don't follow the
+  // server's clock.
+  ['transit-network', '/transit/metrolink'],
+  ['transit-line', '/transit/metrolink/lines/blue'],
+  ['transit-stop', '/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17'],
+  ['transit-timetable', '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00'],
 ];
 
 const WIDTHS = [390, 1366] as const;

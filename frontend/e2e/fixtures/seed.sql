@@ -241,3 +241,74 @@ INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at)
 SELECT 'fixture-group-1', sub.id, 'fixture-owner', NOW()
 FROM sub
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- Transit: a small Manchester Metrolink network (transit networks spec;
+-- the pages under /transit, shown because ci.yml's frontend-e2e job sets
+-- API_TRANSIT_NETWORKS=metrolink). Two lines, three stations, a few trams
+-- on 2026-09-17 (the visual tests pass ?date=2026-09-17) and today (so a
+-- page without a date shows a board too), and one replacement bus. The
+-- horizon runs from the fixed date to 60 days after the seeding.
+-- ---------------------------------------------------------------------
+INSERT INTO transit_feed_versions
+  (network, feed_version, state, network_row, rail_links, content_sha256, counts,
+   horizon_from, horizon_to, source, staged_at, produced_at, activated_at)
+VALUES ('metrolink', 'e2e-v1', 'active',
+  '{"name": "Manchester Metrolink", "mode": "tram", "timezone": "Europe/London", "attribution": {"licence": "OGL-UK-3.0", "text": "Contains public sector information licensed under the Open Government Licence v3.0. Timetables and disruptions: Bus Open Data Service (Department for Transport). Stops: NaPTAN (Department for Transport)."}}',
+  '[]', repeat('e', 64), '{"lines": 2, "stops": 6, "patterns": 3, "trips": 5, "service_days": 2}',
+  '2026-09-01', CURRENT_DATE + 60, '{"url_kind": "e2e", "feed_version": null, "published_at": null}',
+  NOW(), NOW(), NOW())
+ON CONFLICT (network, feed_version) DO NOTHING;
+
+INSERT INTO transit_networks
+  (network, name, mode, timezone, attribution, active_feed_version, activated_at, updated_at)
+VALUES ('metrolink', 'Manchester Metrolink', 'tram', 'Europe/London',
+  '{"licence": "OGL-UK-3.0", "text": "Contains public sector information licensed under the Open Government Licence v3.0. Timetables and disruptions: Bus Open Data Service (Department for Transport). Stops: NaPTAN (Department for Transport)."}',
+  'e2e-v1', NOW(), NOW())
+ON CONFLICT (network) DO UPDATE SET active_feed_version = EXCLUDED.active_feed_version;
+
+INSERT INTO transit_lines (network, feed_version, line_id, name, colour, sort_order, directions) VALUES
+  ('metrolink', 'e2e-v1', 'blue', 'Blue Line', '#1f6fb5', 1,
+   '[{"direction": "outbound", "headsign": "Eccles", "stations": ["9400ZZMAPIC", "9400ZZMAGMX", "9400ZZMAECC"]},
+     {"direction": "inbound", "headsign": "Piccadilly", "stations": ["9400ZZMAECC", "9400ZZMAGMX", "9400ZZMAPIC"]}]'),
+  ('metrolink', 'e2e-v1', 'green', 'Green Line', '#2e8b3e', 2,
+   '[{"direction": "outbound", "headsign": "Deansgate-Castlefield", "stations": ["9400ZZMAPIC", "9400ZZMAGMX"]}]')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO transit_stops (network, feed_version, stop_id, kind, parent_stop_id, name, indicator, lat, lon, wheelchair) VALUES
+  ('metrolink', 'e2e-v1', '9400ZZMAPIC', 'station', NULL, 'Piccadilly', NULL, 53.4774, -2.2309, true),
+  ('metrolink', 'e2e-v1', '9400ZZMAPIC1', 'platform', '9400ZZMAPIC', 'Piccadilly', 'To Eccles', NULL, NULL, NULL),
+  ('metrolink', 'e2e-v1', '9400ZZMAGMX', 'station', NULL, 'Deansgate-Castlefield', NULL, 53.4746, -2.2507, true),
+  ('metrolink', 'e2e-v1', '9400ZZMAGMX1', 'platform', '9400ZZMAGMX', 'Deansgate-Castlefield', 'To Eccles', NULL, NULL, NULL),
+  ('metrolink', 'e2e-v1', '9400ZZMAECC', 'station', NULL, 'Eccles', NULL, 53.4836, -2.3343, true),
+  ('metrolink', 'e2e-v1', '9400ZZMAECC1', 'platform', '9400ZZMAECC', 'Eccles', 'To City', NULL, NULL, NULL)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO transit_patterns (network, feed_version, pattern_id, line_id, direction, headsign) VALUES
+  ('metrolink', 'e2e-v1', 'p1', 'blue', 0, 'Eccles'),
+  ('metrolink', 'e2e-v1', 'p2', 'green', 0, 'Deansgate-Castlefield'),
+  ('metrolink', 'e2e-v1', 'p3', NULL, 0, 'Eccles')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO transit_pattern_stops (network, feed_version, pattern_id, seq, stop_id, arr_offset_s, dep_offset_s, pickup, drop_off) VALUES
+  ('metrolink', 'e2e-v1', 'p1', 0, '9400ZZMAPIC1', 0, 0, 0, 1),
+  ('metrolink', 'e2e-v1', 'p1', 1, '9400ZZMAGMX1', 240, 240, 0, 0),
+  ('metrolink', 'e2e-v1', 'p1', 2, '9400ZZMAECC1', 1500, 1500, 1, 0),
+  ('metrolink', 'e2e-v1', 'p2', 0, '9400ZZMAPIC1', 0, 0, 0, 1),
+  ('metrolink', 'e2e-v1', 'p2', 1, '9400ZZMAGMX1', 240, 240, 1, 0),
+  ('metrolink', 'e2e-v1', 'p3', 0, '9400ZZMAPIC1', 0, 0, 0, 1),
+  ('metrolink', 'e2e-v1', 'p3', 1, '9400ZZMAECC1', 2400, 2400, 1, 0)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO transit_trips (network, feed_version, trip_id, line_id, pattern_id, service_id, start_s, headsign, replacement_bus) VALUES
+  ('metrolink', 'e2e-v1', 'E2E-0702', 'blue', 'p1', 's1', 25320, 'Eccles', false),
+  ('metrolink', 'e2e-v1', 'E2E-0714', 'blue', 'p1', 's1', 26040, 'Eccles', false),
+  ('metrolink', 'e2e-v1', 'E2E-0706', 'green', 'p2', 's1', 25560, 'Deansgate-Castlefield', false),
+  ('metrolink', 'e2e-v1', 'E2E-0730', NULL, 'p3', 's1', 27000, 'Eccles', true),
+  ('metrolink', 'e2e-v1', 'E2E-0802', 'blue', 'p1', 's1', 28920, 'Eccles', false)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO transit_service_days (network, feed_version, service_id, service_date) VALUES
+  ('metrolink', 'e2e-v1', 's1', '2026-09-17'),
+  ('metrolink', 'e2e-v1', 's1', CURRENT_DATE)
+ON CONFLICT DO NOTHING;
