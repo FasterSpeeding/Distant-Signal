@@ -67,7 +67,7 @@ export function parsePriorityParam(value: string | undefined): number | '' {
 }
 
 /** Exactly one of three mutually-exclusive states, mirroring
- * `TrainSearchForm.tsx`'s own `Results` type -- `nextCursor` lives INSIDE
+ * `lib/trainSearch.ts`'s `TrainSearchResults` type -- `nextCursor` lives INSIDE
  * the success variant for the same reason it does there: it must not
  * survive a state transition (a fresh search, or an error) it does not
  * belong to. `query` is the exact query string that was submitted to produce
