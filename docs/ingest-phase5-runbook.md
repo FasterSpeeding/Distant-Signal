@@ -83,8 +83,15 @@ release B's pods while they still serve: "Hook order" in
   is ignored, even with `defaultUser: off`). **The ACL ConfigMap changes,
   so this release restarts Redis once** (`checksum/redis-acl`, about 4 s
   of AOF load; every stream client reconnects and retries as it does for
-  any Redis restart). `crates/common/tests/redis_acl.rs` checks the user is
-  gone.
+  any Redis restart). If Ranma's values put a Reloader annotation on
+  Redis, Reloader may restart it as well; either way it is one Recreate
+  rollout of Redis per ConfigMap change. `crates/common/tests/redis_acl.rs`
+  checks the user is gone. Dropping the user in the same release as the
+  client is safe, unlike a Postgres revoke: release B's api builds a lazy
+  `redis::Client` (it parses the URL and never opens a socket) and, with
+  `/private/incidents` gone, nothing outside its tests calls the XADD, so
+  the old api pods still serving during the rollout never authenticate as
+  `api`.
 - **NetworkPolicies** (5.6): the api's egress drops Redis and Redis's
   ingress drops the api. CI checks both.
 - **Metrics** (Q1): every `api_*` name `ds-store` emitted is `store_*`
@@ -119,7 +126,9 @@ release B's pods while they still serve: "Hook order" in
 2. **Values** (`clusters/mine-bringer/apps/distant-signal.yaml`): delete
    `redis.acl.clients.api` (ignored if left).
 3. Release the chart and the images together. Restarts: Redis (once, the
-   ACL file), the api (env), and every pod whose image changed.
+   ACL file, via `checksum/redis-acl` or Reloader; every stream client
+   reconnects and retries for the ~4 s it is down), the api (env), and
+   every pod whose image changed.
 4. **Checks:**
    - `kubectl exec deploy/distant-signal-redis -- redis-cli --user ds-admin
      --pass … CLIENT LIST` shows no `user=api`, and `ACL LOG` stays empty;
@@ -1310,7 +1319,9 @@ alone. The repo has no Grafana dashboards; any panel lives in Ranma-Config.
 
 **Done in release C (2026-10-14):** the four binaries, the two shims and
 their `gen-rust-dockerfiles.py` entries are deleted; the api image ships
-`api`, `corpus_compare`, `maintenance` and `ds-migrate`. Nothing in the
+`api`, `corpus_compare`, `maintenance` and `ds-migrate` (the runtime
+stage's `COPY` lines too: `gen-rust-dockerfiles.py --check` now fails on a
+`COPY` of a binary the image does not build). Nothing in the
 chart, CI, the docs or the Ranma notes ran the old binaries. CI's
 per-service step runs `writer-maintenance`'s preflight test as the
 incidents role (it already ran as the writer, which it refuses).
