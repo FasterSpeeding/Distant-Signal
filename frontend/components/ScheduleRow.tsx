@@ -1,9 +1,10 @@
-import { Badge, Box, Group, Text, VisuallyHidden } from '@mantine/core';
+import { Box, Group, Text, VisuallyHidden } from '@mantine/core';
 import { StatusRow } from './StatusRow';
 import { PlatformBadge } from './PlatformBadge';
 import { stationLabel } from '@/lib/stationLabel';
 import { CANCELLED_LABEL } from '@/lib/serviceStatus';
 import { DelayBadge } from './DelayBadge';
+import { StateBadge } from './StateBadge';
 
 /** One live LDBWS departure-board row's display data -- deliberately a
  * plain data shape, not `DepartureRow` (`TrackTrainForm.tsx`'s own wire
@@ -49,11 +50,7 @@ export interface ScheduleRowData {
  * tint. Each state is a different word, never colour alone. */
 function statusBadge(row: ScheduleRowData) {
   if (row.isCancelled) {
-    return (
-      <Badge color="red" variant="light" tt="none">
-        {CANCELLED_LABEL}
-      </Badge>
-    );
+    return <StateBadge tone="critical">{CANCELLED_LABEL}</StateBadge>;
   }
   return <DelayBadge delayMinutes={row.delayMinutes} />;
 }

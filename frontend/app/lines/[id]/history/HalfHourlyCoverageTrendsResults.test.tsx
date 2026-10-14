@@ -181,7 +181,7 @@ describe('HalfHourlyCoverageTrendsResults', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Every train', level: 3 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Delay / cancellation / skip rate', level: 4 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Delay, cancellation and skip rates', level: 4 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Average delay (minutes)', level: 4 })).toBeInTheDocument();
   });
 });

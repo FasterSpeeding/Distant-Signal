@@ -1,6 +1,6 @@
 'use client';
 
-import { Stack, Text, Badge, Group } from '@mantine/core';
+import { Stack, Text } from '@mantine/core';
 import type { Disruption } from '@/lib/types';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { incidentIdFromSource } from '@/lib/incidents';
@@ -8,6 +8,7 @@ import { impactTypeLabel } from '@/lib/impactType';
 import { incidentSourceLabel } from '@/lib/incidentSource';
 import { TextLink } from './TextLink';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
+import { BadgeRow, StateBadge } from './StateBadge';
 
 export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
   const incidentId = incidentIdFromSource(disruption.source);
@@ -16,13 +17,11 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
   return (
     <Stack gap="xs">
       {impactLabel && (
-        <Group gap="xs">
-          <Badge tt="none" variant="light" color="orange" w="fit-content">
-            {impactLabel}
-          </Badge>
-          {/* `impactType` only ever comes from the enricher's LLM output. */}
-          {enriched && <AiGeneratedBadge note={ENRICHED_INCIDENT_NOTE} />}
-        </Group>
+        // `impactType` only ever comes from the enricher's LLM output.
+        <BadgeRow
+          state={<StateBadge tone="late">{impactLabel}</StateBadge>}
+          ai={enriched ? <AiGeneratedBadge note={ENRICHED_INCIDENT_NOTE} /> : undefined}
+        />
       )}
       {/* `data-rich-text`: the CSS hook for `app/globals.css`'s
           `[data-rich-text] a` rule. Anchors inside knowledgebase incident
@@ -37,13 +36,11 @@ export function DisruptionDetail({ disruption }: { disruption: Disruption }) {
           and `data-status-badge` already use. */}
       <div data-rich-text dangerouslySetInnerHTML={{ __html: sanitizeDescription(disruption.description) }} />
       {disruption.affectedStops.length > 0 && (
-        <Group gap="xs">
-          {disruption.affectedStops.map((crs) => (
-            <Badge tt="none" key={crs} variant="outline" color="gray">
-              {crs}
-            </Badge>
-          ))}
-        </Group>
+        // Dimmed text, not pills (round 2): stations an item affects are
+        // never badges.
+        <Text size="sm" c="dimmed">
+          Stops: {disruption.affectedStops.join(', ')}
+        </Text>
       )}
       {disruption.affectedRoutes.map((route, i) => (
         <Text key={i} size="sm" c="dimmed">

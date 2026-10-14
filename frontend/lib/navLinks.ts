@@ -1,238 +1,122 @@
 /** The app's nav destinations, as data rather than as JSX.
  *
- * Exists because the same set of destinations now has to be rendered in
- * three different shapes — the inline bar links, the mobile drawer
+ * The same destinations are rendered in three shapes: the inline bar links
+ * (`components/AppNavBar.tsx`), the mobile drawer
  * (`components/AppNavDrawer.tsx`) and the account menu
- * (`components/AccountMenu.tsx`) — and a destination that only got added
- * to two of the three is exactly the bug a single list makes impossible.
- * Every consumer maps over these; nothing hard-codes an href or a label
- * of its own.
+ * (`components/AccountMenu.tsx`). One list makes "added to two of the three"
+ * impossible. Every consumer maps over these; nothing hard-codes an href or
+ * a label of its own.
  *
  * Plain serializable objects, deliberately: two of the three consumers are
  * Client Components receiving this list as a prop from a Server Component,
  * so anything richer (a component reference, a function) would break
- * `next build`'s Server/Client boundary serialization check — the same
- * constraint `app/layout.tsx`'s own comment records for passing `Link`
- * into a Mantine `component` prop. */
+ * `next build`'s Server/Client boundary serialization check. */
 export interface NavDestination {
   href: string;
   label: string;
+  /** Other paths that belong to this entry, so it stays marked as the
+   * current section on them (`isActiveNavHref`). Each is a path prefix
+   * ending at a segment boundary: `/trains` matches `/trains` and
+   * `/trains/x`, not `/trainsx`. */
+  section?: readonly string[];
 }
 
-/** Journey tracking is this app's MAIN feature going forward -- tracking a
- * single train is the simple, one-leg case of a journey, not a separate
- * concept, and `/journeys/new` (`JourneyCreationFlow.tsx`) is the one
- * continuous flow for building either: fill in leg 1, then optionally keep
- * adding legs right there, all before ever leaving the page. This constant
- * is what makes that page THE primary, nav-linked entry point for the
- * feature -- first in `PRIMARY_NAV_DESTINATIONS` below, ahead of even
- * "Status", so it reads as the main way to start tracking something rather
- * than one browsing option among several.
- *
- * `/track` (the old single-leg-only form `JourneyCreationFlow` now wraps
- * as its own leg-1 step) deliberately keeps its own separate existence and
- * is NOT redirected here -- see that page's own doc comment for why: it is
- * still the landing target several existing, narrower flows depend on
- * (a standalone ticket's "find or track the train this ticket is for"
- * link, `/stations/[crs]`'s "Track a train from here", `/trains`' manual
- * fallback link, and `trackAgainHref`'s "Track this journey again"), each
- * of which wants a single pre-filled leg-1 form and nothing past it --
- * none of those needs the inline "Add a leg" step this page adds, and
- * redirecting them all through here would cost every one of them their own
- * pre-fill query params for no benefit. */
-export const TRACK_JOURNEY_DESTINATION: NavDestination = { href: '/journeys/new', label: 'Track a journey' };
+/** The one "Track" entry (round 2 decision, 12 Oct 2026). Tracking used to
+ * be four nav entries for one task: "Track a journey" (`/journeys/new`),
+ * "Trains" (`/trains`), "My trains & tickets" (`/track/mine`) and the
+ * deep-linked `/track` form. Now `/track/mine` is the Track page: what you
+ * are tracking, with "Track a journey", "Find a train", "Add a ticket" and
+ * journey templates one tap away. The other pages keep their URLs (deep
+ * links and pre-fill query params depend on them) and mark this entry as
+ * the current section. */
+export const TRACK_DESTINATION: NavDestination = {
+  href: '/track/mine',
+  label: 'Track',
+  section: ['/track', '/trains', '/journeys'],
+};
 
-/** `/plan` (`app/plan/page.tsx`): the trip planner on a page of its own.
- * Planning (`GET /Trips/plan`) needs no account, but before this route the
- * planner was only reachable by opening "Track a Journey" -- whose copy
- * says an account is needed -- and flipping its mode toggle. Labelled in
- * Title Case to sit beside `TRACK_JOURNEY_DESTINATION`.
- *
- * Not in `PRIMARY_NAV_DESTINATIONS`: the bar between `md` and `lg` has no
- * room for it (measured slack at 992px is a pixel or two). `AppNavBar`
- * shows it inline from `lg` up, where the container stops growing and
- * there is room; the drawer always lists it; and the pages that start a
- * journey (home, `/journeys/new`, `/track/mine`, `/stations/[crs]`) link to
- * it, which covers the `md`-to-`lg` band. */
+/** Where a new journey (or a single train, its one-leg case) starts:
+ * `JourneyCreationFlow` on `/journeys/new`. Linked from the Track page and
+ * the planner; no longer a nav entry of its own. */
+export const TRACK_JOURNEY_HREF = '/journeys/new';
+
+/** `/plan`: the trip planner. Planning needs no account, so it is in the
+ * main bar for everyone, straight after Track. */
 export const PLAN_JOURNEY_DESTINATION: NavDestination = { href: '/plan', label: 'Plan a journey' };
 
-/** Whether a nav entry marks the current page. Exact match, not
- * `startsWith`: `/` would otherwise light up on every route. Shared by the
- * bar (`PrimaryNavLink`) and the drawer so the two agree. */
-export function isActiveNavHref(pathname: string | null, href: string): boolean {
-  return pathname === href;
-}
-
 /** Always visible to everyone, logged in or not. Rendered inline in the
- * bar at `md` and up, and in the drawer below it.
- *
- * Four of these labels ("Lines", "Stations", "Trains", "Incidents") are
- * deliberately terser than the page headings they point at ("All Lines",
- * "Station Disruption Lookup", "Find a Train", "Incident Archive" --
- * unchanged, see each page's own `<Title>`), matching the precedent
- * "Station Lookup" already set for this exact bar: a nav label is a short
- * pointer, not a restatement of the destination's own heading, and a
- * visitor landing on a fuller/differently-worded `<h1>` after a short nav
- * label is a pattern this bar already used before this rename, not one
- * invented for it.
- *
- * They were shortened from "All Lines"/"Station Lookup"/"Find a
- * Train"/"Incident Archive" specifically to buy back width for
- * `TRACK_JOURNEY_DESTINATION` below: added as a NEW, always-inline primary
- * destination, it broke `AppNavBar.tsx`'s single-row-at-`md`-and-`lg`
- * invariant (confirmed against a real rendered bar, both Chromium and
- * Firefox -- the anonymous bar, the widest arrangement per
- * `AppNavBar.tsx`'s own comment, wrapped at BOTH 992px and 1440px, not just
- * the narrower one). Combined with `AppNavBar.tsx`'s own gap reduction,
- * these four renames restore a real (not hairline) margin at 992px: ~30px
- * in both engines, in the same ballpark as the ~42px this file's history
- * already treated as an acceptable working margin -- see
- * `AppNavBar.tsx`'s own comment for the up-to-date figures.
- *
- * "Track a Journey", "Status", "Operators" and "My Trains & Tickets"
- * (below) were deliberately left untouched: the first because
- * `TRACK_JOURNEY_DESTINATION`'s own doc comment is unambiguous that its
- * wording and prominence are the point, not incidental; "Status" is
- * already minimal; "Operators" only just landed at this length and
- * position per review M7/§2.7; and "My Trains & Tickets" is deliberately
- * NOT renamed for a documented, layout-unrelated scope reason (see
- * `TRACKED_TRAINS_DESTINATION`'s own comment) despite being the single
- * widest item on the anonymous bar -- renaming it would have been the
- * cheapest width fix available, and was rejected for that reason. */
+ * bar at `md` and up, and in the drawer below it. Each label is the h1 of
+ * the page it opens (docs/style-guide.md, "Tone"). */
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
-  // First, ahead of "Status" -- see `TRACK_JOURNEY_DESTINATION`'s own doc
-  // comment for why creation, not browsing, now leads the primary nav.
-  TRACK_JOURNEY_DESTINATION,
-  { href: '/status', label: 'Status' },
+  TRACK_DESTINATION,
+  PLAN_JOURNEY_DESTINATION,
+  { href: '/status', label: 'Status', section: ['/network'] },
   { href: '/lines', label: 'Lines' },
-  // Moved beside "Lines" and "Stations" (review M7/§2.7 -- named "All
-  // Lines"/"Station Lookup" at the time, since renamed, see this array's
-  // own doc comment): three ways to browse status, previously split apart
-  // by having this one sit last, after "Incidents" -- reading as an
-  // afterthought rather than a sibling of the other two
-  // catalogue-browsing destinations.
   { href: '/operators', label: 'Operators' },
   { href: '/stations', label: 'Stations' },
-  // The primary train-discovery surface. `/track` is still reachable
-  // (from here via /trains' own manual fallback link, from
-  // /stations/[crs], and from TicketEntryForm) but is no longer the first
-  // thing a visitor is pointed at -- see
-  // docs/superpowers/specs/2026-09-07-train-listing-page-design.md §4, and
-  // `TRACK_JOURNEY_DESTINATION`'s own doc comment for what replaced it as
-  // the primary entry point for tracking specifically.
-  { href: '/trains', label: 'Trains' },
   { href: '/incidents', label: 'Incidents' },
 ];
 
-/** Reclassified from Tier 3 (hidden entirely when logged out) to
- * always-visible, per
- * docs/superpowers/specs/2026-09-02-modal-login-prompt-design.md
- * Decision 6 -- a deliberate, named reversal of
- * docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md's
- * Decision 4, which chose "hidden entirely" specifically because at the
- * time an anonymous click would have resolved to a bare inline sentence
- * with nothing else on the page. Now that `/track/mine`'s own existing
- * `getMyTrackedTrains()` null-on-401 gate (unchanged -- see
- * `app/track/mine/page.tsx`) opens a real, actionable `LoginPromptModal`
- * instead, "dead weight in the nav bar" no longer describes what a
- * logged-out click produces, so this link is worth advertising rather
- * than hiding.
- *
- * That "always visible" is why it appears in BOTH `navDrawerDestinations`
- * (unconditionally) and, for anonymous visitors only, inline in the bar:
- * a logged-in visitor reaches it through the account menu instead, which
- * is where it moved to stop the authenticated bar wrapping onto a second
- * row at 1440px (see `components/AppNavBar.tsx`).
- *
- * Labelled "My Trains & Tickets," not "My Tracked Trains," now that
- * `/track/mine` is the single merged page for both (Part B of the
- * upload-first ticket-tracking plan).
- *
- * NOT renamed to something journey-flavoured when `TRACK_JOURNEY_DESTINATION`
- * was added above, and deliberately so: `/track/mine` already grew its own
- * "Your journeys" section (2026-09-22 UX review C1, `app/track/mine/page.tsx`)
- * well before this constant existed, so its scope was already "everything
- * you're tracking" -- trains, tickets, AND journeys -- not merely trains.
- * Adding a dedicated CREATION page changes where a journey gets STARTED; it
- * doesn't change what this page LISTS, so renaming it here would describe a
- * change that didn't happen on this page. */
-export const TRACKED_TRAINS_DESTINATION: NavDestination = {
-  href: '/track/mine',
-  label: 'My trains & tickets',
-};
+/** Whether a nav entry marks the current page: an exact match on its own
+ * href, or a match on one of its `section` prefixes. Exact, not
+ * `startsWith`, for the href itself: `/` would otherwise light up on every
+ * route, and `/lines` on a single line's page. Shared by the bar
+ * (`PrimaryNavLink`) and the drawer so the two agree. */
+export function isActiveNavHref(pathname: string | null, destination: NavDestination | string): boolean {
+  if (pathname === null) return false;
+  const { href, section = [] } = typeof destination === 'string' ? { href: destination } : destination;
+  if (pathname === href) return true;
+  return section.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
 
-/** Visible only to authenticated users -- unlike
- * `TRACKED_TRAINS_DESTINATION` above, a group has no useful
- * anonymous-visitor landing state at all (an anonymous "Groups" click has
- * nothing to show but a login prompt with zero context), so every
- * consumer gates it on the session rather than advertising it to
- * everyone. */
+/** Visible only to authenticated users: a group has no useful anonymous
+ * landing state at all. */
 export const GROUPS_DESTINATION: NavDestination = { href: '/groups', label: 'Groups' };
 
-/** Review §3.1.3: `/chat` was undiscoverable -- reachable only by typing
- * the URL directly, with no nav entry pointing an allow-listed user at it.
- * Visible only when `getChatbotAccess()` (fetched alongside the session in
- * `app/layout.tsx`'s own `NavBarWithSession`, in the same `<Suspense>`
- * boundary) actually resolves to `'allowed'` -- a non-allow-listed logged-in
- * visitor gets the explained dead-end at `/chat` itself (Task 3.1.2), not a
- * nav item pointing at it. */
+/** `/chat`. Visible only when `getChatbotAccess()` resolves to `'allowed'`
+ * (fetched alongside the session in `app/layout.tsx`'s
+ * `NavBarWithSession`). */
 export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Ask about trains' };
 
 /** The account page: download your data, delete your account (UK legal
- * audit LEG-4). Authenticated only, like `GROUPS_DESTINATION`, since there
- * is nothing on it for an anonymous visitor. Listed last in the account
- * menu, just above the session actions. */
+ * audit LEG-4). Authenticated only. */
 export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'Account & data' };
 
-/** What the mobile drawer lists: every primary destination, the planner
- * (`PLAN_JOURNEY_DESTINATION`), plus the per-account ones the bar hands to
- * the account menu on desktop. The
- * drawer is the ONLY nav surface below `md`, so it has to carry the union
- * — a destination missing here is unreachable from the nav on a phone. */
-/** `/transit`: the tram networks Distant Signal serves (Manchester
- * Metrolink first; docs/superpowers/specs/2026-10-09-transit-networks-design.md).
- * Listed only while the api serves at least one network
- * (`GET /public/transit/networks` non-empty), so it stays hidden while
- * Metrolink is off. In the drawer only, after "Lines": the inline bar has no
- * width to spare at `md` (see `PRIMARY_NAV_DESTINATIONS`), and `/lines`
- * links to it for desktop visitors. */
+/** `/account/preferences`: colour theme, notifications, pride flag and the
+ * Claude API key (round 2, item 4). Open to everyone, since most of it is
+ * saved in the browser, so the drawer always lists it and the footer links
+ * to it for logged-out desktop visitors, who have no account menu. */
+export const PREFERENCES_DESTINATION: NavDestination = { href: '/account/preferences', label: 'Preferences' };
+
+/** `/transit`: the tram networks Distant Signal serves
+ * (docs/superpowers/specs/2026-10-09-transit-networks-design.md). Listed
+ * only while the api serves at least one network, in the drawer after
+ * "Lines": the inline bar has no width to spare, and `/lines` links to it
+ * for desktop visitors. */
 export const TRANSIT_DESTINATION: NavDestination = { href: '/transit', label: 'Trams' };
 
+/** What the mobile drawer lists: every primary destination, plus the
+ * per-account ones the bar hands to the account menu on desktop. The drawer
+ * is the ONLY nav surface below `md`, so it carries the union. */
 export function navDrawerDestinations(
   authenticated: boolean,
   chatAllowed: boolean,
   transitOn = false,
 ): NavDestination[] {
   return [
-    // Planning sits straight after tracking: they are the two ways to start
-    // a journey. Trams follow the National Rail lines.
     ...PRIMARY_NAV_DESTINATIONS.flatMap((destination) =>
-      destination === TRACK_JOURNEY_DESTINATION
-        ? [destination, PLAN_JOURNEY_DESTINATION]
-        : destination.href === '/lines' && transitOn
-          ? [destination, TRANSIT_DESTINATION]
-          : [destination],
+      destination.href === '/lines' && transitOn ? [destination, TRANSIT_DESTINATION] : [destination],
     ),
-    TRACKED_TRAINS_DESTINATION,
     ...(authenticated ? [GROUPS_DESTINATION] : []),
     ...(chatAllowed ? [CHAT_DESTINATION] : []),
     ...(authenticated ? [ACCOUNT_DESTINATION] : []),
+    PREFERENCES_DESTINATION,
   ];
 }
 
-/** What the avatar-keyed account menu lists (above "Log out", which the
- * menu adds itself because it is an action, not a destination). Only ever
- * rendered for an authenticated visitor, so the always-on entries are
- * unconditional; `CHAT_DESTINATION` is appended only for an allow-listed
- * caller (`chatAllowed`) -- `getChatbotAccess()` already implies
- * authentication (it fails closed to `'forbidden'`, never `'allowed'`, for
- * an anonymous caller), so this never renders Chat for a logged-out
- * visitor. */
+/** What the avatar-keyed account menu lists (above the session actions,
+ * which the menu adds itself). Only rendered for an authenticated visitor;
+ * `CHAT_DESTINATION` only for an allow-listed one. */
 export function accountMenuDestinations(chatAllowed: boolean): NavDestination[] {
-  return [
-    TRACKED_TRAINS_DESTINATION,
-    GROUPS_DESTINATION,
-    ...(chatAllowed ? [CHAT_DESTINATION] : []),
-    ACCOUNT_DESTINATION,
-  ];
+  return [GROUPS_DESTINATION, ...(chatAllowed ? [CHAT_DESTINATION] : []), ACCOUNT_DESTINATION, PREFERENCES_DESTINATION];
 }

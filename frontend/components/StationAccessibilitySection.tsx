@@ -18,16 +18,17 @@ import {
 import { SectionTitle } from './SectionTitle';
 import {
   ACCESSIBILITY_CATEGORIES,
-  computeAtAGlance,
+  computeKeyFacts,
   dedupeAcrossSection,
   hasRenderableValue,
   hostLabel,
   humanizeKey,
   isEmptyNode,
+  markupToPlainText,
   renderAccessibilityValue,
   sortEntriesByKind,
   type AccessibilityNode,
-  type AtAGlanceFact,
+  type KeyFact,
   type LabelledNode,
 } from '@/lib/stationAccessibility';
 import type { StationAccessibilityData } from '@/lib/types';
@@ -130,6 +131,12 @@ function describeCount(count: number, noun?: string): string {
  * requirement as a consequence of the same threshold. */
 const INLINE_ITEM_THRESHOLD = 3;
 
+/** A rich-text note longer than this many characters of plain text (about
+ * four lines at the section's 70ch measure) starts collapsed behind a
+ * "Notes" disclosure. A sentence or two stays inline: hiding it would cost
+ * a click for less than it saves. */
+const LONG_NOTE_CHARS = 280;
+
 /** The tick/cross in front of a Pattern A availability line.
  *
  * `aria-hidden`, and never the only carrier of the fact: the words
@@ -181,6 +188,24 @@ function AvailabilityIcon({ available }: { available: boolean }) {
         )}
       </svg>
     </Box>
+  );
+}
+
+/** A sanitized rich-text note, collapsed behind a "Notes" disclosure when
+ * it is longer than `LONG_NOTE_CHARS`. The disclosure's accessible name
+ * carries `path` ("Step free category: Notes"), so several of them on one
+ * page stay distinguishable (see `Disclosure`). */
+function RichTextNote({ html, path }: { html: string; path?: string | undefined }) {
+  const body = (
+    <Typography fz="sm" data-rich-text>
+      <div dangerouslySetInnerHTML={{ __html: html }} />
+    </Typography>
+  );
+  if (markupToPlainText(html).length <= LONG_NOTE_CHARS) return body;
+  return (
+    <Disclosure label="Notes" qualifier={path}>
+      {body}
+    </Disclosure>
   );
 }
 
@@ -305,11 +330,11 @@ function AccessibilityNodeView({
       // `app/globals.css`'s `[data-rich-text] a` rule -- these anchors come
       // from external markup, so they carry no Mantine class and would
       // otherwise render browser-default blue against a grape theme.
-      return (
-        <Typography fz="sm" data-rich-text>
-          <div dangerouslySetInnerHTML={{ __html: node.html }} />
-        </Typography>
-      );
+      //
+      // A long note (several paragraphs of station copy is common) is
+      // collapsed behind a "Notes" disclosure, so the section reads as
+      // facts first; see `LONG_NOTE_CHARS`.
+      return <RichTextNote html={node.html} path={path} />;
 
     case 'tokens':
       return (
@@ -374,7 +399,9 @@ function AccessibilityNodeView({
         <ul className="accessibilityList">
           {node.items.map((item, index) => (
             <li key={index}>
-              <AccessibilityNodeView node={item} path={path} />
+              {/* Numbered when there are several, so two long notes in one
+                  list get distinct "Notes" disclosure names. */}
+              <AccessibilityNodeView node={item} path={path && node.items.length > 1 ? `${path} ${index + 1}` : path} />
             </li>
           ))}
         </ul>
@@ -560,21 +587,23 @@ function renderableGroups(data: StationAccessibilityData): RenderableGroup[] {
  * and `'empty'` (`200 {}`: the row exists but published none of the twelve
  * allowlisted keys) are two genuinely different facts and get two
  * different sentences -- never collapsed into one "no data" message. */
-/** review §3.5.3's at-a-glance strip, rendered as a row of chips above the
- * full section: the handful of facts a reader most often scrolls all
- * 4,500px to find, surfaced without asking them to. Purely additive -- the
- * full section below still carries every fact in full, this is a shortcut
- * to the ones most worth one. */
-function AtAGlanceStrip({ facts }: { facts: AtAGlanceFact[] }) {
+/** The key facts (review §3.5.3, round 2): the handful a reader most often
+ * scrolls the whole section to find, as a definition list rather than a
+ * row of grey pills, so each fact is a term and its value to a screen
+ * reader too. `<div>` groups each pair, which HTML allows inside `<dl>`, so
+ * the `.keyFacts` grid can keep a term and its value on one row. Purely
+ * additive: the full section below still carries every fact. */
+function KeyFacts({ facts }: { facts: KeyFact[] }) {
   if (facts.length === 0) return null;
   return (
-    <Group gap="xs" wrap="wrap" role="list" aria-label="At a glance">
+    <dl className="keyFacts" aria-label="Key facts">
       {facts.map((fact) => (
-        <Badge key={fact.label} variant="light" color="gray" tt="none" fw={500} size="lg" role="listitem">
-          {fact.label}: {fact.value}
-        </Badge>
+        <div key={fact.label}>
+          <dt>{fact.label}</dt>
+          <dd>{fact.value}</dd>
+        </div>
       ))}
-    </Group>
+    </dl>
   );
 }
 
@@ -585,7 +614,7 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
   // paid once on the server and once more on hydration; it must not also be
   // paid on every unrelated re-render of this client component.
   const groups = useMemo(() => (result.coverage === 'present' ? renderableGroups(result.data) : []), [result]);
-  const atAGlance = useMemo(() => (result.coverage === 'present' ? computeAtAGlance(result.data) : []), [result]);
+  const keyFacts = useMemo(() => (result.coverage === 'present' ? computeKeyFacts(result.data) : []), [result]);
   // A `200` whose every allowlisted value turned out to be `{}`/`[]` is the
   // same fact as a `200 {}` from the reader's point of view -- the station
   // has published nothing -- so it gets the same sentence rather than an
@@ -608,7 +637,7 @@ export function StationAccessibilitySection({ result }: StationAccessibilitySect
       {nothingPublished && (
         <Text c="dimmed">No accessibility or facilities details have been published for this station.</Text>
       )}
-      <AtAGlanceStrip facts={atAGlance} />
+      <KeyFacts facts={keyFacts} />
       {groups.map((group) => (
         <Stack key={group.heading} gap={4}>
           {/* review §3.5.2: promoted from a bold `<p>` to a real heading --

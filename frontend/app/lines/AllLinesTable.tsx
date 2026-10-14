@@ -2,7 +2,6 @@
 
 import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  Badge,
   Box,
   Chip,
   ChipGroup,
@@ -28,6 +27,7 @@ import {
   severityRank,
   severityGroup,
   SEVERITY_GROUP_LABELS,
+  severityGroupLabel,
   SEVERITY_GROUPS_BY_RANK,
   type SeverityGroup,
 } from '@/lib/severity';
@@ -41,6 +41,8 @@ import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 import { fullTitle } from '@/lib/pageMetadata';
 import { LinesFilterBar } from './LinesFilterBar';
+import { StateBadge } from '@/components/StateBadge';
+import { noOptionsFound } from '@/components/noOptionsFound';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 interface SortState {
@@ -170,12 +172,8 @@ function statusChipLabel(selected: SeverityGroup | null): string {
 
 /** A severity group's name as a chip or label, in sentence case ("Minor
  * disruption"), matching the sentence-case status badges in the table
- * below. `SEVERITY_GROUP_LABELS` keeps the Title Case form for running
- * text and the tab title. */
-function groupChipLabel(group: SeverityGroup): string {
-  const label = SEVERITY_GROUP_LABELS[group];
-  return label.charAt(0) + label.slice(1).toLowerCase();
-}
+ * below and the /status tiles (`severityGroupLabel`). */
+const groupChipLabel = severityGroupLabel;
 
 /** The query params this table keeps in the URL. `statusGroup` is also
  * what `app/status/page.tsx`'s counter tiles link to. */
@@ -205,24 +203,6 @@ export function linesFilterUrl(
   if (state.statusGroup) params.set(LINES_STATUS_GROUP_PARAM, state.statusGroup);
   const search = params.toString();
   return `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
-}
-
-/** Same gap, same fix, as `components/IncidentSearchForm.tsx`'s own
- * `noOptionsFound` (see that file's comment for the underlying Mantine
- * behaviour): a `searchable` combobox's own `Combobox.Empty` is an
- * unstyled `<Box>` with no ARIA role, and Mantine hides the whole
- * `role="listbox"` outright when there are zero options and no
- * `nothingFoundMessage` -- reachable here whenever a typed operator
- * search matches none of `operatorOptions`, not just in a fixture with an
- * empty catalogue. Duplicated locally rather than imported, matching this
- * file's own `countryChipLabel`/`expandOperatorForFiltering` precedent for
- * a small, component-local concern. */
-function noOptionsFound(label: string) {
-  return (
-    <Box role="option" aria-disabled="true">
-      {label}
-    </Box>
-  );
 }
 
 /** A line name with a line-break opportunity after every "/". Names like
@@ -727,9 +707,11 @@ export function AllLinesTable({
                     // rule) -- otherwise "No data" clips to "N…" in this same
                     // table at narrow widths.
                     <Tooltip label={noStatusReason(representative)}>
-                      <Badge tt="none" color="gray" variant="outline" data-status-badge>
-                        No data
-                      </Badge>
+                      <span>
+                        <StateBadge tone="neutral" data-status-badge="">
+                          No data
+                        </StateBadge>
+                      </span>
                     </Tooltip>
                   )}
                 </TableTd>

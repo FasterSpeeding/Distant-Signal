@@ -20,12 +20,9 @@ import { pageMetadata } from '@/lib/pageMetadata';
  * the branch an unfurler bot (never carrying either param) actually gets.
  *
  * Title matches the page's own `<h1>` ("Track a Train"). This route has no
- * nav label of its own to agree with -- it was dropped from the nav bar in
- * favour of `/trains` (see `app/layout.tsx`'s comment there), and stays
- * dropped now that `/journeys/new` (`lib/navLinks.ts`'s
- * `TRACK_JOURNEY_DESTINATION`) is the nav's actual primary entry point for
- * tracking -- see that constant's own doc comment for why this page is
- * NOT redirected there: several narrower flows still land here on
+ * nav label of its own to agree with: it sits under the nav's one "Track"
+ * entry (`lib/navLinks.ts`'s `TRACK_DESTINATION`), and is NOT redirected
+ * to `/journeys/new` because several narrower flows still land here on
  * purpose, each wanting exactly this single pre-filled leg-1 form and
  * nothing past it -- `/trains`' manual-fallback link, `/stations/[crs]`,
  * `TicketEntryForm`, and `trackAgainHref`'s "Track this journey again" --
