@@ -1,6 +1,6 @@
 import '@/app/globals.css';
 import { Suspense } from 'react';
-import { ColorSchemeScript, mantineHtmlProps, Container } from '@mantine/core';
+import { Box, ColorSchemeScript, mantineHtmlProps, Container } from '@mantine/core';
 import type { Metadata, Viewport } from 'next';
 import { headers } from 'next/headers';
 import { AppNavBar } from '@/components/AppNavBar';
@@ -12,8 +12,10 @@ import { LoginConsentProvider } from '@/components/LoginConsentNote';
 import { legalPagesPublished } from '@/lib/legal';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
+import { ConnectedAppNotice } from '@/components/ConnectedAppNotice';
 import {
   getChatbotAccess,
+  getConnectedAppNotice,
   getDataFreshness,
   getMyGroups,
   getSessionOrLoggedOut,
@@ -212,6 +214,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // `useGroupSummaries()` already treat `null` as "nothing to offer" --
   // same fail-safe posture `useGroupSummaries` always had, just moved here.
   const groupsPromise = getMyGroups({ signal: AbortSignal.timeout(FRESHNESS_TIMEOUT_MS) }).catch(() => null);
+  // The connected-app banner's notice: null without a session cookie (no
+  // request at all), with no app connected in the last 7 days, or on any
+  // failure. Bounded like the above.
+  const noticePromise = getConnectedAppNotice({ signal: AbortSignal.timeout(FRESHNESS_TIMEOUT_MS) });
   // The tram networks we show, for the footer's licence line: [] by
   // default and on any failure (it never throws), bounded like the above.
   const transitPromise = getTransitNetworks({ signal: AbortSignal.timeout(FRESHNESS_TIMEOUT_MS) });
@@ -230,6 +236,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // sequential wait in practice, just picking up a result that was already
   // being computed alongside it.
   const groups = await groupsPromise;
+  const connectedAppNotice = await noticePromise;
   const transitOn = (await transitPromise).length > 0;
   // Set by proxy.ts. Absent only where proxy.ts does not run (a prefetch),
   // and then there is no document for the script to run in.
@@ -333,6 +340,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   with `margin-inline: auto` centering the clamped box --
                   matching the nav Container's box on every route. */}
                 <Container id="main-content" component="main" size="lg" px={0} w="100%" flex={1}>
+                  {/* For 7 days after an app is connected to the account
+                    (delegated access, docs/connected-apps.md). */}
+                  {connectedAppNotice && (
+                    <Box px="lg" pt="md">
+                      <ConnectedAppNotice notice={connectedAppNotice} />
+                    </Box>
+                  )}
                   {children}
                 </Container>
                 <OpenDataAttribution transitOn={transitOn} />

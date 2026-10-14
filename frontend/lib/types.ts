@@ -2536,3 +2536,59 @@ export interface TransitLineTimetable {
   realtime: false;
   kind: 'scheduled';
 }
+
+/** A delegated-access scope a connected app may hold
+ * (`crates/api/src/auth/delegated.rs::Scope`). */
+export type ConnectedAppScope = 'journeys:read' | 'journeys:write' | 'journeys:delete';
+
+/** One app the user connected (`GET /public/account/connected-apps`,
+ * `crates/api/src/routes/connected_apps.rs::GrantView`). */
+export interface ConnectedAppGrant {
+  client: string;
+  displayName: string;
+  scopes: string[];
+  createdAt: string;
+  lastUsedAt: string | null;
+  /** `false` while Distant Signal has turned the app off. */
+  clientEnabled: boolean;
+}
+
+/** An app the user could connect. */
+export interface ConnectableApp {
+  name: string;
+  displayName: string;
+  scopes: string[];
+}
+
+/** One journey a connected app deleted (kept 30 days). */
+export interface ConnectedAppDeletion {
+  id: number;
+  client: string;
+  journeyId: number;
+  deletedAt: string;
+  summary: {
+    customName?: string | null;
+    legs?: {
+      serviceDate?: string | null;
+      originCrs?: string | null;
+      destinationCrs?: string | null;
+      trainUid?: string | null;
+    }[];
+  };
+}
+
+export interface ConnectedAppsData {
+  grants: ConnectedAppGrant[];
+  available: ConnectableApp[];
+  recentDeletions: ConnectedAppDeletion[];
+}
+
+/** `GET /public/account/connected-apps/{client}/consent`. */
+export interface ConnectAppConsent {
+  client: ConnectableApp;
+  username: string | null;
+  name: string | null;
+  confirmationToken: string;
+  expiresAt: string;
+  existingGrant: ConnectedAppGrant | null;
+}

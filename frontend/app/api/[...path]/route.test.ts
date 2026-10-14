@@ -97,6 +97,38 @@ describe('/api/[...path] proxy', () => {
     expect(headers.Referer).toBe('http://localhost:3000/settings');
   });
 
+  // Delegated access (spec 2026-10-14 §5.7, threat T12): the api accepts a
+  // delegated bearer only on its in-cluster listener, and this proxy must
+  // never be a way to present one. An `Authorization` header the browser
+  // sends (a stolen token, an XSS) is dropped on every method, with or
+  // without a session cookie, and the root-mounted delegated routes get
+  // only the cookie.
+  it.each([
+    ['GET', ['Journeys', 'mine']],
+    ['POST', ['Journeys', 'itinerary']],
+    ['DELETE', ['Journeys', '42']],
+    ['GET', ['account', 'connected-apps']],
+  ] as const)('never forwards Authorization (%s %s)', async (method, path) => {
+    const handler = { GET, POST, DELETE }[method];
+    for (const cookie of [undefined, 'distant_signal_session=abc123']) {
+      vi.mocked(fetch).mockClear();
+      const req = makeRequest(`/api/${path.join('/')}`, {
+        method,
+        headers: {
+          authorization: 'Bearer eyJhbGciOiJSUzI1NiJ9.e30.sig',
+          origin: 'http://localhost:3000',
+          ...(cookie ? { cookie } : {}),
+        },
+        ...(method === 'POST' ? { body: '{}' } : {}),
+      });
+      await handler(req, { params: Promise.resolve({ path: [...path] }) });
+      const [, init] = vi.mocked(fetch).mock.calls[0]!;
+      const headers = (init as { headers: Record<string, string> }).headers;
+      expect(Object.keys(headers).map((name) => name.toLowerCase())).not.toContain('authorization');
+      expect(headers.Cookie).toBe(cookie);
+    }
+  });
+
   it('omits Origin/Referer from the outbound fetch when the browser sent neither', async () => {
     const req = makeRequest('/api/auth/logout', { method: 'POST' });
     await POST(req, { params: Promise.resolve({ path: ['auth', 'logout'] }) });

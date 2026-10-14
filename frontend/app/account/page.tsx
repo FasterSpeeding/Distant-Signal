@@ -4,6 +4,7 @@ import type { Metadata } from 'next';
 import { getSessionOrLoggedOut } from '@/lib/api';
 import { LoginControl } from '@/components/LoginControl';
 import { DeleteAccountButton } from '@/components/DeleteAccountButton';
+import { ButtonLink } from '@/components/ButtonLink';
 import { pageMetadata } from '@/lib/pageMetadata';
 
 // Session-dependent: never prerender (see app/page.tsx's own comment).
@@ -49,6 +50,16 @@ export default async function AccountPage() {
           <Button component="a" href="/api/account/export" download variant="light">
             Download my data
           </Button>
+        </Stack>
+      </Card>
+
+      <Card withBorder component="section" aria-labelledby="connected-apps-heading">
+        <Stack gap="sm" align="flex-start">
+          <SectionTitle id="connected-apps-heading">Connected apps</SectionTitle>
+          <Text>See the apps that can work with your journeys, such as an assistant, and disconnect them.</Text>
+          <ButtonLink href="/account/connected-apps" variant="light">
+            Open Connected apps
+          </ButtonLink>
         </Stack>
       </Card>
 

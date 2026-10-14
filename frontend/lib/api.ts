@@ -1,6 +1,8 @@
 import { cookies, headers } from 'next/headers';
 import { clientIpFromHeaders, REAL_IP_HEADER } from './clientIp';
 import type {
+  ConnectedAppGrant,
+  ConnectedAppsData,
   LineStatusReport,
   LineStatusHistoryEntry,
   LineDailyStats,
@@ -1324,4 +1326,33 @@ export async function getTransitLineTimetable(
   return fetchJson<TransitLineTimetable>(transitUrl(network, ['lines', line, 'timetable'], query), {
     next: { revalidate: 300 },
   });
+}
+
+/** `GET /public/account/connected-apps`: the apps the visitor connected,
+ * the apps they could connect, and what an app deleted in the last 30
+ * days (docs/connected-apps.md). `null` when not logged in. */
+export async function getConnectedApps(): Promise<ConnectedAppsData | null> {
+  const url = `${baseUrl()}/public/account/connected-apps`;
+  const response = await apiFetch(url, { cache: 'no-store', ...(await cookieForwardInit()) });
+  if (response.status === 401) return null;
+  if (!response.ok) throw errorForResponse(url, response);
+  return response.json() as Promise<ConnectedAppsData>;
+}
+
+/** `GET /public/account/connected-apps-notice`: the newest app connected
+ * in the last 7 days, for the banner every page shows. `null` when there
+ * is none, when not logged in (no request is sent without a session
+ * cookie), or on any failure: the banner is never worth an error. */
+export async function getConnectedAppNotice(init?: Pick<RequestInit, 'signal'>): Promise<ConnectedAppGrant | null> {
+  const forward = await cookieForwardInit();
+  if (!forward.headers) return null;
+  try {
+    const url = `${baseUrl()}/public/account/connected-apps-notice`;
+    const response = await apiFetch(url, { cache: 'no-store', ...init, ...forward });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { notice: ConnectedAppGrant | null };
+    return body.notice;
+  } catch {
+    return null;
+  }
 }
