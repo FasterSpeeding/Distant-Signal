@@ -18,7 +18,9 @@
 //! Off by default: the chart deploys it only for an enabled network
 //! (`pollerTransitSchedule.networks.<network>.enabled`).
 
+mod adapter;
 mod config;
+mod model;
 mod network;
 mod timetable;
 
@@ -35,10 +37,17 @@ const COMPONENT: &str = "poller-transit-schedule";
 /// How long shutdown waits for an unsent snapshot.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
+/// One whole download (the North West GTFS was 159 MB on 2026-10-14).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// The `User-Agent` of every request: honest and identifying (LEG-21).
+const USER_AGENT: &str = common::user_agent!();
+
 /// What every cycle needs.
 pub(crate) struct Context {
     pub config: Config,
     pub network: NetworkConfig,
+    pub client: reqwest::Client,
     /// The timetable's producer (one item: every part, then the commit).
     pub timetable: SnapshotProducer,
 }
@@ -63,9 +72,14 @@ async fn run() -> anyhow::Result<()> {
     let progress = health_http::spawn_liveness(&config.health);
     let timetable = SnapshotProducer::new(redis, &stream, COMPONENT);
     timetable.start();
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .build()?;
     let ctx = Context {
         config,
         network,
+        client,
         timetable,
     };
 

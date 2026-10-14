@@ -3568,14 +3568,19 @@ dependencies = [
  "chrono",
  "clap",
  "common",
+ "csv",
  "dotenvy",
  "health-http",
  "ingest-stream",
  "metrics",
+ "reqwest 0.13.4",
  "serde",
+ "tempfile",
  "tokio",
  "toml",
  "tracing",
+ "wiremock",
+ "zip",
 ]
 
 [[package]]
