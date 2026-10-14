@@ -132,6 +132,36 @@ for (const scheme of SCHEMES) {
           });
         });
       }
+
+      // The /lines search and filters bar (app/lines/LinesFilterBar.tsx) in
+      // the two states the full-page shot above can't show: stuck to the
+      // top after scrolling, and with the filters open (a popover from
+      // `sm` up, a bottom sheet below). Viewport shots, not full page: both
+      // states are about what is on screen.
+      for (const [state, open] of [
+        ['lines-scrolled', false],
+        ['lines-filters-open', true],
+      ] as const) {
+        test(state, async ({ page }) => {
+          await page.clock.setFixedTime(FIXED_NOW);
+          await page.goto('/lines', { waitUntil: 'networkidle' });
+          await page.addStyleTag({ content: NO_MOTION_CSS });
+          await page.evaluate(() => document.fonts.ready);
+          if (open) {
+            await page.getByRole('button', { name: 'Filters' }).click();
+            await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+          } else {
+            await page.evaluate(() => window.scrollTo(0, 1200));
+            await expect(page.locator('.linesFilterBar')).toHaveAttribute('data-stuck', 'true');
+          }
+
+          await expect(page).toHaveScreenshot(`${state}-${scheme}-${width}.png`, {
+            animations: 'disabled',
+            caret: 'hide',
+            mask: volatile(page),
+          });
+        });
+      }
     });
   }
 }

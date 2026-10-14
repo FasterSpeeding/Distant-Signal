@@ -214,4 +214,12 @@ describe('statusGroup deep link', () => {
     await renderPage({ statusGroup: 'not-a-real-group' });
     expect(screen.getByRole('heading', { name: 'Lines', level: 1 })).toBeInTheDocument();
   });
+
+  it('seeds the search from ?q= and the operator filter from repeated ?operator=', async () => {
+    await renderPage({ q: 'great', operator: ['GW', 'VT'] });
+    expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('great');
+    expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'West Coast Main Line' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('2');
+  });
 });

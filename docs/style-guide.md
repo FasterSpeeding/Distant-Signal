@@ -194,7 +194,7 @@ used, rather than as a literal in a component.
 | Token | Width | What changes |
 | --- | --- | --- |
 | xs | 36em · 576px | Group header actions and member rows stack; standalone-page buttons go full width |
-| sm | 48em · 768px | Issue rows stack and clamp to 2 lines; lines filter bar becomes sticky; journey-progress slots shrink 56→44px |
+| sm | 48em · 768px | Issue rows stack and clamp to 2 lines; the /lines filters open as a bottom sheet instead of a popover; journey-progress slots shrink 56→44px |
 | md | 62em · 992px | Nav links move from the bar into the drawer |
 | lg / xl | 75em / 88em | No custom behaviour |
 
@@ -273,6 +273,15 @@ used, rather than as a literal in a component.
   grape for product notices and information. No blue alerts.
 - **LastUpdated / DataFreshnessInfo**: relative time re-rendered every 30s,
   exact London time in a tooltip; SSR shows the absolute time until mounted.
+- **List search and filters** (`app/lines/LinesFilterBar.tsx`): one
+  sticky row, search on the left and a default-variant "Filters" button
+  on the right with a count badge of active filters. Search is never
+  hidden behind the button. The filters open in a `Popover` from `sm` up
+  and a bottom `Drawer` below it, both a dialog named "Filters" ending in
+  "Clear filters" and "Show *n* lines". The bar is transparent until it
+  sticks, then gets the body colour and a bottom rule. Filter state lives
+  in the URL through `history.replaceState`, not `router.replace`. Not
+  hide-on-scroll.
 - **Form fields**: Mantine `TextInput`/`Autocomplete`: label 14/500,
   description xs dimmed, error in `--mantine-color-error`.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence

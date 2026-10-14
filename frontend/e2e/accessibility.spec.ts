@@ -430,10 +430,26 @@ test.describe('accessibility: interactive sub-states', () => {
     await expectNoViolations(page);
   });
 
+  test('/lines, filters panel open', async ({ page }) => {
+    await page.goto('/lines');
+    await page.getByRole('button', { name: 'Filters' }).click();
+    await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+    await expectNoViolations(page);
+  });
+
+  test('/lines, filters sheet open on a phone viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/lines');
+    await page.getByRole('button', { name: 'Filters' }).click();
+    await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+    await expectNoViolations(page);
+  });
+
   test('/lines, operator filter dropdown open', async ({ page }) => {
     await page.goto('/lines');
-    await page.getByRole('combobox', { name: /Filter by operator/i }).click();
-    await expect(page.getByRole('listbox', { name: /Filter by operator/i })).toBeVisible();
+    await page.getByRole('button', { name: 'Filters' }).click();
+    await page.getByRole('combobox', { name: 'Operator' }).click();
+    await expect(page.getByRole('listbox', { name: 'Operator' })).toBeVisible();
     await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
   });
 
@@ -495,9 +511,10 @@ test.describe('accessibility: interactive sub-states', () => {
     // from `aria-activedescendant`, or the list stops scrolling to the
     // active option, this fails and the waiver has to be re-argued.
     await page.goto('/lines');
-    const combobox = page.getByRole('combobox', { name: /Filter by operator/i });
+    await page.getByRole('button', { name: 'Filters' }).click();
+    const combobox = page.getByRole('combobox', { name: 'Operator' });
     await combobox.click();
-    await expect(page.getByRole('listbox', { name: /Filter by operator/i })).toBeVisible();
+    await expect(page.getByRole('listbox', { name: 'Operator' })).toBeVisible();
     expect(await combobox.getAttribute('aria-activedescendant')).toBeNull();
 
     await page.keyboard.press('ArrowDown');
