@@ -210,6 +210,18 @@ html:root[data-mantine-color-scheme='light'] {
      needs and the review named it explicitly. */
   --ds-color-good-icon: var(--mantine-color-green-7);
   --ds-color-bad-icon: var(--mantine-color-red-7);
+
+  /* Chart series (`lib/chartTheme.ts`): data encodings that borrow the
+     semantic hues (orange late, red cancelled, yellow skipped stops, grape
+     for a plain count). Lines and bars are graphics, so each clears 3:1
+     on white rather than text's 4.5:1: orange 8 3.58:1, red 8 4.51:1,
+     the yellow light-variant text colour 5.21:1, grape 7 4.85:1. The
+     yellow is the off-palette #a85700 above, since yellow 9 only reaches
+     3.00:1 and sits too close to orange 8 in hue. */
+  --ds-chart-count: var(--mantine-color-grape-7);
+  --ds-chart-delay: var(--mantine-color-orange-8);
+  --ds-chart-cancellation: var(--mantine-color-red-8);
+  --ds-chart-skip: var(--mantine-color-yellow-light-color);
 }
 
 /* The dark scheme is NOT the "already fine" case the light-scheme comments
@@ -249,6 +261,12 @@ html:root[data-mantine-color-scheme='dark'] {
      own dark value, already measured at 6.70:1 on the #242424 body. */
   --ds-color-good-icon: var(--mantine-color-green-4);
   --ds-color-bad-icon: var(--mantine-color-red-4);
+  /* The dark half of the chart series colours: shade 4 of each, all over
+     5:1 on the #2e2e2e card and #242424 body. */
+  --ds-chart-count: var(--mantine-color-grape-4);
+  --ds-chart-delay: var(--mantine-color-orange-4);
+  --ds-chart-cancellation: var(--mantine-color-red-4);
+  --ds-chart-skip: var(--mantine-color-yellow-4);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place
