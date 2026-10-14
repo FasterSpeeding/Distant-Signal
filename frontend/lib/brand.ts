@@ -18,15 +18,20 @@ export const SIGNAL_MARK = {
 } as const;
 
 /** The mark as a standalone SVG document, for an `<img>` data URI where
- * JSX SVG isn't available (the preview images). */
-export function signalMarkSvg(): string {
+ * JSX SVG isn't available (the preview images). `tile: false` leaves out
+ * the grape tile, for use on the grape background itself. */
+export function signalMarkSvg({ tile: withTile = true }: { tile?: boolean } = {}): string {
   const { viewBox, tile, tileGradient, post, arm } = SIGNAL_MARK;
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">`,
-    '<defs><linearGradient id="bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">',
-    `<stop offset="0" stop-color="${tileGradient[0]}"/><stop offset="1" stop-color="${tileGradient[1]}"/>`,
-    '</linearGradient></defs>',
-    `<rect x="${tile.x}" y="${tile.y}" width="${tile.size}" height="${tile.size}" rx="${tile.radius}" fill="url(#bg)"/>`,
+    ...(withTile
+      ? [
+          '<defs><linearGradient id="bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">',
+          `<stop offset="0" stop-color="${tileGradient[0]}"/><stop offset="1" stop-color="${tileGradient[1]}"/>`,
+          '</linearGradient></defs>',
+          `<rect x="${tile.x}" y="${tile.y}" width="${tile.size}" height="${tile.size}" rx="${tile.radius}" fill="url(#bg)"/>`,
+        ]
+      : []),
     `<rect x="${post.x}" y="${post.y}" width="${post.width}" height="${post.height}" rx="${post.radius}" fill="${post.fill}"/>`,
     `<polygon fill="${arm.fill}" points="${arm.points}" transform="${arm.transform}"/>`,
     '</svg>',

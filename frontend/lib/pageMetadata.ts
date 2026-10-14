@@ -11,9 +11,11 @@ export const SITE_DESCRIPTION = 'Live UK rail status, train tracking and Delay R
  * the tab reads "Stations · Distant Signal". */
 export const TITLE_TEMPLATE = `%s · ${SITE_NAME}`;
 
-/** The link-preview image, public/opengraph-image.png (1200x630): the
- * signal-arm icon and the site name, a placeholder until the wordmark
- * exists. Listed on every card explicitly: Next merges metadata per
+/** The site-wide link-preview image, public/opengraph-image.png
+ * (1200x630): the wordmark and strapline on the brand background, saved
+ * from `lib/previewImage.tsx`'s template. A route with its own
+ * `opengraph-image.tsx` (the page's title on the same template) replaces
+ * it: Next prefers a file-based image to this one. Listed on every card explicitly: Next merges metadata per
  * top-level field, so a page that sets `openGraph` would drop an image
  * inherited from the root layout. The root layout's `metadataBase` makes
  * the URL absolute. */
@@ -35,7 +37,9 @@ export function fullTitle(title: string): string {
 export function previewCards(title: string, description: string): Pick<Metadata, 'openGraph' | 'twitter'> {
   return {
     openGraph: { title, description, type: 'website', siteName: SITE_NAME, images: [PREVIEW_IMAGE] },
-    twitter: { card: 'summary_large_image', title, description, images: [PREVIEW_IMAGE.url] },
+    // No `images`: X falls back to `og:image`, so a route's own preview
+    // image reaches both cards.
+    twitter: { card: 'summary_large_image', title, description },
   };
 }
 

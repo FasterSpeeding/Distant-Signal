@@ -15,8 +15,9 @@ describe('pageMetadata', () => {
     expect(metadata.twitter).toMatchObject({
       card: 'summary_large_image',
       title: 'Stations · Distant Signal',
-      images: [PREVIEW_IMAGE.url],
     });
+    // X falls back to og:image, so a route's own preview image reaches it.
+    expect(metadata.twitter).not.toHaveProperty('images');
   });
 });
 
