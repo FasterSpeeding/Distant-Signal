@@ -1,0 +1,61 @@
+# promtool unit tests for the CORPUS ingest alerts (see recorded-alerts.yaml's
+# header for how rules.yaml is rendered).
+#
+# DistantSignalCorpusFormatDrift: schedule-ingest's gauge counts the NLC*
+# files in the landing folder that are not .xml.gz (the NLC XML CORPUS
+# feed's format may have drifted). It fires on the first evaluation that sees
+# one (`for: 0m`) and clears once the file is removed.
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  # A drifted file lands at 5m and is removed at 20m.
+  - interval: 1m
+    input_series:
+      - series: 'distant_signal_schedule_feed_corpus_format_drift_files{namespace="distant-signal", pod="schedulefeed"}'
+        values: '0x4 1x15 0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DistantSignalCorpusFormatDrift
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: DistantSignalCorpusFormatDrift
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: distant-signal}
+            exp_annotations:
+              summary: a CORPUS file has an unexpected format
+              description: "An NLC* file in the landing folder is not .xml.gz, so it is ignored. The ingest container's warning names it."
+              runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalcorpusformatdrift
+      - eval_time: 25m
+        alertname: DistantSignalCorpusFormatDrift
+        exp_alerts: []
+  # Registered at 0 and never raised, or another namespace's file: silent.
+  - interval: 1m
+    input_series:
+      - series: 'distant_signal_schedule_feed_corpus_format_drift_files{namespace="distant-signal", pod="schedulefeed"}'
+        values: '0x30'
+      - series: 'distant_signal_schedule_feed_corpus_format_drift_files{namespace="other", pod="schedulefeed"}'
+        values: '2x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DistantSignalCorpusFormatDrift
+        exp_alerts: []
+  # DistantSignalCorpusRejected sums the rejection counter over its `format`
+  # label: a rejected XML snapshot fires it while the JSON series stays at 0.
+  - interval: 1m
+    input_series:
+      - series: 'distant_signal_schedule_feed_corpus_rejected_total{namespace="distant-signal", pod="schedulefeed", format="json"}'
+        values: '0x30'
+      - series: 'distant_signal_schedule_feed_corpus_rejected_total{namespace="distant-signal", pod="schedulefeed", format="xml"}'
+        values: '0x9 1x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DistantSignalCorpusRejected
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DistantSignalCorpusRejected
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: distant-signal}
+            exp_annotations:
+              summary: schedule-ingest rejected a CORPUS extract
+              description: "Moved to corpus/rejected/; the previous extract stays in use. The ingest container's error log names the reason."
+              runbook_url: https://github.com/FasterSpeeding/Distant-Signal/blob/main/docs/alerts.md#distantsignalcorpusrejected

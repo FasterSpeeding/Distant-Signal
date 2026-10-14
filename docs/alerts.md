@@ -1208,7 +1208,24 @@ container's error log names the reason.
 schedule-ingest refused a CORPUS extract (not gzip, not the TIPLOCDATA JSON,
 too few rows, a row without an NLC, or over the decompression cap) and moved
 it to `/data/schedule-feed/corpus/rejected/`. `corpus_locations` keeps the
-previous delivery. The ingest container's error log names the reason.
+previous delivery. The ingest container's error log names the reason. The
+counter carries a `format` label (`json` for `CORPUSExtract.json.gz`, `xml`
+for the `NLC*.xml.gz` snapshot); a file of the non-preferred format is
+checked too, so this can fire for a format that is not being loaded.
+
+### DistantSignalCorpusFormatDrift
+
+A file named like Network Rail's NLC XML CORPUS feed (`NLC*`) sits in the SFTP
+landing folder but is not `.xml.gz`
+(`schedule_feed_corpus_format_drift_files`). NWR's delivery format may have
+changed (an uncompressed `.xml`, a zip, another serialisation).
+schedule-ingest never loads, moves or deletes such a file, so `corpus_locations`
+keeps the previous delivery and the alert stays up until the file is removed.
+The ingest container's warning names the file. Inspect it
+(`kubectl exec deploy/distant-signal-schedulefeed -c ingest -- ls -l
+/data/schedule-feed/incoming`); if the format really changed, the parser
+(`crates/schedule-ingest/src/corpus_xml.rs`) needs updating. Then delete the
+file from the landing folder.
 
 ### DistantSignalCorpusStale
 

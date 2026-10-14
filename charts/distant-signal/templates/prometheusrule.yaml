@@ -1829,6 +1829,27 @@ spec:
             description: "Moved to corpus/rejected/; the previous extract stays in use. The ingest container's error log names the reason."
             runbook_url: {{ printf "%s#distantsignalcorpusrejected" $runbook | quote }}
         {{- /*
+        CORPUS (scheduleFeed.corpus): a file named like the NLC XML CORPUS
+        feed (NLC*) that is not .xml.gz sits in the landing folder. NWR's
+        delivery format may have drifted; schedule-ingest ignores the file
+        (never loads, moves or deletes it), so the gauge stays up until an
+        operator removes it. Fires on the first scrape that sees it. The
+        series only exists while CORPUS ingest is enabled.
+        */}}
+        - alert: DistantSignalCorpusFormatDrift
+          expr: |
+            max by (namespace) (distant_signal_schedule_feed_corpus_format_drift_files{namespace="{{ $ns }}"}) > 0
+          for: 0m
+          labels:
+            severity: {{ .severity }}
+            {{- with $extraLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: "a CORPUS file has an unexpected format"
+            description: "An NLC* file in the landing folder is not .xml.gz, so it is ignored. The ingest container's warning names it."
+            runbook_url: {{ printf "%s#distantsignalcorpusformatdrift" $runbook | quote }}
+        {{- /*
         CORPUS (scheduleFeed.corpus): the newest loaded CORPUS delivery is
         older than corpusStaleAfterDays. api sets the gauge from
         corpus_deliveries at startup and after each load, so it survives
