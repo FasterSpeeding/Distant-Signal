@@ -35,7 +35,7 @@ test.describe('transit pages', () => {
 
   test('a stop shows its notices, and a line its status', async ({ page }) => {
     await page.goto('/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17');
-    await expect(page.getByRole('link', { name: 'MAN' })).toHaveAttribute('href', '/stations/MAN');
+    await expect(page.getByRole('link', { name: 'MAN', exact: true })).toHaveAttribute('href', '/stations/MAN');
     await expect(page.getByRole('list', { name: 'Notices' })).toContainText('Lift out of service at Piccadilly');
     await page.goto('/transit/metrolink/lines/blue');
     await expect(page.getByText('Minor delays')).toBeVisible();
