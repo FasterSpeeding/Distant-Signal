@@ -250,7 +250,7 @@ export function LinesFilterBar({
         position="bottom"
         title="Filters"
         transitionProps={transitionProps}
-        classNames={{ content: 'linesFilterSheet' }}
+        classNames={{ content: 'linesFilterSheet', title: 'linesFilterSheetTitle' }}
       >
         {panel}
       </Drawer>

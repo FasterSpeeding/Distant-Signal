@@ -1613,6 +1613,13 @@ a[data-text-link-tone='inherit'] {
   }
 }
 
+/* The phone sheet's "Filters" title, drawn like the popover's h5 title. */
+.linesFilterSheetTitle {
+  font-size: var(--mantine-h5-font-size);
+  font-weight: var(--mantine-h5-font-weight);
+  line-height: var(--mantine-h5-line-height);
+}
+
 /* The phone filters sheet (`LinesFilterBar`'s bottom `Drawer`): rounded
    top corners so it reads as a sheet, only as tall as its contents (capped
    so the page stays visible behind it), and clear of the home indicator.
