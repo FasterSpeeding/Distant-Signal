@@ -187,11 +187,13 @@ test.describe('phone nav bar (390x844)', () => {
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
 
-  test('keeps the brand and the three always-on controls in the bar', async ({ page }) => {
+  test('keeps the brand, the freshness readout and log in in the bar, and no settings controls', async ({ page }) => {
     const nav = page.locator('nav[aria-label="Main"]');
     await page.goto('/lines');
     await expect(nav.getByRole('link', { name: 'Distant Signal' })).toBeVisible();
-    await expect(nav.getByRole('button', { name: 'Colour theme' })).toBeVisible();
+    await expect(nav.getByRole('button', { name: 'Data freshness' })).toBeVisible();
+    // Theme and pride flag live on /account/preferences now.
+    await expect(nav.getByRole('button', { name: 'Colour theme' })).toHaveCount(0);
     await expect(nav.getByRole('button', { name: /^Pride mode:/ })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Log in' })).toBeVisible();
   });

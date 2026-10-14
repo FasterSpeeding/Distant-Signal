@@ -20,7 +20,6 @@ import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
 import { PinnedTramLineCard } from '@/components/PinnedTramLineCard';
 import { LoginControl } from '@/components/LoginControl';
-import { NotificationsToggle } from '@/components/NotificationsToggle';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
 import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
@@ -256,28 +255,21 @@ export default async function DashboardPage() {
     return (
       <Stack p="lg" gap="xl">
         <Stack gap="xs">
-          <Group justify="space-between" align="flex-start">
-            {/* Review §3.1.7: on mobile this used to repeat "Distant
-                Signal" -- once as the nav brand, again as this page's own
-                `<h1>` a little further down -- reading as duplicated
-                branding above the fold. Re-measured after Task 1.2's nav
-                collapse (which is what this task was sequenced after): the
-                nav no longer wraps to a multi-row header on a phone, so
-                the gap between the two is smaller than it once was, but
-                the duplication itself is unchanged -- the nav still says
-                "Distant Signal" and this heading did too, both still
-                visible without scrolling. The `<h1>` stays, for the
-                document outline and for a link-unfurler bot with no nav to
-                read a name from; only its TEXT changes, to something the
-                nav doesn't already say -- the tagline immediately below
-                keeps the rest of the pitch. */}
-            <Title order={1}>Live UK rail status</Title>
-            {/* Single global toggle (Decision 6), not per-line -- renders
-                for every visitor (Tier 2) regardless of pinned lines, so it
-                lives beside the page's own header rather than nested inside
-                either the anonymous or logged-in section below. */}
-            <NotificationsToggle />
-          </Group>
+          {/* Review §3.1.7: on mobile this used to repeat "Distant
+              Signal" -- once as the nav brand, again as this page's own
+              `<h1>` a little further down -- reading as duplicated
+              branding above the fold. Re-measured after Task 1.2's nav
+              collapse (which is what this task was sequenced after): the
+              nav no longer wraps to a multi-row header on a phone, so
+              the gap between the two is smaller than it once was, but
+              the duplication itself is unchanged -- the nav still says
+              "Distant Signal" and this heading did too, both still
+              visible without scrolling. The `<h1>` stays, for the
+              document outline and for a link-unfurler bot with no nav to
+              read a name from; only its TEXT changes, to something the
+              nav doesn't already say -- the tagline immediately below
+              keeps the rest of the pitch. */}
+          <Title order={1}>Live UK rail status</Title>
           <Text c="dimmed">
             Live UK rail line status, train tracking and Delay Repay support. Pin the lines, stations and operators you
             care about once you&apos;re logged in.
@@ -481,7 +473,6 @@ export default async function DashboardPage() {
           for the 992-1199px band where the nav bar can't fit it. */}
       <Group justify="space-between">
         <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
-        <NotificationsToggle />
       </Group>
 
       {/* When ALL THREE pinned sections are empty, the live "Right now" module

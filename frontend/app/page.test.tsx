@@ -205,26 +205,18 @@ describe('DashboardPage', () => {
     );
   });
 
-  // NotificationsToggle (Decision 6's single global toggle) renders itself
-  // unconditionally on this page -- both branches below -- but gates on
-  // browser capability (`'serviceWorker' in navigator && 'PushManager' in
-  // window`), which jsdom has neither of by default. No component mock is
-  // needed for this page's own tests as a result: the real component
-  // already degrades to a disabled control here, same as it would in any
-  // browser lacking Push API support (review §2.11 -- the slot is always
-  // reserved, never absent). See NotificationsToggle.test.tsx for the
-  // component's own behavior under a stubbed-supported browser.
-  it('renders a disabled "Enable notifications" control under jsdom (no Push API support)', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
-      authenticated: false,
-      id: null,
-      username: null,
-      name: null,
-    });
+  // Notifications moved to /account/preferences (round 2): the home page
+  // no longer carries the control, logged in or out.
+  it.each([false, true])('has no notifications control (authenticated: %s)', async (authenticated) => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(
+      authenticated
+        ? { authenticated: true, id: 'u1', username: null, name: 'Ada' }
+        : { authenticated: false, id: null, username: null, name: null },
+    );
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
-    expect(await screen.findByRole('button', { name: /enable notifications/i })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /enable notifications/i })).toBeNull();
   });
 
   it('anonymous, a line disrupted: lists it, worst-first', async () => {

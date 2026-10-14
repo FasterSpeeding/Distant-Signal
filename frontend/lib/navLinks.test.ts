@@ -7,6 +7,7 @@ import {
   isActiveNavHref,
   navDrawerDestinations,
   PLAN_JOURNEY_DESTINATION,
+  PREFERENCES_DESTINATION,
   PRIMARY_NAV_DESTINATIONS,
   TRACK_JOURNEY_DESTINATION,
   TRACKED_TRAINS_DESTINATION,
@@ -111,7 +112,12 @@ describe('navDrawerDestinations', () => {
 describe('accountMenuDestinations', () => {
   it('always offers My Trains & Tickets and Groups', () => {
     const hrefs = accountMenuDestinations(false).map((d) => d.href);
-    expect(hrefs).toEqual([TRACKED_TRAINS_DESTINATION.href, GROUPS_DESTINATION.href, ACCOUNT_DESTINATION.href]);
+    expect(hrefs).toEqual([
+      TRACKED_TRAINS_DESTINATION.href,
+      GROUPS_DESTINATION.href,
+      ACCOUNT_DESTINATION.href,
+      PREFERENCES_DESTINATION.href,
+    ]);
   });
 
   it('appends Chat only when allow-listed', () => {
@@ -121,6 +127,7 @@ describe('accountMenuDestinations', () => {
       GROUPS_DESTINATION.href,
       CHAT_DESTINATION.href,
       ACCOUNT_DESTINATION.href,
+      PREFERENCES_DESTINATION.href,
     ]);
   });
 });

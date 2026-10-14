@@ -192,7 +192,7 @@ test.describe('/chat, mocked network', () => {
     await page.goto('/chat');
     await page.getByPlaceholder(/ask about/i).fill('hi');
     await page.getByRole('button', { name: /send/i }).click();
-    await expect(page.getByText(/anthropic api key was rejected/i)).toBeVisible();
+    await expect(page.getByText(/claude api key was rejected/i)).toBeVisible();
   });
 
   test('surfaces a distinct "reconnect" error on a 401/403 from /mcp', async ({ page }) => {

@@ -705,179 +705,6 @@ body[data-pride='lesbian'] [data-site-title] {
   }
 }
 
-/* The toggle button itself, once on -- otherwise it's indistinguishable
-   from `ThemeToggle` at a glance beyond the emoji. Targets the rendered
-   `aria-pressed`/`aria-label` pair `PrideToggle.tsx` already sets, rather
-   than adding a bespoke class, so the visual state can never drift out of
-   sync with what's announced to assistive tech. `aria-pressed` alone can't
-   distinguish the two active modes (it's a plain boolean), so the ring's
-   colour keys off the mode word `PrideToggle.tsx` puts in the label text
-   instead (`[aria-label*='rainbow']`/`[aria-label*='trans']`) -- still
-   sourced from the same single string that drives the accessible name, so
-   it can't drift out of sync either. A spinning conic-gradient ring behind
-   the button (`::before`, `z-index: -1`) rather than a border override --
-   Mantine's `outline` variant paints its own border from a CSS var, and
-   fighting that with `!important` is worse than layering a ring
-   underneath it. */
-button[aria-pressed='true'][aria-label^='Pride mode'] {
-  position: relative;
-}
-
-button[aria-pressed='true'][aria-label*='rainbow']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(#e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303);
-  z-index: -1;
-}
-
-button[aria-pressed='true'][aria-label*='trans']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(#5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
-  z-index: -1;
-}
-
-button[aria-pressed='true'][aria-label*='nonbinary']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(#fcf434, #ffffff, #9c59d1, #2c2c2c, #fcf434);
-  z-index: -1;
-}
-
-button[aria-pressed='true'][aria-label*='bisexual']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(
-    #d60270 0deg,
-    #d60270 144deg,
-    #9b4f96 144deg,
-    #9b4f96 216deg,
-    #0038a8 216deg,
-    #0038a8 360deg
-  );
-  z-index: -1;
-}
-
-button[aria-pressed='true'][aria-label*='pansexual']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(#ff218c, #ffd800, #21b1ff, #ff218c);
-  z-index: -1;
-}
-
-button[aria-pressed='true'][aria-label*='asexual']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(#000000, #a3a3a3, #ffffff, #800080, #000000);
-  z-index: -1;
-}
-
-button[aria-pressed='true'][aria-label*='sapphic']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(#fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8, #fd8ba8);
-  z-index: -1;
-}
-
-button[aria-pressed='true'][aria-label*='lesbian']::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 999px;
-  background: conic-gradient(#d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00);
-  z-index: -1;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  button[aria-pressed='true'][aria-label^='Pride mode']::before {
-    animation: pride-spin 3s linear infinite;
-  }
-}
-
-@keyframes pride-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* `components/PrideToggle.tsx`'s decorative sparkle scatter -- only in the
-   DOM at all while pride mode is on, so no `[data-pride]`/`body` gate is
-   needed here the way the CSS-only effects above need one. */
-.prideSparkles {
-  position: absolute;
-  inset: -14px;
-  pointer-events: none;
-}
-
-.prideSparkle {
-  position: absolute;
-  font-size: 10px;
-  line-height: 1;
-}
-
-.prideSparkle:nth-of-type(1) {
-  top: -4px;
-  left: -8px;
-}
-
-.prideSparkle:nth-of-type(2) {
-  top: -10px;
-  right: -4px;
-}
-
-.prideSparkle:nth-of-type(3) {
-  bottom: -6px;
-  left: 50%;
-}
-
-/* Reduced motion: sparkles stay put and fully visible rather than
-   flashing/floating -- present, not animated, matching the pride bars'
-   posture elsewhere in this file. */
-.prideSparkle {
-  opacity: 1;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .prideSparkle {
-    opacity: 0;
-    animation: pride-sparkle-float 2.4s ease-in-out infinite;
-  }
-
-  .prideSparkle:nth-of-type(2) {
-    animation-delay: 0.6s;
-  }
-
-  .prideSparkle:nth-of-type(3) {
-    animation-delay: 1.2s;
-  }
-}
-
-@keyframes pride-sparkle-float {
-  0%,
-  100% {
-    opacity: 0;
-    transform: translateY(4px) scale(0.8);
-  }
-  50% {
-    opacity: 1;
-    transform: translateY(-6px) scale(1.1);
-  }
-}
-
 /* A flag-coloured scrollbar while pride mode is on. `scrollbar-color`
    (Firefox) only accepts a solid thumb colour, not a gradient -- a
    representative mid-flag shade stands in there for each mode (by
@@ -1967,22 +1794,18 @@ svg[data-icon='external-link'] {
   flex-direction: column;
 }
 
-/* `PrideToggle`'s swatch: a 16x4 strip of the flag, from the same
-   `--ds-pride-*` variables the page and nav bars read. */
-.prideToggle {
-  position: relative;
-  display: inline-flex;
-}
-
+/* The pride flag picker's swatch (`PrideModeSelect`, on /account/preferences):
+   a 16x6 strip of the flag, from the same `--ds-pride-*` variables the page
+   and nav bars read. Off shows an empty outlined strip. */
 .prideSwatch {
   display: inline-block;
   width: 16px;
-  height: 4px;
+  height: 6px;
   border-radius: 1px;
 }
 
 .prideSwatch[data-flag='off'] {
-  height: 16px;
+  outline: 1px solid var(--mantine-color-default-border);
 }
 
 .prideSwatch[data-flag='rainbow'] {

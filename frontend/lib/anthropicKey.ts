@@ -1,8 +1,8 @@
 // A per-viewer, browser-local credential -- localStorage, same precedent
-// as ThemeToggle.tsx/PrideToggle.tsx and BrowserMcpOAuthProvider (Task 7).
+// as the theme and pride preferences and BrowserMcpOAuthProvider (Task 7).
 // NEVER sent to any Distant Signal server -- this module's only consumers
 // are Task 10's direct-to-Anthropic client construction and
-// AnthropicKeySettings' own UI below. See the client-side-tokens design
+// ClaudeKeySettings' own UI below. See the client-side-tokens design
 // doc's Decision 6 for why localStorage over sessionStorage/IndexedDB.
 /** Exported for `lib/browserAccountData.ts`, which clears it on logout. */
 export const ANTHROPIC_API_KEY_STORAGE_KEY = 'ds-anthropic-api-key';

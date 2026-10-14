@@ -4,9 +4,8 @@ import { Box, Container, Group, Text } from '@mantine/core';
 import { AppNavDrawer } from './AppNavDrawer';
 import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
-import { PrideModeApplier } from './PrideToggle';
+import { PrideModeApplier } from './PrideMode';
 import { PrimaryNavLink } from './PrimaryNavLink';
-import { ThemeToggle } from './ThemeToggle';
 import {
   navDrawerDestinations,
   PLAN_JOURNEY_DESTINATION,
@@ -21,8 +20,8 @@ import type { DataFreshness, SessionInfo } from '@/lib/types';
  * `'use client'`): it takes both the session and the freshness as already
  * resolved props and makes no fetch of its own, so the single
  * `getSession()` call stays in the layout, inside a `<Suspense>`
- * boundary. Its interactive parts (`AppNavDrawer`, `ThemeToggle`,
- * `PrideToggle`, `DataFreshnessInfo`, `AuthStatus`'s leaves) are imported
+ * boundary. Its interactive parts (`AppNavDrawer`,
+ * `PrideModeApplier`, `DataFreshnessInfo`, `AuthStatus`'s leaves) are imported
  * and rendered as plain JSX elements — Client Component children of a
  * Server Component, the safe direction across the boundary.
  *
@@ -281,14 +280,11 @@ export function AppNavBar({
                   what buys the authenticated bar its missing 12px. */}
               {!session.authenticated && <PrimaryNavLink {...TRACKED_TRAINS_DESTINATION} />}
             </Group>
-            {/* The three always-on icon controls, grouped tightly: they
-                are one cluster of same-sized square buttons rather than
-                three unrelated items, and the 30px this saves over
-                spacing them like links is most of the phone bar's
-                remaining slack. */}
+            {/* The always-on controls: the freshness readout, plus the
+                pride flag applier, which renders nothing. The theme and
+                pride controls themselves live on /account/preferences. */}
             <Group gap="xs" wrap="nowrap">
               <DataFreshnessInfo freshness={freshness} />
-              <ThemeToggle />
               <PrideModeApplier />
             </Group>
             {/* This boundary is load-bearing and has nothing to do with

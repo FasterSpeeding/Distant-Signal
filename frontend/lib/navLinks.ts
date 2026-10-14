@@ -184,6 +184,12 @@ export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Ask abo
  * menu, just above the session actions. */
 export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'Account & data' };
 
+/** `/account/preferences`: colour theme, notifications, pride flag and the
+ * Claude API key (round 2, item 4). Open to everyone, since most of it is
+ * saved in the browser, so the drawer always lists it and the footer links
+ * to it for logged-out desktop visitors, who have no account menu. */
+export const PREFERENCES_DESTINATION: NavDestination = { href: '/account/preferences', label: 'Preferences' };
+
 /** What the mobile drawer lists: every primary destination, the planner
  * (`PLAN_JOURNEY_DESTINATION`), plus the per-account ones the bar hands to
  * the account menu on desktop. The
@@ -217,6 +223,7 @@ export function navDrawerDestinations(
     ...(authenticated ? [GROUPS_DESTINATION] : []),
     ...(chatAllowed ? [CHAT_DESTINATION] : []),
     ...(authenticated ? [ACCOUNT_DESTINATION] : []),
+    PREFERENCES_DESTINATION,
   ];
 }
 
@@ -234,5 +241,6 @@ export function accountMenuDestinations(chatAllowed: boolean): NavDestination[] 
     GROUPS_DESTINATION,
     ...(chatAllowed ? [CHAT_DESTINATION] : []),
     ACCOUNT_DESTINATION,
+    PREFERENCES_DESTINATION,
   ];
 }
