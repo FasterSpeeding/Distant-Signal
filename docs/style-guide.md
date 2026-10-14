@@ -250,6 +250,13 @@ used, rather than as a literal in a component.
   by `lib/serviceStatus.ts` ("12 min late" orange, "3 min early" teal, "On
   time" green). `DELAY_TONE_COLOR` is the one delay-to-colour table;
   `JourneyProgress`'s stop markers read it too.
+- **Nearby stations** (`app/stations/NearbyStationList.tsx`): the "Use
+  my location" results under a "Nearest stations" label, in
+  `ServiceRowList`'s bordered, divided list. Each row is one link to the
+  station page, at least 44px tall, with hover, active and an inset focus
+  ring: "Woking (WOK)" on the left at 500, the distance in its own
+  right-hand column, sm, dimmed, tabular figures, always "0.4 km" (km to
+  one decimal place). The link is named "Woking (WOK), 0.4 km away".
 - **Route text**: a route reads "KGX to YRK" on screen and to a screen
   reader alike. `lib/stationLabel.ts` (`routeLabel`, `codeRouteLabel`)
   joins the ends with "to", so its strings go straight into JSX, titles,
