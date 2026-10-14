@@ -2,7 +2,7 @@
 
 **Status: design approved in direction (2026-10-14), not implemented. A dev
 Authentik spike passed on 2026-10-14 (§9.5).** The
-user answered every open question on 2026-10-14, in three rounds. Section
+user answered every open question on 2026-10-14, in four rounds. Section
 0a records those decisions, and the rest of the document has been updated
 to match. Nothing here is implemented, and no code was changed to write
 it.
@@ -124,6 +124,12 @@ section 8.
 | D-15 | The web planner | `PlanTripFlow` moves to the atomic, idempotent `POST /Journeys/itinerary` in Phase 1 | §5.8, §7 |
 | D-16 | Privacy page | Updated by a separate agent, not as part of Phase 1b | §7 |
 | D-17 | Spec index | `docs/superpowers/README.md` is indexed by a separate agent | — |
+
+**Fourth round (later on 2026-10-14):**
+
+| # | Question | Decision | Where |
+|---|---|---|---|
+| D-18 | Who may use delegated access | **Every Authentik user**, the same as ds-mcp itself. The `distant-signal-api` application has **no group policy binding**; the binding to `distant-signal-chatbot-users` that the spike used is removed from production. The DS grant remains the gate | §9.1, §9.6 |
 
 Decision D-7 replaces the first version's recommendation to keep the grant
 across an Authentik logout. The cost is accepted: after any Authentik
@@ -1458,7 +1464,7 @@ confirms each one against the 2026.8 model source before relying on it
 |---|---|---|---|---|
 | O1 | 4 scope mappings (`authentik_providers_oauth2.scopemapping`) | Names `ds-journeys-read`, `ds-journeys-write`, `ds-journeys-delete`, `ds-journeys-read-shared`, with `scope_name` `journeys:read`, `journeys:write`, `journeys:delete`, `journeys:read_shared`. Each has a consent-screen `description` written as a sentence ("Save journeys to your Distant Signal account"). The expression is `return {}` if S4 shows that the access token's `scope` claim lists the granted scopes. Otherwise it is a distinct claim per scope, for example `return {"ds_scope_journeys_write": True}`. Distinct keys are needed because mappings that return the same key overwrite one another | yes | yes (`read_shared` can wait until Phase 3) |
 | O2 | Provider `distant-signal-api` (`authentik_providers_oauth2.oauth2provider`) | `client_type: confidential`; `client_id: distant-signal-api`; `client_secret` from the sealed Secret; `grant_types: [token_exchange]` (the spike also enables `authorization_code` and `refresh_token` to test fallback A, and production enables them only if A is chosen); `access_token_validity: minutes=5`; `refresh_token_validity: days=30` (A only); `sub_mode: hashed_user_id`, with a comment saying it must match `distant-signal` and `distant-signal-mcp`; `issuer_mode: per_provider`; `signing_key`: the RSA certificate the other providers use; `property_mappings`: O1 (plus `openid` for A); the token-exchange trust list (`jwt_federation_providers`, confirmed against the 2026.8.0 source and on dev) set to `[distant-signal-mcp]` only; `authorization_flow: default-provider-authorization-explicit-consent` (consent matters for A); `invalidation_flow: default-provider-invalidation-flow`; `redirect_uris` (A only), strict: `https://ds-mcp.cursed.solutions/oauth/distant-signal-api/callback`; **no** `logout_uri` | yes | yes |
-| O3 | Application `distant-signal-api` (`authentik_core.application`) | Provider O2. A policy binding to `distant-signal-chatbot-users`, the same as the `distant-signal-mcp` application | yes | yes |
+| O3 | Application `distant-signal-api` (`authentik_core.application`) | Provider O2. **No policy binding** (D-18): every Authentik user may be exchanged for. The dev spike bound it to `distant-signal-chatbot-users` to answer S8 | yes | yes |
 | O4 | Secret | Ranma-Config seals `ds-mcp-secret` / `distant-signal-api-client-secret` (namespace `ds-mcp`), plus the Authentik copy, in the same way as `authentik-client-secret` | fixed dev value | yes |
 | O5 | Spike only: provider and application `ds-spike-rogue` | A confidential client using authorization code, used to prove that foreign tokens cannot be exchanged. Delete it after the spike | yes | yes, then delete |
 | O6 | Spike only: test users | `spike-local` (local, in `distant-signal-chatbot-users`); `spike-nogroup` (not in the group). In production only, `spike-discord` (from the Discord source), if a test Discord account is available | yes (local users) | yes, then delete |
@@ -1613,10 +1619,23 @@ also leaves the production `distant-signal-mcp` provider unchanged.
 
 **Remaining production steps for Ranma** are in §9.6.
 
+**Production smoke test (2026-10-14, Authentik 2026.8.3).** The Ranma
+session ran §9.6 step 3 on `https://sso.cursed.solutions`:
+
+| Check | Result |
+|---|---|
+| Exchange of a `distant-signal-mcp` access token | **200.** RS256 JWT with `iss=https://sso.cursed.solutions/application/o/distant-signal-api/`, `aud=azp=distant-signal-api`, `exp − iat = 300`, `scope="journeys:write journeys:read journeys:delete"`. No `act` and no `sid`, as on dev |
+| A `distant-signal` (DS SSO) access token as the subject | Refused, 400 `invalid_grant` |
+| The same exchange for a deactivated user | Refused, 400 `invalid_grant` |
+
+The smoke test ran while the application still had the
+`distant-signal-chatbot-users` binding. D-18 removes it, which changes
+only who may be exchanged for.
+
 ### 9.6 Production steps for Ranma (exact)
 
-Order matters: each step depends on the previous one. None of these has
-been done.
+Order matters: each step depends on the previous one. Steps 1 to 3 were
+done on 2026-10-14 (§9.5); the O3 binding is being removed under D-18.
 
 1. **Seal the client secret.**
    - Generate a 64-character random secret.
@@ -1654,15 +1673,21 @@ been done.
      - `redirect_uris: []`;
      - no `logout_uri`.
    - **O3:** `authentik_core.application` `distant-signal-api`, with
-     provider O2, plus an `authentik_policies.policybinding` from that
-     application to the group `distant-signal-chatbot-users`.
+     provider O2 and **no** policy binding (D-18).
      - The application is **required**: Authentik refuses an exchange whose
        target provider has no application (`target_without_application`).
-     - The binding mirrors `distant-signal-mcp`'s binding, and S8 showed it
-       being enforced at every exchange.
+     - S8 showed that a binding would be enforced at every exchange. D-18
+       chose not to have one: delegated access is open to every Authentik
+       user, as ds-mcp is, and the DS grant gates use.
+   - **Applying gated entries.** Entries gated on an env var apply only
+     once the Authentik worker has that env var **and** the blueprint has
+     been applied again afterwards. The first apply after the env var is
+     added skips them, so queue `apply_blueprint` for this blueprint by
+     hand (or wait for the next scheduled apply) and check that O1 to O3
+     exist before step 3.
    - **No change** to `distant-signal-mcp` or `distant-signal`.
 3. **Smoke test on production** (S14, shortened), with a temporary test
-   user in `distant-signal-chatbot-users`:
+   user:
    1. Obtain a `distant-signal-mcp` access token, through ds-mcp's login or
       a one-off authorization-code run.
    2. `POST https://sso.cursed.solutions/application/o/token/`, with Basic
