@@ -859,6 +859,10 @@ async fn session_cleanup_sweep_loop(app: App) {
                 tracing::error!(error = ?err, "personal-data retention sweep failed; will retry next interval");
             }
         }
+        // Delegated access (spec 2026-10-14 §5.3, §5.5a): grants unused for
+        // 90 days, `delegated_deletions` past 30 days, expired idempotency
+        // keys and confirmation tokens. Same hourly cadence.
+        data::delegated::run_sweep(&app.database, chrono::Utc::now()).await;
     }
 }
 

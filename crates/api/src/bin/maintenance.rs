@@ -14,7 +14,10 @@
 //! 3. `data::retention::prune_personal_data`, with the retention limits
 //!    from the api's own variables (`PAST_TRAVEL_RETENTION_DAYS`,
 //!    `STALE_PUSH_SUBSCRIPTION_DAYS`, `INACTIVE_ACCOUNT_RETENTION_DAYS`,
-//!    same defaults).
+//!    same defaults);
+//! 4. `data::delegated::run_sweep`: delegated-access grants unused for 90
+//!    days, `delegated_deletions` past 30 days, expired idempotency keys
+//!    and consent confirmation tokens.
 //!
 //! It connects with the shared retry (`common::startup`), giving up after
 //! `MAINTENANCE_CONNECT_DEADLINE_SECS` (default 120): a fresh pod on a
@@ -22,7 +25,7 @@
 //! otherwise fail on its first 5 s acquire.
 //!
 //! Each step runs even if an earlier one failed, as in the loop. The exit
-//! status is 0 only if all three succeeded, so a failing step fails the
+//! status is 0 only if all four succeeded, so a failing step fails the
 //! Job. Every step is idempotent. The loop stays in the api, behind
 //! `API_BACKGROUND_LOOPS`, until the `CronJob` is on.
 
@@ -73,6 +76,7 @@ struct PassReport {
     expired_sessions: Option<u64>,
     dead_links: Option<u64>,
     personal_data: Option<RetentionOutcome>,
+    delegated: Option<api::data::delegated::SweepOutcome>,
     failed: Vec<&'static str>,
 }
 
@@ -104,6 +108,7 @@ async fn run() -> anyhow::Result<()> {
         expired_sessions = report.expired_sessions,
         dead_links = report.dead_links,
         personal_data = ?report.personal_data,
+        delegated = ?report.delegated,
         failed = ?report.failed,
         "maintenance pass finished"
     );
@@ -115,7 +120,7 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The three sweeps, in the loop's order, each logged and attempted
+/// The four sweeps, in the loop's order, each logged and attempted
 /// whatever the others did.
 async fn run_pass(
     pool: &sqlx::PgPool,
@@ -143,6 +148,10 @@ async fn run_pass(
             tracing::error!(error = ?err, "personal-data retention sweep failed");
             report.failed.push("personal_data");
         }
+    }
+    report.delegated = api::data::delegated::run_sweep(pool, now).await;
+    if report.delegated.is_none() {
+        report.failed.push("delegated");
     }
     report
 }

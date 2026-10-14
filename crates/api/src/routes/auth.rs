@@ -587,15 +587,25 @@ async fn backchannel_logout(
         );
         return backchannel_response(StatusCode::BAD_REQUEST, Some("invalid_request"));
     };
-    match users::revoke_all_sessions(&app.database, &sub).await {
+    // Also ends the user's delegated-access grants (D-7 path 1, spec
+    // 2026-10-14 §5.9): an Authentik logout revokes the grant, not just the
+    // live tokens.
+    match users::revoke_all_sessions(
+        &app.database,
+        &sub,
+        crate::data::delegated::RevokeReason::Backchannel,
+    )
+    .await
+    {
         Ok(revoked) => {
             tracing::info!(
                 audit = true,
                 event = "backchannel_logout",
                 user_id = %sub,
                 known_user = revoked.is_some(),
-                sessions_deleted = revoked.unwrap_or(0),
-                "IdP back-channel logout ended the user's sessions"
+                sessions_deleted = revoked.map_or(0, |r| r.sessions_deleted),
+                grants_revoked = revoked.map_or(0, |r| r.grants_revoked),
+                "IdP back-channel logout ended the user's sessions and app grants"
             );
             backchannel_response(StatusCode::OK, None)
         }

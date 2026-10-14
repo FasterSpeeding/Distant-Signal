@@ -750,9 +750,17 @@ pub async fn invalidate_all_sessions_and_reissue(
 /// concurrently with an older snapshot, is still rejected by
 /// [`get_session_with_user`]) and delete the rows outright.
 ///
-/// Returns `Ok(None)` when no user has this id (nothing to revoke), else the
-/// number of session rows deleted.
-pub async fn revoke_all_sessions(pool: &PgPool, user_id: &str) -> Result<Option<u64>> {
+/// Both callers also end the user's delegated-access grants, in the same
+/// transaction (spec 2026-10-14 §5.9: an admin revoke and an Authentik
+/// logout revoke the grant, D-7), with `grant_reason` recorded on each.
+///
+/// Returns `Ok(None)` when no user has this id (nothing to revoke), else how
+/// many session rows were deleted and grants revoked.
+pub async fn revoke_all_sessions(
+    pool: &PgPool,
+    user_id: &str,
+    grant_reason: crate::data::delegated::RevokeReason,
+) -> Result<Option<SessionRevocation>> {
     let mut tx = pool.begin().await?;
     let found: Option<String> = sqlx::query_scalar(
         "UPDATE users SET sessions_invalidated_at = NOW() WHERE id = $1 RETURNING id",
@@ -764,13 +772,26 @@ pub async fn revoke_all_sessions(pool: &PgPool, user_id: &str) -> Result<Option<
         tx.rollback().await?;
         return Ok(None);
     }
-    let deleted = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+    let sessions_deleted = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(user_id)
         .execute(&mut *tx)
         .await?
         .rows_affected();
+    let grants_revoked =
+        crate::data::delegated::revoke_grants_for_user(&mut *tx, user_id, None, grant_reason)
+            .await?;
     tx.commit().await?;
-    Ok(Some(deleted))
+    Ok(Some(SessionRevocation {
+        sessions_deleted,
+        grants_revoked,
+    }))
+}
+
+/// What [`revoke_all_sessions`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionRevocation {
+    pub sessions_deleted: u64,
+    pub grants_revoked: u64,
 }
 
 /// The ids of every user whose stored username (the `preferred_username`
@@ -1592,10 +1613,11 @@ mod db_tests {
             vec![user.id.clone()]
         );
 
-        let deleted = revoke_all_sessions(&pool, &user.id)
-            .await
-            .expect("revoke all");
-        assert_eq!(deleted, Some(2));
+        let deleted =
+            revoke_all_sessions(&pool, &user.id, crate::data::delegated::RevokeReason::Admin)
+                .await
+                .expect("revoke all");
+        assert_eq!(deleted.map(|revoked| revoked.sessions_deleted), Some(2));
         for id in ["test-revoke-all-one", "test-revoke-all-two"] {
             assert!(
                 get_session_with_user(&pool, id)
@@ -1607,9 +1629,13 @@ mod db_tests {
         }
 
         assert_eq!(
-            revoke_all_sessions(&pool, "TEST-USER-REVOKE-ALL-DOES-NOT-EXIST")
-                .await
-                .expect("revoke unknown user"),
+            revoke_all_sessions(
+                &pool,
+                "TEST-USER-REVOKE-ALL-DOES-NOT-EXIST",
+                crate::data::delegated::RevokeReason::Admin,
+            )
+            .await
+            .expect("revoke unknown user"),
             None
         );
 
