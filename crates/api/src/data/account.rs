@@ -39,11 +39,15 @@ use crate::data::groups::{self, RemoveMemberOutcome};
 pub const USER_KEYED_TABLES: &[&str] = &[
     "custom_line_group_grants",
     "custom_lines",
+    "delegated_deletions",
+    "delegated_grant_confirmations",
+    "delegated_grants",
     "group_invite_links",
     "group_journeys",
     "group_members",
     "group_trains",
     "groups",
+    "journey_idempotency_keys",
     "journey_leg_notification_state",
     "journey_templates",
     "journeys",
@@ -169,6 +173,14 @@ pub struct AccountExport {
     pub group_shared_journeys: Value,
     pub share_links: Value,
     pub group_invite_links: Value,
+    /// Delegated access (docs/connected-apps.md): every grant, active or
+    /// revoked, and the consent page's pending confirmations.
+    pub connected_apps: Value,
+    pub connected_app_confirmations: Value,
+    /// Journeys a connected app deleted in the last 30 days.
+    pub connected_app_deletions: Value,
+    /// `Idempotency-Key`s of the last 24 hours' itinerary saves.
+    pub journey_save_keys: Value,
     pub notification_state: NotificationStateExport,
     pub omitted: Vec<&'static str>,
     pub notes: Vec<&'static str>,
@@ -328,6 +340,32 @@ pub async fn export_account(pool: &PgPool, user_id: &str) -> Result<Option<Accou
             user_id,
         )
         .await?,
+        connected_apps: rows(
+            pool,
+            "SELECT to_jsonb(g) FROM delegated_grants g WHERE user_id = $1 ORDER BY id",
+            user_id,
+        )
+        .await?,
+        connected_app_confirmations: rows(
+            pool,
+            "SELECT to_jsonb(c) - 'token_hash' - 'session_id' FROM delegated_grant_confirmations c \
+             WHERE user_id = $1 ORDER BY created_at",
+            user_id,
+        )
+        .await?,
+        connected_app_deletions: rows(
+            pool,
+            "SELECT to_jsonb(d) FROM delegated_deletions d WHERE user_id = $1 ORDER BY id",
+            user_id,
+        )
+        .await?,
+        journey_save_keys: rows(
+            pool,
+            "SELECT to_jsonb(k) FROM journey_idempotency_keys k \
+             WHERE user_id = $1 ORDER BY created_at",
+            user_id,
+        )
+        .await?,
         notification_state: NotificationStateExport {
             trains: rows(
                 pool,
@@ -352,6 +390,8 @@ pub async fn export_account(pool: &PgPool, user_id: &str) -> Result<Option<Accou
             "sessions.id and sessions.refresh_token: hashed session credentials",
             "push_subscriptions.p256dh and push_subscriptions.auth: your browser's push encryption keys",
             "share_links.token_hash and group_invite_links.token_hash: hashed link credentials",
+            "connected_app_confirmations.token_hash and session_id: a hashed one-time credential \
+             and the hashed session it belongs to",
         ],
         notes: vec![
             "Your login identity (name, username, email) comes from the single sign-on provider; \
@@ -483,6 +523,12 @@ pub(crate) mod db_tests {
         let leg = format!("(SELECT id FROM journey_legs WHERE journey_id = {journey} LIMIT 1)");
         exec(pool, &format!("INSERT INTO journey_leg_notification_state (user_id, journey_leg_id, last_notified_skipped, last_notified_at) VALUES ($1, {leg}, false, NOW())"), u).await;
         exec(pool, &format!("INSERT INTO unlisted_links (token_hash, resource_type, resource_id, created_by) VALUES ('tok-' || $1, 'journey', {journey}::text, $1)"), u).await;
+        // Delegated access: a grant, a pending consent confirmation, a
+        // delegated delete and an itinerary Idempotency-Key.
+        exec(pool, "INSERT INTO delegated_grants (user_id, client, client_display_name, scopes) VALUES ($1, 'ds-mcp', 'Assistant', '{journeys:read}')", u).await;
+        exec(pool, "INSERT INTO delegated_grant_confirmations (token_hash, session_id, user_id, client, expires_at) VALUES (encode(sha256(convert_to('conf-' || $1, 'UTF8')), 'hex'), 'sess-' || $1, $1, 'ds-mcp', NOW() + INTERVAL '10 minutes')", u).await;
+        exec(pool, "INSERT INTO delegated_deletions (user_id, client, grant_id, journey_id, summary) VALUES ($1, 'ds-mcp', (SELECT id FROM delegated_grants WHERE user_id = $1 LIMIT 1), 0, '{\"legs\": []}')", u).await;
+        exec(pool, "INSERT INTO journey_idempotency_keys (user_id, idempotency_key, request_hash, response) VALUES ($1, 'key-' || $1, repeat('a', 64), '{}')", u).await;
 
         // Owned, with another member (an admin who should inherit it).
         let shared = format!("{user}-g-shared");
@@ -716,6 +762,10 @@ pub(crate) mod db_tests {
             "groupSharedJourneys",
             "shareLinks",
             "groupInviteLinks",
+            "connectedApps",
+            "connectedAppConfirmations",
+            "connectedAppDeletions",
+            "journeySaveKeys",
         ] {
             let rows = object[key]
                 .as_array()

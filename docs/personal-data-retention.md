@@ -74,6 +74,10 @@ The inactive-account sweep (below) uses the same function.
 | `group_trains`, `group_journeys` | Trains and journeys the user shared into a group (`added_by`) | Cascade | Deleted when the user leaves, or with the train or journey | `groupSharedTrains`, `groupSharedJourneys` |
 | `group_invite_links` | Invite links the user created (hashed token) | Cascade | Expire after 7 days. Revoked or expired rows are deleted 30 days later. | `groupInviteLinks` (without token) |
 | `unlisted_links` | Share links the user created (hashed token) | Cascade, plus any link naming the user's journeys | Revoked or expired rows are deleted after 30 days, and with their journey | `shareLinks` (without token) |
+| `delegated_grants` | Apps the user connected on the Connected apps page: client, scopes, created, last-used and revoked times ([connected-apps.md](connected-apps.md)) | Cascade | Revoked after 90 days unused; revoked rows are deleted 90 days after revocation | `connectedApps` |
+| `delegated_grant_confirmations` | One-time consent tokens (hashed), bound to a session | Cascade, and with the session | Deleted when used, replaced, or 10 minutes after issue (hourly sweep) | `connectedAppConfirmations` (without token or session) |
+| `delegated_deletions` | What a connected app deleted: journey id, custom name, dates, stations, train UIDs | Cascade | Deleted after 30 days | `connectedAppDeletions` |
+| `journey_idempotency_keys` | `Idempotency-Key`s of itinerary saves, with the saved response | Cascade | Deleted after 24 hours | `journeySaveKeys` |
 
 Ticket uploads (PDF, pkpass, zip) are parsed in memory and never stored.
 
