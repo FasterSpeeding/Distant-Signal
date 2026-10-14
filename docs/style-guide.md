@@ -305,7 +305,8 @@ used, rather than as a literal in a component.
   `metadata`; a line or station passes its own `generateMetadata`, so the
   two can't disagree. Titles never come from the request. Every other
   route falls back to `public/opengraph-image.png`, the template's no-title
-  form. The X card lists no image of its own, so it uses `og:image`.
+  form. A route with its own image passes `OWN_PREVIEW_IMAGE` to
+  `pageMetadata`: an explicit card image would otherwise win over it.
 - **Preferences** (`app/account/preferences/page.tsx`): open to everyone.
   Appearance (colour theme, pride flag; saved in this browser),
   notifications (a log in link when logged out, never a permission prompt
