@@ -312,3 +312,54 @@ INSERT INTO transit_service_days (network, feed_version, service_id, service_dat
   ('metrolink', 'e2e-v1', 's1', '2026-09-17'),
   ('metrolink', 'e2e-v1', 's1', CURRENT_DATE)
 ON CONFLICT DO NOTHING;
+
+-- Metrolink disruptions (transit plan 4.8): a delay on the Blue Line, a
+-- lift out of service at Piccadilly (a stop notice), and works on the
+-- Green Line three days from the seeding (upcoming), with the line
+-- statuses the writer would derive from them. The situations' freshness
+-- marker is stamped 12 hours ahead of the seeding, so the pages read the
+-- disruptions as current however long the e2e job runs before its
+-- screenshots (they turn "unavailable" 30 minutes after the marker). Only
+-- this fixture does that; the writer never trusts a future marker.
+INSERT INTO ingest_freshness (source, fetched_at)
+VALUES ('transit-metrolink-situations', NOW() + interval '12 hours')
+ON CONFLICT (source) DO UPDATE SET fetched_at = EXCLUDED.fetched_at;
+
+INSERT INTO transit_situations
+  (network, situation_id, version, progress, planned, reason, summary, description, info_url,
+   validity, publication, consequences, line_ids, stop_ids, scope, observed_at, first_seen_at)
+VALUES
+  ('metrolink', 'E2E-S1', 1, 'open', false, 'equipment:pointsFailure',
+   'Delays between Piccadilly and Eccles', 'A points fault at Cornbrook is causing delays.', NULL,
+   '[{"start": "2026-09-01T05:00:00Z", "end": null}]', '[]',
+   '[{"condition": "delayed", "severity": "slight", "all_lines": false, "line_ids": ["blue"], "unmapped_line_refs": [], "stop_ids": [], "advice": "Allow extra time."}]',
+   '{blue}', '{}', 'line', NOW(), NOW()),
+  ('metrolink', 'E2E-S2', 1, 'open', false, 'equipment:liftFailure',
+   'Lift out of service at Piccadilly', 'Use the ramp from the main concourse.', NULL,
+   '[{"start": "2026-09-01T05:00:00Z", "end": null}]', '[]',
+   '[{"condition": "unknown", "severity": "slight", "all_lines": true, "line_ids": [], "unmapped_line_refs": [], "stop_ids": ["9400ZZMAPIC"], "advice": null}]',
+   '{}', '{9400ZZMAPIC}', 'stop', NOW(), NOW()),
+  ('metrolink', 'E2E-S3', 1, 'open', true, 'miscellaneous:engineeringWorks',
+   'No trams to Deansgate-Castlefield', NULL, NULL,
+   jsonb_build_array(jsonb_build_object(
+     'start', to_char((CURRENT_DATE + 3)::timestamp + interval '5 hours', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+     'end', to_char((CURRENT_DATE + 4)::timestamp + interval '23 hours', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))),
+   '[]',
+   '[{"condition": "suspended", "severity": "severe", "all_lines": false, "line_ids": ["green"], "unmapped_line_refs": [], "stop_ids": [], "advice": "Use replacement buses."}]',
+   '{green}', '{}', 'line', NOW(), NOW())
+ON CONFLICT DO NOTHING;
+
+INSERT INTO line_status (line_id, name, mode_name, operators, statuses, upcoming, computed_at, source, source_updated_at)
+VALUES
+  ('metrolink:blue', 'Blue Line', 'metrolink', '{}',
+   '[{"severity": 9, "reason": "Delays between Piccadilly and Eccles", "validity": {"from_date": "2026-09-01T05:00:00Z", "to_date": null, "is_now": true}, "disruption": {"category": "RealTime", "description": "A points fault at Cornbrook is causing delays.", "affected_stops": [], "source": "transit-situation-E2E-S1"}, "data_quality": "transit"}]',
+   '[]', NOW(), 'transit', NOW()),
+  ('metrolink:green', 'Green Line', 'metrolink', '{}',
+   '[{"severity": 27, "reason": "No disruption has been published for this line.", "validity": {"from_date": "2026-09-01T05:00:00Z", "to_date": null, "is_now": true}, "data_quality": "transit"}]',
+   jsonb_build_array(jsonb_build_object(
+     'from', to_char((CURRENT_DATE + 3)::timestamp + interval '5 hours', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+     'to', to_char((CURRENT_DATE + 4)::timestamp + interval '23 hours', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+     'summary', 'No trams to Deansgate-Castlefield',
+     'incident_id', 'E2E-S3')),
+   NOW(), 'transit', NOW())
+ON CONFLICT (line_id) DO NOTHING;

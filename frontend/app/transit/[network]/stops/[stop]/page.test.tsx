@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { BOARD, NETWORK, STOP } from '@/test/transitFixtures';
+import { BOARD, LIFT, NETWORK, STOP } from '@/test/transitFixtures';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import TransitStopPage from './page';
@@ -50,6 +50,17 @@ describe('/transit/[network]/stops/[stop]', () => {
     expect(screen.getByRole('link', { name: 'Green Line' }).getAttribute('href')).toBe(
       '/transit/metrolink/lines/green',
     );
+  });
+
+  it("shows the stop's notices above the board, and nothing without any", async () => {
+    vi.mocked(api.getTransitStop).mockResolvedValue({ ...STOP, notices: [LIFT] });
+    await render();
+    expect(screen.getByRole('heading', { name: 'Notices' })).toBeTruthy();
+    expect(screen.getByText(LIFT.summary)).toBeTruthy();
+    cleanup();
+    vi.mocked(api.getTransitStop).mockResolvedValue({ ...STOP, notices: [] });
+    await render();
+    expect(screen.queryByRole('heading', { name: 'Notices' })).toBeNull();
   });
 
   it('pages with the cursor and offers the next day', async () => {

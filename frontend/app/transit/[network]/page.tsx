@@ -4,8 +4,9 @@ import type { Metadata } from 'next';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
+import { TransitDisruptions } from '@/components/TransitDisruptions';
 import { TransitLineList } from '@/components/TransitLineList';
-import { getTransitNetwork, getTransitStops } from '@/lib/api';
+import { getTransitNetwork, getTransitSituations, getTransitStops } from '@/lib/api';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { orNotFound, TRANSIT_ID } from '@/lib/transit';
 
@@ -20,14 +21,18 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   return pageMetadata(detail.name, `${detail.name}: lines, stops and scheduled tram times.`);
 }
 
-/** `/transit/[network]`: a tram network's lines and stops. */
+/** `/transit/[network]`: a tram network's lines (with their status, when
+ * the network has a disruptions feed), its disruptions, and its stops. */
 export default async function TransitNetworkPage({ params }: Params) {
   const { network } = await params;
   if (!TRANSIT_ID.test(network)) notFound();
-  const [detail, stops] = await Promise.all([
+  const [detail, stops, situations] = await Promise.all([
     orNotFound(getTransitNetwork(network)),
     orNotFound(getTransitStops(network)),
+    getTransitSituations(network).catch(() => null),
   ]);
+  const lineNames = Object.fromEntries(detail.lines.map((line) => [line.id, line.name]));
+  const hasFeed = (detail.status?.state ?? 'none') !== 'none';
   return (
     <Stack p="lg" gap="lg">
       <Stack gap={4}>
@@ -39,6 +44,13 @@ export default async function TransitNetworkPage({ params }: Params) {
         <SectionTitle>Lines</SectionTitle>
         <TransitLineList network={network} lines={detail.lines} />
       </Stack>
+
+      <TransitDisruptions
+        situations={situations}
+        failed={hasFeed && situations === null}
+        empty="No disruptions reported."
+        lineNames={lineNames}
+      />
 
       <Stack gap="sm">
         <SectionTitle>Stops</SectionTitle>

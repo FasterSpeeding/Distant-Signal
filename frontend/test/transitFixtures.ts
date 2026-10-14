@@ -2,7 +2,10 @@ import type {
   TransitBoard,
   TransitLineDetail,
   TransitLineTimetable,
+  TransitLineStatus,
   TransitNetworkDetail,
+  TransitSituation,
+  TransitSituations,
   TransitStop,
   TransitStopDetail,
 } from '@/lib/types';
@@ -109,4 +112,88 @@ export const TIMETABLE: TransitLineTimetable = {
   outsideHorizon: false,
   realtime: false,
   kind: 'scheduled',
+};
+
+/** A current delay on the Blue Line, its description with markup in it
+ * (which must show as text). */
+export const DELAY: TransitSituation = {
+  id: 'S1',
+  summary: 'Delays between Piccadilly and Eccles',
+  description: 'A <b>fault</b> at Cornbrook.',
+  infoUrl: 'https://example.invalid/s1',
+  planned: false,
+  reason: 'equipment:pointsFailure',
+  scope: 'line',
+  lines: ['metrolink:blue'],
+  stops: [],
+  advice: ['Allow extra time.'],
+  validity: [{ start: '2026-10-14T06:00:00Z', end: null }],
+  starts: null,
+};
+
+/** A lift notice at Piccadilly. */
+export const LIFT: TransitSituation = {
+  id: 'S2',
+  summary: 'Lift out of service at Piccadilly',
+  description: null,
+  infoUrl: 'javascript:alert(1)',
+  planned: false,
+  reason: 'equipment:liftFailure',
+  scope: 'stop',
+  lines: [],
+  stops: ['9400ZZMAPIC'],
+  advice: [],
+  validity: [{ start: '2026-10-14T06:00:00Z', end: '2099-10-20T00:00:00Z' }],
+  starts: null,
+};
+
+/** Planned works on the Green Line, starting later. */
+export const WORKS: TransitSituation = {
+  id: 'S3',
+  summary: 'No trams to Deansgate-Castlefield',
+  description: null,
+  infoUrl: null,
+  planned: true,
+  reason: 'miscellaneous:engineeringWorks',
+  scope: 'line',
+  lines: ['metrolink:green'],
+  stops: [],
+  advice: ['Use replacement buses.'],
+  validity: [{ start: '2026-10-18T05:00:00Z', end: '2026-10-19T23:00:00Z' }],
+  starts: '2026-10-18T05:00:00Z',
+};
+
+export const SITUATIONS: TransitSituations = {
+  state: 'current',
+  asOf: '2026-10-14T09:00:00Z',
+  current: [DELAY, LIFT],
+  upcoming: [WORKS],
+};
+
+export const MINOR_DELAYS: TransitLineStatus = {
+  state: 'current',
+  asOf: '2026-10-14T09:00:00Z',
+  statuses: [{ severity: 9, description: 'Minor Delays', reason: DELAY.summary, situationId: 'S1' }],
+  upcoming: [],
+};
+
+export const NOTHING_REPORTED: TransitLineStatus = {
+  state: 'current',
+  asOf: '2026-10-14T09:00:00Z',
+  statuses: [
+    {
+      severity: 27,
+      description: 'No Reported Disruption',
+      reason: 'No disruption has been published for this line.',
+      situationId: null,
+    },
+  ],
+  upcoming: [],
+};
+
+export const STATUS_UNAVAILABLE: TransitLineStatus = {
+  state: 'unavailable',
+  asOf: '2026-10-14T08:00:00Z',
+  statuses: [],
+  upcoming: [],
 };

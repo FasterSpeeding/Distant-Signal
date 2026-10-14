@@ -4,6 +4,7 @@ import type { Metadata } from 'next';
 import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
+import { TransitStopNotices } from '@/components/TransitDisruptions';
 import { TransitStopBoard } from '@/components/TransitStopBoard';
 import { getTransitDepartures, getTransitNetwork, getTransitStop } from '@/lib/api';
 import { formatDate } from '@/lib/dateFormat';
@@ -79,6 +80,8 @@ export default async function TransitStopPage({ params, searchParams }: Params &
           })}
         </Group>
       </Stack>
+
+      <TransitStopNotices notices={stopDetail.notices} />
 
       <Stack gap="sm" id="departures">
         <SectionTitle>Departures</SectionTitle>

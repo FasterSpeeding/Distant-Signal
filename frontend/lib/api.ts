@@ -60,6 +60,7 @@ import type {
   TransitNetworkDetail,
   TransitLineDetail,
   TransitStop,
+  TransitSituations,
   TransitStopDetail,
   TransitBoard,
   TransitLineTimetable,
@@ -1267,7 +1268,7 @@ export async function getTransitNetwork(network: string): Promise<TransitNetwork
 }
 
 export async function getTransitLine(network: string, line: string): Promise<TransitLineDetail> {
-  return fetchJson<TransitLineDetail>(transitUrl(network, ['lines', line]), { next: { revalidate: 300 } });
+  return fetchJson<TransitLineDetail>(transitUrl(network, ['lines', line]), { next: { revalidate: 60 } });
 }
 
 export async function getTransitStops(network: string): Promise<TransitStop[]> {
@@ -1278,7 +1279,12 @@ export async function getTransitStops(network: string): Promise<TransitStop[]> {
 }
 
 export async function getTransitStop(network: string, stop: string): Promise<TransitStopDetail> {
-  return fetchJson<TransitStopDetail>(transitUrl(network, ['stops', stop]), { next: { revalidate: 300 } });
+  return fetchJson<TransitStopDetail>(transitUrl(network, ['stops', stop]), { next: { revalidate: 60 } });
+}
+
+/** The network's current and upcoming disruptions. */
+export async function getTransitSituations(network: string): Promise<TransitSituations> {
+  return fetchJson<TransitSituations>(transitUrl(network, ['situations']), { next: { revalidate: 60 } });
 }
 
 /** A scheduled board page; `query` holds `date`, `after`, `cursor`, `limit`. */

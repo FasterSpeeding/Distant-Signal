@@ -9,7 +9,7 @@ test.describe('transit pages', () => {
   test('the network page lists its lines and stops', async ({ page }) => {
     await page.goto('/transit/metrolink');
     await expect(page.getByRole('heading', { level: 1, name: 'Manchester Metrolink' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Blue Line' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /^Blue Line/ })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Piccadilly' })).toBeVisible();
   });
 
@@ -20,6 +20,25 @@ test.describe('transit pages', () => {
     const board = page.getByRole('list', { name: 'Scheduled departures' });
     await expect(board.getByRole('listitem').first()).toContainText('07:02');
     await expect(board).toContainText('Replacement bus');
+  });
+
+  test('the network shows its line statuses and disruptions', async ({ page }) => {
+    await page.goto('/transit/metrolink');
+    await expect(page.getByRole('link', { name: /Blue Line/ })).toContainText('Minor delays');
+    await expect(page.getByRole('link', { name: /Green Line/ })).toContainText('No reported disruption');
+    const now = page.getByRole('list', { name: 'Disruptions now' });
+    await expect(now).toContainText('Delays between Piccadilly and Eccles');
+    await expect(page.getByRole('list', { name: 'Disruptions coming up' })).toContainText(
+      'No trams to Deansgate-Castlefield',
+    );
+  });
+
+  test('a stop shows its notices, and a line its status', async ({ page }) => {
+    await page.goto('/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17');
+    await expect(page.getByRole('list', { name: 'Notices' })).toContainText('Lift out of service at Piccadilly');
+    await page.goto('/transit/metrolink/lines/blue');
+    await expect(page.getByText('Minor delays')).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Disruptions now' })).toContainText('Allow extra time.');
   });
 
   test('the line timetable shows a grid', async ({ page }) => {

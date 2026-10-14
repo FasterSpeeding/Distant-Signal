@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { LINE, NETWORK } from '@/test/transitFixtures';
+import { DELAY, LINE, MINOR_DELAYS, NETWORK, NOTHING_REPORTED, SITUATIONS } from '@/test/transitFixtures';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import TransitLinePage, { generateMetadata } from './page';
@@ -41,6 +41,32 @@ describe('/transit/[network]/lines/[line]', () => {
     expect(screen.getByRole('link', { name: 'Timetable' }).getAttribute('href')).toBe(
       '/transit/metrolink/lines/blue/timetable',
     );
+  });
+
+  it("shows the line's status and its disruptions", async () => {
+    vi.mocked(api.getTransitLine).mockResolvedValue({
+      ...LINE,
+      status: MINOR_DELAYS,
+      situations: { ...SITUATIONS, current: [DELAY], upcoming: [] },
+    });
+    renderWithMantine(await TransitLinePage(params('blue')));
+    expect(screen.getByText('Minor delays')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Disruptions' })).toBeTruthy();
+    expect(screen.getByText(DELAY.summary)).toBeTruthy();
+    cleanup();
+    vi.mocked(api.getTransitLine).mockResolvedValue({
+      ...LINE,
+      status: NOTHING_REPORTED,
+      situations: { ...SITUATIONS, current: [], upcoming: [] },
+    });
+    renderWithMantine(await TransitLinePage(params('blue')));
+    expect(screen.getByText('No reported disruption')).toBeTruthy();
+    expect(screen.getByText('Nothing is affecting this line right now.')).toBeTruthy();
+    cleanup();
+    // No feed: neither status nor a disruptions section.
+    vi.mocked(api.getTransitLine).mockResolvedValue(LINE);
+    renderWithMantine(await TransitLinePage(params('blue')));
+    expect(screen.queryByRole('heading', { name: 'Disruptions' })).toBeNull();
   });
 
   it('offers the follow star, pinned when the public line id is pinned', async () => {

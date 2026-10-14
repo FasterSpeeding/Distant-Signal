@@ -2398,9 +2398,59 @@ export interface TransitLine {
   colour: string | null;
 }
 
+/** How fresh a network's disruptions are: `current` (under 30 minutes
+ * old), `unavailable` (older; nothing listed) or `none` (the network has
+ * no disruptions feed: show no status at all). */
+export type TransitStatusState = 'current' | 'unavailable' | 'none';
+
+/** One status of a tram line, worst first; the first is the headline. */
+export interface TransitStatusEntry {
+  /** A severity number, as `statusSeverity` (27 is "No Reported Disruption"). */
+  severity: number;
+  description: string;
+  reason: string;
+  situationId: string | null;
+}
+
+/** A tram line's status (`docs/api-changelog.md`, transit disruptions). */
+export interface TransitLineStatus {
+  state: TransitStatusState;
+  asOf: string | null;
+  statuses: TransitStatusEntry[];
+  upcoming: { from: string; to: string | null; summary: string; situationId: string }[];
+}
+
+/** A published disruption. `description` is plain text: render it as text. */
+export interface TransitSituation {
+  id: string;
+  summary: string;
+  description: string | null;
+  infoUrl: string | null;
+  planned: boolean;
+  reason: string | null;
+  scope: 'line' | 'stop' | 'network';
+  /** Public line ids. */
+  lines: string[];
+  /** Station ids. */
+  stops: string[];
+  advice: string[];
+  validity: { start: string; end: string | null }[];
+  /** An upcoming situation's next start. */
+  starts: string | null;
+}
+
+/** `GET /public/transit/{network}/situations`, and a line's `situations`. */
+export interface TransitSituations {
+  state: TransitStatusState;
+  asOf: string | null;
+  current: TransitSituation[];
+  upcoming: TransitSituation[];
+}
+
 /** `GET /public/transit/{network}`. */
 export interface TransitNetworkDetail extends TransitNetwork {
-  lines: TransitLine[];
+  lines: (TransitLine & { status?: TransitLineStatus })[];
+  status?: { state: TransitStatusState; asOf: string | null };
 }
 
 export interface TransitStationRef {
@@ -2413,6 +2463,8 @@ export type TransitDirection = 'outbound' | 'inbound';
 /** `GET /public/transit/{network}/lines/{line}`. */
 export interface TransitLineDetail extends TransitLine {
   directions: { direction: TransitDirection; headsign: string | null; stations: TransitStationRef[] }[];
+  status?: TransitLineStatus;
+  situations?: TransitSituations;
 }
 
 export interface TransitRailLink {
@@ -2436,6 +2488,8 @@ export interface TransitStop {
 /** `GET /public/transit/{network}/stops/{stop}`. */
 export interface TransitStopDetail extends TransitStop {
   platforms: { id: string; indicator: string | null }[];
+  /** Current disruptions naming this stop (a lift out of service). */
+  notices?: TransitSituation[];
 }
 
 /** One scheduled departure. */

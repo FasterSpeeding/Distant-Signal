@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { NETWORK, STOPS } from '@/test/transitFixtures';
+import { MINOR_DELAYS, NETWORK, NOTHING_REPORTED, SITUATIONS, STATUS_UNAVAILABLE, STOPS } from '@/test/transitFixtures';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
 import TransitNetworkPage, { generateMetadata } from './page';
@@ -14,6 +14,7 @@ vi.mock('@/lib/api', async () => {
     getTransitNetworks: vi.fn(),
     getTransitNetwork: vi.fn(),
     getTransitStops: vi.fn(),
+    getTransitSituations: vi.fn(),
   };
 });
 
@@ -32,6 +33,7 @@ describe('/transit/[network]', () => {
     notFoundMock.mockClear();
     vi.mocked(api.getTransitNetwork).mockResolvedValue(NETWORK);
     vi.mocked(api.getTransitStops).mockResolvedValue(STOPS);
+    vi.mocked(api.getTransitSituations).mockResolvedValue({ state: 'none', asOf: null, current: [], upcoming: [] });
   });
 
   it('lists the lines and stops, with the data credit', async () => {
@@ -43,6 +45,57 @@ describe('/transit/[network]', () => {
     );
     expect(screen.getByText(/We don't have live tram times/)).toBeTruthy();
     expect(screen.getByText(/Open Government Licence/)).toBeTruthy();
+  });
+
+  it('shows no status or disruptions while the network has no disruptions feed', async () => {
+    vi.mocked(api.getTransitSituations).mockResolvedValue({ state: 'none', asOf: null, current: [], upcoming: [] });
+    renderWithMantine(await TransitNetworkPage(params('metrolink')));
+    expect(screen.queryByRole('heading', { name: 'Disruptions' })).toBeNull();
+    expect(screen.queryByText(/reported disruption|Status unavailable/)).toBeNull();
+  });
+
+  it("shows each line's status and the network's disruptions", async () => {
+    vi.mocked(api.getTransitNetwork).mockResolvedValue({
+      ...NETWORK,
+      status: { state: 'current', asOf: SITUATIONS.asOf },
+      lines: [
+        { ...NETWORK.lines[0]!, status: MINOR_DELAYS },
+        { ...NETWORK.lines[1]!, status: NOTHING_REPORTED },
+      ],
+    });
+    vi.mocked(api.getTransitSituations).mockResolvedValue(SITUATIONS);
+    renderWithMantine(await TransitNetworkPage(params('metrolink')));
+    expect(screen.getByRole('link', { name: /Blue Line/ }).textContent).toContain('Minor delays');
+    expect(screen.getByRole('link', { name: /Green Line/ }).textContent).toContain('No reported disruption');
+    expect(screen.getByRole('heading', { name: 'Disruptions' })).toBeTruthy();
+    expect(screen.getByText(SITUATIONS.current[0]!.summary)).toBeTruthy();
+    expect(screen.getByText(SITUATIONS.upcoming[0]!.summary)).toBeTruthy();
+  });
+
+  it('says when the disruptions could not be loaded, and when they are stale', async () => {
+    vi.mocked(api.getTransitNetwork).mockResolvedValue({
+      ...NETWORK,
+      status: { state: 'current', asOf: SITUATIONS.asOf },
+    });
+    vi.mocked(api.getTransitSituations).mockRejectedValue(new Error('500'));
+    renderWithMantine(await TransitNetworkPage(params('metrolink')));
+    expect(screen.getByText(/^Couldn't load disruptions\./)).toBeTruthy();
+    cleanup();
+    vi.mocked(api.getTransitNetwork).mockResolvedValue({
+      ...NETWORK,
+      status: { state: 'unavailable', asOf: STATUS_UNAVAILABLE.asOf },
+      lines: [{ ...NETWORK.lines[0]!, status: STATUS_UNAVAILABLE }],
+    });
+    vi.mocked(api.getTransitSituations).mockResolvedValue({
+      ...SITUATIONS,
+      state: 'unavailable',
+      asOf: STATUS_UNAVAILABLE.asOf,
+      current: [],
+      upcoming: [],
+    });
+    renderWithMantine(await TransitNetworkPage(params('metrolink')));
+    expect(screen.getByRole('link', { name: /Blue Line/ }).textContent).toContain('Status unavailable');
+    expect(screen.getByText('Status unavailable. Last read at 09:00.')).toBeTruthy();
   });
 
   it('is not found for a network the api does not serve', async () => {
