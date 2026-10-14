@@ -5915,3 +5915,151 @@ mod db_sink_tests {
         }
     }
 }
+
+/// **Manual memory harness, not a regular test.** Runs one whole publish
+/// cycle over a delivery on disk and prints this process's resident memory
+/// before, at the peak of, and after it -- the number the operator sees as
+/// the `reference` container's RSS between nightly publishes.
+///
+/// Build a production-shaped synthetic delivery (no production data) with
+/// `schedule-query`'s `index_memory` example (`gen`, ~700MB, 427k schedules,
+/// ~7.9M calling points) plus `TI`/`A` records for its TIPLOC pool, put it
+/// in `<storage>/<timestamp>/` with a `.delivery-complete` marker, then:
+///
+/// ```text
+/// SCHEDULE_REFERENCE_MEMORY_STORAGE=<storage> cargo test --release \
+///   -p schedule-reference publish_memory_harness -- --ignored --nocapture --test-threads=1
+/// ```
+///
+/// The sink serialises every body as the db sink's encode would and drops
+/// it, so the publish's transient allocations are real; nothing is
+/// written. The cycle runs under a multi-thread runtime's `block_on`, as
+/// `main` runs it.
+#[cfg(test)]
+mod publish_memory_harness {
+    use std::future::{Future, ready};
+
+    use super::poll_once_tests::test_config;
+    use super::sink::{ChunkPart, DatedProduct, LinePopulation, PublishSink, SinkError};
+    use super::*;
+
+    /// Serialises and drops every body.
+    struct EncodingSink;
+
+    fn encode<T: serde::Serialize + ?Sized>(body: &T) -> Result<(), SinkError> {
+        let bytes = serde_json::to_vec(body).map_err(|err| SinkError::Rejected(err.into()))?;
+        std::hint::black_box(bytes);
+        Ok(())
+    }
+
+    impl PublishSink for EncodingSink {
+        fn stanox_crs(
+            &self,
+            records: &[common::StanoxCrsRecord],
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(records))
+        }
+
+        fn tiploc_crs(
+            &self,
+            records: &[common::TiplocCrsRecord],
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(records))
+        }
+
+        fn tiploc_locations(
+            &self,
+            records: &[common::TiplocLocationRecord],
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(records))
+        }
+
+        fn fixed_links(
+            &self,
+            records: &[common::FixedLinkRecord],
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(records))
+        }
+
+        fn line_population(
+            &self,
+            body: &LinePopulation,
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(body))
+        }
+
+        fn network_departures(
+            &self,
+            rows: &[serde_json::Value],
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(rows))
+        }
+
+        fn publish_part(
+            &self,
+            _product: DatedProduct,
+            rows: &[serde_json::Value],
+            _part: ChunkPart<'_>,
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(rows))
+        }
+
+        fn services(
+            &self,
+            _service_date: chrono::NaiveDate,
+            rows: &[serde_json::Value],
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(encode(rows))
+        }
+
+        fn record_completed_publish(
+            &self,
+            _delivery: &str,
+        ) -> impl Future<Output = Result<(), SinkError>> {
+            ready(Ok(()))
+        }
+
+        fn last_completed_publish(
+            &self,
+        ) -> impl Future<Output = Result<Option<String>, SinkError>> {
+            ready(Ok(None))
+        }
+    }
+
+    fn mib(bytes: Option<u64>) -> u64 {
+        bytes.unwrap_or(0) / (1024 * 1024)
+    }
+
+    #[test]
+    #[ignore = "manual memory harness: needs SCHEDULE_REFERENCE_MEMORY_STORAGE, see the module doc"]
+    fn publish_memory_harness() {
+        let storage = std::env::var("SCHEDULE_REFERENCE_MEMORY_STORAGE")
+            .expect("SCHEDULE_REFERENCE_MEMORY_STORAGE names a storage dir holding one delivery");
+        let mut config = test_config();
+        config.storage_dir = storage.into();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        eprintln!(
+            "thread {:?}; before: rss {} MiB",
+            std::thread::current().name(),
+            mib(common::heap::resident_set_bytes())
+        );
+        let started = std::time::Instant::now();
+        let mut state = PublishState::default();
+        runtime
+            .block_on(poll_once(&EncodingSink, &config, &mut state))
+            .expect("the cycle runs");
+        assert!(
+            state.last_processed_delivery.is_some() && state.partial.is_none(),
+            "every product published"
+        );
+        eprintln!(
+            "after {:?}: peak {} MiB, rss {} MiB",
+            started.elapsed(),
+            mib(common::heap::peak_resident_set_bytes()),
+            mib(common::heap::resident_set_bytes())
+        );
+    }
+}
