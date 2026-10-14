@@ -3,7 +3,17 @@
 import { BarChart, LineChart } from '@mantine/charts';
 import { Stack, Title, type TitleOrder } from '@mantine/core';
 import { ReferenceArea } from 'recharts';
-import { formatShortDate, formatTime } from '@/lib/dateFormat';
+import {
+  bucketTickLabel,
+  bucketTooltipLabel,
+  CHART_COLORS,
+  CHART_CURVE,
+  CHART_GAP_FILL,
+  CHART_GAP_OPACITY,
+  formatCount,
+  formatMinutes,
+  formatRate,
+} from '@/lib/chartTheme';
 import type { TrendGranularity } from '@/lib/history';
 import type { ChartPoint } from './chartPoint';
 
@@ -115,15 +125,30 @@ export function TrendsCharts({
    * "Scope decision: full-coverage". */
   showVolume?: boolean;
 }) {
-  // Review §3.3: the day axis used to print the raw "2026-09-15" bucket key
-  // verbatim -- every other date in the app reads "15 Sep". The other three
-  // granularities already had a tick formatter (`formatTime`, since their
-  // bucket key is a full instant, not just a calendar day); `day` did not,
-  // simply because nothing had added one yet.
+  // Review §3.3: the day axis used to print the raw "2026-09-15" bucket
+  // key. Ticks and tooltip headings now go through `lib/chartTheme.ts`
+  // ("15 Sep", "14:30"; "15 Sep 2026", "15 Sep, 14:30").
   const xAxisProps = {
     padding: { right: 12 },
-    tickFormatter: (value: string) => (granularity === 'day' ? formatShortDate(value) : formatTime(value)),
+    tickFormatter: (value: string) => bucketTickLabel(granularity, value),
   };
+  const tooltipProps = {
+    labelFormatter: (label: unknown) => (typeof label === 'string' ? bucketTooltipLabel(granularity, label) : ''),
+  };
+  const gapAreas = gapSpans(points).map((span) => {
+    const { x1, x2 } = referenceAreaBounds(span, points);
+    return (
+      <ReferenceArea
+        key={`${span.startKey}-${span.endKey}`}
+        x1={x1}
+        x2={x2}
+        fill={CHART_GAP_FILL}
+        fillOpacity={CHART_GAP_OPACITY}
+        stroke="none"
+        ifOverflow="visible"
+      />
+    );
+  });
 
   return (
     <>
@@ -145,47 +170,44 @@ export function TrendsCharts({
             h={180}
             data={points}
             dataKey="bucketKey"
-            series={[{ name: 'total', label: 'Trains counted', color: 'teal.6' }]}
+            series={[{ name: 'total', label: 'Trains counted', color: CHART_COLORS.count }]}
+            valueFormatter={formatCount}
             xAxisProps={xAxisProps}
+            tooltipProps={tooltipProps}
           />
         </Stack>
       )}
       <Stack gap={4}>
         <Title order={order} size="h6">
-          Delay / cancellation / skip rate
+          Delay, cancellation and skip rates
         </Title>
         {/* The three rate metrics are 0-1 proportions and share one chart/axis.
             Average delay minutes is a different unit and is deliberately never
             combined onto this chart or its axis -- see the second LineChart
-            below, and the plan's Global Constraints. */}
+            below, and the plan's Global Constraints. The dash patterns keep
+            the three apart without relying on colour. */}
         <LineChart
           h={310}
           data={points}
           dataKey="bucketKey"
           withLegend
+          curveType={CHART_CURVE}
           series={[
-            { name: 'delayRate', label: 'Delay rate', color: 'blue.6' },
-            { name: 'cancellationRate', label: 'Cancellation rate', color: 'red.6', strokeDasharray: '6 4' },
-            { name: 'skipRate', label: 'Skip rate', color: 'yellow.6', strokeDasharray: '2 3' },
+            { name: 'delayRate', label: 'Delay rate', color: CHART_COLORS.delay },
+            {
+              name: 'cancellationRate',
+              label: 'Cancellation rate',
+              color: CHART_COLORS.cancellation,
+              strokeDasharray: '6 4',
+            },
+            { name: 'skipRate', label: 'Skip rate', color: CHART_COLORS.skip, strokeDasharray: '2 3' },
           ]}
-          valueFormatter={(value) => `${(value * 100).toFixed(1)}%`}
+          valueFormatter={formatRate}
           connectNulls={false}
           xAxisProps={xAxisProps}
+          tooltipProps={tooltipProps}
         >
-          {gapSpans(points).map((span) => {
-            const { x1, x2 } = referenceAreaBounds(span, points);
-            return (
-              <ReferenceArea
-                key={`${span.startKey}-${span.endKey}`}
-                x1={x1}
-                x2={x2}
-                fill="var(--mantine-color-gray-5)"
-                fillOpacity={0.15}
-                stroke="none"
-                ifOverflow="visible"
-              />
-            );
-          })}
+          {gapAreas}
         </LineChart>
       </Stack>
       <Stack gap={4}>
@@ -196,25 +218,14 @@ export function TrendsCharts({
           h={220}
           data={points}
           dataKey="bucketKey"
-          series={[{ name: 'avgDelayMinutes', label: 'Avg delay (minutes)', color: 'grape.6' }]}
-          valueFormatter={(value) => `${value.toFixed(1)} min`}
+          curveType={CHART_CURVE}
+          series={[{ name: 'avgDelayMinutes', label: 'Average delay', color: CHART_COLORS.delay }]}
+          valueFormatter={formatMinutes}
           connectNulls={false}
           xAxisProps={xAxisProps}
+          tooltipProps={tooltipProps}
         >
-          {gapSpans(points).map((span) => {
-            const { x1, x2 } = referenceAreaBounds(span, points);
-            return (
-              <ReferenceArea
-                key={`${span.startKey}-${span.endKey}`}
-                x1={x1}
-                x2={x2}
-                fill="var(--mantine-color-gray-5)"
-                fillOpacity={0.15}
-                stroke="none"
-                ifOverflow="visible"
-              />
-            );
-          })}
+          {gapAreas}
         </LineChart>
       </Stack>
     </>
