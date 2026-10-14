@@ -7,6 +7,7 @@ pub mod custom_lines;
 pub mod db_health;
 pub mod delay_repay_outcome;
 pub mod delay_repay_rules;
+pub mod delegated;
 pub mod eta_blend;
 pub mod full_coverage_comparison;
 pub mod full_coverage_window;
