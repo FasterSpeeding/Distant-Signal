@@ -5,6 +5,7 @@ import { SectionTitle } from '@/components/SectionTitle';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitStopNotices } from '@/components/TransitDisruptions';
+import { StopRailLinks } from '@/components/TransitRailLinks';
 import { TransitStopBoard } from '@/components/TransitStopBoard';
 import { getTransitDepartures, getTransitNetwork, getTransitStop } from '@/lib/api';
 import { formatDate } from '@/lib/dateFormat';
@@ -80,6 +81,8 @@ export default async function TransitStopPage({ params, searchParams }: Params &
           })}
         </Group>
       </Stack>
+
+      <StopRailLinks links={stopDetail.railLinks} />
 
       <TransitStopNotices notices={stopDetail.notices} />
 

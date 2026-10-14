@@ -3,6 +3,19 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-14: transit rail links
+
+Additive. New: `GET /public/transit/rail-links?crs=MAN` (3600 s):
+`{"links": [{network, networkName, stopId, stopName, kind, note}]}`, the
+tram stops of every served network linked to that National Rail station
+(`kind` `interchange` or `nearby`), by network then stop name. `crs` is
+three letters, either case; anything else is a `400`. Unlike the other
+transit routes this is never a `404`: with no network served, or no link,
+it is `{"links": []}`.
+
+A stop's `railLinks` entries gain `stationName`, the National Rail
+station's name, or `null` when the station list doesn't have the CRS.
+
 ## 2026-10-14: transit disruptions and line status
 
 Additive, on the `/public/transit` routes below, and as dark as they are

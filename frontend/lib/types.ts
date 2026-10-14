@@ -2472,6 +2472,18 @@ export interface TransitRailLink {
   tiploc: string;
   kind: 'interchange' | 'nearby';
   note: string | null;
+  /** The National Rail station's name, when known. */
+  stationName?: string | null;
+}
+
+/** A tram stop linked to a National Rail station (`GET /public/transit/rail-links?crs=`). */
+export interface TransitStationLink {
+  network: string;
+  networkName: string;
+  stopId: string;
+  stopName: string;
+  kind: 'interchange' | 'nearby';
+  note: string | null;
 }
 
 /** A station (`GET /public/transit/{network}/stops`). */

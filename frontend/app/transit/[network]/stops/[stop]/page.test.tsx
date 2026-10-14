@@ -52,6 +52,24 @@ describe('/transit/[network]/stops/[stop]', () => {
     );
   });
 
+  it('links the National Rail station to change to', async () => {
+    vi.mocked(api.getTransitStop).mockResolvedValue({
+      ...STOP,
+      railLinks: [
+        { crs: 'MAN', tiploc: 'MNCRPIC', kind: 'interchange', note: null, stationName: 'Manchester Piccadilly' },
+      ],
+    });
+    await render();
+    expect(screen.getByText(/Change for National Rail/).textContent).toBe(
+      'Change for National Rail at Manchester Piccadilly',
+    );
+    expect(screen.getByRole('link', { name: 'Manchester Piccadilly' }).getAttribute('href')).toBe('/stations/MAN');
+    cleanup();
+    vi.mocked(api.getTransitStop).mockResolvedValue({ ...STOP, railLinks: [] });
+    await render();
+    expect(screen.queryByText(/National Rail/)).toBeNull();
+  });
+
   it("shows the stop's notices above the board, and nothing without any", async () => {
     vi.mocked(api.getTransitStop).mockResolvedValue({ ...STOP, notices: [LIFT] });
     await render();

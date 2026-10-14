@@ -61,6 +61,7 @@ import type {
   TransitLineDetail,
   TransitStop,
   TransitSituations,
+  TransitStationLink,
   TransitStopDetail,
   TransitBoard,
   TransitLineTimetable,
@@ -1251,6 +1252,22 @@ export async function getTransitNetworks(init?: RequestInit): Promise<TransitNet
     return body.networks;
   } catch (err) {
     log.warn('transit networks lookup failed; hiding transit links', { error: err });
+    return [];
+  }
+}
+
+/** The tram stops linked to a National Rail station, from every served
+ * network (empty while none is served). Never throws: the station page
+ * shows the links when it can and nothing otherwise. */
+export async function getTransitRailLinks(crs: string, init?: RequestInit): Promise<TransitStationLink[]> {
+  try {
+    const body = await fetchJson<{ links: TransitStationLink[] }>(
+      `${baseUrl()}/public/transit/rail-links?${new URLSearchParams({ crs }).toString()}`,
+      { ...init, next: { revalidate: 3600 } },
+    );
+    return body.links;
+  } catch (err) {
+    log.warn('transit rail links lookup failed; showing none', { error: err });
     return [];
   }
 }

@@ -10,6 +10,7 @@ import {
   getStationSampleStats,
   getStationAccessibility,
   getAllTocs,
+  getTransitRailLinks,
   ApiNotFoundError,
 } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
@@ -20,6 +21,7 @@ import { ShareButton } from '@/components/ShareButton';
 import { StationAccessibilitySection } from '@/components/StationAccessibilitySection';
 import { StationTimetable } from '@/components/StationTimetable';
 import { TextLink } from '@/components/TextLink';
+import { StationTramLinks } from '@/components/TransitRailLinks';
 import { NationalRailCredit } from '@/components/NationalRailCredit';
 import { RecentlyCleared } from '@/components/RecentlyCleared';
 import { worstStatus, severityRank, severityLabel } from '@/lib/severity';
@@ -185,20 +187,24 @@ export default async function StationDisruptionPage({ params }: { params: Promis
     notFound();
   }
 
-  const [{ reports, coverage }, preferences, sampleStatsResult, accessibilityResult, tocs] = await Promise.all([
-    fetchStationDisruptions(crs),
-    // Per-user, so it fails closed to "nothing pinned" (the shape a 401
-    // already returns) rather than being stale-served -- design spec
-    // Decision 5. The pin button reads as unpinned during an outage.
-    getPreferences().catch(() => NO_PREFERENCES),
-    fetchStationSampleStats(crs),
-    fetchStationAccessibility(crs),
-    // Hour-cached reference data used only to label operator rows in the
-    // sample-stats section below; an empty list degrades to bare ATOC
-    // codes rather than the whole page -- same pattern as
-    // app/lines/page.tsx's own getAllTocs() call.
-    getAllTocs().catch(() => []),
-  ]);
+  const [{ reports, coverage }, preferences, sampleStatsResult, accessibilityResult, tocs, tramLinks] =
+    await Promise.all([
+      fetchStationDisruptions(crs),
+      // Per-user, so it fails closed to "nothing pinned" (the shape a 401
+      // already returns) rather than being stale-served -- design spec
+      // Decision 5. The pin button reads as unpinned during an outage.
+      getPreferences().catch(() => NO_PREFERENCES),
+      fetchStationSampleStats(crs),
+      fetchStationAccessibility(crs),
+      // Hour-cached reference data used only to label operator rows in the
+      // sample-stats section below; an empty list degrades to bare ATOC
+      // codes rather than the whole page -- same pattern as
+      // app/lines/page.tsx's own getAllTocs() call.
+      getAllTocs().catch(() => []),
+      // Tram stops to change to (transit spec §12.1); empty while no tram
+      // network is served, and never throws.
+      getTransitRailLinks(crs),
+    ]);
   const heading = lookup.outcome === 'found' ? `${lookup.name} (${crs})` : crs;
 
   // Stamped once for the whole page (all per-line IssueLists share it) so
@@ -267,6 +273,8 @@ export default async function StationDisruptionPage({ params }: { params: Promis
           Accessibility &amp; facilities
         </TextLink>
       </Group>
+
+      <StationTramLinks links={tramLinks} />
 
       {/* Two different absences, said honestly rather than collapsed into
           one cheerful "no disruptions" that would just as easily describe a

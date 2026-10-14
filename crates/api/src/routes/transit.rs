@@ -58,6 +58,7 @@ type Reply = Result<([(header::HeaderName, &'static str); 1], Json<Value>), (Sta
 pub fn router() -> Router {
     Router::new()
         .route("/transit/networks", axum::routing::get(list_networks))
+        .route("/transit/rail-links", axum::routing::get(rail_links))
         .route("/transit/{network}", axum::routing::get(get_network))
         .route(
             "/transit/{network}/lines/{line}",
@@ -137,6 +138,30 @@ async fn list_networks(State(app): State<App>) -> Reply {
         .await
         .map_err(internal_error)?;
     reply(NETWORKS_CACHE, json!({ "networks": to_json(&networks)? }))
+}
+
+#[derive(Debug, Deserialize)]
+struct RailLinksQuery {
+    crs: Option<String>,
+}
+
+/// `/transit/rail-links?crs=MAN`: the transit stops of every served network
+/// linked to that National Rail station (spec §12.1), for its station
+/// page. Empty while no network is served, or for a CRS with no link.
+async fn rail_links(State(app): State<App>, Query(query): Query<RailLinksQuery>) -> Reply {
+    let crs = query.crs.unwrap_or_default().to_ascii_uppercase();
+    if crs.len() != 3 || !crs.bytes().all(|b| b.is_ascii_uppercase()) {
+        return Err(bad_request("crs must be three letters"));
+    }
+    let networks = enabled(&app);
+    let links = if networks.is_empty() {
+        Vec::new()
+    } else {
+        read::rail_links_for_crs(&app.database, &networks, &crs)
+            .await
+            .map_err(internal_error)?
+    };
+    reply(LONG_CACHE, json!({ "links": to_json(&links)? }))
 }
 
 /// The situations' state for `network` now (spec §10.2's staleness rule).
@@ -539,6 +564,48 @@ mod db_tests {
         assert_eq!(body["stops"].as_array().unwrap().len(), 2);
         let (status, _, _) = get(&lit, &format!("/transit/{NETWORK}/stops/nope")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        cleanup(&pool, NETWORK).await;
+    }
+
+    /// Plan 5.1: a National Rail station's linked tram stops, only from
+    /// served networks; and the stop's own link names the station.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL (a migrated database)"]
+    async fn rail_links_come_from_served_networks_only() {
+        let pool = ds_store::test_support::connect().await;
+        let today = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        seed(&pool, NETWORK, today).await;
+
+        let lit = app(pool.clone(), &[NETWORK]);
+        let (status, cache, body) = get(&lit, "/transit/rail-links?crs=ZZT").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cache.as_deref(), Some(LONG_CACHE));
+        let links = body["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["network"], NETWORK);
+        assert_eq!(links[0]["stopId"], A);
+        assert_eq!(links[0]["kind"], "interchange");
+        // Lower case is accepted; a CRS with no link is an empty list.
+        let (_, _, body) = get(&lit, "/transit/rail-links?crs=zzt").await;
+        assert_eq!(body["links"].as_array().unwrap().len(), 1);
+        let (_, _, body) = get(&lit, "/transit/rail-links?crs=KGX").await;
+        assert_eq!(body, json!({ "links": [] }));
+        let (status, _, _) = get(&lit, "/transit/rail-links?crs=KGXX").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/stops/{A}")).await;
+        assert_eq!(body["railLinks"][0]["crs"], "ZZT");
+        assert!(
+            body["railLinks"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("stationName")
+        );
+
+        // Dark: nothing, not a 404 (the station page asks for every CRS).
+        let dark = app(pool.clone(), &[]);
+        let (status, _, body) = get(&dark, "/transit/rail-links?crs=ZZT").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "links": [] }));
         cleanup(&pool, NETWORK).await;
     }
 

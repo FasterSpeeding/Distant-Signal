@@ -363,3 +363,9 @@ VALUES
      'incident_id', 'E2E-S3')),
    NOW(), 'transit', NOW())
 ON CONFLICT (line_id) DO NOTHING;
+
+-- Piccadilly's link to National Rail (transit plan 5.1). MAN has no row in
+-- `stations` here, so the stop page names it by its code.
+INSERT INTO transit_rail_links (network, stop_id, crs, tiploc, kind, note, observed_at)
+VALUES ('metrolink', '9400ZZMAPIC', 'MAN', 'MNCRPIC', 'interchange', NULL, NOW())
+ON CONFLICT DO NOTHING;

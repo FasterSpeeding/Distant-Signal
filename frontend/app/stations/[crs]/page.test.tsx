@@ -18,6 +18,7 @@ vi.mock('@/lib/api', async () => {
     getStationSampleStats: vi.fn(),
     getStationAccessibility: vi.fn(),
     getAllTocs: vi.fn(),
+    getTransitRailLinks: vi.fn(),
   };
 });
 
@@ -82,11 +83,36 @@ describe('StationDisruptionPage -- outage behaviour', () => {
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getStationAccessibility).mockResolvedValue({});
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([]);
   });
 
   it('offers to plan a journey from this station, pre-filling it as the origin', async () => {
     await renderPage();
     expect(screen.getByRole('link', { name: 'Plan a journey from here' })).toHaveAttribute('href', '/plan?origin=KGX');
+  });
+
+  it('links the tram stops to change to, and nothing while there are none', async () => {
+    await renderPage();
+    expect(screen.queryByText(/Change for trams/)).toBeNull();
+    cleanup();
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([
+      {
+        network: 'metrolink',
+        networkName: 'Manchester Metrolink',
+        stopId: '9400ZZMAPIC',
+        stopName: 'Piccadilly',
+        kind: 'interchange',
+        note: null,
+      },
+    ]);
+    await renderPage();
+    expect(screen.getByText(/Change for trams/).textContent).toBe(
+      'Change for trams: Piccadilly (Manchester Metrolink)',
+    );
+    expect(screen.getByRole('link', { name: 'Piccadilly' })).toHaveAttribute(
+      'href',
+      '/transit/metrolink/stops/9400ZZMAPIC',
+    );
   });
 
   it("renders the station's disruptions normally", async () => {
@@ -141,6 +167,7 @@ describe('StationDisruptionPage -- line-coverage distinction', () => {
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getStationAccessibility).mockResolvedValue({});
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([]);
   });
 
   it('renders the "not covered" copy, not "no disruptions", when the backend 404s for zero line coverage', async () => {
@@ -188,6 +215,7 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
       new ApiNotFoundError('no sample data collected for station: KGX'),
     );
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([]);
 
     await renderPage();
 
@@ -199,6 +227,7 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
   it('renders the "no live departures currently recorded" copy for a covered-but-quiet board', async () => {
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([]);
 
     await renderPage();
 
@@ -209,6 +238,7 @@ describe('StationDisruptionPage -- sample stats by operator', () => {
   it('credits National Rail directly under the live-sampled stats', async () => {
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([]);
 
     await renderPage();
 
@@ -285,6 +315,7 @@ describe('StationDisruptionPage -- accessibility & facilities', () => {
     vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
     vi.mocked(api.getStationSampleStats).mockResolvedValue([]);
     vi.mocked(api.getAllTocs).mockResolvedValue([]);
+    vi.mocked(api.getTransitRailLinks).mockResolvedValue([]);
   });
 
   it('renders the "not yet captured" copy when the route 404s', async () => {
