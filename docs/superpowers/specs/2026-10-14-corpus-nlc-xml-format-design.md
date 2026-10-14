@@ -55,12 +55,11 @@ The comparison is with production's loaded `CORPUSExtract.json.gz` of
 2026-10-02, 55,981 rows, of which 12,403 have a TIPLOC. The XML format holds
 **only the TIPLOC-bearing locations**: every XML row has a TIPLOC.
 
-- 12,099 TIPLOCs are in both. 284 are only in the JSON (for example `ABJN`
-  and `ALTRMET`); 3 are only in the XML.
+- 12,099 TIPLOCs are in both. 284 are only in the JSON; 3 are only in the XML.
 - On those 12,099 shared TIPLOCs the codes agree: NLC, UIC, STANOX and CRS
-  all match, except `GOLBRNE`, which gained a STANOX and CRS in the XML.
+  all match, except one TIPLOC, which gained a STANOX and CRS in the XML.
 - Descriptions differ on 3,843 TIPLOCs. The two versions word names
-  differently (`REDBRIDGE HANTS` against `REDBRIDGE`). `NLCCapriDesc` is the
+  differently (a place with and without its county, for example). `NLCCapriDesc` is the
   16-character name, the counterpart of `NLCDESC16`.
 - The JSON carries CRS codes on 392 rows that have no TIPLOC, and STANOXes on
   428 such rows. The XML has neither.
@@ -69,7 +68,7 @@ The comparison is with production's loaded `CORPUSExtract.json.gz` of
   tram, bus and platform codes) and 18 only in the XML. No TIPLOC gets a
   different CRS. For STANOX→CRS, 2 pairs are only in the JSON and 1 only in
   the XML. Of the 2,659 TIPLOCs in production's stored, station-filtered
-  crosswalk, only `WLSD` is absent from the XML file.
+  crosswalk, only one is absent from the XML file.
 
 The JSON extract is therefore the superset. Switching to the XML alone would
 cost the non-TIPLOC locations and a few crosswalk fills.
