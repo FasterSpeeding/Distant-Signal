@@ -2610,6 +2610,44 @@ Off by default; no API key needed.
 | `pollerNirStations.podAnnotations` | `{}` | Pod annotations. |
 | `pollerNirStations.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
 
+### pollerTransitSchedule
+
+Transit networks that are neither National Rail nor TfL, Manchester
+Metrolink first (docs/superpowers/specs/2026-10-09-transit-networks-design.md).
+One Deployment per enabled network, `<release>-poller-transit-schedule-<network>`
+(`strategy: Recreate`), from one image. Each XADDs its network's BODS
+timetable (GTFS) and disruptions (SIRI-SX) to `ds:ingest:transit-<network>`
+as its own Redis user; no database, api or key. The rollout order is the
+spec's §15.1.
+
+| Key | Default | Description |
+|---|---|---|
+| `pollerTransitSchedule.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-transit-schedule` | Image repository. |
+| `pollerTransitSchedule.image.tag` | `""` | Empty means "use the chart's appVersion". |
+| `pollerTransitSchedule.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
+| `pollerTransitSchedule.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
+| `pollerTransitSchedule.progressStallSecs` | `3600` | `/livez` stall window (see `workerHealth`): one GTFS download, its parse and the produce. |
+| `pollerTransitSchedule.logLevel` | `info` | `RUST_LOG` value. |
+| `pollerTransitSchedule.metricsPort` | `9091` | Prometheus `/metrics` port. |
+| `pollerTransitSchedule.networks.metrolink.enabled` | `false` | Deploy Metrolink's producer. Needs `redis.acl.clients.pollerTransitMetrolink: true` and `ingestWriter.streams.transit-metrolink: apply`. |
+| `pollerTransitSchedule.networks.metrolink.adapter` | `gtfs` | `TRANSIT_ADAPTER`; only `gtfs` exists. |
+| `pollerTransitSchedule.networks.metrolink.gtfsUrl` | BODS North West GTFS | The timetable zip (see values.yaml for the URL). |
+| `pollerTransitSchedule.networks.metrolink.gtfsMaxBytes` | `419430400` | The GTFS download's byte cap. |
+| `pollerTransitSchedule.networks.metrolink.situationsUrl` | BODS SIRI-SX bulk archive | The disruptions archive (a 302 to a signed URL on `download.bus-data.dft.gov.uk`). |
+| `pollerTransitSchedule.networks.metrolink.naptanUrl` | NaPTAN access nodes | `{area}` is the network file's NaPTAN area. |
+| `pollerTransitSchedule.networks.metrolink.timetableIntervalSecs` | `86400` | Seconds between timetable fetches. |
+| `pollerTransitSchedule.networks.metrolink.situationsIntervalSecs` | `300` | Seconds between SIRI-SX fetches. |
+| `pollerTransitSchedule.networks.metrolink.horizonDays` | `60` | Days of service dates stored after today. |
+| `pollerTransitSchedule.networks.metrolink.feedMaxDropFraction` | `0.3` | A feed whose line, stop or trip count fell by more than this since the last commit is refused. |
+| `pollerTransitSchedule.networks.metrolink.workDirSizeLimit` | `512Mi` | The `/work` emptyDir's size limit (the GTFS zip). |
+| `pollerTransitSchedule.networks.metrolink.resources` | requests `100m`/`192Mi`, limit `768Mi` | Container resource requests/limits. |
+| `pollerTransitSchedule.networks.metrolink.extraEnv` | `[]` | Extra env vars for the container. One named like a chart-set var replaces it. |
+| `pollerTransitSchedule.networks.metrolink.nodeSelector` | `{}` | Pod node selector. |
+| `pollerTransitSchedule.networks.metrolink.tolerations` | `[]` | Pod tolerations. |
+| `pollerTransitSchedule.networks.metrolink.affinity` | `{}` | Pod affinity rules. |
+| `pollerTransitSchedule.networks.metrolink.podAnnotations` | `{}` | Pod annotations. |
+| `pollerTransitSchedule.networks.metrolink.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
+
 ### scheduleFeed
 
 An SFTP server (SFTPGo) that receives the pushed CIF timetable, and the

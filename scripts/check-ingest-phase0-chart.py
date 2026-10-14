@@ -656,6 +656,56 @@ def check_optional_acl_users(c: Checker) -> None:
     )
 
 
+TRANSIT_ON = sets(
+    "pollerTransitSchedule.networks.metrolink.enabled=true",
+    "redis.acl.clients.pollerTransitMetrolink=true",
+    "ingestWriter.streams.transit-metrolink=apply",
+)
+
+
+def check_transit_producer(c: Checker) -> None:
+    """Check poller-transit-schedule renders per enabled network only (transit §13.1)."""
+    name = "Deployment/distant-signal-poller-transit-schedule-metrolink"
+    c.check(
+        ok=name not in by_name(c.docs()),
+        message="poller-transit-schedule must not render by default",
+    )
+    docs = by_name(c.docs(*TRANSIT_ON))
+    deployment = docs.get(name, {})
+    spec = cast("dict[str, object]", deployment.get("spec") or {})
+    c.check(
+        ok=cast("dict[str, str]", spec.get("strategy") or {}).get("type") == "Recreate",
+        message=f"{name}: strategy Recreate",
+    )
+    main = (containers(deployment) or [{}])[0]
+    e = env(main)
+    c.check(
+        ok=value(e.get("TRANSIT_NETWORK")) == "metrolink"
+        and value(e.get("REDIS_USERNAME")) == "poller-transit-metrolink"
+        and secret_ref(e.get("REDIS_PASSWORD"))
+        == ("example-redis-users", "poller-transit-metrolink-password")
+        and value(e.get("TRANSIT_WORK_DIR")) == "/work",
+        message=f"{name}: its network, Redis user and work dir",
+    )
+    volumes = cast("list[dict[str, object]]", pod(deployment).get("volumes") or [])
+    c.check(
+        ok=any(v.get("name") == "work" and "emptyDir" in v for v in volumes),
+        message=f"{name}: an emptyDir at /work",
+    )
+    c.refuses(
+        "the transit producer without its stream applied",
+        "ingestWriter.streams.transit-metrolink: apply",
+        *TRANSIT_ON,
+        *sets("ingestWriter.streams.transit-metrolink=off"),
+    )
+    c.refuses(
+        "the transit producer without its Redis user",
+        "redis.acl.clients.pollerTransitMetrolink",
+        *TRANSIT_ON,
+        *sets("redis.acl.clients.pollerTransitMetrolink=false"),
+    )
+
+
 def renders(c: Checker, label: str, *args: str) -> None:
     """Check that the render succeeds."""
     code, out = c.render(*args)
@@ -804,6 +854,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     check_redis_users(c)
     check_redis_acl_file(c)
     check_optional_acl_users(c)
+    check_transit_producer(c)
     check_redis_user_guards(c)
     check_narrow_role_guards(c)
     check_retired_switches(c)
