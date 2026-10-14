@@ -44,6 +44,10 @@ const PAGES: [name: string, path: string][] = [
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
   ['incidents', '/incidents'],
   ['account', '/account'],
+  // Open to everyone: logged out it is the appearance settings and one log
+  // in prompt, logged in the account sections too.
+  ['preferences', '/account/preferences'],
+  ['preferences-logged-in', '/account/preferences'],
   // Tram pages (the seed's metrolink network; API_TRANSIT_NETWORKS in the
   // frontend-e2e job). Dated, so the board and timetable don't follow the
   // server's clock.
@@ -52,6 +56,9 @@ const PAGES: [name: string, path: string][] = [
   ['transit-stop', '/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17'],
   ['transit-timetable', '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00'],
 ];
+
+/** The pages shot with the seed's session cookie (E2E_SESSION_COOKIE). */
+const LOGGED_IN_PAGES: ReadonlySet<string> = new Set(['account', 'preferences-logged-in']);
 
 const WIDTHS = [390, 1366] as const;
 const SCHEMES = ['light', 'dark'] as const;
@@ -114,7 +121,7 @@ for (const scheme of SCHEMES) {
 
       for (const [name, path] of PAGES) {
         test(name, async ({ page, context }) => {
-          if (name === 'account') {
+          if (LOGGED_IN_PAGES.has(name)) {
             test.skip(!SESSION_COOKIE, 'E2E_SESSION_COOKIE is unset');
             await context.addCookies([sessionCookie(SESSION_COOKIE!)]);
           }
