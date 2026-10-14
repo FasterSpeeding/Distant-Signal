@@ -1692,9 +1692,14 @@ a[data-text-link-tone='inherit'] {
 }
 
 @media (min-width: $mantine-breakpoint-sm) {
+  /* Top-aligned, not centred: a linked tile has a third line ("View
+     lines") that a zero tile lacks, and centring each tile's own content
+     sat the linked tiles' counts higher than the zero tiles' on the same
+     row. Count and label start at the same height in every tile; the cue
+     drops to the bottom edge. */
   .statusTile {
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 4px;
     height: 100%;
     padding: var(--mantine-spacing-lg) var(--mantine-spacing-sm);
@@ -1703,6 +1708,7 @@ a[data-text-link-tone='inherit'] {
 
   .statusTile__cue {
     margin-inline-start: 0;
+    margin-block-start: auto;
   }
 }
 
