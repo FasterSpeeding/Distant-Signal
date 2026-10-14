@@ -84,6 +84,19 @@ pub struct ServiceArguments {
     #[arg(long, env, default_value = "distant-signal-chatbot-users")]
     pub chatbot_access_group: String,
 
+    /// The transit networks the `/public/transit` routes serve
+    /// (`API_TRANSIT_NETWORKS`, comma-separated; chart
+    /// `api.transitNetworks`). EMPTY BY DEFAULT: every `/public/transit`
+    /// route then answers 404 and the frontend hides its pages, so the
+    /// routes ship dark (transit networks spec §11, C8).
+    #[arg(
+        long,
+        env = "API_TRANSIT_NETWORKS",
+        value_delimiter = ',',
+        default_value = ""
+    )]
+    pub transit_networks: Vec<String>,
+
     /// Who gets the embedded chatbot (`/chat`, `GET /public/chatbot/access`):
     /// `group` (the default) -- only logged-in users in
     /// `chatbot_access_group`; `authenticated` -- every logged-in user,

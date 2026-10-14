@@ -226,6 +226,7 @@ mod session_revocation_db_tests {
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
             chatbot_access_group: "distant-signal-chatbot-users".to_string(),
+            transit_networks: Vec::new(),
             chatbot_access: crate::data::config::ChatbotAccessMode::Group,
             admin_group: admin_group.to_string(),
             sso_issuer_url: issuer.to_string(),
