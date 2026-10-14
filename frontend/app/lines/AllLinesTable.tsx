@@ -2,7 +2,6 @@
 
 import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  Badge,
   Box,
   Chip,
   ChipGroup,
@@ -42,6 +41,7 @@ import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 import { fullTitle } from '@/lib/pageMetadata';
 import { LinesFilterBar } from './LinesFilterBar';
+import { StateBadge } from '@/components/StateBadge';
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 interface SortState {
@@ -724,9 +724,11 @@ export function AllLinesTable({
                     // rule) -- otherwise "No data" clips to "N…" in this same
                     // table at narrow widths.
                     <Tooltip label={noStatusReason(representative)}>
-                      <Badge tt="none" color="gray" variant="outline" data-status-badge>
-                        No data
-                      </Badge>
+                      <span>
+                        <StateBadge tone="neutral" data-status-badge="">
+                          No data
+                        </StateBadge>
+                      </span>
                     </Tooltip>
                   )}
                 </TableTd>

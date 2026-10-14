@@ -430,25 +430,19 @@ describe('IssueList', () => {
     expect(description).toHaveClass('issueRow__reason');
   });
 
-  it('renders the data-quality badge as neutral gray, not the brand colour', () => {
+  it('shows the data quality as dimmed text, not a fourth badge (round 2)', () => {
     renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
-    // Provenance is metadata, not brand — it must not ride the theme's
-    // primaryColor (grape) fallback, which would make it read as branded
-    // or interactive. Checked via the CSS var Mantine's outline variant
-    // resolves the colour into, since asserting an exact rendered shade
-    // would be brittle.
-    const badge = within(control).getByText('National Rail incidents').closest('.mantine-Badge-root') as HTMLElement;
-    expect(badge.getAttribute('style')).toContain('--mantine-color-gray-outline');
-    expect(badge.getAttribute('style')).not.toContain('--mantine-color-grape-outline');
+    const label = within(control).getByText('National Rail incidents');
+    expect(label.closest('.mantine-Badge-root')).toBeNull();
   });
 
   it('shows no tooltip on the data-quality badge when fullCoverageStats is absent (the overwhelming majority case today)', async () => {
     renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
-    const badge = within(control).getByText('National Rail incidents').closest('.mantine-Badge-root') as HTMLElement;
+    const badge = within(control).getByText('National Rail incidents');
     fireEvent.mouseEnter(badge);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.queryByText(/Based on real train-movement data/)).not.toBeInTheDocument();
@@ -464,7 +458,7 @@ describe('IssueList', () => {
     renderWithMantine(<IssueList items={toItems([withCoverage])} now={NOW} />);
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
-    const badge = within(control).getByText('Network Rail train reports').closest('.mantine-Badge-root') as HTMLElement;
+    const badge = within(control).getByText('Network Rail train reports');
     fireEvent.mouseEnter(badge);
     expect(
       await screen.findByText(
@@ -486,17 +480,17 @@ describe('IssueList', () => {
       },
     };
     renderWithMantine(<IssueList items={toItems([withImpactType])} now={NOW} />);
-    expect(screen.getByText('Rail Replacement Bus')).toBeInTheDocument();
+    expect(screen.getByText('Rail replacement bus')).toBeInTheDocument();
   });
 
   it('renders no impact-type badge on the collapsed row for the common null case', () => {
     renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
-    expect(screen.queryByText('Rail Replacement Bus')).not.toBeInTheDocument();
-    expect(screen.queryByText('No Scheduled Service')).not.toBeInTheDocument();
+    expect(screen.queryByText('Rail replacement bus')).not.toBeInTheDocument();
+    expect(screen.queryByText('No scheduled service')).not.toBeInTheDocument();
     expect(screen.queryByText('Diversion')).not.toBeInTheDocument();
   });
 
-  it('places the impact-type badge before the data-quality badge in the meta group', () => {
+  it('places the impact-type badge before the data quality in the meta group', () => {
     const withImpactType: LineStatus = {
       ...minorNow,
       disruption: {
@@ -512,8 +506,9 @@ describe('IssueList', () => {
     const description = screen.getByText('Signal failure');
     const control = description.closest('button') as HTMLElement;
     const meta = control.querySelector('.issueRow__meta') as HTMLElement;
-    const badgeTexts = Array.from(meta.querySelectorAll('.mantine-Badge-root')).map((el) => el.textContent);
-    expect(badgeTexts.indexOf('No Scheduled Service')).toBeLessThan(badgeTexts.indexOf('National Rail incidents'));
+    const impact = within(meta).getByText('No scheduled service');
+    const quality = within(meta).getByText('National Rail incidents');
+    expect(impact.compareDocumentPosition(quality) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('marks up the collapsed row so it can stack on narrow viewports', () => {

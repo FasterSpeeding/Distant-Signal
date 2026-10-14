@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
-import { Badge, Stack, Title, Text, Group, Paper } from '@mantine/core';
+import { Stack, Title, Text, Group, Paper } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { LoadingText } from '@/components/LoadingText';
 import type { Metadata } from 'next';
@@ -26,6 +26,7 @@ import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTre
 import { LineTrainsResults } from './LineTrainsResults';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { ButtonLink } from '@/components/ButtonLink';
+import { StateBadge } from '@/components/StateBadge';
 
 /** `Suspense` fallback for both "Recent trends" boundaries below (review
  * §2.11). Sized to the *empty* state both `HalfHourlyTrendsResults` and
@@ -472,9 +473,9 @@ export default async function LineDetailPage({
           {statusResult.coverage === 'present' ? (
             <StatusBadge severity={worstStatus(statusResult.report).statusSeverity} />
           ) : (
-            <Badge tt="none" color="gray" variant="light" data-status-badge>
+            <StateBadge tone="neutral" data-status-badge="">
               {NO_STATUS_BADGE}
-            </Badge>
+            </StateBadge>
           )}
         </Group>
       </Group>

@@ -1,10 +1,11 @@
-import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { ButtonLink } from '@/components/ButtonLink';
+import { StateBadge } from '@/components/StateBadge';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { TicketSummary } from '@/components/TicketSummary';
@@ -517,9 +518,9 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
               don't read identically -- same helper and same wording as
               `/groups/{id}`'s shared rows (`lib/memberLabel.ts`). */}
           {groupNames.map((groupName) => (
-            <Badge tt="none" key={groupName} variant="light" color="grape">
-              from {groupName}
-            </Badge>
+            <StateBadge key={groupName} tone="action">
+              From {groupName}
+            </StateBadge>
           ))}
           <Text size="sm" c="dimmed">
             Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}

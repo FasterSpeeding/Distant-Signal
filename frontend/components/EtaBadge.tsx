@@ -1,6 +1,7 @@
-import { Badge, Group, Text, Tooltip, VisuallyHidden } from '@mantine/core';
+import { Group, Text, Tooltip, VisuallyHidden } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import type { EtaSource } from '@/lib/types';
+import { StateBadge } from './StateBadge';
 
 /** Renders nothing when there's no ETA at all (`etaNext` null) -- a
  * tracked train that hasn't been resolved yet, or has no current-state
@@ -80,9 +81,11 @@ export function EtaBadge({
     <Group gap={6} wrap="nowrap">
       <Text size="sm">ETA {formatTime(etaNext)}</Text>
       <Tooltip label={tooltip}>
-        <Badge color={etaSource === 'darwin-estimated' ? 'teal' : 'gray'} variant="light" tt="none">
-          {label}
-        </Badge>
+        {/* A span for the tooltip to attach to: StateBadge takes no ref.
+            Teal is "early, or a live source". */}
+        <span>
+          <StateBadge tone={etaSource === 'darwin-estimated' ? 'early' : 'neutral'}>{label}</StateBadge>
+        </span>
       </Tooltip>
       <VisuallyHidden>{tooltip}</VisuallyHidden>
     </Group>

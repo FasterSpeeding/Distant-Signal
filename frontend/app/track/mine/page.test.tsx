@@ -428,7 +428,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       // ...and the shared one now is too, with both halves of its
       // attribution.
       expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
-      expect(screen.getByText('from Family')).toBeInTheDocument();
+      expect(screen.getByText('From Family')).toBeInTheDocument();
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
     });
 
@@ -441,7 +441,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       expect(screen.queryByText(/You aren't tracking anything yet/)).not.toBeInTheDocument();
       expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
-      expect(screen.getByText('from Family')).toBeInTheDocument();
+      expect(screen.getByText('From Family')).toBeInTheDocument();
     });
 
     it('a train shared into two of the caller’s groups renders once, tagged with both', async () => {
@@ -455,8 +455,8 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       expect(screen.getAllByText(byVisibleText(/PAD to RDG/))).toHaveLength(1);
-      expect(screen.getByText('from Family')).toBeInTheDocument();
-      expect(screen.getByText('from Commuters')).toBeInTheDocument();
+      expect(screen.getByText('From Family')).toBeInTheDocument();
+      expect(screen.getByText('From Commuters')).toBeInTheDocument();
     });
 
     it('a resolved shared train links to the public /train/{uid}/{date} page', async () => {
@@ -633,7 +633,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       const sharedRow = screen.getByText(byVisibleText(/PAD to RDG/)).closest('.mantine-Card-root');
       expect(sharedRow).not.toBeNull();
-      expect(within(sharedRow as HTMLElement).getByText('from Family')).toBeInTheDocument();
+      expect(within(sharedRow as HTMLElement).getByText('From Family')).toBeInTheDocument();
       expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
     });
 

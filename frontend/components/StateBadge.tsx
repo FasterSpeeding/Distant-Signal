@@ -46,6 +46,7 @@ export function StateBadge({
   size,
   title,
   href,
+  leftSection,
   children,
   ...data
 }: {
@@ -53,6 +54,8 @@ export function StateBadge({
   size?: MantineSize;
   title?: string;
   href?: string;
+  /** A 12px icon before the label (`ServiceModeBadge`). */
+  leftSection?: ReactNode;
   children: ReactNode;
 } & Record<`data-${string}`, string | undefined>) {
   const props = {
@@ -62,6 +65,7 @@ export function StateBadge({
     tt: 'none',
     ...(size !== undefined && { size }),
     ...(title !== undefined && { title }),
+    ...(leftSection !== undefined && { leftSection }),
     'data-state-badge': tone,
   } as const;
   return href === undefined ? (

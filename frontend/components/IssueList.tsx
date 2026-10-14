@@ -6,7 +6,6 @@ import {
   AccordionControl,
   AccordionItem,
   AccordionPanel,
-  Badge,
   Button,
   Chip,
   ChipGroup,
@@ -26,6 +25,7 @@ import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
 import { isGoodSeverity } from '@/lib/severity';
 import { impactTypeLabel } from '@/lib/impactType';
+import { BadgeRow, StateBadge } from './StateBadge';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 import { coverageProvenanceNote } from '@/lib/sampleStats';
 
@@ -443,45 +443,37 @@ export function IssueList({
                   <Text size="xs" c="dimmed">
                     {formatValiditySummary(status, now)}
                   </Text>
-                  {impactTypeLabel(status.disruption?.impactType) && (
-                    <Badge tt="none" variant="light" size="sm" color="orange">
-                      {impactTypeLabel(status.disruption?.impactType)}
-                    </Badge>
-                  )}
-                  {/* LEG-16: severity, the reason's timing annotations and
-                      `impactType` may come from the incident enricher's LLM. */}
-                  {isEnricherInfluenced(status.disruption?.source) && (
-                    <AiGeneratedBadge note={ENRICHED_INCIDENT_SHORT_NOTE} />
-                  )}
+                  {/* The row's state and AI slots (the severity sits on its
+                      own, above): at most three badges, in order. LEG-16:
+                      severity, the reason's timing annotations and
+                      `impactType` may come from the incident enricher's
+                      LLM. */}
+                  <BadgeRow
+                    state={
+                      impactTypeLabel(status.disruption?.impactType) ? (
+                        <StateBadge tone="late" size="sm">
+                          {impactTypeLabel(status.disruption?.impactType)}
+                        </StateBadge>
+                      ) : undefined
+                    }
+                    ai={
+                      isEnricherInfluenced(status.disruption?.source) ? (
+                        <AiGeneratedBadge note={ENRICHED_INCIDENT_SHORT_NOTE} />
+                      ) : undefined
+                    }
+                  />
                   {(linesByStatus.get(status) ?? []).length > 1 && (
                     <Text size="xs" c="dimmed">
                       {(linesByStatus.get(status) ?? []).length} lines
                     </Text>
                   )}
-                  {/*
-                    Explicit gray: without a `color`, Mantine falls back to
-                    theme.primaryColor (grape), making this read as branded
-                    or interactive. It's provenance, not brand — gray is
-                    already how `informational` severity is treated in
-                    lib/severity.ts's GROUP_COLOR.
-                  */}
-                  {/*
-                    Decision 2: where the confident third copy branch plugs
-                    into DataQuality badge rendering. Per-status attachment
-                    already makes this a per-status decision, not a
-                    per-line one -- mirrors this file's own existing
-                    mixed-state correctness (Decision 3's "IssueList.tsx...
-                    already correct... no design work needed beyond that"),
-                    so a line with one full-coverage-confirmed status and
-                    one still-sampled status shows the confident tooltip on
-                    only the former. `undefined` (no tooltip) for every
-                    status today, since nothing carries `fullCoverageStats`
-                    yet -- forward-looking scaffolding.
-                  */}
+                  {/* Provenance (sampled or full coverage), so dimmed text,
+                      not a fourth badge (round 2). Decision 2's confident
+                      tooltip still attaches per status. */}
                   <Tooltip label={coverageProvenanceNote(status) ?? ''} disabled={!coverageProvenanceNote(status)}>
-                    <Badge tt="none" variant="outline" size="sm" color="gray">
+                    <Text size="xs" c="dimmed">
                       {DATA_QUALITY_LABELS[status.dataQuality]}
-                    </Badge>
+                    </Text>
                   </Tooltip>
                 </div>
               </div>
