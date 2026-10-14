@@ -88,11 +88,16 @@ const NO_PREFERENCES: Preferences = { pinnedLines: [], pinnedStations: [], pinne
 export default async function AllLinesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ statusGroup?: string | string[] }>;
+  searchParams: Promise<{ statusGroup?: string | string[]; q?: string | string[]; operator?: string | string[] }>;
 }) {
-  const { statusGroup } = await searchParams;
+  const { statusGroup, q, operator } = await searchParams;
   const statusGroupParam = Array.isArray(statusGroup) ? statusGroup[0] : statusGroup;
   const initialStatusGroup = isSeverityGroup(statusGroupParam) ? statusGroupParam : undefined;
+  // `AllLinesTable` writes these back as the visitor searches and filters,
+  // so a refresh or a shared link keeps them. Unknown operator codes are
+  // dropped there, against the lines actually loaded.
+  const initialQuery = Array.isArray(q) ? q[0] : q;
+  const initialOperators = operator === undefined ? [] : Array.isArray(operator) ? operator : [operator];
 
   const [lines, preferences, reports, tocs, viewerIsAnonymous, transitNetworks] = await Promise.all([
     withStaleFallback('allLines', () => getAllLines()),
@@ -143,6 +148,8 @@ export default async function AllLinesPage({
           tocs={tocs}
           viewerIsAnonymous={viewerIsAnonymous}
           initialStatusGroup={initialStatusGroup}
+          initialQuery={initialQuery}
+          initialOperators={initialOperators}
         />
       </Stack>
     </Stack>

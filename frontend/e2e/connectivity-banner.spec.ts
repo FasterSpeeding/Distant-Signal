@@ -18,7 +18,9 @@ const RULES = ['color-contrast', 'landmark-one-main', 'region', 'heading-order',
  * guessing when useNetwork's listener was attached; retrying the (idempotent)
  * event until the banner appears waits exactly as long as needed. */
 async function goOffline(page: Page) {
-  const status = page.getByRole('status');
+  // Filtered by text: /lines has a second, always-mounted status region of
+  // its own (the table's result count, app/lines/AllLinesTable.tsx).
+  const status = page.getByRole('status').filter({ hasText: 'Reconnecting' });
   await expect(async () => {
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     await expect(status).toContainText('Reconnecting', { timeout: 500 });

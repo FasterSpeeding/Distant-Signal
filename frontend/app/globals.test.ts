@@ -799,15 +799,17 @@ describe('journey progress diagram layout', () => {
   });
 });
 
-describe('AllLinesTable mobile scroll fix (2026-09-22 UX review §3.1)', () => {
-  it('overrides --table-min-width back to 0 below the sm breakpoint, with !important', () => {
-    const queries = css.match(/@media \(max-width: \$mantine-breakpoint-sm\)\s*\{[\s\S]*?\n\}/g);
-    expect(queries).not.toBeNull();
-    const rule = queries!.find((query) => query.includes('.linesTableScroll'));
-    expect(rule).toBeDefined();
-    // `!important` is load-bearing here: Mantine's own `minWidth` prop sets
-    // this same variable as an INLINE style on the same element, which only
-    // an `!important` external rule can outrank.
-    expect(rule!).toMatch(/--table-min-width:\s*0px\s*!important/);
+describe('AllLinesTable wrapper and sticky header (2026-10-14)', () => {
+  it('never puts the table in a scroll container, which would trap the sticky header', () => {
+    expect(css).not.toMatch(/\.linesTableWrap\s*\{[^}]*overflow/);
+  });
+
+  it('lets line names wrap anywhere, so the longest word cannot widen the table past a phone', () => {
+    expect(/\.linesNameCell\s*\{[^}]*\}/.exec(css)![0]).toContain('overflow-wrap: anywhere');
+  });
+
+  it('sizes the search bar from the same variable the table header is offset by', () => {
+    expect(css).toMatch(/\.linesTableRoot\s*\{[^}]*--lines-filter-bar-height:/);
+    expect(/\.linesFilterBar\s*\{[^}]*\}/.exec(css)![0]).toContain('height: var(--lines-filter-bar-height)');
   });
 });

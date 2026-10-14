@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { AllLinesTable, expandOperatorForFiltering } from './AllLinesTable';
+import {
+  AllLinesTable,
+  breakableLineName,
+  expandOperatorForFiltering,
+  filteredTitle,
+  linesFilterUrl,
+} from './AllLinesTable';
 import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 
 // `PinToggle` (rendered per row below) unconditionally renders
@@ -12,15 +18,8 @@ import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 // even though none of this file's own tests exercise the login-prompt
 // path directly.
 //
-// `replace` (2026-09-22 UX review §3.2): `AllLinesTable` now mirrors its
-// status-group chip to the URL via `router.replace`, so every test in this
-// file that interacts with the status chips needs a real (mocked)
-// implementation, not just `refresh`'s pre-existing one -- a shared
-// `vi.fn()` here rather than a per-test one since most tests never touch
-// this control and don't need to assert on it.
-const mockRouterReplace = vi.fn();
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh: vi.fn(), replace: mockRouterReplace }),
+  useRouter: () => ({ refresh: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/lines',
   useSearchParams: () => new URLSearchParams(''),
 }));
@@ -114,6 +113,24 @@ function renderTable() {
   return renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={tocs} />);
 }
 
+/** Opens the "Filters" popover (jsdom has no phone-width media query, so
+ * it is always the popover, never the sheet). Idempotent: the button
+ * toggles, so a second click would close it. */
+function openFilters() {
+  const button = screen.getByRole('button', { name: 'Filters' });
+  if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button);
+}
+
+function getOperatorInput() {
+  openFilters();
+  return screen.getByRole('combobox', { name: 'Operator' });
+}
+
+function statusChip(name: string) {
+  openFilters();
+  return screen.getByRole('radio', { name });
+}
+
 function rowNames() {
   const rows = screen.getAllByRole('row').slice(1); // skip header row
   return rows.map((row) => within(row).getAllByRole('link')[0]!.textContent);
@@ -149,13 +166,13 @@ describe('AllLinesTable', () => {
     // in a browser even though jsdom's synthetic change events still fire.
     // Assert on the attribute directly so this test fails without `searchable`.
     renderTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     expect(input).not.toHaveAttribute('readonly');
   });
 
   it('shows operator options as "CODE - Full Name"', async () => {
     renderTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.click(input);
     // Query synchronously, right after opening the dropdown, and read every
@@ -169,7 +186,7 @@ describe('AllLinesTable', () => {
 
   it('narrows rows to lines matching the selected operator', async () => {
     renderTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     input.focus();
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.click(input);
@@ -183,7 +200,7 @@ describe('AllLinesTable', () => {
 
   it('supports searching the operator filter by typing a name instead of a code', async () => {
     renderTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.click(input);
     fireEvent.change(input, { target: { value: 'Avanti' } });
@@ -196,7 +213,7 @@ describe('AllLinesTable', () => {
 
   it('supports searching the operator filter by typing a code instead of a name', async () => {
     renderTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.click(input);
     fireEvent.change(input, { target: { value: 'SW' } });
@@ -217,7 +234,7 @@ describe('AllLinesTable', () => {
     // `Combobox.Empty`, so the listbox stays structurally valid even
     // once a search comes back empty.
     renderTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     fireEvent.click(input);
     fireEvent.change(input, { target: { value: 'zzz-no-such-operator' } });
 
@@ -227,7 +244,7 @@ describe('AllLinesTable', () => {
 
   it('clearing the filter shows all lines again', async () => {
     renderTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     const { fireEvent } = await import('@testing-library/react');
     fireEvent.click(input);
     const option = await screen.findByRole('option', { name: 'SW - South Western Railway' });
@@ -294,7 +311,7 @@ describe('AllLinesTable', () => {
     const nameInput = screen.getByRole('textbox', { name: 'Find a line' });
     fireEvent.change(nameInput, { target: { value: 'western' } });
 
-    const operatorInput = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const operatorInput = getOperatorInput();
     fireEvent.click(operatorInput);
     fireEvent.click(await screen.findByRole('option', { name: 'SW - South Western Railway' }));
 
@@ -641,7 +658,7 @@ describe('AllLinesTable TfL operator filter', () => {
 
   it('selecting "TfL" also shows London Overground and Elizabeth line rows', async () => {
     renderTflTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     fireEvent.click(input);
     const option = await screen.findByRole('option', { name: 'TfL' });
     fireEvent.click(option);
@@ -654,7 +671,7 @@ describe('AllLinesTable TfL operator filter', () => {
 
   it('selecting "LO" alone does not also pull in Tube-only ("TfL") or Elizabeth line ("XR") rows', async () => {
     renderTflTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     fireEvent.click(input);
     const option = await screen.findByRole('option', { name: 'LO' });
     fireEvent.click(option);
@@ -667,7 +684,7 @@ describe('AllLinesTable TfL operator filter', () => {
 
   it('selecting "XR" alone does not also pull in Tube-only ("TfL") or Overground ("LO") rows', async () => {
     renderTflTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     fireEvent.click(input);
     const option = await screen.findByRole('option', { name: 'XR' });
     fireEvent.click(option);
@@ -680,7 +697,7 @@ describe('AllLinesTable TfL operator filter', () => {
 
   it('keeps "LO" and "XR" as their own independently-selectable options, not merged into a single "TfL" option', async () => {
     renderTflTable();
-    const input = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const input = getOperatorInput();
     fireEvent.click(input);
     const optionText = screen.getAllByRole('option').map((o) => o.textContent);
     expect(optionText).toEqual(['LO', 'TfL', 'VT', 'XR']);
@@ -713,6 +730,7 @@ describe('AllLinesTable sorting affordance', () => {
 describe('AllLinesTable country filter', () => {
   it("does not render when every present line resolves to a single country (today's real state)", () => {
     renderTable(); // existing top-of-file fixture: every report is modeName: 'national-rail' -> Gb only
+    openFilters();
     expect(screen.queryByText(/^Country/)).not.toBeInTheDocument();
   });
 
@@ -733,6 +751,7 @@ describe('AllLinesTable country filter', () => {
     ];
     renderWithMantine(<AllLinesTable lines={countryLines} reports={countryReports} pinnedLineIds={[]} tocs={[]} />);
 
+    openFilters();
     expect(screen.getByText('Country: showing all')).toBeInTheDocument();
     // Mantine's Chip in `multiple` mode renders as an accessible checkbox,
     // not a button (verified against this repo's own IssueList.test.tsx,
@@ -778,7 +797,7 @@ describe('AllLinesTable country filter', () => {
 
     // Filter to operator "VT" (matches wcml and synthetic-ni-line) AND
     // country "Gb" (matches wcml and gwr) -- intersection is wcml alone.
-    const operatorInput = screen.getByRole('combobox', { name: 'Filter by operator' });
+    const operatorInput = getOperatorInput();
     fireEvent.click(operatorInput);
     fireEvent.click(await screen.findByRole('option', { name: 'VT' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'GB' }));
@@ -795,17 +814,13 @@ describe('AllLinesTable country filter', () => {
 // bucketed as 'severe' ("Severe Disruption"); swr has no report at all, so
 // its `worst` is undefined and it can never match a specific bucket.
 describe('status-group filter', () => {
-  beforeEach(() => {
-    mockRouterReplace.mockClear();
-  });
-
   it('shows only lines whose worst status is in the selected group', () => {
     renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     // A non-`multiple` Mantine `ChipGroup` renders each `Chip` as
     // `type="radio"`, exposed to Testing Library as `role="radio"` (not
     // `role="button"`) -- unlike the country filter's `multiple` ChipGroup
     // above, which renders `role="checkbox"`.
-    fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
+    fireEvent.click(statusChip('Severe disruption'));
     expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'West Coast Main Line' })).not.toBeInTheDocument();
   });
@@ -822,35 +837,17 @@ describe('status-group filter', () => {
     renderWithMantine(
       <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
     );
-    fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
+    fireEvent.click(statusChip('All statuses'));
     expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
-  });
-
-  // 2026-09-22 UX review §3.2: the chip used to only ever seed state from
-  // the URL, never write back to it -- so clearing a filter left
-  // `?statusGroup=...` in the address bar disagreeing with an unfiltered
-  // table (and vice versa, sharing/refreshing a filtered link).
-  it('mirrors a chip selection to the URL via router.replace', () => {
-    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
-    fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
-    expect(mockRouterReplace).toHaveBeenCalledWith('/lines?statusGroup=severe', { scroll: false });
-  });
-
-  it('clears the statusGroup query param from the URL when the filter is cleared', () => {
-    renderWithMantine(
-      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
-    );
-    fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
-    expect(mockRouterReplace).toHaveBeenCalledWith('/lines', { scroll: false });
   });
 
   it('reflects the filter in the browser tab title, and restores the original title when cleared', () => {
     document.title = 'Lines · Distant Signal';
     renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
-    fireEvent.click(screen.getByRole('radio', { name: /Severe Disruption/ }));
+    fireEvent.click(statusChip('Severe disruption'));
     expect(document.title).toBe('Lines: Severe Disruption · Distant Signal');
-    fireEvent.click(screen.getByRole('radio', { name: 'All statuses' }));
+    fireEvent.click(statusChip('All statuses'));
     expect(document.title).toBe('Lines · Distant Signal');
   });
 
@@ -858,7 +855,7 @@ describe('status-group filter', () => {
     renderWithMantine(
       <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
     );
-    expect(screen.getByText(/1 line with Minor Disruption/)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('1 line with Minor Disruption.');
     fireEvent.click(screen.getByRole('button', { name: 'Show all lines' }));
     expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
@@ -869,7 +866,193 @@ describe('status-group filter', () => {
     renderWithMantine(
       <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="severe" />,
     );
-    fireEvent.click(screen.getByRole('radio', { name: /Good Service/ }));
-    expect(screen.getByText(/No lines are Good Service right now\./)).toBeInTheDocument();
+    fireEvent.click(statusChip('Good service'));
+    expect(screen.getByRole('status')).toHaveTextContent('No lines are Good Service right now.');
+  });
+});
+
+describe('search and filters bar', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('keeps the filters behind a "Filters" button, closed by default', () => {
+    renderTable();
+    const button = screen.getByRole('button', { name: 'Filters' });
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(screen.queryByRole('combobox', { name: 'Operator' })).not.toBeInTheDocument();
+    // Search stays out of the panel, always on screen.
+    expect(screen.getByRole('textbox', { name: 'Find a line' })).toBeInTheDocument();
+  });
+
+  it('opens a labelled dialog that Escape closes', () => {
+    renderTable();
+    openFilters();
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('dialog', { name: 'Filters' })).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Filters' }), { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Filters' })).not.toBeInTheDocument();
+  });
+
+  it('Escape in the open operator list closes only the list, not the panel', () => {
+    renderTable();
+    const input = getOperatorInput();
+    fireEvent.click(input);
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Filters' })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Filters' })).not.toBeInTheDocument();
+  });
+
+  it('counts active filters on the button, without changing its name', () => {
+    renderTable();
+    expect(screen.queryByTestId('lines-filter-count')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('None on');
+    fireEvent.click(statusChip('Severe disruption'));
+    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('1');
+    expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('1 on');
+  });
+
+  it('"Clear filters" resets the panel but keeps the search', () => {
+    renderTable();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Find a line' }), { target: { value: 'west' } });
+    fireEvent.click(statusChip('Severe disruption'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(statusChip('All statuses')).toBeChecked();
+    expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('west');
+    expect(screen.queryByTestId('lines-filter-count')).not.toBeInTheDocument();
+  });
+
+  it('says how many lines are left in the panel and closes on "Show"', () => {
+    renderTable();
+    fireEvent.click(statusChip('Severe disruption'));
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 line' }));
+    expect(screen.queryByRole('dialog', { name: 'Filters' })).not.toBeInTheDocument();
+  });
+
+  it('says so when a search matches nothing, and "Show all lines" clears it', () => {
+    renderTable();
+    const search = screen.getByRole('textbox', { name: 'Find a line' });
+    fireEvent.change(search, { target: { value: 'zzzz' } });
+    expect(screen.getByRole('status')).toHaveTextContent('No lines match.');
+    fireEvent.click(screen.getByRole('button', { name: 'Show all lines' }));
+    expect(search).toHaveValue('');
+    expect(rowNames()).toHaveLength(3);
+  });
+
+  it('clears the search from its own clear button', () => {
+    renderTable();
+    const search = screen.getByRole('textbox', { name: 'Find a line' });
+    fireEvent.change(search, { target: { value: 'great' } });
+    expect(screen.getByRole('status')).toHaveTextContent('1 line matches.');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect(search).toHaveValue('');
+  });
+
+  it('seeds the search and operator filter, dropping operator codes no line has', () => {
+    renderWithMantine(
+      <AllLinesTable
+        lines={lines}
+        reports={reports}
+        pinnedLineIds={[]}
+        tocs={tocs}
+        initialQuery="western"
+        initialOperators={['SW', 'NOPE']}
+      />,
+    );
+    expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('western');
+    expect(rowNames()).toEqual(['South Western']);
+    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('1');
+  });
+
+  it('writes the search, operators and status to the URL once typing settles, not on load', () => {
+    vi.useFakeTimers();
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    renderTable();
+    vi.advanceTimersByTime(1000);
+    expect(replaceState).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Find a line' }), { target: { value: 'w' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Find a line' }), { target: { value: 'west' } });
+    fireEvent.click(statusChip('Severe disruption'));
+    vi.advanceTimersByTime(1000);
+    expect(replaceState).toHaveBeenCalledTimes(1);
+    expect(replaceState).toHaveBeenLastCalledWith(null, '', '/?q=west&statusGroup=severe');
+
+    fireEvent.click(statusChip('All statuses'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    vi.advanceTimersByTime(1000);
+    expect(replaceState).toHaveBeenLastCalledWith(null, '', '/');
+  });
+});
+
+describe('linesFilterUrl', () => {
+  it('replaces only the filter params, keeping others and the hash', () => {
+    expect(
+      linesFilterUrl('https://example.test/lines?utm=x&q=old&operator=GW#top', {
+        query: ' west ',
+        operators: ['SW', 'VT'],
+        statusGroup: 'mild',
+      }),
+    ).toBe('/lines?utm=x&q=west&operator=SW&operator=VT&statusGroup=mild#top');
+  });
+
+  it('drops the query string entirely when nothing is set', () => {
+    expect(
+      linesFilterUrl('https://example.test/lines?statusGroup=severe', { query: '', operators: [], statusGroup: null }),
+    ).toBe('/lines');
+  });
+});
+
+describe('filteredTitle', () => {
+  it('is null when nothing is filtered', () => {
+    expect(filteredTitle(null, [], '  ')).toBeNull();
+  });
+
+  it('names status, then operators, then the search', () => {
+    expect(filteredTitle('severe', ['Great Western Railway'], ' west ')).toBe(
+      'Lines: Severe Disruption, Great Western Railway, "west"',
+    );
+  });
+
+  it('counts operators past one', () => {
+    expect(filteredTitle(null, ['Avanti West Coast', 'Great Western Railway'], '')).toBe('Lines: 2 operators');
+  });
+});
+
+describe('breakableLineName', () => {
+  it('adds a break opportunity after each slash and keeps the text', () => {
+    renderWithMantine(<span data-testid="name">{breakableLineName('Milford Haven/Fishguard/Pembroke')}</span>);
+    const name = screen.getByTestId('name');
+    expect(name).toHaveTextContent('Milford Haven/Fishguard/Pembroke');
+    expect(name.querySelectorAll('wbr')).toHaveLength(2);
+  });
+
+  it('leaves a name without slashes alone', () => {
+    expect(breakableLineName('Airedale Line')).toBe('Airedale Line');
+  });
+});
+
+describe('AllLinesTable tab title and header', () => {
+  it('reflects the search and operator filter in the tab title, by operator name', () => {
+    document.title = 'Lines · Distant Signal';
+    renderTable();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Find a line' }), { target: { value: 'west' } });
+    expect(document.title).toBe('Lines: "west" · Distant Signal');
+    fireEvent.click(getOperatorInput());
+    fireEvent.click(screen.getByRole('option', { name: 'GW - Great Western Railway' }));
+    expect(document.title).toBe('Lines: Great Western Railway, "west" · Distant Signal');
+    fireEvent.click(screen.getByRole('button', { name: 'Show all lines' }));
+    expect(document.title).toBe('Lines · Distant Signal');
+  });
+
+  it('makes the column headers sticky, under the search bar', () => {
+    renderTable();
+    const thead = screen.getAllByRole('rowgroup')[0]!;
+    expect(thead.tagName).toBe('THEAD');
+    expect(thead).toHaveAttribute('data-sticky');
   });
 });
