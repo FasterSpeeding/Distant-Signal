@@ -366,6 +366,75 @@ pub async fn cursor(
     last_produced_at(&mut conn, stream).await
 }
 
+/// Reads `stream` backwards (`XREVRANGE`, which every producer's ACL user
+/// has) a page at a time until `pick` returns `Some`, bounded by the
+/// stream's `MAXLEN`. `None` when nothing matched.
+async fn scan_back<T>(
+    client: &redis::Client,
+    stream: &str,
+    mut pick: impl FnMut(&redis::streams::StreamId) -> Option<T>,
+) -> redis::RedisResult<Option<T>> {
+    const PAGE: usize = 50;
+    let mut conn = common::redis_conn::connect(client).await?;
+    let limit = stream_decl(stream)
+        .map_or(2000, budget::StreamDecl::maxlen)
+        .saturating_add(100);
+    let mut end = "+".to_owned();
+    let mut seen: u64 = 0;
+    loop {
+        let reply: redis::streams::StreamRangeReply = redis::cmd("XREVRANGE")
+            .arg(stream)
+            .arg(&end)
+            .arg("-")
+            .arg("COUNT")
+            .arg(PAGE)
+            .query_async(&mut conn)
+            .await?;
+        for entry in &reply.ids {
+            if let Some(found) = pick(entry) {
+                return Ok(Some(found));
+            }
+        }
+        seen = seen.saturating_add(u64::try_from(reply.ids.len()).unwrap_or(u64::MAX));
+        match reply.ids.last() {
+            // Exclusive start (Redis 6.2+): the page before this one.
+            Some(last) if reply.ids.len() == PAGE && seen < limit => {
+                end = format!("({}", last.id);
+            }
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// The newest entry on `stream` whose schema is named `schema_name` (any
+/// version), decoded; entries that do not decode are skipped. A producer
+/// reads its own last manifest with it after a restart (the transit
+/// timetable's feed guard reads its last `transit-timetable-commit/1`).
+///
+/// # Errors
+///
+/// A Redis error (unreachable, NOPERM).
+pub async fn newest_of_schema(
+    client: &redis::Client,
+    stream: &str,
+    schema_name: &str,
+) -> redis::RedisResult<Option<crate::Envelope>> {
+    let prefix = format!("{schema_name}/");
+    scan_back(client, stream, |entry| {
+        let schema = entry.get::<String>(field::SCHEMA)?;
+        if !schema.starts_with(&prefix) {
+            return None;
+        }
+        let fields: Vec<(String, Vec<u8>)> = entry
+            .map
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), redis::from_redis_value(v).ok()?)))
+            .collect();
+        crate::Envelope::decode(&fields).ok()
+    })
+    .await
+}
+
 /// The declaration of `stream`, matched by suffix so a test's key prefix
 /// (`<prefix>ds:ingest:tfl`) finds its stream's.
 fn stream_decl(stream: &str) -> Option<&'static budget::StreamDecl> {
@@ -540,40 +609,16 @@ impl SnapshotStream {
     ///
     /// A Redis error (unreachable, NOPERM).
     pub async fn last_produced_at(&self) -> redis::RedisResult<Option<DateTime<Utc>>> {
-        const PAGE: usize = 50;
-        let mut conn = common::redis_conn::connect(&self.inner.client).await?;
-        let stream = self.stream();
         let wanted = self.schema.to_string();
-        let limit = stream_decl(stream)
-            .map_or(2000, budget::StreamDecl::maxlen)
-            .saturating_add(100);
-        let mut end = "+".to_owned();
-        let mut seen: u64 = 0;
-        loop {
-            let reply: redis::streams::StreamRangeReply = redis::cmd("XREVRANGE")
-                .arg(stream)
-                .arg(&end)
-                .arg("-")
-                .arg("COUNT")
-                .arg(PAGE)
-                .query_async(&mut conn)
-                .await?;
-            for entry in &reply.ids {
-                if entry.get::<String>(field::SCHEMA).as_deref() == Some(wanted.as_str()) {
-                    return Ok(entry
-                        .get::<String>(field::PRODUCED_AT)
-                        .and_then(|text| parse_produced_at(&text)));
-                }
-            }
-            seen = seen.saturating_add(u64::try_from(reply.ids.len()).unwrap_or(u64::MAX));
-            match reply.ids.last() {
-                // Exclusive start (Redis 6.2+): the page before this one.
-                Some(last) if reply.ids.len() == PAGE && seen < limit => {
-                    end = format!("({}", last.id);
-                }
-                _ => return Ok(None),
-            }
-        }
+        let found = scan_back(&self.inner.client, self.stream(), |entry| {
+            (entry.get::<String>(field::SCHEMA).as_deref() == Some(wanted.as_str())).then(|| {
+                entry
+                    .get::<String>(field::PRODUCED_AT)
+                    .and_then(|text| parse_produced_at(&text))
+            })
+        })
+        .await?;
+        Ok(found.flatten())
     }
 
     /// Closes the producer and waits up to `grace` for what is queued.

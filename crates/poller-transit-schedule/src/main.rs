@@ -20,8 +20,12 @@
 
 mod adapter;
 mod config;
+mod feed_guard;
+mod item;
 mod model;
+mod naptan;
 mod network;
+mod rail_links;
 mod timetable;
 
 use std::time::Duration;
@@ -48,8 +52,15 @@ pub(crate) struct Context {
     pub config: Config,
     pub network: NetworkConfig,
     pub client: reqwest::Client,
+    /// `ds:ingest:transit-<network>`.
+    pub stream: String,
+    /// The network's Redis user, for reading its stream back (`XREVRANGE`).
+    pub redis: redis::Client,
     /// The timetable's producer (one item: every part, then the commit).
     pub timetable: SnapshotProducer,
+    /// The last timetable this process sent: the feed guard's baseline
+    /// when the stream cannot be read.
+    pub last_sent: std::sync::Mutex<Option<timetable::Baseline>>,
 }
 
 #[tokio::main]
@@ -70,7 +81,7 @@ async fn run() -> anyhow::Result<()> {
         .client("the transit stream")
         .map_err(anyhow::Error::msg)?;
     let progress = health_http::spawn_liveness(&config.health);
-    let timetable = SnapshotProducer::new(redis, &stream, COMPONENT);
+    let timetable = SnapshotProducer::new(redis.clone(), &stream, COMPONENT);
     timetable.start();
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -80,12 +91,25 @@ async fn run() -> anyhow::Result<()> {
         config,
         network,
         client,
+        stream,
+        redis,
         timetable,
+        last_sent: std::sync::Mutex::new(None),
     };
 
     let poll = common::poller_loop::run_poll_loop_with_cursor(
         "transit-timetable",
-        || async { Ok(ctx.timetable.cursor().await?) },
+        // The newest timetable commit, not the newest entry: situations
+        // share the stream every 5 minutes.
+        || async {
+            Ok(ingest_stream::snapshot::newest_of_schema(
+                &ctx.redis,
+                &ctx.stream,
+                common::transit::schema::TIMETABLE_COMMIT,
+            )
+            .await?
+            .map(|envelope| envelope.produced_at))
+        },
         ctx.config.timetable_interval(),
         ctx.config.metrics_enabled,
         ctx.config.metrics_port,

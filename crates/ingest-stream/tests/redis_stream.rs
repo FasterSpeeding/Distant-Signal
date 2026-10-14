@@ -1248,6 +1248,10 @@ async fn snapshot_streams_publish_under_the_pollers_acl_users() {
 /// `XREVRANGE` (its cursor and the feed guard's baseline).
 #[tokio::test]
 #[ignore = "needs Redis 7+ (REDIS_URL) whose default user may run ACL SETUSER"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one item written, then read back after a restart"
+)]
 async fn a_transit_timetable_item_is_written_under_its_networks_user() {
     use ingest_stream::envelope::{Envelope, format_produced_at};
     use ingest_stream::snapshot::{Snapshot, SnapshotProducer};
@@ -1316,5 +1320,42 @@ async fn a_transit_timetable_item_is_written_under_its_networks_user() {
         ]
     );
     assert_eq!(producer.cursor().await.unwrap(), Some(at));
+
+    // After a restart the feed guard reads its baseline back: the newest
+    // commit, past newer entries of another schema (the situations).
+    let later = at + chrono::TimeDelta::seconds(1);
+    let mut situations = Snapshot::new();
+    situations
+        .add(
+            &stream,
+            &SchemaId::new("transit-situations", 1).unwrap(),
+            producer.producer_id(),
+            later,
+            &[serde_json::json!({"network": "metrolink"})],
+            100,
+        )
+        .unwrap();
+    producer
+        .submit(situations)
+        .await
+        .unwrap()
+        .written()
+        .await
+        .unwrap();
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let commit =
+        ingest_stream::snapshot::newest_of_schema(&client, &stream, "transit-timetable-commit")
+            .await
+            .unwrap()
+            .expect("the commit");
+    assert_eq!(commit.produced_at, at);
+    let body: serde_json::Value = commit.payload_as().unwrap();
+    assert_eq!(body["parts"]["trips"], 3);
+    assert!(
+        ingest_stream::snapshot::newest_of_schema(&client, &stream, "tocs")
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(producer.shutdown(Duration::from_secs(2)).await);
 }

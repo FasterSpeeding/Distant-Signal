@@ -24,3 +24,15 @@ dropped:
 The extraction kept the first trips of each route by `trip_id`. Their
 services start between 2026-10-14 and 2026-10-19, so the tests pass the
 date they parse as of rather than reading the clock.
+
+## `naptan-940-mini.csv`
+
+A trimmed extract of NaPTAN's access nodes for area 940 (tram, metro and
+underground), `https://naptan.api.dft.gov.uk/v1/access-nodes?atcoAreaCodes=940&dataFormat=csv`,
+downloaded on 2026-10-09. Contains public sector information licensed
+under the Open Government Licence v3.0 (Department for Transport).
+
+Rows unchanged, all columns kept: the `MET` station and `PLT` platform
+rows of 14 Metrolink stops (the ten rail interchanges of
+`reference-data/transit/metrolink-rail-links.csv`, plus Heaton Park,
+Besses o'th' Barn, Market Street and Timperley); 47 rows.
