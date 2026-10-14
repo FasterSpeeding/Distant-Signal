@@ -18,6 +18,7 @@ import {
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
 import { LineStatusCard } from '@/components/LineStatusCard';
+import { PinnedTramLineCard } from '@/components/PinnedTramLineCard';
 import { LoginControl } from '@/components/LoginControl';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
@@ -30,6 +31,7 @@ import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
+import { loadPinnedTramLines } from '@/lib/transit';
 import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/sharedCustomLines';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
@@ -323,6 +325,11 @@ export default async function DashboardPage() {
       const rankDiff = severityRank(worstStatus(b).statusSeverity) - severityRank(worstStatus(a).statusSeverity);
       return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
     });
+  // Pinned tram lines (`metrolink:blue`) are not in the mode statuses
+  // above; each served network's lines and statuses come from
+  // `/public/transit/{network}`, after the National Rail and TfL ones, in
+  // pin order. None while no tram network is served.
+  const pinnedTramLines = await loadPinnedTramLines(preferences.pinnedLines);
 
   // `allOperators` is `null` when its fetch failed (see the fetch's own
   // comment above) -- distinct from a genuinely empty catalogue, which
@@ -464,8 +471,9 @@ export default async function DashboardPage() {
   // link now only renders once its section actually has something to
   // browse PAST (pinned rows already on screen); an empty section keeps
   // just the one link, inline in its own sentence.
+  const pinnedLineCount = pinnedLineReports.length + pinnedTramLines.length;
   const allPinnedSectionsEmpty =
-    pinnedLineReports.length === 0 && pinnedStationEntries.length === 0 && pinnedOperatorSummaries.length === 0;
+    pinnedLineCount === 0 && pinnedStationEntries.length === 0 && pinnedOperatorSummaries.length === 0;
 
   return (
     <Stack p="lg" gap="xl">
@@ -486,9 +494,9 @@ export default async function DashboardPage() {
       <Stack gap="md">
         <Group justify="space-between">
           <Title order={1}>Your lines</Title>
-          {pinnedLineReports.length > 0 && <TextLink href="/lines">Browse all lines</TextLink>}
+          {pinnedLineCount > 0 && <TextLink href="/lines">Browse all lines</TextLink>}
         </Group>
-        {pinnedLineReports.length === 0 ? (
+        {pinnedLineCount === 0 ? (
           <Text c="dimmed">
             You haven&apos;t pinned any lines yet.{' '}
             <TextLink href="/lines" underline="always" inline>
@@ -500,6 +508,9 @@ export default async function DashboardPage() {
           <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
             {pinnedLineReports.map((report) => (
               <LineStatusCard key={report.id} report={report} />
+            ))}
+            {pinnedTramLines.map((pinned) => (
+              <PinnedTramLineCard key={pinned.line.id} pinned={pinned} />
             ))}
           </SimpleGrid>
         )}
@@ -638,7 +649,7 @@ export default async function DashboardPage() {
           of the page (review §3.1.4) -- this is its ordinary spot for the
           narrower case where Lines is empty but Stations or Operators is
           not. */}
-      {!allPinnedSectionsEmpty && pinnedLineReports.length === 0 && <RightNowModule summary={rightNow} />}
+      {!allPinnedSectionsEmpty && pinnedLineCount === 0 && <RightNowModule summary={rightNow} />}
 
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">

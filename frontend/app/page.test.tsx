@@ -13,6 +13,7 @@ import type {
   TrackedTrainListItem,
 } from '@/lib/types';
 import { byVisibleText, visibleText } from '@/test/routeText';
+import { MINOR_DELAYS, NETWORK as TRAM_NETWORK } from '@/test/transitFixtures';
 
 vi.mock('@/lib/api');
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -302,6 +303,35 @@ describe('DashboardPage', () => {
     expect(
       screen.queryByRole('link', { name: 'Log in to pin your lines, stations and operators' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows a pinned tram line with its status in "Your lines", and drops it while its network is dark', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'u1',
+      username: 'a',
+      name: 'A',
+    });
+    vi.mocked(api.getPreferences).mockResolvedValue({
+      pinnedLines: ['metrolink:blue'],
+      pinnedStations: [],
+      pinnedOperators: [],
+    });
+    vi.mocked(api.getTransitNetwork).mockResolvedValue({
+      ...TRAM_NETWORK,
+      lines: [{ ...TRAM_NETWORK.lines[0]!, status: MINOR_DELAYS }],
+    });
+    renderWithMantine(await DashboardPage());
+    const card = screen.getByRole('link', { name: /Blue Line/ });
+    expect(card).toHaveAttribute('href', '/transit/metrolink/lines/blue');
+    expect(card.textContent).toContain('Manchester Metrolink');
+    expect(card.textContent).toContain('Minor delays');
+    expect(screen.queryByText(/You haven't pinned any lines yet/)).not.toBeInTheDocument();
+    cleanup();
+    vi.mocked(api.getTransitNetwork).mockRejectedValue(new Error('404'));
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('link', { name: /Blue Line/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/You haven't pinned any lines yet/)).toBeInTheDocument();
   });
 
   it('shows the live "Right now" module to a logged-in user with no pinned lines', async () => {
