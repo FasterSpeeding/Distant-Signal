@@ -8,6 +8,7 @@
 mod alloc_meter;
 mod auth;
 mod batch;
+mod category;
 mod checks;
 mod churn;
 mod combine;
