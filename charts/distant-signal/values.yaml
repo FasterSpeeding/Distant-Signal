@@ -5419,10 +5419,10 @@ metrics:
       enabled: true
       for: 15m
       severity: warning
-    # DistantSignalIncidentRemovalStalled: over `window`, api skipped the
+    # DistantSignalIncidentRemovalStalled: over `window`, poller-incidents skipped the
     # "Ended (no longer listed)" inference for an incomplete, empty or
     # more-than-50%-shrunken incidents snapshot and applied it to none
-    # (distant_signal_api_incident_removal_inference_total{outcome}), so
+    # (distant_signal_store_incident_removal_inference_total{outcome}), so
     # incidents that leave the Knowledgebase feed stay "active". 2h is 24
     # polls at the 300s interval. Only when pollers.incidents.enabled.
     incidentRemovalStalled:
@@ -5431,9 +5431,8 @@ metrics:
       for: 15m
       severity: warning
     # DistantSignalIncidentSnapshotsMissing: no incidents snapshot reached
-    # the database within `window` (distant_signal_api_incident_removal_inference_total,
-    # every outcome: counted by api under the http sink, by poller-incidents
-    # under db), for `for`. Only when pollers.incidents.enabled.
+    # the database within `window` (distant_signal_store_incident_removal_inference_total,
+    # every outcome: counted by poller-incidents), for `for`. Only when pollers.incidents.enabled.
     incidentSnapshotsMissing:
       enabled: true
       window: 2h

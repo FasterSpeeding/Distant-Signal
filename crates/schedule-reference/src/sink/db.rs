@@ -59,10 +59,9 @@ impl<'a> DbSink<'a> {
     }
 }
 
-/// Startup telemetry for the db sink: the publish metrics under their
-/// `store_` names (spec §14.1) and every `db_writes_total` series at 0.
+/// Startup telemetry for the db sink: the publish metrics (their `store_`
+/// names, spec §14.1) and every `db_writes_total` series at 0.
 pub(crate) fn register_metrics() {
-    ds_store::schedule::use_store_metric_names();
     ds_store::schedule::register_schedule_publish_metrics();
     ds_store::writes::register(&OPERATIONS);
 }

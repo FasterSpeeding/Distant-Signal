@@ -1213,7 +1213,7 @@ previous delivery. The ingest container's error log names the reason.
 ### DistantSignalCorpusStale
 
 The newest loaded Network Rail CORPUS extract was delivered over
-`corpusStaleAfterDays` ago (`api_corpus_last_delivered_at_seconds`, or `store_…` after the phase 5 rename). CORPUS is
+`corpusStaleAfterDays` ago (`store_corpus_last_delivered_at_seconds`; `api_…` before the phase 5 rename). CORPUS is
 published monthly. Either RDM stopped pushing it (check the SFTP corpus
 folder) or schedule-ingest cannot load it (check
 [DistantSignalCorpusRejected](#distantsignalcorpusrejected) and the ingest
@@ -1431,7 +1431,7 @@ the alert clears once api stops listing it or LDBWS accepts it.
 Over the last window (2h, 24 polls), api applied its "Ended (no longer
 listed)" inference to no incidents snapshot, and skipped at least one as
 `incomplete`, `empty` or a `shrink`
-(`api_incident_removal_inference_total{outcome}`, or `store_…` after the phase 5 rename; `too_soon` and
+(`store_incident_removal_inference_total{outcome}`; `api_…` before the phase 5 rename; `too_soon` and
 `no_baseline` skips are benign and not counted). While this lasts,
 an incident that leaves the Knowledgebase feed without RDM clearing it stays
 "active" on the archive and in line status, the bug the inference exists to
@@ -1457,7 +1457,7 @@ as ended.
 
 No incidents snapshot reached the database within
 `incidentSnapshotsMissing.window` (2h): the sum of
-`api_incident_removal_inference_total` over every outcome did not move, for
+`store_incident_removal_inference_total` over every outcome did not move, for
 `for`. Each snapshot counts once there, whatever the inference decided, in
 poller-incidents (the api's `/private/incidents` path went with release
 B). It registers the series at 0 at startup, so this is a real 0, not a

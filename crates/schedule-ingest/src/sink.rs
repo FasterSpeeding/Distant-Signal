@@ -15,7 +15,7 @@
 //! retry and quarantine logic reads; [`IngestSink`] lets the tests stand a
 //! fake in for the database.
 //!
-//! The `api_corpus_last_delivered_at_seconds` gauge and the
+//! The `store_corpus_last_delivered_at_seconds` gauge and the
 //! CORPUS-vs-timetable comparison come from the ingest-writer's CORPUS
 //! crosswalk loop (`ds_store::loops::corpus_crosswalk_comparing`), which
 //! reads the durable `corpus_deliveries` marker, so this process needs no
