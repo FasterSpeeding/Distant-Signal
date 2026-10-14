@@ -307,11 +307,20 @@ used, rather than as a literal in a component.
   route falls back to `public/opengraph-image.png`, the template's no-title
   form. A route with its own image passes `OWN_PREVIEW_IMAGE` to
   `pageMetadata`: an explicit card image would otherwise win over it.
-- **Preferences** (`app/account/preferences/page.tsx`): open to everyone.
-  Appearance (colour theme, pride flag; saved in this browser),
-  notifications (a log in link when logged out, never a permission prompt
-  that then fails), and the Claude API key for accounts that can use "Ask
-  about trains". `/chat` links here instead of holding the key itself.
+- **Preferences** (`app/account/preferences/page.tsx`): open to everyone,
+  never a redirect. Each section is a `PreferencesSection` card.
+  - Device-local, no account needed: Appearance (colour theme, pride
+    flag), saved in this browser and applied before the first paint
+    (Mantine's `ColorSchemeScript`, `PRIDE_MODE_SCRIPT`).
+  - Account-backed: notifications, and the Claude API key for accounts
+    that can use "Ask about trains". Logged out, these give way to one
+    "Account settings" card with a log in link back to the page, never a
+    permission prompt that then fails.
+  - Logging in or out leaves the device-local settings as they are. The
+    account keeps no copy, so there is nothing to merge or overwrite.
+  - Linked from the drawer (everyone), the account menu (logged in) and
+    the footer (everyone; the only route for a logged-out desktop
+    visitor). `/chat` links here instead of holding the key itself.
 - **Page skeletons** (`components/PageSkeleton.tsx`): a route whose server
   fetch holds up the first paint gets a `loading.tsx` built from
   `PageSkeleton` pieces (`SkeletonPageHeader`, `SkeletonText`,
@@ -627,10 +636,11 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 ## Visual regression
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
-Stations, a station, Trains, a train, Incidents and Account (logged in) at
-390 and 1366px, light and dark: 40 full-page images in
-`frontend/e2e/visual-baselines/`. It runs against the seeded e2e stack
-(`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
+Stations, a station, Trains, a train, Incidents, Account (logged in),
+Preferences (logged out and in) and the tram pages at 390 and 1366px,
+light and dark, plus the /lines filter bar's stuck and open states: 72
+images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 
 - **Deterministic.** The browser clock is fixed (2026-09-17T11:00Z, the
