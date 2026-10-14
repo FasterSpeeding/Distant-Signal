@@ -12,15 +12,6 @@ use crate::data::config::ServiceArguments;
 pub struct AppState {
     pub config: ServiceArguments,
     pub database: PgPool,
-    /// Deliberately a lazy `redis::Client`, NOT a live
-    /// `redis::aio::ConnectionManager`. `Client::open` only parses the URL --
-    /// it never opens a socket -- so an unreachable Redis cannot fail
-    /// `AppState::init` and crash-loop the whole public status API. Its one
-    /// consumer, `POST /private/incidents`' `XADD incident-text-changed`,
-    /// went in release B (ingest phase 5); poller-incidents publishes that
-    /// itself now. The client itself goes in step 5.4 of
-    /// docs/ingest-phase5-runbook.md.
-    pub redis: redis::Client,
     /// OIDC relying-party client -- see `auth::oidc`'s module doc for why
     /// discovery is lazy (not performed here in `init`).
     pub oidc: OidcClient,
@@ -67,7 +58,7 @@ pub fn with_dead_client_detection(options: PgConnectOptions) -> PgConnectOptions
 /// function (rather than an inline `ensure!` in `init`) purely so this one
 /// check is unit-testable without needing a live database connection --
 /// everything else `AppState::init` does before reaching this point
-/// (connecting to Postgres, parsing `REDIS_URL`) is not something a plain
+/// (connecting to Postgres) is not something a plain
 /// `#[test]` can exercise cheaply.
 fn ensure_sso_and_internal_oauth_clients_differ(
     sso_client_id: &str,
@@ -110,7 +101,6 @@ impl std::fmt::Debug for AppState {
         f.debug_struct("AppState")
             .field("config", &"ServiceArguments { .. }")
             .field("database", &"PgPool { .. }")
-            .field("redis", &"redis::Client { .. }")
             .field("oidc", &"OidcClient { .. }")
             .field("internal_oauth_verifier", &"ServiceTokenVerifier { .. }")
             .field("schedule_crs_line_index", &self.schedule_crs_line_index)
@@ -185,20 +175,6 @@ impl AppState {
             .connect_with(connect_options)
             .await
             .context("Could not connect to database")?;
-
-        // No eager connect: only the URL is validated here. See the `redis`
-        // field's doc comment on `AppState`.
-        // REDIS_USERNAME and REDIS_PASSWORD, when set, are applied here
-        // (common::redis_auth). REDIS_USERNAME is read from the environment
-        // rather than declared on `Config`, which ~20 route test modules
-        // build field by field; it joins `Config` with the phase 1A
-        // extraction (docs/redis-acl.md).
-        let redis_url = common::redis_auth::redis_url_with_credentials(
-            &config.redis_url,
-            common::redis_auth::username_from_env().as_deref(),
-            config.redis_password.as_ref(),
-        )?;
-        let redis = redis::Client::open(redis_url.expose()).context("Could not parse REDIS_URL")?;
 
         // An empty client secret would make every future confidential-client
         // token exchange fail anyway, but only after a real user has already
@@ -296,7 +272,6 @@ impl AppState {
         Ok(Arc::new(Self {
             config,
             database: db,
-            redis,
             oidc,
             internal_oauth_verifier,
             schedule_crs_line_index,

@@ -2009,7 +2009,7 @@ jobs:
           fi
           n_pw=$(grep -c 'name: REDIS_PASSWORD' <<<"${off}" || true)
           n_acl=$(grep -A3 'name: REDIS_PASSWORD' <<<"${off}" | grep -c 'name: example-redis-users' || true)
-          [[ "${n_pw}" -ge 7 && "${n_pw}" -eq "${n_acl}" ]] \
+          [[ "${n_pw}" -ge 6 && "${n_pw}" -eq "${n_acl}" ]] \
             || fail "every REDIS_PASSWORD must come from redis.acl.existingSecret (${n_acl} of ${n_pw})"
           grep -A1 'name: REDIS_URL' <<<"${off}" | grep 'value:' | grep -q -v '@' \
             || fail "REDIS_URL must stay credential-free"
@@ -3004,7 +3004,7 @@ jobs:
             out=$(egress_of "${c}" "${eg}")
             grep -q 'port: 53$' <<<"${out}" || fail "${c} must get an egress policy allowing DNS"
           done
-          for d in api:postgres api:redis frontend:api aggregator:postgres enricher:postgres \
+          for d in api:postgres frontend:api aggregator:postgres enricher:postgres \
               enricher:redis schedulefeed:postgres trust-consumer:postgres trust-consumer:redis \
               trust-backlog-consumer:postgres full-coverage-consumer:postgres full-coverage-consumer:redis; do
             out=$(egress_of "${d%%:*}" "${eg}")
@@ -3016,6 +3016,12 @@ jobs:
             out=$(egress_of "${c}" "${eg}")
             if grep -q 'component: api$' <<<"${out}"; then fail "${c} must not reach the api"; fi
           done
+          # Ingest phase 5, step 5.4: the api has no Redis client, so it may
+          # not reach Redis, and Redis admits it no longer.
+          out=$(egress_of api "${eg}")
+          if grep -q 'component: redis$' <<<"${out}"; then fail "the api must not reach redis"; fi
+          redis_in=$(policy distant-signal-redis <<<"${eg}" | awk '/^  ingress:/{f=1} /^  egress:/{f=0} f')
+          if grep -q -- '- api$' <<<"${redis_in}"; then fail "redis must not admit the api"; fi
           api_in=$(policy distant-signal-api <<<"${eg}" | awk '/^  ingress:/{f=1} /^  egress:/{f=0} f')
           if grep -E -q -- '- (poller-[a-z-]+|trust-consumer|trust-backlog-consumer|full-coverage-consumer|schedulefeed)$' <<<"${api_in}"; then
             fail "the api must admit no ingest producer"

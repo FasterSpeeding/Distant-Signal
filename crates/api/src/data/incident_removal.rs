@@ -97,11 +97,9 @@ mod db_tests {
         complete: bool,
         mode: RowHeartbeat,
     ) -> Inference {
-        // Port 1: a publish fails fast and is only logged.
-        let redis = redis::Client::open("redis://127.0.0.1:1").expect("redis url");
         let matcher = common::matcher::LineMatcher::new(&[]);
         let IncidentSnapshotOutcome { inference, .. } =
-            queries::upsert_incident_snapshot(pool, &redis, &matcher, batch, complete, mode)
+            queries::upsert_incident_snapshot(pool, &matcher, batch, complete, mode)
                 .await
                 .expect("upsert snapshot");
         inference

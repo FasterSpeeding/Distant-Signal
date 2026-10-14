@@ -448,9 +448,6 @@ with api.extraEnv, which replaces an entry of the same name.
             # independently gate on this.
             - name: FULL_COVERAGE_ENABLED_DEFAULT
               value: {{ .Values.api.fullCoverageEnabledDefault | quote }}
-            - name: REDIS_URL
-              value: {{ include "distant-signal.redisUrl" . | quote }}
-            {{- include "distant-signal.redisClientAuthEnv" (dict "root" . "client" "api" "user" "api") }}
             # Always rendered, so it reflects the real value either way.
             # Decides whether requests are counted at all AND whether the
             # internal-only /metrics listener below is started

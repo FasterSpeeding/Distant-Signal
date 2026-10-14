@@ -1179,8 +1179,6 @@ mod db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             migration_database_url: None,
-            redis_url: "redis://127.0.0.1:0".to_string(),
-            redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
@@ -1221,10 +1219,6 @@ mod db_tests {
             line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
-            // `Client::open` only parses the URL, never opens a socket --
-            // see `AppState::redis`'s doc comment. No route in this file
-            // touches Redis at all.
-            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
             oidc: OidcClient::new(OidcConfig {
                 issuer_url: "https://example.invalid".to_string(),
                 client_id: "test-client".to_string(),

@@ -567,8 +567,8 @@ bundled Postgres is disabled, no Postgres objects render at all and no
 Redis backs two independent Redis Streams here, with two very different
 durability profiles:
 
-- `incident-text-changed`: the api publishes an event when an incident's
-  text changes, and the enricher consumes it to re-extract promptly. Losing
+- `incident-text-changed`: poller-incidents publishes an event when an
+  incident's text changes, and the enricher consumes it to re-extract promptly. Losing
   this one costs nothing but promptness — the enricher's hourly sweep
   re-finds anything a dropped event would have triggered.
 - `movement-events`: the **sole transport** between movement-relay (this
@@ -2070,7 +2070,6 @@ used for and why persistence defaults on.
 | `redis.acl.stage` | `open` | `open`: every existing client's user has `~* &* +@all` (step 1). |
 | `redis.acl.defaultUser` | `on` | `"on"`: the `default` user keeps today's password (redis.auth) and rights. |
 | `redis.acl.existingSecret` | `""` | Existing Secret (a SealedSecret in Ranma-Config) with one key per user: `<user>-password` (letters and digits only), for every user in files/redis-users.acl.tpl. |
-| `redis.acl.clients.api` | `false` | api, as user `api`. |
 | `redis.acl.clients.enricher` | `false` | enricher, as user `enricher`. |
 | `redis.acl.clients.movementRelay` | `false` | movement-relay, as user `movement-relay`. |
 | `redis.acl.clients.trustConsumer` | `false` | trust-consumer, as user `trust-consumer`. |

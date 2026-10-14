@@ -220,8 +220,6 @@ mod session_revocation_db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             migration_database_url: None,
-            redis_url: "redis://127.0.0.1:0".to_string(),
-            redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
@@ -266,7 +264,6 @@ mod session_revocation_db_tests {
             .expect("construct oidc client"),
             config,
             database: pool,
-            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
             internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
                 "https://example.invalid".to_string(),
                 "test-internal-oauth-client".to_string(),
