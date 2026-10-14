@@ -6,6 +6,7 @@ import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
 import { PrideModeApplier } from './PrideMode';
 import { PrimaryNavLink } from './PrimaryNavLink';
+import { Wordmark } from './Wordmark';
 import { navDrawerDestinations, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
@@ -162,12 +163,7 @@ export function AppNavBar({
                 `AppNavDrawer`, which IS a Client Component,
                 `component={Link}` is fine and is used.) */}
             <Link href="/" data-card-link>
-              {/* `data-site-title` is a pure CSS hook for `globals.css`'s
-                  `body[data-pride='true']` rules -- Mantine's `Text`
-                  renders no stable class of its own to key off. */}
-              <Text fw={700} data-site-title>
-                Distant Signal
-              </Text>
+              <Wordmark />
             </Link>
           </Group>
           {/* `gap="xs"` here and between the links: see the gap note

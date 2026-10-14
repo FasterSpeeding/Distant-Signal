@@ -357,7 +357,7 @@ a[data-card-link]:focus-visible [data-card] {
 /* The pride flags' stripe gradients, defined once. Every flag-shaped
    surface reads these: the bar above the page (`body::before`), the bar
    under the nav (`.siteNav::after`), the gradient site title, and
-   `components/PrideToggle.tsx`'s button swatch, so the stripes can't drift
+   the swatch in `components/PrideMode.tsx`'s picker, so the stripes can't drift
    apart between them. Per-flag notes (designer, source of the hex values,
    stripe proportions) sit beside each flag's `body::before` rule below.
    Always defined (not gated on `data-pride`) so the toggle's swatch has a
@@ -381,12 +381,12 @@ a[data-card-link]:focus-visible [data-card] {
   --ds-pride-lesbian: linear-gradient(to right, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00);
 }
 
-/* `components/PrideToggle.tsx` sets `document.body.dataset.pride` from a
+/* `components/PrideMode.tsx` sets `document.body.dataset.pride` from a
    client-only localStorage preference -- one of `'off'` (the default, so
    SSR and the pre-mount client render never need any of these rules to
    exist), `'rainbow'`, `'trans'`, `'nonbinary'`, `'bisexual'`, `'pansexual'`,
-   `'asexual'`, `'sapphic'`, or `'lesbian'`, cycled through the same way `ThemeToggle`
-   cycles light/dark/auto. A flag-striped bar painted above the whole page,
+   `'asexual'`, `'sapphic'`, or `'lesbian'`, picked on /account/preferences.
+   A flag-striped bar painted above the whole page,
    not a change to any element's own colour -- keeps this fully separate
    from `lib/severity.ts`'s `GROUP_COLOR` map, which stays semantic-only per
    docs/superpowers/specs/2026-08-18-grape-theme-design.md.
@@ -642,7 +642,7 @@ body[data-pride='lesbian'] .siteNav::after {
   }
 }
 
-/* `components/PrideToggle.tsx`'s `data-site-title` hook (see
+/* `components/Wordmark.tsx`'s `data-site-title` hook (see
    `app/layout.tsx`) -- the site name itself goes rainbow-gradient text
    while pride mode is on. `background-clip: text` needs `color: transparent`
    to reveal the gradient rather than painting solid text over it. */
@@ -1889,4 +1889,11 @@ svg[data-icon='external-link'] {
 
 .prideSwatch[data-flag='lesbian'] {
   background: var(--ds-pride-lesbian);
+}
+
+/* The signal-arm mark in `components/Wordmark.tsx`: a fixed-size block that
+   never shrinks beside the site name. */
+.signalMark {
+  display: block;
+  flex-shrink: 0;
 }
