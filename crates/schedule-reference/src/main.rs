@@ -124,18 +124,8 @@ async fn connect_db(
 ) -> anyhow::Result<sqlx::PgPool> {
     let url = config.database_url()?;
     ds_store::corpus::init_fallback_from_env()?;
-    common::startup::retry_until_ready(
-        "Postgres",
-        common::startup::CONNECT_BACKOFF,
-        Some(progress),
-        || async {
-            use sqlx::Connection as _;
-            sqlx::PgConnection::connect(url).await?.close().await
-        },
-    )
-    .await;
     let pool = ds_store::pool::PoolSettings::from_env(DB_APPLICATION_NAME, config::DB_POOL_SIZE)?
-        .connect(url)
+        .connect_until_ready(url, Some(progress))
         .await?;
     ds_store::pool::register_metrics();
     ds_store::schema::wait_for_schema(
