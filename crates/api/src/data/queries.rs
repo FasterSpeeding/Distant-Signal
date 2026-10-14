@@ -2119,6 +2119,39 @@ pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Ve
     rows.into_iter().map(row_to_report).collect()
 }
 
+/// Which of `candidates` are transit lines (`<network>:<line>`) of the
+/// `networks` this api serves: a line of the network's active timetable, or
+/// one with a `source = 'transit'` status row (transit spec §12.2). The
+/// pinned-lines read keeps exactly these.
+pub async fn transit_line_ids(
+    pool: &PgPool,
+    candidates: &[String],
+    networks: &[String],
+) -> Result<Vec<String>> {
+    let candidates: Vec<&str> = candidates
+        .iter()
+        .filter(|id| {
+            common::transit::QualifiedLineId::parse(id)
+                .is_ok_and(|q| networks.iter().any(|n| n.trim() == q.network().as_str()))
+        })
+        .map(String::as_str)
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT l.network || ':' || l.line_id FROM transit_lines l \
+           JOIN transit_networks n \
+             ON n.network = l.network AND n.active_feed_version = l.feed_version \
+          WHERE l.network || ':' || l.line_id = ANY($1) \
+         UNION \
+         SELECT line_id FROM line_status WHERE source = 'transit' AND line_id = ANY($1)",
+    )
+    .bind(&candidates)
+    .fetch_all(pool)
+    .await?)
+}
+
 /// The rows of `ids`, National Rail, `TfL` and custom lines only: a transit
 /// row (`source = 'transit'`, `<network>:<line>`) is served by
 /// `/public/transit` alone, never by the `TfL`-shaped `/Line/{ids}/Status`

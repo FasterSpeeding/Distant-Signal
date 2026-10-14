@@ -84,11 +84,20 @@ async fn get_preferences(
     let tfl = queries::tfl_line_summaries(&app.database)
         .await
         .map_err(internal_error)?;
+    // Transit lines (`metrolink:blue`, transit spec §12.2) likewise: known
+    // while their network is served and has the line.
+    let transit = queries::transit_line_ids(
+        &app.database,
+        &pinned_line_ids,
+        &app.config.transit_networks,
+    )
+    .await
+    .map_err(internal_error)?;
     let pinned_lines = filter_known_pinned_lines(
         pinned_line_ids,
         app.config.lines.iter().map(|l| l.id.clone()),
         readable_custom_ids,
-        tfl.into_iter().map(|l| l.id),
+        tfl.into_iter().map(|l| l.id).chain(transit),
     );
 
     let pinned_station_candidates = preferences::list_pinned_station_crs(&app.database, &user.id)
@@ -513,6 +522,53 @@ mod db_tests {
             !pinned_lines.contains(&"TEST-UNKNOWN-LINE".to_string()),
             "a pinned id with no matching line anywhere should still be dropped"
         );
+    }
+
+    /// Transit spec §12.2 (plan 4.6): a pinned transit line survives the
+    /// read while its network is served and has the line; an unknown line,
+    /// or any line of a network not served, is dropped.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL (a migrated database)"]
+    async fn a_pinned_transit_line_survives_the_read_while_its_network_is_served() {
+        let pool = ds_store::test_support::connect().await;
+        let network = "test-pin";
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        ds_store::test_support::transit::seed(&pool, network, today).await;
+        ds_store::test_support::seed_user(&pool, "TEST-PREFS-TRANSIT").await;
+        let pins = [
+            "test-pin:blue".to_owned(),
+            "test-pin:nope".to_owned(),
+            "northern".to_owned(),
+        ];
+        preferences::replace_pinned_lines(&pool, "TEST-PREFS-TRANSIT", &pins)
+            .await
+            .unwrap();
+        let read = |served: Vec<String>| {
+            let pool = pool.clone();
+            async move {
+                let pinned = preferences::list_pinned_line_ids(&pool, "TEST-PREFS-TRANSIT")
+                    .await
+                    .unwrap();
+                let transit = queries::transit_line_ids(&pool, &pinned, &served)
+                    .await
+                    .unwrap();
+                filter_known_pinned_lines(pinned, vec!["northern".to_owned()], vec![], transit)
+            }
+        };
+        let served = read(vec![network.to_owned()]).await;
+        let dark = read(vec![]).await;
+
+        sqlx::query("DELETE FROM pinned_lines WHERE user_id = 'TEST-PREFS-TRANSIT'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        ds_store::test_support::cleanup_user(&pool, "TEST-PREFS-TRANSIT").await;
+        ds_store::test_support::transit::cleanup(&pool, network).await;
+
+        assert!(served.contains(&"test-pin:blue".to_owned()));
+        assert!(!served.contains(&"test-pin:nope".to_owned()));
+        assert!(served.contains(&"northern".to_owned()));
+        assert_eq!(dark, ["northern"]);
     }
 
     #[tokio::test]
