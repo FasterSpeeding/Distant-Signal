@@ -127,6 +127,8 @@ network's extraEnv, which replaces an entry of the same name. Takes (dict
               value: {{ $n.timetableIntervalSecs | int64 | quote }}
             - name: TRANSIT_SITUATIONS_INTERVAL_SECS
               value: {{ $n.situationsIntervalSecs | int64 | quote }}
+            - name: TRANSIT_SITUATIONS_ENABLED
+              value: {{ $n.situationsEnabled | quote }}
             - name: TRANSIT_HORIZON_DAYS
               value: {{ $n.horizonDays | int64 | quote }}
             - name: FEED_MAX_DROP_FRACTION

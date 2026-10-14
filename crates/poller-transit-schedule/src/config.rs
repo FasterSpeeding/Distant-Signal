@@ -66,6 +66,12 @@ pub(crate) struct Config {
     #[arg(long, env = "TRANSIT_SITUATIONS_INTERVAL_SECS", default_value_t = 300)]
     pub situations_interval_secs: u64,
 
+    /// Run the situations loop. Off by default until the ingest-writer has
+    /// the `transit-situations/1` handler (transit plan batch 4): before
+    /// that an applied stream would dead-letter every snapshot.
+    #[arg(long, env = "TRANSIT_SITUATIONS_ENABLED", default_value_t = false, action = clap::ArgAction::Set)]
+    pub situations_enabled: bool,
+
     /// Days of service dates stored after today (Q8: 60).
     #[arg(long, env = "TRANSIT_HORIZON_DAYS", default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=400))]
     pub horizon_days: u32,
@@ -133,6 +139,7 @@ impl std::fmt::Debug for Config {
             .field("naptan_url", &self.naptan_url)
             .field("timetable_interval_secs", &self.timetable_interval_secs)
             .field("situations_interval_secs", &self.situations_interval_secs)
+            .field("situations_enabled", &self.situations_enabled)
             .field("horizon_days", &self.horizon_days)
             .field("feed_max_drop_fraction", &self.feed_max_drop_fraction)
             .field("work_dir", &self.work_dir)

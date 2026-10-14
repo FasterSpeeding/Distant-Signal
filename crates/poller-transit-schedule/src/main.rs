@@ -150,16 +150,23 @@ async fn run() -> anyhow::Result<()> {
         &progress,
         || timetable::poll_once(&ctx),
     );
-    let situations_loop = common::poller_loop::run_poll_loop_with_cursor(
-        "transit-situations",
-        // Poll at once at startup: the archive changes every minute.
-        || async { Ok(None) },
-        ctx.config.situations_interval(),
-        false,
-        ctx.config.metrics_port,
-        &progress,
-        || situations::poll_once(&ctx),
-    );
+    let situations_loop = async {
+        if !ctx.config.situations_enabled {
+            tracing::info!("the situations loop is off (TRANSIT_SITUATIONS_ENABLED)");
+            return std::future::pending().await;
+        }
+        common::poller_loop::run_poll_loop_with_cursor(
+            "transit-situations",
+            // Poll at once at startup: the archive changes every minute.
+            || async { Ok(None) },
+            ctx.config.situations_interval(),
+            false,
+            ctx.config.metrics_port,
+            &progress,
+            || situations::poll_once(&ctx),
+        )
+        .await
+    };
     let result = tokio::select! {
         result = timetable_loop => result,
         result = situations_loop => result,

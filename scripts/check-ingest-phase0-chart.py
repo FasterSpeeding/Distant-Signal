@@ -656,6 +656,9 @@ def check_optional_acl_users(c: Checker) -> None:
     )
 
 
+REDIS_PORT = 6379
+HTTPS_PORT = 443
+POSTGRES_PORT = 5432
 TRANSIT_ON = sets(
     "pollerTransitSchedule.networks.metrolink.enabled=true",
     "redis.acl.clients.pollerTransitMetrolink=true",
@@ -664,7 +667,7 @@ TRANSIT_ON = sets(
 
 
 def check_transit_producer(c: Checker) -> None:
-    """Check poller-transit-schedule renders per enabled network only (transit §13.1)."""
+    """Check poller-transit-schedule renders per enabled network (transit §13)."""
     name = "Deployment/distant-signal-poller-transit-schedule-metrolink"
     c.check(
         ok=name not in by_name(c.docs()),
@@ -691,6 +694,32 @@ def check_transit_producer(c: Checker) -> None:
     c.check(
         ok=any(v.get("name") == "work" and "emptyDir" in v for v in volumes),
         message=f"{name}: an emptyDir at /work",
+    )
+    # NetworkPolicy (transit spec §13.3): Redis and 443 out, no Postgres.
+    egress_on = sets(
+        "networkPolicy.enabled=true",
+        "networkPolicy.egress.enabled=true",
+        "networkPolicy.egress.internetPorts={443}",
+    )
+    policies = by_name(c.docs(*TRANSIT_ON, *egress_on))
+    policy = policies.get("NetworkPolicy/distant-signal-poller-transit-schedule", {})
+    rules = cast(
+        "list[dict[str, object]]",
+        cast("dict[str, object]", policy.get("spec") or {}).get("egress") or [],
+    )
+    ports = {
+        cast("int", p.get("port"))
+        for r in rules
+        for p in cast("list[dict[str, object]]", r.get("ports") or [])
+    }
+    c.check(
+        ok={REDIS_PORT, HTTPS_PORT} <= ports and POSTGRES_PORT not in ports,
+        message=f"transit producer egress: Redis and 443, no Postgres: {sorted(ports)}",
+    )
+    redis_policy = str(policies.get("NetworkPolicy/distant-signal-redis", {}))
+    c.check(
+        ok="poller-transit-schedule" in redis_policy,
+        message="Redis ingress must admit poller-transit-schedule",
     )
     c.refuses(
         "the transit producer without its stream applied",

@@ -3874,6 +3874,10 @@ pollerTransitSchedule:
       timetableIntervalSecs: 86400
       # -- Seconds between SIRI-SX fetches.
       situationsIntervalSecs: 300
+      # -- Run the SIRI-SX loop (TRANSIT_SITUATIONS_ENABLED). Off until the
+      # ingest-writer handles transit-situations/1 (transit plan batch 4):
+      # before that, the applied stream would dead-letter every snapshot.
+      situationsEnabled: false
       # -- Days of service dates stored after today (Q8).
       horizonDays: 60
       # -- Sharp-drop guard: a feed whose line, stop or trip count fell by
@@ -5067,6 +5071,10 @@ metrics:
         island_of_ireland_lines_gtfs: 172800
         island_of_ireland_stations_nir: 172800
         island_of_ireland_lines_nir: 172800
+        # Transit networks (spec §13.4): a daily timetable, so 36 h; the
+        # situations every 5 minutes (written from batch 4).
+        transit-metrolink-timetable: 129600
+        transit-metrolink-situations: 1800
       whileStreamApplies:
         station-samples: "ds:ingest:station-samples"
         full-coverage-stats: "ds:ingest:full-coverage"
@@ -5076,6 +5084,8 @@ metrics:
         island_of_ireland_lines_gtfs: "ds:ingest:ioi-gtfs"
         island_of_ireland_stations_nir: "ds:ingest:ioi-nir"
         island_of_ireland_lines_nir: "ds:ingest:ioi-nir"
+        transit-metrolink-timetable: "ds:ingest:transit-metrolink"
+        transit-metrolink-situations: "ds:ingest:transit-metrolink"
       for: 10m
       severity: warning
     # DistantSignalDbPoolAcquireTimeouts: a component's Postgres pool timed
@@ -5358,6 +5368,23 @@ metrics:
       intervalMultiple: 2
       minAgeSeconds: 1800
       for: 10m
+      severity: warning
+    # DistantSignalTransitFeedRefused: poller-transit-schedule refused a
+    # network's timetable within `window`
+    # (distant_signal_transit_feed_refused_total{network, reason}); the
+    # previous version stays active. 26h spans one daily cycle. Only while
+    # a pollerTransitSchedule network is enabled. Runbook: docs/alerts.md.
+    transitFeedRefused:
+      enabled: true
+      window: 26h
+      severity: warning
+    # DistantSignalTransitUnmappedLineRef: a network's SIRI-SX disruptions
+    # named a LineRef its network file has no alias for, within `window`
+    # (distant_signal_transit_situation_unmapped_line_refs_total{network,
+    # ref}). Its disruptions show on no line until the alias is added.
+    transitUnmappedLineRef:
+      enabled: true
+      window: 1h
       severity: warning
     # DistantSignalLdbwsStationStale (SVC-04): the least recently sampled
     # LDBWS station was last sampled more than `maxAgeSeconds` ago
