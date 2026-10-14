@@ -140,6 +140,28 @@ for (const scheme of SCHEMES) {
         });
       }
 
+      // Preferences with a pride flag saved: the page and nav stripes, the
+      // gradient site name, the sparkles around the wordmark and the
+      // picker's preview. Sparkles float, so this relies on the reduced
+      // motion above holding them still and visible.
+      test('preferences-pride', async ({ page }) => {
+        await page.addInitScript(() => {
+          localStorage.setItem('pride-mode', 'trans');
+        });
+        await page.clock.setFixedTime(FIXED_NOW);
+        await page.goto('/account/preferences', { waitUntil: 'networkidle' });
+        await page.addStyleTag({ content: NO_MOTION_CSS });
+        await page.evaluate(() => document.fonts.ready);
+        await expect(page.locator('main .prideSparkle')).toHaveCount(3);
+
+        await expect(page).toHaveScreenshot(`preferences-pride-${scheme}-${width}.png`, {
+          fullPage: true,
+          animations: 'disabled',
+          caret: 'hide',
+          mask: volatile(page),
+        });
+      });
+
       // The /lines search and filters bar (app/lines/LinesFilterBar.tsx) in
       // the two states the full-page shot above can't show: stuck to the
       // top after scrolling, and with the filters open (a popover from
