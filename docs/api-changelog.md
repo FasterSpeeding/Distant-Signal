@@ -3,6 +3,51 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-14: transit disruptions and line status
+
+Additive, on the `/public/transit` routes below, and as dark as they are
+(nothing is served for a network not listed in `API_TRANSIT_NETWORKS`).
+Statuses come from the network's published disruptions (for Metrolink,
+TfGM's SIRI-SX situations in the Bus Open Data Service), never from the
+timetable.
+
+**`status`.** Each line in `GET /public/transit/{network}`'s `lines`, and
+`GET /public/transit/{network}/lines/{line}`, carry `status`: `{state,
+asOf, statuses: [{severity, description, reason, situationId}], upcoming:
+[{from, to, summary, situationId}]}`. The network also carries `status:
+{state, asOf}`. `state` is:
+
+- `current`: the disruptions were read under 30 minutes ago. `statuses`
+  is worst first, and the first is the line's headline. A line with
+  nothing published reads severity 27, "No Reported Disruption" (not
+  "Good Service": nothing is known about the service itself);
+  `Information` statuses follow it and never replace it.
+- `unavailable`: the disruptions are older than 30 minutes (`asOf` says
+  when they were read). `statuses` and `upcoming` are empty.
+- `none`: the network has no disruptions feed. Show no status.
+
+`severity` is the same number as `statusSeverity` elsewhere in this API
+(Suspended 2, Part Suspended 3, Severe Delays 6, Reduced Service 7, Minor
+Delays 9, Information 26, No Reported Disruption 27). A transit line's
+status is not served by `/Line/{ids}/Status` or
+`/Line/Mode/{modes}/Status`.
+
+**Situations.** New: `GET /public/transit/{network}/situations` (60 s):
+`{state, asOf, current: [...], upcoming: [...]}`, each situation `{id,
+summary, description, infoUrl, planned, reason, scope, lines, stops,
+advice, validity: [{start, end}], starts}`. `scope` is `line`, `stop` or
+`network`; `lines` are public line IDs; `stops` station IDs; `starts` is
+an upcoming situation's next start (within 7 days). `description` is plain
+text as published: render it as text, never as HTML. `current` is ordered
+by validity start, `upcoming` by `starts`. Both are empty unless `state`
+is `current`.
+
+A line's response adds `situations` (the same shape): the current and
+upcoming situations that change its status or name one of its stops. A
+stop's response adds `notices`: the current situations naming it (a lift
+out of service, the stop closed). The line and stop routes' cache drops
+from 300 s to 60 s.
+
 ## 2026-10-14: transit networks (Manchester Metrolink), scheduled only
 
 New endpoints, additive only, under `/public/transit`, for transit networks

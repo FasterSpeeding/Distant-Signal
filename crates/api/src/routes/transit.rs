@@ -13,6 +13,13 @@
 //! cancellation or status field (spec §2, C6): a timetable says nothing
 //! about what ran.
 //!
+//! **Disruptions** (phase 2, spec §10, §11): a network's lines and a line
+//! carry `status`, a line its `situations`, a stop its `notices`, and
+//! `/transit/{network}/situations` lists the current and upcoming ones; all
+//! from the published situations (`ds_store::transit::disruptions`), shown
+//! only while they are under 30 minutes old ("unavailable" after, `none`
+//! while the network has none).
+//!
 //! Path segments: `{network}` and `{line}` are local ids (`metrolink`,
 //! `blue`), `{stop}` a station's ATCO code (`9400ZZMAPIC`). Bodies carry the
 //! public line id (`metrolink:blue`).
@@ -20,9 +27,11 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
-use chrono::{NaiveDate, Timelike};
+use std::collections::BTreeSet;
+
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use common::transit::{is_id, is_stop_id};
-use ds_store::transit::read;
+use ds_store::transit::{disruptions, read};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -30,9 +39,10 @@ use crate::app::{App, Router};
 
 /// `/transit/networks`.
 const NETWORKS_CACHE: &str = "public, max-age=300";
-/// A network (its lines), a board.
+/// A network (its lines and their status), a line, a stop (its notices),
+/// the situations, a board.
 const SHORT_CACHE: &str = "public, max-age=60";
-/// A line, a stop, a timetable.
+/// A timetable.
 const MEDIUM_CACHE: &str = "public, max-age=300";
 /// The stop list.
 const LONG_CACHE: &str = "public, max-age=3600";
@@ -56,6 +66,10 @@ pub fn router() -> Router {
         .route(
             "/transit/{network}/lines/{line}/timetable",
             axum::routing::get(get_line_timetable),
+        )
+        .route(
+            "/transit/{network}/situations",
+            axum::routing::get(get_situations),
         )
         .route("/transit/{network}/stops", axum::routing::get(list_stops))
         .route(
@@ -125,6 +139,21 @@ async fn list_networks(State(app): State<App>) -> Reply {
     reply(NETWORKS_CACHE, json!({ "networks": to_json(&networks)? }))
 }
 
+/// The situations' state for `network` now (spec §10.2's staleness rule).
+async fn status_state(
+    app: &App,
+    network: &str,
+) -> Result<(disruptions::StatusState, Option<DateTime<Utc>>), (StatusCode, String)> {
+    let as_of = disruptions::situations_as_of(&app.database, network)
+        .await
+        .map_err(internal_error)?;
+    Ok((disruptions::state_at(as_of, Utc::now()), as_of))
+}
+
+/// Each line carries `status` (`disruptions::LineStatusView`): its
+/// statuses while the situations are fresh, "unavailable" with the as-of
+/// time once they are over 30 minutes old, `none` while the network has
+/// no situations at all.
 async fn get_network(State(app): State<App>, Path(network): Path<String>) -> Reply {
     check_network(&app, &network)?;
     let Some(summary) = read::get_network(&app.database, &network)
@@ -136,11 +165,29 @@ async fn get_network(State(app): State<App>, Path(network): Path<String>) -> Rep
     let lines = read::list_lines(&app.database, &network)
         .await
         .map_err(internal_error)?;
+    let (state, as_of) = status_state(&app, &network).await?;
+    let stored = disruptions::stored_line_statuses(&app.database, &network)
+        .await
+        .map_err(internal_error)?;
     let mut body = to_json(&summary)?;
-    body["lines"] = to_json(&lines)?;
+    let mut lines_json = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let mut entry = to_json(line)?;
+        entry["status"] = to_json(&disruptions::line_view(
+            state,
+            as_of,
+            stored.get(&line.line_id),
+        ))?;
+        lines_json.push(entry);
+    }
+    body["lines"] = Value::Array(lines_json);
+    body["status"] = json!({ "state": state, "asOf": as_of });
     reply(SHORT_CACHE, body)
 }
 
+/// The line, its `status` and the current and upcoming `situations` that
+/// concern it (those changing its status, and stop notices for its
+/// stations).
 async fn get_line(State(app): State<App>, Path((network, line)): Path<(String, String)>) -> Reply {
     check_network(&app, &network)?;
     if !is_id(&line) {
@@ -152,7 +199,44 @@ async fn get_line(State(app): State<App>, Path((network, line)): Path<(String, S
     else {
         return Err(not_found("line"));
     };
-    reply(MEDIUM_CACHE, to_json(&detail)?)
+    let (state, as_of) = status_state(&app, &network).await?;
+    let stored = disruptions::stored_line_statuses(&app.database, &network)
+        .await
+        .map_err(internal_error)?;
+    let situations = disruptions::stored_situations(&app.database, &network)
+        .await
+        .map_err(internal_error)?;
+    let stations: BTreeSet<String> = detail
+        .directions
+        .iter()
+        .flat_map(|d| d.stations.iter().map(|s| s.id.clone()))
+        .collect();
+    let view = disruptions::situations_view(&network, &situations, state, as_of, Utc::now(), |s| {
+        disruptions::concerns(s, &line, &stations)
+    });
+    let mut body = to_json(&detail)?;
+    body["status"] = to_json(&disruptions::line_view(state, as_of, stored.get(&line)))?;
+    body["situations"] = to_json(&view)?;
+    reply(SHORT_CACHE, body)
+}
+
+/// `/transit/{network}/situations`: every current and upcoming situation.
+async fn get_situations(State(app): State<App>, Path(network): Path<String>) -> Reply {
+    check_network(&app, &network)?;
+    if read::get_network(&app.database, &network)
+        .await
+        .map_err(internal_error)?
+        .is_none()
+    {
+        return Err(not_found("transit network"));
+    }
+    let (state, as_of) = status_state(&app, &network).await?;
+    let situations = disruptions::stored_situations(&app.database, &network)
+        .await
+        .map_err(internal_error)?;
+    let view =
+        disruptions::situations_view(&network, &situations, state, as_of, Utc::now(), |_| true);
+    reply(SHORT_CACHE, to_json(&view)?)
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,7 +329,18 @@ async fn get_stop(State(app): State<App>, Path((network, stop)): Path<(String, S
     else {
         return Err(not_found("stop"));
     };
-    reply(MEDIUM_CACHE, to_json(&detail)?)
+    // `notices`: the current situations naming this station (a lift out
+    // of service, a stop closed), while the situations are fresh.
+    let (state, as_of) = status_state(&app, &network).await?;
+    let situations = disruptions::stored_situations(&app.database, &network)
+        .await
+        .map_err(internal_error)?;
+    let view = disruptions::situations_view(&network, &situations, state, as_of, Utc::now(), |s| {
+        s.stop_ids.iter().any(|id| id == &stop)
+    });
+    let mut body = to_json(&detail)?;
+    body["notices"] = to_json(&view.current)?;
+    reply(SHORT_CACHE, body)
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,7 +417,7 @@ mod tests {
 mod db_tests {
     use axum::body::Body;
     use axum::http::Request;
-    use ds_store::test_support::transit::{A, cleanup, seed};
+    use ds_store::test_support::transit::{A, B, cleanup, seed};
     use tower::ServiceExt;
 
     use super::*;
@@ -443,6 +538,109 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["stops"].as_array().unwrap().len(), 2);
         let (status, _, _) = get(&lit, &format!("/transit/{NETWORK}/stops/nope")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        cleanup(&pool, NETWORK).await;
+    }
+
+    /// Plan 4.5: status and situations by the situations' freshness, the
+    /// stop notices, and the situations listing's order.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL (a migrated database)"]
+    async fn status_follows_the_situations_freshness() {
+        use ds_store::test_support::transit::{apply_situations, set_situations_as_of, situation};
+
+        let pool = ds_store::test_support::connect().await;
+        let today = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        seed(&pool, NETWORK, today).await;
+        let lit = app(pool.clone(), &[NETWORK]);
+
+        // Missing: no status at all.
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}")).await;
+        assert_eq!(body["status"]["state"], "none");
+        assert_eq!(body["lines"][0]["status"]["state"], "none");
+        let (status, cache, body) = get(&lit, &format!("/transit/{NETWORK}/situations")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(cache.as_deref(), Some(SHORT_CACHE));
+        assert_eq!(body["state"], "none");
+
+        // Fresh: a delay on blue naming stop B, a later one, and an
+        // upcoming one.
+        let now = Utc::now();
+        let mut upcoming = situation("S3", "blue", "suspended", None, now);
+        upcoming.validity[0].start = now + chrono::TimeDelta::days(2);
+        let mut later = situation("S2", "blue", "delayed", None, now);
+        later.validity[0].start = now - chrono::TimeDelta::minutes(10);
+        apply_situations(
+            &pool,
+            NETWORK,
+            vec![
+                situation("S1", "blue", "delayed", Some(B), now),
+                later,
+                upcoming,
+            ],
+            now,
+        )
+        .await;
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}")).await;
+        assert_eq!(body["status"]["state"], "current");
+        let line_status = &body["lines"][0]["status"];
+        assert_eq!(line_status["state"], "current");
+        assert_eq!(line_status["statuses"][0]["severity"], 9);
+        assert_eq!(line_status["statuses"][0]["description"], "Minor Delays");
+        assert_eq!(line_status["upcoming"][0]["situationId"], "S3");
+
+        let (_, cache, body) = get(&lit, &format!("/transit/{NETWORK}/lines/blue")).await;
+        assert_eq!(cache.as_deref(), Some(SHORT_CACHE));
+        assert_eq!(body["status"]["state"], "current");
+        let ids = |list: &Value| -> Vec<String> {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(ids(&body["situations"]["current"]), ["S1", "S2"]);
+        assert_eq!(ids(&body["situations"]["upcoming"]), ["S3"]);
+        assert_eq!(
+            body["situations"]["current"][0]["lines"][0],
+            format!("{NETWORK}:blue")
+        );
+        assert_eq!(
+            body["situations"]["current"][0]["advice"][0],
+            "Allow extra time."
+        );
+
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/situations")).await;
+        assert_eq!(ids(&body["current"]), ["S1", "S2"]);
+        assert_eq!(ids(&body["upcoming"]), ["S3"]);
+
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/stops/{B}")).await;
+        assert_eq!(ids(&body["notices"]), ["S1"]);
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/stops/{A}")).await;
+        assert!(body["notices"].as_array().unwrap().is_empty());
+
+        // Stale: "unavailable" with its as-of time, and nothing listed.
+        let stale = now - chrono::TimeDelta::minutes(45);
+        set_situations_as_of(&pool, NETWORK, Some(stale)).await;
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}")).await;
+        assert_eq!(body["status"]["state"], "unavailable");
+        let line_status = &body["lines"][0]["status"];
+        assert_eq!(line_status["state"], "unavailable");
+        assert!(line_status["asOf"].is_string());
+        assert!(line_status["statuses"].as_array().unwrap().is_empty());
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/situations")).await;
+        assert_eq!(body["state"], "unavailable");
+        assert!(body["current"].as_array().unwrap().is_empty());
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/stops/{B}")).await;
+        assert!(body["notices"].as_array().unwrap().is_empty());
+
+        set_situations_as_of(&pool, NETWORK, None).await;
+        let (_, _, body) = get(&lit, &format!("/transit/{NETWORK}/lines/blue")).await;
+        assert_eq!(body["status"]["state"], "none");
+
+        // Dark: the situations route is 404 like the rest.
+        let dark = app(pool.clone(), &[]);
+        let (status, _, _) = get(&dark, &format!("/transit/{NETWORK}/situations")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         cleanup(&pool, NETWORK).await;
     }
