@@ -220,6 +220,6 @@ describe('statusGroup deep link', () => {
     expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('great');
     expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'West Coast Main Line' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('2');
+    expect(screen.getByTestId('list-filter-count')).toHaveTextContent('2');
   });
 });

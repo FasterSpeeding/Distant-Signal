@@ -910,10 +910,10 @@ describe('search and filters bar', () => {
 
   it('counts active filters on the button, without changing its name', () => {
     renderTable();
-    expect(screen.queryByTestId('lines-filter-count')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('list-filter-count')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('None on');
     fireEvent.click(statusChip('Severe disruption'));
-    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('list-filter-count')).toHaveTextContent('1');
     expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('1 on');
   });
 
@@ -924,7 +924,7 @@ describe('search and filters bar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(statusChip('All statuses')).toBeChecked();
     expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('west');
-    expect(screen.queryByTestId('lines-filter-count')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('list-filter-count')).not.toBeInTheDocument();
   });
 
   it('says how many lines are left in the panel and closes on "Show"', () => {
@@ -966,7 +966,7 @@ describe('search and filters bar', () => {
     );
     expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('western');
     expect(rowNames()).toEqual(['South Western']);
-    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('list-filter-count')).toHaveTextContent('1');
   });
 
   it('writes the search, operators and status to the URL once typing settles, not on load', () => {

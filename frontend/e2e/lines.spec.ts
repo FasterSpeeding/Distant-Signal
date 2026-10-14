@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 
-// The /lines search and filters bar (app/lines/LinesFilterBar.tsx): one
+// The /lines search and filters bar (components/ListFilterBar.tsx): one
 // sticky row with "Find a line" and a "Filters" button, the filters in a
 // popover from `sm` up and a bottom sheet below it, and the search,
 // operator and status filters kept in the URL.
@@ -29,12 +29,12 @@ for (const [label, viewport] of [
       // Same row: the two controls' vertical centres line up.
       expect(Math.abs(searchBox!.y + searchBox!.height / 2 - (filtersBox!.y + filtersBox!.height / 2))).toBeLessThan(2);
       // The whole bar costs well under a tenth of a phone screen.
-      const barHeight = await page.locator('.linesFilterBar').evaluate((el) => el.getBoundingClientRect().height);
+      const barHeight = await page.locator('.listFilterBar').evaluate((el) => el.getBoundingClientRect().height);
       expect(barHeight).toBeLessThan(70);
 
       await scrollDown(page, 1500);
       await expect(search).toBeInViewport();
-      await expect(page.locator('.linesFilterBar')).toHaveAttribute('data-stuck', 'true');
+      await expect(page.locator('.listFilterBar')).toHaveAttribute('data-stuck', 'true');
     });
 
     test('filters open in a dialog, Escape closes it and returns focus', async ({ page }) => {
@@ -61,7 +61,7 @@ for (const [label, viewport] of [
 
       await page.reload();
       await expect(page.getByRole('textbox', { name: 'Find a line' })).toHaveValue('main');
-      await expect(page.getByTestId('lines-filter-count')).toHaveText('1');
+      await expect(page.getByTestId('list-filter-count')).toHaveText('1');
     });
   });
 }
@@ -87,7 +87,7 @@ test('the column headers stick under the search bar', async ({ page }) => {
   await page.goto('/lines');
   await scrollDown(page, 1500);
   const { barBottom, headTop } = await page.evaluate(() => ({
-    barBottom: document.querySelector('.linesFilterBar')!.getBoundingClientRect().bottom,
+    barBottom: document.querySelector('.listFilterBar')!.getBoundingClientRect().bottom,
     headTop: document.querySelector('thead')!.getBoundingClientRect().top,
   }));
   expect(Math.abs(headTop - barBottom)).toBeLessThan(1);
