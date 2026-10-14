@@ -60,12 +60,12 @@ describe('GroupsPage', () => {
     expect(screen.getByText(/not in any groups yet/)).toBeInTheDocument();
   });
 
-  it('lists each group with its name, member count, and role badge', async () => {
+  it('lists each group with its name, member count, and role', async () => {
     vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 }]);
     renderWithMantine(await GroupsPage());
     expect(screen.getByText('Family')).toBeInTheDocument();
     expect(screen.getByText('3 members')).toBeInTheDocument();
-    expect(screen.getByText('owner')).toBeInTheDocument();
+    expect(screen.getByText('Owner')).toBeInTheDocument();
   });
 
   it('singularizes the member count for exactly one member', async () => {
@@ -77,13 +77,14 @@ describe('GroupsPage', () => {
   // Review §3.2.5: the card used to be a bare `<Link>` with
   // `textDecoration: 'none'; color: 'inherit'` and no other signal that it
   // was clickable besides the cursor.
-  it('signals that each group card is clickable with a hover/focus hook and a trailing chevron', async () => {
+  it('signals that each group card is clickable with the card-link hover/focus hook, and no arrow glyph', async () => {
     vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 }]);
     renderWithMantine(await GroupsPage());
     const link = screen.getByRole('link', { name: /Family/ });
     expect(link).toHaveAttribute('data-card-link', 'true');
     expect(link.querySelector('[data-card]')).not.toBeNull();
-    expect(screen.getByText('›')).toBeInTheDocument();
+    // No "›": arrow glyphs are banned on screen (docs/style-guide.md).
+    expect(screen.queryByText('›')).toBeNull();
   });
 });
 
