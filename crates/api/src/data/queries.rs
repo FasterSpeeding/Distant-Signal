@@ -3495,7 +3495,7 @@ mod incident_search_query_tests {
             common::LineDefinition::from_dir(&lines_dir).expect("lines/ directory should parse");
         let matcher = common::matcher::LineMatcher::new(&lines);
 
-        let report = crate::data::incident_line_backfill::run_backfill(&pool, &matcher)
+        let report = ds_store::incidents::line_backfill::run_backfill(&pool, &matcher)
             .await
             .expect("backfill");
         assert!(
@@ -3534,7 +3534,7 @@ mod incident_search_query_tests {
         // Idempotence: a second run finds nothing to do at all, and now
         // sees no never-computed rows, since the first run left every row
         // with a non-NULL array.
-        let second = crate::data::incident_line_backfill::run_backfill(&pool, &matcher)
+        let second = ds_store::incidents::line_backfill::run_backfill(&pool, &matcher)
             .await
             .expect("second backfill");
         assert_eq!(
@@ -3569,7 +3569,7 @@ mod incident_search_query_tests {
             .expect("parse placeholder database url");
         let empty = common::matcher::LineMatcher::new(&[]);
 
-        let err = crate::data::incident_line_backfill::run_backfill(&pool, &empty)
+        let err = ds_store::incidents::line_backfill::run_backfill(&pool, &empty)
             .await
             .expect_err("an empty catalogue must be refused, not silently applied");
         assert!(

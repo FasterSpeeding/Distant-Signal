@@ -536,7 +536,9 @@ jobs:
       # MIGRATION_DATABASE_URL; ds_store::test_support::schedule_fixture_pool):
       # since release B the app role (and so the api role) no longer holds
       # the *_publish_keys tables or analyze_publish_keys (db-grants.yaml
-      # app_revokes).
+      # app_revokes). writer-maintenance's backfill-incident-lines preflight
+      # runs as the incidents role, the role that subcommand is run as
+      # (ingest phase 5, 5.4b; the writer run above checks the refusal).
       - name: DB-backed tests as each service's own role (Stage 0b)
         run: |
           # shellcheck disable=SC2016 # expanded by the inner sh, from the env test-postgres-roles.py sets
@@ -556,6 +558,7 @@ jobs:
             DATABASE_URL="$DATABASE_URL_FULL_COVERAGE_RO" cargo test -p full-coverage-consumer --test role_reads -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_LDBWS_RO" cargo test -p poller-ldbws --test role_reads -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_INCIDENTS" cargo test -p poller-incidents -- --ignored --test-threads=1 &&
+            DATABASE_URL="$DATABASE_URL_INCIDENTS" cargo test -p ingest-writer --bin writer-maintenance -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_STATIONS" cargo test -p poller-stations -- --ignored --test-threads=1'
 
   # Custom: no reusable Piped workflow covers Node/npm at all (its

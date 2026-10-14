@@ -62,13 +62,23 @@ class RenderTests(unittest.TestCase):
                     bins = re.findall(r"--bin (\S+)", flags)
                     self.assertEqual(tuple(bins), tuple(gen.SERVICES[service]))
 
-    def test_api_ships_its_eight_binaries(self) -> None:
-        """Api cooks, builds and copies out all eight binaries, ds-migrate too."""
+    def test_api_ships_its_four_binaries(self) -> None:
+        """Api cooks, builds and copies out all four binaries, ds-migrate too.
+
+        Ingest phase 5, step 5.4b: none of the writing one-offs is left.
+        """
         block = gen.render("api")
         for name in gen.SERVICES["api"]:
             self.assertIn(f"/usr/local/bin/{name} ", block)
         self.assertIn("ds-migrate", gen.SERVICES["api"])
-        self.assertEqual(len(gen.SERVICES["api"]), 8)
+        self.assertEqual(len(gen.SERVICES["api"]), 4)
+        for gone in (
+            "backfill_trains",
+            "backfill_incident_lines",
+            "backfill_line_train_summaries",
+            "replay_uidless_movements",
+        ):
+            self.assertNotIn(gone, gen.SERVICES["api"])
 
     def test_no_target_cache_mount(self) -> None:
         """A target/ cache mount would leave the cook layer empty."""

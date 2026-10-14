@@ -250,7 +250,7 @@ fn incident_summary_json(row: &queries::IncidentSummaryRow) -> Value {
 /// docs/superpowers/specs/2026-09-16-tfl-incident-archive-design.md 1c.
 /// The one caveat that remains is scope, not emptiness: rows ingested
 /// before `20260917090000_incidents_affected_lines.sql` match no line until
-/// the `backfill_incident_lines` binary has been run (see
+/// `writer-maintenance backfill-incident-lines` has been run (see
 /// docs/incident-affected-lines-backfill.md).
 async fn search_incidents(
     State(app): State<App>,

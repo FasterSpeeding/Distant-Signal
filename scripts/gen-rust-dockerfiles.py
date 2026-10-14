@@ -80,11 +80,7 @@ SERVICES: Mapping[str, Sequence[str]] = {
     "aggregator": ("aggregator",),
     "api": (
         "api",
-        "backfill_trains",
-        "backfill_incident_lines",
         "corpus_compare",
-        "replay_uidless_movements",
-        "backfill_line_train_summaries",
         "maintenance",
         # The ds-migrate crate's binary (plan 1B.1): the migrate hook Job's
         # command. `--bin` selects it across the workspace.
