@@ -226,6 +226,7 @@ SET log_statement = none;
 \set ldbws_ro_password ''
 \endif
 
+\echo '== postgres-grants.sql: begin'
 BEGIN;
 
 -- Settings live only until COMMIT, so the passwords never outlast it.
@@ -275,6 +276,7 @@ SELECT
 \gset ignored_
 
 -- 1. Roles.
+\echo '== postgres-grants.sql: 1. roles'
 DO $roles$
 DECLARE
     app text := current_setting('ds_grants.app');
@@ -360,6 +362,7 @@ END
 $roles$;
 
 -- 2. Memberships, 3. CONNECT and USAGE.
+\echo '== postgres-grants.sql: 2-3. memberships, CONNECT and USAGE'
 DO $members$
 DECLARE
     app text := current_setting('ds_grants.app');
@@ -435,6 +438,7 @@ $members$;
 -- public is revoked first, so a grant removed from db-grants.yaml goes
 -- away on the next run. Observed roles end with nothing of their own: they
 -- use the app role's privileges.
+\echo '== postgres-grants.sql: 4. grants'
 DO $grants$
 DECLARE
     r record;
@@ -819,6 +823,7 @@ $grants$;
 -- condition is spelled. Only a ds_grants_* policy that is not listed, or
 -- differs (command, role, RESTRICTIVE, USING or WITH CHECK), is dropped,
 -- and only a missing or differing one is created.
+\echo '== postgres-grants.sql: 5. row policies'
 DO $policies$
 DECLARE
     r record;
@@ -918,6 +923,7 @@ $policies$;
 -- grants app DML on every table and EXECUTE on every routine on each run;
 -- these held only for the api's /private routes, and app's members (the
 -- observed roles) inherit the loss.
+\echo '== postgres-grants.sql: 6. app revokes'
 DO $app_revokes$
 DECLARE
     app text := current_setting('ds_grants.app');
@@ -944,4 +950,6 @@ BEGIN
 END
 $app_revokes$;
 
+\echo '== postgres-grants.sql: commit'
 COMMIT;
+\echo '== postgres-grants.sql: done'
