@@ -767,10 +767,13 @@ workload's rollout is now:
 | api | `api.strategy.type`, Recreate or RollingUpdate (maxSurge 1, maxUnavailable 0) | (replicas + 1) × pool + 2 + the api-maintenance pool |
 | movement-relay | RollingUpdate, maxSurge 1 (no Postgres) | none |
 
-The limits are applied by the setup Job, a **post-upgrade hook**: an
-upgrade stuck waiting on its pods never reaches it, so raising a limit by
-values cannot unstick it. `ALTER ROLE ... CONNECTION LIMIT` by hand, or
-delete the old pod, or patch the live Deployment to Recreate; see
+The limits (and every grant) are applied by the setup Job, a
+**pre-upgrade hook** after the migrate Job, so they are in place before the
+pods roll (docs/postgres-app-role.md "Hook order"). Without `migrate.job`,
+and for the one upgrade that adds a password key to the chart's Secret, it
+is a post-upgrade hook, which an upgrade stuck waiting on its pods never
+reaches: then `ALTER ROLE ... CONNECTION LIMIT` by hand, or delete the old
+pod, or patch the live Deployment to Recreate; see
 docs/ingest-phase5-runbook.md §0.5 "Rollout deadlock".
 
 ## Release B: the producers' only paths
