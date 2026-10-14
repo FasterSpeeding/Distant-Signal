@@ -88,6 +88,15 @@ export const SEVERITY_GROUP_LABELS: Record<SeverityGroup, string> = {
   severe: 'Severe Disruption',
 };
 
+/** A severity group's name as a label (a tile, a filter chip, a badge), in
+ * sentence case ("Minor disruption"), as every label is. The Title Case
+ * `SEVERITY_GROUP_LABELS` form is only for running text and tab titles
+ * that name the status. */
+export function severityGroupLabel(group: SeverityGroup): string {
+  const label = SEVERITY_GROUP_LABELS[group];
+  return label.charAt(0) + label.slice(1).toLowerCase();
+}
+
 /** Every `SeverityGroup`, ordered best-to-worst by `GROUP_RANK` -- the
  * iteration order for the dashboard's five counter tiles and
  * `AllLinesTable`'s filter chips, so both render in one deliberate order

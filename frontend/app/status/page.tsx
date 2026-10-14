@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { Badge, Card, Group, SimpleGrid, Stack, Text, Title } from '@mantine/core';
+import { SimpleGrid, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import { getLineStatusForMode } from '@/lib/api';
@@ -8,9 +8,8 @@ import { DISPLAYED_MODES_PARAM, type Country } from '@/lib/modes';
 import { buildNetworkStatusOverview } from '@/lib/networkStatusOverview';
 import {
   isGoodSeverity,
-  SEVERITY_GROUP_LABELS,
   SEVERITY_GROUPS_BY_RANK,
-  severityColor,
+  severityGroupLabel,
   severityRank,
   type SeverityGroup,
   worstStatus,
@@ -21,8 +20,9 @@ import { LastUpdated } from '@/components/LastUpdated';
 import { RecentlyCleared } from '@/components/RecentlyCleared';
 import type { LineStatusReport } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
-import { CardLink } from '@/components/CardLink';
-import { tokens } from '@/lib/theme';
+import { StatusBadge } from '@/components/StatusBadge';
+import { StatusCard } from '@/components/StatusCard';
+import { StatusTile } from '@/components/StatusTile';
 
 // Same rationale as every other dynamic route in this app (see
 // app/lines/page.tsx's own comment): without this, `next build` treats the
@@ -101,9 +101,9 @@ export default async function NetworkStatusPage() {
         {overview.lastUpdated && <LastUpdated timestamp={overview.lastUpdated} />}
       </Stack>
 
-      {/* Five tiles: on two columns the last one spans the row
-          (globals.css, [data-counter-tiles]) rather than sitting alone. */}
-      <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} spacing="md" data-counter-tiles>
+      {/* Five tiles: one compact row each on a phone, five across from
+          `sm` up, so no tile is ever left alone on a row (StatusTile). */}
+      <SimpleGrid cols={{ base: 1, sm: 5 }} spacing={{ base: 'xs', sm: 'md' }} data-counter-tiles>
         {SEVERITY_GROUPS_WORST_FIRST.map((group) => (
           <SeverityCounterTile key={group} group={group} count={overview.counts[group]} />
         ))}
@@ -161,50 +161,15 @@ export default async function NetworkStatusPage() {
  * ring only ever applies to Mantine interactive components, not a bare
  * `<a>`. Sizes come from `tokens.statusTile`. */
 function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: number }) {
-  const label = SEVERITY_GROUP_LABELS[group];
-
-  // A zero-count tile has nothing to drill into -- `/lines?statusGroup=x`
-  // for an empty bucket is a real destination that shows nothing, and
-  // giving it the exact same link affordance as a nonzero tile invites a
-  // pointless click. Rendered muted, with "none" standing in for "0" (both
-  // per §2.1's own recommendation).
-  if (count === 0) {
-    return (
-      <Card {...tokens.card.static} padding={tokens.statusTile.padding} data-status-tile>
-        <Stack gap={tokens.statusTile.gap} align="center">
-          <Text size={tokens.statusTile.valueSize} fw={tokens.statusTile.valueWeight} c="dimmed">
-            0
-          </Text>
-          <Text size={tokens.statusTile.labelSize} c="dimmed" ta="center">
-            {label}
-          </Text>
-        </Stack>
-      </Card>
-    );
-  }
-
+  const label = severityGroupLabel(group);
+  if (count === 0) return <StatusTile count={0} label={label} />;
   return (
-    <CardLink
+    <StatusTile
+      count={count}
+      label={label}
       href={`/lines?statusGroup=${group}`}
-      padding={tokens.statusTile.padding}
-      ariaLabel={`${count} line${count === 1 ? '' : 's'} with ${label}, view in Lines`}
-    >
-      <Stack gap={tokens.statusTile.gap} align="center">
-        <Text size={tokens.statusTile.valueSize} fw={tokens.statusTile.valueWeight}>
-          {count}
-        </Text>
-        <Text size={tokens.statusTile.labelSize} c="dimmed" ta="center">
-          {label}
-        </Text>
-        {/* `aria-hidden`: the link's own `aria-label` above already states
-              the destination in full for assistive tech; this is the
-              sighted-only visual affordance (grape link text + chevron)
-              matching the app's established "this goes somewhere" cue. */}
-        <Text size="xs" c="var(--mantine-color-anchor)" aria-hidden>
-          View lines <span aria-hidden="true">›</span>
-        </Text>
-      </Stack>
-    </CardLink>
+      ariaLabel={`${count} line${count === 1 ? '' : 's'} with ${label.toLowerCase()}, view in Lines`}
+    />
   );
 }
 
@@ -258,47 +223,27 @@ function worstSeverityAcross(reports: LineStatusReport[]): number {
  * (GB/NI/RoI) -- both answer the exact same question ("how is this slice of
  * the network doing"), just sliced a different way.
  *
- * 2026-09-22 UX review §2.3, two separate fixes:
- *   - Zero lines in this slice no longer renders a green "All Good
- *     Service" badge -- an empty set is not "all good service", it is
- *     "nothing tracked", and the green badge was exactly the kind of false
- *     reassurance the app's copy elsewhere is careful to avoid.
- *   - The "N affected" badge is now coloured by the WORST severity actually
- *     present in the slice (`worstSeverityAcross`), not hard-coded yellow --
- *     previously a slice with two Severe lines out of five affected still
- *     showed a plain yellow "5 affected", understating the list it
- *     summarises. (The badge's `variant="light"` contrast is a separate,
- *     already-tracked fix -- not changed here.) */
+ * 2026-09-22 UX review §2.3: zero lines in a slice says "No lines
+ * tracked", with no badge: an empty set is not "all good service". Round 2
+ * (item 3) made it a `StatusCard` like every other status card: the badge
+ * is the worst severity actually present in the slice
+ * (`worstSeverityAcross`), the same filled `StatusBadge` a line shows, and
+ * the count of affected lines moved into the reason line, where it reads
+ * as a sentence ("2 of 120 lines affected.") instead of an off-palette
+ * "2 affected" pill. */
 function ModeCard({ label, reports }: { label: string; reports: LineStatusReport[] }) {
   if (reports.length === 0) {
-    return (
-      <Card withBorder padding="lg">
-        <Stack gap={4}>
-          <Text fw={600}>{label}</Text>
-          <Text size="sm" c="dimmed">
-            No lines tracked.
-          </Text>
-        </Stack>
-      </Card>
-    );
+    return <StatusCard title={label} reason="No lines tracked." />;
   }
 
   const affected = reports.filter((report) => !isGoodSeverity(worstStatus(report).statusSeverity));
-  const badgeColor = affected.length === 0 ? 'green' : severityColor(worstSeverityAcross(reports));
+  const lines = `${reports.length} line${reports.length === 1 ? '' : 's'}`;
 
   return (
-    <Card withBorder padding="lg">
-      <Stack gap={4}>
-        <Group justify="space-between">
-          <Text fw={600}>{label}</Text>
-          <Badge tt="none" color={badgeColor} variant="light">
-            {affected.length === 0 ? 'All Good Service' : `${affected.length} affected`}
-          </Badge>
-        </Group>
-        <Text size="sm" c="dimmed">
-          {reports.length} line{reports.length === 1 ? '' : 's'} tracked
-        </Text>
-      </Stack>
-    </Card>
+    <StatusCard
+      title={label}
+      badge={<StatusBadge severity={worstSeverityAcross(reports)} />}
+      reason={affected.length === 0 ? `${lines}, all running normally.` : `${affected.length} of ${lines} affected.`}
+    />
   );
 }

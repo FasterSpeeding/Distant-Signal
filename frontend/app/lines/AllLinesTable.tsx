@@ -28,6 +28,7 @@ import {
   severityRank,
   severityGroup,
   SEVERITY_GROUP_LABELS,
+  severityGroupLabel,
   SEVERITY_GROUPS_BY_RANK,
   type SeverityGroup,
 } from '@/lib/severity';
@@ -170,12 +171,8 @@ function statusChipLabel(selected: SeverityGroup | null): string {
 
 /** A severity group's name as a chip or label, in sentence case ("Minor
  * disruption"), matching the sentence-case status badges in the table
- * below. `SEVERITY_GROUP_LABELS` keeps the Title Case form for running
- * text and the tab title. */
-function groupChipLabel(group: SeverityGroup): string {
-  const label = SEVERITY_GROUP_LABELS[group];
-  return label.charAt(0) + label.slice(1).toLowerCase();
-}
+ * below and the /status tiles (`severityGroupLabel`). */
+const groupChipLabel = severityGroupLabel;
 
 /** The query params this table keeps in the URL. `statusGroup` is also
  * what `app/status/page.tsx`'s counter tiles link to. */

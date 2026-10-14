@@ -340,6 +340,10 @@ a[data-card-link] {
   text-decoration: none;
 }
 
+a[data-card-link][data-card-fill] {
+  height: 100%;
+}
+
 a[data-card-link]:hover [data-card],
 a[data-card-link]:focus-visible [data-card] {
   border-color: var(--mantine-color-anchor);
@@ -1645,11 +1649,38 @@ a[data-text-link-tone='inherit'] {
   }
 }
 
-/* /status counter tiles: five tiles on the two-column phone grid would
-   leave the last one alone on its row, so it spans the row instead. */
-@media (max-width: $mantine-breakpoint-sm) {
-  [data-counter-tiles] > :last-child:nth-child(odd) {
-    grid-column: 1 / -1;
+/* `components/StatusTile.tsx`, the /status counter tiles. Five tiles never
+   fill a two-column phone grid, so below `sm` each is a compact row (count,
+   label, then the "View lines" cue at the far end) in a one-column list;
+   from `sm` up, count over label, centred, five across. */
+.statusTile {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-sm);
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+}
+
+.statusTile__count {
+  min-width: 2ch;
+  text-align: center;
+}
+
+.statusTile__cue {
+  margin-inline-start: auto;
+}
+
+@media (min-width: $mantine-breakpoint-sm) {
+  .statusTile {
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    height: 100%;
+    padding: var(--mantine-spacing-lg) var(--mantine-spacing-sm);
+    text-align: center;
+  }
+
+  .statusTile__cue {
+    margin-inline-start: 0;
   }
 }
 
