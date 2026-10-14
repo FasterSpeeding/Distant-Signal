@@ -2,7 +2,7 @@ import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { TrainSearchForm } from '@/components/TrainSearchForm';
 import { getAllTocs, getTrainSearchDates } from '@/lib/api';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -34,7 +34,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Find a train';
 const METADATA_DESCRIPTION = 'Search UK trains by station and date, then open one for its live status or track it.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 /** `/trains` -- the primary train-discovery surface. Generalized from a
  * destination-first search into a calling-point-first one -- see

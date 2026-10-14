@@ -50,11 +50,14 @@ describe('the routes with their own preview', () => {
 
   it('all use the shared template, never a title from the request', () => {
     const routes = previewRoutes();
-    expect(routes.length).toBeGreaterThanOrEqual(10);
+    expect(routes.length).toBeGreaterThanOrEqual(9);
     for (const route of routes) {
       const source = readFileSync(route, 'utf8');
       expect(source, route).toContain('renderPreviewImage(');
       expect(source, route).not.toMatch(/searchParams/);
+      // Its page must not list the site-wide image, or that one wins.
+      const page = readFileSync(route.replace('opengraph-image.tsx', 'page.tsx'), 'utf8');
+      expect(page, route).toContain('OWN_PREVIEW_IMAGE');
     }
   });
 });

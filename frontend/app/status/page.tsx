@@ -19,7 +19,7 @@ import { LineStatusCard } from '@/components/LineStatusCard';
 import { LastUpdated } from '@/components/LastUpdated';
 import { RecentlyCleared } from '@/components/RecentlyCleared';
 import type { LineStatusReport } from '@/lib/types';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusCard } from '@/components/StatusCard';
 import { StatusTile } from '@/components/StatusTile';
@@ -34,7 +34,7 @@ export const revalidate = 0;
 const METADATA_TITLE = 'Status';
 const METADATA_DESCRIPTION = 'Live status of every National Rail and TfL line: how many have problems, and which ones.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 const COUNTRY_LABELS: Record<Country, string> = {
   Gb: 'GB',

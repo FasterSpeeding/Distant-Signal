@@ -7,8 +7,10 @@ import { SITE_NAME } from './pageMetadata';
  * page's title on the brand background, under the wordmark. A route opts in
  * with an `opengraph-image.tsx` that re-exports `size`, `contentType` and
  * `alt` from here and renders `renderPreviewImage(title)`; Next then lists
- * that image instead of the site-wide `public/opengraph-image.png`, which is
- * this template's no-title form (`renderPreviewImage(null)`), saved.
+ * that image instead of the site-wide `public/opengraph-image.png`, which
+ * is this template's no-title form (`renderPreviewImage(null)`), saved. The
+ * route's page passes `OWN_PREVIEW_IMAGE` to `pageMetadata`, or the
+ * explicit site-wide image would win.
  *
  * Only for titles the app itself computes: a fixed page name, or the title
  * a route's own `generateMetadata` resolves (`previewTitleFromMetadata`).

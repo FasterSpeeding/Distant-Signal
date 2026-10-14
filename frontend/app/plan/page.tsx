@@ -5,7 +5,7 @@ import { TextLink } from '@/components/TextLink';
 import { getTrainSearchDates } from '@/lib/api';
 import { TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { parsePlanSearchParams } from '@/lib/tripPlanUrl';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 /** `/plan` -- the trip planner (`PlanTripFlow`) on its own page, linked from
  * the nav as `PLAN_JOURNEY_DESTINATION` (`lib/navLinks.ts`).
@@ -43,7 +43,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Plan a journey';
 const METADATA_DESCRIPTION = 'Find train routes between two UK stations, with changes, and track the one you pick.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 
