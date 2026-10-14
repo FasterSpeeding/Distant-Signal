@@ -1,0 +1,55 @@
+/* The "Use my location" results (`NearbyStationList`): one row per
+   station inside `ServiceRowList`'s bordered, divided list, the same
+   result-row look as a train search. Mantine tokens only; no new colours. */
+
+/* The whole row is the link: the name and code on the left, the distance
+   in its own right-hand column, at least 44px tall. */
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--mantine-spacing-md);
+  min-height: 44px;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  color: inherit;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.row:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+.row:active {
+  background: var(--mantine-color-default-border);
+}
+
+/* Inset, so the ring isn't clipped by the list's rounded border. */
+.row:focus-visible {
+  outline: 2px solid var(--mantine-color-anchor);
+  outline-offset: -2px;
+}
+
+/* A long name wraps rather than pushing the distance off the row. */
+.name {
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* Secondary: smaller and dimmed, digits lined up down the column. */
+.distance {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  justify-self: end;
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The pending spinner's slot when no navigation is pending. */
+.hidden {
+  visibility: hidden;
+}

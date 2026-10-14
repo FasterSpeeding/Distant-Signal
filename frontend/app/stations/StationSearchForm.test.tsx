@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, act } from '@testing-library/react';
+import { screen, fireEvent, act, within } from '@testing-library/react';
 import { startTransition as reactStartTransition } from 'react';
 import { renderWithMantine } from '@/test/render';
 import { StationSearchForm } from './StationSearchForm';
@@ -271,13 +271,13 @@ describe('StationSearchForm', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
       });
 
-      const list = await screen.findByRole('list', { name: 'Nearby stations' });
+      const list = await screen.findByRole('list', { name: 'Nearest stations' });
       expect(list).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Woking (WOK), 0.4 km' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Basingstoke (BSK), 12.3 km' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Woking (WOK), 0.4 km away' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Basingstoke (BSK), 12.3 km away' })).toBeInTheDocument();
     });
 
-    it('navigates to the station page when a nearby result is chosen', async () => {
+    it('makes each nearby result one link to its station page, with the distance in its own column', async () => {
       stubGeolocation((success: (position: unknown) => void) => {
         success({ coords: { latitude: 51.3191, longitude: -0.561 } });
       });
@@ -292,15 +292,51 @@ describe('StationSearchForm', () => {
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
       });
+      const link = await screen.findByRole('link', { name: 'Woking (WOK), 0.4 km away' });
+      expect(link).toHaveAttribute('href', '/stations/WOK');
+      // The whole row is the one interactive element: nothing nested.
+      expect(link.querySelector('a, button, input')).toBeNull();
+      expect(within(link).getByText('Woking (WOK)')).toBeInTheDocument();
+      // The distance is its own element, not run on from the name.
+      const distance = link.querySelector('[data-distance]');
+      expect(distance).toHaveTextContent(/^0\.4 km$/);
+      expect(within(link).getByText('Woking (WOK)')).not.toContainElement(distance as HTMLElement);
+    });
+
+    it('says so when the location arrives but the station lookup fails', async () => {
+      stubGeolocation((success: (position: unknown) => void) => {
+        success({ coords: { latitude: 51.3191, longitude: -0.561 } });
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('', { status: 502 })),
+      );
+      renderWithProvider();
+
       await act(async () => {
-        fireEvent.click(await screen.findByRole('button', { name: 'Woking (WOK), 0.4 km' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
       });
 
-      expect(pushMock).toHaveBeenCalledWith('/stations/WOK');
+      expect(await screen.findByText("Couldn't load nearby stations")).toBeInTheDocument();
+      expect(screen.queryByText("Couldn't find your location")).not.toBeInTheDocument();
+    });
+
+    it('says plainly when no station is near', async () => {
+      stubGeolocation((success: (position: unknown) => void) => {
+        success({ coords: { latitude: 0, longitude: 0 } });
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+      );
+      renderWithProvider();
 
       await act(async () => {
-        resolveNavigation();
+        fireEvent.click(screen.getByRole('button', { name: 'Use my location' }));
       });
+
+      expect(await screen.findByText('No stations found near you. Search by name above.')).toBeInTheDocument();
+      expect(screen.queryByRole('list', { name: 'Nearest stations' })).not.toBeInTheDocument();
     });
 
     it('shows a calm, non-error message when the location prompt is declined', async () => {
