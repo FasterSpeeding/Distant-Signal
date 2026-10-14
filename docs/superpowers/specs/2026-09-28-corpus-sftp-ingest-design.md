@@ -247,6 +247,15 @@ TPS names: station names come from the Knowledgebase `stations` table, and
 the TIPLOC fallback lets more stops reach it. So no name substitution was
 built; the comparison lists the name differences for a later decision.
 
+## Follow-up (2026-10-14): the NLC XML format
+
+Network Rail's newer CORPUS API version delivers dated NLC XML snapshots
+(`NLC20261009.xml.gz`) beside `CORPUSExtract.json.gz`. Both now load into the
+same tables, the JSON extract is preferred while both arrive, and files that
+were not loaded now go to `corpus/superseded/` rather than `corpus/` (step 8
+above). See
+[2026-10-14-corpus-nlc-xml-format-design](2026-10-14-corpus-nlc-xml-format-design.md).
+
 ## Consumers (not changed here)
 
 - The **`stanox_crs` / `tiploc_crs` crosswalks** are currently derived from
