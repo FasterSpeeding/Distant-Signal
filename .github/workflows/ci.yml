@@ -2113,6 +2113,31 @@ jobs:
             || fail "the setup Job must read the backup password from roles.backup.existingSecret"
           grep -A4 'name: DS_PG_BACKUP_PASSWORD$' <<<"${job}" | grep -q 'key: postgres-backup-password' \
             || fail "the backup password key must default to postgres-backup-password"
+          # Fail fast and keep the log (the 2026-10-14 Helm v252 deadline):
+          # every psql runs through the bounded, retrying setup script with
+          # lock and statement timeouts, which ends 60 s before the Job's
+          # deadline; the hook ConfigMap carries the script.
+          # shellcheck disable=SC2016 # "${setup}" is the Job's shell variable, matched literally
+          grep -q 'sh "${setup}" wait$' <<<"${job}" || fail "the setup Job must wait for Postgres through the setup script"
+          # shellcheck disable=SC2016 # as above
+          n_run=$(grep -c 'sh "${setup}" run' <<<"${job}" || true)
+          [[ "${n_run}" -eq 2 ]] || fail "postgres-roles.sql and postgres-grants.sql must run through the setup script"
+          # shellcheck disable=SC2016 # the Job's shell arithmetic, matched literally
+          grep -q 'DS_SETUP_DEADLINE=$(($(date +%s) + 540))' <<<"${job}" \
+            || fail "the setup script's deadline must be the Job's 600 s less 60"
+          grep -q '^  backoffLimit: 0$' <<<"${job}" || fail "the setup Job retries in its pod: backoffLimit 0"
+          grep -A1 'name: PGOPTIONS$' <<<"${job}" \
+            | grep -q 'value: "-c lock_timeout=10s -c statement_timeout=120s ' \
+            || fail "the setup Job's sessions need lock_timeout and statement_timeout"
+          grep -q '^  postgres-roles-setup.sh: |$' <<<"${job}" || fail "the hook ConfigMap must carry the setup script"
+          grep -q 'path: postgres-roles-setup.sh$' <<<"${job}" || fail "the setup Job must mount the setup script"
+          for bad in lockTimeout='10 s' statementTimeout=0 attempts=0 activeDeadlineSeconds=100; do
+            # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+            if render --set postgresql.roles.setupJob.enabled=true --set "postgresql.roles.setupJob.${bad}" \
+                >/dev/null 2>&1; then
+              fail "setupJob.${bad} must fail the render"
+            fi
+          done
           if grep -q 'PASSWORD=' <<<"${on}"; then fail "no password may be passed on a command line"; fi
 
           # An existing cluster (initScript off) gets no initdb script on the
