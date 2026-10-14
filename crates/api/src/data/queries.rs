@@ -2103,10 +2103,15 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<LineStatusRow> {
 /// `/Line/Mode/{modes}/Status` takes a comma-separated list and this API
 /// mimics its URL scheme — and because the frontend's list pages want
 /// National Rail and the five `TfL` modes in one round trip.
+///
+/// Never a transit row (transit spec §10.5): those are served by
+/// `/public/transit` only. A transit `mode_name` is its network, which
+/// `SUPPORTED_MODES` never lists; the filter keeps that true if one ever
+/// shared a name with a mode.
 pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
         "SELECT line_id, name, mode_name, operators, statuses, computed_at, upcoming \
-         FROM line_status WHERE mode_name = ANY($1)",
+         FROM line_status WHERE mode_name = ANY($1) AND source <> 'transit'",
     )
     .bind(modes)
     .fetch_all(pool)
@@ -2114,10 +2119,14 @@ pub async fn line_status_for_modes(pool: &PgPool, modes: &[String]) -> Result<Ve
     rows.into_iter().map(row_to_report).collect()
 }
 
+/// The rows of `ids`, National Rail, `TfL` and custom lines only: a transit
+/// row (`source = 'transit'`, `<network>:<line>`) is served by
+/// `/public/transit` alone, never by the `TfL`-shaped `/Line/{ids}/Status`
+/// or the operator pages (transit spec §10.5).
 pub async fn line_status_for_ids(pool: &PgPool, ids: &[String]) -> Result<Vec<LineStatusRow>> {
     let rows = sqlx::query(
         "SELECT line_id, name, mode_name, operators, statuses, computed_at, upcoming \
-         FROM line_status WHERE line_id = ANY($1)",
+         FROM line_status WHERE line_id = ANY($1) AND source <> 'transit'",
     )
     .bind(ids)
     .fetch_all(pool)
@@ -4207,6 +4216,57 @@ pub fn tiploc_of_destination_key(code: &str) -> Option<String> {
 )]
 mod tests {
     use super::*;
+
+    /// Transit spec §10.5 (plan 4.4): a transit row is never served as a
+    /// National Rail or `TfL` line, by id or by mode, even one whose
+    /// `mode_name` is a supported mode; `tfl_line_summaries` ignores it.
+    #[tokio::test]
+    #[ignore = "requires a live database (DATABASE_URL)"]
+    async fn transit_rows_are_left_out_of_the_line_status_readers() {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect(&database_url)
+            .await
+            .expect("connect to postgres");
+        let cleanup = "DELETE FROM line_status WHERE line_id IN ('TEST-AGG-TR', 'test-tr:blue')";
+        sqlx::query(cleanup).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+             VALUES \
+                ('TEST-AGG-TR', 'aggregator line', 'national-rail', '{NT}', '[]', 'aggregator'), \
+                ('test-tr:blue', 'Blue Line', 'national-rail', '{}', '[]', 'transit')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture rows");
+
+        let ids = vec!["TEST-AGG-TR".to_owned(), "test-tr:blue".to_owned()];
+        let by_id: Vec<String> = line_status_for_ids(&pool, &ids)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        let by_mode: Vec<String> = line_status_for_modes(&pool, &["national-rail".to_owned()])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .filter(|id| ids.contains(id))
+            .collect();
+        let tfl: Vec<String> = tfl_line_summaries(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        sqlx::query(cleanup).execute(&pool).await.unwrap();
+
+        assert_eq!(by_id, ["TEST-AGG-TR"]);
+        assert_eq!(by_mode, ["TEST-AGG-TR"]);
+        assert!(!tfl.contains(&"test-tr:blue".to_owned()));
+    }
 
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \

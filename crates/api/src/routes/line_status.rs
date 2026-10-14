@@ -456,6 +456,11 @@ async fn get_line_status_history(
     if let Some(empty) = empty_if_unreadable(&app.database, &id, &user).await? {
         return Ok(empty);
     }
+    // A transit line's history is not this route's (transit spec §10.5):
+    // answered as an unknown line, as `/Line/{ids}/Status` does.
+    if common::transit::QualifiedLineId::parse(&id).is_ok() {
+        return Ok(Json(vec![]));
+    }
 
     let history = queries::line_status_history_for_range(&app.database, &id, from, to)
         .await
@@ -2076,6 +2081,61 @@ mod db_tests {
             .iter()
             .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_string))
             .collect()
+    }
+
+    // --- transit rows (transit spec §10.5, plan 4.4) -------------------
+
+    /// A transit line (`source = 'transit'`) is served by `/public/transit`
+    /// only: `/Line/{ids}/Status` answers 404 for it (the frontend's
+    /// National Rail line page) and its history route answers empty.
+    #[tokio::test]
+    #[ignore = "requires a live database (DATABASE_URL)"]
+    async fn transit_lines_are_not_served_as_national_rail_or_tfl_lines() {
+        let pool = connect().await;
+        let id = "test-route-tr:blue";
+        sqlx::query(
+            "INSERT INTO line_status (line_id, name, mode_name, operators, statuses, source) \
+             VALUES ($1, 'Blue Line', 'national-rail', '{}', '[]', 'transit') \
+             ON CONFLICT (line_id) DO NOTHING",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        seed_line_status_history(&pool, id, "[]").await;
+
+        let (status, _) = request(
+            test_router(test_app(pool.clone(), vec![])),
+            format!("/Line/{id}/Status"),
+            None,
+        )
+        .await;
+        let (mode_status, mode_body) = request(
+            test_router(test_app(pool.clone(), vec![])),
+            "/Line/Mode/national-rail/Status".to_string(),
+            None,
+        )
+        .await;
+        let now = chrono::Utc::now();
+        let stamp = |at: chrono::DateTime<chrono::Utc>| at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let (history_status, history) = request(
+            test_router(test_app(pool.clone(), vec![])),
+            format!(
+                "/Line/{id}/Status/{}/to/{}",
+                stamp(now - chrono::Duration::hours(1)),
+                stamp(now + chrono::Duration::hours(1))
+            ),
+            None,
+        )
+        .await;
+        cleanup_line_status_history(&pool, id).await;
+        cleanup_line_status(&pool, id).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(mode_status, StatusCode::OK);
+        assert!(!ids_in(&mode_body).contains(&id.to_owned()));
+        assert_eq!(history_status, StatusCode::OK);
+        assert_eq!(history, serde_json::json!([]));
     }
 
     // --- get_mode_status -----------------------------------------------
