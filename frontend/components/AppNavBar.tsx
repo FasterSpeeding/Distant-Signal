@@ -5,7 +5,7 @@ import { AppNavDrawer } from './AppNavDrawer';
 import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
 import { PreferencesNavIcon } from './PreferencesNavIcon';
-import { PrideModeApplier } from './PrideMode';
+import { PrideModeApplier, PrideSparkles } from './PrideMode';
 import { PrimaryNavLink } from './PrimaryNavLink';
 import { Wordmark } from './Wordmark';
 import { navDrawerDestinations, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
@@ -163,9 +163,14 @@ export function AppNavBar({
                 `component` prop — a different, safe pattern. (Inside
                 `AppNavDrawer`, which IS a Client Component,
                 `component={Link}` is fine and is used.) */}
-            <Link href="/" data-card-link>
-              <Wordmark />
-            </Link>
+            {/* `prideToggle` anchors the decorative sparkle scatter
+                (`PrideSparkles`, only there while a pride flag is on). */}
+            <span className="prideToggle">
+              <Link href="/" data-card-link>
+                <Wordmark />
+              </Link>
+              <PrideSparkles />
+            </span>
           </Group>
           {/* `gap="xs"` here and between the links: see the gap note
               above this component. */}

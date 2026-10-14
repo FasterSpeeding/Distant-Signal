@@ -92,6 +92,10 @@ test.describe('Preferences, logged out', () => {
       await page.goto(path);
       await expect(page.locator('body')).toHaveAttribute('data-pride', 'trans');
       expect(await prideStripeHeight(page)).toBe(6);
+      // The trans flag's sparkle trio around the wordmark, decorative only.
+      const sparkles = page.locator('nav[aria-label="Main"] .prideSparkles:visible');
+      await expect(sparkles).toHaveAttribute('aria-hidden', 'true');
+      await expect(sparkles.locator('.prideSparkle')).toHaveText(['🩵', '🩷', '✨']);
     }
 
     // The flag is applied by an inline script before the first paint,
@@ -99,9 +103,15 @@ test.describe('Preferences, logged out', () => {
     expect(cspErrors).toEqual([]);
 
     await page.goto(PREFERENCES);
+    // The picker's live preview carries the same trio.
+    await expect(page.locator('.pridePreview')).toHaveAttribute('data-flag', 'trans');
+    await expect(page.locator('main .prideSparkle')).toHaveText(['🩵', '🩷', '✨']);
     await choosePrideFlag(page, 'Off', 'off');
+    // Gone at once, not only after a reload.
+    await expect(page.locator('.prideSparkles:visible')).toHaveCount(0);
     await page.reload();
     expect(await prideStripeHeight(page)).toBe(0);
+    await expect(page.locator('.prideSparkles:visible')).toHaveCount(0);
   });
 
   test('keeps the colour theme across reloads', async ({ page }) => {

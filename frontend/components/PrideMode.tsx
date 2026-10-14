@@ -1,11 +1,12 @@
 'use client';
 
-import { NativeSelect } from '@mantine/core';
+import { Group, NativeSelect } from '@mantine/core';
 import { useMounted } from '@mantine/hooks';
 import { useEffect, useState } from 'react';
 import {
   PRIDE_MODE_OPTIONS,
   PRIDE_MODE_STORAGE_KEY,
+  PRIDE_SPARKLES,
   parseStoredMode,
   readStoredPrideMode,
   type PrideMode,
@@ -53,14 +54,65 @@ export function PrideModeSelect() {
   }
 
   return (
-    <NativeSelect
-      label="Pride flag"
-      description="A flag stripe along the top of every page."
-      data={PRIDE_MODE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-      value={displayedMode}
-      onChange={(event) => choose(parseStoredMode(event.currentTarget.value))}
-      leftSection={<span className="prideSwatch" data-flag={displayedMode} aria-hidden="true" />}
-      maw={320}
-    />
+    <Group gap="lg" align="flex-end" wrap="nowrap">
+      <NativeSelect
+        label="Pride flag"
+        description="A flag stripe and sparkles at the top of every page."
+        data={PRIDE_MODE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+        value={displayedMode}
+        onChange={(event) => choose(parseStoredMode(event.currentTarget.value))}
+        leftSection={<span className="prideSwatch" data-flag={displayedMode} aria-hidden="true" />}
+        maw={320}
+        flex={1}
+      />
+      <PridePreview mode={displayedMode} />
+    </Group>
+  );
+}
+
+/** A live preview beside the picker, in the old nav toggle's shape: the
+ * flag's swatch in a round badge with its spinning ring and sparkles.
+ * Decorative (`aria-hidden`); the select carries the choice. */
+function PridePreview({ mode }: { mode: PrideMode }) {
+  return (
+    <span className="prideToggle" aria-hidden="true">
+      <span className="pridePreview" data-flag={mode}>
+        <span className="prideSwatch" data-flag={mode} />
+      </span>
+      <SparkleScatter mode={mode} />
+    </span>
+  );
+}
+
+/** The scatter itself: three emoji that float around their anchor
+ * (`globals.css`'s `pride-sparkle-float`; static under reduced motion).
+ * Decorative (`aria-hidden`). The preview renders it only while a flag is
+ * on; the nav's copies carry `data-flag` and are shown by CSS. */
+function SparkleScatter({ mode, flagged = false }: { mode: PrideMode; flagged?: boolean }) {
+  if (mode === 'off') return null;
+  const [first, second, third] = PRIDE_SPARKLES[mode];
+  return (
+    <span className="prideSparkles" aria-hidden="true" data-flag={flagged ? mode : undefined}>
+      <span className="prideSparkle">{first}</span>
+      <span className="prideSparkle">{second}</span>
+      <span className="prideSparkle">{third}</span>
+    </span>
+  );
+}
+
+/** The decorative sparkle scatter on every page, around the wordmark in
+ * the nav (`AppNavBar`), restored from the old nav toggle when the pride
+ * controls moved to /account/preferences. Every flag's trio is in the
+ * server HTML, hidden, and `globals.css` shows the one matching
+ * `body[data-pride]`: so, like the stripe, it is there on the first paint
+ * for anyone with a flag saved, logged in or out, and follows the picker
+ * the moment it changes. */
+export function PrideSparkles() {
+  return (
+    <>
+      {PRIDE_MODE_OPTIONS.map(({ value }) => (
+        <SparkleScatter key={value} mode={value} flagged />
+      ))}
+    </>
   );
 }

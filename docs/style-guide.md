@@ -382,8 +382,13 @@ used, rather than as a literal in a component.
 - **Pride mode** (`PrideMode.tsx`): decorative, off by default. Each
   flag's stripes are one `--ds-pride-<flag>` variable in `globals.css`,
   read by the page bar, nav bar, site name and the picker's swatch. The nav
-  mounts `PrideModeApplier`, which applies the saved mode with no control;
-  `PrideModeSelect` on `/account/preferences` picks the flag.
+  mounts `PrideModeApplier`, which applies the saved mode with no control,
+  and `PrideSparkles`, the flag's three-emoji sparkle scatter around the
+  wordmark (`aria-hidden`, floating, static under reduced motion).
+  `PrideModeSelect` on `/account/preferences` picks the flag, with a live
+  preview beside it: the swatch in a round badge with the flag's spinning
+  ring and sparkles, the old nav toggle's look. All of it follows
+  `body[data-pride]`, so it shows logged in or out.
 
 ## States
 
@@ -642,9 +647,9 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains, a train, Incidents, Account (logged in),
-Preferences (logged out and in) and the tram pages at 390 and 1366px,
-light and dark, plus the /lines filter bar's stuck and open states: 72
-images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+Preferences (logged out, logged in and with a pride flag) and the tram
+pages at 390 and 1366px, light and dark, plus the /lines filter bar's
+stuck and open states: 76 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
 stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 
