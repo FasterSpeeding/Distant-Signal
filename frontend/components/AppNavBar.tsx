@@ -176,6 +176,7 @@ export function AppNavBar({
   session,
   freshness,
   chatAllowed = false,
+  transitOn = false,
 }: {
   session: SessionInfo;
   freshness: DataFreshness;
@@ -188,6 +189,10 @@ export function AppNavBar({
    * with only `session`/`freshness` supplied -- degrades to "not shown
    * yet" rather than needing a third prop threaded through it too. */
   chatAllowed?: boolean;
+  /** Whether the api serves any transit network: the drawer then lists
+   * "Trams". Defaults to `false` for the `<Suspense>` fallback, as
+   * `chatAllowed`. */
+  transitOn?: boolean;
 }) {
   return (
     // No max-width anywhere meant a 1920px viewport put a line's name at
@@ -212,7 +217,7 @@ export function AppNavBar({
                 right-hand controls, where it would sit behind three
                 icons a thumb has to skip past. */}
             <AppNavDrawer
-              destinations={navDrawerDestinations(session.authenticated, chatAllowed)}
+              destinations={navDrawerDestinations(session.authenticated, chatAllowed, transitOn)}
               hiddenFrom={NAV_BREAKPOINT}
             />
             {/* Plain `<Link>` wrapping Mantine's `Text`, rather than

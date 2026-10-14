@@ -2372,3 +2372,101 @@ export interface TrainSearchDates {
   publishedTo: string | null;
   provisionalFrom?: string;
 }
+
+// --- Transit networks (`/public/transit/...`, crates/api/src/routes/transit.rs;
+// docs/api-changelog.md 2026-10-14). Scheduled data only: no live fields.
+
+/** A served transit network (`GET /public/transit/networks`). */
+export interface TransitNetwork {
+  id: string;
+  name: string;
+  mode: string;
+  attribution: { licence: string; text: string };
+  feedVersion: string;
+  horizonFrom: string | null;
+  horizonTo: string | null;
+  timetableAsOf: string | null;
+  situationsAsOf: string | null;
+}
+
+/** A transit line: `id` is public (`metrolink:blue`), `lineId` the path
+ * segment (`blue`). */
+export interface TransitLine {
+  id: string;
+  lineId: string;
+  name: string;
+  colour: string | null;
+}
+
+/** `GET /public/transit/{network}`. */
+export interface TransitNetworkDetail extends TransitNetwork {
+  lines: TransitLine[];
+}
+
+export interface TransitStationRef {
+  id: string;
+  name: string;
+}
+
+export type TransitDirection = 'outbound' | 'inbound';
+
+/** `GET /public/transit/{network}/lines/{line}`. */
+export interface TransitLineDetail extends TransitLine {
+  directions: { direction: TransitDirection; headsign: string | null; stations: TransitStationRef[] }[];
+}
+
+export interface TransitRailLink {
+  crs: string;
+  tiploc: string;
+  kind: 'interchange' | 'nearby';
+  note: string | null;
+}
+
+/** A station (`GET /public/transit/{network}/stops`). */
+export interface TransitStop {
+  id: string;
+  name: string;
+  lat: number | null;
+  lon: number | null;
+  /** Public line ids. */
+  lines: string[];
+  railLinks: TransitRailLink[];
+}
+
+/** `GET /public/transit/{network}/stops/{stop}`. */
+export interface TransitStopDetail extends TransitStop {
+  platforms: { id: string; indicator: string | null }[];
+}
+
+/** One scheduled departure. */
+export interface TransitDeparture {
+  /** RFC 3339, UK time. */
+  scheduledDeparture: string;
+  tripId: string;
+  line: TransitLine | null;
+  destination: string;
+  platformId: string;
+  platform: string | null;
+  replacementBus: boolean;
+}
+
+/** `GET /public/transit/{network}/stops/{stop}/departures`. */
+export interface TransitBoard {
+  date: string;
+  departures: TransitDeparture[];
+  nextCursor: string | null;
+  outsideHorizon: boolean;
+  realtime: false;
+  kind: 'scheduled';
+}
+
+/** `GET /public/transit/{network}/lines/{line}/timetable`. */
+export interface TransitLineTimetable {
+  date: string;
+  direction: TransitDirection;
+  stations: TransitStationRef[];
+  trips: { tripId: string; headsign: string | null; times: (string | null)[] }[];
+  outsideHorizon: boolean;
+  realtime: false;
+  kind: 'scheduled';
+}

@@ -56,6 +56,13 @@ import type {
   JourneyListItem,
   JourneyTemplateListItem,
   JourneyTemplateDetail,
+  TransitNetwork,
+  TransitNetworkDetail,
+  TransitLineDetail,
+  TransitStop,
+  TransitStopDetail,
+  TransitBoard,
+  TransitLineTimetable,
 } from './types';
 import { createLogger } from './logger';
 import { lineTimetableQuery } from './lineTrains';
@@ -1226,4 +1233,71 @@ export async function getSharedGroupJourneys(): Promise<SharedGroupJourney[] | n
 export async function getGroupJoinPreview(token: string): Promise<GroupJoinPreview> {
   const url = `${baseUrl()}/public/groups/join/${encodeURIComponent(token)}`;
   return fetchJson<GroupJoinPreview>(url, { cache: 'no-store' });
+}
+
+// --- Transit networks (`/public/transit`). Every route 404s for a network
+// the api does not serve (`API_TRANSIT_NETWORKS`, empty by default), which
+// the pages turn into `notFound()`.
+
+/** The served transit networks, `[]` when none is (the default) or the
+ * call fails: the nav and `/lines` hide their transit links then. */
+export async function getTransitNetworks(): Promise<TransitNetwork[]> {
+  try {
+    const body = await fetchJson<{ networks: TransitNetwork[] }>(`${baseUrl()}/public/transit/networks`, {
+      next: { revalidate: 300 },
+    });
+    return body.networks;
+  } catch (err) {
+    log.warn('transit networks lookup failed; hiding transit links', { error: err });
+    return [];
+  }
+}
+
+function transitUrl(network: string, rest: string[], query: Record<string, string | undefined> = {}): string {
+  const path = [network, ...rest].map(encodeURIComponent).join('/');
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) if (value) params.set(key, value);
+  const qs = params.toString();
+  return `${baseUrl()}/public/transit/${path}${qs ? `?${qs}` : ''}`;
+}
+
+export async function getTransitNetwork(network: string): Promise<TransitNetworkDetail> {
+  return fetchJson<TransitNetworkDetail>(transitUrl(network, []), { next: { revalidate: 60 } });
+}
+
+export async function getTransitLine(network: string, line: string): Promise<TransitLineDetail> {
+  return fetchJson<TransitLineDetail>(transitUrl(network, ['lines', line]), { next: { revalidate: 300 } });
+}
+
+export async function getTransitStops(network: string): Promise<TransitStop[]> {
+  const body = await fetchJson<{ stops: TransitStop[] }>(transitUrl(network, ['stops']), {
+    next: { revalidate: 3600 },
+  });
+  return body.stops;
+}
+
+export async function getTransitStop(network: string, stop: string): Promise<TransitStopDetail> {
+  return fetchJson<TransitStopDetail>(transitUrl(network, ['stops', stop]), { next: { revalidate: 300 } });
+}
+
+/** A scheduled board page; `query` holds `date`, `after`, `cursor`, `limit`. */
+export async function getTransitDepartures(
+  network: string,
+  stop: string,
+  query: Record<string, string | undefined>,
+): Promise<TransitBoard> {
+  return fetchJson<TransitBoard>(transitUrl(network, ['stops', stop, 'departures'], query), {
+    next: { revalidate: 60 },
+  });
+}
+
+/** A line's timetable grid; `query` holds `date`, `direction`, `from`, `to`. */
+export async function getTransitLineTimetable(
+  network: string,
+  line: string,
+  query: Record<string, string | undefined>,
+): Promise<TransitLineTimetable> {
+  return fetchJson<TransitLineTimetable>(transitUrl(network, ['lines', line, 'timetable'], query), {
+    next: { revalidate: 300 },
+  });
 }

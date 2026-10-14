@@ -12,7 +12,14 @@ import { LoginConsentProvider } from '@/components/LoginConsentNote';
 import { legalPagesPublished } from '@/lib/legal';
 import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
-import { getChatbotAccess, getDataFreshness, getMyGroups, getSessionOrLoggedOut, LOGGED_OUT_SESSION } from '@/lib/api';
+import {
+  getChatbotAccess,
+  getDataFreshness,
+  getMyGroups,
+  getSessionOrLoggedOut,
+  getTransitNetworks,
+  LOGGED_OUT_SESSION,
+} from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { NONCE_HEADER } from '@/lib/csp';
 import { previewCards, SITE_DESCRIPTION, SITE_NAME, TITLE_TEMPLATE } from '@/lib/pageMetadata';
@@ -129,8 +136,21 @@ export const viewport: Viewport = {
 // response -- see `lib/api.ts`), so unlike `session` this needs no
 // `.catch()` of its own.
 async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
-  const [session, chatAccess] = await Promise.all([getSessionOrLoggedOut(), getChatbotAccess()]);
-  return <AppNavBar session={session} freshness={freshness} chatAllowed={chatAccess.status === 'allowed'} />;
+  // `getTransitNetworks()` never throws ([] on failure) and is cached for
+  // five minutes, so the "Trams" entry costs no round trip on most renders.
+  const [session, chatAccess, transitNetworks] = await Promise.all([
+    getSessionOrLoggedOut(),
+    getChatbotAccess(),
+    getTransitNetworks(),
+  ]);
+  return (
+    <AppNavBar
+      session={session}
+      freshness={freshness}
+      chatAllowed={chatAccess.status === 'allowed'}
+      transitOn={transitNetworks.length > 0}
+    />
+  );
 }
 
 /** Because the call below is awaited before RootLayout emits any HTML, an

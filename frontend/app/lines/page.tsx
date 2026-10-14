@@ -1,6 +1,13 @@
 import { Group, Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
-import { getAllLines, getAllTocs, getLineStatusForMode, getPreferences, getSessionOrLoggedOut } from '@/lib/api';
+import {
+  getAllLines,
+  getAllTocs,
+  getLineStatusForMode,
+  getPreferences,
+  getSessionOrLoggedOut,
+  getTransitNetworks,
+} from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM } from '@/lib/modes';
 import { isSeverityGroup } from '@/lib/severity';
@@ -87,7 +94,7 @@ export default async function AllLinesPage({
   const statusGroupParam = Array.isArray(statusGroup) ? statusGroup[0] : statusGroup;
   const initialStatusGroup = isSeverityGroup(statusGroupParam) ? statusGroupParam : undefined;
 
-  const [lines, preferences, reports, tocs, viewerIsAnonymous] = await Promise.all([
+  const [lines, preferences, reports, tocs, viewerIsAnonymous, transitNetworks] = await Promise.all([
     withStaleFallback('allLines', () => getAllLines()),
     // Per-user, so it fails closed to "nothing pinned" (the shape a 401
     // already returns) rather than being stale-served -- design spec
@@ -109,6 +116,9 @@ export default async function AllLinesPage({
     // needs no `.catch()` of its own the way the old direct `getSession()`
     // call did.
     getSessionOrLoggedOut().then((session) => !session.authenticated),
+    // The tram networks we show ([] by default, and on failure): linked
+    // here because the inline nav bar has no room for them.
+    getTransitNetworks(),
   ]);
 
   return (
@@ -119,6 +129,11 @@ export default async function AllLinesPage({
           <Group gap="md">
             <TextLink href="/incidents">Incidents</TextLink>
             <TextLink href="/lines/new">New custom line</TextLink>
+            {transitNetworks.map((network) => (
+              <TextLink key={network.id} href={`/transit/${network.id}`}>
+                {network.name}
+              </TextLink>
+            ))}
           </Group>
         </Group>
         <AllLinesTable

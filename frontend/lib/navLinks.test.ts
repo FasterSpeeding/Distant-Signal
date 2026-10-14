@@ -10,7 +10,22 @@ import {
   PRIMARY_NAV_DESTINATIONS,
   TRACK_JOURNEY_DESTINATION,
   TRACKED_TRAINS_DESTINATION,
+  TRANSIT_DESTINATION,
 } from './navLinks';
+
+describe('TRANSIT_DESTINATION', () => {
+  it('is hidden while no transit network is served (the default)', () => {
+    expect(navDrawerDestinations(false, false).map((d) => d.href)).not.toContain('/transit');
+    expect(navDrawerDestinations(true, true, false).map((d) => d.href)).not.toContain('/transit');
+  });
+
+  it('follows Lines in the drawer once a network is served, and never joins the inline bar', () => {
+    const hrefs = navDrawerDestinations(false, false, true).map((d) => d.href);
+    expect(hrefs[hrefs.indexOf('/lines') + 1]).toBe(TRANSIT_DESTINATION.href);
+    expect(TRANSIT_DESTINATION.label).toBe('Trams');
+    expect(PRIMARY_NAV_DESTINATIONS).not.toContain(TRANSIT_DESTINATION);
+  });
+});
 
 describe('TRACK_JOURNEY_DESTINATION', () => {
   it('points at the /journeys/new creation flow', () => {

@@ -189,12 +189,29 @@ export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'A
  * the account menu on desktop. The
  * drawer is the ONLY nav surface below `md`, so it has to carry the union
  * — a destination missing here is unreachable from the nav on a phone. */
-export function navDrawerDestinations(authenticated: boolean, chatAllowed: boolean): NavDestination[] {
+/** `/transit`: the tram networks Distant Signal serves (Manchester
+ * Metrolink first; docs/superpowers/specs/2026-10-09-transit-networks-design.md).
+ * Listed only while the api serves at least one network
+ * (`GET /public/transit/networks` non-empty), so it stays hidden while
+ * Metrolink is off. In the drawer only, after "Lines": the inline bar has no
+ * width to spare at `md` (see `PRIMARY_NAV_DESTINATIONS`), and `/lines`
+ * links to it for desktop visitors. */
+export const TRANSIT_DESTINATION: NavDestination = { href: '/transit', label: 'Trams' };
+
+export function navDrawerDestinations(
+  authenticated: boolean,
+  chatAllowed: boolean,
+  transitOn = false,
+): NavDestination[] {
   return [
     // Planning sits straight after tracking: they are the two ways to start
-    // a journey.
+    // a journey. Trams follow the National Rail lines.
     ...PRIMARY_NAV_DESTINATIONS.flatMap((destination) =>
-      destination === TRACK_JOURNEY_DESTINATION ? [destination, PLAN_JOURNEY_DESTINATION] : [destination],
+      destination === TRACK_JOURNEY_DESTINATION
+        ? [destination, PLAN_JOURNEY_DESTINATION]
+        : destination.href === '/lines' && transitOn
+          ? [destination, TRANSIT_DESTINATION]
+          : [destination],
     ),
     TRACKED_TRAINS_DESTINATION,
     ...(authenticated ? [GROUPS_DESTINATION] : []),
