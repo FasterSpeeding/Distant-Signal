@@ -121,14 +121,15 @@ test.describe('Preferences, logged out', () => {
   test.describe('on a desktop', () => {
     test.use({ viewport: { width: 1366, height: 900 } });
 
-    test('links Preferences from the footer, not the bar', async ({ page }) => {
+    test('links Preferences from the bar and the footer', async ({ page }) => {
       await page.goto('/lines');
       const footerLink = page.getByRole('navigation', { name: 'Site information' }).getByRole('link', {
         name: 'Preferences',
       });
       await expect(footerLink).toHaveAttribute('href', PREFERENCES);
-      await expect(page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' })).toHaveCount(0);
-      await footerLink.click();
+      const gear = page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' });
+      await expect(gear).toHaveAttribute('href', PREFERENCES);
+      await gear.click();
       await expect(page.getByRole('heading', { level: 1, name: 'Preferences' })).toBeVisible();
     });
   });
@@ -172,9 +173,11 @@ test.describe('Preferences, logged in', () => {
   test.describe('on a desktop', () => {
     test.use({ viewport: { width: 1366, height: 900 } });
 
-    test('links Preferences from the account menu and the footer', async ({ page, context }) => {
+    test('links Preferences from the account menu and the footer, not a gear', async ({ page, context }) => {
       await logIn(context);
       await page.goto('/lines');
+      // No gear when logged in: the account menu is the bar's way there.
+      await expect(page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' })).toHaveCount(0);
       await page
         .locator('nav[aria-label="Main"]')
         .getByRole('button', { name: /^Account menu for/ })

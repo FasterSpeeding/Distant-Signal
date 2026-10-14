@@ -101,6 +101,20 @@ describe('AppNavBar', () => {
     expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
   });
 
+  it('links Preferences from a gear for an anonymous visitor, from md up', () => {
+    renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+    const gear = within(screen.getByRole('navigation')).getByRole('link', { name: PREFERENCES_DESTINATION.label });
+    expect(gear).toHaveAttribute('href', PREFERENCES_DESTINATION.href);
+    expect(gear).toHaveClass('mantine-visible-from-md');
+  });
+
+  it('leaves the gear out when logged in, where the account menu links Preferences', () => {
+    renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} />);
+    expect(
+      within(screen.getByRole('navigation')).queryByRole('link', { name: PREFERENCES_DESTINATION.label }),
+    ).not.toBeInTheDocument();
+  });
+
   describe('the "Plan a journey" entry', () => {
     it('links to /plan for anyone, straight after Track, at every width from md up', () => {
       for (const session of [loggedOut, loggedIn]) {

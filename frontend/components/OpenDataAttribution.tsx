@@ -164,8 +164,8 @@ export function OpenDataAttribution({ transitOn = false }: { transitOn?: boolean
         <TextLink href="/attribution" size="sm" underline="always">
           Data sources and licences
         </TextLink>
-        {/* The one route to Preferences for a logged-out desktop visitor,
-            who has no account menu and no drawer. */}
+        {/* Preferences for everyone, wherever they scroll to: the bar's
+            gear, account menu and drawer each cover only some visitors. */}
         <TextLink href={PREFERENCES_DESTINATION.href} size="sm" underline="always">
           {PREFERENCES_DESTINATION.label}
         </TextLink>

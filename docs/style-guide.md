@@ -166,6 +166,11 @@ used, rather than as a literal in a component.
   `/journeys`. No settings live in the bar: the theme and pride flag are
   on `/account/preferences`, reached from the account menu, the drawer and
   the footer.
+- One exception: a logged-out visitor at `md` and up gets a gear
+  (`PreferencesNavIcon`, labelled and tooltipped "Preferences") beside
+  "Log in". It is a link to the settings page, not a control, and they
+  have no account menu or drawer to reach it otherwise. Logged in, the
+  account menu does that job, so the gear is left out.
 - Primary links show at `md` (62em) and up; below that they move into the
   burger `Drawer` (`AppNavDrawer.tsx`).
 
@@ -318,9 +323,9 @@ used, rather than as a literal in a component.
     permission prompt that then fails.
   - Logging in or out leaves the device-local settings as they are. The
     account keeps no copy, so there is nothing to merge or overwrite.
-  - Linked from the drawer (everyone), the account menu (logged in) and
-    the footer (everyone; the only route for a logged-out desktop
-    visitor). `/chat` links here instead of holding the key itself.
+  - Linked from the drawer (everyone), the account menu (logged in), the
+    bar's gear (logged out, `md` and up) and the footer (everyone).
+    `/chat` links here instead of holding the key itself.
 - **Page skeletons** (`components/PageSkeleton.tsx`): a route whose server
   fetch holds up the first paint gets a `loading.tsx` built from
   `PageSkeleton` pieces (`SkeletonPageHeader`, `SkeletonText`,

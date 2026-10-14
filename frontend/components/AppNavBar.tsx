@@ -4,6 +4,7 @@ import { Box, Container, Group, Text } from '@mantine/core';
 import { AppNavDrawer } from './AppNavDrawer';
 import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
+import { PreferencesNavIcon } from './PreferencesNavIcon';
 import { PrideModeApplier } from './PrideMode';
 import { PrimaryNavLink } from './PrimaryNavLink';
 import { Wordmark } from './Wordmark';
@@ -176,9 +177,12 @@ export function AppNavBar({
             </Group>
             {/* The always-on controls: the freshness readout, plus the
                 pride flag applier, which renders nothing. The theme and
-                pride controls themselves live on /account/preferences. */}
+                pride controls themselves live on /account/preferences:
+                logged out, the gear links there from `md` up (below it the
+                drawer does); logged in, the account menu does. */}
             <Group gap="xs" wrap="nowrap">
               <DataFreshnessInfo freshness={freshness} />
+              {!session.authenticated && <PreferencesNavIcon visibleFrom={NAV_BREAKPOINT} />}
               <PrideModeApplier />
             </Group>
             {/* This boundary is load-bearing and has nothing to do with
