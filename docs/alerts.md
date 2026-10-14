@@ -699,8 +699,7 @@ rows (`notifier_forward_queue_rows`; 50000 by default) for `largeFor`.
 Production held 315 rows for a full 30-day window on 2026-10-09, all for
 tracked trains. Rows stay for the trains retention window whether or not the
 notifier has read them, so this is either a producer writing far more
-signals than usual (trust-consumer, through its DB sink or api's
-`/private/train-forward-signals`: check `GROUP BY trains_id` for one train
+signals than usual (trust-consumer, through its DB sink: check `GROUP BY trains_id` for one train
 with thousands of rows, or many rows with no `dedup_key`), or tracked trains
 have grown enough that the table should be pruned or archived on its own
 schedule. Raise `maxRows` only after ruling out the first.

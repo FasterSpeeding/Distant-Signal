@@ -476,12 +476,12 @@ export interface DataFreshness {
   // camelCase types: `crates/api/src/routes/freshness.rs`'s `DataFreshness`
   // has no `#[serde(rename_all = ...)]`, so this field serializes on the
   // wire as literally `schedule_feed` -- when a CIF SCHEDULE feed delivery
-  // was last recorded by `schedule-ingest`'s push to
-  // `/private/schedule-feed-ingests`.
+  // was last recorded by `schedule-ingest` (its direct write to
+  // `schedule_feed_ingests`, since ingest phase 5).
   schedule_feed: string | null;
   // Also snake_case on the wire, for the same reason: the `delivered_at`
   // (the delivered file's own mtime) of the newest Network Rail CORPUS
-  // extract `schedule-ingest` loaded through `/private/corpus-locations`
+  // extract `schedule-ingest` loaded (directly, since ingest phase 5)
   // (`MAX(corpus_deliveries.delivered_at)`). `null` until the first load.
   // Optional only for deploy skew: an api older than this field omits it,
   // which `DataFreshnessInfo` renders the same as `null`.
