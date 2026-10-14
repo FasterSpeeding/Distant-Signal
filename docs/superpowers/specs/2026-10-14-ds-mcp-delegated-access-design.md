@@ -2,10 +2,10 @@
 
 **Status: design approved in direction (2026-10-14), not implemented. A dev
 Authentik spike passed on 2026-10-14 (§9.5).** The
-user answered the main open questions on 2026-10-14. Section 0a records
-those decisions, and the rest of the document has been updated to match.
-The questions still open are in section 8. Nothing here is implemented, and
-no code was changed to write it.
+user answered every open question on 2026-10-14, in three rounds. Section
+0a records those decisions, and the rest of the document has been updated
+to match. Nothing here is implemented, and no code was changed to write
+it.
 
 Requested by the user. The aim: a user who plans a trip with the
 Distant-Signal-MCP server's (ds-mcp's) `plan_journey` tool can save the
@@ -113,6 +113,17 @@ spec:
 | D-11 | Limits and audit | The proposed limits are accepted: 50 saves and 20 deletes a day; per minute 10 writes, 60 reads and 5 deletes; a per-client ceiling at 20 times the per-user limit. Audit retention as proposed, with no extra audit table | §5.10, §5.11 |
 | D-12 | DS-only logout | The grant is **kept** | §5.9 |
 | D-8 (revised) | Creating a grant | A valid DS session is enough, and its lifetime follows the SSO configuration. The user's words: "10-min is too recent, we should consider that users may be logged in and keeping a long-running session dependent on sso config instead of constantly re-logging in." No `max_age` and no `authenticated_at`. Compensating controls are in §5.3, and the threat-model change is T6b | §5.3, §6 |
+
+**Third round (later on 2026-10-14):** the five questions left open in
+section 8.
+
+| # | Question | Decision | Where |
+|---|---|---|---|
+| D-13 | Group reads (Phase 3) | Only group **owners and admins** can turn on `allow_assistant_reads` for a group. Other members' journey names are **replaced with generic labels** ("Journey 1", ...) before they reach ds-mcp, even in a group that opted in | §5.13 |
+| D-14 | Public ingress | Delegated tokens are **refused** when the api is reached through the public tunnel or ingress, and accepted only from the in-cluster ds-mcp. DS tells the two apart by the listener a request arrived on, never by a header | §5.7 |
+| D-15 | The web planner | `PlanTripFlow` moves to the atomic, idempotent `POST /Journeys/itinerary` in Phase 1 | §5.8, §7 |
+| D-16 | Privacy page | Updated by a separate agent, not as part of Phase 1b | §7 |
+| D-17 | Spec index | `docs/superpowers/README.md` is indexed by a separate agent | — |
 
 Decision D-7 replaces the first version's recommendation to keep the grant
 across an Authentik logout. The cost is accepted: after any Authentik
@@ -902,17 +913,41 @@ Delegated { client, grant_id, jti } }`:
 - **CORS is unchanged**: GET only, no credentials, `Authorization` not
   allowed in the preflight. A browser on another origin cannot send a
   bearer to the api even if it holds one.
-- **Reachability.** ds-mcp reaches the api in-cluster; the api's NetworkPolicy
-  already narrows extra-namespace ingress to the MCP pod (`4068cbff`). If
-  `ingress.api.enabled` exposes the api publicly, delegated bearers would
-  also be accepted there. Open question 2 asks whether to refuse delegated
-  bearers on public ingress.
+- **Reachability (D-14): delegated bearers only on an in-cluster
+  listener.** ds-mcp reaches the api in-cluster; the api's NetworkPolicy
+  already narrows extra-namespace ingress to the MCP pod (`4068cbff`).
+  Public traffic arrives three ways: the tunnel to the frontend (whose
+  proxy never forwards `Authorization`), `ingress.api.enabled` (the
+  ingress controller straight to the api) and `networkPolicy.tunnel.api`
+  (the tunnel straight to the api). The last two can carry any header a
+  client chooses, so no header (`X-Real-IP`, `X-Forwarded-For`, `Host`)
+  can tell them apart from ds-mcp. DS uses the socket instead:
+  1. The api binds a **second listener**, the delegated listener
+     (`DELEGATED_LISTEN_ADDR`, default `0.0.0.0:8082`), only when at least
+     one delegated client is enabled.
+  2. It is published only by its own `ClusterIP` Service,
+     `<api>-delegated`, whatever `api.service.type` is. The Ingress and the
+     tunnel route to the main Service's `http` port, so they never reach
+     it.
+  3. The api's NetworkPolicy admits that port only from the pods in
+     `networkPolicy.apiExtraIngressNamespaces` (narrowed by
+     `apiExtraIngressPodLabels`), that is, ds-mcp.
+  4. The listener itself marks each request it accepts with a request
+     extension (`Ingress::Delegated`), which no client can set. A delegated
+     bearer is verified only on a request carrying that mark.
+  5. On the public listener, a bearer whose unverified `iss` names a
+     delegated issuer gets 401 `invalid_token` before any handler runs, and
+     is logged as `event=delegated_rejected reason=public_listener`.
+
+  ds-mcp therefore calls the delegated routes at
+  `http://<release>-api-delegated.<namespace>.svc:8082`, and keeps its
+  existing base URL for everything else.
 
 ### 5.8 Which routes gain bearer auth
 
 | Route | Today | Delegated scope | Phase | Notes |
 |---|---|---|---|---|
-| `POST /Journeys/itinerary` (**new**) | — | `journeys:write` | 1 | Creates a journey and 1–8 `knownTrain` legs in **one transaction**. Optional `customName`. Requires an `Idempotency-Key` header from delegated callers; the key is remembered per user for 24 h and a repeat returns the original response. Checks the train-pin cap and the journey cap. Also available with a cookie, so `PlanTripFlow` can drop its non-atomic loop (open question 3) |
+| `POST /Journeys/itinerary` (**new**) | — | `journeys:write` | 1 | Creates a journey and 1–8 `knownTrain` legs in **one transaction**. Optional `customName`. Requires an `Idempotency-Key` header from delegated callers; the key is remembered per user for 24 h and a repeat returns the original response. Checks the train-pin cap and the journey cap. Also available with a cookie: `PlanTripFlow` moves to it in Phase 1 and drops its non-atomic loop (D-15) |
 | `GET /Journeys/mine` | cookie | `journeys:read` | 1 | Unchanged response |
 | `GET /Journeys/{id}` | cookie (`journey_readable_by`) | `journeys:read` (own only) / `journeys:read_shared` | 1 / 3 | For a delegated caller without `read_shared`, ownership only. `shareLink` is always `null` for a delegated caller |
 | `DELETE /Journeys/{id}` | cookie, owner | `journeys:delete` | 1 | Delegated callers: only journeys this client created that are not shared (§5.5a). The cookie path is unchanged |
@@ -1096,15 +1131,19 @@ itineraries would be sent to an LLM vendor when someone asks their
 assistant.
 
 **Per-group opt-in.** `groups` gains `allow_assistant_reads BOOLEAN NOT
-NULL DEFAULT false`, which group owners and admins toggle on the group page.
-The group's member list shows a short notice when it is on.
+NULL DEFAULT false`, which **only** group owners and admins toggle on the
+group page (D-13). The group's member list shows a short notice when it is
+on.
 
 - `GET /groups/shared-journeys` and `GET /Journeys/{id}` filter on it for
   delegated callers. Cookie callers are not affected.
 - A new helper, `journey_readable_by_delegate`, is kept separate from
   `journey_readable_by` so the cookie path's query is not touched.
-- Responses for shared journeys omit `customName` unless the owner opted
-  in. See open question 1.
+- Responses for shared journeys never carry another member's
+  `customName` (D-13). DS replaces it with a generic label ("Journey 1",
+  "Journey 2", numbered within the response) before it reaches ds-mcp,
+  even in a group that opted in. The caller's own journeys keep their
+  names.
 - ds-mcp passes shared data to the model inside a clearly marked "untrusted
   content from other users" block.
 - A read through a group logs `group_id` in its audit line.
@@ -1278,6 +1317,8 @@ production steps.**
 
 1. **Configuration.** `DELEGATED_CLIENTS` (with `serviceGroup`), the
    verifiers, and the startup guard extended to every client ID and issuer.
+   The delegated listener, its `ClusterIP` Service and its NetworkPolicy
+   rule (D-14, §5.7).
 2. **Rate limiter.** Issuer routing, and the delegated buckets for read,
    write and delete.
 3. **Migrations.**
@@ -1299,7 +1340,7 @@ production steps.**
    lines and metrics.
 7. **Routes.**
    - `POST /Journeys/itinerary`: atomic and idempotent, with
-     `created_via` and the 50/day cap.
+     `created_via` and the 50/day cap. `PlanTripFlow` moves to it (D-15).
    - `GET /Journeys/mine` and `GET /Journeys/{id}` (own journeys only),
      moved to the extractor.
    - **`DELETE /Journeys/{id}` for delegated callers**, under the §5.5a
@@ -1347,7 +1388,6 @@ session, because the live Authentik configuration lives there.
 - "Saved by assistant" in the DS UI, and a filter.
 - Caps tuned from real usage.
 - Dashboard panels and alerts.
-- Optionally move `PlanTripFlow` to the atomic route.
 
 **Phase 3: group reads (D-4).**
 
@@ -1356,7 +1396,7 @@ session, because the live Authentik configuration lives there.
   mappings.
 - `journey_readable_by_delegate`.
 - ds-mcp `list_shared_journeys`, with untrusted-content marking.
-- A privacy-page update.
+- A privacy-page update (D-16: a separate agent).
 
 **Phase 4, only if needed.**
 
@@ -1384,19 +1424,15 @@ session, because the live Authentik configuration lives there.
   - the grant is kept on a DS-only logout (D-12);
   - D-8 revised: a valid DS session is enough to create a grant.
 
-**Still open:**
+- Third round (D-13 to D-17):
+  - group reads: only owners and admins opt a group in, and other
+    members' journey names become generic labels;
+  - delegated bearers are refused on the public tunnel and ingress, and
+    accepted only on an in-cluster listener;
+  - `PlanTripFlow` moves to `POST /Journeys/itinerary` in Phase 1;
+  - the privacy page and the spec index are updated by separate agents.
 
-1. **Group-read details** (Phase 3). Can only owners and admins toggle
-   `allow_assistant_reads`? And should other members' journey names be
-   redacted even in groups that opted in?
-2. **Public ingress.** Should DS refuse delegated bearers when the api is
-   reached through a public ingress (`ingress.api.enabled`)?
-3. **The web planner.** Should `PlanTripFlow` move to
-   `POST /Journeys/itinerary`?
-4. **Privacy page.** Who updates the privacy page to cover connected apps
-   and processing by a third-party LLM?
-5. **Spec index.** `docs/superpowers/README.md` has no rows for specs after
-   2026-10-06. Should it be brought up to date in a separate pass?
+**Still open:** none.
 
 ## 9. Authentik spike runbook (before Phase 1)
 
