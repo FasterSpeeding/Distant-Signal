@@ -94,6 +94,9 @@ async fn main() -> std::process::ExitCode {
 async fn run() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     common::logging::init("schedule-reference");
+    // Before the first publish: each publish's freed peak goes back to the
+    // kernel (`common::heap`, [`ReleaseAfterPublish`]).
+    common::heap::pin_mmap_threshold();
 
     let config = Config::parse();
     common::metrics::ingest_sink_info(&config.ingest_sink);
@@ -447,6 +450,12 @@ mod telemetry {
     pub(crate) const LAST_PUBLISHED_DELIVERY_METRIC: &str =
         "schedule_reference_last_published_delivery_timestamp_seconds";
 
+    /// Resident set size (`VmRSS`, bytes) right after the last publish cycle
+    /// ended and released its freed heap ([`super::ReleaseAfterPublish`]).
+    /// Should sit near the idle baseline (tens of MiB), not the publish peak.
+    pub(crate) const POST_PUBLISH_RSS_METRIC: &str =
+        "schedule_reference_post_publish_resident_memory_bytes";
+
     pub(crate) const PUBLISHED: &str = "published";
     pub(crate) const RETRYABLE: &str = "retryable";
     pub(crate) const PERMANENT: &str = "permanent";
@@ -514,6 +523,14 @@ mod telemetry {
         chrono::NaiveDateTime::parse_from_str(dir_name, "%Y%m%dT%H%M%SZ")
             .ok()
             .map(|at| at.and_utc().timestamp())
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "metric gauges take f64, and a process's RSS stays far below 2^52 bytes"
+    )]
+    pub(crate) fn set_post_publish_rss(bytes: u64) {
+        metrics::gauge!(common::metrics::metric_name(POST_PUBLISH_RSS_METRIC)).set(bytes as f64);
     }
 
     #[expect(
@@ -675,6 +692,10 @@ async fn poll_once(
         );
         return Ok(());
     }
+
+    // Declared before everything the cycle builds, so it drops after all of
+    // it, on every return path.
+    let _release = ReleaseAfterPublish;
 
     let ti_text = read_prefixed_lines(&delivery.mca_path, "TI")?;
     let a_text = read_prefixed_lines(&delivery.msn_path, "A")?;
@@ -850,6 +871,39 @@ async fn poll_once(
     }
 
     Ok(())
+}
+
+/// Hands a publish cycle's freed heap back to the kernel when dropped, and
+/// reports the resident size left behind.
+///
+/// **Why (2026-10-14).** Between nightly publishes the `reference` container
+/// sat at ~1.3GiB RSS until its next restart, against ~8MiB before the first
+/// publish: the `ScheduleIndex`, the per-date row chunks and the crosswalks
+/// were all freed when the cycle ended, but glibc kept the pages (see
+/// `common::heap`). The cycle runs on the main thread (`main`'s `block_on`),
+/// so nearly all of it is the main arena, which glibc only shrinks from the
+/// top on its own. `malloc_trim(0)` here, with the mmap threshold pinned at
+/// startup, returns it. The harness in `publish_memory_harness` measures it.
+///
+/// Logs the RSS (`VmRSS`) and the process's peak (`VmHWM`) after the release,
+/// and sets [`telemetry::POST_PUBLISH_RSS_METRIC`], so the drop back to
+/// baseline is visible in prod.
+struct ReleaseAfterPublish;
+
+impl Drop for ReleaseAfterPublish {
+    fn drop(&mut self) {
+        common::heap::release_freed_memory();
+        let rss = common::heap::resident_set_bytes();
+        tracing::info!(
+            rss_mib = rss.map(|bytes| bytes / (1024 * 1024)),
+            peak_rss_mib =
+                common::heap::peak_resident_set_bytes().map(|bytes| bytes / (1024 * 1024)),
+            "publish cycle finished; returned its freed heap to the kernel"
+        );
+        if let Some(rss) = rss {
+            telemetry::set_post_publish_rss(rss);
+        }
+    }
 }
 
 /// Writes this service's OWN durable "delivery fully published" marker, the
@@ -4486,6 +4540,40 @@ mod poll_once_retry_tests {
         );
     }
 
+    /// A cycle that publishes reports the RSS it leaves behind once its
+    /// freed heap is released ([`ReleaseAfterPublish`]); a cycle with nothing
+    /// new to publish leaves the gauge alone.
+    #[tokio::test]
+    async fn a_publish_cycle_reports_its_post_publish_rss() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let gauge = "distant_signal_schedule_reference_post_publish_resident_memory_bytes";
+        let sink = FakePublishSink::new();
+        let storage = tempfile::tempdir().unwrap();
+        let mut config = poll_once_tests::test_config();
+        config.storage_dir = storage.path().to_path_buf();
+        let mut state = PublishState::default();
+
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
+        assert!(
+            !handle.render().contains(gauge),
+            "no delivery yet: nothing published, nothing to report"
+        );
+
+        write_fixture_delivery(storage.path(), "20260925T180000Z");
+        poll_once(&sink, &config, &mut state).await.expect("cycle");
+        let rendered = handle.render();
+        let rss: f64 = rendered
+            .lines()
+            .find_map(|line| line.strip_prefix(gauge))
+            .unwrap_or_else(|| panic!("missing {gauge} in:\n{rendered}"))
+            .trim()
+            .parse()
+            .expect("a number");
+        assert!(rss > 0.0, "{rendered}");
+    }
+
     /// A publish failure that reprocessing the SAME delivery cannot fix (this
     /// delivery's ALF member parses to zero fixed links) must NOT hold the
     /// delivery back -- otherwise this service would re-parse a 700MB+ file
@@ -6030,6 +6118,18 @@ mod publish_memory_harness {
         bytes.unwrap_or(0) / (1024 * 1024)
     }
 
+    /// `RssAnon`/`RssFile` from `/proc/self/status`: the heap, against the
+    /// binary's own pages that the cycle faulted in.
+    fn rss_split() -> String {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        status
+            .lines()
+            .filter(|line| line.starts_with("RssAnon:") || line.starts_with("RssFile:"))
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     #[test]
     #[ignore = "manual memory harness: needs SCHEDULE_REFERENCE_MEMORY_STORAGE, see the module doc"]
     fn publish_memory_harness() {
@@ -6042,9 +6142,10 @@ mod publish_memory_harness {
             .build()
             .expect("a runtime");
         eprintln!(
-            "thread {:?}; before: rss {} MiB",
+            "thread {:?}; before: rss {} MiB ({})",
             std::thread::current().name(),
-            mib(common::heap::resident_set_bytes())
+            mib(common::heap::resident_set_bytes()),
+            rss_split()
         );
         let started = std::time::Instant::now();
         let mut state = PublishState::default();
@@ -6056,10 +6157,11 @@ mod publish_memory_harness {
             "every product published"
         );
         eprintln!(
-            "after {:?}: peak {} MiB, rss {} MiB",
+            "after {:?}: peak {} MiB, rss {} MiB ({})",
             started.elapsed(),
             mib(common::heap::peak_resident_set_bytes()),
-            mib(common::heap::resident_set_bytes())
+            mib(common::heap::resident_set_bytes()),
+            rss_split()
         );
     }
 }
