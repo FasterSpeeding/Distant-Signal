@@ -35,12 +35,13 @@ describe('ChatPanel', () => {
     expect(screen.getByText(/Ask about live departures/)).toBeInTheDocument();
   });
 
-  it('shows a "no key" error when submitting without an Anthropic key set', async () => {
+  it('shows a "no key" error when submitting without a Claude API key set', async () => {
     seedMcpTokens();
     renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'when is the next train' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
-    expect(await screen.findByText(/set your anthropic api key/i)).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Preferences' })).toHaveAttribute('href', '/account/preferences');
+    expect(screen.getByText(/add your claude api key in/i)).toBeInTheDocument();
     expect(mockRunChatTurn).not.toHaveBeenCalled();
   });
 
@@ -123,7 +124,7 @@ describe('ChatPanel', () => {
     renderWithMantine(<ChatPanel mcpServerUrl="https://mcp.example.com" />);
     fireEvent.change(screen.getByPlaceholderText(/ask about/i), { target: { value: 'hi' } });
     fireEvent.click(screen.getByRole('button', { name: /send/i }));
-    expect(await screen.findByText(/anthropic api key was rejected/i)).toBeInTheDocument();
+    expect(await screen.findByText(/claude api key was rejected/i)).toBeInTheDocument();
   });
 
   it('shows a distinct tool-error message for a non-auth failure', async () => {

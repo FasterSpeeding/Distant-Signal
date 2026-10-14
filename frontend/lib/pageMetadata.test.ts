@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fullTitle, pageMetadata, PREVIEW_IMAGE, withAbsoluteTitle } from './pageMetadata';
+import { fullTitle, OWN_PREVIEW_IMAGE, pageMetadata, PREVIEW_IMAGE, withAbsoluteTitle } from './pageMetadata';
 
 describe('pageMetadata', () => {
   it('leaves the site name to the root template, and spells it out on the preview cards', () => {
@@ -12,10 +12,16 @@ describe('pageMetadata', () => {
       siteName: 'Distant Signal',
       images: [PREVIEW_IMAGE],
     });
+    expect(metadata.twitter).toMatchObject({ images: [PREVIEW_IMAGE.url] });
+  });
+
+  it('lists no image for a route with its own preview, so Next fills in its own', () => {
+    const metadata = pageMetadata('Status', 'Live status.', OWN_PREVIEW_IMAGE);
+    expect(metadata.openGraph).not.toHaveProperty('images');
+    expect(metadata.twitter).not.toHaveProperty('images');
     expect(metadata.twitter).toMatchObject({
       card: 'summary_large_image',
-      title: 'Stations · Distant Signal',
-      images: [PREVIEW_IMAGE.url],
+      title: 'Status · Distant Signal',
     });
   });
 });

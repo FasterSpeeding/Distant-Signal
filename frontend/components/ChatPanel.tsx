@@ -11,10 +11,13 @@ import type { RenderedTrainLeg } from '@/lib/types';
 import { getAnthropicApiKey } from '@/lib/anthropicKey';
 import { chatOAuthProvider, startMcpSignIn } from '@/lib/mcpAuthorization';
 import { mcpEndpointUrl } from '@/lib/mcpInstallLinks';
-import { AnthropicKeySettings } from './AnthropicKeySettings';
+import { TextLink } from './TextLink';
 import { AiGeneratedBadge, CHAT_AI_NOTE } from './AiGeneratedBadge';
 import { runChatTurn, type ChatEvent, type ConfirmToolCall } from '@/lib/chatTurn';
 import { ButtonLink } from '@/components/ButtonLink';
+import { PREFERENCES_DESTINATION } from '@/lib/navLinks';
+
+const PREFERENCES_HREF = PREFERENCES_DESTINATION.href;
 
 interface ChatMessage {
   /** Stable per-panel id (FE-11): streamed events find their assistant turn
@@ -242,7 +245,6 @@ export function ChatPanel({ mcpServerUrl }: ChatPanelProps) {
 
   return (
     <Stack gap="md" h="100%" flex={1} mih={0}>
-      <AnthropicKeySettings />
       {shownError && (
         <ChatErrorAlert
           error={shownError}
@@ -406,14 +408,18 @@ function ChatErrorAlert({
   switch (error.kind) {
     case 'no-key':
       return (
-        <Alert color="orange" variant="light">
-          Set your Anthropic API key below to start chatting.
+        <Alert color="grape" variant="light">
+          Add your Claude API key in{' '}
+          <TextLink href={PREFERENCES_HREF} underline="always" inline>
+            Preferences
+          </TextLink>{' '}
+          to start asking.
         </Alert>
       );
     case 'anthropic-rejected':
       return (
         <Alert color="red" variant="light">
-          Your Anthropic API key was rejected. Check that it&apos;s correct and try again.
+          Your Claude API key was rejected. Check it in Preferences and try again.
         </Alert>
       );
     case 'mcp-connect':

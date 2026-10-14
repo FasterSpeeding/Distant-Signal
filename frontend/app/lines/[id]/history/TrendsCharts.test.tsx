@@ -4,21 +4,40 @@ import { renderWithMantine } from '@/test/render';
 import { gapSpans, TrendsCharts } from './TrendsCharts';
 import type { ChartPoint } from './chartPoint';
 
+interface MockSeries {
+  name: string;
+  color?: string;
+}
+interface MockChartProps {
+  data: unknown[];
+  series: MockSeries[];
+  curveType?: string;
+  valueFormatter?: (value: number) => string;
+  xAxisProps?: { tickFormatter?: (value: string) => string };
+  tooltipProps?: { labelFormatter?: (label: unknown) => string };
+}
+
 vi.mock('@mantine/charts', () => ({
-  LineChart: (props: { xAxisProps?: { tickFormatter?: (value: string) => string } }) => (
+  LineChart: (props: MockChartProps) => (
     <div
       data-testid="line-chart"
       data-has-tick-formatter={String(typeof props.xAxisProps?.tickFormatter === 'function')}
       data-formatted-first-point={
         props.xAxisProps?.tickFormatter ? props.xAxisProps.tickFormatter('2026-08-01T12:00:00Z') : ''
       }
+      data-tooltip-label={props.tooltipProps?.labelFormatter?.('2026-08-01T12:00:00Z') ?? ''}
+      data-curve={props.curveType ?? ''}
+      data-colors={props.series.map((s) => s.color).join(',')}
+      data-formatted-value={props.valueFormatter?.(0.25) ?? ''}
     />
   ),
-  BarChart: (props: { data: unknown[]; series: { name: string }[] }) => (
+  BarChart: (props: MockChartProps) => (
     <div
       data-testid="bar-chart"
       data-series={props.series.map((s) => s.name).join(',')}
       data-points={JSON.stringify(props.data)}
+      data-colors={props.series.map((s) => s.color).join(',')}
+      data-formatted-value={props.valueFormatter?.(80000) ?? ''}
     />
   ),
 }));
@@ -204,5 +223,40 @@ describe('TrendsCharts showVolume prop', () => {
   it('still renders the two rate/delay line charts unchanged when showVolume is true', () => {
     renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
     expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
+  });
+});
+
+describe('TrendsCharts theming', () => {
+  const points: ChartPoint[] = [
+    {
+      bucketKey: '2026-08-01T12:00:00Z',
+      delayRate: 0.1,
+      cancellationRate: 0,
+      skipRate: 0,
+      avgDelayMinutes: 1,
+      total: 80000,
+      sampleCycles: 50,
+    },
+  ];
+
+  it('draws straight lines in the theme colours, with the site units', () => {
+    renderWithMantine(<TrendsCharts points={points} granularity="halfHour" order={2} />);
+    const [rates, delay] = screen.getAllByTestId('line-chart');
+    expect(rates).toHaveAttribute('data-curve', 'linear');
+    expect(delay).toHaveAttribute('data-curve', 'linear');
+    expect(rates).toHaveAttribute(
+      'data-colors',
+      'var(--ds-chart-delay),var(--ds-chart-cancellation),var(--ds-chart-skip)',
+    );
+    expect(rates).toHaveAttribute('data-formatted-value', '25%');
+    expect(delay).toHaveAttribute('data-formatted-value', '0.3 min');
+    expect(rates).toHaveAttribute('data-tooltip-label', '1 Aug, 13:00');
+  });
+
+  it('puts thousands separators on the trains counted chart', () => {
+    renderWithMantine(<TrendsCharts points={points} granularity="day" order={2} showVolume />);
+    const bars = screen.getByTestId('bar-chart');
+    expect(bars).toHaveAttribute('data-formatted-value', '80,000');
+    expect(bars).toHaveAttribute('data-colors', 'var(--ds-chart-count)');
   });
 });

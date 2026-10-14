@@ -1,4 +1,4 @@
-import { Alert, Badge, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
+import { Alert, Group, Loader, Stack, Text, Tooltip } from '@mantine/core';
 import { DelayBadge } from './DelayBadge';
 import { EtaBadge } from './EtaBadge';
 import { JourneyProgress } from './JourneyProgress';
@@ -8,6 +8,7 @@ import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly, serviceNoun, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
 import type { TrainJourneyState } from '@/lib/types';
+import { StateBadge } from './StateBadge';
 
 /** Renders one train's journey through every state the backend can
  * return, per
@@ -210,9 +211,10 @@ function StatusMessage({
             {destination ? `Matched to the timetabled service to ${destination}` : 'Matched to a timetabled service'}
           </Text>
           <Tooltip label="This is the booked timetable, not a live report yet. It may change if Network Rail issues a late alteration, and we'll update this automatically once live tracking begins.">
-            <Badge color="gray" variant="light" tt="none">
-              As scheduled
-            </Badge>
+            {/* A span for the tooltip to attach to: StateBadge takes no ref. */}
+            <span className="ds-self-start">
+              <StateBadge tone="neutral">As scheduled</StateBadge>
+            </span>
           </Tooltip>
         </Group>
         {pinSummary}

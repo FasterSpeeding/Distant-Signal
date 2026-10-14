@@ -7,8 +7,8 @@ import { ownValue } from './ownValue';
  * `IssueList.tsx` (collapsed row) via `impactTypeLabel`, so both surfaces
  * stay in sync on wording by construction. */
 export const IMPACT_TYPE_LABELS: Record<string, string> = {
-  rail_replacement_bus: 'Rail Replacement Bus',
-  no_scheduled_service: 'No Scheduled Service',
+  rail_replacement_bus: 'Rail replacement bus',
+  no_scheduled_service: 'No scheduled service',
   diversion: 'Diversion',
 };
 

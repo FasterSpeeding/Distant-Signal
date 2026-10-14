@@ -5,14 +5,14 @@ import { withStaleFallback } from '@/lib/liveDataCache';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { severityRank } from '@/lib/severity';
 import type { OperatorSummary, Preferences } from '@/lib/types';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
 const METADATA_TITLE = 'Operators';
 const METADATA_DESCRIPTION = "Every train operator, with its worst line status and today's delays and cancellations.";
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 // Fails closed to "nothing pinned" on a preferences-fetch failure, the
 // exact shape a 401 already returns (design spec Decision 5) -- same

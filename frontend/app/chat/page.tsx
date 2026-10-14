@@ -3,6 +3,8 @@ import { getChatbotAccess } from '@/lib/api';
 import { AutoOpenLoginPrompt } from '@/app/track/mine/AutoOpenLoginPrompt';
 import { LoginControl } from '@/components/LoginControl';
 import { ChatPanel } from '@/components/ChatPanel';
+import { TextLink } from '@/components/TextLink';
+import { PREFERENCES_DESTINATION } from '@/lib/navLinks';
 import { AddMcpServerLinks } from '@/components/AddMcpServerLinks';
 import { runtimeRailMcpPublicUrl } from '@/lib/csp';
 import type { Metadata } from 'next';
@@ -99,7 +101,13 @@ export default async function ChatPage() {
     <Stack p="lg" gap="md" h="100%">
       <Stack gap={4}>
         <Title order={1}>Ask about trains</Title>
-        <Text c="dimmed">{CHAT_SUBLINE}</Text>
+        <Text c="dimmed">
+          {CHAT_SUBLINE}, set in{' '}
+          <TextLink href={PREFERENCES_DESTINATION.href} underline="always" inline>
+            Preferences
+          </TextLink>
+          .
+        </Text>
       </Stack>
       <ChatPanel mcpServerUrl={mcpServerUrl} />
       {/* The MCP server's own access rule is flipped together with this
