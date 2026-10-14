@@ -2,10 +2,9 @@
 
 A login creates a session that lasts `SESSION_TTL_DAYS` (default 14). The
 session carries the user's Authentik `groups` claim as it was at login
-(`users.groups`), and every group-gated feature reads it from there. This
-covers the chatbot (`CHATBOT_ACCESS_GROUP`, only while `CHATBOT_ACCESS` is
-`group`; with `CHATBOT_ACCESS=authenticated` any live session gets the
-chatbot) and admin (`ADMIN_GROUP`).
+(`users.groups`), and every group-gated feature reads it from there. Today
+that is admin (`ADMIN_GROUP`) alone: the chatbot is open to any live
+session (its `CHATBOT_ACCESS_GROUP` gate was removed on 2026-10-14).
 
 Code: `crates/api/src/routes/admin.rs`, `crates/api/src/routes/auth.rs`
 (`backchannel_logout`), `crates/api/src/auth/backchannel_logout.rs` and

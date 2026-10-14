@@ -1,5 +1,12 @@
 # Embedded Chatbot Option B: Client-Side Anthropic Keys — Design
 
+> **2026-10-14:** the access gate this design keeps (`GET
+> /public/chatbot/access`, `ChatbotAuthorizedUser`, the SSO group that
+> replaced `chatbot_allowed_users`) has been removed. `/chat` is open to
+> every logged-in user and checks only the session. With each user's own
+> Anthropic key there was no spend left for it to protect. See
+> `docs/api-changelog.md` (2026-10-14).
+
 **Status: design proposal, not approved.** Written to the same rigor as
 `docs/superpowers/specs/2026-09-02-embedded-chatbot-dual-mode-design.md`
 (hereafter "the dual-mode design") and
