@@ -2003,6 +2003,12 @@ ingestWriter:
     ioi-gtfs: "off"
     ioi-nir: "off"
     ioi-live: "off"
+    # One stream per transit network (transit networks spec §9; off by
+    # default): ds:ingest:transit-metrolink (pollerTransitSchedule's
+    # metrolink network: transit-timetable, transit-timetable-commit).
+    # `apply` needs postgresql.roles.perService.writer.connect, as tfl
+    # does (the writer's ingest_freshness row policy binds its own role).
+    transit-metrolink: "off"
   # -- Changed rows only (INGEST_WRITER_CHANGED_ROWS_ONLY; plan 3a.9, spec
   # §7.8): the `station-full-coverage-samples/1` handler stops advancing
   # `resolved_at` on rows whose stats are unchanged (about 2,400 of 2,700

@@ -741,6 +741,22 @@ def check_narrow_role_guards(c: Checker) -> None:
         "perService.writer.connect",
         *sets("postgresql.roles.perService.writer.connect=false"),
     )
+    # The same for a transit network's stream (transit spec §0): the
+    # writer's ingest_freshness row policy binds its own role only.
+    c.refuses(
+        "M4: transit-metrolink apply as the app role",
+        "ingestWriter.streams.transit-metrolink: apply needs",
+        *sets(
+            "ingestWriter.streams.tfl=off",
+            "ingestWriter.streams.transit-metrolink=apply",
+            "postgresql.roles.perService.writer.connect=false",
+        ),
+    )
+    renders(
+        c,
+        "transit-metrolink apply as the writer's role",
+        *sets("ingestWriter.streams.transit-metrolink=apply"),
+    )
 
 
 def check_retired_switches(c: Checker) -> None:

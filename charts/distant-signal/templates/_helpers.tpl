@@ -1446,6 +1446,11 @@ other than off or apply (release B removed shadow). Takes root.
 {{- if and (eq (toString (get .Values.ingestWriter.streams "tfl")) "apply") (not (include "distant-signal.perServiceConnects" (dict "root" . "service" "writer"))) -}}
 {{- fail "ingestWriter.streams.tfl: apply needs postgresql.roles.perService.writer.connect (security review M4): line_status's row policy (source = 'tfl') applies to the writer's own role only. As the app role the writer could write the aggregator's lines too." -}}
 {{- end -}}
+{{- range $name, $mode := .Values.ingestWriter.streams -}}
+{{- if and (hasPrefix "transit-" $name) (eq (toString $mode) "apply") (not (include "distant-signal.perServiceConnects" (dict "root" $ "service" "writer"))) -}}
+{{- fail (printf "ingestWriter.streams.%s: apply needs postgresql.roles.perService.writer.connect (as tfl, security review M4): the writer's row policies (ingest_freshness's transit sources, line_status from batch 4) bind its own role only. As the app role it could write any feed's freshness." $name) -}}
+{{- end -}}
+{{- end -}}
 {{- join "," $items -}}
 {{- end }}
 
