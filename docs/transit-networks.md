@@ -149,13 +149,17 @@ is at most 5 minutes away.
 
 ## Forcing a timetable refresh
 
-The producer fetches the timetable at start and then daily. Restart it:
+The producer fetches the timetable when its newest commit on the stream is
+`timetableIntervalSecs` (a day) old, so **a restart alone does not
+refresh it**: the new pod reads that commit and waits out the rest of the
+day (seen in the 2026-10-14 dry run). To pick up a new BODS file sooner,
+set `pollerTransitSchedule.networks.metrolink.timetableIntervalSecs` to
+`600` for one release (the pod restarts and fetches within a minute), then
+put it back to `86400`.
 
-```sh
-kubectl -n <namespace> rollout restart deploy/<fullname>-poller-transit-schedule-metrolink
-```
-
-An unchanged feed (same content hash) only moves the timetable freshness.
+A fetched feed whose content is unchanged since the last commit is not
+re-sent ("the timetable is unchanged since the last commit; not re-sending
+it yet" in the log); the daily re-send moves the timetable freshness.
 
 ## Adding a SIRI line alias
 
