@@ -1216,23 +1216,56 @@ checked too, so this can fire for a format that is not being loaded.
 ### DistantSignalCorpusFormatDrift
 
 A file named like Network Rail's NLC XML CORPUS feed (`NLC*`) sits in the SFTP
-landing folder but is not `.xml.gz`
-(`schedule_feed_corpus_format_drift_files`). NWR's delivery format may have
-changed (an uncompressed `.xml`, a zip, another serialisation).
-schedule-ingest never loads, moves or deletes such a file, so `corpus_locations`
-keeps the previous delivery and the alert stays up until the file is removed.
+landing folder but is not `.xml.gz`. NWR's delivery format may have changed
+(an uncompressed `.xml`, a zip, another serialisation). schedule-ingest never
+loads, moves or deletes such a file, so `corpus_locations` keeps the previous
+delivery. It counts `schedule_feed_corpus_failures_total{stage="drift"}` on
+every poll while the file is there (and sets
+`schedule_feed_corpus_format_drift_files` to how many there are), so the alert
+fires on the first poll that sees one and clears `corpusFailingWindow` (30m)
+after the file is removed.
 The ingest container's warning names the file. Inspect it
 (`kubectl exec deploy/distant-signal-schedulefeed -c ingest -- ls -l
 /data/schedule-feed/incoming`); if the format really changed, the parser
 (`crates/schedule-ingest/src/corpus_xml.rs`) needs updating. Then delete the
 file from the landing folder.
 
+### DistantSignalCorpusLoadFailing
+
+schedule-ingest keeps failing at one CORPUS `stage`
+(`schedule_feed_corpus_failures_total{stage}`, at least
+`corpusFailingMin` times within `corpusFailingWindow`, 3 in 30m by
+default). It retries every poll (120s), and `corpus_locations` keeps the
+previous delivery meanwhile. This is a real failure, not a quiet feed: a
+CORPUS file is waiting and cannot be loaded.
+
+- `scan`: `watch_dir` cannot be listed (the volume, or its permissions).
+- `read`: a stable file cannot be read. The 2026-10-02 `EACCES` was this:
+  SFTPGo wrote the upload `0600` (see the `umask` note in
+  `charts/distant-signal/files/schedule-sftp-entrypoint.sh`).
+- `load`: the Postgres write failed (connection, grants, or a refused
+  load). Check the `schedule_ingest` role and the database.
+
+The ingest container's error log names the file and the cause. The
+counter's `drift` stage is not this alert's: see
+[DistantSignalCorpusFormatDrift](#distantsignalcorpusformatdrift).
+
 ### DistantSignalCorpusStale
 
 The newest loaded Network Rail CORPUS extract was delivered over
-`corpusStaleAfterDays` ago (`api_corpus_last_delivered_at_seconds`, or `store_…` after the phase 5 rename). CORPUS is
-published monthly. Either RDM stopped pushing it (check the SFTP corpus
-folder) or schedule-ingest cannot load it (check
+`corpusStaleWarningDays` (35, warning) or `corpusStaleCriticalDays` (45,
+`corpusStaleCriticalSeverity`) ago (`api_corpus_last_delivered_at_seconds`,
+or `store_…` after the phase 5 rename). Only one of the two fires at a
+time.
+
+CORPUS is not a daily feed. RDM lists it as monthly, and deliveries have
+come every few days to couple of weeks, so days or weeks without a new
+file are normal and do not alert. 35 days is a full monthly cycle plus
+four days' grace; 45 days means at least one delivery was missed.
+
+Either RDM stopped pushing it (check the SFTP corpus folder, the bucket and
+the RDM subscription) or schedule-ingest cannot load it (check
+[DistantSignalCorpusLoadFailing](#distantsignalcorpusloadfailing),
 [DistantSignalCorpusRejected](#distantsignalcorpusrejected) and the ingest
 container's error log). The previous extract stays in use.
 

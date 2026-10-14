@@ -44,7 +44,7 @@ export type McpCredentialScope = 'all' | 'client' | 'tokens' | 'verifier' | 'dis
  * client shape Claude Desktop already gets from `RailMcpOAuthProvider`,
  * just run inside the browser instead of a native app. Backed by
  * `localStorage`, matching this app's existing precedent
- * (`ThemeToggle.tsx`/`PrideToggle.tsx`) -- see the client-side-tokens
+ * (the theme and pride preferences) -- see the client-side-tokens
  * design doc's Decision 6 for why `localStorage` over `sessionStorage`/
  * IndexedDB.
  *

@@ -1,4 +1,4 @@
-import { Badge, Card, Group, Radio, Stack, Text } from '@mantine/core';
+import { Card, Group, Radio, Stack, Text } from '@mantine/core';
 import { codeRouteLabel } from '@/lib/stationLabel';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
@@ -12,6 +12,7 @@ import type {
   TripPlanWaypointSatisfied,
 } from '@/lib/types';
 import { transferModeLabel } from '@/lib/displayLabels';
+import { StateBadge } from './StateBadge';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
  * full name -- `GET /Trips/plan` (unlike every other station-bearing
@@ -123,9 +124,9 @@ export function ItineraryOption({
         />
         <Stack gap={4} align="flex-end">
           <Text size="sm">{itinerary.totalDurationMinutes} min</Text>
-          <Badge color={itinerary.changeCount === 0 ? 'green' : 'gray'} tt="none">
+          <StateBadge tone={itinerary.changeCount === 0 ? 'good' : 'neutral'}>
             {itinerary.changeCount} {itinerary.changeCount === 1 ? 'change' : 'changes'}
-          </Badge>
+          </StateBadge>
           {itinerary.liveFeasible === false && (
             <Text size="xs" c="red">
               Live data says this route may no longer work

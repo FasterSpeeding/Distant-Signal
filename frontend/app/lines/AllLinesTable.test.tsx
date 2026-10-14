@@ -356,7 +356,8 @@ describe('AllLinesTable "NO DATA" status badge', () => {
     // `Tooltip`+`Badge` repro; every other Tooltip+`Text` pair elsewhere in
     // this file doesn't hit this because `Text` itself is the wrapped
     // root, with no further nesting).
-    fireEvent.mouseEnter(badgeRoot);
+    // The tooltip wraps a span around the badge (StateBadge takes no ref).
+    fireEvent.mouseEnter(badgeRoot.parentElement!);
     expect(await screen.findByRole('tooltip')).toHaveTextContent('No status has been computed for this line yet.');
   });
 

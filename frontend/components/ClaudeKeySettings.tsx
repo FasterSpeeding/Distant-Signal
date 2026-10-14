@@ -2,25 +2,20 @@
 
 import { useEffect, useState } from 'react';
 import { useMounted } from '@mantine/hooks';
-import { Alert, Button, Group, PasswordInput, Stack, Text } from '@mantine/core';
+import { Button, Group, PasswordInput, Stack, Text } from '@mantine/core';
 import { getAnthropicApiKey, setAnthropicApiKey, clearAnthropicApiKey } from '@/lib/anthropicKey';
 
-/** The Chat page's own settings affordance for a user's Anthropic API key
- * (client-side-tokens design doc, Decision 6). Deliberately inline inside
- * /chat, not a new top-level route -- a single-field control, not a
- * page-sized concern.
+/** The visitor's own Claude API key for "Ask about trains", on
+ * /account/preferences (client-side-tokens design doc, Decision 6). It used
+ * to sit at the top of /chat; the chat page now links here.
  *
- * The disclosure text below is a real trust requirement, not polish: the
- * whole point of this redesign is that the key never reaches a Distant
- * Signal server, which only has value if the user is told it's true.
+ * The "saved in this browser" sentence is a trust requirement, not polish:
+ * the key never reaches a Distant Signal server, which only has value if
+ * the visitor is told so.
  *
- * Same useMounted()-gated shape PrideToggle.tsx already uses for its own
- * localStorage-seeded state: `localStorage` doesn't exist during SSR (or
- * the client's first pre-hydration render), so `hasKey` starts at the
- * deterministic `false` every render agrees on, and only picks up the
- * real stored value from an effect gated on `mounted` -- never read
- * directly during render. */
-export function AnthropicKeySettings() {
+ * `localStorage` doesn't exist during SSR, so `hasKey` starts at `false`
+ * and picks up the stored value only after mount. */
+export function ClaudeKeySettings() {
   const mounted = useMounted();
   const [hasKey, setHasKey] = useState(false);
   const [input, setInput] = useState('');
@@ -50,20 +45,18 @@ export function AnthropicKeySettings() {
 
   return (
     <Stack gap="xs">
-      <Alert color="grape" variant="light">
-        Your Anthropic API key is saved in this browser and sent only to Anthropic. Distant Signal&apos;s servers never
-        see it.
-      </Alert>
       <Text size="sm" fw={500}>
         {displayedHasKey ? 'Key saved.' : 'No key set.'}
       </Text>
       <Group align="flex-end">
         <PasswordInput
-          label="Anthropic API key"
-          placeholder="sk-ant-..."
+          label="Claude API key"
+          description="Saved in this browser and sent only to Anthropic. Distant Signal's servers never see it."
+          placeholder="sk-ant-"
           value={input}
           onChange={(e) => setInput(e.currentTarget.value)}
           flex={1}
+          miw={0}
         />
         <Button onClick={handleSave} disabled={!input.trim()}>
           Save
@@ -75,8 +68,8 @@ export function AnthropicKeySettings() {
         )}
       </Group>
       {savedMessage && (
-        <Text size="xs" c="dimmed">
-          Saved to this browser.
+        <Text size="xs" c="dimmed" role="status">
+          Saved in this browser.
         </Text>
       )}
     </Stack>

@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { Badge, Divider, Group, Stack, Text, Title } from '@mantine/core';
+import { Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getAllTocs, getIncident, getStationName } from '@/lib/api';
@@ -13,6 +13,7 @@ import { operatorLabel, tocNameLookup } from '@/lib/displayLabels';
 import { stationLabel } from '@/lib/stationLabel';
 import type { IncidentDetail, IncidentHistoryEntry, ValidityPeriod } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
+import { StateBadge } from '@/components/StateBadge';
 
 // Same rationale as every dynamic `[param]` route in this app: without
 // this, `next build` may try to prerender against a database that only
@@ -137,11 +138,7 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           row instead of wrapping the button onto its own. */}
       <Group justify="space-between">
         <Group gap="sm">
-          {incident.isPlanned && (
-            <Badge color="blue" tt="none">
-              Planned work
-            </Badge>
-          )}
+          {incident.isPlanned && <StateBadge tone="planned">Planned work</StateBadge>}
           {/* Review §3.3's "at-a-glance strip": the archive rows' own
               Active/Ended/Cleared badge, the same component, so a reader
               who has seen the archive recognises it immediately here. */}
@@ -177,13 +174,11 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
               fallback every other station reference on this app already
               uses. */}
           <SectionTitle>Affected stations</SectionTitle>
-          <Group gap="xs">
-            {incident.affectedStations.map((crs) => (
-              <Badge tt="none" key={crs} variant="outline" color="gray">
-                {stationLabel(crs, stationNamesByCrs.get(crs))}
-              </Badge>
-            ))}
-          </Group>
+          {/* Dimmed text, not pills (round 2): stations an item affects
+              are never badges. */}
+          <Text c="dimmed">
+            {incident.affectedStations.map((crs) => stationLabel(crs, stationNamesByCrs.get(crs))).join(', ')}
+          </Text>
         </Stack>
       )}
 

@@ -170,7 +170,7 @@ describe('HalfHourlyTrendsResults', () => {
       await HalfHourlyTrendsResults({ id: 'wcml', from: '2026-08-31T00:00:00Z', to: '2026-09-01T00:00:00Z' }),
     );
 
-    expect(screen.getByRole('heading', { name: 'Delay / cancellation / skip rate', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Delay, cancellation and skip rates', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Average delay (minutes)', level: 3 })).toBeInTheDocument();
   });
 

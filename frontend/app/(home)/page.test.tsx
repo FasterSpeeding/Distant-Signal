@@ -172,20 +172,20 @@ describe('DashboardPage', () => {
     expect(screen.queryByRole('heading', { name: 'Distant Signal' })).not.toBeInTheDocument();
   });
 
-  it('offers the planner, which needs no account, to signed-out and signed-in visitors alike', async () => {
+  // Signed in, the planner is in the nav bar at every width; the anonymous
+  // page keeps it first among its quick links, as the one journey feature
+  // that needs no account.
+  it('offers the planner, which needs no account, to a signed-out visitor', async () => {
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
-    for (const authenticated of [false, true]) {
-      vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
-        authenticated,
-        id: authenticated ? 'u1' : null,
-        username: authenticated ? 'a' : null,
-        name: authenticated ? 'A' : null,
-      });
-      const { unmount } = renderWithMantine(await DashboardPage());
-      expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
-      unmount();
-    }
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
   });
 
   it('anonymous, all lines good: shows the no-disruption message, not a raw empty state', async () => {
@@ -205,26 +205,18 @@ describe('DashboardPage', () => {
     );
   });
 
-  // NotificationsToggle (Decision 6's single global toggle) renders itself
-  // unconditionally on this page -- both branches below -- but gates on
-  // browser capability (`'serviceWorker' in navigator && 'PushManager' in
-  // window`), which jsdom has neither of by default. No component mock is
-  // needed for this page's own tests as a result: the real component
-  // already degrades to a disabled control here, same as it would in any
-  // browser lacking Push API support (review §2.11 -- the slot is always
-  // reserved, never absent). See NotificationsToggle.test.tsx for the
-  // component's own behavior under a stubbed-supported browser.
-  it('renders a disabled "Enable notifications" control under jsdom (no Push API support)', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
-      authenticated: false,
-      id: null,
-      username: null,
-      name: null,
-    });
+  // Notifications moved to /account/preferences (round 2): the home page
+  // no longer carries the control, logged in or out.
+  it.each([false, true])('has no notifications control (authenticated: %s)', async (authenticated) => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(
+      authenticated
+        ? { authenticated: true, id: 'u1', username: null, name: 'Ada' }
+        : { authenticated: false, id: null, username: null, name: null },
+    );
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
-    expect(await screen.findByRole('button', { name: /enable notifications/i })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /enable notifications/i })).toBeNull();
   });
 
   it('anonymous, a line disrupted: lists it, worst-first', async () => {
@@ -1100,7 +1092,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
 
     expect(screen.getByRole('heading', { name: 'Lines shared with you' })).toBeInTheDocument();
     expect(screen.getByText('My Commute')).toBeInTheDocument();
-    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
     expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /My Commute/ })).toHaveAttribute('href', '/lines/custom-my-commute');
   });
@@ -1114,8 +1106,8 @@ describe('DashboardPage -- Lines shared with you section', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getAllByText('My Commute')).toHaveLength(1);
-    expect(screen.getByText('from Family')).toBeInTheDocument();
-    expect(screen.getByText('from Commute Buddies')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
+    expect(screen.getByText('From Commute Buddies')).toBeInTheDocument();
   });
 
   it('falls back to "a member" rather than a raw user id when the sharer has no display name', async () => {
@@ -1429,7 +1421,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
-    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
     expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
   });
 
@@ -1480,7 +1472,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     const sharedRow = screen.getByText(byVisibleText('PAD to RDG')).closest('.mantine-Card-root');
     expect(sharedRow).not.toBeNull();
-    expect(within(sharedRow as HTMLElement).getByText('from Family')).toBeInTheDocument();
+    expect(within(sharedRow as HTMLElement).getByText('From Family')).toBeInTheDocument();
     expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
 
     // ...and the caller's own row carries neither -- an unattributed row
@@ -1500,8 +1492,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getAllByText(byVisibleText('PAD to RDG'))).toHaveLength(1);
-    expect(screen.getByText('from Family')).toBeInTheDocument();
-    expect(screen.getByText('from Commuters')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
+    expect(screen.getByText('From Commuters')).toBeInTheDocument();
   });
 
   it('a shared train with a uid links to the public /train/{uid}/{date} page, even before it resolves', async () => {
@@ -1656,7 +1648,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
     // Still attributed -- the tags are what stop an unlabelled row reading
     // as one the caller tracked themselves.
-    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
   });
 
   it('caps the whole section at 5 rows across both halves, not 5 of each', async () => {
@@ -1751,7 +1743,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
     expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
-    expect(screen.queryByText('from Family')).not.toBeInTheDocument();
+    expect(screen.queryByText('From Family')).not.toBeInTheDocument();
   });
 });
 

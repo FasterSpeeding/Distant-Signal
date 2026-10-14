@@ -109,7 +109,9 @@ cost the non-TIPLOC locations and a few crosswalk fills.
 - **Drift.** Any other `NLC*` name, such as `.xml`, `.zip` or `.json.gz`, is
   never loaded, moved or deleted. Instead it produces:
   - a warning, once per file;
-  - a count in `schedule_feed_corpus_format_drift_total`;
+  - a count in `schedule_feed_corpus_failures_total{stage="drift"}` on every
+    poll while such a file is present (the counter
+    `DistantSignalCorpusLoadFailing` reads for its other stages);
   - the current number of such files in
     `schedule_feed_corpus_format_drift_files`;
   - the `DistantSignalCorpusFormatDrift` alert (below).
@@ -178,19 +180,25 @@ cost the non-TIPLOC locations and a few crosswalk fills.
 - **Guards.** Every guard applies to both formats: gzip, the decompression
   cap, the per-format minimum rows, the NLC on every row, rejection
   (`DistantSignalCorpusRejected`, now with a `format` label), the
-  `(mtime, size)` re-check before every move, and `DistantSignalCorpusStale`.
+  `(mtime, size)` re-check before every move, `DistantSignalCorpusLoadFailing`
+  (scan, read and load failures of either format) and
+  `DistantSignalCorpusStale` (warning at 35 days, critical at 45). The
+  35-day `preferredGraceDays` matches the stale warning: if the preferred
+  feed stops, the warning fires and the other format takes over at its next
+  delivery.
   No guard compares row counts between deliveries, so switching formats
   (56k → 12k rows) trips nothing.
 
 ### Alert: `DistantSignalCorpusFormatDrift`
 
-`max by (namespace) (distant_signal_schedule_feed_corpus_format_drift_files) > 0`,
-`for: 0m`, `schedulePipeline.severity`.
+`sum by (namespace) (increase(distant_signal_schedule_feed_corpus_failures_total{stage="drift"}[corpusFailingWindow])) > 0`,
+`for: 0m`, `schedulePipeline.severity`. This is the same counter and style as
+`DistantSignalCorpusLoadFailing`, which now excludes `stage="drift"`.
 
 - It fires on the first evaluation after the scan that sees the file, which
   is within one `pollIntervalSecs` (120 s) plus a scrape. It does not wait
   for the file to be stable.
-- It clears when the file is removed.
+- It clears `corpusFailingWindow` (30m) after the file is removed.
 - It has a promtool test in `scripts/alert-rules-tests/corpus.yaml` and a
   runbook in `docs/alerts.md`.
 

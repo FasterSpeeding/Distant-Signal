@@ -56,8 +56,17 @@
 //! Both moves re-check the file's `(mtime, size)` first, so a re-upload
 //! that starts mid-cycle is never moved away half-written. A failed load
 //! leaves the file where it is and the next cycle tries again; loading the
-//! same file twice is idempotent, so a restart at any point is safe without
-//! persisted state.
+//! same file twice is idempotent, so a restart at any point
+//! is safe without persisted state.
+//!
+//! A cycle that cannot scan `watch_dir`, or read or load a stable file,
+//! counts [`FAILURES_METRIC`] by `stage`. That backs the prompt
+//! `DistantSignalCorpusLoadFailing` alert, kept apart from "no new file
+//! yet": CORPUS arrives every couple of weeks to monthly, so a quiet
+//! `watch_dir` is normal and only `DistantSignalCorpusStale` (weeks)
+//! covers it. Format drift (an `NLC*` file that is not `.xml.gz`) counts
+//! as `stage="drift"` on every cycle the file is present, which backs
+//! `DistantSignalCorpusFormatDrift`.
 
 use std::collections::{BTreeSet, HashSet};
 use std::io::Read;
@@ -80,13 +89,19 @@ const LAST_LOAD_METRIC: &str = "schedule_feed_corpus_last_load_delivered_at_seco
 const ROWS_METRIC: &str = "schedule_feed_corpus_rows";
 /// The last load's mtime per `format`.
 const FORMAT_LAST_LOAD_METRIC: &str = "schedule_feed_corpus_format_last_load_delivered_at_seconds";
-/// How many `NLC*` files that are not `.xml.gz` sit in `watch_dir` now;
-/// `DistantSignalCorpusFormatDrift` reads it.
+/// How many `NLC*` files that are not `.xml.gz` sit in `watch_dir` now
+/// (for dashboards; the alert reads [`FAILURES_METRIC`]'s `drift`).
 pub(crate) const DRIFT_FILES_METRIC: &str = "schedule_feed_corpus_format_drift_files";
-/// Counts each such file once, when first seen.
-pub(crate) const DRIFT_METRIC: &str = "schedule_feed_corpus_format_drift_total";
 /// The date in the last processed XML snapshot's name (metadata only).
 const XML_FILE_DATE_METRIC: &str = "schedule_feed_corpus_xml_file_date_seconds";
+/// Counts CORPUS cycles that failed to scan `watch_dir` (`stage="scan"`),
+/// read a stable file (`"read"`) or load it into Postgres (`"load"`). Each
+/// is retried next cycle. `DistantSignalCorpusLoadFailing` reads those.
+/// `"drift"` counts each cycle that sees an `NLC*` file that is not
+/// `.xml.gz` (never loaded); `DistantSignalCorpusFormatDrift` reads it.
+const FAILURES_METRIC: &str = "schedule_feed_corpus_failures_total";
+/// Every `stage` label value of [`FAILURES_METRIC`].
+const FAILURE_STAGES: [&str; 4] = ["scan", "read", "load", "drift"];
 
 /// Subdirectory of `storage_dir` that loaded files are moved into.
 const ARCHIVE_DIR: &str = "corpus";
@@ -200,14 +215,23 @@ impl CorpusState {
 }
 
 /// Registers the metrics at 0 so the alerts' `increase()` sees the first
-/// rejection or drift.
+/// rejection, failure or drift.
 pub(crate) fn register_metrics() {
     for format in [CorpusFormat::Json, CorpusFormat::Xml] {
         metrics::counter!(common::metrics::metric_name(REJECTED_METRIC), "format" => format.as_str())
             .increment(0);
     }
-    metrics::counter!(common::metrics::metric_name(DRIFT_METRIC)).increment(0);
+    for stage in FAILURE_STAGES {
+        metrics::counter!(common::metrics::metric_name(FAILURES_METRIC), "stage" => stage)
+            .increment(0);
+    }
     metrics::gauge!(common::metrics::metric_name(DRIFT_FILES_METRIC)).set(0.0);
+}
+
+/// Counts one failed CORPUS cycle at `stage` (one of [`FAILURE_STAGES`]).
+fn count_failure(stage: &'static str) {
+    debug_assert!(FAILURE_STAGES.contains(&stage), "unknown stage {stage}");
+    metrics::counter!(common::metrics::metric_name(FAILURES_METRIC), "stage" => stage).increment(1);
 }
 
 /// Gunzips `compressed`, refusing more than `max_bytes` of output.
@@ -381,8 +405,9 @@ fn candidates(snapshot: &DirSnapshot, routing: &Routing) -> Vec<Candidate> {
 }
 
 /// Reports every `NLC*` file in `snapshot` that is not `.xml.gz`: the
-/// gauge always, and a warning plus one count the first time each name is
-/// seen. Such a file is never loaded, moved or deleted.
+/// gauge and one `drift` failure every cycle one is present, and a warning
+/// the first time each name is seen. Such a file is never loaded, moved or
+/// deleted.
 #[expect(
     clippy::cast_precision_loss,
     reason = "a gauge takes f64, and a file count stays far below 2^52"
@@ -395,13 +420,15 @@ fn report_drift(snapshot: &DirSnapshot, state: &mut CorpusState) {
         .collect();
     drift.sort();
     metrics::gauge!(common::metrics::metric_name(DRIFT_FILES_METRIC)).set(drift.len() as f64);
+    if !drift.is_empty() {
+        count_failure("drift");
+    }
     for name in drift {
         if state.drift_seen.insert(name.clone()) {
             tracing::warn!(
                 file = %name,
                 "a file named like the NLC CORPUS feed is not .xml.gz: the delivery format may have drifted; it is ignored, not loaded"
             );
-            metrics::counter!(common::metrics::metric_name(DRIFT_METRIC)).increment(1);
         }
     }
     state
@@ -573,6 +600,7 @@ fn read_and_parse(watch_dir: &Path, file: &Candidate, args: &CorpusArgs) -> Read
         }
         Err(err) => {
             tracing::error!(error = %err, file = %file.name, "failed to read CORPUS file; retrying next cycle");
+            count_failure("read");
             ReadOutcome::Retry
         }
     }
@@ -746,7 +774,7 @@ pub(crate) async fn run_corpus_cycle(
     stability_cycles: u32,
     state: &mut CorpusState,
 ) -> anyhow::Result<()> {
-    let snapshot = scan_incoming(watch_dir)?;
+    let snapshot = scan_incoming(watch_dir).inspect_err(|_| count_failure("scan"))?;
     let just_stabilized = state.tracker.observe(&snapshot, stability_cycles);
     state.known_stable.extend(just_stabilized);
     state
@@ -837,6 +865,7 @@ pub(crate) async fn run_corpus_cycle(
         // Every failure is retried, a rejection too (as before the sink):
         // the file stays in watch_dir.
         tracing::error!(error = %err, file = %winner.name, "CORPUS load failed; retrying next cycle");
+        count_failure("load");
         return Ok(());
     }
     tracing::info!(

@@ -114,11 +114,11 @@ export function AppNavDrawer({
               component={Link}
               href={destination.href}
               label={destination.label}
-              // Marks the row for the page you are already on (exact
-              // match -- see `isActiveNavHref`). Mantine's `NavLink` sets
-              // `data-active` for the tint; `aria-current` says it aloud.
-              active={isActiveNavHref(pathname, destination.href)}
-              aria-current={isActiveNavHref(pathname, destination.href) ? 'page' : undefined}
+              // Marks the row for the page or section you are in (see
+              // `isActiveNavHref`). Mantine's `NavLink` sets `data-active`
+              // for the tint; `aria-current` says it aloud.
+              active={isActiveNavHref(pathname, destination)}
+              aria-current={isActiveNavHref(pathname, destination) ? 'page' : undefined}
             />
           ))}
         </Stack>

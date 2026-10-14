@@ -1,6 +1,6 @@
 'use client';
 
-import { Card, Group, Stack, Text } from '@mantine/core';
+import { Group, Text } from '@mantine/core';
 import { StatusBadge } from './StatusBadge';
 import { LastUpdated } from './LastUpdated';
 import { PinToggle } from './PinToggle';
@@ -8,7 +8,7 @@ import { TextLink } from './TextLink';
 import { formatOperatorSampleSummary } from '@/lib/operatorStats';
 import { isGoodSeverity } from '@/lib/severity';
 import type { OperatorSummary } from '@/lib/types';
-import { tokens } from '@/lib/theme';
+import { StatusCard } from './StatusCard';
 
 /** The "Worst of N lines · {name}" qualifier under the reason text (2026-09-22
  * UX review [OH] §2.3/I11): a rollup's reason is one line's own text
@@ -113,40 +113,27 @@ export function OperatorStatusCard({
   const reasonAlreadyShownAbove =
     dedupedLineId !== undefined && operator.worstLineId !== undefined && dedupedLineId === operator.worstLineId;
 
+  const showCrossReference = reasonAlreadyShownAbove && Boolean(operator.worstLineName);
+
   return (
-    <Card {...tokens.card.static} padding={tokens.statusCard.padding} className="ds-column">
-      <Stack gap="xs" flex="1 1 auto">
-        <Group justify="space-between" wrap="nowrap" gap="xs" data-card-title-row>
-          <Text fw={600} lineClamp={tokens.statusCard.titleLineClamp} miw={0}>
-            {operator.name}
-          </Text>
-          <StatusBadge severity={operator.worstSeverity} />
-        </Group>
-        {reasonAlreadyShownAbove && operator.worstLineName ? (
-          <Text size="sm" c="dimmed" data-card-reason>
+    <StatusCard
+      title={operator.name}
+      badge={<StatusBadge severity={operator.worstSeverity} />}
+      reason={
+        showCrossReference ? (
+          <>
             See{' '}
             <TextLink href={`/lines/${operator.worstLineId}`} underline="always" inline size="sm">
               {operator.worstLineName}
             </TextLink>{' '}
             above.
-          </Text>
-        ) : (
-          <>
-            <Text size="sm" c="dimmed" lineClamp={tokens.statusCard.reasonLineClamp} data-card-reason>
-              {operator.reason || 'No current disruption reported.'}
-            </Text>
-            <RollupScopeLine operator={operator} />
           </>
-        )}
-        <Text size="xs" c="dimmed">
-          {formatOperatorSampleSummary(operator)}
-        </Text>
-        {/* `marginTop: 'auto'` anchors this row to the card's bottom edge
-            regardless of how many lines the name/reason above wrapped to --
-            without it the footer (and the pin star inside it) drifted
-            vertically between cards in the same row, sitting at different
-            heights depending on how much text was above it (review M6). */}
-        <Group justify="space-between" align="center" wrap="nowrap" data-card-footer mt="auto">
+        ) : (
+          operator.reason || 'No current disruption reported.'
+        )
+      }
+      footer={
+        <>
           <Group gap="md" wrap="nowrap" miw={0}>
             {operator.computedAt ? (
               <LastUpdated timestamp={operator.computedAt} />
@@ -171,8 +158,13 @@ export function OperatorStatusCard({
               needsAccountHint={needsAccountHint}
             />
           )}
-        </Group>
-      </Stack>
-    </Card>
+        </>
+      }
+    >
+      {!showCrossReference && <RollupScopeLine operator={operator} />}
+      <Text size="xs" c="dimmed">
+        {formatOperatorSampleSummary(operator)}
+      </Text>
+    </StatusCard>
   );
 }

@@ -8,9 +8,8 @@ import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain, JourneyLis
 import { byVisibleText, visibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api');
-// The not-logged-in prompt is AutoOpenLoginPrompt -> LoginPromptModal,
-// which calls useLoginHref() (usePathname()/useSearchParams() under the
-// hood) -- same stub AuthStatus.test.tsx and TicketPanel.test.tsx use for
+// The not-logged-in branch's LoginControl calls useLoginHref()
+// (usePathname()/useSearchParams() under the hood) -- same stub AuthStatus.test.tsx and TicketPanel.test.tsx use for
 // the same reason. This page also renders AttachTicketAction and
 // DeleteTicketButton, both of which call useRouter() from next/navigation
 // -- same workaround TicketPanel.test.tsx/TicketEntryForm.test.tsx use for
@@ -109,32 +108,33 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyJourneys).mockResolvedValue([]);
   });
 
-  it('null (not logged in): shows an auto-opened login prompt modal', async () => {
+  it('null (not logged in): titles the page Track, with a log in button and no auto-opened modal', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText('Log in required')).toBeInTheDocument();
-    expect(screen.getByText("Log in to see the trains and tickets you're tracking.")).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Track' })).toBeInTheDocument();
+    expect(screen.queryByText('Log in required')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
       'href',
       '/api/auth/login?return_to=%2Ftrack%2Fmine',
     );
   });
 
-  it('null (not logged in): also renders a server-rendered LoginControl, not just the client-only modal', async () => {
+  it('null (not logged in): offers the two things that need no account', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
     renderWithMantine(await MyTrackedTrainsPage());
-    const link = screen.getByRole('link', { name: "Log in to see the trains and tickets you're tracking" });
-    expect(link).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine');
+    expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
+    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
+    expect(screen.queryByRole('link', { name: 'Track a journey' })).toBeNull();
   });
 
-  it('no trains and no tickets: shows the empty state with a working link to /track', async () => {
+  it('no trains and no tickets: shows the empty state, under the Track a journey button', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/haven't tracked any trains or added any tickets yet/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Track a train' })).toHaveAttribute('href', '/track');
+    expect(screen.getByText(/You aren't tracking anything yet/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Track a journey' })).toHaveAttribute('href', '/journeys/new');
   });
 
   it('a train with no tickets: renders just the train row, no ticket content under it', async () => {
@@ -400,24 +400,15 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     expect(screen.queryByText('Your reliability')).not.toBeInTheDocument();
   });
 
-  it('renders "Track a new train" and "Add a ticket" entry-point links beside the title', async () => {
+  it('heads the page Track, with every way to start tracking beside it', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
     renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('link', { name: 'Track a new train' })).toHaveAttribute('href', '/track');
+    expect(screen.getByRole('heading', { level: 1, name: 'Track' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Track a journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
     expect(screen.getByRole('link', { name: 'Add a ticket' })).toHaveAttribute('href', '/track/mine/add-ticket');
-    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
-  });
-
-  it('renders "Manage your journey templates" link even when nothingToShow is true (empty state)', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
-    // Verify the link is present even when no trains, tickets, shared trains, or journeys exist
-    expect(screen.getByRole('link', { name: 'Manage your journey templates' })).toHaveAttribute(
-      'href',
-      '/journeys/templates',
-    );
+    expect(screen.getByRole('link', { name: 'Journey templates' })).toHaveAttribute('href', '/journeys/templates');
   });
 
   // The reported bug: a train another member shared into a group the
@@ -437,7 +428,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       // ...and the shared one now is too, with both halves of its
       // attribution.
       expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
-      expect(screen.getByText('from Family')).toBeInTheDocument();
+      expect(screen.getByText('From Family')).toBeInTheDocument();
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
     });
 
@@ -448,9 +439,9 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.queryByText(/haven't tracked any trains or added any tickets yet/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/You aren't tracking anything yet/)).not.toBeInTheDocument();
       expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
-      expect(screen.getByText('from Family')).toBeInTheDocument();
+      expect(screen.getByText('From Family')).toBeInTheDocument();
     });
 
     it('a train shared into two of the caller’s groups renders once, tagged with both', async () => {
@@ -464,8 +455,8 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       renderWithMantine(await MyTrackedTrainsPage());
 
       expect(screen.getAllByText(byVisibleText(/PAD to RDG/))).toHaveLength(1);
-      expect(screen.getByText('from Family')).toBeInTheDocument();
-      expect(screen.getByText('from Commuters')).toBeInTheDocument();
+      expect(screen.getByText('From Family')).toBeInTheDocument();
+      expect(screen.getByText('From Commuters')).toBeInTheDocument();
     });
 
     it('a resolved shared train links to the public /train/{uid}/{date} page', async () => {
@@ -642,7 +633,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       const sharedRow = screen.getByText(byVisibleText(/PAD to RDG/)).closest('.mantine-Card-root');
       expect(sharedRow).not.toBeNull();
-      expect(within(sharedRow as HTMLElement).getByText('from Family')).toBeInTheDocument();
+      expect(within(sharedRow as HTMLElement).getByText('From Family')).toBeInTheDocument();
       expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
     });
 
@@ -759,7 +750,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.queryByText(/haven't tracked any trains/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/You aren't tracking anything yet/)).not.toBeInTheDocument();
     });
 
     it('renders station names and a formatted date when the backend resolved them', async () => {

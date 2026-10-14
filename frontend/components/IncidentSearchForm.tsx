@@ -3,9 +3,6 @@
 import { useEffect, useId, useState, type SubmitEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
-  Alert,
-  Badge,
-  Box,
   Button,
   Grid,
   Group,
@@ -18,116 +15,19 @@ import {
   Text,
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
-import { londonCalendarDay, londonDayEndIso, londonDayStartIso, nowInLondon } from '@/lib/londonWallClock';
-import { IncidentStateBadge } from './IncidentStateBadge';
-import { LoadMoreControl } from './LoadMoreControl';
-import { TextLink } from './TextLink';
-import { formatDateTime } from '@/lib/dateFormat';
-import type { IncidentSearchResponse, IncidentSummary, LineSummary, Suggestion } from '@/lib/types';
-import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
-
-type DatePreset = '7d' | '30d' | '90d' | 'all';
-
-/** The Status filter: `GET /public/incidents`' `state`, or no filter.
- * "Ended" is an incident the Knowledgebase feed stopped listing without
- * clearing it (see `incidentState` in `lib/incidents.ts`). */
-type StateFilter = 'all' | 'active' | 'ended' | 'cleared';
-
-/** The Status filter a URL restores: `?state=` when it names a real state,
- * else the legacy `?cleared=` boolean (`false` = active, `true` = cleared),
- * else All. Malformed means absent, as for the priority params. */
-function initialStateFilter(state: string | undefined, cleared: string | undefined): StateFilter {
-  if (state === 'active' || state === 'ended' || state === 'cleared') return state;
-  if (cleared === 'false') return 'active';
-  if (cleared === 'true') return 'cleared';
-  return 'all';
-}
-
-/** How many affected-line badges one result row shows before collapsing the
- * rest into a "+N more". An operator-only incident on a large TOC matches
- * every catalogue line that TOC runs -- Northern alone is 13 -- which would
- * otherwise bury the summary under a wall of badges. */
-const MAX_LINE_BADGES = 4;
-
-/** "South Western Railway · South Western Main Line, Portsmouth Direct Line
- * +3 more · WOK, GLD": the operators (by name), lines and stations an
- * archived incident affects, as one line of text. */
-function affectsSummary(
-  row: Pick<IncidentSummary, 'operators' | 'affectedLines' | 'affectedStations'>,
-  tocNamesByCode: ReadonlyMap<string, string>,
-  lineNamesById: ReadonlyMap<string, string>,
-): string {
-  const operators = row.operators.map((code) => tocNamesByCode.get(code) ?? code).join(', ');
-  const lines = row.affectedLines ?? [];
-  const shownLines = lines.slice(0, MAX_LINE_BADGES).map((id) => lineNamesById.get(id) ?? id);
-  const moreLines = lines.length > MAX_LINE_BADGES ? ` +${lines.length - MAX_LINE_BADGES} more` : '';
-  const lineText = shownLines.length > 0 ? `${shownLines.join(', ')}${moreLines}` : '';
-  return [operators, lineText, row.affectedStations.join(', ')].filter((part) => part !== '').join(' · ');
-}
-
-function calendarDaysAgo(days: number): string {
-  return nowInLondon().subtract(days, 'day').format('YYYY-MM-DD');
-}
-
-/** Parses `priority_min`/`priority_max`'s raw URL string into the numeric
- * value `priorityMin`/`priorityMax` state expects, folding "absent",
- * "present but blank" (a literal `?priority_min=`) and "not a real, finite
- * number at all" into the same `''` (blank) result `NumberInput` already
- * treats as "no filter" -- same "malformed means absent" posture
- * `app/track/page.tsx`'s `validTimeParam`/`ticketIdParam` already take
- * elsewhere in this codebase, just applied inside the component rather than
- * the page since these two params aren't pre-validated by their caller.
- * `Number.isFinite` rather than `!Number.isNaN`: `Number('')` is `0` (not
- * `NaN`), which the blank-string check above already intercepts, but
- * `Number('Infinity')` is a real, finite-looking `NaN`-free number the
- * NaN-only check would have let straight through as a filter value.
- * Never throws on a garbage value in the URL. */
-function parsePriorityParam(value: string | undefined): number | '' {
-  if (value === undefined || value.trim() === '') return '';
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : '';
-}
-
-/** A `nothingFoundMessage` node, not a plain string: Mantine's own
- * `Combobox.Empty` (what `nothingFoundMessage` renders into,
- * `OptionsDropdown.tsx` in `@mantine/core`) is an unstyled `<Box>` with no
- * ARIA role at all, so a plain string leaves the `role="listbox"` wrapper
- * with a child that is neither an `option` nor a `group` -- axe's
- * `aria-required-children` (critical) fires on exactly that, confirmed live
- * against this form's own Operator field once the TOC catalogue (or a
- * search) comes back empty. `Combobox.Empty` forwards unrecognised props
- * straight onto that `<Box>` (it's a thin wrapper, no prop allowlist), so
- * `role="option"` + `aria-disabled` here is enough to make the listbox
- * structurally valid without touching Mantine internals -- `aria-disabled`
- * (state, not `disabled`) keeps it out of the tab order's expectations
- * without hiding it, matching how a real disabled option would read. */
-function noOptionsFound(label: string) {
-  return (
-    <Box role="option" aria-disabled="true">
-      {label}
-    </Box>
-  );
-}
-
-/** Exactly one of three mutually-exclusive states, mirroring
- * `TrainSearchForm.tsx`'s own `Results` type -- `nextCursor` lives INSIDE
- * the success variant for the same reason it does there: it must not
- * survive a state transition (a fresh search, or an error) it does not
- * belong to. `query` is the exact query string that was submitted to produce
- * these `rows` -- captured once at submit time, mirroring
- * `TrainSearchForm.tsx`'s own capture of `date` for the identical reason:
- * `handleLoadMore` must page through THIS search's filters, never whatever
- * live filter state the form happens to hold when "Load more" is pressed.
- *
- * `loadMoreFailed` records that the LAST "Load more" press errored, so the
- * footer can say so instead of pretending the list ended there. It lives in
- * this variant (rather than its own `useState`) for the same reason
- * `nextCursor` does: a fresh search replaces the whole object, so the flag
- * cannot outlive the result set it describes. The cursor is deliberately
- * kept on failure -- it is still a valid cursor, so the retry the footer
- * offers is a real one. */
-type Results =
-  { rows: IncidentSummary[]; nextCursor: string | null; query: string; loadMoreFailed: boolean } | 'error' | null;
+import { londonCalendarDay, londonDayEndIso, londonDayStartIso } from '@/lib/londonWallClock';
+import { IncidentResults } from './IncidentResults';
+import { noOptionsFound } from './noOptionsFound';
+import type { IncidentSearchResponse, LineSummary, Suggestion } from '@/lib/types';
+import { ButtonSpinner } from '@/components/LoadingText';
+import {
+  calendarDaysAgo,
+  initialStateFilter,
+  parsePriorityParam,
+  type DatePreset,
+  type IncidentResults as IncidentResultsState,
+  type StateFilter,
+} from '@/lib/incidentSearch';
 
 /** `/incidents`'s one interactive component: filter form plus a
  * cursor-paginated, "Load more"-driven results list over
@@ -222,7 +122,7 @@ export function IncidentSearchForm({
   const [stateFilter, setStateFilter] = useState<StateFilter>(initialStateFilter(initialState, initialCleared));
   const [priorityMin, setPriorityMin] = useState<number | ''>(parsePriorityParam(initialPriorityMin));
   const [priorityMax, setPriorityMax] = useState<number | ''>(parsePriorityParam(initialPriorityMax));
-  const [results, setResults] = useState<Results>(null);
+  const [results, setResults] = useState<IncidentResultsState>(null);
   const [searching, setSearching] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -442,144 +342,6 @@ export function IncidentSearchForm({
     }
   }
 
-  function resultsContent() {
-    if (searching) {
-      return <LoadingText>Searching</LoadingText>;
-    }
-    if (results === null) {
-      return (
-        <Text size="sm" c="dimmed">
-          Press Search to browse incidents across the network.
-        </Text>
-      );
-    }
-    if (results === 'error') {
-      return (
-        <Alert color="red" title="Search failed">
-          Couldn&apos;t search incidents right now. Try again.
-        </Alert>
-      );
-    }
-    if (results.rows.length === 0) {
-      return (
-        <Text size="sm" c="dimmed">
-          No incidents match these filters.
-        </Text>
-      );
-    }
-    return (
-      <>
-        {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
-         * otherwise). It used to be, and that hard-clipped the archive: a
-         * Mantine `ScrollArea` root is `position: relative; overflow: hidden`
-         * (`@mantine/core/styles/ScrollArea.css`, `.m_d57069b5`) while its
-         * viewport is `height: 100%`. With only `mah` on the root, the root's
-         * own `height` stays `auto`, so that `100%` resolves to `auto` too
-         * (CSS 2.1 §10.5: a percentage height against a content-sized
-         * containing block computes to `auto`) -- the viewport grows to its
-         * full content height and therefore never overflows *itself*, so it
-         * never scrolls, while the root clamps to the cap and clips
-         * everything past it with `overflow: hidden`. Net effect: no pointer,
-         * wheel or scrollbar gesture could reach a result past the cap
-         * (keyboard focus still could -- browsers scroll an `overflow:
-         * hidden` box to reveal a focused descendant -- which left the box
-         * parked at an offset with no way back), and each "Load more"
-         * appended rows straight into the clipped region. Worse on a ~360px
-         * phone, where rows are two or three lines tall so the cap landed
-         * after only a handful of them. Nothing hinted that anything had
-         * been cut off: Mantine hides the native scrollbar
-         * (`scrollbar-width: none`) and draws its own, and that one is
-         * sized from `scrollHeight` vs `clientHeight` -- equal here -- so it
-         * never appeared either.
-         *
-         * `ScrollArea.Autosize` IS the Mantine component that supports a max
-         * height (it wraps the root in a `display: flex` / `flex: 1` /
-         * `overflow: hidden` chain, which is what makes the root's height
-         * definite). It is still not used here: letting the page scroll is
-         * what `StationTimetable.tsx` -- the other paginated "Load more"
-         * list in this app -- already does, rendering its rows as a plain
-         * `Stack` with no inner scroll region. (`TrainSearchForm.tsx`, which
-         * this component's header says it mirrors, and `TrackTrainForm.tsx`'s
-         * departure picker both carried the same `mah`-capped `ScrollArea`
-         * and have since been fixed the same way.) A nested scroller buys
-         * nothing here anyway --
-         * the filter form above is short, so there are no sticky controls to
-         * preserve -- while costing real usability on touch, where it steals
-         * the page's own scroll gesture. */}
-        <Stack gap="sm" data-incident-results>
-          {results.rows.map((row) => (
-            <Stack key={row.incidentId} gap={4}>
-              {/* `wrap` is left at Mantine's wrapping default rather than
-               * `nowrap`: at ~360px the summary and the timestamp cannot
-               * share a line, and forcing them to shrank the timestamp
-               * until it broke mid-value ("19 Aug 2026," etc. across four
-               * lines) -- under `nowrap` its floor is `min-width: auto`,
-               * i.e. its widest *word*, not the whole value. The timestamp
-               * instead stays unbreakable and claims the end of whichever
-               * line it lands on. `margin-inline-start: auto` rather than
-               * the `Group`'s `justify` because `space-between` leaves a
-               * *wrapped* single-item line at `flex-start`, which would
-               * left-align the date under a long summary on desktop; with
-               * the auto margin it reads flush right whether it shares the
-               * summary's line or wraps below it.
-               *
-               * `rowGap` overrides `Group`'s own `md` gap on the wrap axis
-               * only (an inline longhand beats the class's `gap` shorthand).
-               * Without it a wrapped timestamp sat 16px under its summary
-               * while the badge row below sat 4px under the timestamp, so
-               * the date read as a label on the badges rather than on the
-               * incident it belongs to. The horizontal `md` gap is
-               * deliberately left alone.
-               *
-               * `overflowWrap: 'anywhere'` (inherited, so it reaches the
-               * `TextLink` anchor, which takes no style of its own) is what
-               * the removed `ScrollArea`'s `overflow: hidden` used to
-               * provide by accident: a Knowledgebase summary can contain an
-               * unbroken token longer than a 360px screen (a URL, a Welsh
-               * station name), and a flex item's `min-width: auto` floor is
-               * its longest word -- so without this the row would push the
-               * whole page sideways. `anywhere` rather than `break-word`
-               * precisely because it DOES lower that intrinsic minimum,
-               * which is the whole point here; same choice, same reason, as
-               * `.journeyProgressLabel` in `app/globals.css`. */}
-              <Group className="incidentRow__head">
-                <TextLink href={`/incidents/${encodeURIComponent(row.incidentId)}`} underline="always">
-                  {row.summary}
-                </TextLink>
-                <Text size="xs" c="dimmed" ms="auto" className="ds-nowrap">
-                  {formatDateTime(row.firstSeenAt)}
-                </Text>
-              </Group>
-              {/* At most two badges: planned work (real-time is the default
-                  and needs no badge) and the incident's state. What it
-                  affects is plain dimmed text, operators by name. */}
-              <Group gap="xs">
-                {row.isPlanned && (
-                  <Badge color="blue" tt="none">
-                    Planned work
-                  </Badge>
-                )}
-                <IncidentStateBadge isCleared={row.isCleared} sourceRemovedAt={row.sourceRemovedAt} />
-              </Group>
-              {affectsSummary(row, tocNamesByCode, lineNamesById) && (
-                <Text size="xs" c="dimmed">
-                  {affectsSummary(row, tocNamesByCode, lineNamesById)}
-                </Text>
-              )}
-            </Stack>
-          ))}
-        </Stack>
-        <LoadMoreControl
-          hasMore={results.nextCursor !== null}
-          loading={loadingMore}
-          failed={results.loadMoreFailed}
-          onLoadMore={handleLoadMore}
-          endMessage="You've reached the end. No more incidents match these filters."
-        />
-      </>
-    );
-  }
-
   return (
     // Review §3.3: at 1440 the filter fields used to stretch across the
     // whole ~1100px `<main>` container, reading as a table's worth of
@@ -780,7 +542,14 @@ export function IncidentSearchForm({
       </Grid.Col>
       <Grid.Col span={{ base: 12, md: 7 }}>
         <Stack gap="xs" mih={72}>
-          {resultsContent()}
+          <IncidentResults
+            results={results}
+            searching={searching}
+            loadingMore={loadingMore}
+            onLoadMore={() => void handleLoadMore()}
+            tocNamesByCode={tocNamesByCode}
+            lineNamesById={lineNamesById}
+          />
         </Stack>
       </Grid.Col>
     </Grid>
