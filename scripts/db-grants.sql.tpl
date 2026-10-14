@@ -242,8 +242,9 @@ $grants$;
 --
 -- CREATE POLICY and DROP POLICY take ACCESS EXCLUSIVE on the table, which
 -- waits behind every open transaction that has touched it and blocks every
--- query queued after it (the 2026-10-14 setup Job ran into its deadline on
--- a release that changed no policy). So a policy whose definition is
+-- query queued after it (a suspect when the 2026-10-14 setup Job ran into
+-- its deadline on a release that changed no policy; the Job's lock_timeout
+-- now bounds such a wait). So a policy whose definition is
 -- already right is left alone: the steady state takes no lock stronger
 -- than a GRANT's. The wanted definition is deparsed on a throwaway TEMP
 -- copy of the table's columns (CREATE TABLE ... LIKE takes only ACCESS

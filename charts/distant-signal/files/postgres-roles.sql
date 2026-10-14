@@ -264,7 +264,12 @@ BEGIN
             current_setting('ds_roles.old_owner');
     END IF;
 
-    EXECUTE format('ALTER SCHEMA public OWNER TO %I', owner_role);
+    -- Only when it changes: a steady-state run writes no catalog row it
+    -- need not (scripts/test-postgres-roles.py --check-setup-job).
+    IF (SELECT nspowner FROM pg_namespace WHERE nspname = 'public')
+        <> (SELECT oid FROM pg_roles WHERE rolname = owner_role) THEN
+        EXECUTE format('ALTER SCHEMA public OWNER TO %I', owner_role);
+    END IF;
 
     -- Relations. Indexes and TOAST tables follow their table; a sequence
     -- owned by a column (serial/identity) follows its table too, and may
