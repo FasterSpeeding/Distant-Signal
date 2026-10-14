@@ -1,6 +1,7 @@
 import { Card, Text } from '@mantine/core';
 import { CardLink } from './CardLink';
 import { tokens } from '@/lib/theme';
+import { severityGroupTextColor, type SeverityGroup } from '@/lib/severity';
 
 /** A count over its label: the /status strip of five severity groups
  * (round 2, item 3).
@@ -14,26 +15,35 @@ import { tokens } from '@/lib/theme';
  *
  * With `href` (a non-zero count) the tile is one link, raised like every
  * clickable card, and `ariaLabel` names where it goes. A zero tile is flat
- * and dimmed: there is nothing to view. */
+ * and dimmed: there is nothing to view.
+ *
+ * `severity` colours a linked tile's count in its group's hue
+ * (`severityGroupTextColor`), the same hue as that group's `StatusBadge`,
+ * so the strip reads red to green at a glance. The label still names the
+ * group, so colour is never the only signal. A zero tile stays dimmed
+ * whatever its group: there is nothing there to flag. */
 export function StatusTile({
   count,
   label,
+  severity,
   href,
   ariaLabel,
 }: {
   count: number;
   label: string;
+  severity?: SeverityGroup;
   href?: string;
   ariaLabel?: string;
 }) {
   const muted = href === undefined;
+  const countColor = muted ? 'dimmed' : severity && severityGroupTextColor(severity);
   const body = (
-    <div className="statusTile" data-status-tile>
+    <div className="statusTile" data-status-tile data-severity={severity}>
       <Text
         size={tokens.statusTile.valueSize}
         fw={tokens.statusTile.valueWeight}
         className="statusTile__count"
-        {...(muted && { c: 'dimmed' })}
+        {...(countColor && { c: countColor })}
       >
         {count}
       </Text>
