@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import * as legal from '@/lib/legal';
 import {
@@ -26,6 +26,18 @@ afterEach(() => {
 });
 
 describe('OpenDataAttribution', () => {
+  it('adds the OGL line only while a tram network is shown', () => {
+    renderWithMantine(<OpenDataAttribution />);
+    expect(screen.queryByText(/Contains public sector information licensed under the/)).toBeNull();
+    cleanup();
+    renderWithMantine(<OpenDataAttribution transitOn />);
+    expect(screen.getByText(/Contains public sector information licensed under the/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Government Licence v3.0 (opens in a new tab)' })).toHaveAttribute(
+      'href',
+      'https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/',
+    );
+  });
+
   it("carries TfL's required attribution verbatim", () => {
     // Not decoration: TfL's modified OGL v2.0 requires this exact phrase
     // wherever its open data is presented. Reworded, it stops being

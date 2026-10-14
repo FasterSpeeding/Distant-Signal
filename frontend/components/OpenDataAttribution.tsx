@@ -75,6 +75,15 @@ export { NationalRailCredit } from './NationalRailCredit';
  * same National Rail line directly under LDBWS-derived departure data
  * (`NationalRailCredit`, LEG-23). Revisit only if the RDM terms change.
  *
+ * Transit networks (Manchester Metrolink; docs/superpowers/specs/2026-10-09-
+ * transit-networks-design.md §12.3), shown only while the api serves one
+ * (`API_TRANSIT_NETWORKS`): timetables and disruptions from the DfT's Bus
+ * Open Data Service and stop names from NaPTAN, all under the Open
+ * Government Licence v3.0, whose default statement is used, with the
+ * sources named. DS uses no TfGM logo and says it is not affiliated with
+ * TfGM. If TfGM's own GTFS (ODbL) is ever used instead, its required ODbL
+ * notice replaces the BODS line, in TfGM's wording at that time.
+ *
  * Irish and Northern Irish sources (LEG-20, LEG-21): Irish Rail GTFS is the
  * NTA's, under CC BY 4.0, which requires the NTA's name, a link and an
  * "as is" statement. Translink station data comes from OpenDataNI under OGL
@@ -118,13 +127,21 @@ function ExternalLink({ href, children }: { href: string; children: ReactNode })
  * show the legal links if the flag was set for the image build. Every
  * per-request route, including the legal pages and `/attribution`, reads
  * the runtime value. */
-export function OpenDataAttribution() {
+export function OpenDataAttribution({ transitOn = false }: { transitOn?: boolean }) {
   const legalLinks = legalPagesVisible() ? LEGAL_LINKS : [];
   return (
     <Box component="footer" p="md" className="siteFooter">
       <Text size="xs" c="dimmed">
         Powered by TfL Open Data
       </Text>
+      {/* Only while a tram network is shown (transit spec §12.3): its
+          timetables, disruptions and stop names are OGL v3.0. */}
+      {transitOn && (
+        <Text size="sm" c="dimmed">
+          Contains public sector information licensed under the{' '}
+          <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>
+        </Text>
+      )}
       {/* `size="sm"`, not `xs`: review §2.16 ("auth controls are
           inconsistently sized") named this line specifically as "a 12px
           underlined link with a ~16px hit height", and `sm` (14px) is the
@@ -314,14 +331,41 @@ export const DATA_SOURCES: readonly DataSource[] = [
   },
 ];
 
-/** Full content of `/attribution`. */
-export function OpenDataAttributionDetails() {
+export const BODS_URL = 'https://www.bus-data.dft.gov.uk/';
+export const NAPTAN_URL = 'https://www.gov.uk/government/publications/national-public-transport-access-node-schema';
+
+/** The sources of each transit network, by network id, credited only while
+ * the network is shown. */
+export const TRANSIT_DATA_SOURCES: Readonly<Record<string, DataSource>> = {
+  metrolink: {
+    id: 'metrolink',
+    title: 'Manchester Metrolink (Bus Open Data Service and NaPTAN)',
+    use: 'Metrolink timetables, disruptions and stop names. Metrolink is a trademark of Transport for Greater Manchester. Distant Signal is not affiliated with TfGM.',
+    statement: (
+      <>
+        Contains public sector information licensed under the{' '}
+        <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>. Timetables and disruptions:{' '}
+        <ExternalLink href={BODS_URL}>Bus Open Data Service</ExternalLink> (Department for Transport). Stops:{' '}
+        <ExternalLink href={NAPTAN_URL}>NaPTAN</ExternalLink> (Department for Transport).
+      </>
+    ),
+    licence: <ExternalLink href={OGL_V3_URL}>Open Government Licence v3.0</ExternalLink>,
+  },
+};
+
+/** Full content of `/attribution`. `transitNetworks` are the ids of the
+ * tram networks shown, whose sources are added. */
+export function OpenDataAttributionDetails({ transitNetworks = [] }: { transitNetworks?: readonly string[] }) {
+  const transit = transitNetworks.flatMap((id) => {
+    const source = TRANSIT_DATA_SOURCES[id];
+    return source ? [source] : [];
+  });
   return (
     <Stack gap="lg">
       <Text>
         Distant Signal is built on open data. Each source below is credited with the wording its licence requires.
       </Text>
-      {DATA_SOURCES.map((source) => (
+      {[...DATA_SOURCES, ...transit].map((source) => (
         <Stack key={source.id} gap={4} component="section" aria-labelledby={`source-${source.id}`}>
           <SectionTitle id={`source-${source.id}`}>{source.title}</SectionTitle>
           <Text size="sm">{source.use}</Text>

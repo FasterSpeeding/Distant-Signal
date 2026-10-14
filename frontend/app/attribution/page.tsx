@@ -1,6 +1,7 @@
 import { Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { OpenDataAttributionDetails } from '@/components/OpenDataAttribution';
+import { getTransitNetworks } from '@/lib/api';
 import { READING_PAGE_WIDTH } from '@/components/LegalPage';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -17,11 +18,13 @@ export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPT
 /** `/attribution`: always public (unlike the draft legal pages), because the
  * licences below require the attribution now. Content lives in
  * `components/OpenDataAttribution.tsx` beside the footer's short version. */
-export default function AttributionPage() {
+export default async function AttributionPage() {
+  // The tram networks shown ([] by default): their sources are credited too.
+  const transit = await getTransitNetworks();
   return (
     <Stack p="lg" gap="lg" maw={READING_PAGE_WIDTH}>
       <Title order={1}>Data sources and licences</Title>
-      <OpenDataAttributionDetails />
+      <OpenDataAttributionDetails transitNetworks={transit.map((network) => network.id)} />
     </Stack>
   );
 }

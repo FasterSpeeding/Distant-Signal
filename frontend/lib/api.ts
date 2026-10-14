@@ -1241,9 +1241,10 @@ export async function getGroupJoinPreview(token: string): Promise<GroupJoinPrevi
 
 /** The served transit networks, `[]` when none is (the default) or the
  * call fails: the nav and `/lines` hide their transit links then. */
-export async function getTransitNetworks(): Promise<TransitNetwork[]> {
+export async function getTransitNetworks(init?: RequestInit): Promise<TransitNetwork[]> {
   try {
     const body = await fetchJson<{ networks: TransitNetwork[] }>(`${baseUrl()}/public/transit/networks`, {
+      ...init,
       next: { revalidate: 300 },
     });
     return body.networks;

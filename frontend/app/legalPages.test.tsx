@@ -9,6 +9,13 @@ import CookiesPage, { dynamic as cookiesDynamic } from './cookies/page';
 import ContactPage, { dynamic as contactDynamic } from './contact/page';
 import AccessibilityPage, { dynamic as accessibilityDynamic } from './accessibility/page';
 import AttributionPage, { dynamic as attributionDynamic } from './attribution/page';
+import * as api from '@/lib/api';
+import type { TransitNetwork } from '@/lib/types';
+
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+  return { ...actual, getTransitNetworks: vi.fn() };
+});
 
 // Real Next throws from notFound(); mirror that so an unpublished page never
 // renders past the gate.
@@ -98,9 +105,22 @@ describe('/attribution', () => {
     expect(attributionDynamic).toBe('force-dynamic');
   });
 
-  it('is always public, whatever the legal pages flag says', () => {
-    renderWithMantine(AttributionPage());
+  it('is always public, whatever the legal pages flag says', async () => {
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([]);
+    renderWithMantine(await AttributionPage());
     expect(screen.getByRole('heading', { level: 1, name: 'Data sources and licences' })).toBeInTheDocument();
     expect(notFound).not.toHaveBeenCalled();
+    // No tram network shown: no Metrolink credit.
+    expect(screen.queryByRole('heading', { name: /Manchester Metrolink/ })).toBeNull();
+  });
+
+  it('credits a tram network while it is shown, with the non-affiliation line', async () => {
+    vi.mocked(api.getTransitNetworks).mockResolvedValue([{ id: 'metrolink' } as TransitNetwork]);
+    renderWithMantine(await AttributionPage());
+    expect(
+      screen.getByRole('heading', { name: 'Manchester Metrolink (Bus Open Data Service and NaPTAN)' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Distant Signal is not affiliated with TfGM/)).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /Bus Open Data Service/ }).length).toBeGreaterThan(0);
   });
 });

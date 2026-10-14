@@ -212,6 +212,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // `useGroupSummaries()` already treat `null` as "nothing to offer" --
   // same fail-safe posture `useGroupSummaries` always had, just moved here.
   const groupsPromise = getMyGroups({ signal: AbortSignal.timeout(FRESHNESS_TIMEOUT_MS) }).catch(() => null);
+  // The tram networks we show, for the footer's licence line: [] by
+  // default and on any failure (it never throws), bounded like the above.
+  const transitPromise = getTransitNetworks({ signal: AbortSignal.timeout(FRESHNESS_TIMEOUT_MS) });
 
   let freshness: DataFreshness;
   let backendReachable: boolean;
@@ -227,6 +230,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // sequential wait in practice, just picking up a result that was already
   // being computed alongside it.
   const groups = await groupsPromise;
+  const transitOn = (await transitPromise).length > 0;
   // Set by proxy.ts. Absent only where proxy.ts does not run (a prefetch),
   // and then there is no document for the script to run in.
   const nonce = (await headers()).get(NONCE_HEADER) ?? undefined;
@@ -331,7 +335,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <Container id="main-content" component="main" size="lg" px={0} w="100%" flex={1}>
                   {children}
                 </Container>
-                <OpenDataAttribution />
+                <OpenDataAttribution transitOn={transitOn} />
               </ConnectivityMonitor>
             </GroupSummariesProvider>
           </LoginConsentProvider>
