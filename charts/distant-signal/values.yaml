@@ -1979,8 +1979,15 @@ apiMaintenance:
   # -- Deadline per run. The retention prune allows itself 600 s per
   # statement.
   activeDeadlineSeconds: 1800
+  # -- Finished Jobs the CronJob keeps: the last success, and the last
+  # three failures to read logs from. The TTL below removes either sooner
+  # once they are a day old.
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
+  # -- Seconds after a run finishes (succeeded or failed) before the TTL
+  # controller deletes its Job and pod: a day, so a failed run's logs
+  # outlast a night. null leaves finished Jobs to the history limits alone.
+  ttlSecondsAfterFinished: 86400
   # -- tracing-subscriber EnvFilter (RUST_LOG).
   logLevel: info
   resources: {}

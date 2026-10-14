@@ -1931,6 +1931,7 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `apiMaintenance.activeDeadlineSeconds` | `1800` | Deadline per run. |
 | `apiMaintenance.successfulJobsHistoryLimit` | `1` | Finished Jobs kept. |
 | `apiMaintenance.failedJobsHistoryLimit` | `3` | Failed Jobs kept. |
+| `apiMaintenance.ttlSecondsAfterFinished` | `86400` | The Jobs' `ttlSecondsAfterFinished`: a finished run's Job and pod are deleted a day after it ends, even within the history limits. null leaves them to the history limits. The Helm hook Jobs (migrate, roles setup) have none: their hook delete policy handles them. |
 | `apiMaintenance.logLevel` | `info` | `RUST_LOG`. |
 | `apiMaintenance.resources` | `{}` | Container resources. |
 | `apiMaintenance.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |

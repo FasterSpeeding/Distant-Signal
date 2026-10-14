@@ -1006,7 +1006,8 @@ jobs:
       # template restarted every workload (Redis and schedulefeed included)
       # on every deploy. Every Deployment and StatefulSet also sets
       # revisionHistoryLimit from the chart value (Kubernetes' default of
-      # 10 left 177 zero-replica ReplicaSets behind).
+      # 10 left 177 zero-replica ReplicaSets behind), and the api-maintenance
+      # Jobs get a TTL while the Helm hook Jobs don't.
       - name: pod templates stable across releases
         run: uv run --no-sync scripts/check-pod-labels-chart.py
 

@@ -30,7 +30,9 @@ Their controllers, too: every Deployment and StatefulSet sets
 default, and 5 in a render that sets it), and every template that defines
 one includes `distant-signal.revisionHistoryLimit`, so a workload none of
 the renders turn on is covered as well. Kubernetes' default of 10 left 177
-zero-replica ReplicaSets behind.
+zero-replica ReplicaSets behind. And the api-maintenance CronJob's Jobs
+get `ttlSecondsAfterFinished` (a day by default), while the Helm hook Jobs
+(migrate, roles setup) keep their hook delete policy and no TTL.
 
 Exit 1 with one line per failed check. Needs helm on PATH (or --helm) and
 PyYAML (pyproject.toml's lint group).
@@ -64,6 +66,9 @@ CONTROLLER_KIND = re.compile(r"(?m)^kind: (?:Deployment|StatefulSet)$")
 HISTORY_HELPER = "distant-signal.revisionHistoryLimit"
 # values.yaml's revisionHistoryLimit.
 DEFAULT_HISTORY = 3
+MAINTENANCE = "CronJob/distant-signal-api-maintenance"
+# values.yaml's apiMaintenance.ttlSecondsAfterFinished: a day.
+DEFAULT_MAINTENANCE_TTL = 86400
 
 
 def sets(*pairs: str) -> tuple[str, ...]:
@@ -291,6 +296,36 @@ def check_revision_history(c: Checker) -> None:
             )
 
 
+def check_job_ttl(c: Checker) -> None:
+    """Check the api-maintenance Jobs get a TTL and the Helm hook Jobs don't."""
+    docs = c.docs(*EVERYTHING)
+    by_name = {name_of(d): d for d in docs}
+    cronjob = by_name.get(MAINTENANCE, {})
+    job_spec = as_map(
+        as_map(as_map(cronjob.get("spec")).get("jobTemplate")).get("spec")
+    )
+    ttl = job_spec.get("ttlSecondsAfterFinished")
+    if ttl != DEFAULT_MAINTENANCE_TTL:
+        c.failures.append(
+            f"{MAINTENANCE}: ttlSecondsAfterFinished is {ttl!r},"
+            f" not {DEFAULT_MAINTENANCE_TTL}"
+        )
+    hooks = [
+        d
+        for d in docs
+        if d.get("kind") == "Job"
+        and "helm.sh/hook" in as_map(as_map(d.get("metadata")).get("annotations"))
+    ]
+    if not hooks:
+        c.failures.append("everything on: no Helm hook Job rendered")
+    c.failures.extend(
+        f"{name_of(d)}: a Helm hook Job must keep its hook delete policy, not a TTL"
+        for d in hooks
+        if "ttlSecondsAfterFinished" in as_map(d.get("spec"))
+    )
+    print(f"job TTL: {MAINTENANCE} and {len(hooks)} hook Jobs checked")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run every check; print failures."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
@@ -300,10 +335,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     check_labels(c)
     check_version_invariance(c)
     check_revision_history(c)
+    check_job_ttl(c)
     for failure in c.failures:
         print(failure)
     if not c.failures:
-        print("ok: no pod template changes per release; every history limit set")
+        print("ok: pod templates stable; history limits and job TTLs set")
     return 1 if c.failures else 0
 
 
