@@ -148,7 +148,7 @@ describe('PlanTripFlow', () => {
     await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
   });
 
-  it('creates the journey via POST /api/Journeys after picking the only itinerary', async () => {
+  it('creates the journey via POST /api/Journeys/itinerary after picking the only itinerary', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) })
@@ -186,20 +186,19 @@ describe('PlanTripFlow', () => {
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/Journeys',
+      '/api/Journeys/itinerary',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          leg: {
-            mode: 'knownTrain',
-            trainUid: 'C11052',
-            serviceDate: '2026-09-23',
-            originCrs: 'EUS',
-            destinationCrs: 'MKC',
-          },
+          legs: [{ trainUid: 'C11052', serviceDate: '2026-09-23', originCrs: 'EUS', destinationCrs: 'MKC' }],
         }),
       }),
     );
+    // A fresh Idempotency-Key per click, so a retried request cannot save
+    // the journey twice.
+    const init = fetchMock.mock.calls[1]![1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toMatch(/\S{8,}/);
   });
 
   it('omits originCrs/destinationCrs entirely (not null) when the itinerary leg has no CRS for either end', async () => {
@@ -268,12 +267,10 @@ describe('PlanTripFlow', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
     // No `originCrs`/`destinationCrs` keys at all -- not present as `null`.
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/Journeys',
+      '/api/Journeys/itinerary',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({
-          leg: { mode: 'knownTrain', trainUid: 'C11052', serviceDate: '2026-09-23' },
-        }),
+        body: JSON.stringify({ legs: [{ trainUid: 'C11052', serviceDate: '2026-09-23' }] }),
       }),
     );
   });
@@ -336,7 +333,7 @@ describe('PlanTripFlow', () => {
     await screen.findByText(/the last one leaves at 23:10/);
   });
 
-  it('creates a leg per train across multiple segments, in order (POST /Journeys then POST /Journeys/{id}/legs)', async () => {
+  it('saves every train leg across multiple segments, in order, in one POST /Journeys/itinerary', async () => {
     const twoSegmentPlan: TripPlanResponse = {
       results: 'fastest',
       segments: [
@@ -394,8 +391,7 @@ describe('PlanTripFlow', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      })
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ legId: 2, trackingId: 8 }) });
+      });
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
@@ -416,41 +412,22 @@ describe('PlanTripFlow', () => {
     fireEvent.click(screen.getByText('Track this journey'));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
-    // Call order: [1] the plan GET, [2] `POST /Journeys` for the FIRST
-    // train leg (segment 1), [3] `POST /Journeys/{id}/legs` for the
-    // SECOND (segment 2) -- never the reverse, and never a second
-    // `POST /Journeys`.
+    // One request after the plan GET, carrying every train leg in order:
+    // the journey and its legs are created together or not at all.
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      '/api/Journeys',
+      '/api/Journeys/itinerary',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          leg: {
-            mode: 'knownTrain',
-            trainUid: 'C11052',
-            serviceDate: '2026-09-23',
-            originCrs: 'EUS',
-            destinationCrs: 'MKC',
-          },
+          legs: [
+            { trainUid: 'C11052', serviceDate: '2026-09-23', originCrs: 'EUS', destinationCrs: 'MKC' },
+            { trainUid: 'C22000', serviceDate: '2026-09-23', originCrs: 'MKC', destinationCrs: 'EDB' },
+          ],
         }),
       }),
     );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      '/api/Journeys/42/legs',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          mode: 'knownTrain',
-          trainUid: 'C22000',
-          serviceDate: '2026-09-23',
-          originCrs: 'MKC',
-          destinationCrs: 'EDB',
-        }),
-      }),
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("sends the train leg's own origin/destination, not the segment's, for a leg that boards/alights mid-route", async () => {
@@ -513,124 +490,59 @@ describe('PlanTripFlow', () => {
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/Journeys',
+      '/api/Journeys/itinerary',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          leg: {
-            mode: 'knownTrain',
-            trainUid: 'X12345',
-            serviceDate: '2026-09-23',
-            originCrs: 'CRE',
-            destinationCrs: 'PRE',
-          },
+          legs: [{ trainUid: 'X12345', serviceDate: '2026-09-23', originCrs: 'CRE', destinationCrs: 'PRE' }],
         }),
       }),
     );
   });
 
-  it('reports which leg failed and still hands off the already-created journey when a later leg’s add-leg call throws a network exception', async () => {
-    const twoTrainLegItinerarySegments: TripPlanResponse = {
-      results: 'fastest',
-      segments: [
-        {
-          originCrs: 'EUS',
-          destinationCrs: 'MKC',
-          cappedByMaxChanges: false,
-          itineraries: [
-            {
-              legs: [
-                {
-                  kind: 'train',
-                  trainUid: 'C11052',
-                  serviceDate: '2026-09-23',
-                  originCrs: 'EUS',
-                  destinationCrs: 'MKC',
-                  scheduledDeparture: '08:00:00',
-                  scheduledArrival: '08:50:00',
-                  arrivalDayOffset: 0,
-                },
-              ],
-              changeCount: 0,
-              totalDurationMinutes: 50,
-            },
-          ],
-        },
-        {
-          originCrs: 'MKC',
-          destinationCrs: 'EDB',
-          cappedByMaxChanges: false,
-          itineraries: [
-            {
-              legs: [
-                {
-                  kind: 'train',
-                  trainUid: 'C22000',
-                  serviceDate: '2026-09-23',
-                  originCrs: 'MKC',
-                  destinationCrs: 'EDB',
-                  scheduledDeparture: '09:10:00',
-                  scheduledArrival: '13:00:00',
-                  arrivalDayOffset: 0,
-                },
-              ],
-              changeCount: 0,
-              totalDurationMinutes: 230,
-            },
-          ],
-        },
-      ],
-    };
-    // Review finding 1: a genuine network-level `fetch` rejection (e.g. a
-    // dropped connection -- `TypeError: Failed to fetch` is the real
-    // browser message for that) during the leg-2+ loop must be treated the
-    // same as an HTTP-error response, NOT escape to the outer catch (which
-    // used to report a generic failure and never call `onCreated`, even
-    // though leg 1's journey already exists server-side by this point).
+  it('shows the failure, creates nothing and keeps the button when the save fails', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoTrainLegItinerarySegments) })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      })
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) })
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(
+        new Response("You're already tracking 100 upcoming trains, which is the maximum. Remove some to make room.", {
+          status: 400,
+        }),
+      );
     vi.stubGlobal('fetch', fetchMock);
 
     const onCreated = vi.fn();
     renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
 
     fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
-    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
     fireEvent.click(screen.getByText('Find routes'));
 
     await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
-    await screen.findByText(byVisibleText('09:10 MKC to EDB 13:00'));
     const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 2]!);
     fireEvent.click(radios[radios.length - 1]!);
+
+    // A network failure: the generic sentence, and the button stays, since
+    // the atomic save created nothing.
     fireEvent.click(screen.getByText('Track this journey'));
-
-    await screen.findByText("Tracked 1 of 2 legs. Couldn't add leg 2. You can add it from the journey page.");
-    // C1 (final-review fix): `onCreated` must NOT fire yet -- calling it
-    // here, before the visitor has had a chance to actually read the
-    // message above, is exactly the unmountable-by-construction bug this
-    // fixes (see `PlanTripFlow.tsx`'s own doc comment). The message and
-    // the hand-off button must coexist on screen first.
+    expect(await screen.findByText("Couldn't track this journey")).toBeInTheDocument();
     expect(onCreated).not.toHaveBeenCalled();
-    expect(
-      screen.getByText("Tracked 1 of 2 legs. Couldn't add leg 2. You can add it from the journey page."),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Track this journey')).not.toBeInTheDocument();
+    expect(screen.getByText('Track this journey')).toBeInTheDocument();
 
-    // Only once the visitor clicks through does the already-created
-    // journey (leg 1 already tracked) get handed off -- never withheld,
-    // just deferred.
-    fireEvent.click(screen.getByText('Continue to your journey'));
-    expect(onCreated).toHaveBeenCalledTimes(1);
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 }));
-    // No retry, and no third leg was ever attempted.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // An API refusal: its own sentence.
+    fireEvent.click(screen.getByText('Track this journey'));
+    expect(
+      await screen.findByText(
+        "You're already tracking 100 upcoming trains, which is the maximum. Remove some to make room.",
+      ),
+    ).toBeInTheDocument();
+    expect(onCreated).not.toHaveBeenCalled();
+    // Each click is a new attempt with its own key.
+    const keys = fetchMock.mock.calls
+      .slice(1)
+      .map((call) => ((call[1] as RequestInit).headers as Record<string, string>)['Idempotency-Key']);
+    expect(new Set(keys).size).toBe(2);
   });
 
   it('shows a "needs no train" message and never calls POST /Journeys for a plan with no train legs to track', async () => {
@@ -700,7 +612,7 @@ describe('PlanTripFlow', () => {
     }
   });
 
-  it('shows the login prompt (not a raw error) on a 401 from the initial POST /Journeys, and never calls onCreated', async () => {
+  it('shows the login prompt (not a raw error) on a 401 from POST /Journeys/itinerary, and never calls onCreated', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(singleSegmentPlan) })
@@ -725,71 +637,6 @@ describe('PlanTripFlow', () => {
     expect(await screen.findByText('Log in to track this journey.')).toBeInTheDocument();
     expect(screen.queryByText('no session')).not.toBeInTheDocument();
     expect(onCreated).not.toHaveBeenCalled();
-  });
-
-  it('shows the login prompt and still offers a hand-off when a later leg’s add-leg call 401s', async () => {
-    const twoSegmentPlan: TripPlanResponse = {
-      results: 'fastest',
-      segments: [
-        singleSegmentPlan.segments[0]!,
-        {
-          originCrs: 'MKC',
-          destinationCrs: 'EDB',
-          cappedByMaxChanges: false,
-          itineraries: [
-            {
-              legs: [
-                {
-                  kind: 'train',
-                  trainUid: 'C22000',
-                  serviceDate: '2026-09-23',
-                  originCrs: 'MKC',
-                  destinationCrs: 'EDB',
-                  scheduledDeparture: '09:10:00',
-                  scheduledArrival: '13:00:00',
-                  arrivalDayOffset: 0,
-                },
-              ],
-              changeCount: 0,
-              totalDurationMinutes: 230,
-            },
-          ],
-        },
-      ],
-    };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(twoSegmentPlan) })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
-      })
-      .mockResolvedValueOnce(new Response('no session', { status: 401 }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const onCreated = vi.fn();
-    renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
-
-    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
-    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
-    fireEvent.click(screen.getByText('Find routes'));
-
-    await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
-    await screen.findByText(byVisibleText('09:10 MKC to EDB 13:00'));
-    const radios = screen.getAllByRole('radio');
-    fireEvent.click(radios[radios.length - 2]!);
-    fireEvent.click(radios[radios.length - 1]!);
-    fireEvent.click(screen.getByText('Track this journey'));
-
-    expect(await screen.findByText('Log in to track this journey.')).toBeInTheDocument();
-    await screen.findByText(/Tracked 1 of 2 legs\. Your session expired before leg 2 could be added\./);
-    expect(onCreated).not.toHaveBeenCalled();
-
-    // The already-created journey (leg 1) must still be reachable, exactly
-    // like any other partial-failure -- a 401 mid-sequence is one more
-    // reason a leg can fail to attach, not a special dead end.
-    fireEvent.click(screen.getByText('Continue to your journey'));
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 }));
   });
 
   it('shows a loading label on the search button while a plan search is pending, then clears it', async () => {

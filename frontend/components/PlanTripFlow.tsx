@@ -21,37 +21,33 @@ import { groupLabels, useStationGroups } from '@/lib/stationGroups';
 import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
-import { apiRefusalMessage, describeFailure, failureFromResponse } from '@/lib/failure';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 /** A failure already worded for the visitor (`describeFailure` or the API's own sentence). */
 class JourneyCreationError extends Error {}
+
+/** A fresh `Idempotency-Key` for one "Track this journey" click. */
+function idempotencyKey(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 interface SegmentSelection {
   itinerary: TripPlanItinerary | null;
 }
 
 /** "Plan a route for me" (design spec §5.3): the form (Task 3) → results
- * comparison (Task 4, per segment) → the multi-leg creation sequence
- * (this task) → hands off to `JourneyCreationFlow`'s existing
- * `handleLegOneCreated`-driven view via `onCreated`, called EXACTLY ONCE
- * after this component's own creation sequence finishes -- see this
- * plan's own Judgment Call 2 for why the sequence lives here, not spread
- * across `JourneyCreationFlow`'s incremental "Add a leg" flow.
+ * comparison (Task 4, per segment) → one `POST /Journeys/itinerary` for
+ * every train leg of the chosen itineraries → hands off to
+ * `JourneyCreationFlow`'s `handleLegOneCreated`-driven view via
+ * `onCreated`, called exactly once, after the journey exists.
  *
- * Final-review fix (C1): a FULL success calls `onCreated` immediately --
- * there's nothing left for the visitor to read first. A PARTIAL failure
- * (leg 1..i committed, leg i+1 didn't) instead stores the already-created
- * journey in `pendingResult` and renders a "Continue to your journey"
- * button rather than calling `onCreated` right away. `onCreated` is
- * `JourneyCreationFlow`'s `handleLegOneCreated`, which flips `journeyId`
- * from `null` to a real id in the SAME state-update batch that would have
- * set `creationError` here -- calling it immediately unmounted this
- * component (and its about-to-render error Alert) before the visitor
- * could ever see which leg failed, landing them instead on
- * `JourneyCreationFlow`'s single-leg "success" view with legs 2+ silently
- * gone. Deferring the call until the visitor acknowledges the message
- * keeps `onCreated` called exactly once overall, per Judgment Call 2 --
- * just later. */
+ * The save is atomic (2026-10-14, decision D-15): the journey and all its
+ * legs are created in one transaction, so either everything is tracked or
+ * nothing is. This replaced a `POST /Journeys` followed by one
+ * `POST /Journeys/{id}/legs` per later leg, whose partial failures needed
+ * a "Continue to your journey" hand-off. */
 export function PlanTripFlow({
   onCreated,
   initialOriginCrs,
@@ -101,7 +97,6 @@ export function PlanTripFlow({
   const [selections, setSelections] = useState<SegmentSelection[]>([]);
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
-  const [pendingResult, setPendingResult] = useState<CreateJourneyResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const needsLoginState = useNeedsLogin();
   // Monotonic guard against a stale `GET /Trips/plan` response landing
@@ -201,144 +196,53 @@ export function PlanTripFlow({
       selections.flatMap((selection) => (selection.itinerary ? [selection.itinerary] : [])),
     );
 
-    const [firstLeg, ...laterLegs] = trainLegs;
-    if (firstLeg === undefined) {
+    if (trainLegs.length === 0) {
       setCreationError('This route needs no train, so there is nothing to track.');
       setCreating(false);
       return;
     }
 
     try {
-      // `firstLeg.originCrs`/`firstLeg.destinationCrs` (from `GET
-      // /Trips/plan`) are this leg's real boarding/alighting points, which
-      // can legitimately differ from the matched train's own full route --
-      // e.g. boarding a Birmingham->Glasgow service at Crewe and alighting
-      // at Preston. They're now sent as the optional `originCrs`/
-      // `destinationCrs` override fields `CreateJourneyLegRequest::
-      // KnownTrain` (`crates/api/src/routes/journeys.rs`) gained for
-      // exactly this purpose -- without them, the backend falls back to
-      // deriving `origin_crs`/`destination_crs` from the matched train's
-      // OWN full schedule, which is what silently happened here before.
-      // `TripPlanLeg`'s train variant types both fields as `string | null`;
-      // a `null` means "no override for this end," so the key is omitted
-      // entirely rather than sending an explicit `null` -- same
-      // conditional-spread convention `TrackTrainForm.tsx`'s optional
-      // `destinationCrs` field already uses.
-      const createResponse = await fetch('/api/Journeys', {
+      // One request for the whole itinerary (`POST /Journeys/itinerary`,
+      // decision D-15 of the 2026-10-14 delegated-access spec): the
+      // journey and every train leg are created in one transaction, so a
+      // failure can no longer leave a journey with only some of its legs.
+      //
+      // Each leg's `originCrs`/`destinationCrs` (from `GET /Trips/plan`)
+      // are its real boarding and alighting points, which can differ from
+      // the matched train's own full route (boarding a Birmingham to
+      // Glasgow service at Crewe and leaving it at Preston). A `null` end,
+      // or a bus stop's `tiploc:` end (no CRS a journey leg can store),
+      // means "no override", so the key is omitted rather than sent as
+      // `null`.
+      //
+      // The Idempotency-Key makes a retried request (a double click, a
+      // dropped response) return the journey the first one made instead
+      // of a second copy.
+      const response = await fetch('/api/Journeys/itinerary', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey() },
         body: JSON.stringify({
-          leg: {
-            mode: 'knownTrain',
-            trainUid: firstLeg.trainUid,
-            serviceDate: firstLeg.serviceDate,
-            // A bus stop's `tiploc:` end is no CRS a journey leg can store:
-            // no override for that end.
-            ...(firstLeg.originCrs && !isTiplocCode(firstLeg.originCrs) ? { originCrs: firstLeg.originCrs } : {}),
-            ...(firstLeg.destinationCrs && !isTiplocCode(firstLeg.destinationCrs)
-              ? { destinationCrs: firstLeg.destinationCrs }
-              : {}),
-          },
+          legs: trainLegs.map((leg) => ({
+            trainUid: leg.trainUid,
+            serviceDate: leg.serviceDate,
+            ...(leg.originCrs && !isTiplocCode(leg.originCrs) ? { originCrs: leg.originCrs } : {}),
+            ...(leg.destinationCrs && !isTiplocCode(leg.destinationCrs) ? { destinationCrs: leg.destinationCrs } : {}),
+          })),
         }),
       });
       // I1: `GET /Trips/plan` is deliberately unauthenticated, so an
-      // anonymous visitor can plan a full route with no friction -- but
-      // `POST /Journeys` requires a session, and returns a plain-text
-      // `401`/"no session" a raw-error Alert would render verbatim and
-      // confusingly. Mirrors `TrackTrainForm.tsx`'s `submitTrack`/
-      // `submitWindow` -- detect the 401 before the generic `!ok` branch
-      // below and show the same login-prompt UI they already use instead.
-      if (createResponse.status === 401) {
+      // anonymous visitor can plan a full route with no friction, but
+      // saving needs a session, and the plain-text 401 would read badly in
+      // an Alert. Show the login prompt instead.
+      if (response.status === 401) {
         needsLoginState.markNeedsLogin();
         return;
       }
-      if (!createResponse.ok) {
-        throw new JourneyCreationError(await failureFromResponse('create', 'this journey', createResponse));
+      if (!response.ok) {
+        throw new JourneyCreationError(await failureFromResponse('create', 'this journey', response));
       }
-      const created = (await createResponse.json()) as CreateJourneyResponse;
-
-      for (const [laterIndex, leg] of laterLegs.entries()) {
-        const i = laterIndex + 1;
-        // Same real-origin/destination handling as the initial `POST
-        // /Journeys` call above -- `leg.originCrs`/`leg.destinationCrs` are
-        // this subsequent leg's own real boarding/alighting points, sent as
-        // the optional `originCrs`/`destinationCrs` override fields
-        // `AddJourneyLegRequest::KnownTrain`
-        // (`crates/api/src/routes/journeys.rs`) gained alongside
-        // `CreateJourneyLegRequest::KnownTrain`, omitted (never sent as an
-        // explicit `null`) whenever this end has no override.
-        //
-        // This inner try/catch (not just an `if (!addResponse.ok)` check)
-        // is load-bearing: `fetch` itself can reject -- a genuine network
-        // exception (a dropped connection, an aborted request), distinct
-        // from an HTTP error status, which resolves normally -- and by the
-        // time we're in this loop `created` already names a REAL journey
-        // that exists server-side (leg 1 already succeeded). Funnelling
-        // both failure shapes into the same partial-failure branch below
-        // means a network blip here gets the exact same "tell them which
-        // leg failed, still hand off the journey that DOES exist" treatment
-        // an HTTP error already got -- review finding: the previous version
-        // let a thrown exception here escape to the OUTER catch, which
-        // reports a generic failure and never calls `onCreated`, stranding
-        // the visitor even though their journey (with leg 1 already
-        // tracked) is sitting right there.
-        try {
-          const addResponse = await fetch(`/api/Journeys/${created.journeyId}/legs`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              mode: 'knownTrain',
-              trainUid: leg.trainUid,
-              serviceDate: leg.serviceDate,
-              ...(leg.originCrs && !isTiplocCode(leg.originCrs) ? { originCrs: leg.originCrs } : {}),
-              ...(leg.destinationCrs && !isTiplocCode(leg.destinationCrs)
-                ? { destinationCrs: leg.destinationCrs }
-                : {}),
-            }),
-          });
-          // I1: a session can in principle expire mid-sequence too -- same
-          // 401 handling as the initial `POST /Journeys` call above, but
-          // leg 1..i already exist server-side by this point, so this
-          // still tells the visitor which leg failed (same partial-failure
-          // treatment as any other add-leg failure) AND prompts login,
-          // rather than losing that context behind a login-only message.
-          if (addResponse.status === 401) {
-            needsLoginState.markNeedsLogin();
-            setCreationError(
-              `Tracked ${i} of ${trainLegs.length} legs. Your session expired before leg ${i + 1} could be added. ` +
-                'Log in, then add it manually from the journey page.',
-            );
-            setPendingResult(created);
-            return;
-          }
-          if (!addResponse.ok) {
-            throw new JourneyCreationError((await apiRefusalMessage(addResponse)) ?? '');
-          }
-        } catch (legError) {
-          // Partial success: leg 1..i already exist. Tell the visitor
-          // exactly which leg failed, then still hand off -- the journey
-          // that DOES exist must not strand them (this plan's own Review
-          // Focus, matching JourneyCreationFlow's own established
-          // refetch-failure posture). Covers both an HTTP-error response
-          // (the `throw` above, carrying the API's own sentence when it
-          // wrote one) and a genuine network exception, whose message is
-          // never shown.
-          const reason = legError instanceof JourneyCreationError && legError.message ? ` ${legError.message}` : '';
-          setCreationError(
-            `Tracked ${i} of ${trainLegs.length} legs. Couldn't add leg ${i + 1}.${reason} ` +
-              'You can add it from the journey page.',
-          );
-          // C1: do NOT call `onCreated` here -- see this component's own
-          // doc comment. Store the already-created journey so the
-          // "Continue to your journey" button (rendered below once
-          // `creationError`/`pendingResult` are both set) can hand off
-          // once the visitor has actually seen which leg failed.
-          setPendingResult(created);
-          return;
-        }
-      }
-
-      onCreated(created);
+      onCreated((await response.json()) as CreateJourneyResponse);
     } catch (error) {
       setCreationError(
         error instanceof JourneyCreationError ? error.message : describeFailure('create', 'this journey'),
@@ -428,31 +332,18 @@ export function PlanTripFlow({
         );
       })}
       {creationError && (
-        <Alert color="red" title="Some legs could not be created">
+        <Alert color="red" title="Couldn't track this journey">
           {creationError}
         </Alert>
       )}
-      {/* C1: once a partial failure has happened, `pendingResult` holds
-          the journey that DOES already exist server-side. This button is
-          the visitor's own deliberate acknowledgement of the message
-          above -- `onCreated` fires only when they click it, never
-          automatically, so it's never called in the same tick as (and
-          before) the error message could render. Replaces "Track this
-          journey" entirely rather than sitting alongside it: re-running
-          `handleTrackJourney` from here would re-POST leg 1 as a second,
-          duplicate journey. */}
-      {pendingResult ? (
-        <Button onClick={() => onCreated(pendingResult)}>Continue to your journey</Button>
-      ) : (
-        plan && (
-          <Button
-            disabled={!allSegmentsSelected || creating}
-            loading={creating}
-            onClick={() => void handleTrackJourney()}
-          >
-            Track this journey
-          </Button>
-        )
+      {plan && (
+        <Button
+          disabled={!allSegmentsSelected || creating}
+          loading={creating}
+          onClick={() => void handleTrackJourney()}
+        >
+          Track this journey
+        </Button>
       )}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to track this journey.
