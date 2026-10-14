@@ -208,7 +208,7 @@ mod tests {
     impl std::error::Error for FakeDbError {}
 
     impl sqlx::error::DatabaseError for FakeDbError {
-        fn message(&self) -> &str {
+        fn message(&self) -> &'static str {
             "duplicate key value violates unique constraint"
         }
         fn code(&self) -> Option<std::borrow::Cow<'_, str>> {

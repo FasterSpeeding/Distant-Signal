@@ -2138,7 +2138,7 @@ pub(crate) fn parse_primary(content: &str) -> anyhow::Result<PrimaryExtraction> 
             "primary extraction returned an unrecognised category"
         );
     }
-    extraction.category = normalised.category.to_owned();
+    normalised.category.clone_into(&mut extraction.category);
     // Before the adversarial passes, which echo each period's scope back
     // and are checked against exactly what was sent.
     for period in &mut extraction.periods {
