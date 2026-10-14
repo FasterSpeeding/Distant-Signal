@@ -162,6 +162,41 @@ for (const scheme of SCHEMES) {
           });
         });
       }
+
+      // The /stations "Use my location" results
+      // (app/stations/NearbyStationList.tsx), which only exist after the
+      // click. The location is mocked and so is the lookup, with five
+      // stations (the seed has two with coordinates) so a long name wraps
+      // at 390px. A shot of the results block alone.
+      test('stations-nearby', async ({ page, context }) => {
+        await context.grantPermissions(['geolocation']);
+        await context.setGeolocation({ latitude: 51.53, longitude: -0.13 });
+        await page.route('**/api/stations/nearby?*', (route) =>
+          route.fulfill({
+            json: [
+              { code: 'EUS', name: 'London Euston', distanceKm: 0.32 },
+              { code: 'KGX', name: 'London Kings Cross', distanceKm: 0.44 },
+              { code: 'STP', name: 'London St Pancras International', distanceKm: 0.51 },
+              { code: 'ZFD', name: 'Farringdon', distanceKm: 1.62 },
+              { code: 'MYB', name: 'London Marylebone', distanceKm: 12.04 },
+            ],
+          }),
+        );
+        await page.clock.setFixedTime(FIXED_NOW);
+        await page.goto('/stations', { waitUntil: 'networkidle' });
+        await page.addStyleTag({ content: NO_MOTION_CSS });
+        await page.evaluate(() => document.fonts.ready);
+        await page.getByRole('button', { name: 'Use my location' }).click();
+        const list = page.getByRole('list', { name: 'Nearest stations' });
+        await expect(list.getByRole('link')).toHaveCount(5);
+        // The mouse rests on nothing, so no row is in its hover state.
+        await page.mouse.move(0, 0);
+
+        await expect(list.locator('xpath=..')).toHaveScreenshot(`stations-nearby-${scheme}-${width}.png`, {
+          animations: 'disabled',
+          caret: 'hide',
+        });
+      });
     });
   }
 }
