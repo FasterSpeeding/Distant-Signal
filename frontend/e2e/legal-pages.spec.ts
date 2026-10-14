@@ -12,7 +12,14 @@ test('/attribution renders every required data-source credit', async ({ page }) 
   ).toBeVisible();
   await expect(main.getByText(/^Source: RSP/)).toBeVisible();
   await expect(main.getByRole('link', { name: 'CC BY 4.0' })).toBeVisible();
-  await expect(main.getByText(/Contains public sector information licensed under the/)).toBeVisible();
+  await expect(
+    main.getByLabel(/^Translink/).getByText(/Contains public sector information licensed under the/),
+  ).toBeVisible();
+  // The tram network's credit, shown while the api serves it (the
+  // frontend-e2e job sets API_TRANSIT_NETWORKS=metrolink).
+  const metrolink = main.getByLabel(/^Manchester Metrolink/);
+  await expect(metrolink.getByText(/Contains public sector information licensed under the/)).toBeVisible();
+  await expect(metrolink.getByText(/Metrolink is a trademark of Transport for Greater Manchester/)).toBeVisible();
 });
 
 // The footer is in the root layout, so any page shows it. /attribution is
