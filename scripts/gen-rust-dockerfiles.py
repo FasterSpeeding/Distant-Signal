@@ -105,6 +105,7 @@ SERVICES: Mapping[str, Sequence[str]] = {
     "poller-stations": ("poller-stations",),
     "poller-tfl": ("poller-tfl",),
     "poller-tocs": ("poller-tocs",),
+    "poller-transit-schedule": ("poller-transit-schedule",),
     "schedule-ingest": ("schedule-ingest",),
     "schedule-reference": ("schedule-reference",),
     "trust-backlog-consumer": ("trust-backlog-consumer",),

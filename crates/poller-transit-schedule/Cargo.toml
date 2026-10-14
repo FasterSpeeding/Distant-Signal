@@ -1,0 +1,28 @@
+[package]
+name = "poller-transit-schedule"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The transit networks' producer (docs/superpowers/specs/2026-10-09-transit-
+# networks-design.md §6): one process per network, stream-only (no
+# database, no api), so no sqlx or ds-store (scripts/check-crate-deps.py).
+[dependencies]
+anyhow = "1.0.102"
+chrono = "0.4.44"
+clap = { version = "4.6.1", features = ["derive", "env"] }
+common = { path = "../common" }
+dotenvy = "0.15.7"
+health-http = { path = "../health-http" }
+# The `ds:ingest:transit-<network>` producer.
+ingest-stream = { path = "../ingest-stream" }
+metrics = "0.24"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "signal", "time"] }
+# The network files (networks/<network>.toml), as the line catalogue.
+toml = { version = "1.1.2", features = ["serde"] }
+tracing = "0.1.44"
+
+[lints]
+workspace = true
