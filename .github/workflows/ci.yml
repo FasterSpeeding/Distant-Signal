@@ -2475,35 +2475,34 @@ jobs:
           # tcpSocket by default, so nothing is forked in the container;
           # readiness every 10s, liveness every 30s with 6 failures
           # allowed; `type: exec` renders the old commands.
-          probe() { grep -A7 "^          $1Probe:" <<<"$2"; }
+          # probe_has <render> <kind> <pattern> <failure message>
+          probe_has() { grep -A7 "^          $2Probe:" <<<"$1" | grep -q -- "$3" || fail "$4"; }
           pg=$(render --show-only templates/postgres-statefulset.yaml)
           if grep -q 'exec:' <<<"${pg}${redis}"; then
             fail "postgres and redis probes must not exec by default"
           fi
           for kind in startup readiness liveness; do
-            probe "${kind}" "${pg}" | grep -q 'port: postgres$' \
-              || fail "postgres ${kind}Probe must default to tcpSocket on the postgres port"
-            probe "${kind}" "${redis}" | grep -q 'port: redis$' \
-              || fail "redis ${kind}Probe must default to tcpSocket on the redis port"
+            probe_has "${pg}" "${kind}" 'port: postgres$' \
+              "postgres ${kind}Probe must default to tcpSocket on the postgres port"
+            probe_has "${redis}" "${kind}" 'port: redis$' \
+              "redis ${kind}Probe must default to tcpSocket on the redis port"
           done
-          probe startup "${pg}" | grep -q 'failureThreshold: 90$' \
-            || fail "postgres startupProbe budget must default to 90 x 10s"
+          probe_has "${pg}" startup 'failureThreshold: 90$' \
+            "postgres startupProbe budget must default to 90 x 10s"
           for out in "${pg}" "${redis}"; do
-            probe readiness "${out}" | grep -q 'periodSeconds: 10$' \
-              || fail "readiness must default to a 10s period"
-            probe liveness "${out}" | grep -q 'periodSeconds: 30$' \
-              || fail "liveness must default to a 30s period"
-            probe liveness "${out}" | grep -q 'failureThreshold: 6$' \
-              || fail "liveness must default to 6 failures"
+            probe_has "${out}" readiness 'periodSeconds: 10$' "readiness must default to a 10s period"
+            probe_has "${out}" liveness 'periodSeconds: 30$' "liveness must default to a 30s period"
+            probe_has "${out}" liveness 'failureThreshold: 6$' "liveness must default to 6 failures"
           done
           pg_exec=$(render --show-only templates/postgres-statefulset.yaml \
             --set postgresql.probes.startup.type=exec)
-          probe startup "${pg_exec}" | grep -q 'pg_isready' \
-            || fail "postgresql.probes.startup.type=exec must run pg_isready"
+          probe_has "${pg_exec}" startup 'pg_isready' \
+            "postgresql.probes.startup.type=exec must run pg_isready"
           redis_exec=$(render --show-only templates/redis-deployment.yaml \
             --set redis.probes.liveness.type=exec)
-          probe liveness "${redis_exec}" | grep -q -- '- ping$' \
-            || fail "redis.probes.liveness.type=exec must run redis-cli ping"
+          probe_has "${redis_exec}" liveness '- ping$' \
+            "redis.probes.liveness.type=exec must run redis-cli ping"
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
           if render --set postgresql.probes.readiness.type=httpGet >/dev/null 2>&1; then
             fail "an unknown probe type must fail the render"
           fi
