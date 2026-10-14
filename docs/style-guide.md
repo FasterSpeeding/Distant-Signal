@@ -429,9 +429,9 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 - Motion only under `prefers-reduced-motion: no-preference`.
 - Small icons get a 24px hit area (`.iconHitArea24`). Tooltips open on
   hover, focus and touch.
-- A toggle has a fixed accessible name and states its value separately
-  (the theme toggle: name "Colour theme", description "Light. Switches to
-  dark.").
+- A toggle has a fixed accessible name and states its value separately.
+  A choice of several is a labelled radio group (the colour theme: a
+  `SegmentedControl` named "Colour theme").
 - Sort indicators are SVG chevrons, `aria-hidden`, with `aria-sort` on
   the header; no ▲▼↕ glyphs.
 - Email addresses render through `EmailLink`, which server-renders no
@@ -473,8 +473,9 @@ never "this app".
   text: "7 more lines are not at Good Service" (`severityLabel` in
   `lib/severity.ts`). On a badge the same status
   is sentence case ("Good service", `severityBadgeLabel`).
-- A page's h1 is its nav label: Status, Lines, Stations, Trains,
-  Incidents, Ask about trains.
+- A page's h1 is its nav label: Track, Plan a journey, Status, Lines,
+  Operators, Stations, Incidents, Ask about trains, Preferences. A page
+  linked from a hub takes the link's words ("Find a train").
 - Helper text is one line. If the detail matters, put it behind a "How
   this is calculated" disclosure.
 - Meta descriptions: one plain sentence, 20 words or fewer, at most 160
