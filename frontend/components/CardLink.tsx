@@ -28,6 +28,7 @@ export function CardLink({
   children,
   padding,
   ariaLabel,
+  fill = false,
 }: {
   href: string;
   children: ReactNode;
@@ -35,10 +36,18 @@ export function CardLink({
   /** For a card whose visible text doesn't name the destination on its
    * own (a `/status` tile is just a count and a label). */
   ariaLabel?: string | undefined;
+  /** Stretch to the grid cell's height, so cards in one row line up
+   * (`StatusCard`). */
+  fill?: boolean;
 }) {
   return (
-    <Link href={href} data-card-link aria-label={ariaLabel}>
-      <Card {...tokens.card.link} {...(padding !== undefined && { padding })} data-card>
+    <Link href={href} data-card-link aria-label={ariaLabel} {...(fill && { 'data-card-fill': true })}>
+      <Card
+        {...tokens.card.link}
+        {...(padding !== undefined && { padding })}
+        {...(fill && { h: '100%', className: 'ds-column' })}
+        data-card
+      >
         {children}
       </Card>
     </Link>

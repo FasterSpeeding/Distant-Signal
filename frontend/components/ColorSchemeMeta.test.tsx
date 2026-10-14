@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { ThemeToggle } from './ThemeToggle';
+import { ThemePreference } from './ThemePreference';
 import { ColorSchemeMeta } from './ColorSchemeMeta';
 
 function colorSchemeMetaTags() {
@@ -10,7 +10,7 @@ function colorSchemeMetaTags() {
 
 describe('ColorSchemeMeta', () => {
   beforeEach(() => {
-    // Same reason ThemeToggle.test.tsx clears this in its own beforeEach:
+    // Same reason ThemePreference.test.tsx clears this in its own beforeEach:
     // Mantine's stored preference (localStorage['mantine-color-scheme-value'])
     // persists across tests within this file otherwise, so a value one test
     // seeds (e.g. 'dark') would silently leak into and desync the next.
@@ -34,7 +34,7 @@ describe('ColorSchemeMeta', () => {
   });
 
   it('sets content="dark" when the stored preference resolves to dark', () => {
-    // Same persistence key ThemeToggle.test.tsx's own SSR test seeds
+    // Same persistence key ThemePreference.test.tsx's own SSR test seeds
     // (mantine-color-scheme-value) — Mantine reads it directly on mount,
     // no provider prop needed to set this up.
     localStorage.setItem('mantine-color-scheme-value', 'dark');
@@ -45,14 +45,13 @@ describe('ColorSchemeMeta', () => {
   });
 
   it('updates content as the resolved scheme changes, without ever duplicating the tag', () => {
-    // Mounted alongside ThemeToggle, same as production (both sit inside
-    // MantineProvider in app/layout.tsx) — clicking ThemeToggle's button
-    // is what actually changes the resolved scheme; ColorSchemeMeta has no
-    // UI of its own to drive this directly.
+    // Mounted alongside ThemePreference (the /account/preferences picker):
+    // choosing a scheme there is what changes the resolved scheme;
+    // ColorSchemeMeta has no UI of its own to drive this directly.
     renderWithMantine(
       <>
         <ColorSchemeMeta />
-        <ThemeToggle />
+        <ThemePreference />
       </>,
       { defaultColorScheme: 'auto' },
     );
@@ -61,16 +60,15 @@ describe('ColorSchemeMeta', () => {
     expect(colorSchemeMetaTags()).toHaveLength(1);
     expect(colorSchemeMetaTags()[0]).toHaveAttribute('content', 'light');
 
-    const button = screen.getByRole('button');
-    fireEvent.click(button); // auto -> light
+    fireEvent.click(screen.getByRole('radio', { name: 'Light' }));
     expect(colorSchemeMetaTags()).toHaveLength(1);
     expect(colorSchemeMetaTags()[0]).toHaveAttribute('content', 'light');
 
-    fireEvent.click(button); // light -> dark
+    fireEvent.click(screen.getByRole('radio', { name: 'Dark' }));
     expect(colorSchemeMetaTags()).toHaveLength(1);
     expect(colorSchemeMetaTags()[0]).toHaveAttribute('content', 'dark');
 
-    fireEvent.click(button); // dark -> auto
+    fireEvent.click(screen.getByRole('radio', { name: 'Match device' }));
     expect(colorSchemeMetaTags()).toHaveLength(1);
     expect(colorSchemeMetaTags()[0]).toHaveAttribute('content', 'light');
   });

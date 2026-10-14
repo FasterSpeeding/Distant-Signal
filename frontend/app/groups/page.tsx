@@ -1,4 +1,5 @@
-import { Badge, Group, Stack, Text, Title } from '@mantine/core';
+import { Group, Stack, Text, Title } from '@mantine/core';
+import { groupRoleLabel } from '@/lib/memberLabel';
 import type { Metadata } from 'next';
 import { getMyGroups } from '@/lib/api';
 import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
@@ -125,20 +126,21 @@ export default async function GroupsPage() {
 
 function GroupRow({ group }: { group: GroupSummary }) {
   // `CardLink` (review §3.2.5): a hover/focus border change marks the
-  // whole card as the link, and the trailing chevron is decoration.
+  // whole card as the link. The member count and role are dimmed text, not
+  // badges (round 2): neither is a state.
   return (
     <CardLink href={`/groups/${group.id}`}>
       <Group justify="space-between" wrap="nowrap">
         <Text fw={500}>{group.name}</Text>
-        <Group gap="xs" wrap="nowrap">
-          <Badge tt="none" variant="light">
+        <Group gap={6} wrap="nowrap">
+          <Text size="sm" c="dimmed">
             {group.memberCount} member{group.memberCount === 1 ? '' : 's'}
-          </Badge>
-          <Badge tt="none" variant="outline">
-            {group.role}
-          </Badge>
-          <Text aria-hidden c="dimmed">
-            ›
+          </Text>
+          <Text size="sm" c="dimmed" aria-hidden>
+            ·
+          </Text>
+          <Text size="sm" c="dimmed">
+            {groupRoleLabel(group.role)}
           </Text>
         </Group>
       </Group>

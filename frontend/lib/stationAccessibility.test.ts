@@ -1,16 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import {
   ACCESSIBILITY_CATEGORIES,
-  computeAtAGlance,
+  computeKeyFacts,
   containsMarkup,
   dedupeAcrossSection,
   formatDays,
   formatHours,
+  formatStepFreeCategory,
   hasRenderableValue,
   hostLabel,
   humanizeKey,
   isEmptyNode,
   isSentence,
+  markupToPlainText,
   MAX_RENDER_DEPTH,
   renderAccessibilityValue,
   sortEntriesByKind,
@@ -394,13 +396,37 @@ describe('Pattern D -- named-item collection', () => {
       ]),
       'collection',
     );
-    expect(node.items[0]!.label).toBe('Balham Passenger Assistance Meeting Point 0');
+    // Round 2: numbered from 1 and named by its location, not the feed's
+    // zero-based "Balham Passenger Assistance Meeting Point 0".
+    expect(node.items[0]!.label).toBe('Meeting point 1: Assistance Meeting Point');
     // The structured branch, because `available` is not a string -- and
     // `available` comes out as an ordinary labelled boolean line (§4.5).
     const { fields } = expectKind(node.items[0]!.body, 'fields');
     const availability = fields.find((field) => field.label === 'Available');
     expect(availability).toBeDefined();
     expect(expectKind(availability!.node, 'text').text).toBe('Yes');
+    // The location is in the label now, so it is not repeated below it.
+    expect(fields.some((field) => field.label === 'Location')).toBe(false);
+  });
+
+  it('numbers meeting points from 1 in feed order, falling back to the number alone without a location', () => {
+    const node = expectKind(
+      renderAccessibilityValue([
+        {
+          available: true,
+          location: '<p>Customer Information Point &amp; seating</p>',
+          name: 'York Passenger Assistance Meeting Point 0',
+        },
+        { available: true, location: null, name: 'York Passenger Assistance Meeting Point 1' },
+        { available: true, location: '<p>-</p>', name: 'York Passenger Assistance Meeting Point 2' },
+      ]),
+      'collection',
+    );
+    expect(node.items.map((item) => item.label)).toEqual([
+      'Meeting point 1: Customer Information Point & seating',
+      'Meeting point 2',
+      'Meeting point 3',
+    ]);
   });
 
   it('recurses the structured branch into Patterns B, C and D again', () => {
@@ -822,28 +848,46 @@ describe('sortEntriesByKind (review §3.5.3)', () => {
   });
 });
 
-describe('computeAtAGlance (review §3.5.3)', () => {
-  it("surfaces a station's step-free category, lift count and accessible-toilet facts", () => {
-    const facts = computeAtAGlance({
-      stationAccessibility: { stepFreeCategory: { category: 'A, Compliant step-free access' } },
+describe('computeKeyFacts (review §3.5.3, round 2)', () => {
+  it("lists a station's step-free access, assistance, ramps, toilets and lifts in reading order", () => {
+    const facts = computeKeyFacts({
+      stationAccessibility: {
+        stepFreeCategory: { category: 'A, Compliant step-free access to all platform(s)' },
+        trainRamp: { available: true },
+        wheelchairsAvailable: false,
+      },
+      staffAssistance: {
+        staffHelp: { available: true },
+        helpline: { operatorContactDetails: { primaryTelephoneNumber: '0345 077 4224' } },
+      },
       lifts: { liftsInfo: [{ name: 'Lift 1' }, { name: 'Lift 2' }] },
       toiletsAndChanging: {
         toilets: { accessibleToiletsAvailable: true, changingPlacesToiletsAvailable: false },
       },
     });
-    expect(facts).toContainEqual({ label: 'Step-free category', value: 'A, Compliant step-free access' });
-    expect(facts).toContainEqual({ label: 'Lifts', value: '2' });
-    expect(facts).toContainEqual({ label: 'Accessible toilet', value: 'Yes' });
-    expect(facts.find((f) => f.label === 'Changing Places')).toBeUndefined();
+    expect(facts).toEqual([
+      { label: 'Step-free access', value: 'Category A: step-free access to all platforms' },
+      { label: 'Staff assistance', value: 'Yes' },
+      { label: 'Assistance phone', value: '0345 077 4224' },
+      { label: 'Ramps for boarding', value: 'Yes' },
+      { label: 'Wheelchairs', value: 'No' },
+      { label: 'Accessible toilet', value: 'Yes' },
+      { label: 'Changing Places toilet', value: 'No' },
+      { label: 'Lifts', value: '2' },
+    ]);
+  });
+
+  it('says "None" for a station that publishes an empty lift list', () => {
+    expect(computeKeyFacts({ lifts: { liftsInfo: [] } })).toEqual([{ label: 'Lifts', value: 'None' }]);
   });
 
   it('returns no facts at all for a payload with none of the recognised shapes', () => {
-    expect(computeAtAGlance({ cycling: 'Racks on the forecourt' })).toEqual([]);
+    expect(computeKeyFacts({ cycling: 'Racks on the forecourt' })).toEqual([]);
   });
 
   it('never throws on a malformed shape for any of its fields', () => {
     expect(() =>
-      computeAtAGlance({
+      computeKeyFacts({
         stationAccessibility: 'not an object',
         lifts: null,
         carParks: [1, 2, 3] as never,
@@ -951,5 +995,22 @@ describe('review §3.5.11: label defects', () => {
     // bare-word case above exercises, just as the first of two words rather
     // than the whole key.
     expect(humanizeKey('constructorInfo')).toBe('Constructor info');
+  });
+});
+
+describe('formatStepFreeCategory', () => {
+  it.each([
+    ['A, Compliant step-free access to all platform(s)', 'Category A: step-free access to all platforms'],
+    ['B3, step-free access only to some platforms', 'Category B3: step-free access only to some platforms'],
+    ['B2, (refer to quick reference guide)', 'Category B2'],
+    ['Step-free throughout', 'Step-free throughout'],
+  ])('%s reads as %s', (raw, expected) => {
+    expect(formatStepFreeCategory(raw)).toBe(expected);
+  });
+});
+
+describe('markupToPlainText', () => {
+  it('drops tags, decodes the entities the feed uses and collapses whitespace', () => {
+    expect(markupToPlainText('<p>WHSmith&#39;s</p>\n<p>Mon-Sat &amp; Sun</p>')).toBe("WHSmith's Mon-Sat & Sun");
   });
 });

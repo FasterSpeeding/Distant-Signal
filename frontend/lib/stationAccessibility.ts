@@ -758,11 +758,67 @@ function renderCollection(value: unknown[], depth: number): AccessibilityNode {
   // than through `renderAt`, so their level is checked here.
   if (depth + 1 > MAX_RENDER_DEPTH) return raw(value);
   const items: CollectionItem[] = [];
+  let meetingPoint = 0;
   for (const element of value) {
     if (!isPlainObject(element)) continue;
+    if (isMeetingPoint(element)) {
+      meetingPoint += 1;
+      items.push(renderMeetingPoint(element, meetingPoint, depth + 1));
+      continue;
+    }
     items.push(renderCollectionItem(element, depth + 1));
   }
   return { kind: 'collection', items };
+}
+
+/** The feed names assistance meeting points "York Passenger Assistance
+ * Meeting Point 0", "... 1": zero-based, and naming the station the reader
+ * is already looking at. */
+const MEETING_POINT_NAME = /passenger assistance meeting point\s*\d*\s*$/i;
+
+function isMeetingPoint(item: Record<string, unknown>): boolean {
+  return typeof item.name === 'string' && MEETING_POINT_NAME.test(item.name.trim());
+}
+
+const MARKUP_ENTITIES: Record<string, string> = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&nbsp;': ' ',
+  '&#160;': ' ',
+};
+
+/** Feed markup as one line of plain text, for a label or a length check:
+ * tags dropped, the few entities the feed uses decoded, whitespace
+ * collapsed. Never injected as HTML. */
+export function markupToPlainText(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(
+      /&(?:amp|lt|gt|quot|nbsp|#39|#160);/gi,
+      (entity) => ownValue(MARKUP_ENTITIES, entity.toLowerCase()) ?? entity,
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** A meeting point, numbered from 1 in feed order and named by where it
+ * is: "Meeting point 1: Customer Information Point". The location moves
+ * into the label, so the body keeps only the rest (availability, notes). */
+function renderMeetingPoint(item: Record<string, unknown>, number: number, depth: number): CollectionItem {
+  const location = typeof item.location === 'string' ? markupToPlainText(item.location) : '';
+  const named = location !== '' && !isPunctuationOnlyText(location);
+  const rest = Object.fromEntries(
+    Object.entries(item).filter(
+      ([key, own]) => key !== 'name' && (key !== 'location' || !named) && hasRenderableValue(own),
+    ),
+  );
+  return {
+    label: named ? `Meeting point ${number}: ${location}` : `Meeting point ${number}`,
+    body: renderFields(rest, depth),
+  };
 }
 
 function renderCollectionItem(item: Record<string, unknown>, depth: number): CollectionItem {
@@ -1165,19 +1221,21 @@ export function sortEntriesByKind<T extends { node: AccessibilityNode }>(entries
 }
 
 // ---------------------------------------------------------------------------
-// At-a-glance strip (review §3.5.3)
+// Key facts (review §3.5.3, round 2)
 // ---------------------------------------------------------------------------
 
-export interface AtAGlanceFact {
+/** One row of the key facts definition list: "Step-free access" over
+ * "Category A: step-free access to all platforms". */
+export interface KeyFact {
   label: string;
   value: string;
 }
 
 /** Shallow, defensive search for a string field named `key` up to `depth`
  * plain-object/array levels below `value` -- used only to surface a
- * best-effort fact for the at-a-glance strip. Never throws and never
+ * best-effort fact for the key facts list. Never throws and never
  * assumes a shape: a payload that doesn't have the field simply yields no
- * fact, which is this strip's only failure mode (§3.5.3's items are a
+ * fact, which is the list's only failure mode (its rows are a
  * bonus summary, not a replacement for the full section below it). */
 function findString(value: unknown, key: string, depth: number): string | null {
   if (depth < 0 || value === null || value === undefined) return null;
@@ -1207,39 +1265,72 @@ function sumNumberField(value: unknown, key: string): number {
   }, 0);
 }
 
-/** A handful of the facts a station-page reader most often scrolls the
- * whole 4,500px section to find, surfaced as a strip above it (review
- * §3.5.3). Each fact is read directly off `data` through a narrow,
- * well-known path rather than by scanning the rendered node tree, so this
- * stays a small, auditable list rather than a second general-purpose
- * renderer: a payload shaped differently from the 31 surveyed stations
- * simply omits that one fact instead of guessing at it. */
-export function computeAtAGlance(data: StationAccessibilityData): AtAGlanceFact[] {
-  const facts: AtAGlanceFact[] = [];
+/** The ORR step-free category as a commuter reads it. The feed writes
+ * "A, Compliant step-free access to all platform(s)" or "B2, (refer to
+ * quick reference guide)"; this gives "Category A: step-free access to all
+ * platforms" and "Category B2". Anything not shaped like that is returned
+ * as the feed wrote it. */
+export function formatStepFreeCategory(raw: string): string {
+  const match = /^([A-Z]\d?)\s*,\s*(.*)$/.exec(raw.trim());
+  if (!match) return raw.trim();
+  const [, code, rest = ''] = match;
+  const description = rest
+    .replace(/\([^)]*\)/g, (group) => (group === '(s)' ? 's' : ''))
+    .replace(/^compliant\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (description === '') return `Category ${code}`;
+  return `Category ${code}: ${description.charAt(0).toLowerCase()}${description.slice(1)}`;
+}
+
+function yesNo(value: unknown): string | null {
+  if (value === true) return 'Yes';
+  if (value === false) return 'No';
+  return null;
+}
+
+/** `value.available` for a Pattern A facility record, or undefined. */
+function facilityAvailable(value: unknown): unknown {
+  return isPlainObject(value) ? value.available : undefined;
+}
+
+/** The facts a station-page reader most often scrolls the whole section to
+ * find, shown first as a definition list (review §3.5.3, round 2). Each is
+ * read off `data` through a narrow, known path rather than by scanning the
+ * rendered node tree, so this stays a small, auditable list: a payload
+ * shaped differently from the 31 surveyed stations simply omits that one
+ * fact instead of guessing at it. Order is the reader's: can I get on,
+ * who helps, then the facilities. */
+export function computeKeyFacts(data: StationAccessibilityData): KeyFact[] {
+  const facts: KeyFact[] = [];
+  const push = (label: string, value: string | null): void => {
+    if (value !== null && value !== '') facts.push({ label, value });
+  };
 
   const category = findString(data.stationAccessibility, 'category', 1);
-  if (category) facts.push({ label: 'Step-free category', value: category });
+  if (category) push('Step-free access', formatStepFreeCategory(category));
 
-  const phone = findString(data.staffAssistance, 'primaryTelephoneNumber', 3);
-  if (phone) facts.push({ label: 'Assistance phone', value: phone });
+  const access = isPlainObject(data.stationAccessibility) ? data.stationAccessibility : {};
+  const staff = isPlainObject(data.staffAssistance) ? data.staffAssistance : {};
+  push('Staff assistance', yesNo(facilityAvailable(staff.staffHelp)));
+  push('Assistance phone', findString(data.staffAssistance, 'primaryTelephoneNumber', 3));
+  push('Ramps for boarding', yesNo(facilityAvailable(access.trainRamp)));
+  push('Wheelchairs', yesNo(access.wheelchairsAvailable));
 
   const toilets = isPlainObject(data.toiletsAndChanging) ? data.toiletsAndChanging.toilets : undefined;
   if (isPlainObject(toilets)) {
-    if (toilets.accessibleToiletsAvailable === true) {
-      facts.push({ label: 'Accessible toilet', value: 'Yes' });
-    }
-    if (toilets.changingPlacesToiletsAvailable === true) {
-      facts.push({ label: 'Changing Places', value: 'Yes' });
-    }
+    push('Accessible toilet', yesNo(toilets.accessibleToiletsAvailable));
+    push('Changing Places toilet', yesNo(toilets.changingPlacesToiletsAvailable));
   }
 
   if (isPlainObject(data.lifts) && Array.isArray(data.lifts.liftsInfo)) {
-    facts.push({ label: 'Lifts', value: String(data.lifts.liftsInfo.length) });
+    const lifts = data.lifts.liftsInfo.length;
+    push('Lifts', lifts === 0 ? 'None' : String(lifts));
   }
 
   if (isPlainObject(data.carParks) && Array.isArray(data.carParks.carParks)) {
     const bays = sumNumberField(data.carParks.carParks, 'numberOfAccessibleSpaces');
-    if (bays > 0) facts.push({ label: 'Blue Badge bays', value: String(bays) });
+    if (bays > 0) push('Blue Badge bays', String(bays));
   }
 
   return facts;

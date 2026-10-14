@@ -3,9 +3,9 @@ import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
 import { getTrainSearchDates } from '@/lib/api';
-import { TRACK_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { parsePlanSearchParams } from '@/lib/tripPlanUrl';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 /** `/plan` -- the trip planner (`PlanTripFlow`) on its own page, linked from
  * the nav as `PLAN_JOURNEY_DESTINATION` (`lib/navLinks.ts`).
@@ -43,7 +43,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
 const METADATA_TITLE = 'Plan a journey';
 const METADATA_DESCRIPTION = 'Find train routes between two UK stations, with changes, and track the one you pick.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 
@@ -68,7 +68,7 @@ export default async function PlanPage({
       <Text c="dimmed">
         Find routes between two stations, including changes and any stops you want on the way, then compare the options.
         Already know which train you&apos;re catching?{' '}
-        <TextLink href={TRACK_JOURNEY_DESTINATION.href} underline="always" inline>
+        <TextLink href={TRACK_JOURNEY_HREF} underline="always" inline>
           Track it directly
         </TextLink>
         .

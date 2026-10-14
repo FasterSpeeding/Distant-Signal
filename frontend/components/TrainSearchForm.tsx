@@ -2,116 +2,21 @@
 
 import { useEffect, useMemo, useState, type SubmitEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
+import { Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { nowInLondon } from '@/lib/londonWallClock';
-import { LoadMoreControl } from './LoadMoreControl';
-import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
-import { TrackThisTrainButton } from './TrackThisTrainButton';
-import { searchRowDetails, searchRowHeadcode, searchRowSummary, searchRowTime } from '@/lib/searchRow';
-import type { ServiceModeFields, TrainSearchDates, TrainSearchPage, TrainSearchResult } from '@/lib/types';
+import { TrainSearchResults } from './TrainSearchResults';
+import type { TrainSearchDates, TrainSearchPage } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
-import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
+import { ButtonSpinner } from '@/components/LoadingText';
+import { hasRows, TIME_PATTERN, type TrainSearchResults as TrainSearchResultsState } from '@/lib/trainSearch';
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
-/** The exact `"HH:MM"` shape the four time filters put on the wire
- * (`from`/`to`/`arrival_from`/`arrival_to`, all parsed server-side by
- * `crates/api/src/routes/trains.rs`'s `normalize_time`).
- *
- * Deliberately KEPT now that those four fields are `@mantine/dates`'
- * `TimeInput` (a native `<input type="time">`) rather than a free-text
- * `TextInput`, because that control is NOT equivalent to this check --
- * it is narrower in one direction and wider in the other.
- *
- * Narrower: a native time input's value sanitization drops outright
- * nonsense (`"25:99"`) to `""` before it can ever reach `onChange`, so
- * that class of input no longer produces an error at all, it simply never
- * lands. Wider: the values it DOES accept are "valid HTML time strings",
- * which include a seconds component -- `"09:00:30"` survives sanitization
- * untouched even though `step` is 60 and no seconds segment is offered in
- * the UI. `"HH:MM:SS"` is not what this API parses, so that is the case
- * this pattern still genuinely catches, as an inline error rather than a
- * 400 from the server.
- *
- * It is also the guard for a browser with no `type="time"` support at all,
- * where the control degrades to a plain text field with no sanitization
- * whatsoever. */
-const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-/** The track button's noun for a search row. */
-function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {
-  if (row.serviceMode === 'ferry') return 'ferry';
-  if (row.serviceMode === 'bus' || row.serviceMode === 'replacementBus') return 'bus';
-  return 'train';
-}
-
-/** Exactly one of five mutually-exclusive states, checked top to bottom by
- * `resultsContent` below. `'unpublished'` and an empty `rows` array are
- * genuinely different facts and get different copy -- the backend route
- * draws that 404-vs-empty-results distinction on purpose and collapsing it
- * here would waste it.
- *
- * `nextCursor` lives INSIDE the success variant rather than in its own
- * `useState`, so it cannot survive a state transition it does not belong
- * to: a fresh search, an error, or an unpublished response all discard it
- * automatically. `date` lives here for the same reason: it is the RAW
- * `dateValue` that was submitted with THIS search -- `''` when no date was
- * picked, exactly mirroring the condition `searchParams()` itself uses to
- * decide whether to include a `date` query param at all -- captured once at
- * submit time and carried forward untouched by `handleLoadMore`. Never
- * re-read live from the `dateValue` picker state at render time, which can
- * drift out from under already-displayed rows if the caller moves the date
- * picker without pressing Search again. See `resolvedDate` for turning this
- * into an actual calendar date for a link or an API call.
- *
- * `loadMoreFailed` rides along for the same reason: it records that the LAST
- * "Load more" press errored, so the footer can say so rather than let the
- * list read as finished, and a fresh search clears it automatically by
- * replacing this whole object. The cursor is deliberately kept on failure --
- * it is still valid, so the retry the footer offers is a real one. */
-type Results =
-  | {
-      rows: TrainSearchResult[];
-      nextCursor: string | null;
-      date: string;
-      loadMoreFailed: boolean;
-      provisional: boolean;
-    }
-  | 'unpublished'
-  | 'error'
-  | null;
-
-/** Narrows `Results` to the "has rows" branch -- factored out for the same
- * reason `StationTimetable.tsx`'s identical helper is: `handleLoadMore`'s
- * early-return guard plus each of its functional `setResults` updaters need
- * this exact three-way check, and spelling it out at every call site invited
- * the copies to drift apart. */
-function hasRows(results: Results): results is {
-  rows: TrainSearchResult[];
-  nextCursor: string | null;
-  date: string;
-  loadMoreFailed: boolean;
-  provisional: boolean;
-} {
-  return results !== null && results !== 'error' && results !== 'unpublished';
-}
-
-/** Turns a `Results` success variant's raw `date` (`''` meaning "no date was
- * picked, defaulted to today") into an actual `"YYYY-MM-DD"` to put in a
- * link or hand to `TrackThisTrainButton`. Only the `''` branch reads the
- * clock, and only to name the SAME "no date picked" default `searchParams()`
- * itself would have applied at submit time -- it does not reintroduce a live
- * read of `dateValue`. */
-function resolvedDate(rawDate: string): string {
-  return rawDate || nowInLondon().format('YYYY-MM-DD');
-}
-
 /** Calling-point-first, whole-network train search -- the `/trains` page's
  * one interactive component. Generalizes the earlier destination-first
  * search into "any station the train calls at" as the primary, required
@@ -239,18 +144,18 @@ export function TrainSearchForm({
     arrivalFrom: false,
     arrivalTo: false,
   });
-  const [results, setResults] = useState<Results>(null);
+  const [results, setResults] = useState<TrainSearchResultsState>(null);
   // The RAW `dateValue` submitted with the last search that came back
   // 404/unpublished, captured at submit time -- separate from `results`
   // because the `'unpublished'` variant carries no payload of its own to
   // carry a `date` field on. Only ever read by the 'unpublished' branch of
-  // `resultsContent` below; never read live from `dateValue` there, for the
+  // `TrainSearchResults`; never read live from `dateValue` there, for the
   // same reason `results`' own `date` field exists (see `Results`' doc
   // comment).
   const [unpublishedDate, setUnpublishedDate] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   // Separate from `searching` on purpose: a "Load more" in flight must not
-  // blank the rows already on screen the way `resultsContent`'s
+  // blank the rows already on screen the way `TrainSearchResults`'
   // `searching` branch does, and must not re-disable the Search button.
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -480,125 +385,6 @@ export function TrainSearchForm({
     }
   }
 
-  function resultsContent() {
-    if (!stationValid) {
-      return (
-        <Text size="sm" c="dimmed">
-          Enter a station above to search for trains that call there.
-        </Text>
-      );
-    }
-    if (searching) {
-      return <LoadingText>Searching</LoadingText>;
-    }
-    if (results === null) {
-      return (
-        <Text size="sm" c="dimmed">
-          Press Search to find trains that call at this station.
-        </Text>
-      );
-    }
-    if (results === 'error') {
-      return (
-        <Alert color="red" title="Search failed">
-          Couldn&apos;t search for trains right now. Try again.
-        </Alert>
-      );
-    }
-    if (results === 'unpublished') {
-      return (
-        <Text size="sm" c="dimmed">
-          {unpublishedDate
-            ? `Scheduled timetable data for ${unpublishedDate} isn't available yet. It may not have been published, or that station may not be one this feed covers.`
-            : "Today's scheduled timetable data isn't available yet. It may not have been published, or that station may not be one this feed covers."}
-        </Text>
-      );
-    }
-    if (results.rows.length === 0) {
-      return (
-        <Text size="sm" c="dimmed">
-          No scheduled trains match those filters right now.
-        </Text>
-      );
-    }
-    // The date the rows on screen were ACTUALLY searched with -- computed
-    // once here from `results.date`, never from live `dateValue`. See
-    // `resolvedDate`'s own doc comment.
-    const displayDate = resolvedDate(results.date);
-    return (
-      <>
-        <ProvisionalTimetableNote provisional={results.provisional} />
-        <Text size="sm" c="dimmed">
-          Times are when each train leaves the station you searched, from the scheduled timetable, and may be up to 30
-          minutes out of date. Open a train to see its live status.
-        </Text>
-        {/* Deliberately NOT wrapped in a `ScrollArea` (`mah`-capped or
-         * otherwise). It used to be (`<ScrollArea mah={420}
-         * offsetScrollbars>`), and that hard-clipped the results: a Mantine
-         * `ScrollArea` root is `position: relative; overflow: hidden`
-         * (`@mantine/core/styles/ScrollArea.css`, `.m_d57069b5`) while its
-         * viewport is `height: 100%`. With only `mah` on the root, the
-         * root's own `height` stays `auto`, so that `100%` resolves to
-         * `auto` too (CSS 2.1 §10.5: a percentage height against a
-         * content-sized containing block computes to `auto`) -- the
-         * viewport grows to its full content height and therefore never
-         * overflows *itself*, so it never scrolls, while the root clamps to
-         * the cap and clips everything past it with `overflow: hidden`. No
-         * pointer, wheel or scrollbar gesture could reach a row past 420px,
-         * and each "Load more" appended rows straight into the clipped
-         * region. Nothing hinted anything had been cut off either: Mantine
-         * hides the native scrollbar (`scrollbar-width: none`) and draws its
-         * own, sized from `scrollHeight` vs `clientHeight` -- equal here --
-         * so it never appeared.
-         *
-         * `ScrollArea.Autosize` IS the Mantine component that supports a max
-         * height (it wraps the root in a `display: flex` / `flex: 1` /
-         * `overflow: hidden` chain, which is what makes the root's height
-         * definite). It is still not what's used: letting the page scroll is
-         * what `StationTimetable.tsx` (the other paginated "Load more" list
-         * over these same CIF rows) and `IncidentSearchForm.tsx` (which this
-         * component's results section mirrors) both already do. A nested
-         * scroller buys nothing here -- there are no sticky controls above
-         * the list to keep on screen -- while costing real usability on
-         * touch, where it steals the page's own scroll gesture. */}
-        {/* One `ServiceRow` per train, its "Track this train" button in the
-         * row's actions slot: the destination is the link to the train's
-         * page, so the button is never nested in a link. On a phone the
-         * actions wrap onto a line of their own under the destination. */}
-        <ServiceRowList aria-label="Trains" data-train-results>
-          {results.rows.map((row) => (
-            <ServiceRow
-              key={`${row.uid}-${row.scheduled ?? ''}`}
-              train={searchRowSummary(row)}
-              date={displayDate}
-              timeOverride={searchRowTime(row)}
-              dayOffset={row.dayOffset}
-              details={
-                [searchRowDetails(row, operatorLookup), searchRowHeadcode(row)].filter(Boolean).join(' · ') || undefined
-              }
-              actions={
-                <TrackThisTrainButton
-                  uid={row.uid}
-                  date={displayDate}
-                  {...(attachTicketId === undefined ? {} : { attachTicketId })}
-                  size="xs"
-                  noun={trackNoun(row)}
-                />
-              }
-            />
-          ))}
-        </ServiceRowList>
-        <LoadMoreControl
-          hasMore={results.nextCursor !== null}
-          loading={loadingMore}
-          failed={results.loadMoreFailed}
-          onLoadMore={handleLoadMore}
-          endMessage="You've reached the end. No more scheduled trains match those filters."
-        />
-      </>
-    );
-  }
-
   return (
     <Stack gap="md" component="form" onSubmit={handleSubmit}>
       <Autocomplete
@@ -741,7 +527,16 @@ export function TrainSearchForm({
         </Button>
       </Group>
       <Stack gap="xs" mih={72}>
-        {resultsContent()}
+        <TrainSearchResults
+          stationValid={stationValid}
+          searching={searching}
+          results={results}
+          unpublishedDate={unpublishedDate}
+          loadingMore={loadingMore}
+          onLoadMore={() => void handleLoadMore()}
+          operatorLookup={operatorLookup}
+          attachTicketId={attachTicketId}
+        />
       </Stack>
       {/* `inline`/`underline="always"`: this link sits mid-sentence in body
           text rather than in a nav or beside a heading, so (a) colour alone

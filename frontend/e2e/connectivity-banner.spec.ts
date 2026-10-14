@@ -35,9 +35,9 @@ test.describe('connectivity banner', () => {
     test.setTimeout(120_000);
 
     await page.goto('/lines');
-    // Hydration gate: ThemeToggle is a client component, so its button
-    // being visible means React has attached its window listeners.
-    await expect(page.getByRole('button', { name: 'Colour theme' })).toBeVisible();
+    // Hydration gate: DataFreshnessInfo is a client component, so its
+    // button being visible means React has attached its window listeners.
+    await expect(page.getByRole('button', { name: 'Data freshness' })).toBeVisible();
 
     // The same event the browser itself fires when connectivity drops, and
     // the one @mantine/hooks' useNetwork listens for. Deliberately NOT
@@ -52,7 +52,7 @@ test.describe('connectivity banner', () => {
 
   test('keeps the page content on screen while the banner is up', async ({ page }) => {
     await page.goto('/lines');
-    await expect(page.getByRole('button', { name: 'Colour theme' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Data freshness' })).toBeVisible();
     await goOffline(page);
     // The whole point of the feature: the banner is non-blocking and the
     // last-known content stays put rather than being replaced by an error.

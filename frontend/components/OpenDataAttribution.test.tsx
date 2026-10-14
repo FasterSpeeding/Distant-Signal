@@ -130,6 +130,7 @@ describe('OpenDataAttribution', () => {
       'href',
       '/attribution',
     );
+    expect(within(nav).getByRole('link', { name: 'Preferences' })).toHaveAttribute('href', '/account/preferences');
   });
 
   it('hides the legal page links while the legal pages are unpublished (the default)', () => {

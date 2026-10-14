@@ -80,7 +80,7 @@ describe('IncidentDetailPage', () => {
     renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
     expect(screen.getByText('Signal failure at Woking')).toBeInTheDocument();
     expect(screen.getByText('Delays expected')).toBeInTheDocument();
-    expect(screen.getByText('WOK')).toBeInTheDocument();
+    expect(screen.getByText('WOK, WAT')).toBeInTheDocument();
     // Review §2.9: bare CRS pills with nothing on the page to say what
     // they are -- this heading is what makes them read as station
     // identifiers rather than three floating, unexplained letters.
@@ -247,13 +247,12 @@ describe('IncidentDetailPage', () => {
     // nothing to say what they are. Now labelled "Name (CRS)" -- the same
     // fallback contract `stationLabel` uses everywhere else in this app --
     // rather than just a hover-only `title` tooltip.
-    it('labels an affected-station badge with its resolved name and code', async () => {
+    it('names each affected station with its resolved name and code, as text', async () => {
       vi.mocked(api.getStationName).mockImplementation(async (crs) => (crs === 'WOK' ? 'Woking' : null));
       vi.mocked(api.getIncident).mockResolvedValue(detail({ affectedStations: ['WOK', 'WAT'] }));
       renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
-      expect(screen.getByText('Woking (WOK)')).toBeInTheDocument();
       // WAT never resolved a name -- falls back to the bare code.
-      expect(screen.getByText('WAT')).toBeInTheDocument();
+      expect(screen.getByText('Woking (WOK), WAT')).toBeInTheDocument();
     });
   });
 

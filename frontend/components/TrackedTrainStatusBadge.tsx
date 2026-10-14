@@ -1,4 +1,5 @@
-import { Badge, Group } from '@mantine/core';
+import { Group } from '@mantine/core';
+import { StateBadge } from './StateBadge';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly } from '@/lib/serviceMode';
 import { DelayBadge } from './DelayBadge';
@@ -42,9 +43,7 @@ export function TrackedTrainStatusBadge({
     return (
       <Group gap={6} wrap="nowrap">
         <ServiceModeBadge mode={train.serviceMode} />
-        <Badge color="gray" variant="light" tt="none">
-          Timetabled only
-        </Badge>
+        <StateBadge tone="neutral">Timetabled only</StateBadge>
       </Group>
     );
   }
@@ -56,17 +55,17 @@ export function TrackedTrainStatusBadge({
   // backend can't honestly support that distinction today.
   if (train.resolutionStatus !== 'resolved') {
     return (
-      <Badge color={train.resolutionStatus === 'unresolved' ? 'red' : 'gray'} variant="light" tt="none">
+      <StateBadge tone={train.resolutionStatus === 'unresolved' ? 'critical' : 'neutral'}>
         {STATUS_LABELS[train.resolutionStatus] ?? train.resolutionStatus}
-      </Badge>
+      </StateBadge>
     );
   }
   return (
     <Group gap={6} wrap="nowrap">
       {train.status && (
-        <Badge color={train.status === 'cancelled' ? 'red' : 'gray'} variant="light" tt="none">
+        <StateBadge tone={train.status === 'cancelled' ? 'critical' : 'neutral'}>
           {STATUS_LABELS[train.status] ?? train.status}
-        </Badge>
+        </StateBadge>
       )}
       {train.delayMinutes !== null && <DelayBadge delayMinutes={train.delayMinutes} />}
     </Group>

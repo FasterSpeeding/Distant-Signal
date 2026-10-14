@@ -1,6 +1,6 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
-import { Badge, Stack, Title, Text, Group, Paper } from '@mantine/core';
+import { Stack, Title, Text, Group, Paper } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { LoadingText } from '@/components/LoadingText';
 import type { Metadata } from 'next';
@@ -24,8 +24,9 @@ import type { CustomLineDetail, LineDefinitionSummary, LineGroupRef, LineStatusR
 import { HalfHourlyTrendsResults } from './history/HalfHourlyTrendsResults';
 import { HalfHourlyCoverageTrendsResults } from './history/HalfHourlyCoverageTrendsResults';
 import { LineTrainsResults } from './LineTrainsResults';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 import { ButtonLink } from '@/components/ButtonLink';
+import { StateBadge } from '@/components/StateBadge';
 
 /** `Suspense` fallback for both "Recent trends" boundaries below (review
  * §2.11). Sized to the *empty* state both `HalfHourlyTrendsResults` and
@@ -232,7 +233,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     }
     const title = name;
     const description = `${name}: ${NO_STATUS_SUMMARY}`;
-    return pageMetadata(title, description);
+    return pageMetadata(title, description, OWN_PREVIEW_IMAGE);
   }
 
   const report = statusResult.report;
@@ -242,7 +243,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     ? `${report.name}: ${severityLabel(worst.statusSeverity)}. ${worst.reason}`
     : `${report.name}: ${severityLabel(worst.statusSeverity)}`;
 
-  return pageMetadata(title, description);
+  return pageMetadata(title, description, OWN_PREVIEW_IMAGE);
 }
 
 export default async function LineDetailPage({
@@ -472,9 +473,9 @@ export default async function LineDetailPage({
           {statusResult.coverage === 'present' ? (
             <StatusBadge severity={worstStatus(statusResult.report).statusSeverity} />
           ) : (
-            <Badge tt="none" color="gray" variant="light" data-status-badge>
+            <StateBadge tone="neutral" data-status-badge="">
               {NO_STATUS_BADGE}
-            </Badge>
+            </StateBadge>
           )}
         </Group>
       </Group>
