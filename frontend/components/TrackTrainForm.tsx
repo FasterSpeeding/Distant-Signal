@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useState, type SubmitEvent } from 'react';
+import { useId, useState, type SubmitEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Alert,
@@ -17,9 +17,7 @@ import { DateTimePicker, DatePickerInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
-import { NationalRailCredit } from './NationalRailCredit';
-import { ScheduleRow } from './ScheduleRow';
-import { TextLink } from './TextLink';
+import { DeparturePicker, useDeparturePicker } from './DeparturePicker';
 import { TrackDestinationModal } from './TrackDestinationModal';
 import { TimeFilterInput } from './TimeFilterInput';
 import { searchStations, searchTocs } from '@/lib/suggestions';
@@ -27,368 +25,20 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import { useGroupSummaries } from '@/lib/useGroupSummaries';
 import { shareTrackedTrainToGroup } from '@/lib/shareTrackedTrain';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import { stationLabel } from '@/lib/stationLabel';
-import { addCalendarDays, nowInLondon, londonToday, londonWallClockToUtc, LONDON_TZ } from '@/lib/londonWallClock';
-import type { BoardCallingPoint, CreateJourneyResponse, LineTrainSummaryLive } from '@/lib/types';
+import { nowInLondon, londonWallClockToUtc } from '@/lib/londonWallClock';
+import type { CreateJourneyResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
-import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
-
-const CRS_PATTERN = /^[A-Za-z]{3}$/;
-const OPERATOR_PATTERN = /^[A-Za-z]{2}$/;
-
-/** How many days past London's today a pin's service date may be. Mirrors
- * the backend's `PIN_MAX_DAYS_AHEAD` (`crates/ds-store/src/tracking.rs`,
- * 28 since 2026-10-08, the timetable's publish window), which rejects
- * anything later with the same copy as `pinTooFarMessage`. */
-export const PIN_MAX_DAYS_AHEAD = 28;
-
-/** The last London calendar day a pin may be for, `'YYYY-MM-DD'`. */
-export function lastPinDate(): string {
-  return addCalendarDays(londonToday(), PIN_MAX_DAYS_AHEAD);
-}
-
-const pinTooFarMessage = `That departure is too far ahead. Trains can be tracked up to ${PIN_MAX_DAYS_AHEAD} days before they run.`;
-
-/** True unless `destinationCrs` looks like a resolved 3-letter code AND
- * the row's own destination doesn't case-insensitively match it. While
- * the field still holds partial/typed-name text (or is empty), every row
- * matches -- there is nothing on a row to honestly match partial text
- * against (rows carry a CRS code, never a station name). A `null` row
- * destination (CIF only) never matches an *active* filter: "unknown" is
- * not "assume it matches". See
- * docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
- * Decision 1. */
-function matchesDestination(rowDestinationCrs: string | null, destinationCrs: string): boolean {
-  const trimmed = destinationCrs.trim();
-  if (!CRS_PATTERN.test(trimmed)) return true;
-  return rowDestinationCrs !== null && rowDestinationCrs.toUpperCase() === trimmed.toUpperCase();
-}
-
-/** Same idea for Operator, LDBWS rows only -- CIF rows have no `operator`
- * field at all (the CIF SCHEDULE feed doesn't carry one), so call sites
- * for CIF rows never call this at all, exempting those rows from the
- * Operator filter entirely rather than having them always fail it (which
- * would silently defeat the whole point of the CIF fallback). See the
- * design doc's Decision 1, "CIF/Operator schema asymmetry". */
-function matchesOperator(rowOperator: string, operator: string): boolean {
-  const trimmed = operator.trim();
-  if (!OPERATOR_PATTERN.test(trimmed)) return true;
-  return rowOperator.toUpperCase() === trimmed.toUpperCase();
-}
-
-/** How many hours a same-day combination of an LDBWS `DepartureRow.scheduled`
- * "HH:MM" with TODAY's date can land before real wall-clock "now" before
- * `resolveLdbwsDepartureDate` (below) judges it to actually be tomorrow
- * instead. `DepartureRow` carries no date/day-offset field at all (see its
- * own doc comment), so the only signal available to tell "a genuinely
- * same-day departure that's already left" apart from "a departure that's
- * rolled past local midnight and is really tomorrow" is how far in the past
- * the naive same-day combination lands. `crates/poller-ldbws/src/main.rs`'s
- * `fetch_departures`/`fetch_departures_once` calls Darwin's
- * `GetDepBoardWithDetails` with only `numRows` set -- no `timeOffset`/
- * `timeWindow` override -- so every row on the board is governed by
- * Darwin's own default near-term look-ahead window (on the order of ~2
- * hours): a live board never shows a departure that has already left, and
- * never reaches further into the future than that window either. `4`
- * comfortably clears that ~2-hour window with margin for clock skew between
- * the browser and Darwin/the poller and for the board being briefly stale
- * by the time it's rendered/clicked, while staying well short of a full
- * 24h so a genuinely-stale same-day row is never misread as "tomorrow"
- * just because it's a few hours old. Mirrors the reasoning
- * `poller-ldbws::schema::compute_delay_minutes` already applies to these
- * same `std`/`etd` fields for its own midnight-wraparound handling (see
- * that function's doc comment) -- same bare-"HH:MM"-no-date shape, same
- * data source, same underlying fix, just applied client-side here since
- * `DepartureRow` has no day-offset field to compute server-side. */
-const LDBWS_PAST_THRESHOLD_HOURS = 4;
-
-/** How many days past `now`'s own calendar date an LDBWS `DepartureRow`'s
- * bare `"HH:MM"` `scheduled` genuinely falls on: `0` (today) unless
- * combining it with today's date would land more than
- * `LDBWS_PAST_THRESHOLD_HOURS` hours in the PAST relative to `now`, in
- * which case it's `1` (tomorrow) -- see that constant's own doc comment for
- * why that threshold. Only ever corrects forward, never backward: a live
- * upcoming-departures board never shows an already-passed departure, so
- * there is no valid scenario where a row is really YESTERDAY relative to
- * `now` -- unlike CIF's `dayOffset` (a known fact carried on the row
- * itself), this is inferred, and inference only ever needs to go one
- * direction here. Deliberately compares against `now` (real wall-clock
- * time), not whatever `scheduledDeparture` the user may have already typed
- * -- the two are unrelated: this answers "what calendar day is this row
- * really on", not "has the user's chosen time already passed it".
- *
- * `now` is converted to Europe/London (`.tz(LONDON_TZ)`) before either its
- * calendar date is read or the row's `"HH:MM"` is combined with it --
- * `scheduled` is Darwin's own Europe/London wall-clock reading, so "today"
- * must mean the London calendar day, and the combined same-day guess must
- * be interpreted in that same zone, not whatever zone `now` itself happens
- * to carry (`dayjs()`'s host zone, if a caller passes one unconverted). This
- * makes the function correct regardless of what `now` the caller passes in
- * -- see `lib/londonWallClock.ts`'s own doc comment (2026-09-26 "Repeater
- * Signal" review, finding M8) for the bug this closes: a visitor outside
- * the UK combining today's BROWSER-local date with a London-wall-clock
- * `"HH:MM"` could misjudge a near-midnight row's real day by up to a whole
- * day. */
-function ldbwsDayOffset(scheduled: string, now: dayjs.Dayjs): 0 | 1 {
-  const [hh, mm] = scheduled.split(':');
-  const nowLondon = now.tz(LONDON_TZ);
-  const sameDay = dayjs.tz(`${nowLondon.format('YYYY-MM-DD')} ${hh}:${mm}:00`, LONDON_TZ);
-  return nowLondon.diff(sameDay, 'hour', true) > LDBWS_PAST_THRESHOLD_HOURS ? 1 : 0;
-}
-
-/** Resolves the real calendar date (`'YYYY-MM-DD'`) an LDBWS
- * `DepartureRow.scheduled` "HH:MM" falls on, relative to `now` -- `now.add(
- * ldbwsDayOffset(scheduled, now), 'day')`, formatted. See `ldbwsDayOffset`'s
- * own doc comment for the reasoning; this is the piece `pickDeparture` and
- * the LDBWS branch of `matchesScheduledDeparture`'s filtering both need,
- * factored out so they can't drift out of sync with each other.
- *
- * `now` is converted to Europe/London before its calendar date is read, same
- * reasoning and same fix as `ldbwsDayOffset` immediately above (whose own
- * internal London conversion this relies on for the day-offset itself). */
-function resolveLdbwsDepartureDate(scheduled: string, now: dayjs.Dayjs): string {
-  return now.tz(LONDON_TZ).add(ldbwsDayOffset(scheduled, now), 'day').format('YYYY-MM-DD');
-}
-
-/** True unless `scheduledDeparture` is resolved AND the row's own
- * departure time is strictly before it -- filters out departures that
- * have already passed relative to whatever the user has typed/picked,
- * additive alongside `matchesDestination`/`matchesOperator`. Applies to
- * BOTH sources identically (unlike the Destination/Operator split): both
- * `DepartureRow.scheduled` and `ScheduleDepartureRow.scheduled` are the
- * same `"HH:MM"` shape. Combines the row's `"HH:MM"` with `rowDayOffset`
- * days past *today's Europe/London* date (`nowInLondon()`, not `dayjs()`'s
- * host-zone "today" -- 2026-09-26 review, finding M8: `scheduled` is itself
- * a London wall-clock reading, so "today" must mean the London calendar day
- * or this comparison drifts by a day near midnight for a visitor outside
- * the UK) into the exact same `'YYYY-MM-DD HH:mm:ss'` string shape
- * `scheduledDeparture` itself holds
- * -- same construction `pickDeparture`/`pickCifDeparture`/the "Now" button
- * already use -- so the two can be compared with a plain string comparison
- * rather than round-tripping through `Date`/UTC (this format sorts
- * lexicographically identical to chronologically, and a round-trip through
- * `Date` risks exactly the kind of local-midnight/DST day-off-by-one this
- * file's `handleSubmit` comment already warns about). A `null`
- * `scheduledDeparture` (not yet resolved) never filters -- matches every
- * row, same "unknown means don't filter" posture as the other two
- * matchers.
- *
- * `rowDayOffset` defaults to `0`. Two call sites, two different ways of
- * arriving at a value: the CIF call site passes a real, known
- * `row.dayOffset` -- see `ScheduleDepartureRow.dayOffset`'s own doc comment
- * for why CIF rows, and only CIF rows, can carry one straight from the
- * server. The LDBWS call site has no such field to read (`DepartureRow`
- * carries no day-offset concept at all -- Darwin has no CIF-schedule
- * linkage to derive one from), so it instead passes an INFERRED value, via
- * `ldbwsDayOffset` -- see that function's own doc comment for the
- * midnight-wraparound heuristic behind it. Without a nonzero offset from
- * either source, a genuinely-future post-midnight row (CIF `dayOffset: 1`,
- * or an LDBWS row `ldbwsDayOffset` infers as tomorrow -- e.g. `00:07`
- * viewed at 23:50) would compare as "today 00:07", read as already-passed
- * relative to a same-day `scheduledDeparture`, and be silently filtered out
- * of the picker entirely -- never even reachable to click, regardless of
- * how `pickCifDeparture`/`pickDeparture` themselves compute the date once
- * picked.
- *
- * `baseDate` (`'YYYY-MM-DD'`) is the day `rowDayOffset` counts from,
- * London's today by default. The CIF call site passes the row's own
- * `serviceDate` (see `CifPickerRow`), which is what its `dayOffset` is
- * relative to. */
-function matchesScheduledDeparture(
-  rowScheduled: string,
-  scheduledDeparture: string | null,
-  rowDayOffset = 0,
-  baseDate: string = londonToday(),
-): boolean {
-  if (scheduledDeparture === null) return true;
-  const [hh, mm] = rowScheduled.split(':');
-  const date = addCalendarDays(baseDate, rowDayOffset);
-  const rowDateTime = `${date} ${hh}:${mm}:00`;
-  return rowDateTime >= scheduledDeparture;
-}
-
-/** Wire shape of `GET /public/stations/{crs}/departures`
- * (`crates/api/src/render.rs::station_departure_json`) -- camelCase
- * mirror of `common::StationDeparture`'s own fields, minus `headcode`
- * (always `None` at the source, never carried through). See
- * docs/superpowers/specs/2026-09-03-trip-search-design.md Decision 2/5.
- * Deliberately carries no `uid`: LDBWS/Darwin has no concept of the CIF
- * schedule UID the public `/train/[uid]/[date]` page is keyed on --
- * `serviceId` below is Darwin's own RID-based identifier, a different
- * scheme entirely, not a substitute. That's why this source's row
- * rendering (`pickerContent`, `'ldbws'` branch) has no "View live status"
- * link even though the `'cif'` branch does. */
-interface DepartureRow {
-  serviceId: string;
-  operator: string;
-  destinationCrs: string;
-  /** Resolved via a batched `stations` lookup, added server-side
-   * (`render::station_departure_json`) so this picker can show a name
-   * instead of a bare CRS code -- 2026-09-22 UX review follow-up. `null`
-   * when the code has no `stations` reference row, same "fall back to the
-   * bare code" convention `stationLabel` applies everywhere else in this
-   * app. */
-  destinationName: string | null;
-  scheduled: string;
-  estimated: string;
-  isCancelled: boolean;
-  delayMinutes: number;
-  cancelReason: string | null;
-  delayReason: string | null;
-  skippedStations: string[];
-  // See `JourneyStop.platform`/`plannedPlatform`/`platformChanged`'s own
-  // doc comments in `lib/types.ts` -- same fields, same meaning, this
-  // route's own copy of them (`station_departure_json`).
-  platform: string | null;
-  plannedPlatform: string | null;
-  platformChanged: boolean;
-  // LDBWS Retail Service ID and the service's subsequent calling points
-  // (see `BoardCallingPoint` in `lib/types.ts`). Optional: older backends
-  // and older stored boards don't send them. Not rendered by the picker.
-  rsid?: string | null;
-  callingPoints?: BoardCallingPoint[];
-}
-
-/** Wire shape of `GET /public/stations/{crs}/schedule-departures`
- * (`crates/api/src/render.rs::schedule_departure_json`) -- deliberately
- * NOT `DepartureRow`: no `operator`, no live running-status fields at all
- * (`isCancelled`/`delayMinutes`/`estimated`/`cancelReason`/`delayReason`),
- * because the CIF SCHEDULE feed genuinely has none of that -- see
- * docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
- * Decision 2/5. (Since 2026-10-07 the server joins the train's own live
- * state, when it has one, into the optional `live` object below.)
- * `destinationCrs` is nullable: `null` when the terminating
- * TIPLOC has no `stanox_crs` row (a real, if rare, gap).
- *
- * `dayOffset` is how many calendar days past this route's own "today" (the
- * server always resolves this endpoint's `service_date` to today, see that
- * route's own doc comment) `scheduled` actually falls on -- mirrors
- * `schedule_query::CallingPoint::day_offset` verbatim. Needed because a
- * bare `"HH:MM"` string carries no day information of its own: a real
- * overnight CIF schedule can have a calling point booked at, say, `00:07`
- * that is genuinely TOMORROW relative to when the schedule itself started
- * (see `schedule_query::resolve`'s own `f49687_raw` doc comment for the
- * live-confirmed c2c Liverpool Street -> Shoeburyness example this exists
- * for). Almost always `0`. `pickCifDeparture` and `matchesScheduledDeparture`
- * both use this to compute the row's REAL departure calendar date instead of
- * always assuming "today" -- see their own doc comments.
- *
- * It never moves the row's SERVICE date: every row in one response belongs
- * to the same CIF service date (the bucket's, `Picker`'s `serviceDate`), and
- * the `/train/{uid}/{date}` link is keyed on that, not on the departure's
- * own day. Optional because an `api` pod from before the field existed
- * (rolled independently of `frontend`) omits it; absent means `0`. */
-interface ScheduleDepartureRow {
-  uid: string;
-  scheduled: string;
-  /** The public (timetable) departure, shown in place of `scheduled` (the
-   * working-timetable time, kept as WTT for one release). `null`/absent
-   * until the next schedule publish. */
-  publicDeparture?: string | null;
-  /** Absent from an older api pod mid-rollout; see `pickCifDeparture`. */
-  dayOffset?: number;
-  destinationCrs: string | null;
-  /** Same server-side batched-lookup enrichment as `DepartureRow`'s own
-   * `destinationName` -- see its doc comment. `null` both when
-   * `destinationCrs` itself is `null` and when it resolved to no
-   * `stations` row. */
-  destinationName: string | null;
-  /** The schedule's true origin CRS, `null` when it does not resolve
-   * (2026-10-07, docs/api-changelog.md). */
-  originCrs?: string | null;
-  /** `originCrs`'s station name, `null` when unknown. */
-  originName?: string | null;
-  /** The line summary's compact live status for this train today; `null`
-   * when it has none. */
-  live?: LineTrainSummaryLive | null;
-}
-
-/** `'unavailable'` replaces the old `'not-sampled'` name: it now means
- * neither the LDBWS live board NOR the CIF-derived timetable had data for
- * this station -- see Decision 3/5.
- *
- * Each CIF row carries the `serviceDate` of the bucket it was fetched from
- * (`CifPickerRow`). */
-type Picker =
-  { source: 'ldbws'; rows: DepartureRow[] } | { source: 'cif'; rows: CifPickerRow[] } | 'unavailable' | null;
-
-/** A CIF picker row plus its CIF service date: the London date of the
- * `schedule-departures` bucket it came from (`?date=`, or the server's own
- * `london_today()` when absent). A row's own departure day is
- * `serviceDate + dayOffset`; its `/train/{uid}/{date}` link uses
- * `serviceDate`. Captured at fetch time rather than re-read from the clock
- * at render, so a picker fetched at 23:59 doesn't relabel every row a day
- * later once London midnight passes. Between 00:00 and 02:00 the picker
- * also holds rows from yesterday's bucket, see `fetchCifPickerRows`. */
-type CifPickerRow = ScheduleDepartureRow & { serviceDate: string };
-
-/** London hour before which the CIF picker also shows yesterday's services
- * still due here -- this codebase's 02:00 rail-day rollover
- * (`crates/common/src/rail_day.rs`). Until then, a service that left its
- * origin last evening can still be on its way to this station. */
-const RAIL_DAY_ROLLOVER_HOUR = 2;
-
-/** The departure's own London wall-clock reading, `'YYYY-MM-DD HH:mm:00'`
- * -- the same string shape `scheduledDeparture` holds. */
-function cifDepartureDateTime(row: CifPickerRow): string {
-  const [hh, mm] = row.scheduled.split(':');
-  return `${addCalendarDays(row.serviceDate, row.dayOffset ?? 0)} ${hh}:${mm}:00`;
-}
-
-/** The `schedule-departures` rows for `crs`, each tagged with its service
- * date. Resolves to `'unavailable'` on today's `404`, `null` on any other
- * failure of today's request -- the picker's existing contract.
- *
- * Between London 00:00 and 02:00 it also asks for yesterday's bucket
- * (`?date=`) and adds its rows that depart after midnight (`dayOffset >= 1`)
- * and not before now: last evening's services still due here, which
- * today's bucket can't contain (a CIF service is dated by its origin day).
- * Those rows keep yesterday as their service date. That request is
- * best-effort: any failure just leaves them out. An `api` pod from before
- * `?date=` ignores the parameter and answers with today's bucket, so an
- * answer identical to today's is discarded rather than relabelled.
- *
- * The merged rows are put in departure order. Duplicates (same uid, service
- * date and departure) are dropped; a service calling here twice keeps both
- * calls, since those differ in departure. */
-async function fetchCifPickerRows(crs: string, signal: AbortSignal): Promise<CifPickerRow[] | 'unavailable' | null> {
-  const now = nowInLondon();
-  const today = now.format('YYYY-MM-DD');
-  const yesterday = addCalendarDays(today, -1);
-  const base = `/api/stations/${crs}/schedule-departures`;
-  const yesterdayRequest: Promise<ScheduleDepartureRow[] | null> =
-    now.hour() < RAIL_DAY_ROLLOVER_HOUR
-      ? fetch(`${base}?date=${yesterday}`, { signal })
-          .then((res) => (res.ok ? (res.json() as Promise<unknown>) : null))
-          .then((body) => (Array.isArray(body) ? (body as ScheduleDepartureRow[]) : null))
-          .catch(() => null)
-      : Promise.resolve(null);
-  const [todayRes, yesterdayRows] = await Promise.all([fetch(base, { signal }), yesterdayRequest]);
-  if (todayRes.status === 404) {
-    return 'unavailable';
-  }
-  if (!todayRes.ok) {
-    return null;
-  }
-  const todayRows = (await todayRes.json()) as ScheduleDepartureRow[];
-  const rows: CifPickerRow[] = todayRows.map((row) => ({ ...row, serviceDate: today }));
-  if (yesterdayRows === null || JSON.stringify(yesterdayRows) === JSON.stringify(todayRows)) {
-    return rows;
-  }
-  const nowWallClock = now.format('YYYY-MM-DD HH:mm:00');
-  const stillDue = yesterdayRows
-    .map((row): CifPickerRow => ({ ...row, serviceDate: yesterday }))
-    .filter((row) => (row.dayOffset ?? 0) >= 1 && cifDepartureDateTime(row) >= nowWallClock);
-  const seen = new Set<string>();
-  return [...stillDue, ...rows]
-    .filter((row) => {
-      const key = `${row.uid}|${row.serviceDate}|${cifDepartureDateTime(row)}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((a, b) => cifDepartureDateTime(a).localeCompare(cifDepartureDateTime(b)));
-}
+import { ButtonSpinner } from '@/components/LoadingText';
+import {
+  CRS_PATTERN,
+  PIN_MAX_DAYS_AHEAD,
+  cifDepartureDateTime,
+  lastPinDate,
+  pinTooFarMessage,
+  resolveLdbwsDepartureDate,
+  type CifPickerRow,
+  type DepartureRow,
+} from '@/lib/departurePicker';
 
 /** The v1 entry point for individual train tracking -- a manual form, not
  * a per-departure "track this train" action, per
@@ -560,16 +210,9 @@ export function TrackTrainForm({
     searchTocs,
   );
   const [originTouched, setOriginTouched] = useState(false);
-  const [picker, setPicker] = useState<Picker>(null);
-  // Initialized from `initialOrigin` (not `false`) so a form mounted with
-  // an already-valid pre-filled origin shows "Checking for departures"
-  // on the very first paint rather than flashing the `picker === null`
-  // "couldn't load" sentence for one render before the effect below runs.
-  // Per docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
-  // Decision 5.
-  const [pickerLoading, setPickerLoading] = useState(() => CRS_PATTERN.test(initialOrigin.trim()));
 
   const originValid = CRS_PATTERN.test(originCrs.trim());
+  const { picker, loading: pickerLoading } = useDeparturePicker(originCrs, originValid, initialOrigin);
   const canSubmit = originValid && scheduledDeparture !== null && !submitting;
 
   // Window-search mode -- the `SegmentedControl`'s second option. Reuses
@@ -646,61 +289,6 @@ export function TrackTrainForm({
   const windowHasABound =
     departFrom.trim() !== '' || departTo.trim() !== '' || arriveFrom.trim() !== '' || arriveTo.trim() !== '';
   const canSubmitWindow = originValid && destinationValid && windowTimesComplete && windowHasABound && !submitting;
-
-  // Fetch the live departures picker whenever the origin resolves to a
-  // syntactically valid CRS -- same same-origin `/api/*` proxy pattern
-  // `searchStations`/`searchTocs` already use (client-safe, no `baseUrl()`
-  // import). Per docs/superpowers/specs/2026-09-03-trip-search-design.md
-  // Decision 4. Falls back to the CIF-derived schedule-departures picker on
-  // a 404, per
-  // docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
-  // Decision 3.
-  useEffect(() => {
-    if (!originValid) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the picker when its input stops being valid, before any fetch
-      setPicker(null);
-      setPickerLoading(false);
-      return;
-    }
-    const controller = new AbortController();
-    const crs = originCrs.trim().toUpperCase();
-    setPickerLoading(true);
-
-    fetch(`/api/stations/${crs}/departures`, { signal: controller.signal })
-      .then((res) => {
-        if (res.status === 404) {
-          // Fallback ONLY on 404 -- an LDBWS network blip or 500 must NOT
-          // silently swap in the CIF picker; `!res.ok` still maps to `null`
-          // exactly as today, leaving the picker absent rather than
-          // switching sources on an error condition. Per
-          // docs/superpowers/specs/2026-09-04-whole-network-trip-search-design.md
-          // Decision 3.
-          return fetchCifPickerRows(crs, controller.signal).then((rows) => {
-            setPickerLoading(false);
-            setPicker(rows === 'unavailable' || rows === null ? rows : { source: 'cif', rows });
-          });
-        }
-        if (!res.ok) {
-          setPickerLoading(false);
-          setPicker(null);
-          return;
-        }
-        return res.json().then((rows: DepartureRow[]) => {
-          setPickerLoading(false);
-          setPicker({ source: 'ldbws', rows });
-        });
-      })
-      .catch(() => {
-        // Aborted (superseded by a newer origin change) or a genuine
-        // network blip -- either way, leave prior `picker` state, same
-        // posture as `useSuggestions`. Only flip `pickerLoading` off for a
-        // genuine failure of *this* request; an aborted one is about to be
-        // superseded by a new effect run that has already set it back to
-        // `true`, and unconditionally clearing it here would race that.
-        if (!controller.signal.aborted) setPickerLoading(false);
-      });
-    return () => controller.abort();
-  }, [originCrs, originValid]);
 
   /** Fills Destination/Operator/Scheduled-departure from a picked, real
    * live departure -- without submitting, so the user can still review/
@@ -1050,250 +638,6 @@ export function TrackTrainForm({
     void submitTrack(null);
   }
 
-  /** The picker container's content, in the priority order documented in
-   * docs/superpowers/specs/2026-09-04-track-a-train-picker-refactor-design.md
-   * Decision 4 -- exactly one of six mutually-exclusive states, checked
-   * top to bottom. Rows are filtered by `matchesDestination`/
-   * `matchesOperator` (Decision 1), and additionally by
-   * `matchesScheduledDeparture` (both sources -- see that function's own
-   * doc comment) before rendering; a source whose *unfiltered* result was
-   * already empty (state 5 below) is distinguished from one that had rows
-   * but none survived filtering (the two new sentences inside the
-   * `'ldbws'`/`'cif'` branches) -- different honest meanings, different
-   * copy.
-   *
-   * Neither row-list branch below is wrapped in a `ScrollArea`, and that is
-   * load-bearing. Both used to be (`<ScrollArea mah={220}
-   * offsetScrollbars>`), which did not scroll -- it hard-clipped. A Mantine
-   * `ScrollArea` root is `position: relative; overflow: hidden`
-   * (`@mantine/core/styles/ScrollArea.css`, `.m_d57069b5`) while its
-   * viewport is `height: 100%`. With only `mah` on the root, the root's own
-   * `height` stays `auto`, so that `100%` resolves to `auto` too (CSS 2.1
-   * §10.5: a percentage height against a content-sized containing block
-   * computes to `auto`): the viewport grew to its full content height and
-   * so never overflowed *itself* -- nothing scrolled -- while the root
-   * clamped to 220px and hid the rest behind `overflow: hidden`. Mantine's
-   * own scrollbar is sized from `scrollHeight` vs `clientHeight`, equal
-   * here, so it never appeared to hint at it either, and the native one is
-   * suppressed (`scrollbar-width: none`).
-   *
-   * That is worse here than in the two list pages with the same defect
-   * (`IncidentSearchForm.tsx`, since fixed, and `TrainSearchForm.tsx`):
-   * these rows are `role="button"` pickers, not text. A row is ~30px of
-   * pitch (a `size="sm"` line -- 14px at Mantine's `--mantine-line-height-
-   * sm: 1.45`, so ~20px -- plus the `Stack`'s 10px `xs` gap), so the 220px
-   * cap landed after about seven of them, and every row past that was
-   * unselectable -- unreachable by pointer and by wheel, and reachable by
-   * keyboard only into a dead end (a browser does scroll an `overflow:
-   * hidden` box to reveal a focused descendant, which parked the box at an
-   * offset the user had no gesture to undo, hiding the *earlier* rows
-   * instead). Silently, too: the rows were in the DOM and in the a11y tree,
-   * so nothing said a departure had been hidden.
-   *
-   * `ScrollArea.Autosize` IS the Mantine component that supports a max
-   * height (it wraps the root in a `display: flex` / `flex: 1` /
-   * `overflow: hidden` chain, which is what makes the root's height
-   * definite), but a bounded scroller isn't wanted here anyway: this picker
-   * is rendered in the page flow inside the form (see the `mih={72}`
-   * `Stack` below), not in a popover or a dropdown, so there is no
-   * containing box it has to fit. Both sources publish about 10 rows in
-   * practice -- CIF by a hard cap (`schedule-reference`'s
-   * `MAX_DEPARTURES_PER_STATION = 10`, truncated before publication, which
-   * `schedule_network_departures`' own migration header records as
-   * "next-10, now-forward-filtered"), LDBWS only by the DEFAULT of
-   * `poller-ldbws`'s `--num-rows` flag, which an operator can raise (see
-   * `crates/poller-ldbws/src/main.rs`, which explicitly contemplates a
-   * configured value "much larger than 10"). So ~290px at worst today,
-   * barely past the 220px cap it replaces -- and, unlike that cap, an
-   * LDBWS board configured longer degrades into more page to scroll
-   * rather than into hidden departures. */
-  function pickerContent() {
-    if (!originValid) {
-      return (
-        <Text size="sm" c="dimmed">
-          Enter an origin station above to see upcoming departures.
-        </Text>
-      );
-    }
-    if (pickerLoading) {
-      return <LoadingText>Checking for departures</LoadingText>;
-    }
-    if (picker === null) {
-      return (
-        <Text size="sm" c="dimmed">
-          Couldn&apos;t load departures for this station right now. Enter the details below.
-        </Text>
-      );
-    }
-    if (picker === 'unavailable') {
-      return (
-        <Text size="sm" c="dimmed">
-          No departure information is available for this station. Enter the details below.
-        </Text>
-      );
-    }
-    if (picker.rows.length === 0) {
-      return (
-        <Text size="sm" c="dimmed">
-          No live departures currently on the board for this station right now.
-        </Text>
-      );
-    }
-    if (picker.source === 'ldbws') {
-      // `ldbwsDayOffset`, not a bare `0`: without it, a near-midnight row
-      // that's really tomorrow (see `ldbwsDayOffset`'s own doc comment)
-      // would compare as "today HH:MM", read as already-passed relative to
-      // a same-day `scheduledDeparture`, and be silently filtered out here
-      // before it could ever be reached to click -- the same exposure
-      // `matchesScheduledDeparture`'s own doc comment already documents for
-      // the CIF side.
-      const now = dayjs();
-      const filtered = picker.rows.filter(
-        (row) =>
-          matchesDestination(row.destinationCrs, destinationCrs) &&
-          matchesOperator(row.operator, operator) &&
-          matchesScheduledDeparture(row.scheduled, scheduledDeparture, ldbwsDayOffset(row.scheduled, now)),
-      );
-      if (filtered.length === 0) {
-        return (
-          <Text size="sm" c="dimmed">
-            No upcoming departures match the destination and/or operator you&apos;ve entered.
-          </Text>
-        );
-      }
-      return (
-        // Deliberately NOT wrapped in a `ScrollArea` -- see
-        // `pickerContent`'s own doc comment for the full reasoning. This
-        // branch's rows are `role="button"` pickers, so the clipping this
-        // used to cause made them literally unselectable.
-        //
-        // Rows render via the shared `ScheduleRow` component (not
-        // hand-rolled here) -- see that component's own comments for
-        // its non-clickable cancelled treatment (struck-through time, red
-        // "Cancelled" badge, screen-reader text; never dimmed, for AA).
-        <>
-          <Stack gap="xs" data-departure-picker-rows>
-            {filtered.map((row) => (
-              <ScheduleRow
-                key={row.serviceId}
-                row={{
-                  key: row.serviceId,
-                  scheduled: row.scheduled,
-                  destinationCrs: row.destinationCrs,
-                  destinationName: row.destinationName,
-                  operator: row.operator,
-                  isCancelled: row.isCancelled,
-                  delayMinutes: row.delayMinutes,
-                  platform: row.platform,
-                  plannedPlatform: row.plannedPlatform,
-                  platformChanged: row.platformChanged,
-                }}
-                onSelect={() => pickDeparture(row)}
-              />
-            ))}
-          </Stack>
-          {/* LEG-23: this is Darwin's live departure board, so the National
-              Rail credit sits directly under it. */}
-          <NationalRailCredit />
-        </>
-      );
-    }
-    // picker.source === 'cif' -- Operator never filters this source
-    // (Decision 1's CIF/Operator asymmetry): `matchesOperator` is simply
-    // never called here.
-    const filtered = picker.rows.filter(
-      (row) =>
-        matchesDestination(row.destinationCrs, destinationCrs) &&
-        matchesScheduledDeparture(row.scheduled, scheduledDeparture, row.dayOffset, row.serviceDate),
-    );
-    return (
-      <>
-        <Text size="sm" c="dimmed">
-          Live departure boards aren&apos;t available for this station. Showing the scheduled timetable instead. This is
-          not live running information and may be up to 30 minutes out of date.
-        </Text>
-        {filtered.length === 0 ? (
-          <Text size="sm" c="dimmed">
-            No upcoming scheduled departures match the destination you&apos;ve entered.
-          </Text>
-        ) : (
-          // Deliberately NOT wrapped in a `ScrollArea` -- see
-          // `pickerContent`'s own doc comment, and the LDBWS branch's own
-          // copy of this note. Same `role="button"` rows, same defect.
-          <Stack gap="xs" data-departure-picker-rows>
-            {filtered.map((row) => (
-              <Group
-                key={row.uid}
-                justify="space-between"
-                wrap="nowrap"
-                role="button"
-                tabIndex={0}
-                onClick={() => pickCifDeparture(row)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row);
-                }}
-                className="ds-clickable"
-              >
-                <Text size="sm">
-                  {/* Public time shown; `row.scheduled` (WTT) stays the
-                      value `pickCifDeparture` matches on. */}
-                  {row.publicDeparture ?? row.scheduled}
-                  {/* `stationLabel` -- same "Name (CODE)", bare-code-fallback
-                      convention as everywhere else in this app (item 5,
-                      2026-09-22 UX review follow-up): this used to always
-                      show the raw code alone. */}
-                  {row.destinationCrs ? ` · ${stationLabel(row.destinationCrs, row.destinationName)}` : ''}
-                </Text>
-                {/* A secondary action, deliberately separate from the row's
-                    own click-to-select behaviour above: this navigates to
-                    the train's own public status page
-                    (`/train/[uid]/[date]`) WITHOUT filling/submitting the
-                    tracking form at all, for a visitor who just wants to
-                    look, not track. `row.uid` is a real CIF schedule UID
-                    here (unlike the LDBWS branch above, whose
-                    `DepartureRow` carries no train UID at all -- Darwin's
-                    `serviceId` is a different identifier scheme entirely,
-                    and the public page is keyed on the CIF/TRUST one --
-                    so that branch has nothing honest to link this action
-                    to and doesn't render it).
-
-                    `stopPropagation` on BOTH handlers, not just `onClick`:
-                    this link sits inside the row's own `role="button"`
-                    `onClick`/`onKeyDown`, so without it, either activation
-                    path would ALSO select the row for tracking --
-                    a plain click bubbles up to the row's `onClick`, and an
-                    Enter/Space keydown on the focused link bubbles up to
-                    the row's `onKeyDown` before the browser's own
-                    synthesized click on the anchor even fires. The link
-                    keeps its own native Enter-to-follow behaviour and
-                    remains a normal, independently tab-reachable focus
-                    stop -- only the *bubbling into the row* is stopped.
-
-                    The linked date is the row's own `serviceDate`, with no `row.dayOffset` added: the public train
-                    page is keyed by `(train_uid, service_date)`, the CIF
-                    date the service left its origin, and `dayOffset` only
-                    moves a row's departure past midnight, never its
-                    service date. A service leaving its origin at 23:30 on
-                    D and calling here at 00:20 (`dayOffset: 1`) is D's
-                    run; D+1 would be the next night's run of the same uid,
-                    or a 404. `serviceDate` is a London date captured at
-                    fetch time (2026-09-26 review, finding M8; see
-                    `CifPickerRow`). */}
-                <TextLink
-                  href={`/train/${encodeURIComponent(row.uid)}/${row.serviceDate}`}
-                  onClick={(event) => event.stopPropagation()}
-                  onKeyDown={(event) => event.stopPropagation()}
-                >
-                  View live status
-                </TextLink>
-              </Group>
-            ))}
-          </Stack>
-        )}
-      </>
-    );
-  }
-
   return (
     <Stack gap="md">
       {/* Review §2.1/I21: the page's own intro used to be static copy
@@ -1558,11 +902,20 @@ export function TrackTrainForm({
               Decision 4. `mih={72}` blunts the size jump between the
               one/two-line text states; row-list states can legitimately grow
               past the minimum and are deliberately given no maximum -- see
-              `pickerContent`'s own doc comment for why the `mah`-capped
+              `DeparturePicker`'s doc comment for why the `mah`-capped
               `ScrollArea` that used to bound them was a clip, not a scroller,
               and why nothing replaced it. */}
             <Stack gap="xs" mih={72}>
-              {pickerContent()}
+              <DeparturePicker
+                originValid={originValid}
+                loading={pickerLoading}
+                picker={picker}
+                destinationCrs={destinationCrs}
+                operator={operator}
+                scheduledDeparture={scheduledDeparture}
+                onPickLive={pickDeparture}
+                onPickTimetable={pickCifDeparture}
+              />
             </Stack>
           </>
         )}

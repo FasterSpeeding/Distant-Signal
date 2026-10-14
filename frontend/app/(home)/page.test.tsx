@@ -1092,7 +1092,7 @@ describe('DashboardPage -- Lines shared with you section', () => {
 
     expect(screen.getByRole('heading', { name: 'Lines shared with you' })).toBeInTheDocument();
     expect(screen.getByText('My Commute')).toBeInTheDocument();
-    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
     expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /My Commute/ })).toHaveAttribute('href', '/lines/custom-my-commute');
   });
@@ -1106,8 +1106,8 @@ describe('DashboardPage -- Lines shared with you section', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getAllByText('My Commute')).toHaveLength(1);
-    expect(screen.getByText('from Family')).toBeInTheDocument();
-    expect(screen.getByText('from Commute Buddies')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
+    expect(screen.getByText('From Commute Buddies')).toBeInTheDocument();
   });
 
   it('falls back to "a member" rather than a raw user id when the sharer has no display name', async () => {
@@ -1421,7 +1421,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
-    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
     expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
   });
 
@@ -1472,7 +1472,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     const sharedRow = screen.getByText(byVisibleText('PAD to RDG')).closest('.mantine-Card-root');
     expect(sharedRow).not.toBeNull();
-    expect(within(sharedRow as HTMLElement).getByText('from Family')).toBeInTheDocument();
+    expect(within(sharedRow as HTMLElement).getByText('From Family')).toBeInTheDocument();
     expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
 
     // ...and the caller's own row carries neither -- an unattributed row
@@ -1492,8 +1492,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     renderWithMantine(await DashboardPage());
 
     expect(screen.getAllByText(byVisibleText('PAD to RDG'))).toHaveLength(1);
-    expect(screen.getByText('from Family')).toBeInTheDocument();
-    expect(screen.getByText('from Commuters')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
+    expect(screen.getByText('From Commuters')).toBeInTheDocument();
   });
 
   it('a shared train with a uid links to the public /train/{uid}/{date} page, even before it resolves', async () => {
@@ -1648,7 +1648,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
     // Still attributed -- the tags are what stop an unlabelled row reading
     // as one the caller tracked themselves.
-    expect(screen.getByText('from Family')).toBeInTheDocument();
+    expect(screen.getByText('From Family')).toBeInTheDocument();
   });
 
   it('caps the whole section at 5 rows across both halves, not 5 of each', async () => {
@@ -1743,7 +1743,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
     expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
-    expect(screen.queryByText('from Family')).not.toBeInTheDocument();
+    expect(screen.queryByText('From Family')).not.toBeInTheDocument();
   });
 });
 

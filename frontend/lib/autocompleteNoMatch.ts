@@ -1,7 +1,7 @@
 /** Works around a gap `nothingFoundMessage` can't reach: Mantine's
  * `Select`/`MultiSelect` accept a `nothingFoundMessage` prop that renders
  * into `Combobox.Empty` whenever their options list is empty (see
- * `components/IncidentSearchForm.tsx`'s own `noOptionsFound` for why that
+ * `components/noOptionsFound.tsx` for why that
  * matters -- an unstyled `Combobox.Empty` has no ARIA role, so a plain
  * string there fails axe's `aria-required-children`). `Autocomplete` does
  * NOT expose that prop at all (`@mantine/core` 9.5.2,

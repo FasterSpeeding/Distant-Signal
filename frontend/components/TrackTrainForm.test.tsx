@@ -2198,10 +2198,10 @@ describe('TrackTrainForm', () => {
     // component that *would* cap the height correctly. Deliberate, matching
     // `IncidentSearchForm.test.tsx`/`TrainSearchForm.test.tsx`'s identical
     // guards: the choice here is "no nested scroller at all, the page
-    // scrolls", and `pickerContent`'s own doc comment records why.
+    // scrolls", and `DeparturePicker`'s doc comment records why.
     describe('every picker row stays reachable, however many there are', () => {
       /** Deliberately 10 rows -- the number both sources actually publish
-       * (see `pickerContent`'s own doc comment), and comfortably past the
+       * (see `DeparturePicker`'s doc comment), and comfortably past the
        * ~7 that used to fit inside the removed 220px cap. '10:55', the
        * last, is the one that mattered: under the old `ScrollArea` it was
        * rendered and exposed to the a11y tree, and yet impossible to

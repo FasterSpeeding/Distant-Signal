@@ -201,6 +201,44 @@ export default function PrivacyPage() {
         </Text>
       </LegalSection>
 
+      {/* Delegated access (docs/superpowers/specs/2026-10-14-ds-mcp-delegated-
+          access-design.md). Worded to ship before the feature: no flag
+          exists yet. Drop "Once it is available" when Connected apps goes
+          live. */}
+      <LegalSection title="Connecting your AI assistant">
+        <Text>
+          This is optional and off unless you turn it on. Once it is available, you turn it on in Connected apps on your
+          account page. It lets an AI assistant you have connected to Distant Signal, such as Claude, work with the
+          journeys in your account.
+        </Text>
+        <List size="sm" spacing={4}>
+          <ListItem>It can save journeys you plan with it, and list and read your own journeys.</ListItem>
+          <ListItem>
+            It can delete only journeys it saved itself that are not shared with a group or by a link.
+          </ListItem>
+          <ListItem>
+            It can read journeys shared in a group only if a group owner or admin has turned this on for that group.
+            Other members&apos; journey names are hidden from it.
+          </ListItem>
+          <ListItem>It cannot create share links or change your groups.</ListItem>
+        </List>
+        <Text>
+          The journeys it saves, lists or reads (their names, dates, stations and trains) go through our assistant
+          connector, which we run ourselves, to your assistant&apos;s AI provider, such as Anthropic. The provider
+          handles them under your own account and its own terms.
+        </Text>
+        <Text>
+          To disconnect, use Disconnect in Connected apps. It takes effect straight away. The connection also ends after
+          90 days without use, and when you log out of our login service. Logging out of Distant Signal alone does not
+          end it.
+        </Text>
+        <Text>
+          We log each request your assistant makes (your account, the time, what it asked for and whether it worked),
+          never the journey contents, and keep these logs for 7 days. We keep a list of the journeys it deleted (name,
+          date, stations and train) for 30 days, shown in Connected apps so you can save them again.
+        </Text>
+      </LegalSection>
+
       <LegalSection title="Who we share it with">
         <List size="sm" spacing={4}>
           <ListItem>
@@ -215,6 +253,7 @@ export default function PrivacyPage() {
             carries the notifications but cannot read them, because they are encrypted.
           </ListItem>
           <ListItem>Anthropic, only if you use the AI chat with your own key (see above).</ListItem>
+          <ListItem>Your AI assistant&apos;s provider, only if you connect your assistant (see above).</ListItem>
           <ListItem>Members of groups you join, and anyone you give a share link to (see above).</ListItem>
         </List>
         <Text>

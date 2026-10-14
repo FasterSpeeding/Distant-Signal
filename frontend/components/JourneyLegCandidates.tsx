@@ -64,7 +64,7 @@ interface CandidatesResponse {
 }
 
 /** Exactly one of three mutually-exclusive states, mirroring
- * `TrainSearchForm.tsx`'s own `Results` type for the same reason: `hasRows`
+ * `lib/trainSearch.ts`'s `TrainSearchResults` type for the same reason: `hasRows`
  * below narrows to the success variant, and `nextCursor`/`loadMoreFailed`
  * live INSIDE it so a fresh fetch (a `journeyId`/`legId` change) or an error
  * discard them automatically rather than needing a separate `useState` each
