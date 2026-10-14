@@ -2688,6 +2688,13 @@ redis:
       pollerIrishRailGtfs: false
       pollerIrishRailLive: false
       pollerNirStations: false
+      # -- poller-transit-schedule for network metrolink (off by default;
+      # transit spec §13), as user `poller-transit-metrolink`
+      # (`~ds:ingest:transit-metrolink +xadd +xrevrange`). An `optional`
+      # user: it is rendered into the ACL file, and so needs the
+      # `poller-transit-metrolink-password` key of `existingSecret`, only
+      # while this is on. Turning it on restarts Redis once.
+      pollerTransitMetrolink: false
   image:
     repository: redis
     # -- Pinned to an exact 7.4 patch release and content digest (INF-11);

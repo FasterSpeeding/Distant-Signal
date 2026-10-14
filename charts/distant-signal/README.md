@@ -2076,6 +2076,7 @@ used for and why persistence defaults on.
 | `redis.acl.clients.pollerLdbws` | `false` | poller-ldbws (its stream sink), as user `poller-ldbws` (`~ds:ingest:station-samples +xadd +xrevrange`). |
 | `redis.acl.clients.pollerTfl` / `.pollerTocs` | `false` | poller-tfl's and poller-tocs's stream sinks (ingest plan 3c.2), as users `poller-tfl` and `poller-tocs`. |
 | `redis.acl.clients.pollerIrishRailGtfs` / `.pollerIrishRailLive` / `.pollerNirStations` | `false` | The island-of-Ireland pollers (each one's only sink is its own `ds:ingest:ioi-gtfs`, `ds:ingest:ioi-live` or `ds:ingest:ioi-nir`, D8), as users `poller-irish-rail-gtfs`, `poller-irish-rail-live` and `poller-nir-stations`. |
+| `redis.acl.clients.pollerTransitMetrolink` | `false` | poller-transit-schedule for network metrolink (transit networks; off by default), as user `poller-transit-metrolink` (`~ds:ingest:transit-metrolink +xadd +xrevrange`). An `optional` user: rendered into the ACL file, and so needing the `poller-transit-metrolink-password` Secret key, only while this is on; turning it on restarts Redis once (docs/redis-acl.md). |
 | `redis.image.repository` | `redis` | Redis image repository (upstream image; this repo builds no Redis image). |
 | `redis.image.tag` | `7.4.11@sha256:…` | Redis 7.4, digest-pinned in the tag. |
 | `redis.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
