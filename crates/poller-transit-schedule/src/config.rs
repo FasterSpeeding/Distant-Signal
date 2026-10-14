@@ -97,10 +97,6 @@ pub(crate) struct Config {
     pub health: common::service_args::HealthArgs,
 }
 
-#[allow(
-    dead_code,
-    reason = "the situations loop and the NaPTAN fetch (transit plan 2.3, 2.4) use the rest"
-)]
 impl Config {
     pub(crate) fn timetable_interval(&self) -> Duration {
         Duration::from_secs(self.timetable_interval_secs)
