@@ -1,8 +1,10 @@
 # Transit networks: Manchester Metrolink first
 
-Design, 2026-10-09. Status: **proposed**. The user's decisions of
-2026-10-09 are recorded as D1–D7 in [§14](#14-decisions-2026-10-09); the
-open questions are in [§16](#16-open-questions-for-the-user).
+Design, 2026-10-09. Status: **accepted**, reconciled with DS on
+2026-10-14 ([§0](#0-reconciliation-with-ds-2026-10-14)). The user's
+decisions of 2026-10-09 are recorded as D1–D7 in
+[§14](#14-decisions-2026-10-09), and their answers to the open questions
+in [§16](#16-open-questions-for-the-user).
 [The plan](../plans/2026-10-09-transit-networks-plan.md) is how to build
 it, batch by batch.
 
@@ -16,6 +18,7 @@ document.
 
 ## Contents
 
+0. [Reconciliation with DS (2026-10-14)](#0-reconciliation-with-ds-2026-10-14)
 1. [Summary](#1-summary)
 2. [Scope](#2-scope)
 3. [Sources and measurements](#3-sources-and-measurements)
@@ -32,6 +35,147 @@ document.
 14. [Decisions (2026-10-09)](#14-decisions-2026-10-09)
 15. [Phases, later work and risks](#15-phases-later-work-and-risks)
 16. [Open questions for the user](#16-open-questions-for-the-user)
+
+## 0. Reconciliation with DS (2026-10-14)
+
+The design was written on 2026-10-09 against main at 87340fa5 and parked.
+DS changed a lot before it restarted. This section lists what changed and
+where the spec now differs from its first draft. Where a later section
+still disagrees with this one, this one wins.
+
+**Ingest release B (phase 5) is complete** (docs/ingest-phase5-runbook.md).
+
+- There are no `/private` routes. Every producer writes Postgres as its
+  own role or XADDs to its stream, and the HTTP sinks are deleted. The
+  producer here was stream-only from the start, so nothing changes in its
+  shape (§5, §6).
+- **The writer's `shadow` mode is gone.** `ingestWriter.streams.<x>`
+  takes `off` or `apply`, and `shadow` fails at startup and at render.
+  So the rollout (§15.1) has no shadow step. Its dark-launch guard is
+  `api.transitNetworks: []`: the writer applies the stream, the tables
+  fill, and nothing is public until the api switch. The writer's tests
+  cover `apply` only.
+- **Chart render checks.** An enabled producer whose stream is not
+  `apply` fails the render (`distant-signal.requireStreamApplied`, as the IoI
+  pollers). `ci/ingest-prereqs.yaml` is the CI render baseline, and
+  `zz-ingest-sink-preflight.yaml` lists release prerequisites. Transit adds
+  nothing to the preflight: it is off by default and needs no release
+  prerequisite.
+- **Rollouts.** Single-replica Postgres workers use `Recreate`, after the
+  2026-10-10 rollout deadlock (runbook §0.5). The producer has no Postgres
+  role, but it is a single-instance producer, so its Deployment uses
+  `Recreate` from creation too. Two overlapping pods would both XADD a
+  timetable. Creating it with `Recreate` avoids the Flux server-side-apply
+  problem of switching an existing Deployment (runbook §1, "Switching a
+  live Deployment to Recreate").
+- **The writer needs its own role before it applies `line_status`.** The
+  chart refuses `ingestWriter.streams.tfl: apply` unless the writer
+  connects as `distant_signal_writer` (security review M4), because the
+  row policy binds that role only. A transit stream at `apply` gets the
+  same check, from batch 1, because the timetable handler already writes
+  `ingest_freshness` under the writer's row policy.
+
+**Redis ACLs are fully on in production**: per-client users,
+`stage: narrow`, `defaultUser: "on-unshared"` (docs/redis-acl.md).
+
+- **Every user line in `files/redis-users.acl.tpl` needs a key in the
+  users Secret.** A missing `<user>-password` key stops the Redis pod
+  from starting, and any change to the users file restarts Redis (the
+  ConfigMap checksum). A Secret change restarts it too (Reloader). The
+  first draft added `poller-transit-metrolink` as a `final` line. Merged
+  that way, batch 1 would restart Redis on deploy, and Redis would not
+  come back until Ranma-Config added the key. That breaks "batch 1 is
+  safe to merge".
+- **Fix: a new kind, `optional`.** It has `final` rights, but the chart
+  renders the user (its ACL line and its password env in the Redis pod)
+  only while `redis.acl.clients.<client>` is on. `<client>` is the user
+  name in camelCase (`poller-transit-metrolink` →
+  `pollerTransitMetrolink`). So merging changes nothing that renders.
+  Turning the client on needs the Secret key first and restarts Redis
+  once, about 4 s of AOF load with the consumers retrying, as any Redis
+  restart. Ranma adds the key and flips the client in one Ranma-Config
+  change. Reloader and the ConfigMap checksum may then roll Redis twice in
+  quick succession. `scripts/render-redis-acl.py` and
+  `crates/common/tests/redis_acl.rs` learn the kind (§13.2).
+- **The default user.** With `defaultUser` other than `"on"`, the chart
+  refuses any client still on `default` whose workload renders.
+  `pollerTransitMetrolink` counts as deployed only while
+  `pollerTransitSchedule.networks.metrolink.enabled` is set
+  (`distant-signal.redisAclClientDeployed`).
+
+**Postgres grants and RLS.**
+
+- **`ingest_freshness` has a writer row policy** listing every source
+  the writer may write (security review L4; migration
+  `20261009170000_ingest_freshness_rls.sql`). The timetable handler
+  (batch 1) records `transit-metrolink-timetable`, so batch 1, not 4.1,
+  adds both transit sources to `row_policies.ingest_freshness.writer`.
+  The situations one is unused until batch 4.
+- **`line_status`'s writer policy is still `source = 'tfl'`**
+  (`row_policies.line_status.writer`, migration
+  `20261009131300_line_status_rls.sql`). Batch 4.1 widens it to
+  `source IN ('tfl', 'transit')` as planned. No other `line_status`
+  source has appeared since.
+- **`read_shared`.** Class `ingest` tables are in the `read_shared`
+  group, so the api, aggregator, notifier and writer all get SELECT on
+  `transit_*`. The first draft said the aggregator gets no grants: it gets
+  SELECT through the group, which is harmless (public data, and the
+  aggregator has no code reading it). Only the writer gets DML.
+- **DB tests run per role.** In CI's per-service step, ds-store's suite
+  runs as the api role and ingest-writer's as the writer. So the transit
+  write tests (plan 1.5) live in `crates/ingest-writer/tests/`, where
+  they run as the writer and prove its grants. ds-store's suite keeps
+  read-only tests (batch 3).
+- **Migrations.** The newest existing migration is
+  `20261010120000_enricher_llm_batches.sql`, so the transit migrations
+  use `20261014…`. The lock is `crates/api/tests/migration_checksums.lock`.
+  Index DDL needs its own `-- no-transaction` file only on an existing
+  table: `migration_index_locking` allows an index on a table the same
+  file creates. So the transit indexes go in the table migration (§8.2).
+
+**Line status (since 2026-10-09).**
+
+- **`line_status.statuses` is a `Vec<common::LineStatus>`** (`severity`
+  as a `common::Severity` number, `reason`, `validity`, `data_quality`),
+  not TfL's camelCase API shape. Transit rows use the same type (§10.3).
+- **"No reported disruption" needs a new `Severity` variant.** The
+  closest existing ones are `NoIssues` (25, TfL's "No Issues") and
+  `GoodService` (10). Neither says what Q1 decided. Batch 4.2 adds
+  `Severity::NoReportedDisruption = 27`, grouped "good" in
+  `frontend/lib/severity.ts`. It also adds `DataQuality::Transit`
+  (`"transit"`), so a reader can tell a published-situations status from
+  a sampled one.
+- **Recently cleared incidents** (`/public/incidents/recently-cleared`,
+  2026-10-12) cover Knowledgebase incidents on catalogue lines. Transit
+  does not use them. A transit line page lists its own current and
+  upcoming situations (§11).
+- **The aggregator's reason text** (2026-10-09, plain sentences) touches
+  only `source = 'aggregator'` rows.
+
+**Frontend (the polish rounds; docs/style-guide.md).**
+
+- **Copy rules.** New transit pages follow the style guide: sentence
+  case; no em dashes, ellipses or arrows; `describeFailure` for every
+  failure; no inline `style` props (ESLint bans them); the shared
+  components (`CardLink`, `TextLink`, `ConfirmActionButton`, `ServiceRow`
+  and friends); tokens. Their copy passes `scripts/check-copy.py` and the
+  ESLint copy rules.
+- **Copy changes.** The board caption "Scheduled times — not live" breaks
+  the em-dash rule, so it becomes "Scheduled times, not live". A
+  tram is a "tram", not a "train" (the terminology table's "train" is
+  National Rail), and stops are "stops".
+- **Visual baselines.** Each new page gets one (`frontend/e2e/visual.spec.ts`,
+  `scripts/visual-tests.py --update`, reviewed images committed).
+
+**Plan mechanics.**
+
+- **The schema names** live in `common::transit` (constants), and the
+  stream → schemas map is `ingest_writer::stream::STREAMS`, not a list
+  in `ingest_stream`. ingest-stream has no schema registry. Its golden
+  tests cover the envelope only, so the payload fixtures go with the
+  types, under `crates/common/tests/fixtures/transit/`.
+- **The parsers are in the lockfile:** `zip` 8.6, `csv` 1.4 and
+  `quick-xml` 0.41, so batch 2 adds no parser crate.
 
 ## 1. Summary
 
@@ -225,7 +369,7 @@ any URL.
                                                        │   (source='transit')
           ds:ingest:transit-metrolink ──► ingest-writer┤
                                        (stream task,   └── ingest_freshness
-                                        off/shadow/apply)  (transit-metrolink-*)
+                                        off/apply)         (transit-metrolink-*)
 
  api /public/transit/{network}/… ── SELECT ── transit_*, line_status
  notifier ── line_status_history (pinned transit lines) ── web push
@@ -520,9 +664,10 @@ Every row carries `(network, feed_version)`, so activation only changes
 | `transit_service_days` | network, feed_version, service_id, service_date | – | about 12 × 61 |
 
 The indexes are `transit_pattern_stops (network, feed_version, stop_id)`
-for boards and `transit_trips (network, feed_version, pattern_id)`. Each
-index has its own `-- no-transaction` file. The tables are new and empty,
-but this follows the repo rule.
+for boards and `transit_trips (network, feed_version, pattern_id)`. They
+are created in the tables' own migration: the `-- no-transaction` rule
+is for an index on an existing table, and `migration_index_locking`
+allows an index on a table the same file creates (§0).
 
 At most two versions are kept, `active` and `previous`, so about 40k
 rows per network. Older versions are deleted at activation.
@@ -577,7 +722,8 @@ present) at each timetable commit, in the activation transaction.
   then validated:
   `CHECK (source <> 'transit' OR line_id ~ '^[a-z0-9-]+:[a-z0-9-]+$')`.
 - **`ingest_freshness`** gets the sources `transit-<network>-timetable` and
-  `transit-<network>-situations`.
+  `transit-<network>-situations`. Both join the writer's freshness row
+  policy in batch 1 (§0, §8.6).
 
 ### 8.6 `db-grants.yaml`
 
@@ -593,11 +739,14 @@ present) at each timetable commit, in the activation transaction.
 - `line_status`: the writer's policy becomes
   `source IN ('tfl', 'transit')` (§10.4).
 - `ingest_freshness`: the writer's write list gains the two
-  `transit-metrolink-*` names.
+  `transit-metrolink-*` names, in batch 1 with the tables (the timetable
+  handler records the first one; §0).
 
 `postgres-grants.sql` is regenerated (`uv run scripts/gen-db-grants.py`).
 The notifier needs nothing new: it already reads `line_status_history`.
-The aggregator gets no grants on `transit_*`.
+The aggregator gets no grants of its own on `transit_*`. As class
+`ingest` tables they are in `read_shared`, so it, the notifier and the
+writer can SELECT them through the group (§0).
 
 **Moving the island-of-Ireland data later.** `island_of_ireland_stations`
 maps to `transit_stops` (network `irish-rail` or `nir`, kind `station`),
@@ -608,15 +757,16 @@ here.
 ## 9. The ingest-writer handlers
 
 `crates/ingest-writer/src/handlers/transit.rs` registers three schemas.
-It uses the IoI module's helpers: `decode`, `count_apply`, `count_shadow`,
-`classify_anyhow` and `Observed`.
+It uses the shared handler helpers: `decode`, `count_apply`,
+`classify_anyhow` and `Observed`. (`count_shadow` went with the shadow
+mode in release B.)
 
 ### 9.1 Network pinning
 
 `stream_network(stream)` returns `Some("metrolink")` only for
 `ds:ingest:transit-metrolink`. It reads a table generated from the same
 network list the producer compiles in. These are poison
-(`network_not_for_stream`), checked in both shadow and apply before
+(`network_not_for_stream`), checked before
 anything is written:
 
 - a body whose `network` differs from the stream's;
@@ -713,7 +863,7 @@ A situation whose next validity period starts within 7 days is
 | Mapped line refs, non-disruptive condition (`unknown`, `normal`) | `line` | **Information** (shown on the line, never pushed) |
 | No mappable line or stop | `network` | none. It is shown on the network page |
 
-| SIRI `Condition` | Severity | Status (`statusSeverityDescription`) |
+| SIRI `Condition` | SIRI severity | Status (`common::Severity`) |
 |---|---|---|
 | `noService`, `suspended`, `cancelled` (no stop subset) | any | Suspended |
 | the same, with a stop subset | any | Part suspended |
@@ -737,10 +887,14 @@ A situation whose next validity period starts within 7 days is
 
 ### 10.3 Writing `line_status`
 
-The statuses use the same JSON shape as TfL rows (`statuses` JSONB:
-`statusSeverity`, `statusSeverityDescription`, `reason`,
-`validityPeriods`), so the existing line-status UI and the notifier's
-comparison work unchanged. The row is:
+The statuses use the same JSON shape as TfL rows: `statuses` JSONB is a
+`Vec<common::LineStatus>` (`severity` as a `common::Severity` number,
+`reason`, `validity`, `data_quality`). So the existing line-status UI and
+the notifier's comparison work unchanged. The status names in §10.2 map
+to `Severity` variants: Suspended, PartSuspended, ReducedService,
+SevereDelays, MinorDelays, Information, and the new
+`NoReportedDisruption` (27, §0). `data_quality` is the new
+`DataQuality::Transit`. The row is:
 
 ```
 line_id     = 'metrolink:blue'
@@ -860,7 +1014,7 @@ query or type. It does reuse the frontend's row primitives (§12).
   title, a subtitle and details. `StationTimetable` is not reused: it is
   bound to `TrainSearchResult` and CRS. A new `TransitStopBoard` maps the
   transit row onto `ServiceRow`. Every board shows the caption "Scheduled
-  times — not live".
+  times, not live" (the style guide bans the em dash, §0).
 - **Navigation.** The frontend lists `/public/transit/networks`. An empty
   list hides the nav entry, so the API switch is the only switch.
 - **National Rail station pages** (phase 2) show "Metrolink stop:
@@ -939,7 +1093,7 @@ api:
   transitNetworks: []            # API_TRANSIT_NETWORKS; empty: every /public/transit route 404s
 ingestWriter:
   streams:
-    transit-metrolink: "off"     # off | shadow | apply
+    transit-metrolink: "off"     # off | apply (release B removed shadow)
 redis:
   acl:
     clients:
@@ -956,7 +1110,8 @@ redis:
 - **The deployment.** Name `poller-transit-schedule-<network>`, component
   label `poller-transit-schedule`, label `distant-signal/transit-network`.
   It has an `emptyDir` at `/work` with `sizeLimit` and
-  `readOnlyRootFilesystem`.
+  `readOnlyRootFilesystem`. `strategy: Recreate` from creation, so two
+  pods never XADD at once (§0).
 - **No secret.** There is no BODS key (§3.1). The Redis password comes
   from `redis.acl.existingSecret`, key `poller-transit-metrolink-password`.
   Ranma-Config adds that key to the SealedSecret.
@@ -967,11 +1122,17 @@ redis:
 Add to `charts/distant-signal/files/redis-users.acl.tpl`:
 
 ```
-poller-transit-metrolink final ~ds:ingest:transit-metrolink +xadd +xrevrange +ping +hello +auth +client|setname +client|setinfo +client|id
+poller-transit-metrolink optional ~ds:ingest:transit-metrolink +xadd +xrevrange +ping +hello +auth +client|setname +client|setinfo +client|id
 ```
 
-- The user is `final` (rights the same in every stage), so creating it
-  restarts Redis once and enabling the network later needs no restart.
+- **The user is `optional`** (§0): `final` rights in every stage, but
+  rendered only while `redis.acl.clients.pollerTransitMetrolink` is on.
+  The first draft made it `final`, which would have restarted Redis on
+  merge and needed the Secret key before any deploy. Now merging renders
+  nothing new. Turning the client on needs the
+  `poller-transit-metrolink-password` key first and restarts Redis once
+  (twice in quick succession if Reloader rolls it for the Secret too).
+  That is the operational cost of each new producer.
 - The `ingest-writer` user's `~ds:ingest:*` and `~ds:dlq:*` already cover
   the new stream.
 - `crates/common/tests/redis_acl.rs` gains the user's allowed sequence
@@ -1011,15 +1172,16 @@ the component.
 
 | Alert | Expression (sketch) | Severity |
 |---|---|---|
-| `DistantSignalTransitTimetableStale` | `ingest_freshness` age of `transit-<n>-timetable` over 36 h (warning) or 72 h (critical), only for networks in `api.transitNetworks` | warning, critical |
-| `DistantSignalTransitSituationsStale` | age of `transit-<n>-situations` over 30 min for 15 m | warning |
+| the existing `DistantSignalIngestSourceStale` (2026-10-14: replaces the first draft's `DistantSignalTransitTimetableStale` and `DistantSignalTransitSituationsStale`) | `ingestSourceStale.maxAgeSeconds` gains `transit-<n>-timetable` (36 h) and `transit-<n>-situations` (30 min), each in `whileStreamApplies` under `transit-<n>`, so it is checked only while the writer applies the stream | as today |
 | `DistantSignalTransitFeedRefused` | `increase(transit_feed_refused_total[26h]) > 0` | warning |
 | `DistantSignalTransitUnmappedLineRef` | `increase(transit_situation_unmapped_line_refs_total[1h]) > 0` | info or warning (the config needs an alias) |
 | the existing `DistantSignalIngestStreamBacklog` | per-stream map: `MAXLEN` 320, so warning at 160 and critical at 256 | as today |
 | the existing `DistantSignalIngestStreamStalled` | cadence 300 s, so it fires after 900 s with no apply while produces succeed | as today |
 | the existing `DistantSignalIngestDeadLetters` | covers `incomplete_feed_version` and `network_not_for_stream` | as today |
 
-The alerts render only when the network is enabled.
+The new alerts render only when the network is enabled. Each alert
+needs its `docs/alerts.md` runbook section and must pass
+`scripts/check-alert-payloads.py` (CI).
 `crates/ingest-stream/tests/chart_values.rs` keeps the per-stream maps
 equal to `budget.rs`.
 
@@ -1073,16 +1235,22 @@ document that disagrees.
 | 2: disruptions | 4 situations, line status, notifications; 5 rail links | line status, stop notices, follow and push, National Rail interchange links | 5–7 |
 | | | **Total** | **17–22**, plus soak |
 
-Rollout (by the user or Ranma, in Ranma-Config), in this order:
+Rollout (by the user or Ranma, in Ranma-Config), in this order. The
+writer has no shadow mode since release B (§0), so the api switch is the
+dark-launch guard:
 
-1. The ACL user and password (one Redis restart).
-2. `ingestWriter.streams.transit-metrolink: shadow`.
-3. `pollerTransitSchedule.networks.metrolink.enabled: true` and
-   `redis.acl.clients.pollerTransitMetrolink: true`.
-4. Compare: the shadow counts, and one timetable and one situations
-   snapshot inspected with `XRANGE`.
-5. The writer to `apply`.
-6. After a day with the timetable applied, `api.transitNetworks:
+1. Add `poller-transit-metrolink-password` to the Redis users Secret and
+   set `redis.acl.clients.pollerTransitMetrolink: true` in the same
+   change. Redis restarts (once, or twice in quick succession if Reloader
+   also rolls it for the Secret). Check `ACL USERS` lists the user.
+2. In one change, `ingestWriter.streams.transit-metrolink: apply` and
+   `pollerTransitSchedule.networks.metrolink.enabled: true`. The chart
+   refuses the producer without the `apply`. The writer restarts (its
+   env); the producer starts.
+3. Check, with nothing public yet: the first timetable item with
+   `XRANGE`, the writer's applied and dead-letter counts, the
+   `transit_*` row counts against §3.2, and one situations snapshot.
+4. After a day with the timetable applied, `api.transitNetworks:
    [metrolink]`.
 
 Rollback: set `api.transitNetworks` back to `[]` (the pages disappear),
@@ -1124,21 +1292,24 @@ empty line set, or one SQL delete in the runbook removes them.
 | The North West zip grows and the pod runs out of memory or disk | low | no refresh | streamed parse; `gtfsMaxBytes`; the `emptyDir` `sizeLimit`; the memory limit; the feed guard keeps the old version |
 | A BODS route rename (a new line, renamed colours) | medium | refused feed | `unmapped_route` refusal plus an alert; a one-line config change |
 | The SIRI-SX `LineRef`s drift | high | situations shown at network level only | the alias table, the unmapped counter and its alert |
-| Line status read as service quality | medium | misleading UI | "No reported disruption" wording, "Scheduled times — not live" captions, `realtime: false` |
+| Line status read as service quality | medium | misleading UI | "No reported disruption" wording, "Scheduled times, not live" captions, `realtime: false` |
 | Transit rows leak into National Rail or TfL lists and stats | medium | wrong dashboards | the §10.5 audit in batch 4, plus tests that each list excludes `source = 'transit'` |
 | One timetable part is lost (DLQ or trim) | low | that day's feed is not applied | `incomplete_feed_version` poison plus the dead-letter alert; the previous version keeps serving; the next day retries |
 
 ## 16. Open questions for the user
 
-| # | Question | Default if not answered |
+The user answered all but Q7 on 2026-10-09. The answers are binding, as
+D1–D7 are.
+
+| # | Question | Answer (2026-10-09) |
 |---|---|---|
-| Q1 | With no current line-scoped disruption, should a Metrolink line read "No reported disruption" or "Good service"? | "No reported disruption" |
-| Q2 | Should stop-level equipment situations (lift and escalator outages) also show on the line status, or only on the stop and line pages as notices? | notices only; line status unchanged |
-| Q3 | Should replacement-bus trips from the timetable appear on stop boards (labelled "Replacement bus")? | yes, labelled; excluded from line timetables |
-| Q4 | Should transit lines appear on the home and status dashboard next to National Rail and TfL, or only on `/transit` pages and in the user's pinned lines? | only on `/transit` pages and in pinned lines |
-| Q5 | No BODS key is needed today. Register a BODS account anyway, as a named contact and for any later key (Ranma-Config would hold it as a SealedSecret)? | register, but add no secret until it is needed |
-| Q6 | Should transit status history feed the half-hourly and daily status rollups (as TfL's does), or stay out of all stats? | out of all stats (full-coverage stats and the catalogue are National Rail only regardless) |
-| Q7 | Who applies to TfGM for live-data access, and should DS apply now so the §15.2 slot can be built when a key arrives? | the user decides; nothing is built until a key exists |
-| Q8 | The timetable horizon stored: 60 days, or the whole BODS horizon (about 9 months, about 4× the service-day rows but the same trip rows)? | 60 days |
-| Q9 | Navigation: a top-level "Trams" entry, or under the existing Network page? | under Network, as "Metrolink" |
-| Q10 | Should rail-link `nearby` rows (for example Deansgate and Deansgate-Castlefield, or Eccles) show walking minutes, which would be hand-entered? | no minutes in phase 2; `interchange` versus `nearby` only |
+| Q1 | With no current line-scoped disruption, should a Metrolink line read "No reported disruption" or "Good service"? | **"No reported disruption"** when nothing is published (a new `Severity` variant, §0) |
+| Q2 | Should stop-level equipment situations (lift and escalator outages) also show on the line status, or only on the stop and line pages as notices? | **Stop notices**, not line status |
+| Q3 | Should replacement-bus trips from the timetable appear on stop boards (labelled "Replacement bus")? | **Yes, on boards, labelled as buses**; not in line timetables |
+| Q4 | Should transit lines appear on the home and status dashboard next to National Rail and TfL, or only on `/transit` pages and in the user's pinned lines? | **Own `/transit` pages plus pinned lines only**; not on the home page or the status dashboard. (The brief that relayed the answers numbered this Q9; its wording is this question's.) |
+| Q5 | No BODS key is needed today. Register a BODS account anyway, as a named contact and for any later key (Ranma-Config would hold it as a SealedSecret)? | **Register an account**, though no key is needed; add no secret until one is |
+| Q6 | Should transit status history feed the half-hourly and daily status rollups (as TfL's does), or stay out of all stats? | **Not in the rollups** (or any stats) |
+| Q7 | Who applies to TfGM for live-data access, and should DS apply now so the §15.2 slot can be built when a key arrives? | **Still open.** Nothing is built until a key exists |
+| Q8 | The timetable horizon stored: 60 days, or the whole BODS horizon (about 9 months, about 4× the service-day rows but the same trip rows)? | **60 days** |
+| Q9 | Navigation: a top-level "Trams" entry, or under the existing Network page? | Taken as answered by Q4's "own `/transit` pages". The nav entry's label and place are settled in batch 3 against the style guide; until then the default stands (under Network, as "Metrolink") |
+| Q10 | Should rail-link `nearby` rows (for example Deansgate and Deansgate-Castlefield, or Eccles) show walking minutes, which would be hand-entered? | **No walking minutes**; `interchange` versus `nearby` only |
