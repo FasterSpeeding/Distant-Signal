@@ -1243,9 +1243,9 @@ async fn snapshot_streams_publish_under_the_pollers_acl_users() {
 
 /// Transit spec §6.1, §7.2: poller-transit-schedule's timetable item, under
 /// its network's own ACL user (`poller-transit-metrolink`, an `optional`
-/// user), is capped parts of several kinds plus the commit, XADDed in order
+/// user), is capped parts of several kinds plus the commit, added in order
 /// as one item with distinct keys; it reads its stream back with
-/// XREVRANGE (its cursor and the feed guard's baseline).
+/// `XREVRANGE` (its cursor and the feed guard's baseline).
 #[tokio::test]
 #[ignore = "needs Redis 7+ (REDIS_URL) whose default user may run ACL SETUSER"]
 async fn a_transit_timetable_item_is_written_under_its_networks_user() {
