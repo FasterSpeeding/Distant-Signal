@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
 import { getTrainSearchDates } from '@/lib/api';
-import { TRACK_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { parsePlanSearchParams } from '@/lib/tripPlanUrl';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -68,7 +68,7 @@ export default async function PlanPage({
       <Text c="dimmed">
         Find routes between two stations, including changes and any stops you want on the way, then compare the options.
         Already know which train you&apos;re catching?{' '}
-        <TextLink href={TRACK_JOURNEY_DESTINATION.href} underline="always" inline>
+        <TextLink href={TRACK_JOURNEY_HREF} underline="always" inline>
           Track it directly
         </TextLink>
         .

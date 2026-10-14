@@ -172,20 +172,20 @@ describe('DashboardPage', () => {
     expect(screen.queryByRole('heading', { name: 'Distant Signal' })).not.toBeInTheDocument();
   });
 
-  it('offers the planner, which needs no account, to signed-out and signed-in visitors alike', async () => {
+  // Signed in, the planner is in the nav bar at every width; the anonymous
+  // page keeps it first among its quick links, as the one journey feature
+  // that needs no account.
+  it('offers the planner, which needs no account, to a signed-out visitor', async () => {
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
-    for (const authenticated of [false, true]) {
-      vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
-        authenticated,
-        id: authenticated ? 'u1' : null,
-        username: authenticated ? 'a' : null,
-        name: authenticated ? 'A' : null,
-      });
-      const { unmount } = renderWithMantine(await DashboardPage());
-      expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
-      unmount();
-    }
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: false,
+      id: null,
+      username: null,
+      name: null,
+    });
+    renderWithMantine(await DashboardPage());
+    expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
   });
 
   it('anonymous, all lines good: shows the no-disruption message, not a raw empty state', async () => {

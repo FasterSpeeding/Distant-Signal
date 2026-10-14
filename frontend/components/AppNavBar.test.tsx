@@ -3,7 +3,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { screen, fireEvent, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { AppNavBar } from './AppNavBar';
-import { PLAN_JOURNEY_DESTINATION, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
+import { PLAN_JOURNEY_DESTINATION, PREFERENCES_DESTINATION, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
 import type { DataFreshness, SessionInfo } from '@/lib/types';
 
 // LoginControl / AccountMenu / AppNavDrawer all reach for App Router hooks
@@ -58,32 +58,21 @@ describe('AppNavBar', () => {
     }
   });
 
-  /** Regression guard carried over from the old source-level assertion in
-   * app/layout.test.tsx: /trains is an ADDITION, not a replacement. The
-   * design doc's §4 is an explicit "no" on removing or hiding /track, and
-   * the two station/line entry points either side of the newer link must
-   * survive it. */
-  it('keeps the lines, stations and train-search entry points together', () => {
-    renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-    expect(screen.getByRole('link', { name: 'Lines' })).toHaveAttribute('href', '/lines');
-    expect(screen.getByRole('link', { name: 'Stations' })).toHaveAttribute('href', '/stations');
-    expect(screen.getByRole('link', { name: 'Trains' })).toHaveAttribute('href', '/trains');
+  it('has one Track entry, and no separate train search or tracked-trains link', () => {
+    for (const session of [loggedOut, loggedIn]) {
+      const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
+      expect(screen.getByRole('link', { name: 'Track' })).toHaveAttribute('href', '/track/mine');
+      expect(barLinkNames()).not.toContain('Trains');
+      expect(barLinkNames()).not.toContain('Track a journey');
+      expect(barLinkNames()).not.toContain('My trains & tickets');
+      unmount();
+    }
   });
 
-  it('offers "My Trains & Tickets" inline to an anonymous visitor, who has no account menu to find it in', () => {
+  it.each(['/trains', '/journeys/new', '/track', '/track/mine'])('marks Track current on %s', (path) => {
+    pathname = path;
     renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-    expect(screen.getByRole('link', { name: 'My trains & tickets' })).toHaveAttribute('href', '/track/mine');
-  });
-
-  it('moves "My Trains & Tickets" out of the bar once there is an account menu to hold it', () => {
-    // This, plus the display name and the "Log out" button collapsing
-    // into one avatar, is what stops the authenticated bar wrapping onto
-    // a second row at 1440px. The destination itself is still reachable
-    // -- from the account menu (AccountMenu.test.tsx) and from the drawer
-    // (below).
-    renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} />);
-    expect(barLinkNames()).not.toContain('My trains & tickets');
-    expect(screen.getByRole('button', { name: 'Account menu for Ada' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Track' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('never advertises Groups in the bar itself', () => {
@@ -112,39 +101,24 @@ describe('AppNavBar', () => {
     expect(screen.getByRole('button', { name: 'Data freshness' })).toBeInTheDocument();
   });
 
-  describe('the "Plan a Journey" entry', () => {
-    it('links to /plan for anyone, straight after "Track a Journey"', () => {
+  describe('the "Plan a journey" entry', () => {
+    it('links to /plan for anyone, straight after Track, at every width from md up', () => {
       for (const session of [loggedOut, loggedIn]) {
         const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
         const names = barLinkNames();
-        expect(names[names.indexOf('Track a journey') + 1]).toBe('Plan a journey');
-        expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
+        expect(names[names.indexOf('Track') + 1]).toBe('Plan a journey');
+        const link = screen.getByRole('link', { name: 'Plan a journey' });
+        expect(link).toHaveAttribute('href', '/plan');
+        expect(link.closest('.mantine-visible-from-lg')).toBeNull();
         unmount();
       }
-    });
-
-    it('is shown inline only from lg up, where the bar has room for it', () => {
-      // Below lg the bar measures a pixel or two of slack (AppNavBar.tsx's
-      // PLAN_LINK_BREAKPOINT comment); jsdom has no layout, so pin the
-      // class Mantine's `visibleFrom` emits rather than a width.
-      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-      const link = screen.getByRole('link', { name: 'Plan a journey' });
-      expect(link.closest('.mantine-visible-from-lg')).not.toBeNull();
-      expect(screen.getByRole('link', { name: 'Track a journey' }).closest('.mantine-visible-from-lg')).toBeNull();
     });
 
     it('marks itself as the current page on /plan, and nothing else', () => {
       pathname = '/plan';
       renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
       expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('aria-current', 'page');
-      expect(screen.getByRole('link', { name: 'Track a journey' })).not.toHaveAttribute('aria-current');
-    });
-
-    it('is not marked current on /journeys/new', () => {
-      pathname = '/journeys/new';
-      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-      expect(screen.getByRole('link', { name: 'Track a journey' })).toHaveAttribute('aria-current', 'page');
-      expect(screen.getByRole('link', { name: 'Plan a journey' })).not.toHaveAttribute('aria-current');
+      expect(screen.getByRole('link', { name: 'Track' })).not.toHaveAttribute('aria-current');
     });
 
     it('is in the drawer, marked current on /plan', async () => {
@@ -173,12 +147,12 @@ describe('AppNavBar', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Navigation menu' }));
     }
 
-    it('carries every primary destination plus "My Trains & Tickets"', async () => {
+    it('carries every primary destination plus Preferences', async () => {
       renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
       openDrawer();
       const drawer = await screen.findByRole('dialog');
 
-      for (const destination of [...PRIMARY_NAV_DESTINATIONS, { label: 'My trains & tickets', href: '/track/mine' }]) {
+      for (const destination of [...PRIMARY_NAV_DESTINATIONS, PREFERENCES_DESTINATION]) {
         expect(within(drawer).getByRole('link', { name: destination.label })).toHaveAttribute('href', destination.href);
       }
     });

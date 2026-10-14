@@ -280,9 +280,7 @@ export default async function DashboardPage() {
 
         <Group gap="lg">
           {/* First: planning is the one journey feature that works without
-              an account, so it is the one worth offering here. Also covers
-              the 992-1199px band where the nav bar has no room for it (see
-              `PLAN_JOURNEY_DESTINATION`). */}
+              an account, so it is the one worth offering here. */}
           <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
           <TextLink href="/lines">Browse all lines</TextLink>
           <TextLink href="/stations">Look up a station</TextLink>
@@ -469,12 +467,6 @@ export default async function DashboardPage() {
 
   return (
     <Stack p="lg" gap="xl">
-      {/* The planner link mirrors the anonymous branch's quick link above,
-          for the 992-1199px band where the nav bar can't fit it. */}
-      <Group justify="space-between">
-        <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
-      </Group>
-
       {/* When ALL THREE pinned sections are empty, the live "Right now" module
           is the only thing on this page with real content -- it leads,
           ahead of otherwise-empty prompts, rather than being buried below

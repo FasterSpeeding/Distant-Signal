@@ -2,9 +2,11 @@ import { Badge, Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
 import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
-import { AutoOpenLoginPrompt } from './AutoOpenLoginPrompt';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
+import { ButtonLink } from '@/components/ButtonLink';
+import { pageMetadata } from '@/lib/pageMetadata';
+import { PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { TicketSummary } from '@/components/TicketSummary';
 import { ReliabilityDigest } from '@/components/ReliabilityDigest';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
@@ -32,10 +34,16 @@ import type { Metadata } from 'next';
 // network at runtime.
 export const revalidate = 0;
 
-export const metadata: Metadata = { title: 'My trains & tickets', robots: { index: false } };
+export const metadata: Metadata = {
+  ...pageMetadata('Track', 'Your tracked trains, journeys and tickets, and where to track a new one.'),
+  robots: { index: false },
+};
 
-/** `/track/mine` -- a logged-in user's own tracked trains AND tickets, one
- * merged page (Part B of the upload-first ticket-tracking plan). Was two
+/** `/track/mine` -- the Track page, the nav's one tracking entry
+ * (`TRACK_DESTINATION` in `lib/navLinks.ts`, round 2). Its header starts
+ * everything tracking-shaped: "Track a journey", "Find a train", "Add a
+ * ticket" and journey templates. Below that, a logged-in user's own
+ * tracked trains AND tickets, one merged page (Part B of the upload-first ticket-tracking plan). Was two
  * separate pages (`/track/mine` for trains, `/track/tickets` for tickets)
  * per docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md and
  * docs/superpowers/specs/2026-08-31-tickets-list-design.md -- the latter's
@@ -102,16 +110,15 @@ export default async function MyTrackedTrainsPage() {
 
   if (trains === null) {
     return (
-      <Stack p="lg" gap="md">
-        <Title order={1}>My trains &amp; tickets</Title>
-        {/* Server-rendered, same pattern as
-            app/train/by-id/[trackingId]/page.tsx's own
-            ApiUnauthorizedError branch: a link-unfurler bot or a
-            pre-hydration visitor sees this sentence even though it can
-            never run the client-only AutoOpenLoginPrompt modal below,
-            which stays as progressive enhancement on top of it. */}
-        <LoginControl underline="always">Log in to see the trains and tickets you&apos;re tracking</LoginControl>
-        <AutoOpenLoginPrompt>Log in to see the trains and tickets you&apos;re tracking.</AutoOpenLoginPrompt>
+      // No auto-opening login modal: this is the nav's Track entry, so every
+      // logged-out visitor who taps it lands here. The two things they can
+      // do without an account come first.
+      <Stack p="lg" gap="md" maw={640}>
+        <TrackHeader />
+        <Text>Log in to track trains and journeys, and to keep your tickets with them.</Text>
+        <LoginControl variant="button" title="Log in (needs a Distant Signal account)">
+          Log in
+        </LoginControl>
       </Stack>
     );
   }
@@ -179,25 +186,11 @@ export default async function MyTrackedTrainsPage() {
 
   return (
     <Stack p="lg" gap="lg">
-      <Group justify="space-between" align="baseline">
-        <Title order={1}>My trains &amp; tickets</Title>
-        <Group gap="md">
-          <TextLink href="/track">Track a new train</TextLink>
-          <TextLink href="/plan">Plan a journey</TextLink>
-          <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
-        </Group>
-      </Group>
+      <TrackHeader authenticated />
       {hasOwnContent && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
-      <TextLink href="/journeys/templates" underline="always">
-        Manage your journey templates
-      </TextLink>
       {nothingToShow ? (
         <Text c="dimmed">
-          You haven&apos;t tracked any trains or added any tickets yet.{' '}
-          <TextLink href="/track" underline="always" inline>
-            Track a train
-          </TextLink>{' '}
-          to get started.
+          You aren&apos;t tracking anything yet. Track a journey, or find a train first, and it will show here.
         </Text>
       ) : (
         <>
@@ -258,6 +251,30 @@ export default async function MyTrackedTrainsPage() {
           )}
         </>
       )}
+    </Stack>
+  );
+}
+
+/** The Track page's h1 and its ways to start tracking. Logged out, the
+ * actions are the two that need no account: finding a train and planning
+ * a journey. Logged in, "Track a journey" leads, as a button; the rest are
+ * links. */
+function TrackHeader({ authenticated = false }: { authenticated?: boolean }) {
+  return (
+    <Stack gap="sm">
+      <Title order={1}>Track</Title>
+      <Group gap="md" align="center">
+        {authenticated && <ButtonLink href={TRACK_JOURNEY_HREF}>Track a journey</ButtonLink>}
+        <TextLink href="/trains">Find a train</TextLink>
+        {authenticated ? (
+          <>
+            <TextLink href="/track/mine/add-ticket">Add a ticket</TextLink>
+            <TextLink href="/journeys/templates">Journey templates</TextLink>
+          </>
+        ) : (
+          <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
+        )}
+      </Group>
     </Stack>
   );
 }
