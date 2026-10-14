@@ -1,4 +1,15 @@
-import { ScrollArea, Stack, Table, Text, VisuallyHidden } from '@mantine/core';
+import {
+  ScrollArea,
+  Stack,
+  Table,
+  TableTbody,
+  TableTd,
+  TableTh,
+  TableThead,
+  TableTr,
+  Text,
+  VisuallyHidden,
+} from '@mantine/core';
 import { ServiceListNotice } from '@/components/ServiceRow';
 import { SCHEDULED_CAPTION } from '@/lib/transit';
 import type { TransitLineTimetable as Timetable } from '@/lib/types';
@@ -21,39 +32,39 @@ export function TransitLineTimetable({ timetable }: { timetable: Timetable }) {
       </Text>
       <ScrollArea type="auto" offsetScrollbars>
         <Table striped withTableBorder withColumnBorders fz="sm" ff="monospace" miw="max-content">
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th scope="col">Stop</Table.Th>
+          <TableThead>
+            <TableTr>
+              <TableTh scope="col">Stop</TableTh>
               {timetable.trips.map((trip, i) => (
-                <Table.Th key={trip.tripId} scope="col">
+                <TableTh key={trip.tripId} scope="col">
                   <VisuallyHidden>Tram </VisuallyHidden>
                   {i + 1}
-                </Table.Th>
+                </TableTh>
               ))}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
+            </TableTr>
+          </TableThead>
+          <TableTbody>
             {timetable.stations.map((station, row) => (
-              <Table.Tr key={station.id}>
-                <Table.Th scope="row" ff="text">
+              <TableTr key={station.id}>
+                <TableTh scope="row" ff="text">
                   {station.name}
-                </Table.Th>
+                </TableTh>
                 {timetable.trips.map((trip) => {
                   const time = trip.times[row] ?? null;
                   return (
-                    <Table.Td key={trip.tripId}>
+                    <TableTd key={trip.tripId}>
                       {time ?? (
                         <>
                           <span aria-hidden="true">–</span>
                           <VisuallyHidden>Doesn&apos;t call</VisuallyHidden>
                         </>
                       )}
-                    </Table.Td>
+                    </TableTd>
                   );
                 })}
-              </Table.Tr>
+              </TableTr>
             ))}
-          </Table.Tbody>
+          </TableTbody>
         </Table>
       </ScrollArea>
     </Stack>
