@@ -25,6 +25,13 @@ Jobs, and CronJobs' jobTemplate):
     version reaching a pod template any other way, such as a checksum
     annotation over a rendered object whose labels carry the version.
 
+Their controllers, too: every Deployment and StatefulSet sets
+`revisionHistoryLimit` to the chart's `revisionHistoryLimit` value (3 by
+default, and 5 in a render that sets it), and every template that defines
+one includes `distant-signal.revisionHistoryLimit`, so a workload none of
+the renders turn on is covered as well. Kubernetes' default of 10 left 177
+zero-replica ReplicaSets behind.
+
 Exit 1 with one line per failed check. Needs helm on PATH (or --helm) and
 PyYAML (pyproject.toml's lint group).
 """
@@ -52,6 +59,11 @@ VERSIONS = (
     ("9.9.9+build.2.sha.2222222", "sha-2222222"),
 )
 APP_VERSION_PLACEHOLDER = "<appVersion>"
+CONTROLLERS = ("Deployment", "StatefulSet")
+CONTROLLER_KIND = re.compile(r"(?m)^kind: (?:Deployment|StatefulSet)$")
+HISTORY_HELPER = "distant-signal.revisionHistoryLimit"
+# values.yaml's revisionHistoryLimit.
+DEFAULT_HISTORY = 3
 
 
 def sets(*pairs: str) -> tuple[str, ...]:
@@ -247,6 +259,38 @@ def check_version_invariance(c: Checker) -> None:
     print(f"version invariance: {len(before)} pod templates compared")
 
 
+def history_problems(docs: Sequence[Doc], expected: int) -> list[str]:
+    """Return each Deployment or StatefulSet whose history limit isn't `expected`."""
+    return [
+        f"{name_of(doc)}: revisionHistoryLimit is {limit!r}, not {expected}"
+        for doc in docs
+        if doc.get("kind") in CONTROLLERS
+        and (limit := as_map(doc.get("spec")).get("revisionHistoryLimit")) != expected
+    ]
+
+
+def check_revision_history(c: Checker) -> None:
+    """Check every Deployment and StatefulSet sets revisionHistoryLimit."""
+    renders = (
+        *((label, args, DEFAULT_HISTORY) for label, args in RENDERS),
+        ("everything on, limit 5", (*EVERYTHING, *sets("revisionHistoryLimit=5")), 5),
+    )
+    for label, args, expected in renders:
+        docs = c.docs(*args)
+        c.failures.extend(f"{label}: {p}" for p in history_problems(docs, expected))
+        n = sum(1 for d in docs if d.get("kind") in CONTROLLERS)
+        print(f"{label}: {n} Deployments and StatefulSets checked")
+    for path in sorted((CHART / "templates").glob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        controllers = len(CONTROLLER_KIND.findall(text))
+        limits = text.count(HISTORY_HELPER)
+        if controllers != limits:
+            c.failures.append(
+                f"templates/{path.name}: {controllers} Deployment/StatefulSet"
+                f" kinds but {limits} {HISTORY_HELPER} includes"
+            )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run every check; print failures."""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
@@ -255,10 +299,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     c = Checker(cast("str", args.helm))
     check_labels(c)
     check_version_invariance(c)
+    check_revision_history(c)
     for failure in c.failures:
         print(failure)
     if not c.failures:
-        print("ok: no pod template changes per release")
+        print("ok: no pod template changes per release; every history limit set")
     return 1 if c.failures else 0
 
 

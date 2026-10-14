@@ -1004,7 +1004,9 @@ jobs:
       # and a new chart version/appVersion changes no pod template but its
       # image tags: CI stamps both on every release, so either one in a pod
       # template restarted every workload (Redis and schedulefeed included)
-      # on every deploy.
+      # on every deploy. Every Deployment and StatefulSet also sets
+      # revisionHistoryLimit from the chart value (Kubernetes' default of
+      # 10 left 177 zero-replica ReplicaSets behind).
       - name: pod templates stable across releases
         run: uv run --no-sync scripts/check-pod-labels-chart.py
 

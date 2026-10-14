@@ -6,6 +6,7 @@ metadata:
   labels:
     {{- include "distant-signal.labels" (dict "root" . "component" "postgres") | nindent 4 }}
 spec:
+  revisionHistoryLimit: {{ include "distant-signal.revisionHistoryLimit" $ }}
   # Fixed at 1 -- see the comment above `postgresql:` in values.yaml.
   replicas: 1
   serviceName: {{ include "distant-signal.postgresFullname" . }}

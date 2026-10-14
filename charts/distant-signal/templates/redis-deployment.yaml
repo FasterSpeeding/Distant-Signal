@@ -13,6 +13,7 @@ metadata:
   labels:
     {{- include "distant-signal.labels" (dict "root" . "component" "redis") | nindent 4 }}
 spec:
+  revisionHistoryLimit: {{ include "distant-signal.revisionHistoryLimit" $ }}
   # Fixed at 1 -- this is still a single, non-clustered Redis instance (see
   # values.yaml's own comment on `redis:` for the two consumers of it), not
   # a system of record with any HA story. It stays a Deployment+PVC rather

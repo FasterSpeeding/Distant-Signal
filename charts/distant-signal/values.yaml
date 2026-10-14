@@ -13,6 +13,13 @@ fullnameOverride: ""
 imagePullSecrets: []
 # - name: my-registry-creds
 
+# -- Old ReplicaSets (Deployments) and ControllerRevisions (StatefulSets)
+# kept for `kubectl rollout undo`, on every Deployment and StatefulSet this
+# chart renders. Kubernetes' default is 10, which left 177 zero-replica
+# ReplicaSets (2026-10) for the controllers and the apiserver to list and
+# watch. `helm rollback` does not need them: it re-applies the release.
+revisionHistoryLimit: 3
+
 global:
   # -- Registry (and, optionally, org/path prefix) substituted in front of
   # every image this chart renders, in place of whichever registry each
