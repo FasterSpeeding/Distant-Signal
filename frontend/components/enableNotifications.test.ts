@@ -4,8 +4,12 @@ import {
   BLOCKED_MESSAGE,
   EnableNotificationsError,
   failureReference,
+  NO_SUBSCRIPTION_ERROR,
   blockedMessage,
   isIos,
+  isPushServiceMissing,
+  isPushServiceUnavailable,
+  subscribeToPush,
   urlBase64ToUint8Array,
   withTimeout,
 } from './enableNotifications';
@@ -87,5 +91,65 @@ describe('isIos', () => {
     expect(isIos({ userAgent: 'Mozilla/5.0 (Android 14; Mobile; rv:131.0) Firefox/131.0', maxTouchPoints: 5 })).toBe(
       false,
     );
+  });
+});
+
+describe('isPushServiceUnavailable', () => {
+  const abort = new DOMException('Error retrieving push subscription.', 'AbortError');
+  const empty = Object.assign(new Error('x'), { name: NO_SUBSCRIPTION_ERROR });
+
+  it('is true for an AbortError or no subscription from subscribe, while online', () => {
+    expect(isPushServiceUnavailable(new EnableNotificationsError('subscribe', abort), true)).toBe(true);
+    expect(isPushServiceUnavailable(new EnableNotificationsError('subscribe', empty), true)).toBe(true);
+  });
+
+  it('is false offline, for another step, or for another error', () => {
+    expect(isPushServiceUnavailable(new EnableNotificationsError('subscribe', abort), false)).toBe(false);
+    expect(isPushServiceUnavailable(new EnableNotificationsError('save', abort), true)).toBe(false);
+    expect(
+      isPushServiceUnavailable(
+        new EnableNotificationsError('subscribe', new DOMException('x', 'NotAllowedError')),
+        true,
+      ),
+    ).toBe(false);
+    expect(isPushServiceUnavailable(abort, true)).toBe(false);
+  });
+});
+
+describe('isPushServiceMissing', () => {
+  it('is true only for an AbortError', () => {
+    expect(isPushServiceMissing(new DOMException('Error retrieving push subscription.', 'AbortError'))).toBe(true);
+    expect(isPushServiceMissing(new DOMException('x', 'InvalidStateError'))).toBe(false);
+    expect(isPushServiceMissing(new TypeError('x'))).toBe(false);
+  });
+});
+
+describe('subscribeToPush', () => {
+  const KEY = 'BEl62iUYgUivxIkv69yViEuiBIa40HI0DLLuxazjBk9j4H_hMVU2fV4kX_pMcFOxIRXVFrCzYqfE_ArNVjpJUBg';
+
+  function registrationWith(subscribe: () => Promise<unknown>): ServiceWorkerRegistration {
+    return {
+      pushManager: { subscribe, getSubscription: () => Promise.resolve(null) },
+    } as unknown as ServiceWorkerRegistration;
+  }
+
+  it('fails the subscribe step when subscribe resolves without a subscription', async () => {
+    const result = subscribeToPush(
+      registrationWith(() => Promise.resolve(null)),
+      KEY,
+    );
+    await expect(result).rejects.toBeInstanceOf(EnableNotificationsError);
+    await expect(result.catch((error: unknown) => failureReference(error))).resolves.toBe(
+      `subscribe-${NO_SUBSCRIPTION_ERROR}`,
+    );
+  });
+
+  it('wraps an AbortError from subscribe in the subscribe step', async () => {
+    const abort = new DOMException('Error retrieving push subscription.', 'AbortError');
+    const result = subscribeToPush(
+      registrationWith(() => Promise.reject(abort)),
+      KEY,
+    );
+    await expect(result.catch((error: unknown) => failureReference(error))).resolves.toBe('subscribe-AbortError');
   });
 });

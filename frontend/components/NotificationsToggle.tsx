@@ -8,11 +8,15 @@ import { LoginPromptModal } from './LoginPromptModal';
 import {
   EnableNotificationsError,
   GENERIC_ENABLE_ERROR,
+  PUSH_UNAVAILABLE_MESSAGE,
+  PUSH_UNAVAILABLE_NOTE_MESSAGE,
   SERVICE_WORKER_TIMEOUT_MS,
   blockedMessage,
   errorName,
   failureReference,
   fetchVapidKey,
+  isPushServiceMissing,
+  isPushServiceUnavailable,
   logEnableFailure,
   pushSupported,
   requestNotificationPermission,
@@ -98,8 +102,14 @@ export function NotificationsToggle() {
           setEnabled(true);
         }
       })
-      .catch(() => {
-        // Nothing to seed -- falls back to "not yet enabled".
+      .catch((error: unknown) => {
+        // Nothing to seed, so "not yet enabled". An `AbortError` here
+        // means the browser has no push service (enableNotifications.ts):
+        // a tap would only fail, so say so now and disable the button.
+        if (cancelled || !isPushServiceMissing(error)) return;
+        logEnableFailure(new EnableNotificationsError('probe', error));
+        setSupported(false);
+        setUnsupportedNote(PUSH_UNAVAILABLE_NOTE_MESSAGE);
       });
     return () => {
       cancelled = true;
@@ -243,6 +253,9 @@ function serviceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
  * - a `NotAllowedError` while permission really is denied (Firefox also
  *   rejects `subscribe()` this way when push is blocked for the site):
  *   the "blocked" steps;
+ * - an `AbortError` from `subscribe()`, or no subscription, while online:
+ *   the browser has no push service, so say that and suggest another
+ *   browser rather than "Try again";
  * - anything else, including Firefox's `NotAllowedError` from a lost user
  *   activation while permission is granted, which a second tap fixes:
  *   "Couldn't turn on notifications. Try again." with a reference code. */
@@ -253,6 +266,9 @@ function describeEnableFailure(error: unknown): Failure {
   const cause = error instanceof EnableNotificationsError ? error.cause : error;
   if (errorName(cause) === 'NotAllowedError' && Notification.permission === 'denied') {
     return { message: blockedMessage(navigator.userAgent) };
+  }
+  if (isPushServiceUnavailable(error, navigator.onLine)) {
+    return { message: PUSH_UNAVAILABLE_MESSAGE, reference: failureReference(error) };
   }
   return { message: GENERIC_ENABLE_ERROR, reference: failureReference(error) };
 }

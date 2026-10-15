@@ -6,6 +6,8 @@ import {
   BLOCKED_FIREFOX_MESSAGE,
   BLOCKED_MESSAGE,
   GENERIC_ENABLE_ERROR,
+  PUSH_UNAVAILABLE_MESSAGE,
+  PUSH_UNAVAILABLE_NOTE_MESSAGE,
   UNSUPPORTED_IOS_MESSAGE,
   UNSUPPORTED_MESSAGE,
 } from './enableNotifications';
@@ -151,6 +153,31 @@ describe('NotificationsToggle', () => {
       expect(await screen.findByText(UNSUPPORTED_IOS_MESSAGE)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /enable notifications/i })).toBeDisabled();
     });
+
+    // Waterfox for Android (GitHub build): no push service, so GeckoView
+    // fails getSubscription() as well as subscribe() with an AbortError.
+    it('says the browser has no push service when getSubscription fails with an AbortError on mount', async () => {
+      stubUserAgent(FIREFOX_ANDROID_UA);
+      stubPushApi({
+        getSubscription: vi
+          .fn()
+          .mockRejectedValue(new DOMException('Error retrieving push subscription.', 'AbortError')),
+      });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      expect(await screen.findByText(PUSH_UNAVAILABLE_NOTE_MESSAGE)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /enable notifications/i })).toBeDisabled();
+      expect(screen.queryByText(GENERIC_ENABLE_ERROR)).not.toBeInTheDocument();
+    });
+
+    it('keeps the button usable when getSubscription fails another way on mount', async () => {
+      stubPushApi({ getSubscription: vi.fn().mockRejectedValue(new DOMException('x', 'InvalidStateError')) });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      const button = await screen.findByRole('button', { name: /enable notifications/i });
+      await waitFor(() => expect(button).not.toBeDisabled());
+      expect(screen.queryByText(PUSH_UNAVAILABLE_NOTE_MESSAGE)).not.toBeInTheDocument();
+    });
   });
 
   it('reserves the button slot and enables it once support is confirmed', async () => {
@@ -278,7 +305,7 @@ describe('NotificationsToggle', () => {
       expect((options.applicationServerKey as Uint8Array).length).toBe(65);
     });
 
-    it('shows "try again" with a reference, not a permissions message, when subscribe fails', async () => {
+    it('says the browser has no push service, with a reference, when subscribe fails with an AbortError', async () => {
       stubUserAgent(FIREFOX_ANDROID_UA);
       stubPushApi({
         permission: 'granted',
@@ -287,10 +314,49 @@ describe('NotificationsToggle', () => {
       stubFetch();
       renderWithMantine(<NotificationsToggle />);
       const button = await clickEnable();
-      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(await screen.findByText(PUSH_UNAVAILABLE_MESSAGE)).toBeInTheDocument();
       expect(screen.getByText('Reference: subscribe-AbortError')).toBeInTheDocument();
+      expect(screen.queryByText(/try again/i)).not.toBeInTheDocument();
       expect(screen.queryByText(BLOCKED_FIREFOX_MESSAGE)).not.toBeInTheDocument();
       // The button recovers.
+      await waitFor(() => expect(button).not.toBeDisabled());
+    });
+
+    it('says the browser has no push service when subscribe resolves without a subscription', async () => {
+      stubPushApi({ permission: 'granted', subscribe: vi.fn().mockResolvedValue(null) });
+      const fetchMock = stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(PUSH_UNAVAILABLE_MESSAGE)).toBeInTheDocument();
+      expect(screen.getByText('Reference: subscribe-NoSubscriptionError')).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalledWith('/api/notifications/subscribe', expect.anything());
+    });
+
+    it('shows "try again" for an AbortError while offline, when the push server may just be out of reach', async () => {
+      vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+      stubPushApi({
+        permission: 'granted',
+        subscribe: vi.fn().mockRejectedValue(new DOMException('Registration failed', 'AbortError')),
+      });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(screen.getByText('Reference: subscribe-AbortError')).toBeInTheDocument();
+    });
+
+    it('shows "try again" with a reference, not a permissions message, for another subscribe failure', async () => {
+      stubUserAgent(FIREFOX_ANDROID_UA);
+      stubPushApi({
+        permission: 'granted',
+        subscribe: vi.fn().mockRejectedValue(new DOMException('x', 'UnknownError')),
+      });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      const button = await clickEnable();
+      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(screen.getByText('Reference: subscribe-UnknownError')).toBeInTheDocument();
+      expect(screen.queryByText(BLOCKED_FIREFOX_MESSAGE)).not.toBeInTheDocument();
       await waitFor(() => expect(button).not.toBeDisabled());
     });
 

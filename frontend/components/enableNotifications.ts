@@ -20,6 +20,17 @@
  * called synchronously in the click handler, the key and the service
  * worker registration are fetched before the click, and `subscribe()`
  * follows the permission answer with nothing slow in between.
+ *
+ * When the browser has no push service (Waterfox for Android and other
+ * Firefox forks built without Mozilla's Firebase credentials, or Chrome
+ * without Google Play services): GeckoView answers every push call with an
+ * error when the app registered no `WebPushDelegate`, which Gecko turns
+ * into an `AbortError` ("Error retrieving push subscription.") from both
+ * `subscribe()` and `getSubscription()`. A fork that has the delegate but
+ * whose push service then fails resolves `subscribe()` with no subscription
+ * at all. Retrying fixes neither, so both get `PUSH_UNAVAILABLE_MESSAGE`,
+ * and the `getSubscription()` on mount detects the first case before the
+ * tap (`isPushServiceMissing`).
  */
 
 import { createLogger } from '@/lib/logger';
@@ -36,6 +47,18 @@ export const BLOCKED_FIREFOX_MESSAGE =
 export const BLOCKED_MESSAGE =
   "Couldn't turn on notifications. They're blocked for this site. Allow notifications in your browser's site settings, then try again.";
 
+/** `subscribe()` failed because the browser has no working push service. */
+export const PUSH_UNAVAILABLE_MESSAGE =
+  "Couldn't turn on notifications. This browser can't receive push notifications. Try Firefox or Chrome.";
+
+/** The line under the button when the check on mount found no push
+ * service. */
+export const PUSH_UNAVAILABLE_NOTE_MESSAGE = "This browser can't receive push notifications. Try Firefox or Chrome.";
+
+/** The `name` given to a `subscribe()` that resolved without a
+ * subscription, for the log and the reference code. */
+export const NO_SUBSCRIPTION_ERROR = 'NoSubscriptionError';
+
 export const UNSUPPORTED_MESSAGE = "This browser can't show notifications.";
 
 export const UNSUPPORTED_IOS_MESSAGE =
@@ -48,7 +71,7 @@ export const SERVICE_WORKER_TIMEOUT_MS = 10_000;
 
 /** The step of the flow that failed, for the log and the on-screen
  * reference. */
-export type EnableStep = 'permission' | 'key' | 'worker' | 'subscribe' | 'save';
+export type EnableStep = 'probe' | 'permission' | 'key' | 'worker' | 'subscribe' | 'save';
 
 /** A failure in one step, carrying what went wrong underneath. */
 export class EnableNotificationsError extends Error {
@@ -158,8 +181,13 @@ export async function subscribeToPush(
     throw new EnableNotificationsError('key', error);
   }
   const options: PushSubscriptionOptionsInit = { userVisibleOnly: true, applicationServerKey };
+  // Typed as nullable on purpose: Gecko resolves with no subscription when
+  // its push service fails (see the module comment), whatever the DOM
+  // types say.
+  const subscribe = (): Promise<PushSubscription | null> => registration.pushManager.subscribe(options);
+  let subscription: PushSubscription | null;
   try {
-    return await registration.pushManager.subscribe(options);
+    subscription = await subscribe();
   } catch (error) {
     if (errorName(error) !== 'InvalidStateError') {
       throw new EnableNotificationsError('subscribe', error);
@@ -167,11 +195,36 @@ export async function subscribeToPush(
     try {
       const stale = await registration.pushManager.getSubscription();
       await stale?.unsubscribe();
-      return await registration.pushManager.subscribe(options);
+      subscription = await subscribe();
     } catch (retryError) {
       throw new EnableNotificationsError('subscribe', retryError);
     }
   }
+  if (!subscription) {
+    const empty = new Error('subscribe() resolved without a subscription');
+    empty.name = NO_SUBSCRIPTION_ERROR;
+    throw new EnableNotificationsError('subscribe', empty);
+  }
+  return subscription;
+}
+
+/** Whether a failed enable means the browser has no working push service,
+ * so trying again won't help: `subscribe()` rejected with an `AbortError`
+ * or resolved with nothing. Not while offline, when an `AbortError` can
+ * just mean the push server was out of reach (Firefox desktop, Chrome). */
+export function isPushServiceUnavailable(error: unknown, online: boolean): boolean {
+  if (!online || !(error instanceof EnableNotificationsError) || error.step !== 'subscribe') {
+    return false;
+  }
+  const name = errorName(error.cause);
+  return name === 'AbortError' || name === NO_SUBSCRIPTION_ERROR;
+}
+
+/** Whether `getSubscription()`, which asks for no permission and needs no
+ * network, failed in the way GeckoView fails every push call when the
+ * browser has no push service. */
+export function isPushServiceMissing(error: unknown): boolean {
+  return errorName(error) === 'AbortError';
 }
 
 /** An error's `name` (`NotAllowedError`, `AbortError`, `TypeError`), read
