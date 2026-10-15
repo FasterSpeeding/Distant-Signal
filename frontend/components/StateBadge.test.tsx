@@ -62,4 +62,15 @@ describe('StatusTile', () => {
     expect(screen.queryByRole('link')).toBeNull();
     expect(screen.queryByText('View lines')).toBeNull();
   });
+
+  it("colours a linked tile's count by its severity group, and leaves a zero dimmed", () => {
+    const { unmount } = renderWithMantine(
+      <StatusTile count={3} label="Severe disruption" severity="severe" href="/lines?statusGroup=severe" />,
+    );
+    expect(screen.getByText('3').getAttribute('style')).toContain('var(--ds-severity-severe-text)');
+    expect(screen.getByText('Severe disruption')).toBeInTheDocument();
+    unmount();
+    renderWithMantine(<StatusTile count={0} label="Severe disruption" severity="severe" />);
+    expect(screen.getByText('0').getAttribute('style')).toContain('var(--mantine-color-dimmed)');
+  });
 });

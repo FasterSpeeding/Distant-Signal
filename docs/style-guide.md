@@ -61,6 +61,7 @@ filled grape in the light scheme only.
 | Filled grape | `--mantine-color-grape-filled` | grape 7, hover 8 | grape 8, hover 9 | Text pinned white by `variantColorResolver` |
 | Error text | `--ds-color-error-text` | red 9 | red 4 | App-owned token |
 | Good / bad icon | `--ds-color-good-icon`, `--ds-color-bad-icon` | green 7 / red 7 | green 4 / red 4 | Non-text glyphs |
+| Severity text | `--ds-severity-<group>-text` (`severityGroupTextColor`) | green `#267b37`, gray 7, blue 9, yellow `#a85700`, red 9 | shade 4 of each | Same hue as the group's `StatusBadge`; each ≥5.2:1 on a card |
 | Light-variant text | `--mantine-color-*-light-color` | yellow `#a85700`, orange `#bb3e0d`, green `#267b37`, teal `#087a57` | shade 0 | Off-palette hexes, each ≥4.6:1 on its shade-1 background |
 
 App-owned tokens are prefixed `--ds-`. The overrides use
@@ -301,7 +302,13 @@ used, rather than as a literal in a component.
   the /status strip. Below `sm` each tile is one compact row (count, label,
   "View lines") in a single column; from `sm` up, five across. Five tiles
   never fill a two-column grid, so there is no two-column layout. Labels
-  are sentence case (`severityGroupLabel`).
+  are sentence case (`severityGroupLabel`). `severity` colours a linked
+  tile's count in its group's hue (`--ds-severity-<group>-text`), so the
+  strip reads red to green like the badges; the label still names the
+  group, and a zero tile stays dimmed. Colour goes on the count, never a
+  left-border accent. From `sm` up, count and label sit at the top of every
+  tile, so they line up across the row whether or not a tile has the
+  "View lines" cue, which drops to the bottom edge.
 - **StateBadge** and **BadgeRow** (`components/StateBadge.tsx`): every
   badge that states a thing's state, light variant, sentence case, coloured
   by a semantic `tone` (neutral gray, good green, caution yellow, late
