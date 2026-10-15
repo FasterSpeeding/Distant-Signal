@@ -250,7 +250,7 @@ fn incident_summary_json(row: &queries::IncidentSummaryRow) -> Value {
 /// docs/superpowers/specs/2026-09-16-tfl-incident-archive-design.md 1c.
 /// The one caveat that remains is scope, not emptiness: rows ingested
 /// before `20260917090000_incidents_affected_lines.sql` match no line until
-/// the `backfill_incident_lines` binary has been run (see
+/// `writer-maintenance backfill-incident-lines` has been run (see
 /// docs/incident-affected-lines-backfill.md).
 async fn search_incidents(
     State(app): State<App>,
@@ -966,8 +966,6 @@ mod db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             migration_database_url: None,
-            redis_url: "redis://127.0.0.1:0".to_string(),
-            redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
@@ -1008,7 +1006,6 @@ mod db_tests {
             line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
-            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
             oidc: OidcClient::new(OidcConfig {
                 issuer_url: "https://example.invalid".to_string(),
                 client_id: "test-client".to_string(),

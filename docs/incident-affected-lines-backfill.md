@@ -76,9 +76,9 @@ kubectl -n distant-signal run backfill-incident-lines \
   --command -- /usr/local/bin/writer-maintenance backfill-incident-lines
 ```
 
-The api image's `backfill_incident_lines` binary still works but is
-deprecated (it runs with whatever `DATABASE_URL` it is given); it goes in
-phase 5 step 5.4b.
+The api image's old `backfill_incident_lines` binary is gone (ingest phase
+5, step 5.4b): `writer-maintenance backfill-incident-lines` is the only
+way to run it.
 
 ## Reading the output
 
@@ -148,4 +148,5 @@ Any time `lines/*.toml` changes in a way that affects matching —
 `segment`. Live incidents pick the change up on the next poll on their own;
 archived ones only move when this runs.
 
-Implementation and reasoning: `crates/api/src/data/incident_line_backfill.rs`.
+Implementation and reasoning: `crates/ds-store/src/incidents/line_backfill.rs`
+(entry point `crates/ingest-writer/src/bin/writer_maintenance.rs`).

@@ -2604,21 +2604,21 @@ notifier:
   podSecurityContext: {}
 
 # ---------------------------------------------------------------------------
-# redis (crates/enricher's trigger queue; crates/api publishes to it)
+# redis (movement-events, incident-text-changed and the ds:ingest:* streams)
 # ---------------------------------------------------------------------------
 redis:
   enabled: true
   # -- Connection URL of an externally-managed Redis. Used ONLY when
   # `redis.enabled` is false, in which case it is required: setting
   # `redis.enabled: false` with this left empty aborts the render rather
-  # than pointing api and enricher at an in-chart Service that was never
+  # than pointing its clients at an in-chart Service that was never
   # created. Same contract as `postgresql.enabled: false` +
   # `externalDatabase.*`.
   externalUrl: ""
   # -- Redis AUTH (INF-3). OFF by default: with `enabled: false` nothing
   # below renders and the chart output is unchanged.
   #
-  # When enabled, every workload that talks to Redis (api, enricher,
+  # When enabled, every workload that talks to Redis (enricher,
   # trust-consumer, full-coverage-consumer, trust-backlog-consumer,
   # movement-relay) gets a `REDIS_PASSWORD` env from the Secret below via
   # `secretKeyRef`, next to its unchanged, credential-free `REDIS_URL`. The
@@ -2733,9 +2733,9 @@ redis:
     # -- Which clients connect as their own user (`REDIS_USERNAME` and
     # their own `REDIS_PASSWORD` from `existingSecret`) instead of
     # `default` (step 2). Needs `enabled`.
+    # The api has had no Redis client since ingest phase 5 (step 5.4): a
+    # leftover `api` key here is ignored.
     clients:
-      # -- api, as user `api`.
-      api: false
       # -- enricher, as user `enricher`.
       enricher: false
       # -- movement-relay, as user `movement-relay`.
@@ -2839,8 +2839,8 @@ redis:
   # run_cycle, event_sink.rs), so Kafka holds the backlog and nothing is
   # dropped. On each refusal it also XTRIMs the stream to its cap (XTRIM
   # is allowed at maxmemory), so lowering movementRelay.streamMaxLen is
-  # enough to recover. api's XADD to incident-text-changed fails the same
-  # way; enricher's hourly sweep covers anything that missed.
+  # enough to recover. poller-incidents' XADD to incident-text-changed
+  # fails the same way; enricher's hourly sweep covers anything that missed.
   #
   # 1536mb (Redis units: mebibytes) is movementRelay.streamMaxLen's 1 GiB
   # budget plus 50% for larger-than-planned entries, the small
@@ -5578,10 +5578,10 @@ metrics:
       enabled: true
       for: 15m
       severity: warning
-    # DistantSignalIncidentRemovalStalled: over `window`, api skipped the
+    # DistantSignalIncidentRemovalStalled: over `window`, poller-incidents skipped the
     # "Ended (no longer listed)" inference for an incomplete, empty or
     # more-than-50%-shrunken incidents snapshot and applied it to none
-    # (distant_signal_api_incident_removal_inference_total{outcome}), so
+    # (distant_signal_store_incident_removal_inference_total{outcome}), so
     # incidents that leave the Knowledgebase feed stay "active". 2h is 24
     # polls at the 300s interval. Only when pollers.incidents.enabled.
     incidentRemovalStalled:
@@ -5590,9 +5590,8 @@ metrics:
       for: 15m
       severity: warning
     # DistantSignalIncidentSnapshotsMissing: no incidents snapshot reached
-    # the database within `window` (distant_signal_api_incident_removal_inference_total,
-    # every outcome: counted by api under the http sink, by poller-incidents
-    # under db), for `for`. Only when pollers.incidents.enabled.
+    # the database within `window` (distant_signal_store_incident_removal_inference_total,
+    # every outcome: counted by poller-incidents), for `for`. Only when pollers.incidents.enabled.
     incidentSnapshotsMissing:
       enabled: true
       window: 2h

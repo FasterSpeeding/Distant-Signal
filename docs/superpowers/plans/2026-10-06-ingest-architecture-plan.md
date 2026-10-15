@@ -1010,6 +1010,14 @@ Rollback: `source=http`.
 
 ## Phase 5: remove `/private` and lock down
 
+**2026-10-14: release C is built** (5.4, 5.4b's deletions, Q1's
+`store_*` rename, the chart side of 5.6, 5.7; no grant change). Releases A
+and B are live (2026-10-10, 2026-10-13). 5.5 is blocked: production's
+api, aggregator, enricher and notifier still connect as the app role, so
+phase 0b's `connect` and 7-day report come first, then the narrowing
+(release D, with the per-role test fixtures ported) and the `app` drop
+(release E). See the runbook's "Release C" and "5.5 status" sections.
+
 **2026-10-12: release B is built** (5.1–5.3b: the `/private` routes, the
 producers' HTTP sinks and reads, the writer's `shadow` mode, the cutover
 alerts and the app role's publish-staging grants; not yet deployed). 5.4,

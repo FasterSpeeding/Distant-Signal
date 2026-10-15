@@ -80,11 +80,7 @@ SERVICES: Mapping[str, Sequence[str]] = {
     "aggregator": ("aggregator",),
     "api": (
         "api",
-        "backfill_trains",
-        "backfill_incident_lines",
         "corpus_compare",
-        "replay_uidless_movements",
-        "backfill_line_train_summaries",
         "maintenance",
         # The ds-migrate crate's binary (plan 1B.1): the migrate hook Job's
         # command. `--bin` selects it across the workspace.
@@ -415,6 +411,36 @@ def runtime_stage_problems(found: Mapping[str, Path]) -> list[str]:
     return problems
 
 
+# A runtime stage's copy of one built binary out of the builder stage.
+BINARY_COPY = re.compile(r"^COPY --from=builder /usr/local/bin/(\S+) ", re.MULTILINE)
+
+
+def binary_copy_problems(found: Mapping[str, Path]) -> list[str]:
+    """Return the runtime COPYs that disagree with SERVICES.
+
+    The generated block builds exactly SERVICES' binaries; the hand-written
+    runtime stage copies them. A COPY of a binary no longer built fails only
+    at `docker build` (ingest phase 5, 5.4b), and a built binary nobody
+    copies ships nothing.
+    """
+    problems: list[str] = []
+    for name in sorted(found.keys() & SERVICES.keys()):
+        copied = BINARY_COPY.findall(found[name].read_text(encoding="utf-8"))
+        built = SERVICES[name]
+        problems += [
+            f"docker/{name}.Dockerfile copies {binary!r}, which SERVICES does not build"
+            for binary in copied
+            if binary not in built
+        ]
+        problems += [
+            f"docker/{name}.Dockerfile builds {binary!r} but never copies it "
+            "into the runtime stage"
+            for binary in built
+            if binary not in copied
+        ]
+    return problems
+
+
 def ignore_files(found: Mapping[str, Path]) -> dict[Path, str]:
     """Return every generated .dockerignore path and its wanted text."""
     ignores = {
@@ -527,6 +553,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ]
     problems += input_problems(found)
     problems += runtime_stage_problems(found)
+    problems += binary_copy_problems(found)
     wanted, splice_problems = wanted_files(found)
     problems += splice_problems
     stale: list[str] = []

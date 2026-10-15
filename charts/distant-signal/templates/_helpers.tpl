@@ -414,6 +414,9 @@ counts as deployed. Takes (dict "root" $ "client" <redis.acl.clients key>).
 */}}
 {{- define "distant-signal.redisAclClientDeployed" -}}
 {{- $v := .root.Values -}}
+{{- /* Retired clients (no workload connects as them any more): the api
+     lost its Redis client in ingest phase 5, step 5.4. */ -}}
+{{- if not (has .client (list "api")) -}}
 {{- $pollers := dict "pollerIncidents" "incidents" "pollerLdbws" "ldbws" "pollerTfl" "tfl" "pollerTocs" "tocs" "pollerStations" "stations" -}}
 {{- $own := dict "pollerIrishRailGtfs" "pollerIrishRailGtfs" "pollerIrishRailLive" "pollerIrishRailLive" "pollerNirStations" "pollerNirStations" "movementRelay" "movementRelay" "ingestWriter" "ingestWriter" -}}
 {{- /* poller-transit-schedule, one Deployment per enabled network
@@ -428,6 +431,7 @@ counts as deployed. Takes (dict "root" $ "client" <redis.acl.clients key>).
 {{- if (get $v (get $own .client) | default dict).enabled }}true{{ end -}}
 {{- else -}}
 true
+{{- end -}}
 {{- end -}}
 {{- end }}
 

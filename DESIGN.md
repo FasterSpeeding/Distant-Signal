@@ -154,7 +154,7 @@ the aggregator trivial (it's a function from inputs to outputs).
 columns for the variable bits (incident metadata, sample departures).
 
 **Why Redis.** Used for streams, not as a database: the
-`incident-text-changed` stream gives push-driven enrichment (the api
+`incident-text-changed` stream gives push-driven enrichment (poller-incidents
 signals `enricher` rather than the enricher polling Postgres; an hourly
 sweep is only the backstop for a missed event), and the
 `movement-events` stream lets one Kafka connection feed three independent
