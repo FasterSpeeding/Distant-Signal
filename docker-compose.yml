@@ -120,10 +120,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
-      # crates/api/src/data/config.rs: ServiceArguments
+      # crates/api/src/data/config.rs: ServiceArguments. No Redis: the api
+      # has had no Redis client since ingest phase 5 (step 5.4).
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       BIND_URL: 0.0.0.0:8080
       INTERNAL_OAUTH_ISSUER_URL: ${INTERNAL_OAUTH_ISSUER_URL:?INTERNAL_OAUTH_ISSUER_URL must be set — see the internal-oauth section of local.env.example}
@@ -134,7 +133,6 @@ services:
       # The ingest-writer owns the train-domain loops and api-maintenance
       # the user-data sweeps, as in production (ingest plan 1B.7).
       API_BACKGROUND_LOOPS: "false"
-      REDIS_URL: redis://redis:6379
       RUST_LOG: ${RUST_LOG:-info}
       # common::logging: json (default) or pretty (dev.env sets pretty).
       LOG_FORMAT: ${LOG_FORMAT:-json}
@@ -932,8 +930,8 @@ services:
       # option-c plan, Tasks 1-7) -- replaces the DISCORD_CLIENT_ID/
       # DISCORD_ALLOWED_USER_IDS env vars this block used to render here
       # (retired, not kept alongside: that plan's Task 8). Reuses the
-      # same `redis` service every other compose service already shares
-      # (see api:'s own REDIS_URL above) -- src/oauth/store.ts namespaces
+      # same `redis` service the stream services already share --
+      # src/oauth/store.ts namespaces
       # its own keys under `railmcp:oauth:` to avoid collision.
       OAUTH_REDIS_URL: redis://redis:6379
       # Only /mcp's own CORS scoping now (the in-app chat calls /mcp from

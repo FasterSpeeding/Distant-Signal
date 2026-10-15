@@ -28,8 +28,7 @@ describe('DisruptionDetail', () => {
 
   it('renders each affected stop', () => {
     renderWithMantine(<DisruptionDetail disruption={sample} />);
-    expect(screen.getByText('WOK')).toBeInTheDocument();
-    expect(screen.getByText('WAT')).toBeInTheDocument();
+    expect(screen.getByText('Stops: WOK, WAT')).toBeInTheDocument();
   });
 
   it('renders the affected route range', () => {
@@ -89,12 +88,12 @@ describe('DisruptionDetail', () => {
 
   it('renders the badge with the correct label for a rail-replacement-bus impact type', () => {
     renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: 'rail_replacement_bus' }} />);
-    expect(screen.getByText('Rail Replacement Bus')).toBeInTheDocument();
+    expect(screen.getByText('Rail replacement bus')).toBeInTheDocument();
   });
 
   it('renders the badge with the correct label for a no-scheduled-service impact type', () => {
     renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: 'no_scheduled_service' }} />);
-    expect(screen.getByText('No Scheduled Service')).toBeInTheDocument();
+    expect(screen.getByText('No scheduled service')).toBeInTheDocument();
   });
 
   it('renders the badge with the correct label for a diversion impact type', () => {
@@ -104,8 +103,8 @@ describe('DisruptionDetail', () => {
 
   it('renders no badge when impactType is null', () => {
     renderWithMantine(<DisruptionDetail disruption={{ ...sample, impactType: null }} />);
-    expect(screen.queryByText('Rail Replacement Bus')).not.toBeInTheDocument();
-    expect(screen.queryByText('No Scheduled Service')).not.toBeInTheDocument();
+    expect(screen.queryByText('Rail replacement bus')).not.toBeInTheDocument();
+    expect(screen.queryByText('No scheduled service')).not.toBeInTheDocument();
     expect(screen.queryByText('Diversion')).not.toBeInTheDocument();
   });
 
@@ -125,7 +124,7 @@ describe('DisruptionDetail', () => {
     const { container } = renderWithMantine(
       <DisruptionDetail disruption={{ ...sample, impactType: 'rail_replacement_bus' }} />,
     );
-    expect(screen.getByText('Rail Replacement Bus')).toBeInTheDocument();
+    expect(screen.getByText('Rail replacement bus')).toBeInTheDocument();
     expect(container.querySelector('[data-ai-badge]')).toHaveAccessibleDescription(ENRICHED_INCIDENT_NOTE);
   });
 

@@ -1,4 +1,4 @@
-import { Badge } from '@mantine/core';
+import { StateBadge, type StateTone } from './StateBadge';
 import { worstLegStatus, type LegStatusGroup } from '@/lib/journeyStatus';
 import type { JourneyLegDetail } from '@/lib/types';
 
@@ -23,22 +23,22 @@ const LABEL: Record<LegStatusGroup, string> = {
   severe: 'Cancelled',
 };
 
-const COLOR: Record<LegStatusGroup, string> = {
-  good: 'green',
-  awaiting: 'gray',
+const TONE: Record<LegStatusGroup, StateTone> = {
+  good: 'good',
+  awaiting: 'neutral',
   // Grape, not blue: this is the one state that asks the user to act
   // (pick a train), so it takes the app's action colour. Blue means a
   // planned or changed arrangement (planned closures, a changed platform)
   // -- docs/style-guide.md "Semantic roles". Yellow/orange are already
   // "Delayed"/"Not stopping" in this same rollup, and two facts must not
   // share a hue here.
-  unmatched: 'grape',
-  delayed: 'yellow',
+  unmatched: 'action',
+  delayed: 'caution',
   // Orange, not red: red is already "Cancelled" one row below, and two
   // different facts must not share a hue here (the same rule the 09-22
   // review's I20 applies to the platform/delay badge pair).
-  skipped: 'orange',
-  severe: 'red',
+  skipped: 'late',
+  severe: 'critical',
 };
 
 /** The badge for an ALREADY-CLASSIFIED status group -- the one place a
@@ -51,11 +51,7 @@ const COLOR: Record<LegStatusGroup, string> = {
  * UX review, M17) and a `Tooltip` on a non-focusable `Badge` is
  * keyboard-unreachable anyway. */
 export function JourneyStatusGroupBadge({ group }: { group: LegStatusGroup }) {
-  return (
-    <Badge color={COLOR[group]} variant="light" tt="none">
-      {LABEL[group]}
-    </Badge>
-  );
+  return <StateBadge tone={TONE[group]}>{LABEL[group]}</StateBadge>;
 }
 
 /** The journey-level summary badge, per spec §3. Renders nothing for a
@@ -88,22 +84,14 @@ export function JourneyStatusBadge({ legs }: { legs: JourneyLegDetail[] }) {
     const firstUnmatchedLegId = unmatchedLegs[0]?.id;
     const label = unmatchedLegs.length === 1 ? '1 leg needs a train' : `${unmatchedLegs.length} legs need a train`;
     if (firstUnmatchedLegId === undefined) {
-      return (
-        <Badge color={COLOR.unmatched} variant="light" tt="none">
-          {label}
-        </Badge>
-      );
+      return <StateBadge tone={TONE.unmatched}>{label}</StateBadge>;
     }
     return (
-      <Badge component="a" href={`#leg-${firstUnmatchedLegId}`} color={COLOR.unmatched} variant="light" tt="none">
+      <StateBadge href={`#leg-${firstUnmatchedLegId}`} tone={TONE.unmatched}>
         {label}
-      </Badge>
+      </StateBadge>
     );
   }
 
-  return (
-    <Badge color={COLOR[worst]} variant="light" tt="none">
-      {LABEL[worst]}
-    </Badge>
-  );
+  return <StateBadge tone={TONE[worst]}>{LABEL[worst]}</StateBadge>;
 }

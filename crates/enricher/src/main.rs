@@ -8,6 +8,7 @@
 mod alloc_meter;
 mod auth;
 mod batch;
+mod category;
 mod checks;
 mod churn;
 mod combine;
@@ -23,7 +24,6 @@ mod config;
     )
 )]
 mod eval;
-mod heap;
 mod latency;
 mod llm;
 mod profile;
@@ -73,8 +73,8 @@ async fn run() -> anyhow::Result<()> {
 
     common::logging::init("enricher");
     // Before any batch work: the batch path's freed peaks go back to the
-    // kernel (`heap`).
-    heap::pin_mmap_threshold();
+    // kernel (`common::heap`).
+    common::heap::pin_mmap_threshold();
 
     let config = Config::parse();
     // `LLM_PROVIDER` with its defaults (`anthropic` fills in the base URL
@@ -166,24 +166,11 @@ async fn run() -> anyhow::Result<()> {
     // still loading its AOF after a node reboot) instead of exiting into
     // CrashLoopBackOff. `/healthz` stays 503 until all three steps below
     // are done; `/livez` stays 200 while they retry.
-    common::startup::retry_until_ready(
-        "Postgres",
-        common::startup::CONNECT_BACKOFF,
-        Some(&progress),
-        || async {
-            use sqlx::Connection;
-            sqlx::PgConnection::connect(config.database_url.expose())
-                .await?
-                .close()
-                .await
-        },
-    )
-    .await;
     // application_name, statement/idle-in-transaction timeouts and a short
     // acquire_timeout; see `common::pg`. ds_store's wrapper adds the
     // db_pool_* metrics.
     let pool = ds_store::pool::PoolSettings::from_env("distant-signal-enricher", 5)?
-        .connect(config.database_url.expose())
+        .connect_until_ready(config.database_url.expose(), Some(&progress))
         .await?;
     // The schema gate (spec §12.2): no loop and no readiness until the
     // schema and grants this build needs are there; exits after 15 minutes.

@@ -14,7 +14,7 @@ import { isSeverityGroup } from '@/lib/severity';
 import type { Preferences } from '@/lib/types';
 import { TextLink } from '@/components/TextLink';
 import { AllLinesTable } from './AllLinesTable';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 export const revalidate = 0;
 
@@ -77,7 +77,7 @@ export const revalidate = 0;
 const METADATA_TITLE = 'Lines';
 const METADATA_DESCRIPTION = 'Every National Rail and TfL line, with its current status, delays and cancellations.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 // The exact shape getPreferences() already returns for a 401, named so the
 // fallback below is typed as `Preferences` rather than inferred with

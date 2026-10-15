@@ -9,7 +9,6 @@ vi.mock('@/lib/api', () => ({
   getDataFreshness: vi.fn(),
   getSessionOrLoggedOut: vi.fn(),
   getMyGroups: vi.fn(),
-  getChatbotAccess: vi.fn(),
   LOGGED_OUT_SESSION: { authenticated: false, id: null, username: null, name: null },
 }));
 
@@ -134,27 +133,18 @@ describe('backend reachability threading', () => {
     // as someone who really is logged out. See lib/api.test.ts for that
     // behaviour's own coverage.
     // Matches the invoking CALL specifically (immediately followed by the
-    // `,` that separates it from the `getChatbotAccess()` leg inside
-    // `Promise.all([...])`), not the bare identifier: this file's own doc
-    // comments above also mention `getSessionOrLoggedOut()` in prose
-    // without invoking it.
+    // `,` that separates it from the `getTransitNetworks()` leg inside
+    // `Promise.all([...])`), not the bare identifier, in case a comment
+    // mentions `getSessionOrLoggedOut()` in prose.
     const source = readFileSync('app/layout.tsx', 'utf8');
     expect(source.match(/getSessionOrLoggedOut\(\),/g)).toHaveLength(1);
   });
 
-  // Review §3.1.3: /chat was undiscoverable -- getChatbotAccess() now rides
-  // alongside the session check in the same fetch/Suspense boundary, rather
-  // than adding a third sequential wait of its own.
-  it('fetches getChatbotAccess() concurrently with getSessionOrLoggedOut(), inside the same Suspense boundary', () => {
+  // The /chat nav entry follows the session alone (every logged-in user
+  // gets the chat), so the nav makes no chatbot-access request at all.
+  it('makes no separate chatbot-access request for the nav', () => {
     const source = readFileSync('app/layout.tsx', 'utf8');
-    // Both calls sit inside the SAME `Promise.all([...])` -- not a second,
-    // separately-awaited call outside it, which would be a sequential wait
-    // stacked on top of the session fetch rather than a concurrent one.
-    const promiseAllMatch = /Promise\.all\(\[([\s\S]*?)\]\)/.exec(source);
-    expect(promiseAllMatch).not.toBeNull();
-    const body = promiseAllMatch![1];
-    expect(body).toMatch(/getSessionOrLoggedOut\(\)/);
-    expect(body).toMatch(/getChatbotAccess\(\)/);
+    expect(source).not.toMatch(/getChatbotAccess|chatbot\/access/);
   });
 });
 

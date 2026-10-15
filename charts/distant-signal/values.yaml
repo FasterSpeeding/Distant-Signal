@@ -13,6 +13,13 @@ fullnameOverride: ""
 imagePullSecrets: []
 # - name: my-registry-creds
 
+# -- Old ReplicaSets (Deployments) and ControllerRevisions (StatefulSets)
+# kept for `kubectl rollout undo`, on every Deployment and StatefulSet this
+# chart renders. Kubernetes' default is 10, which left 177 zero-replica
+# ReplicaSets (2026-10) for the controllers and the apiserver to list and
+# watch. `helm rollback` does not need them: it re-applies the release.
+revisionHistoryLimit: 3
+
 global:
   # -- Registry (and, optionally, org/path prefix) substituted in front of
   # every image this chart renders, in place of whichever registry each
@@ -166,10 +173,27 @@ postgresql:
       # CONNECTION LIMITs and grants current and moves to `owner` anything
       # a superuser created meanwhile. A failure fails the helm upgrade.
       enabled: false
-      # -- Seconds before the Job gives up (it first waits for Postgres).
+      # -- Seconds before the Job gives up (at least 120). The pod keeps 60
+      # s of it in hand: its bounded wait for Postgres, every try and
+      # backoff end by then, so it fails by itself and keeps its log
+      # (docs/postgres-app-role.md "When the setup Job fails").
       activeDeadlineSeconds: 600
-      # -- Retries after a failed run.
-      backoffLimit: 2
+      # -- New pods after a failed one. 0: the pod retries a lock timeout
+      # and the like itself, and a new one would only repeat a final error
+      # with less of the deadline left.
+      backoffLimit: 0
+      # -- Tries per script (postgres-roles.sql, then postgres-grants.sql)
+      # when one fails for a reason a later try can get past: a lock or
+      # statement timeout, a deadlock, a lost connection. Backoff 5 s,
+      # doubling, at most 60 s; never past the deadline.
+      attempts: 5
+      # -- lock_timeout of the setup's sessions: a lock queued behind a
+      # long transaction fails (and is retried) instead of waiting, and
+      # blocking every query queued behind it, until the deadline.
+      lockTimeout: 10s
+      # -- statement_timeout of the setup's sessions (each section is one
+      # statement).
+      statementTimeout: 120s
       # -- Container resources.
       resources:
         requests:
@@ -510,17 +534,52 @@ postgresql:
         # (`pollers.ldbws.internalReads.database.maxConnections`, 1) plus 1
         # (spec §6.6: 2).
         connectionLimit: ""
+  # Probes of the bundled Postgres. Each one's `type` is `tcpSocket` (the
+  # default) or `exec`:
+  #   - tcpSocket: the kubelet opens a TCP connection to the postgres port.
+  #     Nothing is forked in the container. It passes as soon as the
+  #     postmaster listens, which is before it accepts queries: readiness
+  #     turns true slightly earlier during crash recovery (clients get "the
+  #     database system is starting up" for the rest of WAL redo), and
+  #     liveness never kills Postgres in the middle of WAL redo.
+  #   - exec: `pg_isready` against 127.0.0.1, true only once Postgres
+  #     accepts connections. Every period forks a process through
+  #     containerd and the shim, which is what a CPU-saturated node can
+  #     least afford (readiness alone was every 5s).
+  # Like the api's HTTP probes, tcpSocket probes come from the node, so a
+  # CNI that applies NetworkPolicy to node-local traffic (most don't; see
+  # networkPolicy.healthIngress) would need the node admitted through
+  # networkPolicy.postgresClients.
   probes:
-    # -- startupProbe budget (INF-4). Liveness only begins once pg_isready
-    # succeeds, so crash recovery (WAL redo after a node reboot) is never
-    # killed mid-way. periodSeconds x failureThreshold = 10s x 90 = 15
-    # minutes, generous for up to max_wal_size (4GB) of redo while every
-    # other pod on the node is also starting; the 2026-09-27 00:29 recovery
-    # replayed 1.7GB in 20s on an idle node. After startup the liveness probe
-    # keeps its normal 60s (10s x 6) budget.
+    # -- startupProbe (INF-4). Liveness and readiness begin only once it
+    # succeeds. periodSeconds x failureThreshold = 10s x 90 = 15 minutes,
+    # generous for up to max_wal_size (4GB) of redo while every other pod
+    # on the node is also starting (with `exec`; tcpSocket passes once the
+    # postmaster listens); the 2026-09-27 00:29 recovery replayed 1.7GB in
+    # 20s on an idle node.
     startup:
+      # -- `tcpSocket` or `exec` (pg_isready).
+      type: tcpSocket
       periodSeconds: 10
+      timeoutSeconds: 5
       failureThreshold: 90
+    # -- readinessProbe: the Service sends traffic only while it passes.
+    # 10s x 5 = 50s of failures before the pod turns unready (it was 5s x
+    # 10 with exec).
+    readiness:
+      # -- `tcpSocket` or `exec` (pg_isready).
+      type: tcpSocket
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 5
+    # -- livenessProbe: restarts Postgres after 30s x 6 = 3 minutes of
+    # failures (it was 10s x 6 with exec).
+    liveness:
+      # -- `tcpSocket` or `exec` (pg_isready).
+      type: tcpSocket
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 6
   persistence:
     # -- Attach a PersistentVolumeClaim. When false, an emptyDir is used and
     # ALL DATA IS LOST when the pod is rescheduled -- ephemeral testing only.
@@ -1547,39 +1606,24 @@ api:
   # image) before turning it on.
   corpusFallback:
     enabled: false
-  # -- Authentik/SSO group (via the `groups` OIDC claim, NOT one of the
-  # machine/service-account groups above) that grants a real, logged-in
-  # user access to the embedded chatbot -- crate::auth::ChatbotAuthorizedUser
-  # checks this against that user's own resolved `groups`. Suggested default
-  # only; an operator's actual Authentik group name is not mandated.
-  # Supersedes the former per-user `chatbot_allowed_users` DB allowlist.
-  # Only read when chatbotAccess is `group`; there, "" means nobody gets the
-  # chatbot (it does NOT mean everyone -- use chatbotAccess: authenticated).
-  chatbotAccessGroup: distant-signal-chatbot-users
   # -- The transit networks `/public/transit` serves (API_TRANSIT_NETWORKS;
   # transit networks spec §11). Empty by default: every `/public/transit`
   # route answers 404 and the frontend hides its pages. List a network only
   # after its timetable has been applied for a day (spec §15.1), e.g.
   # `[metrolink]`.
   transitNetworks: []
-  # -- Who gets the embedded chatbot (/chat): `group` (default) -- logged-in
-  # members of chatbotAccessGroup only; `authenticated` -- every logged-in
-  # user, whatever their groups (logged-out visitors still get the sign-in
-  # prompt). In `authenticated` mode chatbotAccessGroup is ignored and no
-  # longer kept on users.groups, and the frontend drops its "only accounts
-  # that have been given access" notes. Flip it together with
-  # distant-signal-mcp's own ungating: the chat's tools come from that
-  # server, which enforces its own access groups.
-  chatbotAccess: group
-  # -- Authentik/SSO end-user group (same `groups` OIDC claim as
-  # chatbotAccessGroup) whose members may end any user's sessions through
+  # The embedded chatbot (/chat) is open to every logged-in user. The former
+  # chatbotAccess and chatbotAccessGroup keys were removed on 2026-10-14;
+  # setting either now fails the render.
+  # -- Authentik/SSO end-user group (from the `groups` OIDC claim, NOT one
+  # of the machine/service-account groups above) whose members may end any user's sessions through
   # POST /api/admin/users/revoke-sessions. OFF by default: empty means
   # nobody is an admin and that endpoint returns 403 to everyone. Group
   # membership is read at login, so adding or removing someone takes effect
   # at their next login. See docs/session-revocation.md.
   adminGroup: ""
   # -- LEG-6: extra IdP groups kept on users.groups at login, besides
-  # chatbotAccessGroup and adminGroup (every other group in the claim is
+  # adminGroup (every other group in the claim is
   # dropped). Comma-separated; "" (the default) keeps none. Nothing reads
   # extra groups today: distant-signal-mcp takes its groups straight from
   # Authentik since 2026-09-29.
@@ -1991,8 +2035,15 @@ apiMaintenance:
   # -- Deadline per run. The retention prune allows itself 600 s per
   # statement.
   activeDeadlineSeconds: 1800
+  # -- Finished Jobs the CronJob keeps: the last success, and the last
+  # three failures to read logs from. The TTL below removes either sooner
+  # once they are a day old.
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
+  # -- Seconds after a run finishes (succeeded or failed) before the TTL
+  # controller deletes its Job and pod: a day, so a failed run's logs
+  # outlast a night. null leaves finished Jobs to the history limits alone.
+  ttlSecondsAfterFinished: 86400
   # -- tracing-subscriber EnvFilter (RUST_LOG).
   logLevel: info
   resources: {}
@@ -2592,21 +2643,21 @@ notifier:
   podSecurityContext: {}
 
 # ---------------------------------------------------------------------------
-# redis (crates/enricher's trigger queue; crates/api publishes to it)
+# redis (movement-events, incident-text-changed and the ds:ingest:* streams)
 # ---------------------------------------------------------------------------
 redis:
   enabled: true
   # -- Connection URL of an externally-managed Redis. Used ONLY when
   # `redis.enabled` is false, in which case it is required: setting
   # `redis.enabled: false` with this left empty aborts the render rather
-  # than pointing api and enricher at an in-chart Service that was never
+  # than pointing its clients at an in-chart Service that was never
   # created. Same contract as `postgresql.enabled: false` +
   # `externalDatabase.*`.
   externalUrl: ""
   # -- Redis AUTH (INF-3). OFF by default: with `enabled: false` nothing
   # below renders and the chart output is unchanged.
   #
-  # When enabled, every workload that talks to Redis (api, enricher,
+  # When enabled, every workload that talks to Redis (enricher,
   # trust-consumer, full-coverage-consumer, trust-backlog-consumer,
   # movement-relay) gets a `REDIS_PASSWORD` env from the Secret below via
   # `secretKeyRef`, next to its unchanged, credential-free `REDIS_URL`. The
@@ -2615,7 +2666,7 @@ redis:
   # appears in values, in `REDIS_URL` or in any rendered manifest. With
   # `requirePass` (and the bundled Redis) the Redis container also gets the
   # password from the Secret and starts with `--requirepass`, and its
-  # probes authenticate (`REDISCLI_AUTH`).
+  # redis-cli in it (the `exec` probes) authenticates (`REDISCLI_AUTH`).
   #
   # SAFE ENABLE SEQUENCE FOR A RUNNING DEPLOYMENT (no outage). The chart's
   # Redis is 7.4: the default user accepts `AUTH default <anything>` while
@@ -2721,9 +2772,9 @@ redis:
     # -- Which clients connect as their own user (`REDIS_USERNAME` and
     # their own `REDIS_PASSWORD` from `existingSecret`) instead of
     # `default` (step 2). Needs `enabled`.
+    # The api has had no Redis client since ingest phase 5 (step 5.4): a
+    # leftover `api` key here is ignored.
     clients:
-      # -- api, as user `api`.
-      api: false
       # -- enricher, as user `enricher`.
       enricher: false
       # -- movement-relay, as user `movement-relay`.
@@ -2827,8 +2878,8 @@ redis:
   # run_cycle, event_sink.rs), so Kafka holds the backlog and nothing is
   # dropped. On each refusal it also XTRIMs the stream to its cap (XTRIM
   # is allowed at maxmemory), so lowering movementRelay.streamMaxLen is
-  # enough to recover. api's XADD to incident-text-changed fails the same
-  # way; enricher's hourly sweep covers anything that missed.
+  # enough to recover. poller-incidents' XADD to incident-text-changed
+  # fails the same way; enricher's hourly sweep covers anything that missed.
   #
   # 1536mb (Redis units: mebibytes) is movementRelay.streamMaxLen's 1 GiB
   # budget plus 50% for larger-than-planned entries, the small
@@ -2900,6 +2951,47 @@ redis:
       memory: 1536Mi
     limits:
       memory: 2560Mi
+  # Probes of the bundled Redis. Each one's `type` is `tcpSocket` (the
+  # default) or `exec`:
+  #   - tcpSocket: the kubelet opens a TCP connection to the redis port.
+  #     Nothing is forked in the container. Redis listens while it loads
+  #     the AOF, so readiness turns true slightly earlier after a restart
+  #     (clients get -LOADING until the load ends), and liveness never
+  #     kills Redis in the middle of a long AOF load.
+  #   - exec: `redis-cli ping` (`--user ds-admin` with `acl.enabled`,
+  #     authenticated through REDISCLI_AUTH). Every period forks a process
+  #     through containerd and the shim, which is what a CPU-saturated node
+  #     can least afford (readiness alone was every 5s).
+  # As for postgresql.probes, a CNI that applies NetworkPolicy to
+  # node-local traffic would need the node admitted through
+  # networkPolicy.redisClients.
+  probes:
+    # -- startupProbe: liveness and readiness begin only once it succeeds.
+    # 5s x 60 = 5 minutes for an AOF load (with `exec`; tcpSocket passes
+    # once Redis listens). There was no startupProbe before; liveness
+    # waited a fixed 15s instead.
+    startup:
+      # -- `tcpSocket` or `exec` (redis-cli ping).
+      type: tcpSocket
+      periodSeconds: 5
+      timeoutSeconds: 5
+      failureThreshold: 60
+    # -- readinessProbe: 10s x 3 = 30s of failures before the pod turns
+    # unready (it was 5s x 6 with exec).
+    readiness:
+      # -- `tcpSocket` or `exec` (redis-cli ping).
+      type: tcpSocket
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    # -- livenessProbe: restarts Redis after 30s x 6 = 3 minutes of
+    # failures (it was 10s x 6 with exec).
+    liveness:
+      # -- `tcpSocket` or `exec` (redis-cli ping).
+      type: tcpSocket
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 6
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -4357,14 +4449,47 @@ scheduleFeed:
   # replace per delivery). OFF by default: while off, a CORPUS file is left
   # in the landing folder with a one-time "stray file" warning. See
   # docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md.
+  #
+  # CORPUS comes in two formats, two versions of NWR's CORPUS API that can
+  # both be subscribed to at once, loaded into the same table: the JSON
+  # extract (CORPUSExtract.json.gz, every location, ~56,000 rows) and the
+  # NLC XML snapshot (NLC<YYYYMMDD>.xml.gz, only TIPLOC-bearing locations,
+  # ~12,100 rows). Both are on by default; `formatPrecedence` decides which
+  # is loaded when both arrive. See
+  # docs/superpowers/specs/2026-10-14-corpus-nlc-xml-format-design.md.
   corpus:
     enabled: false
-    # -- Globs naming the CORPUS extract. Only this gzipped-JSON shape is
+    # -- Load the JSON extract (the older API version).
+    jsonEnabled: true
+    # -- Globs naming the JSON extract. Only this gzipped-JSON shape is
     # loaded; CORPUSExtract.csv.gz (SMART) is deliberately ignored.
     filePattern: "CORPUSExtract.json.gz"
-    # -- An extract with fewer rows is rejected (real: ~56,000), so a
+    # -- A JSON extract with fewer rows is rejected (real: ~56,000), so a
     # truncated or placeholder file cannot wipe the table.
     minRows: 10000
+    xml:
+      # -- Load the NLC XML snapshot (the newer API version), picked by
+      # the NLC prefix and the .xml.gz extension. Any other NLC* file is
+      # never loaded: it raises DistantSignalCorpusFormatDrift.
+      enabled: true
+      # -- A snapshot with fewer rows is rejected (real: 12,102 on
+      # 2026-10-09).
+      minRows: 10000
+    # -- Which file is loaded when both formats arrive: `json` (the
+    # default: the superset, and what was loaded before the XML format),
+    # `xml`, or `newest` (by mtime; with both feeds subscribed the table
+    # then alternates between them). The non-preferred format is still
+    # parsed (a broken file alerts), compared and archived, and is loaded
+    # only when the preferred one has not been loaded for
+    # `preferredGraceDays`.
+    formatPrecedence: json
+    # -- Days without a load of the preferred format before the other
+    # format takes over.
+    preferredGraceDays: 35
+    # -- Compare each file with the newest one of the other format and log
+    # and export the differences (schedule_feed_corpus_format_diff), the
+    # migration signal. Read-only.
+    compareFormats: true
     # -- gzip-bomb guard: the most bytes an extract may decompress to (the
     # real one is ~7 MB).
     maxDecompressedBytes: 268435456
@@ -4543,6 +4668,17 @@ scheduleFeed:
     # them (~1.2Gi peak by the estimate above). Once live usage confirms
     # it, bring both down -- resize from live `kubectl top`, not from this
     # estimate.
+    #
+    # Between publishes (2026-10-14). Prod ran at ~1.3GiB RSS from each
+    # nightly publish until the next restart: glibc kept the freed index
+    # and row pages. The binary now pins malloc's mmap threshold at startup
+    # and runs malloc_trim(0) after every publish cycle (`common::heap`), so
+    # RSS falls back to tens of MiB once the cycle ends: 1149 MiB -> 42 MiB
+    # after a production-shaped synthetic publish (peak ~1.2GiB, unchanged).
+    # `distant_signal_schedule_reference_post_publish_resident_memory_bytes`
+    # and the "publish cycle finished" log line report it. So the request
+    # can size the idle state (512Mi is ample) while the limit covers the
+    # ~1.2-1.4GiB nightly burst.
     resources:
       requests:
         cpu: 250m
@@ -5481,10 +5617,10 @@ metrics:
       enabled: true
       for: 15m
       severity: warning
-    # DistantSignalIncidentRemovalStalled: over `window`, api skipped the
+    # DistantSignalIncidentRemovalStalled: over `window`, poller-incidents skipped the
     # "Ended (no longer listed)" inference for an incomplete, empty or
     # more-than-50%-shrunken incidents snapshot and applied it to none
-    # (distant_signal_api_incident_removal_inference_total{outcome}), so
+    # (distant_signal_store_incident_removal_inference_total{outcome}), so
     # incidents that leave the Knowledgebase feed stay "active". 2h is 24
     # polls at the 300s interval. Only when pollers.incidents.enabled.
     incidentRemovalStalled:
@@ -5493,9 +5629,8 @@ metrics:
       for: 15m
       severity: warning
     # DistantSignalIncidentSnapshotsMissing: no incidents snapshot reached
-    # the database within `window` (distant_signal_api_incident_removal_inference_total,
-    # every outcome: counted by api under the http sink, by poller-incidents
-    # under db), for `for`. Only when pollers.incidents.enabled.
+    # the database within `window` (distant_signal_store_incident_removal_inference_total,
+    # every outcome: counted by poller-incidents), for `for`. Only when pollers.incidents.enabled.
     incidentSnapshotsMissing:
       enabled: true
       window: 2h
@@ -5617,12 +5752,29 @@ metrics:
     # uploaded delivery zip within `zipRejectedWindow` (PL-5 caps).
     # DistantSignalCorpusRejected: schedule-ingest refused a CORPUS extract
     # within `zipRejectedWindow` (only while scheduleFeed.corpus.enabled).
+    # DistantSignalCorpusLoadFailing: schedule-ingest failed to scan
+    # watch_dir, or to read or load a stable CORPUS file, at least
+    # `corpusFailingMin` times within `corpusFailingWindow`
+    # (schedule_feed_corpus_failures_total{stage}). It retries every poll
+    # (120s), so 3 in 30m is about 6 minutes of a persistent failure. Kept
+    # apart from "no new file yet", which is normal for days or weeks.
+    # DistantSignalCorpusFormatDrift: an NLC* file that is not .xml.gz sits
+    # in the landing folder (the NLC XML CORPUS format may have drifted; the
+    # file is ignored): a `drift` count in
+    # schedule_feed_corpus_failures_total within `corpusFailingWindow`.
+    # Fires on the first poll that sees it.
     # DistantSignalCorpusStale: the newest loaded CORPUS delivery is older
-    # than `corpusStaleAfterDays` (only while scheduleFeed.corpus.enabled;
-    # never before the first load). CORPUS is published monthly, so 45 days
-    # is one full cycle (at most 31 days) plus two weeks' grace for a late
-    # publication or upload: a single missed month alerts, a slightly late
-    # one does not.
+    # than `corpusStaleWarningDays` (severity `severity`) or
+    # `corpusStaleCriticalDays` (`corpusStaleCriticalSeverity`); only one
+    # fires at a time. Only while scheduleFeed.corpus.enabled; never before
+    # the first load. CORPUS is not a daily feed: RDM lists it as monthly,
+    # and deliveries have come every few days to couple of weeks, so a gap
+    # of up to a month (at most 31 days) is normal. 35 days is one full
+    # monthly cycle plus four days' grace for a late publication or
+    # upload; 45 days is a cycle plus two weeks, so at least one delivery
+    # was missed. A fortnightly cadence is covered with more slack. The
+    # warning must be below the critical; corpusStaleAfterDays (45, one
+    # warning) was replaced by the two and refuses to render.
     # DistantSignalScheduleReferencePublishStale: the last fully published
     # delivery is older than `staleAfterHours` (deliveries land nightly).
     # DistantSignalSchedulePublishStagedMismatch: api (or schedule-reference's
@@ -5640,7 +5792,11 @@ metrics:
       notSeededFor: 30m
       zipRejectedWindow: 6h
       staleAfterHours: 30
-      corpusStaleAfterDays: 45
+      corpusStaleWarningDays: 35
+      corpusStaleCriticalDays: 45
+      corpusStaleCriticalSeverity: critical
+      corpusFailingWindow: 30m
+      corpusFailingMin: 3
       mismatchWindow: 6h
       rejectedWindow: 6h
       populationMissingFor: 15m

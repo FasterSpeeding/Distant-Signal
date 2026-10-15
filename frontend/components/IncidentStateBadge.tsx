@@ -1,4 +1,5 @@
-import { Badge, VisuallyHidden } from '@mantine/core';
+import { VisuallyHidden } from '@mantine/core';
+import { StateBadge } from './StateBadge';
 import { endedDescription, incidentState } from '@/lib/incidents';
 
 /** An incident's lifecycle badge, shared by the archive rows
@@ -28,23 +29,23 @@ export function IncidentStateBadge({
   const state = incidentState({ isCleared, sourceRemovedAt });
   if (state === 'cleared') {
     return (
-      <Badge tt="none" color="gray" data-incident-state="cleared">
+      <StateBadge tone="neutral" data-incident-state="cleared">
         Cleared
-      </Badge>
+      </StateBadge>
     );
   }
   if (state === 'ended' && sourceRemovedAt) {
     const description = endedDescription(sourceRemovedAt);
     return (
-      <Badge tt="none" color="gray" variant="light" data-incident-state="ended" title={description}>
+      <StateBadge tone="neutral" data-incident-state="ended" title={description}>
         Ended
         <VisuallyHidden>: {description}</VisuallyHidden>
-      </Badge>
+      </StateBadge>
     );
   }
   return (
-    <Badge tt="none" color="green" data-incident-state="active">
+    <StateBadge tone="good" data-incident-state="active">
       Active
-    </Badge>
+    </StateBadge>
   );
 }

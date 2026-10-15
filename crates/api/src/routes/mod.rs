@@ -3,7 +3,6 @@ use crate::app::Router;
 pub mod account;
 pub mod admin;
 pub mod auth;
-pub mod chatbot;
 pub mod connected_apps;
 #[cfg(test)]
 #[expect(
@@ -137,7 +136,6 @@ pub fn public_router() -> Router {
         .merge(account::router())
         .merge(connected_apps::router())
         .merge(groups::router())
-        .merge(chatbot::router())
         .merge(station_stats::router())
         .merge(departures::router())
         .merge(stanox_crs::router())

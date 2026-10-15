@@ -1084,7 +1084,7 @@ mod tests {
             (Method::GET, "/Journeys/shared/{token}"),
             (Method::GET, "/public/groups/shared-journeys"),
             (Method::POST, "/public/admin/users/revoke-sessions"),
-            (Method::GET, "/public/chatbot/access"),
+            (Method::GET, "/public/preferences"),
             (Method::GET, "/public/account/export"),
             (Method::POST, "/public/account/connected-apps/{client}"),
             (Method::GET, "/Trips/plan"),
@@ -1127,7 +1127,7 @@ mod tests {
             let public = axum::Router::new()
                 .route("/groups/shared-journeys", get(handler))
                 .route("/admin/users/revoke-sessions", post(handler))
-                .route("/chatbot/access", get(handler))
+                .route("/preferences", get(handler))
                 .route("/account/export", get(handler))
                 .route("/account/connected-apps/{client}", post(handler));
             axum::Router::new()
@@ -1246,7 +1246,7 @@ mod tests {
                 ("POST", "/delegated-grants/revoke"),
                 ("GET", "/public/groups/shared-journeys"),
                 ("POST", "/public/admin/users/revoke-sessions"),
-                ("GET", "/public/chatbot/access"),
+                ("GET", "/public/preferences"),
                 ("GET", "/public/account/export"),
                 ("POST", "/public/account/connected-apps/ds-mcp"),
             ] {

@@ -27,7 +27,7 @@ explains the format). The kinds:
   `poller-transit-<network>`): `final` rights, but rendered only while its
   client, `redis.acl.clients.<user in camelCase>`, is on. See
   [Optional users](#optional-users-new-producers-that-ship-off).
-- **admin**: `ds-admin`, for humans and the Redis probes: `~* &* +@all`.
+- **admin**: `ds-admin`, for humans and the Redis `exec` probes: `~* &* +@all`.
 
 | User | Kind | Narrow rights (summary) |
 |---|---|---|
@@ -35,7 +35,6 @@ explains the format). The kinds:
 | `trust-consumer`, `trust-backlog-consumer` | client | `movement-events`: XREADGROUP, XACK, XAUTOCLAIM, XCLAIM, XPENDING, XGROUP CREATE, XINFO, XLEN, XRANGE, EXISTS; the dead-letter stream: XADD, XLEN. No ingest stream (decision D1 for trust-consumer) |
 | `full-coverage-consumer` | client | as above, plus XADD and XREVRANGE on `ds:ingest:full-coverage` (phase 3a) |
 | `enricher` | client | `incident-text-changed`: its consumer group commands |
-| `api` | client | XADD on `incident-text-changed` only (write-only) |
 | `exporter` | client | read-only metrics commands (`INFO`, `CONFIG GET`, `CLIENT LIST`, `SLOWLOG`, `LATENCY`, `XINFO`, `SCAN`, `MEMORY USAGE`, `COMMAND INFO`, ...) |
 | `poller-incidents` | final | XADD on `incident-text-changed` (phase 2c) |
 | `poller-ldbws`, `poller-tfl`, `poller-tocs`, the three island-of-Ireland pollers | final | XADD and XREVRANGE on their own `ds:ingest:*` stream (one each: the island-of-Ireland pollers have `ds:ingest:ioi-gtfs`, `-live` and `-nir`) |
@@ -68,20 +67,24 @@ refused. Edit the template and that test together.
 
   Needed: `movement-relay-password`, `trust-consumer-password`,
   `trust-backlog-consumer-password`, `full-coverage-consumer-password`,
-  `enricher-password`, `api-password`, `exporter-password`,
+  `enricher-password`, `exporter-password`,
   `poller-incidents-password`, `poller-ldbws-password`,
   `poller-tfl-password`, `poller-tocs-password`,
   `poller-irish-rail-gtfs-password`, `poller-irish-rail-live-password`,
   `poller-nir-stations-password`, `ingest-writer-password`,
   `ds-admin-password`. An `optional` user's key
   (`poller-transit-metrolink-password`) only once its client is on.
+  `api-password` is no longer needed: the `api` user went with the api's
+  Redis client (ingest phase 5, step 5.4; see
+  [Retired users](#retired-users)).
 - **Redis.** A `<release>-redis-acl` ConfigMap holds `users.acl` with
   `${REDIS_ACL_PASSWORD_<USER>}` placeholders. The Redis pod's `redis-acl`
   initContainer (the Redis image's `sh` and `awk`) fills them from the
   Secret into a memory-backed emptyDir; an empty password, or one with
   whitespace, fails the pod instead of starting Redis with a broken file.
   Redis starts with `--aclfile` instead of `--requirepass`, and its probes
-  run `redis-cli --user ds-admin ping`. A pod annotation with the file's
+  (with `redis.probes.*.type: exec`; tcpSocket by default) run
+  `redis-cli --user ds-admin ping`. A pod annotation with the file's
   checksum restarts Redis when the stage or the users change.
 - **Clients.** `redis.acl.clients.<client>: true` gives that Deployment
   `REDIS_USERNAME` and `REDIS_PASSWORD` from `<user>-password`. The
@@ -162,7 +165,7 @@ exporter's `redis_up` stays 1.
 redis:
   acl:
     clients:
-      enricher: true   # then api, trustBacklogConsumer, fullCoverageConsumer,
+      enricher: true   # then trustBacklogConsumer, fullCoverageConsumer,
                        # trustConsumer, movementRelay, one per release
 ```
 
@@ -282,3 +285,20 @@ Add `<user>-password-previous` with the current password and put the new
 one in `<user>-password`. Reloader (or a `kubectl rollout restart`)
 restarts Redis, which then accepts both; restart the client; then remove
 `-previous` (another Redis restart).
+
+## Retired users
+
+- **`api`** (2026-10-14, ingest phase 5 step 5.4). The api's only Redis
+  use, `POST /private/incidents`' `XADD incident-text-changed`, went with
+  release B; poller-incidents publishes those entries as its own user.
+  The api now has no Redis client, no `REDIS_*` env and no NetworkPolicy
+  path to Redis, and `files/redis-users.acl.tpl` no longer lists `api`.
+  Removing the line changes the ACL ConfigMap, so **that release restarts
+  Redis once** (`checksum/redis-acl`, about 4 s of AOF load; every stream
+  client reconnects). A leftover `redis.acl.clients.api` in values is
+  ignored. After the release, Ranma may drop `api-password` from the
+  users Secret; that Secret change makes Reloader restart Redis (and every
+  client that reads the Secret) once more, so batch it with the next
+  rotation. Rollback: the previous chart, which puts the `api` line back
+  (and needs `api-password` again, so keep the key until the release has
+  settled).

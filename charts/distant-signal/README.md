@@ -567,8 +567,8 @@ bundled Postgres is disabled, no Postgres objects render at all and no
 Redis backs two independent Redis Streams here, with two very different
 durability profiles:
 
-- `incident-text-changed`: the api publishes an event when an incident's
-  text changes, and the enricher consumes it to re-extract promptly. Losing
+- `incident-text-changed`: poller-incidents publishes an event when an
+  incident's text changes, and the enricher consumes it to re-extract promptly. Losing
   this one costs nothing but promptness — the enricher's hourly sweep
   re-finds anything a dropped event would have triggered.
 - `movement-events`: the **sole transport** between movement-relay (this
@@ -639,7 +639,7 @@ exactly what it rendered before the option existed. When enabled:
   `AUTH default <password>`. The password is never in values, in the URL or
   in any rendered manifest, and the services never log it;
 - with `redis.auth.requirePass: true` (the default) the bundled Redis starts
-  with `--requirepass` from the same Secret, and its probes authenticate
+  with `--requirepass` from the same Secret, and `redis-cli` in the pod (the `exec` probes, `kubectl exec`) authenticates
   through `REDISCLI_AUTH`.
 
 The password comes from `redis.auth.existingSecret` / `existingSecretKey`
@@ -683,7 +683,7 @@ them against a real Redis.
 With `redis.acl.enabled` (and the bundled Redis), an initContainer renders
 `users.acl` into a memory-backed emptyDir from one password per user in
 `redis.acl.existingSecret` (`<user>-password`, required), and Redis starts
-with `--aclfile` instead of `--requirepass`. Its probes authenticate as
+with `--aclfile` instead of `--requirepass`. `redis-cli` in the pod (the `exec` probes, `kubectl exec`) authenticates as
 `ds-admin`. `redis.acl.clients.<client>` gives that client `REDIS_USERNAME`
 and its own `REDIS_PASSWORD`.
 
@@ -1405,6 +1405,44 @@ Clap's own argument errors (a missing required env var at startup) are
 still printed by clap as plain text before logging starts, then the process
 exits with code 2.
 
+## Postgres and Redis probes
+
+The bundled Postgres and Redis have startup, readiness and liveness probes
+set by `postgresql.probes` and `redis.probes`. Each probe's `type` is
+`tcpSocket` (the default) or `exec`:
+
+- `tcpSocket`: the kubelet opens a TCP connection to the container port.
+  Nothing runs in the container. The defaults probe readiness every 10s
+  and liveness every 30s, allowing 6 liveness failures (3 minutes).
+- `exec`: the old commands, `pg_isready` and `redis-cli ping` (`--user
+  ds-admin` with `redis.acl.enabled`). Each period forks a process
+  through containerd and its shim. Until this chart version, readiness
+  ran every 5s, which adds load to a CPU-saturated node.
+
+The trade-off: a TCP probe passes once the server listens, before it can
+answer queries.
+
+- Readiness turns true slightly earlier during Postgres crash recovery
+  (WAL redo after an unclean shutdown) and while Redis loads its AOF.
+  Until they finish, clients get "the database system is starting up" or
+  `-LOADING` errors instead of finding no endpoint.
+- Liveness no longer kills Postgres in the middle of WAL redo, or Redis in
+  the middle of a long AOF load. With `exec`, the startup probe's budget
+  (`postgresql.probes.startup`, 10s x 90 = 15 minutes) was all that
+  protected a long redo. A Postgres that listens but has hung is no longer
+  restarted. To keep `pg_isready` semantics for one probe only, set
+  `postgresql.probes.readiness.type: exec` and leave liveness on TCP.
+
+TCP probes come from the node, like the api's and the workers' HTTP
+probes, so they rely on the CNI not applying NetworkPolicy to node-local
+traffic (see `networkPolicy.healthIngress`). On a CNI that does, admit the
+node through `networkPolicy.postgresClients` and `networkPolicy.redisClients`,
+or use `exec`.
+
+Changing either probe changes the pod template, so the upgrade that first
+applies these defaults restarts Postgres (StatefulSet) and Redis
+(Deployment, `Recreate`) once.
+
 ## Values reference
 
 ### Global
@@ -1414,6 +1452,7 @@ exits with code 2.
 | `nameOverride` | `""` | Override the chart name used in resource names and labels. |
 | `fullnameOverride` | `""` | Override the fully-qualified release name entirely. |
 | `imagePullSecrets` | `[]` | Image pull secrets applied to every pod in the chart. |
+| `revisionHistoryLimit` | `3` | Old ReplicaSets and StatefulSet ControllerRevisions kept, on every Deployment and StatefulSet (Kubernetes' default is 10). A whole number >= 0; `helm rollback` does not need them. |
 | `global.imageRegistry` | `""` | Registry (and optional path prefix) put in front of every image in place of the registry its `image.repository` carries, e.g. `registry.example.com/myfork`. Empty keeps each repository as written. |
 | `serviceAccount.create` | `true` | Create a ServiceAccount for the chart's workloads. |
 | `serviceAccount.name` | `""` | Name to use. Empty + `create` uses the fullname. |
@@ -1453,8 +1492,11 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.enabled` | `false` | Connect the api pools and every worker as `app`, api's migrations as `owner`, and the pgBackRest CronJobs as `backup` (docs/postgres-app-role.md). The roles must exist first (`setupJob`, or `initScript` on a new cluster). Does not restart Postgres on its own. |
 | `postgresql.roles.initScript` | `true` | With `enabled`: run files/postgres-roles.sql from /docker-entrypoint-initdb.d, which the image runs only on an EMPTY data directory (a new cluster), before any client connects. Turning it on restarts Postgres: set it false on an existing cluster. |
 | `postgresql.roles.setupJob.enabled` | `false` | Run files/postgres-roles.sql as a Helm hook Job (post-install; pre-upgrade after the migrate hook Job, or post-upgrade without migrate.job: docs/postgres-app-role.md "Hook order"), as the superuser over the Service, on every install and upgrade (idempotent: creates/updates the roles, moves ownership to `owner`, grants). Independent of `enabled`: on an existing cluster turn this on first. A failure fails the release. |
-| `postgresql.roles.setupJob.activeDeadlineSeconds` | `600` | Seconds before the Job gives up (it first waits for Postgres). |
-| `postgresql.roles.setupJob.backoffLimit` | `2` | Retries after a failed run. |
+| `postgresql.roles.setupJob.activeDeadlineSeconds` | `600` | Seconds before the Job gives up (at least 120). The pod keeps 60 s of it in hand: its bounded wait for Postgres, every try and backoff end by then, so it fails by itself and keeps its log (docs/postgres-app-role.md "When the setup Job fails"). |
+| `postgresql.roles.setupJob.backoffLimit` | `0` | New pods after a failed one. The pod retries a lock timeout and the like itself; a new one would only repeat a final error with less of the deadline left. |
+| `postgresql.roles.setupJob.attempts` | `5` | Tries per script when one fails for a reason a later try can get past (lock or statement timeout, deadlock, lost connection). Backoff 5 s, doubling, at most 60 s; never past the deadline. |
+| `postgresql.roles.setupJob.lockTimeout` | `10s` | `lock_timeout` of the setup's sessions: a lock queued behind a long transaction fails and is retried instead of waiting (and blocking the queries behind it) until the deadline. |
+| `postgresql.roles.setupJob.statementTimeout` | `120s` | `statement_timeout` of the setup's sessions (each section is one statement). |
 | `postgresql.roles.setupJob.resources` | requests `10m`/`32Mi`, limit `128Mi` | Container resources. |
 | `postgresql.roles.setupJob.podSecurityContext` | `{}` | Overrides the pod securityContext (default: uid/gid 999, the image's postgres user, non-root, RuntimeDefault seccomp). |
 | `postgresql.roles.owner.username` | `distant_signal_owner` | Role name of the schema owner. |
@@ -1551,8 +1593,18 @@ StatefulSet with no replication, backup or restore story.
 | `postgresql.roles.perService.ldbws_ro.existingSecret` | `""` | Read the password from this pre-existing Secret instead. |
 | `postgresql.roles.perService.ldbws_ro.existingSecretPasswordKey` | `postgres-ldbws-ro-password` | Key within `existingSecret` (and in the chart's Secret). |
 | `postgresql.roles.perService.ldbws_ro.connectionLimit` | `""` | CONNECTION LIMIT. Empty: `pollers.ldbws.internalReads.database.maxConnections` + 1. |
-| `postgresql.probes.startup.periodSeconds` | `10` | Startup probe period. Liveness starts only after `pg_isready` succeeds, so WAL redo after a reboot is never killed. |
+| `postgresql.probes.startup.type` | `tcpSocket` | `tcpSocket` or `exec` (`pg_isready`). See [Postgres and Redis probes](#postgres-and-redis-probes). |
+| `postgresql.probes.startup.periodSeconds` | `10` | Startup probe period. Liveness and readiness start only after it succeeds. |
+| `postgresql.probes.startup.timeoutSeconds` | `5` | Startup probe timeout. |
 | `postgresql.probes.startup.failureThreshold` | `90` | Startup probe failures allowed (90 x 10s = 15 minutes of crash recovery). |
+| `postgresql.probes.readiness.type` | `tcpSocket` | `tcpSocket` or `exec` (`pg_isready`). TCP turns ready slightly earlier during crash recovery. |
+| `postgresql.probes.readiness.periodSeconds` | `10` | Readiness probe period (5 before tcpSocket became the default). |
+| `postgresql.probes.readiness.timeoutSeconds` | `5` | Readiness probe timeout. |
+| `postgresql.probes.readiness.failureThreshold` | `5` | Readiness probe failures allowed (5 x 10s = 50s). |
+| `postgresql.probes.liveness.type` | `tcpSocket` | `tcpSocket` or `exec` (`pg_isready`). TCP never kills Postgres mid-WAL-redo. |
+| `postgresql.probes.liveness.periodSeconds` | `30` | Liveness probe period. |
+| `postgresql.probes.liveness.timeoutSeconds` | `5` | Liveness probe timeout. |
+| `postgresql.probes.liveness.failureThreshold` | `6` | Liveness probe failures allowed (6 x 30s = 3 minutes). |
 | `postgresql.persistence.enabled` | `true` | Attach a PVC. When false an emptyDir is used and data is lost on reschedule. |
 | `postgresql.persistence.size` | `20Gi` | Requested volume size. |
 | `postgresql.persistence.storageClass` | `""` | StorageClass name. Empty means the cluster default. |
@@ -1734,7 +1786,7 @@ and [docs/postgres-pitr.md](../../docs/postgres-pitr.md).
 | `metrics.prometheusRule.ingestApplyWritesNothing` | see `values.yaml` | `DistantSignalIngestApplyWritesNothing`: over `window` (15m) the writer applied entries of a stream but wrote no row (`ingest_stream_row_writes_total{outcome="written"}` flat), for 5m; `excludeStreams` (the daily `ds:ingest:reference`). Renders only with `ingestWriter.enabled`. |
 | `metrics.prometheusRule.ingestSourceStale` | see `values.yaml` | `DistantSignalIngestSourceStale`: an `ingest_freshness` row (`ingest_freshness_timestamp_seconds{source}`, read by the writer every 60s) older than its `maxAgeSeconds` entry (incidents and tfl 900, stations and tocs 172800, the stream-only snapshot sources 1800, the island-of-Ireland catalogues' per-network sources 172800, a transit network's timetable 129600 and situations 1800), for 10m; a source in `whileStreamApplies` only while the writer applies that stream. Renders only with `ingestWriter.enabled`. |
 | `metrics.prometheusRule.dbPoolAcquireTimeouts` / `.directWritesFailing` | see `values.yaml` | `DistantSignalDbPoolAcquireTimeouts`: a component's pool timed out an acquire (`db_pool_acquire_timeouts_total`) within `window` (10m). `DistantSignalDirectWritesFailing`: a direct writer's writes of one operation (`db_writes_total`) all failed (timeout, transient, rejected; no ok) over `window` (15m), for 30m. Each has `enabled`, `for`, `severity`. |
-| `metrics.prometheusRule.incidentSnapshotsMissing` | see `values.yaml` | `DistantSignalIncidentSnapshotsMissing`: no incidents snapshot reached the database (`api_incident_removal_inference_total`, any outcome, from api or poller-incidents) within `window` (2h), for 15m. Only with `pollers.incidents.enabled`. |
+| `metrics.prometheusRule.incidentSnapshotsMissing` | see `values.yaml` | `DistantSignalIncidentSnapshotsMissing`: no incidents snapshot reached the database (`store_incident_removal_inference_total`, any outcome, from poller-incidents; `api_` before ingest phase 5) within `window` (2h), for 15m. Only with `pollers.incidents.enabled`. |
 | `metrics.prometheusRule.scheduleFeedMarkerStale` | see `values.yaml` | `DistantSignalScheduleFeedMarkerStale`: the newest recorded CIF delivery (`schedule_feed_last_ingest_delivered_at_seconds`) older than `maxAgeSeconds` (108000, 30h), for 15m. Only with `scheduleFeed.enabled`. |
 | `metrics.prometheusRule.trainEventOutbox` | see `values.yaml` | `DistantSignalTrainEventOutboxRejected`: `rejected.window` (1h), `rejected.severity` (warning); `DistantSignalTrainEventOutboxStuck`: `stuck.maxAgeSeconds` (120), `stuck.for` (1m), `stuck.severity` (critical); and `enabled`. Render only with `ingestWriter.enabled`. |
 | `metrics.prometheusRule.postgresDown` | see `values.yaml` | `DistantSignalPostgresDown`: `enabled`, `for` (3m), `severity` (critical) and `pgUpSelector`, extra label matchers for postgres_exporter's `pg_up` (see [Alerts](#alerts)). |
@@ -1821,10 +1873,8 @@ Used only when `postgresql.enabled` is `false`.
 | `api.stalePushSubscriptionDays` | `365` | Drop push subscriptions whose user has not logged in (and that were not renewed) for this many days. `0` disables. |
 | `api.inactiveAccountRetentionDays` | `0` | Delete accounts with no login and no live session for this many days. Off by default: the app holds no email addresses, so users cannot be warned first, and enabling it is an operator decision the privacy notice must state. |
 | `api.transitNetworks` | `[]` | The transit networks `/public/transit` serves (`API_TRANSIT_NETWORKS`). Empty: every `/public/transit` route answers 404 and the frontend hides its pages. List a network (`[metrolink]`) only after its timetable has been applied for a day. |
-| `api.chatbotAccessGroup` | `distant-signal-chatbot-users` | SSO group (from the `groups` OIDC claim) that grants a logged-in user the embedded chatbot. Only read when `api.chatbotAccess` is `group`; there, `""` means nobody gets it. |
-| `api.chatbotAccess` | `group` | Who gets the embedded chatbot: `group` (members of `api.chatbotAccessGroup` only) or `authenticated` (every logged-in user; logged-out visitors still get the sign-in prompt, and `chatbotAccessGroup` is ignored and no longer stored). Flip it together with distant-signal-mcp's own ungating. |
 | `api.adminGroup` | `""` | SSO group whose members may end any user's sessions (`POST /api/admin/users/revoke-sessions`). Empty: nobody is an admin. Read at login. See `docs/session-revocation.md`. |
-| `api.oidcStoredGroupsExtra` | `""` | Extra IdP groups kept on the user at login besides `chatbotAccessGroup` and `adminGroup`; every other group is dropped. Comma-separated; `""` keeps none. Nothing reads extra groups today: distant-signal-mcp takes its groups straight from Authentik. |
+| `api.oidcStoredGroupsExtra` | `""` | Extra IdP groups kept on the user at login besides `adminGroup`; every other group is dropped. Comma-separated; `""` keeps none. Nothing reads extra groups today: distant-signal-mcp takes its groups straight from Authentik. |
 | `api.timeouts.requestTimeoutSecs` | `30` | Public requests still running after this get a 408. |
 | `api.timeouts.headerReadTimeoutSecs` | `10` | Disconnect an HTTP/1 client that has not sent its full headers within this. |
 | `api.timeouts.unavailableRetryAfterSecs` | `30` | `Retry-After` (seconds, 1-3600) on a 503. A route that cannot reach the database answers `503 {"error":"service_unavailable","retryable":true}` instead of a 500. |
@@ -1889,6 +1939,7 @@ Off by default. See [Migrations, maintenance and the ingest-writer](#migrations-
 | `apiMaintenance.activeDeadlineSeconds` | `1800` | Deadline per run. |
 | `apiMaintenance.successfulJobsHistoryLimit` | `1` | Finished Jobs kept. |
 | `apiMaintenance.failedJobsHistoryLimit` | `3` | Failed Jobs kept. |
+| `apiMaintenance.ttlSecondsAfterFinished` | `86400` | The Jobs' `ttlSecondsAfterFinished`: a finished run's Job and pod are deleted a day after it ends, even within the history limits. null leaves them to the history limits. The Helm hook Jobs (migrate, roles setup) have none: their hook delete policy handles them. |
 | `apiMaintenance.logLevel` | `info` | `RUST_LOG`. |
 | `apiMaintenance.resources` | `{}` | Container resources. |
 | `apiMaintenance.podSecurityContext` | `{}` | Merged over the chart-wide pod securityContext defaults. |
@@ -2070,14 +2121,13 @@ used for and why persistence defaults on.
 | `redis.enabled` | `true` | Deploy the bundled Redis Deployment and Service. |
 | `redis.externalUrl` | `""` | Connection URL of an externally-managed Redis. Used only when `redis.enabled` is false, where it is **required** — empty aborts the render. |
 | `redis.auth.enabled` | `false` | Redis AUTH: give every Redis client `REDIS_PASSWORD` from a Secret. See "Redis authentication (optional)". |
-| `redis.auth.requirePass` | `true` | With `auth.enabled` and the bundled Redis, start it with `--requirepass` and authenticate its probes. `false` is step 1 of the no-outage enable sequence. |
+| `redis.auth.requirePass` | `true` | With `auth.enabled` and the bundled Redis, start it with `--requirepass` and authenticate `redis-cli` in the pod (`exec` probes). `false` is step 1 of the no-outage enable sequence. |
 | `redis.auth.existingSecret` | `""` | Secret holding the password. Empty: the chart generates `redis-password` in its own Secret (bundled Redis only; an external Redis requires this). |
 | `redis.auth.existingSecretKey` | `redis-password` | Key within `redis.auth.existingSecret`. |
 | `redis.acl.enabled` | `false` | Turn the ACL users on (needs `existingSecret`). |
 | `redis.acl.stage` | `open` | `open`: every existing client's user has `~* &* +@all` (step 1). |
 | `redis.acl.defaultUser` | `on` | `"on"`: the `default` user keeps today's password (redis.auth) and rights. |
 | `redis.acl.existingSecret` | `""` | Existing Secret (a SealedSecret in Ranma-Config) with one key per user: `<user>-password` (letters and digits only), for every user in files/redis-users.acl.tpl. |
-| `redis.acl.clients.api` | `false` | api, as user `api`. |
 | `redis.acl.clients.enricher` | `false` | enricher, as user `enricher`. |
 | `redis.acl.clients.movementRelay` | `false` | movement-relay, as user `movement-relay`. |
 | `redis.acl.clients.trustConsumer` | `false` | trust-consumer, as user `trust-consumer`. |
@@ -2103,6 +2153,18 @@ used for and why persistence defaults on.
 | `redis.protoMaxBulkLen` | `2mb` | Passed as `--proto-max-bulk-len`: the largest single argument a client may send (Redis' default is 512mb). The largest legitimate one is an ingest entry's body (1 MiB accepted). At least `1mb`; empty or null keeps Redis' default. Changing it restarts Redis. |
 | `redis.save` | `""` | Passed as `--save`. `""` disables RDB snapshots (AOF covers durability); null keeps the image's built-in schedule. |
 | `redis.resources` | `{requests: {cpu: 50m, memory: 1536Mi}, limits: {memory: 2560Mi}}` | Container resource requests/limits, sized for `movementRelay.streamMaxLen` at `redis.maxmemory` plus fork copy-on-write; see values.yaml for the arithmetic. |
+| `redis.probes.startup.type` | `tcpSocket` | `tcpSocket` or `exec` (`redis-cli ping`). See [Postgres and Redis probes](#postgres-and-redis-probes). |
+| `redis.probes.startup.periodSeconds` | `5` | Startup probe period. Liveness and readiness start only after it succeeds. |
+| `redis.probes.startup.timeoutSeconds` | `5` | Startup probe timeout. |
+| `redis.probes.startup.failureThreshold` | `60` | Startup probe failures allowed (60 x 5s = 5 minutes for an AOF load). |
+| `redis.probes.readiness.type` | `tcpSocket` | `tcpSocket` or `exec` (`redis-cli ping`). TCP turns ready slightly earlier during an AOF load. |
+| `redis.probes.readiness.periodSeconds` | `10` | Readiness probe period (5 before tcpSocket became the default). |
+| `redis.probes.readiness.timeoutSeconds` | `5` | Readiness probe timeout. |
+| `redis.probes.readiness.failureThreshold` | `3` | Readiness probe failures allowed (3 x 10s = 30s). |
+| `redis.probes.liveness.type` | `tcpSocket` | `tcpSocket` or `exec` (`redis-cli ping`). |
+| `redis.probes.liveness.periodSeconds` | `30` | Liveness probe period. |
+| `redis.probes.liveness.timeoutSeconds` | `5` | Liveness probe timeout. |
+| `redis.probes.liveness.failureThreshold` | `6` | Liveness probe failures allowed (6 x 30s = 3 minutes). |
 | `redis.nodeSelector` | `{}` | Pod node selector. |
 | `redis.tolerations` | `[]` | Pod tolerations. |
 | `redis.affinity` | `{}` | Pod affinity rules. |
@@ -2766,7 +2828,7 @@ one-pod layout.
 | `scheduleFeed.reference.healthPort` | `8091` | Health port. Must differ from `workerHealth.port`, which the ingest container in the same pod uses. |
 | `scheduleFeed.reference.progressStallSecs` | `7200` | `/livez` stall window: one cycle publishes every derived product of a full timetable. |
 | `scheduleFeed.reference.metricsPort` | `9092` | Prometheus `/metrics` port. Must differ from `metrics.port`, which the ingest container uses. |
-| `scheduleFeed.reference.resources` | requests `250m`/`3Gi`, limit `4Gi` | schedule-reference container resource requests/limits: the largest in the chart, since it parses the whole timetable. |
+| `scheduleFeed.reference.resources` | requests `250m`/`3Gi`, limit `4Gi` | schedule-reference container resource requests/limits: the largest in the chart, since it parses the whole timetable. The ~1.2-1.4GiB peak lasts only the nightly publish; afterwards the binary returns its freed heap (`malloc_trim`) and RSS falls to tens of MiB (`distant_signal_schedule_reference_post_publish_resident_memory_bytes`), so a request of about `512Mi` with the `4Gi` limit fits. |
 | `scheduleFeed.service.type` | `LoadBalancer` | `LoadBalancer`, or `NodePort` behind an external load balancer. Not an Ingress: SFTP is not HTTP. |
 | `scheduleFeed.service.annotations` | `{}` | Service annotations. |
 | `scheduleFeed.service.nodePort` | `null` | Explicit NodePort for the SFTP port. Empty lets Kubernetes assign one. |
@@ -2922,8 +2984,10 @@ recording rules (`distant_signal:*`) in the same group, so the alert's
 | `DistantSignalScheduleReferenceNotSeeded` | warning | schedule-reference has not read its last completed publish from api (`schedule_reference_seeded` is 0) for 30m. |
 | `DistantSignalScheduleFeedZipRejected` | warning | schedule-ingest quarantined a delivery zip (`schedule_feed_zip_rejected_total`) within the last 6h: over the extraction caps, or failing a CIF content check (`scheduleFeed.ingest.cifChecks`). The `schedule_ingest::audit` line names the reason. |
 | `DistantSignalScheduleFeedIngestRejected` | warning | api answered 400/413/422 to schedule-ingest's delivery record (`schedule_feed_ingest_rejected_total`) within the last 6h (`schedulePipeline.rejectedWindow`). The delivery is not retried until a new upload. |
-| `DistantSignalCorpusRejected` | warning | schedule-ingest refused a CORPUS extract (`schedule_feed_corpus_rejected_total`) within the last 6h. The series exists only while `scheduleFeed.corpus.enabled`. |
-| `DistantSignalCorpusStale` | warning | The newest loaded CORPUS delivery (`api_corpus_last_delivered_at_seconds`, set by api from `corpus_deliveries` at startup and after each load) is over 45 days old (`schedulePipeline.corpusStaleAfterDays`), for 1h. CORPUS is published monthly: 45 days is one cycle plus two weeks' grace. Rendered only when `scheduleFeed.corpus.enabled`, and silent before the first load. |
+| `DistantSignalCorpusRejected` | warning | schedule-ingest refused a CORPUS file of either format (`schedule_feed_corpus_rejected_total{format}`) within the last 6h. The series exists only while `scheduleFeed.corpus.enabled`. |
+| `DistantSignalCorpusLoadFailing` | warning | schedule-ingest failed to scan `watch_dir`, or to read or load a stable CORPUS file (`schedule_feed_corpus_failures_total{stage}`), at least 3 times within 30m (`schedulePipeline.corpusFailingMin`, `corpusFailingWindow`): about 6 minutes of a persistent failure at the 120s poll. A real failure, kept apart from "no new file yet". The series exists only while `scheduleFeed.corpus.enabled`. |
+| `DistantSignalCorpusFormatDrift` | warning | An `NLC*` file that is not `.xml.gz` is in the landing folder: the NLC XML CORPUS format may have drifted, and the file is ignored. schedule-ingest counts `schedule_feed_corpus_failures_total{stage="drift"}` every poll while it is there (and sets `schedule_feed_corpus_format_drift_files`), so this fires on the first poll that sees it and clears `corpusFailingWindow` after the file is removed. The series exists only while `scheduleFeed.corpus.enabled`. |
+| `DistantSignalCorpusStale` | warning, then critical | The newest loaded CORPUS delivery (`store_corpus_last_delivered_at_seconds`, set by the ingest-writer from `corpus_deliveries`; `api_` before ingest phase 5) is over 35 days old (`schedulePipeline.corpusStaleWarningDays`, warning) or over 45 days (`corpusStaleCriticalDays`, `corpusStaleCriticalSeverity`), for 1h; only one fires at a time. CORPUS is not daily: RDM lists it as monthly and it has arrived every few days to couple of weeks, so 35 days is one monthly cycle plus four days' grace and 45 days means at least one delivery was missed. Rendered only when `scheduleFeed.corpus.enabled`, and silent before the first load. |
 | `DistantSignalScheduleReferencePublishStale` | warning | No CIF delivery fully published for over 30h (`schedule_reference_last_published_delivery_timestamp_seconds`), for 15m. |
 | `DistantSignalSchedulePublishStagedMismatch` | warning | api, or schedule-reference's db sink, skipped a final chunk's delete because the staged key count did not match (`api_` or `store_schedule_publish_staged_mismatch_total{product}`) within the last 6h. |
 | `DistantSignalScheduleReferencePublishRejected` | warning | api answered 400/413/422 to a schedule-reference product (`schedule_reference_publishes_total{outcome="rejected"}`) within the last 6h. |
@@ -2943,7 +3007,7 @@ recording rules (`distant_signal:*`) in the same group, so the alert's
 | `DistantSignalTransitUnmappedLineRef` | warning | A network's SIRI-SX disruptions named a `LineRef` its network file has no alias for (`transit_situation_unmapped_line_refs_total{network, ref}`) within 1h. Only while a network is enabled. |
 | `DistantSignalLdbwsStationStale` | warning | The least recently sampled LDBWS station (`ldbws_stalest_station_age_seconds`) is over 900s old (the aggregator's sample-age limit, past which it drops the station) for 15m: the rotation stopped reaching part of the list (SVC-04). Stations LDBWS rejects as an invalid CRS are excluded. Only when `pollers.ldbws.enabled`. |
 | `DistantSignalLdbwsInvalidCrs` | warning | LDBWS has answered "Invalid crs code supplied" for a sample station (`ldbws_invalid_crs_station{crs}` is 1) for 15m: a `lines/*.toml` typo. The poller re-probes it hourly instead of every cycle. Only when `pollers.ldbws.enabled`. |
-| `DistantSignalIncidentSnapshotsMissing` | warning | No incidents snapshot reached the database (`api_incident_removal_inference_total`, every outcome, counted by api under the http sink and poller-incidents under db) over 2h, for 15m. |
+| `DistantSignalIncidentSnapshotsMissing` | warning | No incidents snapshot reached the database (`store_incident_removal_inference_total`, every outcome, counted by poller-incidents; `api_` before ingest phase 5) over 2h, for 15m. |
 | `DistantSignalWriterLoopStale` | warning | A background loop's newest successful run (`loop_last_success_timestamp_seconds{cycle}`, max over api and writer) is over 1800s old (`ingest_dedup_prune`: 9000s; the canary left out), for 10m. With `ingestWriter.loops.enabled`. |
 | `DistantSignalWriterLoopUnowned` | warning | No process holds a loop's advisory lock (`sum by (loop) (loop_lock_held) < 1`) for 15m (`ingest_dedup_prune`: 75m). With `ingestWriter.loops.enabled`. |
 | `DistantSignalIngestApplyWritesNothing` | warning | Over 15m the writer applied entries of a stream (`ingest_stream_consumed_total`) but wrote no row (`ingest_stream_row_writes_total{outcome="written"}`), for 5m; not `ds:ingest:reference`. |
@@ -3002,11 +3066,17 @@ See `docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md`.
 | `scheduleFeed.ingest.cifChecks.maxGeneratedAgeDays` | `3` | Quarantine a CIF delivery whose MSN `Generated` date is more than this many days before the delivery (a replayed old extract). The structural checks (full-extract `HD`, known record types, one `ZZ` trailer, a `Generated` date) always run. `0` disables. See [docs/schedule-feed-sftp.md](../../docs/schedule-feed-sftp.md#delivery-checks). |
 | `scheduleFeed.ingest.cifChecks.minSchedules` | `100000` | Quarantine an MCA with fewer `BS` (schedule) records; the real extract has ~505,000. `0` disables. |
 | `scheduleFeed.ingest.cifChecks.maxRecordDropPercent` | `20` | Quarantine a delivery whose `BS` or `TI` count fell by more than this percentage since the last accepted delivery (real day-to-day change is under 0.3%). `0` disables. |
-| `scheduleFeed.corpus.enabled` | `false` | Load Network Rail CORPUS (`CORPUSExtract.json.gz`, pushed to the same SFTP account and folder) into `corpus_locations`. Off: the file stays in the landing folder with a one-time stray warning. |
+| `scheduleFeed.corpus.enabled` | `false` | Load Network Rail CORPUS (pushed to the same SFTP account and folder) into `corpus_locations`, in either format below. Off: the files stay in the landing folder with a one-time stray warning. |
+| `scheduleFeed.corpus.jsonEnabled` | `true` | Load the JSON extract (`CORPUSExtract.json.gz`, the older CORPUS API version: every location, ~56,000 rows). |
 | `scheduleFeed.corpus.filePattern` | `CORPUSExtract.json.gz` | Globs naming the CORPUS extract. `CORPUSExtract.csv.gz` (SMART berth data) is deliberately ignored. |
-| `scheduleFeed.corpus.minRows` | `10000` | Fewer rows than this rejects the extract instead of replacing the table. |
+| `scheduleFeed.corpus.minRows` | `10000` | Fewer rows than this rejects the JSON extract instead of replacing the table. |
+| `scheduleFeed.corpus.xml.enabled` | `true` | Load the NLC XML snapshot (`NLC<YYYYMMDD>.xml.gz`, the newer API version: TIPLOC-bearing locations only, ~12,100 rows), picked by the `NLC` prefix and `.xml.gz` extension. Any other `NLC*` file is never loaded and raises `DistantSignalCorpusFormatDrift`. |
+| `scheduleFeed.corpus.xml.minRows` | `10000` | Fewer rows than this rejects the XML snapshot. |
+| `scheduleFeed.corpus.formatPrecedence` | `json` | Which file loads when both formats arrive: `json`, `xml` or `newest` (by mtime; the table then alternates between formats). The other format is still checked, compared and archived, and loads only once the preferred one has not loaded for `preferredGraceDays`. |
+| `scheduleFeed.corpus.preferredGraceDays` | `35` | Days without a load of the preferred format before the other format takes over. |
+| `scheduleFeed.corpus.compareFormats` | `true` | Compare each file with the newest one of the other format; logs and `schedule_feed_corpus_format_diff{measure}`. Read-only. |
 | `scheduleFeed.corpus.maxDecompressedBytes` | `268435456` | gzip-bomb guard. |
-| `scheduleFeed.corpus.retentionKeep` | `3` | Processed (and, separately, rejected) extracts kept under `/data/schedule-feed/corpus/`. |
+| `scheduleFeed.corpus.retentionKeep` | `3` | Loaded files kept under `/data/schedule-feed/corpus/`, and separately rejected (`corpus/rejected/`) and superseded, unloaded ones (`corpus/superseded/`). |
 
 ### scheduleFeed: bucket source
 

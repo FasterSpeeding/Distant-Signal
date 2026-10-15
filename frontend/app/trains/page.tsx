@@ -2,7 +2,7 @@ import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { TrainSearchForm } from '@/components/TrainSearchForm';
 import { getAllTocs, getTrainSearchDates } from '@/lib/api';
-import { pageMetadata } from '@/lib/pageMetadata';
+import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
  * shape every detail page in this app already emits (see
@@ -18,8 +18,9 @@ import { pageMetadata } from '@/lib/pageMetadata';
  * does vary with `attachTicketId`; this deliberately describes the page's
  * ordinary, shareable purpose instead.
  *
- * Title matches the page's own `<h1>` ("Find a Train"), which is also the
- * nav label for this route.
+ * Title matches the page's own `<h1>` ("Find a train"), which is also the
+ * link to this route from the Track page (`/track/mine`), the nav's one
+ * tracking entry since round 2.
  *
  * "another station along its route" is deliberately generic rather than
  * spelling out the ordering rule in this short SEO/OG blurb: `stops_at`
@@ -30,10 +31,10 @@ import { pageMetadata } from '@/lib/pageMetadata';
  * "another station along its route" -- it just does not additionally claim
  * the ordering, which belongs in the field's own, more detailed
  * description rather than this page-level summary. */
-const METADATA_TITLE = 'Trains';
+const METADATA_TITLE = 'Find a train';
 const METADATA_DESCRIPTION = 'Search UK trains by station and date, then open one for its live status or track it.';
 
-export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
+export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION, OWN_PREVIEW_IMAGE);
 
 /** `/trains` -- the primary train-discovery surface. Generalized from a
  * destination-first search into a calling-point-first one -- see
@@ -111,7 +112,7 @@ export default async function TrainsPage({
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Trains</Title>
+      <Title order={1}>Find a train</Title>
       <Text c="dimmed">
         {attachTicketId !== undefined
           ? "Find the train your saved ticket is for. It'll be attached automatically once you track it."

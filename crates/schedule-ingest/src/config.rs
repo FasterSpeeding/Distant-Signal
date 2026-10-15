@@ -63,7 +63,8 @@ impl CifCheckArgs {
 #[derive(Debug, Clone, clap::Args)]
 #[expect(
     clippy::struct_field_names,
-    reason = "clap derives each env var from the field name, so the prefix is part of the interface"
+    clippy::struct_excessive_bools,
+    reason = "clap derives each env var from the field name, so the prefix is part of the interface; each bool is an independent on/off env switch"
 )]
 pub(crate) struct CorpusArgs {
     /// Load CORPUS deliveries from `watch_dir` into
@@ -89,10 +90,65 @@ pub(crate) struct CorpusArgs {
     pub corpus_min_rows: usize,
 
     /// How many processed extracts to keep in `storage_dir/corpus/` (and,
-    /// separately, rejected ones in `storage_dir/corpus/rejected/`). Every
+    /// separately, rejected ones in `storage_dir/corpus/rejected/` and
+    /// superseded ones in `storage_dir/corpus/superseded/`). Every
     /// processed file is moved out of `watch_dir`.
     #[arg(long, env, default_value_t = 3)]
     pub corpus_retention_keep: u32,
+
+    /// Load the JSON extract (`CORPUS_FILE_PATTERN`, the older CORPUS API
+    /// version). `false` leaves those files in `watch_dir` as strays.
+    #[arg(long, env, default_value_t = true, action = clap::ArgAction::Set)]
+    pub corpus_json_enabled: bool,
+
+    /// Load the NLC XML snapshot (`NLC*.xml.gz`, the newer CORPUS API
+    /// version; `corpus_xml.rs`). `false` leaves those files in `watch_dir`
+    /// as strays. A file named `NLC*` that is not `.xml.gz` is never loaded
+    /// either way: it is reported as format drift.
+    #[arg(long, env, default_value_t = true, action = clap::ArgAction::Set)]
+    pub corpus_xml_enabled: bool,
+
+    /// The fewest rows an XML snapshot must carry (the 2026-10-09 one has
+    /// 12,102: the format holds only TIPLOC-bearing locations).
+    #[arg(long, env, default_value_t = 10_000)]
+    pub corpus_xml_min_rows: usize,
+
+    /// Which file is loaded when both formats are delivered
+    /// (`corpus.rs`, "Choosing the file to load").
+    #[arg(long, env, value_enum, default_value_t = FormatPrecedence::Json)]
+    pub corpus_format_precedence: FormatPrecedence,
+
+    /// With a preferred format (`json` or `xml`): a file of the other
+    /// format is loaded only when no file of the preferred one has been
+    /// loaded within this many days (by the archived file's mtime), so the
+    /// other takes over if the preferred feed stops. One monthly cycle plus
+    /// a few days.
+    #[arg(long, env, default_value_t = 35)]
+    pub corpus_preferred_grace_days: u32,
+
+    /// After each decision, compare the file with the newest one of the
+    /// other format (in `watch_dir` or the archive) and log and export the
+    /// differences (`corpus_formats.rs`). Read-only.
+    #[arg(long, env, default_value_t = true, action = clap::ArgAction::Set)]
+    pub corpus_compare_formats: bool,
+}
+
+/// `CORPUS_FORMAT_PRECEDENCE`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum FormatPrecedence {
+    /// The newest stable file of either format, by mtime. Each delivery
+    /// replaces the table, so with both feeds subscribed the table
+    /// alternates between them.
+    Newest,
+    /// The JSON extract; the XML snapshot only when no JSON extract has
+    /// been loaded within `CORPUS_PREFERRED_GRACE_DAYS`. The default: the
+    /// JSON extract is the superset (every location, not only TIPLOCs) and
+    /// what production loads today.
+    #[default]
+    Json,
+    /// The XML snapshot; the JSON extract only when no XML snapshot has
+    /// been loaded within `CORPUS_PREFERRED_GRACE_DAYS`.
+    Xml,
 }
 
 /// CLI/env configuration for the `schedule-ingest` service.
@@ -298,7 +354,7 @@ mod chart_env_wiring_tests {
             .map(str::to_string)
             .collect();
         assert!(
-            declared.len() >= 9,
+            declared.len() >= 15,
             "sanity check: expected the CIF_*, CORPUS_* and *_URL env vars; got {declared:?}"
         );
         let missing: Vec<&String> = declared

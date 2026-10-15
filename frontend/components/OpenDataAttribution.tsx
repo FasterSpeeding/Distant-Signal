@@ -2,6 +2,7 @@ import { Box, Group, List, ListItem, Stack, Text } from '@mantine/core';
 import { SectionTitle } from './SectionTitle';
 import type { ReactNode } from 'react';
 import { TextLink } from './TextLink';
+import { PREFERENCES_DESTINATION } from '@/lib/navLinks';
 import { LEGAL_LINKS, legalPagesVisible } from '@/lib/legal';
 import { NATIONAL_RAIL_URL } from './NationalRailCredit';
 
@@ -162,6 +163,11 @@ export function OpenDataAttribution({ transitOn = false }: { transitOn?: boolean
       <Group component="nav" aria-label="Site information" gap="md" mt={4}>
         <TextLink href="/attribution" size="sm" underline="always">
           Data sources and licences
+        </TextLink>
+        {/* Preferences for everyone, wherever they scroll to: the bar's
+            gear, account menu and drawer each cover only some visitors. */}
+        <TextLink href={PREFERENCES_DESTINATION.href} size="sm" underline="always">
+          {PREFERENCES_DESTINATION.label}
         </TextLink>
         {legalLinks.map((link) => (
           <TextLink key={link.href} href={link.href} size="sm" underline="always">

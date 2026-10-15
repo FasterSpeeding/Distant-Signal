@@ -699,8 +699,7 @@ rows (`notifier_forward_queue_rows`; 50000 by default) for `largeFor`.
 Production held 315 rows for a full 30-day window on 2026-10-09, all for
 tracked trains. Rows stay for the trains retention window whether or not the
 notifier has read them, so this is either a producer writing far more
-signals than usual (trust-consumer, through its DB sink or api's
-`/private/train-forward-signals`: check `GROUP BY trains_id` for one train
+signals than usual (trust-consumer, through its DB sink: check `GROUP BY trains_id` for one train
 with thousands of rows, or many rows with no `dedup_key`), or tracked trains
 have grown enough that the table should be pruned or archived on its own
 schedule. Raise `maxRows` only after ruling out the first.
@@ -1208,14 +1207,64 @@ container's error log names the reason.
 schedule-ingest refused a CORPUS extract (not gzip, not the TIPLOCDATA JSON,
 too few rows, a row without an NLC, or over the decompression cap) and moved
 it to `/data/schedule-feed/corpus/rejected/`. `corpus_locations` keeps the
-previous delivery. The ingest container's error log names the reason.
+previous delivery. The ingest container's error log names the reason. The
+counter carries a `format` label (`json` for `CORPUSExtract.json.gz`, `xml`
+for the `NLC*.xml.gz` snapshot); a file of the non-preferred format is
+checked too, so this can fire for a format that is not being loaded.
+
+### DistantSignalCorpusFormatDrift
+
+A file named like Network Rail's NLC XML CORPUS feed (`NLC*`) sits in the SFTP
+landing folder but is not `.xml.gz`. NWR's delivery format may have changed
+(an uncompressed `.xml`, a zip, another serialisation). schedule-ingest never
+loads, moves or deletes such a file, so `corpus_locations` keeps the previous
+delivery. It counts `schedule_feed_corpus_failures_total{stage="drift"}` on
+every poll while the file is there (and sets
+`schedule_feed_corpus_format_drift_files` to how many there are), so the alert
+fires on the first poll that sees one and clears `corpusFailingWindow` (30m)
+after the file is removed.
+The ingest container's warning names the file. Inspect it
+(`kubectl exec deploy/distant-signal-schedulefeed -c ingest -- ls -l
+/data/schedule-feed/incoming`); if the format really changed, the parser
+(`crates/schedule-ingest/src/corpus_xml.rs`) needs updating. Then delete the
+file from the landing folder.
+
+### DistantSignalCorpusLoadFailing
+
+schedule-ingest keeps failing at one CORPUS `stage`
+(`schedule_feed_corpus_failures_total{stage}`, at least
+`corpusFailingMin` times within `corpusFailingWindow`, 3 in 30m by
+default). It retries every poll (120s), and `corpus_locations` keeps the
+previous delivery meanwhile. This is a real failure, not a quiet feed: a
+CORPUS file is waiting and cannot be loaded.
+
+- `scan`: `watch_dir` cannot be listed (the volume, or its permissions).
+- `read`: a stable file cannot be read. The 2026-10-02 `EACCES` was this:
+  SFTPGo wrote the upload `0600` (see the `umask` note in
+  `charts/distant-signal/files/schedule-sftp-entrypoint.sh`).
+- `load`: the Postgres write failed (connection, grants, or a refused
+  load). Check the `schedule_ingest` role and the database.
+
+The ingest container's error log names the file and the cause. The
+counter's `drift` stage is not this alert's: see
+[DistantSignalCorpusFormatDrift](#distantsignalcorpusformatdrift).
 
 ### DistantSignalCorpusStale
 
 The newest loaded Network Rail CORPUS extract was delivered over
-`corpusStaleAfterDays` ago (`api_corpus_last_delivered_at_seconds`, or `store_…` after the phase 5 rename). CORPUS is
-published monthly. Either RDM stopped pushing it (check the SFTP corpus
-folder) or schedule-ingest cannot load it (check
+`corpusStaleWarningDays` (35, warning) or `corpusStaleCriticalDays` (45,
+`corpusStaleCriticalSeverity`) ago (`store_corpus_last_delivered_at_seconds`;
+`api_…` before the phase 5 rename). Only one of the two fires at a
+time.
+
+CORPUS is not a daily feed. RDM lists it as monthly, and deliveries have
+come every few days to couple of weeks, so days or weeks without a new
+file are normal and do not alert. 35 days is a full monthly cycle plus
+four days' grace; 45 days means at least one delivery was missed.
+
+Either RDM stopped pushing it (check the SFTP corpus folder, the bucket and
+the RDM subscription) or schedule-ingest cannot load it (check
+[DistantSignalCorpusLoadFailing](#distantsignalcorpusloadfailing),
 [DistantSignalCorpusRejected](#distantsignalcorpusrejected) and the ingest
 container's error log). The previous extract stays in use.
 
@@ -1431,7 +1480,7 @@ the alert clears once api stops listing it or LDBWS accepts it.
 Over the last window (2h, 24 polls), api applied its "Ended (no longer
 listed)" inference to no incidents snapshot, and skipped at least one as
 `incomplete`, `empty` or a `shrink`
-(`api_incident_removal_inference_total{outcome}`, or `store_…` after the phase 5 rename; `too_soon` and
+(`store_incident_removal_inference_total{outcome}`; `api_…` before the phase 5 rename; `too_soon` and
 `no_baseline` skips are benign and not counted). While this lasts,
 an incident that leaves the Knowledgebase feed without RDM clearing it stays
 "active" on the archive and in line status, the bug the inference exists to
@@ -1457,7 +1506,7 @@ as ended.
 
 No incidents snapshot reached the database within
 `incidentSnapshotsMissing.window` (2h): the sum of
-`api_incident_removal_inference_total` over every outcome did not move, for
+`store_incident_removal_inference_total` over every outcome did not move, for
 `for`. Each snapshot counts once there, whatever the inference decided, in
 poller-incidents (the api's `/private/incidents` path went with release
 B). It registers the series at 0 at startup, so this is a real 0, not a

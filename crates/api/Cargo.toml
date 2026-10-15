@@ -13,7 +13,7 @@ base64 = "0.22"
 chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4.6.1", features = ["derive", "env"] }
-common = { path = "../common", features = ["postgres", "redis"] }
+common = { path = "../common", features = ["postgres"] }
 dotenvy = "0.15.7"
 # The shared data access (ingest architecture phase 1A): `data::*` keeps
 # `pub use ds_store::...` shims as functions move there.
@@ -38,7 +38,7 @@ libc = "0.2"
 # directly rather than reaching through sqlx's own re-export surface (which
 # doesn't expose it).
 log = "0.4"
-# Hand-emitted counters (e.g. `api_trust_event_backlog_rejected_rows_total`).
+# Hand-emitted counters (e.g. `api_rate_limited_total`).
 # Same facade `axum-prometheus` already records through, so they reach the
 # same recorder and `/metrics` listener.
 metrics = "0.24"
@@ -46,7 +46,6 @@ oauth2 = "5.0"
 openidconnect = "4.0"
 pdf-extract = "0.12"
 rand = "0.8"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 regex = "1"
 # PINNED TO 0.12 ON PURPOSE, not merely "not upgraded yet": oauth2 5.0 (via
 # openidconnect 4.0) implements its `AsyncHttpClient` trait for

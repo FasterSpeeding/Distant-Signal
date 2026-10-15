@@ -492,9 +492,13 @@ jobs:
       # (a new cluster). The #[sqlx::test] modules are skipped: they create a
       # throwaway database per test, which needs CREATEDB, a test-harness
       # right, not a runtime one; their DML runs in the step above.
+      # --check-setup-job: the setup scripts run once more, through the
+      # setup Job's entrypoint, behind a reader holding ACCESS SHARE on
+      # every table, with lock_timeout=2s: a steady-state release takes no
+      # ACCESS EXCLUSIVE lock (2026-10-14, Helm v252).
       - name: DB-backed tests as the non-superuser app role (existing cluster)
         run: >-
-          scripts/test-postgres-roles.py --mode existing -- sh -c '
+          scripts/test-postgres-roles.py --mode existing --check-setup-job -- sh -c '
           cargo test -p api -p ds-store -p aggregator -p notifier -- --ignored --test-threads=1
           --skip corpus::db_tests --skip crosswalk::db_tests --skip freshness::db_tests --skip line_timetable::db_tests --skip reads::db_tests
           && cargo test -p common --features postgres pg::tests -- --ignored --test-threads=1
@@ -536,11 +540,13 @@ jobs:
       # MIGRATION_DATABASE_URL; ds_store::test_support::schedule_fixture_pool):
       # since release B the app role (and so the api role) no longer holds
       # the *_publish_keys tables or analyze_publish_keys (db-grants.yaml
-      # app_revokes).
+      # app_revokes). writer-maintenance's backfill-incident-lines preflight
+      # runs as the incidents role, the role that subcommand is run as
+      # (ingest phase 5, 5.4b; the writer run above checks the refusal).
       - name: DB-backed tests as each service's own role (Stage 0b)
         run: |
           # shellcheck disable=SC2016 # expanded by the inner sh, from the env test-postgres-roles.py sets
-          uv run --no-sync scripts/test-postgres-roles.py --mode per-service -- sh -c '
+          uv run --no-sync scripts/test-postgres-roles.py --mode per-service --check-setup-job -- sh -c '
             skip="--skip corpus::db_tests --skip crosswalk::db_tests --skip freshness::db_tests --skip line_timetable::db_tests --skip reads::db_tests"
             DATABASE_URL="$DATABASE_URL_API" cargo test -p api -- --ignored --test-threads=1 $skip &&
             DATABASE_URL="$DATABASE_URL_API" cargo test -p ds-store -- --ignored --test-threads=1 $skip --skip schedule::publish:: &&
@@ -556,6 +562,7 @@ jobs:
             DATABASE_URL="$DATABASE_URL_FULL_COVERAGE_RO" cargo test -p full-coverage-consumer --test role_reads -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_LDBWS_RO" cargo test -p poller-ldbws --test role_reads -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_INCIDENTS" cargo test -p poller-incidents -- --ignored --test-threads=1 &&
+            DATABASE_URL="$DATABASE_URL_INCIDENTS" cargo test -p ingest-writer --bin writer-maintenance -- --ignored --test-threads=1 &&
             DATABASE_URL="$DATABASE_URL_STATIONS" cargo test -p poller-stations -- --ignored --test-threads=1'
 
   # Custom: no reusable Piped workflow covers Node/npm at all (its
@@ -1004,7 +1011,10 @@ jobs:
       # and a new chart version/appVersion changes no pod template but its
       # image tags: CI stamps both on every release, so either one in a pod
       # template restarted every workload (Redis and schedulefeed included)
-      # on every deploy.
+      # on every deploy. Every Deployment and StatefulSet also sets
+      # revisionHistoryLimit from the chart value (Kubernetes' default of
+      # 10 left 177 zero-replica ReplicaSets behind), and the api-maintenance
+      # Jobs get a TTL while the Helm hook Jobs don't.
       - name: pod templates stable across releases
         run: uv run --no-sync scripts/check-pod-labels-chart.py
 
@@ -1092,6 +1102,36 @@ jobs:
             --set api.sso.redirectUrl=https://app.example.com/callback \
             --set api.sso.postLoginRedirectUrl=https://app.example.com/ \
             > /dev/null
+
+      # api.chatbotAccess / api.chatbotAccessGroup were removed on 2026-10-14
+      # (/chat is open to every logged-in user). Without them the api renders
+      # no CHATBOT_ACCESS* env var; a values file that still sets either one
+      # fails the render, naming the key.
+      - name: helm template (removed chatbot access values)
+        run: |
+          set -euo pipefail
+          base=(
+            -f charts/distant-signal/ci/ingest-prereqs.yaml
+            --set trustConsumer.kafka.brokers=kafka.example.com:9094
+            --set trustConsumer.kafka.topic=test-topic
+            --set trustConsumer.kafka.saslMechanism=PLAIN
+            --set enricher.llm.baseUrl=http://llm.example.com/v1
+            --set enricher.llm.model=test-model
+            --set api.sso.issuerUrl=https://sso.example.com
+            --set api.sso.clientId=test-client
+            --set api.sso.clientSecret=test-secret
+            --set api.sso.redirectUrl=https://app.example.com/callback
+            --set api.sso.postLoginRedirectUrl=https://app.example.com/
+          )
+          render() { helm template distant-signal charts/distant-signal "${base[@]}" "$@"; }
+          fail() { echo "$1" >&2; exit 1; }
+          out=$(render)
+          if grep -q 'name: CHATBOT_ACCESS' <<<"${out}"; then fail "no CHATBOT_ACCESS* env var may render"; fi
+          for key in chatbotAccess chatbotAccessGroup; do
+            # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+            if err=$(render --set "api.${key}=x" 2>&1 >/dev/null); then fail "api.${key} rendered"; fi
+            grep -qF "api.${key}: removed on 2026-10-14" <<<"${err}" || fail "the failure must name api.${key}: ${err}"
+          done
 
       # Release B (ingest phase 5, docs/ingest-phase5-runbook.md): every
       # producer has only its db or stream sink and every internal reader
@@ -2009,13 +2049,18 @@ jobs:
           fi
           n_pw=$(grep -c 'name: REDIS_PASSWORD' <<<"${off}" || true)
           n_acl=$(grep -A3 'name: REDIS_PASSWORD' <<<"${off}" | grep -c 'name: example-redis-users' || true)
-          [[ "${n_pw}" -ge 7 && "${n_pw}" -eq "${n_acl}" ]] \
+          [[ "${n_pw}" -ge 6 && "${n_pw}" -eq "${n_acl}" ]] \
             || fail "every REDIS_PASSWORD must come from redis.acl.existingSecret (${n_acl} of ${n_pw})"
           grep -A1 'name: REDIS_URL' <<<"${off}" | grep 'value:' | grep -q -v '@' \
             || fail "REDIS_URL must stay credential-free"
           redis=$(render --show-only templates/redis-deployment.yaml)
           grep -q -- '- --aclfile' <<<"${redis}" || fail "redis must start with --aclfile"
-          grep -q 'name: REDISCLI_AUTH' <<<"${redis}" || fail "redis probes must authenticate"
+          # The probes are tcpSocket by default; REDISCLI_AUTH serves the
+          # exec option (and humans' `kubectl exec ... redis-cli`).
+          grep -q 'name: REDISCLI_AUTH' <<<"${redis}" || fail "redis-cli in the redis pod must authenticate"
+          redis_exec=$(render --show-only templates/redis-deployment.yaml --set redis.probes.readiness.type=exec)
+          grep -A7 'readinessProbe:' <<<"${redis_exec}" | grep -q -- '- ds-admin' \
+            || fail "redis exec probes must run redis-cli as ds-admin with the ACL users"
 
           on=$(render --set redis.auth.enabled=true \
             --set redis.auth.existingSecret=redis-auth --set redis.auth.existingSecretKey=pw)
@@ -2113,6 +2158,31 @@ jobs:
             || fail "the setup Job must read the backup password from roles.backup.existingSecret"
           grep -A4 'name: DS_PG_BACKUP_PASSWORD$' <<<"${job}" | grep -q 'key: postgres-backup-password' \
             || fail "the backup password key must default to postgres-backup-password"
+          # Fail fast and keep the log (the 2026-10-14 Helm v252 deadline):
+          # every psql runs through the bounded, retrying setup script with
+          # lock and statement timeouts, which ends 60 s before the Job's
+          # deadline; the hook ConfigMap carries the script.
+          # shellcheck disable=SC2016 # "${setup}" is the Job's shell variable, matched literally
+          grep -q 'sh "${setup}" wait$' <<<"${job}" || fail "the setup Job must wait for Postgres through the setup script"
+          # shellcheck disable=SC2016 # as above
+          n_run=$(grep -c 'sh "${setup}" run' <<<"${job}" || true)
+          [[ "${n_run}" -eq 2 ]] || fail "postgres-roles.sql and postgres-grants.sql must run through the setup script"
+          # shellcheck disable=SC2016 # the Job's shell arithmetic, matched literally
+          grep -q 'DS_SETUP_DEADLINE=$(($(date +%s) + 540))' <<<"${job}" \
+            || fail "the setup script's deadline must be the Job's 600 s less 60"
+          grep -q '^  backoffLimit: 0$' <<<"${job}" || fail "the setup Job retries in its pod: backoffLimit 0"
+          grep -A1 'name: PGOPTIONS$' <<<"${job}" \
+            | grep -q 'value: "-c lock_timeout=10s -c statement_timeout=120s ' \
+            || fail "the setup Job's sessions need lock_timeout and statement_timeout"
+          grep -q '^  postgres-roles-setup.sh: |$' <<<"${job}" || fail "the hook ConfigMap must carry the setup script"
+          grep -q 'path: postgres-roles-setup.sh$' <<<"${job}" || fail "the setup Job must mount the setup script"
+          for bad in lockTimeout='10 s' statementTimeout=0 attempts=0 activeDeadlineSeconds=100; do
+            # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+            if render --set postgresql.roles.setupJob.enabled=true --set "postgresql.roles.setupJob.${bad}" \
+                >/dev/null 2>&1; then
+              fail "setupJob.${bad} must fail the render"
+            fi
+          done
           if grep -q 'PASSWORD=' <<<"${on}"; then fail "no password may be passed on a command line"; fi
 
           # An existing cluster (initScript off) gets no initdb script on the
@@ -2509,7 +2579,8 @@ jobs:
 
       # Reboot resilience: redis must roll with Recreate (single RWO AOF
       # volume, INF-1); postgres needs a startupProbe so WAL redo is never
-      # killed by liveness (INF-4); the frontend probes must hit the
+      # killed by liveness (INF-4), and it and redis default to tcpSocket
+      # probes (no exec fork per period); the frontend probes must hit the
       # dependency-free /healthz (FE-1); every background worker needs a
       # /livez liveness probe (SVC-08/INF-9), and the DB-backed ones a
       # /healthz readiness probe (INF-5).
@@ -2536,11 +2607,41 @@ jobs:
           grep -A1 '^  strategy:' <<<"${redis}" | grep -q 'type: Recreate' \
             || fail "redis Deployment must use strategy Recreate"
 
+          # Postgres and Redis probes (postgresql.probes, redis.probes):
+          # tcpSocket by default, so nothing is forked in the container;
+          # readiness every 10s, liveness every 30s with 6 failures
+          # allowed; `type: exec` renders the old commands.
+          # probe_has <render> <kind> <pattern> <failure message>
+          probe_has() { grep -A7 "^          $2Probe:" <<<"$1" | grep -q -- "$3" || fail "$4"; }
           pg=$(render --show-only templates/postgres-statefulset.yaml)
-          grep -A5 'startupProbe:' <<<"${pg}" | grep -q 'pg_isready' \
-            || fail "postgres must have a pg_isready startupProbe"
-          grep -A10 'startupProbe:' <<<"${pg}" | grep -q 'failureThreshold: 90' \
-            || fail "postgres startupProbe budget must default to 90 x 10s"
+          if grep -q 'exec:' <<<"${pg}${redis}"; then
+            fail "postgres and redis probes must not exec by default"
+          fi
+          for kind in startup readiness liveness; do
+            probe_has "${pg}" "${kind}" 'port: postgres$' \
+              "postgres ${kind}Probe must default to tcpSocket on the postgres port"
+            probe_has "${redis}" "${kind}" 'port: redis$' \
+              "redis ${kind}Probe must default to tcpSocket on the redis port"
+          done
+          probe_has "${pg}" startup 'failureThreshold: 90$' \
+            "postgres startupProbe budget must default to 90 x 10s"
+          for out in "${pg}" "${redis}"; do
+            probe_has "${out}" readiness 'periodSeconds: 10$' "readiness must default to a 10s period"
+            probe_has "${out}" liveness 'periodSeconds: 30$' "liveness must default to a 30s period"
+            probe_has "${out}" liveness 'failureThreshold: 6$' "liveness must default to 6 failures"
+          done
+          pg_exec=$(render --show-only templates/postgres-statefulset.yaml \
+            --set postgresql.probes.startup.type=exec)
+          probe_has "${pg_exec}" startup 'pg_isready' \
+            "postgresql.probes.startup.type=exec must run pg_isready"
+          redis_exec=$(render --show-only templates/redis-deployment.yaml \
+            --set redis.probes.liveness.type=exec)
+          probe_has "${redis_exec}" liveness '- ping$' \
+            "redis.probes.liveness.type=exec must run redis-cli ping"
+          # shellcheck disable=SC2310 # render is expected to fail here; that failure is the assertion
+          if render --set postgresql.probes.readiness.type=httpGet >/dev/null 2>&1; then
+            fail "an unknown probe type must fail the render"
+          fi
 
           api=$(render --show-only templates/api-deployment.yaml)
           grep -A6 'startupProbe:' <<<"${api}" | grep -q 'periodSeconds: 2' \
@@ -3078,7 +3179,7 @@ jobs:
             out=$(egress_of "${c}" "${eg}")
             grep -q 'port: 53$' <<<"${out}" || fail "${c} must get an egress policy allowing DNS"
           done
-          for d in api:postgres api:redis frontend:api aggregator:postgres enricher:postgres \
+          for d in api:postgres frontend:api aggregator:postgres enricher:postgres \
               enricher:redis schedulefeed:postgres trust-consumer:postgres trust-consumer:redis \
               trust-backlog-consumer:postgres full-coverage-consumer:postgres full-coverage-consumer:redis; do
             out=$(egress_of "${d%%:*}" "${eg}")
@@ -3090,6 +3191,12 @@ jobs:
             out=$(egress_of "${c}" "${eg}")
             if grep -q 'component: api$' <<<"${out}"; then fail "${c} must not reach the api"; fi
           done
+          # Ingest phase 5, step 5.4: the api has no Redis client, so it may
+          # not reach Redis, and Redis admits it no longer.
+          out=$(egress_of api "${eg}")
+          if grep -q 'component: redis$' <<<"${out}"; then fail "the api must not reach redis"; fi
+          redis_in=$(policy distant-signal-redis <<<"${eg}" | awk '/^  ingress:/{f=1} /^  egress:/{f=0} f')
+          if grep -q -- '- api$' <<<"${redis_in}"; then fail "redis must not admit the api"; fi
           api_in=$(policy distant-signal-api <<<"${eg}" | awk '/^  ingress:/{f=1} /^  egress:/{f=0} f')
           if grep -E -q -- '- (poller-[a-z-]+|trust-consumer|trust-backlog-consumer|full-coverage-consumer|schedulefeed)$' <<<"${api_in}"; then
             fail "the api must admit no ingest producer"

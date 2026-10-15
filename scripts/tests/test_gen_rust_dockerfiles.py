@@ -62,13 +62,23 @@ class RenderTests(unittest.TestCase):
                     bins = re.findall(r"--bin (\S+)", flags)
                     self.assertEqual(tuple(bins), tuple(gen.SERVICES[service]))
 
-    def test_api_ships_its_eight_binaries(self) -> None:
-        """Api cooks, builds and copies out all eight binaries, ds-migrate too."""
+    def test_api_ships_its_four_binaries(self) -> None:
+        """Api cooks, builds and copies out all four binaries, ds-migrate too.
+
+        Ingest phase 5, step 5.4b: none of the writing one-offs is left.
+        """
         block = gen.render("api")
         for name in gen.SERVICES["api"]:
             self.assertIn(f"/usr/local/bin/{name} ", block)
         self.assertIn("ds-migrate", gen.SERVICES["api"])
-        self.assertEqual(len(gen.SERVICES["api"]), 8)
+        self.assertEqual(len(gen.SERVICES["api"]), 4)
+        for gone in (
+            "backfill_trains",
+            "backfill_incident_lines",
+            "backfill_line_train_summaries",
+            "replay_uidless_movements",
+        ):
+            self.assertNotIn(gone, gen.SERVICES["api"])
 
     def test_no_target_cache_mount(self) -> None:
         """A target/ cache mount would leave the cook layer empty."""
@@ -164,6 +174,44 @@ class RuntimeStageTests(unittest.TestCase):
             problems = gen.runtime_stage_problems({"good": good, "bad": bad})
         self.assertEqual(len(problems), 1)
         self.assertIn("docker/bad.Dockerfile", problems[0])
+
+
+class BinaryCopyTests(unittest.TestCase):
+    """The runtime stage copies exactly the binaries SERVICES builds."""
+
+    def problems(self, text: str) -> list[str]:
+        """Return binary_copy_problems for an api Dockerfile with `text`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "api.Dockerfile"
+            path.write_text(text)
+            return list(gen.binary_copy_problems({"api": path}))
+
+    def copies(self, *names: str) -> str:
+        """Return one runtime COPY line per name."""
+        return "".join(
+            f"COPY --from=builder /usr/local/bin/{n} /usr/local/bin/{n}\n"
+            for n in names
+        )
+
+    def test_matching_copies_pass(self) -> None:
+        """A COPY per built binary, and nothing else, is fine."""
+        self.assertEqual(self.problems(self.copies(*gen.SERVICES["api"])), [])
+
+    def test_copy_of_an_unbuilt_binary_is_a_problem(self) -> None:
+        """A removed binary's leftover COPY would fail `docker build`."""
+        problems = self.problems(self.copies(*gen.SERVICES["api"], "backfill_trains"))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("'backfill_trains'", problems[0])
+
+    def test_built_binary_never_copied_is_a_problem(self) -> None:
+        """Every built binary reaches the image."""
+        problems = self.problems(self.copies(*gen.SERVICES["api"][:-1]))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("never copies", problems[0])
+
+    def test_committed_dockerfiles_agree(self) -> None:
+        """No committed Dockerfile copies a binary it does not build."""
+        self.assertEqual(gen.binary_copy_problems(gen.dockerfiles()), [])
 
 
 class RuntimeUpgradeTests(unittest.TestCase):

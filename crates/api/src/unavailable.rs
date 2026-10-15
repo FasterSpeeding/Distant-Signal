@@ -10,7 +10,7 @@
 //! contract (docs/api-changelog.md, 2026-10-06).
 //!
 //! **How.** Every route's error helper asks [`response_for`] first. When
-//! the error chain shows the database (or Redis, or an upstream HTTP
+//! the error chain shows the database (or an upstream HTTP
 //! dependency) could not be reached, it answers
 //! `503 {"error":"service_unavailable","retryable":true,...}` and marks the
 //! request; [`annotate_unavailable`], one middleware over the whole router,
@@ -113,12 +113,6 @@ pub fn cause_is_unavailable(cause: &(dyn std::error::Error + 'static)) -> bool {
     }
     if let Some(err) = cause.downcast_ref::<std::io::Error>() {
         return io_error_is_unavailable(err);
-    }
-    if let Some(err) = cause.downcast_ref::<redis::RedisError>() {
-        return err.is_connection_refusal()
-            || err.is_connection_dropped()
-            || err.is_timeout()
-            || err.is_io_error();
     }
     if let Some(err) = cause.downcast_ref::<reqwest::Error>() {
         return err.is_connect() || err.is_timeout();
@@ -273,14 +267,6 @@ mod tests {
         ] {
             assert!(!is_dependency_unavailable(&io(kind).into()), "{kind:?}");
         }
-    }
-
-    #[test]
-    fn redis_connection_errors_are_unavailable() {
-        let refused = redis::RedisError::from(io(std::io::ErrorKind::ConnectionRefused));
-        assert!(is_dependency_unavailable(&refused.into()));
-        let type_error = redis::RedisError::from((redis::ErrorKind::TypeError, "not a string"));
-        assert!(!is_dependency_unavailable(&type_error.into()));
     }
 
     #[test]

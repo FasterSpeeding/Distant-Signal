@@ -14,7 +14,6 @@ import { AppMantineProvider } from '@/components/AppMantineProvider';
 import { ConnectivityMonitor } from '@/components/ConnectivityMonitor';
 import { ConnectedAppNotice } from '@/components/ConnectedAppNotice';
 import {
-  getChatbotAccess,
   getConnectedAppNotice,
   getDataFreshness,
   getMyGroups,
@@ -24,6 +23,7 @@ import {
 } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { NONCE_HEADER } from '@/lib/csp';
+import { PRIDE_MODE_SCRIPT } from '@/lib/prideMode';
 import { previewCards, SITE_DESCRIPTION, SITE_NAME, TITLE_TEMPLATE } from '@/lib/pageMetadata';
 import { getConfiguredSiteOrigin } from '@/lib/siteOrigin';
 import type { DataFreshness } from '@/lib/types';
@@ -35,7 +35,8 @@ import type { DataFreshness } from '@/lib/types';
 // below only cover a page that sets none.
 //
 // The preview image is public/opengraph-image.png (lib/pageMetadata.ts's
-// PREVIEW_IMAGE). Next needs `metadataBase` to make its URL absolute; it comes from NEXT_PUBLIC_SITE_URL (the chart
+// PREVIEW_IMAGE), or a route's own opengraph-image.tsx
+// (lib/previewImage.tsx). Next needs `metadataBase` to make its URL absolute; it comes from NEXT_PUBLIC_SITE_URL (the chart
 // sets it on the pod), read per request in `generateMetadata` below, the
 // same way app/robots.ts reads it. Without it Next falls back to
 // localhost, which only matters for local runs.
@@ -127,32 +128,13 @@ export const viewport: Viewport = {
 // Unlike the freshness fetch above, this deliberately keeps its
 // `<Suspense>`: it is not a connectivity oracle, and nothing sibling to
 // it needs to read its outcome.
-// Review §3.1.3: `/chat` was reachable only by typing the URL directly --
-// nothing in the nav pointed an allow-listed user at it. Fetched
-// concurrently with `session` (both are independent reads of the same
-// in-cluster `api` service) rather than as a second sequential round trip,
-// and inside the SAME `<Suspense>` boundary as the session check below, so
-// this doesn't add a third wait of its own on top of the one the nav
-// already streams past first paint. `getChatbotAccess()` never throws (it
-// already fails closed to `'forbidden'` on any ambiguous or failed
-// response -- see `lib/api.ts`), so unlike `session` this needs no
-// `.catch()` of its own.
+// The nav's "Ask about trains" (/chat) entry follows the session alone:
+// every logged-in user gets the chat, so it needs no request of its own.
 async function NavBarWithSession({ freshness }: { freshness: DataFreshness }) {
   // `getTransitNetworks()` never throws ([] on failure) and is cached for
   // five minutes, so the "Trams" entry costs no round trip on most renders.
-  const [session, chatAccess, transitNetworks] = await Promise.all([
-    getSessionOrLoggedOut(),
-    getChatbotAccess(),
-    getTransitNetworks(),
-  ]);
-  return (
-    <AppNavBar
-      session={session}
-      freshness={freshness}
-      chatAllowed={chatAccess.status === 'allowed'}
-      transitOn={transitNetworks.length > 0}
-    />
-  );
+  const [session, transitNetworks] = await Promise.all([getSessionOrLoggedOut(), getTransitNetworks()]);
+  return <AppNavBar session={session} freshness={freshness} transitOn={transitNetworks.length > 0} />;
 }
 
 /** Because the call below is awaited before RootLayout emits any HTML, an
@@ -248,7 +230,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             (lib/csp.ts) blocks any inline script without it. */}
         <ColorSchemeScript defaultColorScheme="auto" nonce={nonce} />
       </head>
-      <body>
+      {/* `suppressHydrationWarning`: PRIDE_MODE_SCRIPT below adds
+          `data-pride` to this element before React hydrates it. */}
+      <body suppressHydrationWarning>
+        {/* The saved pride flag, applied before the first paint so it
+            doesn't pop in after hydration (lib/prideMode.ts). Same nonce
+            as ColorSchemeScript above. */}
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: PRIDE_MODE_SCRIPT }} />
         <a href="#main-content" className="skip-link">
           Skip to content
         </a>

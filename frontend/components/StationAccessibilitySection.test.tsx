@@ -611,4 +611,61 @@ describe('StationAccessibilitySection, against real station payloads', () => {
       screen.queryByText('No accessibility or facilities details have been published for this station.'),
     ).not.toBeInTheDocument();
   });
+
+  describe('round 2', () => {
+    it('shows the key facts as a definition list, each term paired with its value', () => {
+      const { container } = renderWithMantine(
+        <StationAccessibilitySection result={{ coverage: 'present', data: loadAccessibilityFixture('YRK') }} />,
+      );
+      const list = container.querySelector('dl[aria-label="Key facts"]');
+      expect(list).not.toBeNull();
+      const pairs = [...list!.querySelectorAll('div')].map((pair) => [
+        pair.querySelector('dt')?.textContent,
+        pair.querySelector('dd')?.textContent,
+      ]);
+      expect(pairs[0]).toEqual(['Step-free access', 'Category A: step-free access to all platforms']);
+      expect(pairs).toContainEqual(['Ramps for boarding', 'Yes']);
+      expect(pairs).toContainEqual(['Lifts', '6']);
+    });
+
+    it.each(['KGX', 'YRK', 'MAN', 'BHM', 'EDB'])('gives every disclosure on %s a distinct name', (crs) => {
+      renderWithMantine(
+        <StationAccessibilitySection result={{ coverage: 'present', data: loadAccessibilityFixture(crs) }} />,
+      );
+      const names = screen
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label') ?? button.textContent);
+      expect(new Set(names).size).toBe(names.length);
+    });
+
+    it('numbers assistance meeting points from 1 and names them by location', () => {
+      renderWithMantine(
+        <StationAccessibilitySection result={{ coverage: 'present', data: loadAccessibilityFixture('YRK') }} />,
+      );
+      expect(screen.getByText('Meeting point 1: Customer Information Point')).toBeInTheDocument();
+      expect(screen.getByText(/^Meeting point 2: Passenger Assist seating area/)).toBeInTheDocument();
+      expect(screen.queryByText(/Meeting Point 0/)).not.toBeInTheDocument();
+    });
+
+    it('collapses a long note behind a "Notes" disclosure named by its field, and keeps a short one inline', async () => {
+      const long = `<p>${'Staff can deploy ramps at all times when trains are operating. '.repeat(6)}</p>`;
+      renderWithMantine(
+        <StationAccessibilitySection
+          result={{
+            coverage: 'present',
+            data: {
+              stationAccessibility: { stepFreeNotes: long },
+              cycling: '<p>Racks by the <strong>main entrance</strong>.</p>',
+            },
+          }}
+        />,
+      );
+      expect(screen.getByText('main entrance')).toBeInTheDocument();
+      expect(screen.queryByText(/Staff can deploy ramps/)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Station accessibility Step free notes: Notes' }));
+
+      expect(await screen.findByText(/Staff can deploy ramps/)).toBeInTheDocument();
+    });
+  });
 });

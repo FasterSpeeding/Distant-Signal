@@ -3,8 +3,7 @@
 //! of another user's sessions.
 //!
 //! "Admin" is membership of `ServiceArguments::admin_group` in the caller's
-//! `users.groups`, the same `groups` OIDC claim `chatbot_access_group` gates
-//! on. Empty (the default) turns the feature off: nobody is an admin.
+//! `users.groups`, read from the `groups` OIDC claim at login. Empty (the default) turns the feature off: nobody is an admin.
 //! Membership is read from `users.groups`, which is written only at login, so
 //! a change in Authentik takes effect at that admin's next login (or at once
 //! if another admin revokes their sessions). See docs/session-revocation.md.
@@ -202,7 +201,7 @@ mod tests {
 /// DB-gated, end to end through the real routers: the admin endpoint and
 /// the back-channel logout endpoint (`routes::auth`), against a mocked
 /// Authentik JWKS for the latter. Same oneshot pattern as
-/// `routes::chatbot::db_tests`.
+/// `routes::groups`' own DB tests.
 #[cfg(test)]
 #[expect(
     clippy::needless_pass_by_value,
@@ -231,14 +230,10 @@ mod session_revocation_db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             migration_database_url: None,
-            redis_url: "redis://127.0.0.1:0".to_string(),
-            redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
-            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             transit_networks: Vec::new(),
-            chatbot_access: crate::data::config::ChatbotAccessMode::Group,
             admin_group: admin_group.to_string(),
             sso_issuer_url: issuer.to_string(),
             sso_client_id: CLIENT_ID.to_string(),
@@ -277,7 +272,6 @@ mod session_revocation_db_tests {
             .expect("construct oidc client"),
             config,
             database: pool,
-            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
             internal_oauth_verifier: crate::auth::internal_oauth::ServiceTokenVerifier::new(
                 "https://example.invalid".to_string(),
                 "test-internal-oauth-client".to_string(),

@@ -117,18 +117,25 @@ test.describe('desktop nav bar (1440x900)', () => {
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
 
+  test('links Preferences from a gear beside Log in, logged out', async ({ page }) => {
+    await page.goto('/lines');
+    const gear = page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' });
+    await expect(gear).toBeVisible();
+    await expect(gear).toHaveAttribute('href', '/account/preferences');
+    // Retried: a hover before hydration opens nothing.
+    await expect(async () => {
+      await page.mouse.move(0, 0);
+      await gear.hover();
+      await expect(page.getByRole('tooltip')).toHaveText('Preferences', { timeout: 1_000 });
+    }).toPass({ timeout: 20_000 });
+  });
+
   test('shows the primary links inline, and no burger', async ({ page }) => {
     await page.goto('/lines');
     const nav = page.locator('nav[aria-label="Main"]');
-    // `exact: true` matters here specifically for 'Trains': Playwright's
-    // default accessible-name match is substring-based, and 'Trains' is
-    // also a substring of the separate 'My trains & tickets' destination
-    // rendered in this same bar for an anonymous visitor -- non-exact
-    // matching makes that one locator resolve to two elements (a real
-    // strict-mode violation seen in CI), even though the two links read as
-    // clearly distinct text to an actual reader/screen reader. This is a
-    // test-matcher precision issue only, not a real accessibility gap.
-    for (const label of ['Track a journey', 'Status', 'Lines', 'Stations', 'Trains', 'Incidents']) {
+    // `exact: true`: Playwright's default accessible-name match is a
+    // substring match, and 'Track' would otherwise also hit other links.
+    for (const label of ['Track', 'Plan a journey', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents']) {
       await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
@@ -151,7 +158,7 @@ test.describe('desktop nav bar (1440x900)', () => {
       expect(await hasHorizontalOverflow(page)).toBe(false);
     });
 
-    test('keeps My Trains & Tickets, Groups and Log out reachable from the account menu', async ({ page }) => {
+    test('keeps Groups, Preferences and Log out reachable from the account menu', async ({ page }) => {
       await page.goto('/lines');
       await page
         .locator('nav[aria-label="Main"]')
@@ -159,7 +166,7 @@ test.describe('desktop nav bar (1440x900)', () => {
         .click();
 
       const menu = page.getByRole('menu');
-      await expect(menu.getByRole('menuitem', { name: 'My trains & tickets' })).toHaveAttribute('href', '/track/mine');
+      await expect(menu.getByRole('menuitem', { name: 'Preferences' })).toHaveAttribute('href', '/account/preferences');
       await expect(menu.getByRole('menuitem', { name: 'Groups' })).toHaveAttribute('href', '/groups');
       // `exact`: Playwright name-matching is a case-insensitive substring match
       // by default, and "Log out other sessions" also contains "Log out".
@@ -170,7 +177,7 @@ test.describe('desktop nav bar (1440x900)', () => {
     test('keeps those three OUT of the bar itself', async ({ page }) => {
       await page.goto('/lines');
       const nav = page.locator('nav[aria-label="Main"]');
-      await expect(nav.getByRole('link', { name: 'My trains & tickets' })).toHaveCount(0);
+      await expect(nav.getByRole('link', { name: 'Preferences' })).toHaveCount(0);
       await expect(nav.getByRole('link', { name: 'Groups' })).toHaveCount(0);
       await expect(nav.getByRole('button', { name: 'Log out', exact: true })).toHaveCount(0);
     });
@@ -187,11 +194,13 @@ test.describe('phone nav bar (390x844)', () => {
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
 
-  test('keeps the brand and the three always-on controls in the bar', async ({ page }) => {
+  test('keeps the brand, the freshness readout and log in in the bar, and no settings controls', async ({ page }) => {
     const nav = page.locator('nav[aria-label="Main"]');
     await page.goto('/lines');
     await expect(nav.getByRole('link', { name: 'Distant Signal' })).toBeVisible();
-    await expect(nav.getByRole('button', { name: 'Colour theme' })).toBeVisible();
+    await expect(nav.getByRole('button', { name: 'Data freshness' })).toBeVisible();
+    // Theme and pride flag live on /account/preferences now.
+    await expect(nav.getByRole('button', { name: 'Colour theme' })).toHaveCount(0);
     await expect(nav.getByRole('button', { name: /^Pride mode:/ })).toHaveCount(0);
     await expect(nav.getByRole('link', { name: 'Log in' })).toBeVisible();
   });
@@ -202,16 +211,16 @@ test.describe('phone nav bar (390x844)', () => {
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
 
     const drawer = await openNavDrawer(page);
-    // `exact: true` for the same reason as the desktop-bar test above:
-    // 'Trains' is a substring of 'My trains & tickets', both present here.
+    // `exact: true` for the same reason as the desktop-bar test above.
     for (const label of [
-      'Track a journey',
+      'Track',
+      'Plan a journey',
       'Status',
       'Lines',
+      'Operators',
       'Stations',
-      'Trains',
       'Incidents',
-      'My trains & tickets',
+      'Preferences',
     ]) {
       await expect(drawer.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
@@ -247,8 +256,21 @@ test.describe('the md breakpoint the bar pivots on', () => {
     await page.goto('/lines');
     const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeVisible();
+    // The logged-out bar's widest form: the Preferences gear sits beside
+    // "Log in" from here up.
+    await expect(nav.getByRole('link', { name: 'Preferences' })).toBeVisible();
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);
+    expect(await navHeight(page)).toBe(61);
+    expect(await hasHorizontalOverflow(page)).toBe(false);
+  });
+
+  test('keeps the logged-out bar, gear included, on one row at 1366px', async ({ page }) => {
+    await page.setViewportSize({ width: 1366, height: 900 });
+    await page.goto('/lines');
+    await expect(page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' })).toBeVisible();
+    expect(await barRowCount(page)).toBe(1);
+    expect(await navHeight(page)).toBe(61);
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
 
@@ -258,6 +280,8 @@ test.describe('the md breakpoint the bar pivots on', () => {
     const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
+    // Below md the drawer links Preferences instead of the gear.
+    await expect(nav.getByRole('link', { name: 'Preferences' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);
   });
 });

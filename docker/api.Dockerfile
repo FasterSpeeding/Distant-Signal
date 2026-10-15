@@ -18,31 +18,25 @@
 # resolves to the same rustc 1.88 requirement by way of the icu_* chain
 # above (api additionally hits it via `home`).
 #
-# This image carries EIGHT binaries: `api` (the ENTRYPOINT), `corpus_compare`
+# This image carries FOUR binaries: `api` (the ENTRYPOINT), `corpus_compare`
 # (a read-only CORPUS report, see crates/api/src/bin/corpus_compare.rs),
-# `backfill_trains`, the one-off, idempotent shared-train-identity backfill
-# that MUST be run before this image is first started against a database
-# with pre-existing `tracked_trains` data, and `backfill_incident_lines`,
-# the one-off, idempotent `incidents.affected_lines` backfill (see
-# docs/incident-affected-lines-backfill.md -- optional, but the incident
-# archive's Line filter returns nothing for pre-existing rows until it has
-# run), `replay_uidless_movements` (one-off, idempotent, see below),
-# `backfill_line_train_summaries` (optional, idempotent, see below),
 # `maintenance` (the api-maintenance CronJob's hourly pass, see below) and
-# `ds-migrate` (the migrate hook Job's command, see below).
-# `api`'s own startup enforces that
-# ordering (it refuses to apply `20260906140000_drop_legacy_columns.sql`
-# while unbackfilled rows remain), so shipping both here is what makes the
-# enforced sequence actually satisfiable from inside the cluster. See
+# `ds-migrate` (the migrate hook Job's command and the schema-owner
+# backfills `ds-migrate backfill-trains` / `backfill-line-train-summaries`).
+# `api`'s own startup refuses to apply
+# `20260906140000_drop_legacy_columns.sql` while unbackfilled rows remain
+# and names `ds-migrate backfill-trains`, which ships here, so the enforced
+# sequence stays satisfiable from inside the cluster. See
 # crates/ds-store/src/migrate/legacy_backfill.rs's module doc.
 #
-# Ingest phase 5 prep (Q2, docs/ingest-phase5-runbook.md): the four writing
-# one-offs are DEPRECATED here and leave this image in step 5.4b, since they
-# must never run with the api's credentials. Their replacements:
-# `ds-migrate backfill-trains` and `ds-migrate backfill-line-train-summaries`
-# (this image, as the schema owner), and `writer-maintenance
-# replay-uidless-movements` / `backfill-incident-lines` (the ingest-writer
-# image, as the writer and incidents roles).
+# Ingest phase 5, step 5.4b (Q2, docs/ingest-phase5-runbook.md): the api's
+# four writing one-offs (`backfill_trains`, `backfill_incident_lines`,
+# `backfill_line_train_summaries`, `replay_uidless_movements`) are gone from
+# this image, so nothing in it can write outside the api role's grants.
+# Their replacements: the two `ds-migrate` subcommands above (as the schema
+# owner), and `writer-maintenance replay-uidless-movements` /
+# `backfill-incident-lines` (the ingest-writer image, as the writer and
+# incidents roles).
 #
 # Migrations note: `api` (at startup) and `ds-migrate` both run
 # `ds_store::migrate::run`, whose `sqlx::migrate!()` has no path argument,
@@ -102,9 +96,9 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     if [ "${CARGO_PROFILE}" = "release" ]; then \
-      cargo chef cook --release --locked --recipe-path recipe.json --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate; \
+      cargo chef cook --release --locked --recipe-path recipe.json --bin api --bin corpus_compare --bin maintenance --bin ds-migrate; \
     else \
-      cargo chef cook --locked --recipe-path recipe.json --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate; \
+      cargo chef cook --locked --recipe-path recipe.json --bin api --bin corpus_compare --bin maintenance --bin ds-migrate; \
     fi
 
 COPY . .
@@ -116,9 +110,9 @@ COPY . .
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
     if [ "${CARGO_PROFILE}" = "release" ]; then \
-      cargo build --release --locked --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate > /tmp/cargo-build.log 2>&1; \
+      cargo build --release --locked --bin api --bin corpus_compare --bin maintenance --bin ds-migrate > /tmp/cargo-build.log 2>&1; \
     else \
-      cargo build --locked --bin api --bin backfill_trains --bin backfill_incident_lines --bin corpus_compare --bin replay_uidless_movements --bin backfill_line_train_summaries --bin maintenance --bin ds-migrate > /tmp/cargo-build.log 2>&1; \
+      cargo build --locked --bin api --bin corpus_compare --bin maintenance --bin ds-migrate > /tmp/cargo-build.log 2>&1; \
     fi; \
     status=$?; \
     cat /tmp/cargo-build.log; \
@@ -128,11 +122,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
       exit 1; \
     fi; \
     cp "/app/target/${CARGO_PROFILE}/api" /usr/local/bin/api \
-    && cp "/app/target/${CARGO_PROFILE}/backfill_trains" /usr/local/bin/backfill_trains \
-    && cp "/app/target/${CARGO_PROFILE}/backfill_incident_lines" /usr/local/bin/backfill_incident_lines \
     && cp "/app/target/${CARGO_PROFILE}/corpus_compare" /usr/local/bin/corpus_compare \
-    && cp "/app/target/${CARGO_PROFILE}/replay_uidless_movements" /usr/local/bin/replay_uidless_movements \
-    && cp "/app/target/${CARGO_PROFILE}/backfill_line_train_summaries" /usr/local/bin/backfill_line_train_summaries \
     && cp "/app/target/${CARGO_PROFILE}/maintenance" /usr/local/bin/maintenance \
     && cp "/app/target/${CARGO_PROFILE}/ds-migrate" /usr/local/bin/ds-migrate \
     && rm -rf /app/target /tmp/cargo-build.log
@@ -179,46 +169,10 @@ RUN apt-get update \
     && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 1000 --gid 1000 api
 
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
-# The operational, one-off backfill this image must be able to run BEFORE it
-# is first started against a database with pre-existing `tracked_trains`
-# data -- see crates/ds-store/src/migrate/legacy_backfill.rs's module doc for the
-# required deploy sequence. Shipped in the same image (rather than a second
-# one) so it is guaranteed to be the exact build whose migrations are about
-# to run:
-#   kubectl run ... --image=<this image> --command -- /usr/local/bin/backfill_trains
-# `api`'s own startup refuses to apply the contract migration until this has
-# been run, so the two can never get out of order silently.
-# DEPRECATED (phase 5 prep): `ds-migrate backfill-trains` (below) does the same as
-# the schema owner.
-COPY --from=builder /usr/local/bin/backfill_trains /usr/local/bin/backfill_trains
-# The one-off `incidents.affected_lines` backfill. Unlike `backfill_trains`
-# nothing refuses to start without it -- the archive's Line filter simply
-# finds no pre-existing rows until it has run, which is the behaviour it
-# had before the column existed. It reads the catalogue from `/app/lines`
-# (copied in just below), the same default as `api`'s own `--lines-dir`, so
-# it needs no arguments here either:
-#   kubectl run ... --image=<this image> --command -- /usr/local/bin/backfill_incident_lines
-# DEPRECATED (phase 5 prep): `writer-maintenance backfill-incident-lines` in the
-# ingest-writer image, as the incidents role.
-COPY --from=builder /usr/local/bin/backfill_incident_lines /usr/local/bin/backfill_incident_lines
 # Read-only CORPUS-vs-timetable crosswalk report (api::data::corpus_comparison),
 # run in the api pod with its own DATABASE_URL:
 #   kubectl exec deploy/<api deployment> -c api -- corpus_compare [--full]
 COPY --from=builder /usr/local/bin/corpus_compare /usr/local/bin/corpus_compare
-# One-off, idempotent: writes the shared movement tables for the uid-less
-# TRUST rows a trust-backlog-consumer restart left out of them (2026-10-01),
-# from trust_event_backlog (kept a day), with the api pod's DATABASE_URL:
-#   kubectl exec deploy/<api deployment> -c api -- replay_uidless_movements [<since, RFC 3339>]
-# DEPRECATED (phase 5 prep): `writer-maintenance replay-uidless-movements` in the
-# ingest-writer image, as the writer role.
-COPY --from=builder /usr/local/bin/replay_uidless_movements /usr/local/bin/replay_uidless_movements
-# Optional, idempotent: derives `line_train_summaries` for line populations
-# stored before the table existed (or derived against an older catalogue);
-# until then the line page reads the population JSONB. Reads /app/lines:
-#   kubectl exec deploy/<api deployment> -c api -- backfill_line_train_summaries
-# DEPRECATED (phase 5 prep): `ds-migrate backfill-line-train-summaries` (below), as
-# the schema owner.
-COPY --from=builder /usr/local/bin/backfill_line_train_summaries /usr/local/bin/backfill_line_train_summaries
 # One pass of the user-data sweeps (expired sessions, dead links,
 # personal-data retention), then exit: the hourly api-maintenance CronJob's
 # command (crates/api/src/bin/maintenance.rs).

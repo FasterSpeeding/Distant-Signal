@@ -28,13 +28,8 @@ describe('AddMcpServerLinks', () => {
     renderWithMantine(<AddMcpServerLinks mcpPublicUrl={`${PUBLIC_URL}/`} />);
     const section = screen.getByRole('region', { name: 'Use Distant Signal in your own assistant' });
     expect(within(section).getByLabelText('MCP server URL')).toHaveValue(ENDPOINT);
-    expect(screen.getByText(/Only accounts that have been given access/)).toBeInTheDocument();
-  });
-
-  it('drops the access-restriction note when access is not restricted', () => {
-    renderWithMantine(<AddMcpServerLinks mcpPublicUrl={PUBLIC_URL} accessRestricted={false} />);
-    expect(screen.getByLabelText('MCP server URL')).toHaveValue(ENDPOINT);
-    expect(screen.queryByText(/Only accounts that have been given access/)).not.toBeInTheDocument();
+    // Any account can connect, so there is no "given access" note.
+    expect(screen.queryByText(/given access/)).not.toBeInTheDocument();
   });
 
   it('links to the Cursor and VS Code installers with the endpoint', () => {

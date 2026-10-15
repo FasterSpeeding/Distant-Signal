@@ -62,6 +62,15 @@ const GROUP_COLOR: Record<SeverityGroup, string> = {
  * never drift from `StatusBadge`'s own colour for the same bucket. */
 export const SEVERITY_GROUP_COLORS: Record<SeverityGroup, string> = GROUP_COLOR;
 
+/** The CSS colour for TEXT in a severity group's hue: `--ds-severity-<group>-text`
+ * in `app/globals.css`, defined per colour scheme from the same hue as
+ * `SEVERITY_GROUP_COLORS` (and so `StatusBadge`), at a shade that clears
+ * 4.5:1 on a card in both schemes. A badge's filled colour is a background,
+ * not a text colour: green 6 is 2.36:1 on white. */
+export function severityGroupTextColor(group: SeverityGroup): string {
+  return `var(--ds-severity-${group}-text)`;
+}
+
 // TfL's `statusSeverity` codes are NOT monotonic with actual severity (e.g.
 // 10 GoodService sits in the middle of the numeric range, while 21 Diverted
 // and 11 PartClosed are severe but numerically high). This rank reflects
@@ -87,6 +96,15 @@ export const SEVERITY_GROUP_LABELS: Record<SeverityGroup, string> = {
   mild: 'Minor Disruption',
   severe: 'Severe Disruption',
 };
+
+/** A severity group's name as a label (a tile, a filter chip, a badge), in
+ * sentence case ("Minor disruption"), as every label is. The Title Case
+ * `SEVERITY_GROUP_LABELS` form is only for running text and tab titles
+ * that name the status. */
+export function severityGroupLabel(group: SeverityGroup): string {
+  const label = SEVERITY_GROUP_LABELS[group];
+  return label.charAt(0) + label.slice(1).toLowerCase();
+}
 
 /** Every `SeverityGroup`, ordered best-to-worst by `GROUP_RANK` -- the
  * iteration order for the dashboard's five counter tiles and

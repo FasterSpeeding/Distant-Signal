@@ -12,7 +12,7 @@ import { withAbsoluteTitle } from '@/lib/pageMetadata';
 // Sch. A1 (in force 5 Feb 2026) requires clear information AND a free,
 // simple way to object, so this page would then need an opt-out.
 // Keep the list in sync with the code: cookie names in crates/api/src/auth.rs,
-// storage keys in components/PrideToggle.tsx, components/ServiceWorkerRegister.tsx,
+// storage keys in components/PrideMode.tsx, components/ServiceWorkerRegister.tsx,
 // lib/anthropicKey.ts and lib/mcpOAuthProvider.ts.
 // ============================================================================
 
@@ -52,7 +52,7 @@ const LOCAL_STORAGE: readonly StorageItem[] = [
   },
   {
     name: 'pride-mode',
-    purpose: 'Remembers whether you turned on the pride colour theme.',
+    purpose: 'Remembers the pride flag you chose, if any.',
     lasts: 'Until you clear it.',
   },
   {
@@ -64,7 +64,7 @@ const LOCAL_STORAGE: readonly StorageItem[] = [
   {
     name: 'ds-anthropic-api-key',
     purpose:
-      'Only if you choose to use the AI chat: your own Anthropic API key, stored in your browser at your choice and never sent to us. You can remove it in the chat settings.',
+      'Only if you choose to use the AI chat: your own Claude API key, stored in your browser at your choice and never sent to us. You can remove it in Preferences.',
     lasts: 'Until you remove it, log out, or delete your account.',
   },
   {

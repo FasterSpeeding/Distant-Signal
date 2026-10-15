@@ -221,17 +221,13 @@ mod tests {
             "grafana-access",
             "mcp-users",
             "coder-users",
-            "distant-signal-chatbot-users",
+            "ds-admins",
             "mcp-users",
         ]);
-        let allowlist = strings(&[
-            "distant-signal-chatbot-users",
-            "mcp-users",
-            "mcp-live-boards",
-        ]);
+        let allowlist = strings(&["ds-admins", "mcp-users", "mcp-live-boards"]);
         assert_eq!(
             retain_allowed_groups(&claim, &allowlist),
-            strings(&["mcp-users", "distant-signal-chatbot-users"])
+            strings(&["mcp-users", "ds-admins"])
         );
     }
 

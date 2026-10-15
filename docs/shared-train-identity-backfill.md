@@ -32,8 +32,8 @@ database that has already applied `20260906140000`.
 
    It refuses the api's own role (`distant_signal_api`): since the ingest
    phase 5 prep (Q2 of `docs/ingest-phase5-runbook.md`) these one-offs never
-   run with the api's credentials. The old `backfill_trains` binary in the
-   api image still works but is deprecated; it goes in phase 5 step 5.4b.
+   run with the api's credentials. The api image's old `backfill_trains`
+   binary is gone (phase 5 step 5.4b).
 
 3. **Check the output.** It reports how many subscription /
    `train_movement_events` / `train_current_state` rows it linked, plus

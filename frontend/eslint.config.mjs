@@ -205,6 +205,14 @@ const eslintConfig = defineConfig([
       'react/forbid-component-props': ['error', { forbid: [{ propName: 'style', message: INLINE_STYLE_MESSAGE }] }],
     },
   },
+  // The one file-wide exception: the link-preview image template. next/og
+  // renders its JSX to a PNG with Satori, which reads layout only from
+  // `style` objects (no stylesheet, no Mantine), so inline styles are the
+  // only way to write it. It never reaches a page.
+  {
+    files: ['lib/previewImage.tsx'],
+    rules: { 'react/forbid-dom-props': 'off' },
+  },
 
   // TypeScript: `import type` for type-only imports, which
   // verbatimModuleSyntax (tsconfig.base.json) keeps as written.

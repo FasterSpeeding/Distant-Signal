@@ -84,13 +84,10 @@ export class ApiNotFoundError extends Error {}
  * docs/superpowers/specs/2026-08-31-private-custom-lines-and-tracked-trains-design.md). */
 export class ApiUnauthorizedError extends Error {}
 
-/** Thrown when the API responds 403 -- so far only `GET
- * /public/chatbot/access` (embedded-chatbot-option-b plan, Task 2) uses
- * this status, for a real, logged-in user who simply isn't allowlisted.
- * Deliberately its own error type rather than collapsing into the generic
- * `Error` fallback below: `getChatbotAccess()` needs to tell this apart
- * from `ApiUnauthorizedError` ("no session at all") to render the right of
- * two different page states. */
+/** Thrown when the API responds 403: a real, logged-in user who lacks the
+ * permission a route needs (a group role, the admin group). Its own error
+ * type, apart from `ApiUnauthorizedError` ("no session at all"), so a
+ * caller can tell the two apart. */
 export class ApiForbiddenError extends Error {}
 
 /** Thrown when the API responds 503: Distant Signal is temporarily
@@ -623,46 +620,6 @@ export async function getSessionOrLoggedOut(): Promise<SessionInfo> {
       error: err,
     });
     return LOGGED_OUT_SESSION;
-  }
-}
-
-/** Who the api lets into the embedded chatbot (`CHATBOT_ACCESS`, chart
- * value `api.chatbotAccess`): `group` -- only members of its access group;
- * `authenticated` -- every logged-in user. Learnt from the api's own
- * `GET /public/chatbot/access` answer, never from a frontend setting. */
-export type ChatbotAccessMode = 'group' | 'authenticated';
-
-export type ChatbotAccess =
-  { status: 'allowed'; mode: ChatbotAccessMode } | { status: 'unauthenticated' } | { status: 'forbidden' };
-
-/** `/chat`'s own three-state page-load gate (embedded-chatbot-option-b
- * plan, Task 5 Step 1 -- `getChatbotAccess()`'s own design note there
- * flagged extending `errorForResponse` with a real `ApiForbiddenError`
- * over a string-return sketch as the choice to make once one exists; it
- * now does, see above). Extends `getMyTrackedTrains()`'s own `null`-means-
- * "not logged in" convention with the allowlist's own third state, since
- * two booleans (`ApiUnauthorizedError`/`ApiForbiddenError`) collapse
- * neither into the other, unlike every other 401-only gate in this file. */
-export async function getChatbotAccess(): Promise<ChatbotAccess> {
-  try {
-    const body = await fetchJson<{ access?: unknown } | null>(`${baseUrl()}/public/chatbot/access`, {
-      cache: 'no-store',
-      ...(await cookieForwardInit()),
-    });
-    // An api that predates `CHATBOT_ACCESS` sends no `access` field; it can
-    // only have been gating on the group, so anything but an explicit
-    // "authenticated" reads as `group` (keeps the "only accounts that have
-    // been given access" notes -- the conservative wording).
-    return { status: 'allowed', mode: body?.access === 'authenticated' ? 'authenticated' : 'group' };
-  } catch (err) {
-    if (err instanceof ApiUnauthorizedError) return { status: 'unauthenticated' };
-    if (err instanceof ApiForbiddenError) return { status: 'forbidden' };
-    // Any other failure (network error, 5xx) is treated the same as "not
-    // available" -- same fail-closed posture orchestrator/'s own
-    // checkChatbotAccess (Task 3) takes for an ambiguous response: never
-    // render the chat UI on an answer this page can't positively confirm
-    // as "allowed".
-    return { status: 'forbidden' };
   }
 }
 

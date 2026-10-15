@@ -69,6 +69,16 @@ New cookie routes under `/public/account/`: `connected-apps` (GET),
 `connected-apps-notice` (GET), `connected-apps/{client}/consent` (GET) and
 `connected-apps/{client}` (POST, DELETE).
 
+## 2026-10-14: `GET /public/chatbot/access` removed
+
+Removal. The embedded chatbot (`/chat`) is open to every logged-in user,
+so the access check it answered (`200 {"allowed": true, "access": ...}`,
+`401` with no session, `403 {"error": "chatbot_not_available"}` outside
+the SSO group) has nothing left to say beyond "is there a session". The
+route is gone and now answers `404`; use `GET /public/auth/session`
+(`authenticated`) instead. Its only caller was DS's own frontend. The
+`CHATBOT_ACCESS` and `CHATBOT_ACCESS_GROUP` settings went with it.
+
 ## 2026-10-14: transit rail links
 
 Additive. New: `GET /public/transit/rail-links?crs=MAN` (3600 s):

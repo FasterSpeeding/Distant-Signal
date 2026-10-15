@@ -210,6 +210,31 @@ html:root[data-mantine-color-scheme='light'] {
      needs and the review named it explicitly. */
   --ds-color-good-icon: var(--mantine-color-green-7);
   --ds-color-bad-icon: var(--mantine-color-red-7);
+
+  /* Chart series (`lib/chartTheme.ts`): data encodings that borrow the
+     semantic hues (orange late, red cancelled, yellow skipped stops, grape
+     for a plain count). Lines and bars are graphics, so each clears 3:1
+     on white rather than text's 4.5:1: orange 8 3.58:1, red 8 4.51:1,
+     the yellow light-variant text colour 5.21:1, grape 7 4.85:1. The
+     yellow is the off-palette #a85700 above, since yellow 9 only reaches
+     3.00:1 and sits too close to orange 8 in hue. */
+  --ds-chart-count: var(--mantine-color-grape-7);
+  --ds-chart-delay: var(--mantine-color-orange-8);
+  --ds-chart-cancellation: var(--mantine-color-red-8);
+  --ds-chart-skip: var(--mantine-color-yellow-light-color);
+
+  /* Severity-group text (`severityGroupTextColor` in `lib/severity.ts`):
+     the count on a /status tile, in its group's hue. Same hue per group
+     as `SEVERITY_GROUP_COLORS` (so `StatusBadge`), but not its filled
+     shade 6, which is a background (green 6 is 2.36:1 on white). Each is
+     the light-variant text colour, or the shade it would be, on a white
+     card: green #267b37 5.29:1, gray 7 8.18:1, blue 9 6.09:1, yellow
+     #a85700 5.21:1, red 9 5.46:1. */
+  --ds-severity-good-text: var(--mantine-color-green-light-color);
+  --ds-severity-informational-text: var(--mantine-color-gray-7);
+  --ds-severity-planned-text: var(--mantine-color-blue-9);
+  --ds-severity-mild-text: var(--mantine-color-yellow-light-color);
+  --ds-severity-severe-text: var(--mantine-color-red-9);
 }
 
 /* The dark scheme is NOT the "already fine" case the light-scheme comments
@@ -249,6 +274,20 @@ html:root[data-mantine-color-scheme='dark'] {
      own dark value, already measured at 6.70:1 on the #242424 body. */
   --ds-color-good-icon: var(--mantine-color-green-4);
   --ds-color-bad-icon: var(--mantine-color-red-4);
+  /* The dark half of the chart series colours: shade 4 of each, all over
+     5:1 on the #2e2e2e card and #242424 body. */
+  --ds-chart-count: var(--mantine-color-grape-4);
+  --ds-chart-delay: var(--mantine-color-orange-4);
+  --ds-chart-cancellation: var(--mantine-color-red-4);
+  --ds-chart-skip: var(--mantine-color-yellow-4);
+  /* The dark half of the severity-group text: shade 4 of each hue, on the
+     #2e2e2e card: green 7.78:1, gray 9.09:1, blue 5.49:1, yellow 9.53:1,
+     red 5.86:1. */
+  --ds-severity-good-text: var(--mantine-color-green-4);
+  --ds-severity-informational-text: var(--mantine-color-gray-4);
+  --ds-severity-planned-text: var(--mantine-color-blue-4);
+  --ds-severity-mild-text: var(--mantine-color-yellow-4);
+  --ds-severity-severe-text: var(--mantine-color-red-4);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place
@@ -322,6 +361,10 @@ a[data-card-link] {
   text-decoration: none;
 }
 
+a[data-card-link][data-card-fill] {
+  height: 100%;
+}
+
 a[data-card-link]:hover [data-card],
 a[data-card-link]:focus-visible [data-card] {
   border-color: var(--mantine-color-anchor);
@@ -339,7 +382,7 @@ a[data-card-link]:focus-visible [data-card] {
 /* The pride flags' stripe gradients, defined once. Every flag-shaped
    surface reads these: the bar above the page (`body::before`), the bar
    under the nav (`.siteNav::after`), the gradient site title, and
-   `components/PrideToggle.tsx`'s button swatch, so the stripes can't drift
+   the swatch in `components/PrideMode.tsx`'s picker, so the stripes can't drift
    apart between them. Per-flag notes (designer, source of the hex values,
    stripe proportions) sit beside each flag's `body::before` rule below.
    Always defined (not gated on `data-pride`) so the toggle's swatch has a
@@ -363,12 +406,12 @@ a[data-card-link]:focus-visible [data-card] {
   --ds-pride-lesbian: linear-gradient(to right, #d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00);
 }
 
-/* `components/PrideToggle.tsx` sets `document.body.dataset.pride` from a
+/* `components/PrideMode.tsx` sets `document.body.dataset.pride` from a
    client-only localStorage preference -- one of `'off'` (the default, so
    SSR and the pre-mount client render never need any of these rules to
    exist), `'rainbow'`, `'trans'`, `'nonbinary'`, `'bisexual'`, `'pansexual'`,
-   `'asexual'`, `'sapphic'`, or `'lesbian'`, cycled through the same way `ThemeToggle`
-   cycles light/dark/auto. A flag-striped bar painted above the whole page,
+   `'asexual'`, `'sapphic'`, or `'lesbian'`, picked on /account/preferences.
+   A flag-striped bar painted above the whole page,
    not a change to any element's own colour -- keeps this fully separate
    from `lib/severity.ts`'s `GROUP_COLOR` map, which stays semantic-only per
    docs/superpowers/specs/2026-08-18-grape-theme-design.md.
@@ -624,7 +667,7 @@ body[data-pride='lesbian'] .siteNav::after {
   }
 }
 
-/* `components/PrideToggle.tsx`'s `data-site-title` hook (see
+/* `components/Wordmark.tsx`'s `data-site-title` hook (see
    `app/layout.tsx`) -- the site name itself goes rainbow-gradient text
    while pride mode is on. `background-clip: text` needs `color: transparent`
    to reveal the gradient rather than painting solid text over it. */
@@ -705,25 +748,27 @@ body[data-pride='lesbian'] [data-site-title] {
   }
 }
 
-/* The toggle button itself, once on -- otherwise it's indistinguishable
-   from `ThemeToggle` at a glance beyond the emoji. Targets the rendered
-   `aria-pressed`/`aria-label` pair `PrideToggle.tsx` already sets, rather
-   than adding a bespoke class, so the visual state can never drift out of
-   sync with what's announced to assistive tech. `aria-pressed` alone can't
-   distinguish the two active modes (it's a plain boolean), so the ring's
-   colour keys off the mode word `PrideToggle.tsx` puts in the label text
-   instead (`[aria-label*='rainbow']`/`[aria-label*='trans']`) -- still
-   sourced from the same single string that drives the accessible name, so
-   it can't drift out of sync either. A spinning conic-gradient ring behind
-   the button (`::before`, `z-index: -1`) rather than a border override --
-   Mantine's `outline` variant paints its own border from a CSS var, and
-   fighting that with `!important` is worse than layering a ring
-   underneath it. */
-button[aria-pressed='true'][aria-label^='Pride mode'] {
+/* The live preview beside the pride flag picker (`PridePreview` in
+   `components/PrideMode.tsx`), in the old nav toggle's shape: a round
+   badge holding the swatch, with a spinning conic-gradient ring of the
+   flag behind it once a flag is on. These are the toggle's own ring rules,
+   moved from `button[aria-pressed='true'][aria-label*='<flag>']` (the
+   toggle is gone) to the preview's `data-flag`. A ring behind the badge
+   (`::before`, `z-index: -1`, inside `.prideToggle`'s isolated stacking
+   context) rather than a border override. */
+.pridePreview {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--mantine-color-default-border);
+  background: var(--mantine-color-body);
 }
 
-button[aria-pressed='true'][aria-label*='rainbow']::before {
+.pridePreview[data-flag='rainbow']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -732,7 +777,7 @@ button[aria-pressed='true'][aria-label*='rainbow']::before {
   z-index: -1;
 }
 
-button[aria-pressed='true'][aria-label*='trans']::before {
+.pridePreview[data-flag='trans']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -741,7 +786,7 @@ button[aria-pressed='true'][aria-label*='trans']::before {
   z-index: -1;
 }
 
-button[aria-pressed='true'][aria-label*='nonbinary']::before {
+.pridePreview[data-flag='nonbinary']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -750,7 +795,7 @@ button[aria-pressed='true'][aria-label*='nonbinary']::before {
   z-index: -1;
 }
 
-button[aria-pressed='true'][aria-label*='bisexual']::before {
+.pridePreview[data-flag='bisexual']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -766,7 +811,7 @@ button[aria-pressed='true'][aria-label*='bisexual']::before {
   z-index: -1;
 }
 
-button[aria-pressed='true'][aria-label*='pansexual']::before {
+.pridePreview[data-flag='pansexual']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -775,7 +820,7 @@ button[aria-pressed='true'][aria-label*='pansexual']::before {
   z-index: -1;
 }
 
-button[aria-pressed='true'][aria-label*='asexual']::before {
+.pridePreview[data-flag='asexual']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -784,7 +829,7 @@ button[aria-pressed='true'][aria-label*='asexual']::before {
   z-index: -1;
 }
 
-button[aria-pressed='true'][aria-label*='sapphic']::before {
+.pridePreview[data-flag='sapphic']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -793,7 +838,7 @@ button[aria-pressed='true'][aria-label*='sapphic']::before {
   z-index: -1;
 }
 
-button[aria-pressed='true'][aria-label*='lesbian']::before {
+.pridePreview[data-flag='lesbian']::before {
   content: '';
   position: absolute;
   inset: -3px;
@@ -803,7 +848,7 @@ button[aria-pressed='true'][aria-label*='lesbian']::before {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  button[aria-pressed='true'][aria-label^='Pride mode']::before {
+  .pridePreview:not([data-flag='off'])::before {
     animation: pride-spin 3s linear infinite;
   }
 }
@@ -814,13 +859,39 @@ button[aria-pressed='true'][aria-label*='lesbian']::before {
   }
 }
 
-/* `components/PrideToggle.tsx`'s decorative sparkle scatter -- only in the
-   DOM at all while pride mode is on, so no `[data-pride]`/`body` gate is
-   needed here the way the CSS-only effects above need one. */
+/* The decorative sparkle scatter (`PrideSparkles` around the nav's
+   wordmark on every page, and the picker's preview), as the old nav toggle
+   had it. The preview's is only in the DOM while a flag is on; the nav's
+   are gated on `body[data-pride]` below. `.prideToggle` is the anchor it
+   scatters around. */
+.prideToggle {
+  position: relative;
+  display: inline-flex;
+  isolation: isolate;
+}
+
 .prideSparkles {
   position: absolute;
   inset: -14px;
   pointer-events: none;
+}
+
+/* The nav's scatters (`PrideSparkles`): one per flag in the server HTML,
+   each `data-flag`, shown only when it matches `body[data-pride]`, so it
+   is on screen from the first paint like the stripe. */
+.prideSparkles[data-flag] {
+  display: none;
+}
+
+body[data-pride='rainbow'] .prideSparkles[data-flag='rainbow'],
+body[data-pride='trans'] .prideSparkles[data-flag='trans'],
+body[data-pride='nonbinary'] .prideSparkles[data-flag='nonbinary'],
+body[data-pride='bisexual'] .prideSparkles[data-flag='bisexual'],
+body[data-pride='pansexual'] .prideSparkles[data-flag='pansexual'],
+body[data-pride='asexual'] .prideSparkles[data-flag='asexual'],
+body[data-pride='sapphic'] .prideSparkles[data-flag='sapphic'],
+body[data-pride='lesbian'] .prideSparkles[data-flag='lesbian'] {
+  display: block;
 }
 
 .prideSparkle {
@@ -1800,11 +1871,45 @@ a[data-text-link-tone='inherit'] {
   }
 }
 
-/* /status counter tiles: five tiles on the two-column phone grid would
-   leave the last one alone on its row, so it spans the row instead. */
-@media (max-width: $mantine-breakpoint-sm) {
-  [data-counter-tiles] > :last-child:nth-child(odd) {
-    grid-column: 1 / -1;
+/* `components/StatusTile.tsx`, the /status counter tiles. Five tiles never
+   fill a two-column phone grid, so below `sm` each is a compact row (count,
+   label, then the "View lines" cue at the far end) in a one-column list;
+   from `sm` up, count over label, centred, five across. The count's colour
+   is its severity group's (`--ds-severity-*-text`), set by `StatusTile`. */
+.statusTile {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-sm);
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
+}
+
+.statusTile__count {
+  min-width: 2ch;
+  text-align: center;
+}
+
+.statusTile__cue {
+  margin-inline-start: auto;
+}
+
+@media (min-width: $mantine-breakpoint-sm) {
+  /* Top-aligned, not centred: a linked tile has a third line ("View
+     lines") that a zero tile lacks, and centring each tile's own content
+     sat the linked tiles' counts higher than the zero tiles' on the same
+     row. Count and label start at the same height in every tile; the cue
+     drops to the bottom edge. */
+  .statusTile {
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 4px;
+    height: 100%;
+    padding: var(--mantine-spacing-lg) var(--mantine-spacing-sm);
+    text-align: center;
+  }
+
+  .statusTile__cue {
+    margin-inline-start: 0;
+    margin-block-start: auto;
   }
 }
 
@@ -1959,6 +2064,39 @@ svg[data-icon='external-link'] {
   list-style-position: outside;
 }
 
+/* The station accessibility key facts (`StationAccessibilitySection`): a
+   definition list, term over value on a phone and term beside value from
+   `xs` up. Each pair is one `<div>` so a long value wraps under its own
+   column. Terms are dimmed small text, values the body text. */
+.keyFacts {
+  margin: 0;
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  font-size: var(--mantine-font-size-sm);
+  line-height: var(--mantine-line-height-sm);
+}
+
+.keyFacts > div {
+  display: grid;
+  gap: 2px;
+}
+
+.keyFacts dt {
+  color: var(--mantine-color-dimmed);
+}
+
+.keyFacts dd {
+  margin: 0;
+  font-weight: 500;
+}
+
+@media (min-width: 36em) {
+  .keyFacts > div {
+    grid-template-columns: 12rem minmax(0, 1fr);
+    gap: var(--mantine-spacing-md);
+  }
+}
+
 /* `OperatorStatusCard` is a column, so its footer (`mt="auto"`) sits on
    the card's bottom edge whatever the text above it wrapped to (review
    M6). */
@@ -1967,22 +2105,18 @@ svg[data-icon='external-link'] {
   flex-direction: column;
 }
 
-/* `PrideToggle`'s swatch: a 16x4 strip of the flag, from the same
-   `--ds-pride-*` variables the page and nav bars read. */
-.prideToggle {
-  position: relative;
-  display: inline-flex;
-}
-
+/* The pride flag picker's swatch (`PrideModeSelect`, on /account/preferences):
+   a 16x6 strip of the flag, from the same `--ds-pride-*` variables the page
+   and nav bars read. Off shows an empty outlined strip. */
 .prideSwatch {
   display: inline-block;
   width: 16px;
-  height: 4px;
+  height: 6px;
   border-radius: 1px;
 }
 
 .prideSwatch[data-flag='off'] {
-  height: 16px;
+  outline: 1px solid var(--mantine-color-default-border);
 }
 
 .prideSwatch[data-flag='rainbow'] {
@@ -2015,4 +2149,11 @@ svg[data-icon='external-link'] {
 
 .prideSwatch[data-flag='lesbian'] {
   background: var(--ds-pride-lesbian);
+}
+
+/* The signal-arm mark in `components/Wordmark.tsx`: a fixed-size block that
+   never shrinks beside the site name. */
+.signalMark {
+  display: block;
+  flex-shrink: 0;
 }

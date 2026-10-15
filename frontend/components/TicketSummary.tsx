@@ -1,4 +1,4 @@
-import { Badge, Group, Stack, Text } from '@mantine/core';
+import { Group, Stack, Text } from '@mantine/core';
 import type { TrackedTrainTicket, TicketListItem, TicketSource } from '@/lib/types';
 import { stationLabel } from '@/lib/stationLabel';
 import { LocalDateTime } from './LocalDateTime';
@@ -67,13 +67,10 @@ export function TicketSummary({
       </Text>
       {route && <Text size="sm">{route}</Text>}
       <Group gap="xs">
-        {/* Explicit gray, same rationale as IssueList.tsx's dataQuality
-            badge (components/IssueList.tsx:366-372): without a `color`,
-            Mantine falls back to theme.primaryColor, making this read as
-            branded or interactive. It's provenance, not brand. */}
-        <Badge tt="none" variant="outline" size="sm" color="gray">
+        {/* Provenance, so dimmed text, not a badge (round 2). */}
+        <Text size="xs" c="dimmed">
           {SOURCE_LABELS[ticket.source]}
-        </Badge>
+        </Text>
         {/* The one viewer-local timestamp in the app, and deliberately so:
             "Added" records something *this viewer* did, so their own clock
             is what answers it -- the same convention an email or

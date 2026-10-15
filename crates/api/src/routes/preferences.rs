@@ -437,8 +437,8 @@ mod tests {
 /// same as `PUT /preferences/pinned-lines`), then reads it back through
 /// `preferences::list_pinned_line_ids` + `queries::tfl_line_summaries` +
 /// `filter_known_pinned_lines` -- the same three calls `get_preferences`
-/// makes, minus the axum plumbing (constructing a full `App` needs OIDC/
-/// Redis config this test has no need of).
+/// makes, minus the axum plumbing (constructing a full `App` needs OIDC
+/// config this test has no need of).
 #[cfg(test)]
 mod db_tests {
     use super::*;

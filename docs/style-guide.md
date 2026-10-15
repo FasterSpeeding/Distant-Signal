@@ -32,7 +32,8 @@ down anywhere else.
 ## Colour
 
 The colour scheme follows the OS by default (`defaultColorScheme="auto"`);
-the nav's theme toggle cycles light → dark → auto. `primaryShade` stays at
+the colour theme picker on `/account/preferences` (`ThemePreference`) offers
+match device, light and dark. `primaryShade` stays at
 Mantine's default (light 6, dark 8) because raising it would shift every
 status badge too. Instead `globals.css` substitutes grape 7 for links and
 filled grape in the light scheme only.
@@ -60,6 +61,7 @@ filled grape in the light scheme only.
 | Filled grape | `--mantine-color-grape-filled` | grape 7, hover 8 | grape 8, hover 9 | Text pinned white by `variantColorResolver` |
 | Error text | `--ds-color-error-text` | red 9 | red 4 | App-owned token |
 | Good / bad icon | `--ds-color-good-icon`, `--ds-color-bad-icon` | green 7 / red 7 | green 4 / red 4 | Non-text glyphs |
+| Severity text | `--ds-severity-<group>-text` (`severityGroupTextColor`) | green `#267b37`, gray 7, blue 9, yellow `#a85700`, red 9 | shade 4 of each | Same hue as the group's `StatusBadge`; each ≥5.2:1 on a card |
 | Light-variant text | `--mantine-color-*-light-color` | yellow `#a85700`, orange `#bb3e0d`, green `#267b37`, teal `#087a57` | shade 0 | Off-palette hexes, each ≥4.6:1 on its shade-1 background |
 
 App-owned tokens are prefixed `--ds-`. The overrides use
@@ -109,9 +111,13 @@ list-row titles 500.
   "12 min late", "Not stopping at your station", "Planned work", "AI
   summary". There is deliberately no
   theme-level Badge default (`lib/theme.ts` explains why).
-- At most three badges in a row. Lines, operators and stations an item
-  affects are dimmed text, operators by name, not pills. Don't badge what
-  the severity already says (no "Real-time" badge).
+- At most three badges in a row, in the order severity (`StatusBadge`),
+  state (`StateBadge`), then "AI summary" (`AiGeneratedBadge`). `BadgeRow`
+  takes one badge per slot, so a fourth or a different order can't be
+  written. Lines, operators and stations an item affects are dimmed text,
+  operators by name, not pills; so are provenance (data quality, a
+  ticket's source) and group roles. Don't badge what the severity already
+  says (no "Real-time" badge).
 
 ## Spacing, radius and elevation
 
@@ -136,8 +142,8 @@ Mantine's theme. Spread them; don't repeat the numbers.
 | --- | --- | --- |
 | `tokens.card.static` | `withBorder` | A card that only holds content or its own controls |
 | `tokens.card.link` | `withBorder`, `shadow="sm"` | A card that is one link (`CardLink`, `LineStatusCard`) |
-| `tokens.statusTile` | padding lg, gap 4, value xl/700, label sm | A count over its label (`/status` top strip) |
-| `tokens.statusCard` | padding lg, title clamp 2, reason clamp 3 | `LineStatusCard`, `OperatorStatusCard` |
+| `tokens.statusTile` | gap 4, value xl/700, label sm | `StatusTile`, a count and its label (`/status` top strip) |
+| `tokens.statusCard` | padding lg, title clamp 2, reason clamp 3 | `StatusCard` (lines, operators, the /status mode cards) |
 | `tokens.iconButton.field` | 36px | An `ActionIcon` beside a 36px input (`CopyableLink`) |
 | `tokens.iconButton.pageAction` | 44px | Page-level pin and share (`PinToggle`, `ShareButton`, review §2.10) |
 
@@ -153,6 +159,19 @@ used, rather than as a literal in a component.
   edges line up with the bar. The bar is 60px minimum, `px="lg" py="md"`,
   with a bottom border and a dashed "sleeper" rule (20px dash, 16px gap,
   text colour at 20%).
+- The bar starts with the wordmark (`Wordmark`: the favicon's signal arm on
+  its grape tile, 24px, then "Distant Signal" in 16px bold). Its links are
+  Track, Plan a journey, Status, Lines, Operators, Stations and Incidents
+  (`lib/navLinks.ts`). Track is the one tracking entry: it opens the Track
+  page (`/track/mine`) and stays marked current on `/track`, `/trains` and
+  `/journeys`. No settings live in the bar: the theme and pride flag are
+  on `/account/preferences`, reached from the account menu, the drawer and
+  the footer.
+- One exception: a logged-out visitor at `md` and up gets a gear
+  (`PreferencesNavIcon`, labelled and tooltipped "Preferences") beside
+  "Log in". It is a link to the settings page, not a control, and they
+  have no account menu or drawer to reach it otherwise. Logged in, the
+  account menu does that job, so the gear is left out.
 - Primary links show at `md` (62em) and up; below that they move into the
   burger `Drawer` (`AppNavDrawer.tsx`).
 
@@ -250,6 +269,13 @@ used, rather than as a literal in a component.
   by `lib/serviceStatus.ts` ("12 min late" orange, "3 min early" teal, "On
   time" green). `DELAY_TONE_COLOR` is the one delay-to-colour table;
   `JourneyProgress`'s stop markers read it too.
+- **Nearby stations** (`app/stations/NearbyStationList.tsx`): the "Use
+  my location" results under a "Nearest stations" label, in
+  `ServiceRowList`'s bordered, divided list. Each row is one link to the
+  station page, at least 44px tall, with hover, active and an inset focus
+  ring: "Woking (WOK)" on the left at 500, the distance in its own
+  right-hand column, sm, dimmed, tabular figures, always "0.4 km" (km to
+  one decimal place). The link is named "Woking (WOK), 0.4 km away".
 - **Route text**: a route reads "KGX to YRK" on screen and to a screen
   reader alike. `lib/stationLabel.ts` (`routeLabel`, `codeRouteLabel`)
   joins the ends with "to", so its strings go straight into JSX, titles,
@@ -264,8 +290,86 @@ used, rather than as a literal in a component.
 - **PlatformBadge**: light, sentence case. Unchanged gray; changed blue with
   the old platform in words; cancelled red, struck through, with a hidden
   "(cancelled)" and a `title` tooltip. A null platform renders nothing.
-- **LineStatusCard**: `Card withBorder shadow="sm" padding="lg"`; the whole
-  card is the link. Title 600 clamps to 2 lines, reason to 3.
+- **StatusCard** (`components/StatusCard.tsx`): the one status card. A
+  name (600, clamped to 2 lines) with its `StatusBadge` on a row that never
+  wraps, the reason (sm dimmed, clamped to 3), detail lines, then a footer
+  pinned to the bottom edge. With `href` the whole card is one link
+  (`CardLink`, raised); without, it is flat because it holds its own
+  controls. `LineStatusCard`, `OperatorStatusCard` and the /status mode
+  cards are built on it. A mode card's badge is the worst severity in the
+  slice, and the count is a sentence ("2 of 120 lines affected.").
+- **StatusTile** (`components/StatusTile.tsx`): a count over its label,
+  the /status strip. Below `sm` each tile is one compact row (count, label,
+  "View lines") in a single column; from `sm` up, five across. Five tiles
+  never fill a two-column grid, so there is no two-column layout. Labels
+  are sentence case (`severityGroupLabel`). `severity` colours a linked
+  tile's count in its group's hue (`--ds-severity-<group>-text`), so the
+  strip reads red to green like the badges; the label still names the
+  group, and a zero tile stays dimmed. Colour goes on the count, never a
+  left-border accent. From `sm` up, count and label sit at the top of every
+  tile, so they line up across the row whether or not a tile has the
+  "View lines" cue, which drops to the bottom edge.
+- **StateBadge** and **BadgeRow** (`components/StateBadge.tsx`): every
+  badge that states a thing's state, light variant, sentence case, coloured
+  by a semantic `tone` (neutral gray, good green, caution yellow, late
+  orange, early teal, planned blue, critical red, action grape), never by a
+  colour picked at the call site. `href` makes it an in-page anchor. It
+  takes no ref, so a `Tooltip` wraps it in a `<span>`.
+- **Wordmark** (`components/Wordmark.tsx`) and `lib/brand.ts`: the signal
+  arm (one geometry, checked against `app/icon.svg`) beside the name.
+  `data-site-title` (the pride hook) stays on the name only.
+- **Link previews** (`lib/previewImage.tsx`): a route's `opengraph-image.tsx`
+  renders its own title on the brand template (the bare arm and the name,
+  the title below, on a grape 7 to 9 gradient). Static pages pass their
+  `metadata`; a line or station passes its own `generateMetadata`, so the
+  two can't disagree. Titles never come from the request. Every other
+  route falls back to `public/opengraph-image.png`, the template's no-title
+  form. A route with its own image passes `OWN_PREVIEW_IMAGE` to
+  `pageMetadata`: an explicit card image would otherwise win over it.
+- **Preferences** (`app/account/preferences/page.tsx`): open to everyone,
+  never a redirect. Each section is a `PreferencesSection` card.
+  - Device-local, no account needed: Appearance (colour theme, pride
+    flag), saved in this browser and applied before the first paint
+    (Mantine's `ColorSchemeScript`, `PRIDE_MODE_SCRIPT`).
+  - Account-backed: notifications, and the Claude API key for accounts
+    that can use "Ask about trains". Logged out, these give way to one
+    "Account settings" card with a log in link back to the page, never a
+    permission prompt that then fails.
+  - Logging in or out leaves the device-local settings as they are. The
+    account keeps no copy, so there is nothing to merge or overwrite.
+  - Linked from the drawer (everyone), the account menu (logged in), the
+    bar's gear (logged out, `md` and up) and the footer (everyone).
+    `/chat` links here instead of holding the key itself.
+- **Page skeletons** (`components/PageSkeleton.tsx`): a route whose server
+  fetch holds up the first paint gets a `loading.tsx` built from
+  `PageSkeleton` pieces (`SkeletonPageHeader`, `SkeletonText`,
+  `SkeletonCardGrid`, `SkeletonRows`, `SkeletonStops`, `SkeletonSection`),
+  drawn in the page's real padding, gap, width and card shapes so nothing
+  jumps when the data lands. One `role="status"` `aria-busy` region per
+  page, named by a visually hidden plain-word label ("Loading line"), with
+  everything drawn `aria-hidden`; headings are bars, never real h1s.
+  In-page Suspense fallbacks keep using `LoadingPlaceholder`. Today: home
+  (in the `(home)` route group, because a root `app/loading.tsx` would wrap
+  every route), `/lines/[id]`, both train routes (`TrainPageSkeleton`) and
+  `/track/mine`. Never add `app/loading.tsx`.
+- **Station accessibility** (`StationAccessibilitySection`): the section
+  opens with its key facts as a definition list (`<dl class="keyFacts">`,
+  term above value on a phone and beside it from `xs` up): step-free access
+  ("Category A: step-free access to all platforms"), staff assistance, the
+  assistance phone, ramps, wheelchairs, toilets, lifts and Blue Badge bays,
+  with Yes or No for booleans. Assistance meeting points are numbered from
+  1 and named by location ("Meeting point 1: Customer Information Point"),
+  never the feed's zero-based name. A note over 280 characters starts
+  collapsed behind a "Notes" disclosure whose accessible name includes its
+  field. Shorter notes stay inline.
+- **Charts** (`lib/chartTheme.ts`): every chart takes its series colours
+  from `CHART_COLORS`, the `--ds-chart-*` variables in `globals.css`. Late
+  is orange, cancelled red, skipped stops yellow and a plain count grape;
+  each clears 3:1 in both themes. Lines are straight (`CHART_CURVE`), never
+  smoothed. Numbers use en-GB separators and the site's units ("80,000",
+  "12.5%", "2.5 min"). Ticks read "15 Sep" or "14:30", tooltip headings
+  "15 Sep 2026" or "15 Sep, 14:30". Series sharing an axis also differ by
+  dash pattern. Sparse buckets are a gray band, never a fake point.
 - **Section card**: see [Heading rules](#heading-rules); `Stack gap="xs"` or
   `"sm"` with `align="flex-start"` so buttons don't stretch.
 - **Alerts** (light variant): red for errors (title "Couldn't …" or "…
@@ -289,17 +393,22 @@ used, rather than as a literal in a component.
   description xs dimmed, error in `--mantine-color-error`.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence
   text; copy it exactly, including "NationalRail" as one word.
-- **Pride mode** (`PrideToggle.tsx`): decorative, off by default. Each
+- **Pride mode** (`PrideMode.tsx`): decorative, off by default. Each
   flag's stripes are one `--ds-pride-<flag>` variable in `globals.css`,
-  read by the page bar, nav bar and site title. The nav mounts
-  `PrideModeApplier`, which applies the saved mode with no control; the
-  toggle moves to the preferences page (wave 2).
+  read by the page bar, nav bar, site name and the picker's swatch. The nav
+  mounts `PrideModeApplier`, which applies the saved mode with no control,
+  and `PrideSparkles`, the flag's three-emoji sparkle scatter around the
+  wordmark (`aria-hidden`, floating, static under reduced motion).
+  `PrideModeSelect` on `/account/preferences` picks the flag, with a live
+  preview beside it: the swatch in a round badge with the flag's spinning
+  ring and sparkles, the old nav toggle's look. All of it follows
+  `body[data-pride]`, so it shows logged in or out.
 
 ## States
 
 | State | Pattern | Example copy |
 | --- | --- | --- |
-| Loading | `Skeleton` inside Suspense (`LoadingPlaceholder`); inline, `LoadingText` (a plain word beside an `aria-hidden` `Loader`) in `role="status" aria-busy` where it is the region's content. A busy button keeps a word label ("Saving") with `leftSection={<ButtonSpinner />}`. No "…". The nav's fallback is the full logged-out bar. | "Loading trends", "Searching" |
+| Loading | A page whose fetch holds up the first paint: a `loading.tsx` skeleton of its real layout (`PageSkeleton`). Inside a page: `Skeleton` inside Suspense (`LoadingPlaceholder`); inline, `LoadingText` (a plain word beside an `aria-hidden` `Loader`) in `role="status" aria-busy` where it is the region's content. A busy button keeps a word label ("Saving") with `leftSection={<ButtonSpinner />}`. No "…". The nav's fallback is the full logged-out bar. | "Loading trends", "Searching" |
 | Empty | Dimmed text saying what would appear, with a route out. No illustrations. | "Nothing is affecting this line right now." |
 | Error (page) | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest | "Couldn't load this page" |
 | Error (inline) | Red Alert, title names the failed action | "Couldn't save this ticket" |
@@ -354,9 +463,9 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 - Motion only under `prefers-reduced-motion: no-preference`.
 - Small icons get a 24px hit area (`.iconHitArea24`). Tooltips open on
   hover, focus and touch.
-- A toggle has a fixed accessible name and states its value separately
-  (the theme toggle: name "Colour theme", description "Light. Switches to
-  dark.").
+- A toggle has a fixed accessible name and states its value separately.
+  A choice of several is a labelled radio group (the colour theme: a
+  `SegmentedControl` named "Colour theme").
 - Sort indicators are SVG chevrons, `aria-hidden`, with `aria-sort` on
   the header; no ▲▼↕ glyphs.
 - Email addresses render through `EmailLink`, which server-renders no
@@ -398,8 +507,9 @@ never "this app".
   text: "7 more lines are not at Good Service" (`severityLabel` in
   `lib/severity.ts`). On a badge the same status
   is sentence case ("Good service", `severityBadgeLabel`).
-- A page's h1 is its nav label: Status, Lines, Stations, Trains,
-  Incidents, Ask about trains.
+- A page's h1 is its nav label: Track, Plan a journey, Status, Lines,
+  Operators, Stations, Incidents, Ask about trains, Preferences. A page
+  linked from a hub takes the link's words ("Find a train").
 - Helper text is one line. If the detail matters, put it behind a "How
   this is calculated" disclosure.
 - Meta descriptions: one plain sentence, 20 words or fewer, at most 160
@@ -536,7 +646,9 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
   value only known at render time that CSS can't express. Today there are
   three, all in `JourneyProgress`: the stop counts as CSS variables, the
   node-slot CSS variable, and each node circle's state-dependent size and
-  colours.
+  colours. One file is exempt as a whole, in `eslint.config.mjs`:
+  `lib/previewImage.tsx`, whose JSX next/og renders to a PNG and which can
+  only be styled with style objects.
 - Global CSS in `app/globals.css`, as BEM-ish classes or `data-*` hooks
   (`[data-text-link]`, `[data-card-link]`, `[data-status-badge]`).
 - Theme config is one object in `lib/theme.ts`, shared by the app and tests.
@@ -548,10 +660,11 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 ## Visual regression
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
-Stations, a station, Trains, a train, Incidents and Account (logged in) at
-390 and 1366px, light and dark: 40 full-page images in
-`frontend/e2e/visual-baselines/`. It runs against the seeded e2e stack
-(`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
+Stations, a station, Trains, a train, Incidents, Account (logged in),
+Preferences (logged out, logged in and with a pride flag) and the tram
+pages at 390 and 1366px, light and dark, plus the /lines filter bar's
+stuck and open states: 76 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 
 - **Deterministic.** The browser clock is fixed (2026-09-17T11:00Z, the
@@ -618,3 +731,13 @@ implementations; `DELAY_TONE_COLOR` is the one delay colour table; design
 tokens in `lib/theme.ts`; the inline `style` ban (99 to 3); visual
 regression screenshots in CI; "station code" and "log in" everywhere,
 including API error text; no "--:--".
+
+Round 2, phases 2 and 3 (14 Oct 2026): `/account/preferences` holds the
+colour theme (out of the nav), the pride flag picker, notifications (off
+the home page) and the Claude API key (out of `/chat`); one Track entry in
+the nav replaces "Track a journey", "Trains" and "My trains & tickets",
+with Plan a journey in the bar from `md` up and `/trains` titled "Find a
+train"; the signal-arm wordmark and per-page link previews; `StatusCard`,
+`StatusTile`, `StateBadge` and `BadgeRow`; sentence-case severity group
+and impact labels; station accessibility key facts; themed charts; page
+skeletons; and the largest forms split into smaller modules.

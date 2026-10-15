@@ -6,8 +6,8 @@ import { getTrainSearchDates } from '@/lib/api';
 import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { pageMetadata } from '@/lib/pageMetadata';
 
-/** `/journeys/new` -- the app's primary, nav-linked entry point for
- * tracking something (`lib/navLinks.ts`'s `TRACK_JOURNEY_DESTINATION`).
+/** `/journeys/new` -- where tracking something starts, linked first from
+ * the Track page (`lib/navLinks.ts`'s `TRACK_DESTINATION`).
  * Journey tracking is the app's main feature going forward; tracking one
  * train is the simple, one-leg case of a journey, not a separate concept
  * -- this page is where that gets built, whether the visitor stops after
