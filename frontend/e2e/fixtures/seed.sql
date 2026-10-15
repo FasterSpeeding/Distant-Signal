@@ -35,14 +35,12 @@
 -- ---------------------------------------------------------------------
 -- Users
 -- ---------------------------------------------------------------------
--- fixture-owner carries the default `chatbot_access_group`
--- ('distant-signal-chatbot-users', crates/api/src/data/config.rs) so
--- `/chat` mounts `ChatPanel` for chat.spec.ts's logged-in cases instead of
--- rendering `getChatbotAccess()`'s 'forbidden' state
--- (crates/api/src/auth.rs `has_chatbot_access`).
+-- Neither user carries any group: `/chat` mounts `ChatPanel` for every
+-- logged-in user (no access group since 2026-10-14), which chat.spec.ts's
+-- logged-in cases rely on.
 INSERT INTO users (id, email, name, username, groups, created_at, last_login_at)
 VALUES
-  ('fixture-owner', 'owner@example.invalid', 'Ada Fixture', 'ada-fixture', '{distant-signal-chatbot-users}', NOW(), NOW()),
+  ('fixture-owner', 'owner@example.invalid', 'Ada Fixture', 'ada-fixture', '{}', NOW(), NOW()),
   ('fixture-member', 'member@example.invalid', 'Rider Fixture', 'rider-fixture', '{}', NOW(), NOW())
 ON CONFLICT (id) DO NOTHING;
 

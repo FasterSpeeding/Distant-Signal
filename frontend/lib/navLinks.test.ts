@@ -16,12 +16,12 @@ import {
 
 describe('TRANSIT_DESTINATION', () => {
   it('is in the drawer only while a network is served', () => {
-    expect(navDrawerDestinations(false, false).map((d) => d.href)).not.toContain('/transit');
-    expect(navDrawerDestinations(true, true, false).map((d) => d.href)).not.toContain('/transit');
+    expect(navDrawerDestinations(false).map((d) => d.href)).not.toContain('/transit');
+    expect(navDrawerDestinations(true, false).map((d) => d.href)).not.toContain('/transit');
   });
 
   it('sits straight after Lines, and never in the bar', () => {
-    const hrefs = navDrawerDestinations(false, false, true).map((d) => d.href);
+    const hrefs = navDrawerDestinations(false, true).map((d) => d.href);
     expect(hrefs[hrefs.indexOf('/lines') + 1]).toBe(TRANSIT_DESTINATION.href);
     expect(TRANSIT_DESTINATION.label).toBe('Trams');
     expect(PRIMARY_NAV_DESTINATIONS).not.toContain(TRANSIT_DESTINATION);
@@ -90,41 +90,30 @@ describe('isActiveNavHref', () => {
 
 describe('navDrawerDestinations', () => {
   it('carries every primary destination and Preferences for anyone', () => {
-    const hrefs = navDrawerDestinations(false, false).map((d) => d.href);
+    const hrefs = navDrawerDestinations(false).map((d) => d.href);
     expect(hrefs).toEqual([...PRIMARY_NAV_DESTINATIONS.map((d) => d.href), PREFERENCES_DESTINATION.href]);
   });
 
   it('omits Groups, Chat and Account for a logged-out visitor', () => {
-    const hrefs = navDrawerDestinations(false, false).map((d) => d.href);
+    const hrefs = navDrawerDestinations(false).map((d) => d.href);
     expect(hrefs).not.toContain(GROUPS_DESTINATION.href);
     expect(hrefs).not.toContain(CHAT_DESTINATION.href);
     expect(hrefs).not.toContain(ACCOUNT_DESTINATION.href);
   });
 
-  it('adds Groups and Account when logged in, with Preferences last', () => {
-    const hrefs = navDrawerDestinations(true, false).map((d) => d.href);
+  // Every logged-in visitor gets Chat: it has no access group any more.
+  it('adds Groups, Chat and Account when logged in, with Preferences last', () => {
+    const hrefs = navDrawerDestinations(true).map((d) => d.href);
     expect(hrefs).toContain(GROUPS_DESTINATION.href);
+    expect(hrefs).toContain(CHAT_DESTINATION.href);
     expect(hrefs).toContain(ACCOUNT_DESTINATION.href);
-    expect(hrefs).not.toContain(CHAT_DESTINATION.href);
     expect(hrefs.at(-1)).toBe(PREFERENCES_DESTINATION.href);
-  });
-
-  it('includes Chat once getChatbotAccess() resolves to "allowed"', () => {
-    expect(navDrawerDestinations(true, true).map((d) => d.href)).toContain(CHAT_DESTINATION.href);
   });
 });
 
 describe('accountMenuDestinations', () => {
-  it('offers Groups, Account and Preferences', () => {
-    expect(accountMenuDestinations(false).map((d) => d.href)).toEqual([
-      GROUPS_DESTINATION.href,
-      ACCOUNT_DESTINATION.href,
-      PREFERENCES_DESTINATION.href,
-    ]);
-  });
-
-  it('adds Chat only when allow-listed', () => {
-    expect(accountMenuDestinations(true).map((d) => d.href)).toEqual([
+  it('offers Groups, Chat, Account and Preferences', () => {
+    expect(accountMenuDestinations().map((d) => d.href)).toEqual([
       GROUPS_DESTINATION.href,
       CHAT_DESTINATION.href,
       ACCOUNT_DESTINATION.href,
@@ -133,6 +122,6 @@ describe('accountMenuDestinations', () => {
   });
 
   it('no longer carries the tracking page, which is in the bar for everyone', () => {
-    expect(accountMenuDestinations(true).map((d) => d.href)).not.toContain(TRACK_DESTINATION.href);
+    expect(accountMenuDestinations().map((d) => d.href)).not.toContain(TRACK_DESTINATION.href);
   });
 });

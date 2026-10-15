@@ -103,10 +103,8 @@ describe('AuthStatus', () => {
 
   // Review §3.1.3: /chat was undiscoverable -- this is the account menu's
   // half of the fix (the drawer's own is in AppNavBar.test.tsx).
-  it('adds a Chat entry to the account menu only when chatAllowed is true', async () => {
-    renderWithMantine(
-      <AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} chatAllowed />,
-    );
+  it('lists Chat in the account menu for every logged-in user', async () => {
+    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
     // `hidden: true` -- same as AccountMenu.test.tsx's own `menuItem`
     // helper: Mantine's dropdown content can be aria-hidden mid-transition.
@@ -114,11 +112,5 @@ describe('AuthStatus', () => {
       'href',
       '/chat',
     );
-  });
-
-  it('omits Chat from the account menu by default', () => {
-    renderWithMantine(<AuthStatus session={{ authenticated: true, id: 'u1', username: 'a', name: 'Ada' }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Account menu for Ada' }));
-    expect(screen.queryByRole('menuitem', { name: 'Ask about trains' })).not.toBeInTheDocument();
   });
 });

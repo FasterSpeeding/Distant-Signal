@@ -106,23 +106,14 @@ const NAV_BREAKPOINT = 'md';
 export function AppNavBar({
   session,
   freshness,
-  chatAllowed = false,
   transitOn = false,
 }: {
   session: SessionInfo;
   freshness: DataFreshness;
-  /** Whether `getChatbotAccess()` resolved to `'allowed'` for this
-   * visitor (review §3.1.3) -- fetched alongside `session` in
-   * `app/layout.tsx`'s `NavBarWithSession`, inside the same `<Suspense>`
-   * boundary, so it costs no extra round trip on top of the one this bar
-   * already waits on. Defaults to `false` (no Chat nav item) so the
-   * `<Suspense>` fallback in `app/layout.tsx` -- which renders this bar
-   * with only `session`/`freshness` supplied -- degrades to "not shown
-   * yet" rather than needing a third prop threaded through it too. */
-  chatAllowed?: boolean;
   /** Whether the api serves any transit network: the drawer then lists
-   * "Trams". Defaults to `false` for the `<Suspense>` fallback, as
-   * `chatAllowed`. */
+   * "Trams". Defaults to `false` so the `<Suspense>` fallback in
+   * `app/layout.tsx`, which renders this bar with only
+   * `session`/`freshness`, degrades to "not shown yet". */
   transitOn?: boolean;
 }) {
   return (
@@ -148,7 +139,7 @@ export function AppNavBar({
                 right-hand controls, where it would sit behind three
                 icons a thumb has to skip past. */}
             <AppNavDrawer
-              destinations={navDrawerDestinations(session.authenticated, chatAllowed, transitOn)}
+              destinations={navDrawerDestinations(session.authenticated, transitOn)}
               hiddenFrom={NAV_BREAKPOINT}
             />
             {/* Plain `<Link>` wrapping Mantine's `Text`, rather than
@@ -220,7 +211,7 @@ export function AppNavBar({
                 </Text>
               }
             >
-              <AuthStatus session={session} chatAllowed={chatAllowed} />
+              <AuthStatus session={session} />
             </Suspense>
           </Group>
         </Group>

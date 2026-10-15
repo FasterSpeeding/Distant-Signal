@@ -1,12 +1,11 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import PreferencesPage, { metadata } from './page';
-import { getChatbotAccess, getSessionOrLoggedOut } from '@/lib/api';
+import { getSessionOrLoggedOut } from '@/lib/api';
 
 vi.mock('@/lib/api', () => ({
   getSessionOrLoggedOut: vi.fn(),
-  getChatbotAccess: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -19,10 +18,6 @@ const loggedOut = { authenticated: false, id: null, username: null, name: null }
 const loggedIn = { authenticated: true, id: 'user-1', username: null, name: 'Ada' } as const;
 
 describe('PreferencesPage', () => {
-  beforeEach(() => {
-    vi.mocked(getChatbotAccess).mockResolvedValue({ status: 'unauthenticated' });
-  });
-
   it('is titled Preferences', async () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedOut);
     renderWithMantine(await PreferencesPage());
@@ -39,8 +34,6 @@ describe('PreferencesPage', () => {
 
   it('asks a logged-out visitor to log in for the account sections, rather than hiding them or redirecting', async () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedOut);
-    // Even if chat were open to everyone, the key needs an account here.
-    vi.mocked(getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'authenticated' });
     renderWithMantine(await PreferencesPage());
     expect(screen.getByRole('heading', { level: 1, name: 'Preferences' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Account settings' })).toBeInTheDocument();
@@ -59,14 +52,13 @@ describe('PreferencesPage', () => {
     expect(screen.queryByRole('link', { name: /^Log in/ })).toBeNull();
   });
 
-  it('shows the Claude API key only to accounts that can ask about trains', async () => {
-    vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedIn);
-    vi.mocked(getChatbotAccess).mockResolvedValue({ status: 'forbidden' });
+  it('shows the Claude API key to every logged-in account, and not to a logged-out visitor', async () => {
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedOut);
     const { unmount } = renderWithMantine(await PreferencesPage());
     expect(screen.queryByLabelText('Claude API key')).toBeNull();
     unmount();
 
-    vi.mocked(getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'group' });
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedIn);
     renderWithMantine(await PreferencesPage());
     expect(screen.getByRole('heading', { name: 'Ask about trains' })).toBeInTheDocument();
     expect(screen.getByLabelText('Claude API key')).toBeInTheDocument();

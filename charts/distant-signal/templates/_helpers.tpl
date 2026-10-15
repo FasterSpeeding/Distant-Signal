@@ -1,14 +1,20 @@
 {{/*
-api.chatbotAccess, validated at render time: `group` (default) or
-`authenticated`. The api would also refuse a bad value at startup (clap),
-but failing the render keeps a typo from crash-looping the api pod.
+api.chatbotAccess and api.chatbotAccessGroup were removed on 2026-10-14:
+the embedded chatbot (/chat) is open to every logged-in user, with no
+setting. Like the other removed values in this chart, a values file that
+still sets either key fails the render rather than being ignored, so the
+stale key is deleted instead of lingering as a setting that does nothing.
 */}}
-{{- define "distant-signal.chatbotAccess" -}}
-{{- $mode := .Values.api.chatbotAccess | default "group" | toString -}}
-{{- if not (has $mode (list "group" "authenticated")) -}}
-{{- fail (printf "api.chatbotAccess must be \"group\" or \"authenticated\", got %q." $mode) -}}
+{{- define "distant-signal.removedChatbotAccessGuard" -}}
+{{- $set := list -}}
+{{- range $key := list "chatbotAccess" "chatbotAccessGroup" -}}
+{{- if hasKey $.Values.api $key -}}
+{{- $set = append $set (printf "api.%s" $key) -}}
 {{- end -}}
-{{- $mode -}}
+{{- end -}}
+{{- if $set -}}
+{{- fail (printf "%s: removed on 2026-10-14. The embedded chatbot (/chat) is now open to every logged-in user (logged-out visitors still get the sign-in prompt), and nothing reads an SSO group for it any more. Delete these keys from your values." (join ", " $set)) -}}
+{{- end -}}
 {{- end }}
 
 {{/*
