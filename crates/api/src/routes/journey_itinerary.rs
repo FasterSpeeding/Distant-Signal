@@ -296,10 +296,7 @@ async fn save_itinerary(
         let canonical =
             serde_json::to_vec(&request).map_err(|err| internal("hash request")(err.into()))?;
         let digest = Sha256::digest(&canonical);
-        digest
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+        format!("{digest:x}")
     };
 
     let mut tx = app

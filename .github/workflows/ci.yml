@@ -2332,7 +2332,8 @@ jobs:
           if grep -q -- '- frontend' <<<"${rule}"; then fail "the frontend must not reach the delegated port"; fi
           np=$(render "${client[@]}" --set networkPolicy.tunnel.enabled=true --set networkPolicy.tunnel.api=true \
             --set api.rateLimit.trustXRealIp=false --show-only templates/networkpolicy.yaml)
-          if delegated_rule <<<"${np}" | grep -q 'cloudflared'; then
+          rule=$(delegated_rule <<<"${np}")
+          if grep -q 'cloudflared' <<<"${rule}"; then
             fail "the tunnel must not reach the delegated port"
           fi
           ing=$(render "${client[@]}" --set ingress.enabled=true --set ingress.frontend.enabled=false --set ingress.api.enabled=true \

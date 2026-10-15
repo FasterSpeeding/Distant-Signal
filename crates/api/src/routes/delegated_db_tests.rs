@@ -481,14 +481,14 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
     let read = token(&h, &user, "journeys:read", 0);
     let reply = send(&h, "GET", "/Journeys/mine", &Auth::Bearer(&read), None, &[]).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
-    let used: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+    let last_used: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
         "SELECT last_used_at FROM delegated_grants WHERE user_id = $1 AND revoked_at IS NULL",
     )
     .bind(&user)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(used.is_some(), "a use is recorded");
+    assert!(last_used.is_some(), "a use is recorded");
 
     // The token's scope: empty, or another one.
     for scope in ["", "journeys:write"] {

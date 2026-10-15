@@ -521,7 +521,7 @@ async fn serve_until_shutdown(
             None => Ok(()),
         }
     };
-    let (served, served_delegated, ()) = tokio::join!(
+    let (served, delegated_outcome, ()) = tokio::join!(
         api::edge::serve_with_shutdown(
             listener,
             router,
@@ -533,7 +533,7 @@ async fn serve_until_shutdown(
         stop_loops,
     );
     served?;
-    served_delegated?;
+    delegated_outcome?;
     tracing::info!("api shut down");
     Ok(())
 }

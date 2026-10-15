@@ -8,7 +8,7 @@
 //! 1. **The listener** (`main.rs`). Delegated bearers are accepted only on
 //!    the delegated listener (`DELEGATED_LISTEN_ADDR`), an in-cluster port
 //!    published by its own `ClusterIP` Service and admitted by the
-//!    NetworkPolicy only from ds-mcp's pods (decision D-14). That listener
+//!    `NetworkPolicy` only from ds-mcp's pods (decision D-14). That listener
 //!    tags every request it accepts with [`Ingress::Delegated`]; no client
 //!    can set a request extension, so the public listener (tunnel,
 //!    ingress, frontend proxy) can never pass for it.
@@ -549,7 +549,9 @@ pub fn error_response(status: StatusCode, error: &'static str, message: &str) ->
 /// log line can be correlated without carrying the value itself.
 pub fn log_hash(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
-    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&digest[..8]);
+    format!("{:016x}", u64::from_be_bytes(prefix))
 }
 
 fn reject(
@@ -578,6 +580,10 @@ fn reject(
 
 /// The router-wide middleware: see the module doc. Layer it outside the
 /// rate limiter (`main.rs`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear sequence of checks, each with its own rejection; split, the order would be harder to see"
+)]
 pub async fn gate(
     State(auth): State<Arc<DelegatedAuth>>,
     mut request: Request,
@@ -623,9 +629,8 @@ pub async fn gate(
     if !client.config.enabled {
         return reject(Some(client_name), "client_disabled", None, invalid());
     }
-    let claims = match verify_delegated(client, &token).await {
-        Ok(claims) => claims,
-        Err(_) => return reject(Some(client_name), "invalid_token", None, invalid()),
+    let Ok(claims) = verify_delegated(client, &token).await else {
+        return reject(Some(client_name), "invalid_token", None, invalid());
     };
     let method = request.method().clone();
     let Some(matched) = request
@@ -785,6 +790,16 @@ impl<S: RequiredScope> FromRequestParts<App> for DelegatedOrSessionUser<S> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the extractor's checks in order, each with its own rejection"
+)]
+// `allow`, not `expect`: newer clippy flags axum's `Response` as a large
+// `Err`, 1.88's does not.
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is axum's Rejection type, a Response"
+)]
 async fn resolve_delegated<S: RequiredScope>(
     app: &App,
     token: &DelegatedToken,
@@ -1127,7 +1142,7 @@ mod tests {
                 .nest("/public", public)
         }
 
-        async fn auth_for(issuer: &str, enabled: bool) -> Arc<DelegatedAuth> {
+        fn auth_for(issuer: &str, enabled: bool) -> Arc<DelegatedAuth> {
             let settings = DelegatedSettings {
                 clients: String::new(),
                 listen_addr: "127.0.0.1:0".to_string(),
@@ -1192,7 +1207,7 @@ mod tests {
         #[tokio::test]
         async fn a_delegated_token_works_only_on_the_delegated_listener() {
             let (server, _) = mock_authentik().await;
-            let (public, delegated) = routers(auth_for(&server.uri(), true).await);
+            let (public, delegated) = routers(auth_for(&server.uri(), true));
             let token = sign_token(&claims(&server.uri(), |_| {}));
 
             let (status, headers, body) =
@@ -1221,7 +1236,7 @@ mod tests {
         #[tokio::test]
         async fn delegated_tokens_never_reach_any_other_route() {
             let (server, _) = mock_authentik().await;
-            let (_, delegated) = routers(auth_for(&server.uri(), true).await);
+            let (_, delegated) = routers(auth_for(&server.uri(), true));
             let token = sign_token(&claims(&server.uri(), |_| {}));
             for (method, uri) in [
                 ("POST", "/Journeys"),
@@ -1247,7 +1262,7 @@ mod tests {
         #[tokio::test]
         async fn a_cookie_and_a_bearer_together_are_refused() {
             let (server, _) = mock_authentik().await;
-            let (public, delegated) = routers(auth_for(&server.uri(), true).await);
+            let (public, delegated) = routers(auth_for(&server.uri(), true));
             let token = sign_token(&claims(&server.uri(), |_| {}));
             for router in [&public, &delegated] {
                 let (status, _, body) = send(router, "GET", "/Journeys/mine", &token, true).await;
@@ -1259,7 +1274,7 @@ mod tests {
         #[tokio::test]
         async fn the_kill_switch_refuses_every_token() {
             let (server, _) = mock_authentik().await;
-            let auth = auth_for(&server.uri(), false).await;
+            let auth = auth_for(&server.uri(), false);
             assert_eq!(
                 auth.listen_addr(),
                 None,
@@ -1274,7 +1289,7 @@ mod tests {
         #[tokio::test]
         async fn bad_tokens_for_the_client_are_refused() {
             let (server, _) = mock_authentik().await;
-            let (_, delegated) = routers(auth_for(&server.uri(), true).await);
+            let (_, delegated) = routers(auth_for(&server.uri(), true));
             let uri = server.uri();
             let cases = [
                 (
@@ -1315,14 +1330,14 @@ mod tests {
         #[tokio::test]
         async fn other_audiences_are_never_treated_as_delegated() {
             let (server, _) = mock_authentik().await;
-            let (_, delegated) = routers(auth_for(&server.uri(), true).await);
+            let (_, delegated) = routers(auth_for(&server.uri(), true));
             // The same issuer with the SSO client's audience, and another
             // issuer with the delegated audience: neither names the client,
             // so the gate leaves them alone and no handler sees a delegated
             // identity (the extractor then answers 401).
             for token in [
                 sign_token(&claims(&server.uri(), |c| {
-                    c["aud"] = json!("distant-signal")
+                    c["aud"] = json!("distant-signal");
                 })),
                 sign_token(&claims("https://other.example/", |_| {})),
             ] {

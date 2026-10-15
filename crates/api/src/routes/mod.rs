@@ -6,6 +6,10 @@ pub mod auth;
 pub mod chatbot;
 pub mod connected_apps;
 #[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
 mod delegated_db_tests;
 pub mod departures;
 pub mod freshness;
