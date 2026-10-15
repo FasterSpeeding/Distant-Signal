@@ -44,6 +44,10 @@ const PAGES: [name: string, path: string][] = [
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
   ['incidents', '/incidents'],
   ['account', '/account'],
+  // Open to everyone: logged out it is the appearance settings and one log
+  // in prompt, logged in the account sections too.
+  ['preferences', '/account/preferences'],
+  ['preferences-logged-in', '/account/preferences'],
   // Tram pages (the seed's metrolink network; API_TRANSIT_NETWORKS in the
   // frontend-e2e job). Dated, so the board and timetable don't follow the
   // server's clock.
@@ -52,6 +56,9 @@ const PAGES: [name: string, path: string][] = [
   ['transit-stop', '/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17'],
   ['transit-timetable', '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00'],
 ];
+
+/** The pages shot with the seed's session cookie (E2E_SESSION_COOKIE). */
+const LOGGED_IN_PAGES: ReadonlySet<string> = new Set(['account', 'preferences-logged-in']);
 
 const WIDTHS = [390, 1366] as const;
 const SCHEMES = ['light', 'dark'] as const;
@@ -114,7 +121,7 @@ for (const scheme of SCHEMES) {
 
       for (const [name, path] of PAGES) {
         test(name, async ({ page, context }) => {
-          if (name === 'account') {
+          if (LOGGED_IN_PAGES.has(name)) {
             test.skip(!SESSION_COOKIE, 'E2E_SESSION_COOKIE is unset');
             await context.addCookies([sessionCookie(SESSION_COOKIE!)]);
           }
@@ -132,6 +139,28 @@ for (const scheme of SCHEMES) {
           });
         });
       }
+
+      // Preferences with a pride flag saved: the page and nav stripes, the
+      // gradient site name, the sparkles around the wordmark and the
+      // picker's preview. Sparkles float, so this relies on the reduced
+      // motion above holding them still and visible.
+      test('preferences-pride', async ({ page }) => {
+        await page.addInitScript(() => {
+          localStorage.setItem('pride-mode', 'trans');
+        });
+        await page.clock.setFixedTime(FIXED_NOW);
+        await page.goto('/account/preferences', { waitUntil: 'networkidle' });
+        await page.addStyleTag({ content: NO_MOTION_CSS });
+        await page.evaluate(() => document.fonts.ready);
+        await expect(page.locator('main .prideSparkle')).toHaveCount(3);
+
+        await expect(page).toHaveScreenshot(`preferences-pride-${scheme}-${width}.png`, {
+          fullPage: true,
+          animations: 'disabled',
+          caret: 'hide',
+          mask: volatile(page),
+        });
+      });
 
       // The /lines search and filters bar (app/lines/LinesFilterBar.tsx) in
       // the two states the full-page shot above can't show: stuck to the
@@ -162,6 +191,41 @@ for (const scheme of SCHEMES) {
           });
         });
       }
+
+      // The /stations "Use my location" results
+      // (app/stations/NearbyStationList.tsx), which only exist after the
+      // click. The location is mocked and so is the lookup, with five
+      // stations (the seed has two with coordinates) so a long name wraps
+      // at 390px. A shot of the results block alone.
+      test('stations-nearby', async ({ page, context }) => {
+        await context.grantPermissions(['geolocation']);
+        await context.setGeolocation({ latitude: 51.53, longitude: -0.13 });
+        await page.route('**/api/stations/nearby?*', (route) =>
+          route.fulfill({
+            json: [
+              { code: 'EUS', name: 'London Euston', distanceKm: 0.32 },
+              { code: 'KGX', name: 'London Kings Cross', distanceKm: 0.44 },
+              { code: 'STP', name: 'London St Pancras International', distanceKm: 0.51 },
+              { code: 'ZFD', name: 'Farringdon', distanceKm: 1.62 },
+              { code: 'MYB', name: 'London Marylebone', distanceKm: 12.04 },
+            ],
+          }),
+        );
+        await page.clock.setFixedTime(FIXED_NOW);
+        await page.goto('/stations', { waitUntil: 'networkidle' });
+        await page.addStyleTag({ content: NO_MOTION_CSS });
+        await page.evaluate(() => document.fonts.ready);
+        await page.getByRole('button', { name: 'Use my location' }).click();
+        const list = page.getByRole('list', { name: 'Nearest stations' });
+        await expect(list.getByRole('link')).toHaveCount(5);
+        // The mouse rests on nothing, so no row is in its hover state.
+        await page.mouse.move(0, 0);
+
+        await expect(list.locator('xpath=..')).toHaveScreenshot(`stations-nearby-${scheme}-${width}.png`, {
+          animations: 'disabled',
+          caret: 'hide',
+        });
+      });
     });
   }
 }

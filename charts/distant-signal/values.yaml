@@ -13,6 +13,13 @@ fullnameOverride: ""
 imagePullSecrets: []
 # - name: my-registry-creds
 
+# -- Old ReplicaSets (Deployments) and ControllerRevisions (StatefulSets)
+# kept for `kubectl rollout undo`, on every Deployment and StatefulSet this
+# chart renders. Kubernetes' default is 10, which left 177 zero-replica
+# ReplicaSets (2026-10) for the controllers and the apiserver to list and
+# watch. `helm rollback` does not need them: it re-applies the release.
+revisionHistoryLimit: 3
+
 global:
   # -- Registry (and, optionally, org/path prefix) substituted in front of
   # every image this chart renders, in place of whichever registry each
@@ -527,17 +534,52 @@ postgresql:
         # (`pollers.ldbws.internalReads.database.maxConnections`, 1) plus 1
         # (spec §6.6: 2).
         connectionLimit: ""
+  # Probes of the bundled Postgres. Each one's `type` is `tcpSocket` (the
+  # default) or `exec`:
+  #   - tcpSocket: the kubelet opens a TCP connection to the postgres port.
+  #     Nothing is forked in the container. It passes as soon as the
+  #     postmaster listens, which is before it accepts queries: readiness
+  #     turns true slightly earlier during crash recovery (clients get "the
+  #     database system is starting up" for the rest of WAL redo), and
+  #     liveness never kills Postgres in the middle of WAL redo.
+  #   - exec: `pg_isready` against 127.0.0.1, true only once Postgres
+  #     accepts connections. Every period forks a process through
+  #     containerd and the shim, which is what a CPU-saturated node can
+  #     least afford (readiness alone was every 5s).
+  # Like the api's HTTP probes, tcpSocket probes come from the node, so a
+  # CNI that applies NetworkPolicy to node-local traffic (most don't; see
+  # networkPolicy.healthIngress) would need the node admitted through
+  # networkPolicy.postgresClients.
   probes:
-    # -- startupProbe budget (INF-4). Liveness only begins once pg_isready
-    # succeeds, so crash recovery (WAL redo after a node reboot) is never
-    # killed mid-way. periodSeconds x failureThreshold = 10s x 90 = 15
-    # minutes, generous for up to max_wal_size (4GB) of redo while every
-    # other pod on the node is also starting; the 2026-09-27 00:29 recovery
-    # replayed 1.7GB in 20s on an idle node. After startup the liveness probe
-    # keeps its normal 60s (10s x 6) budget.
+    # -- startupProbe (INF-4). Liveness and readiness begin only once it
+    # succeeds. periodSeconds x failureThreshold = 10s x 90 = 15 minutes,
+    # generous for up to max_wal_size (4GB) of redo while every other pod
+    # on the node is also starting (with `exec`; tcpSocket passes once the
+    # postmaster listens); the 2026-09-27 00:29 recovery replayed 1.7GB in
+    # 20s on an idle node.
     startup:
+      # -- `tcpSocket` or `exec` (pg_isready).
+      type: tcpSocket
       periodSeconds: 10
+      timeoutSeconds: 5
       failureThreshold: 90
+    # -- readinessProbe: the Service sends traffic only while it passes.
+    # 10s x 5 = 50s of failures before the pod turns unready (it was 5s x
+    # 10 with exec).
+    readiness:
+      # -- `tcpSocket` or `exec` (pg_isready).
+      type: tcpSocket
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 5
+    # -- livenessProbe: restarts Postgres after 30s x 6 = 3 minutes of
+    # failures (it was 10s x 6 with exec).
+    liveness:
+      # -- `tcpSocket` or `exec` (pg_isready).
+      type: tcpSocket
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 6
   persistence:
     # -- Attach a PersistentVolumeClaim. When false, an emptyDir is used and
     # ALL DATA IS LOST when the pod is rescheduled -- ephemeral testing only.
@@ -1954,8 +1996,15 @@ apiMaintenance:
   # -- Deadline per run. The retention prune allows itself 600 s per
   # statement.
   activeDeadlineSeconds: 1800
+  # -- Finished Jobs the CronJob keeps: the last success, and the last
+  # three failures to read logs from. The TTL below removes either sooner
+  # once they are a day old.
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
+  # -- Seconds after a run finishes (succeeded or failed) before the TTL
+  # controller deletes its Job and pod: a day, so a failed run's logs
+  # outlast a night. null leaves finished Jobs to the history limits alone.
+  ttlSecondsAfterFinished: 86400
   # -- tracing-subscriber EnvFilter (RUST_LOG).
   logLevel: info
   resources: {}
@@ -2578,7 +2627,7 @@ redis:
   # appears in values, in `REDIS_URL` or in any rendered manifest. With
   # `requirePass` (and the bundled Redis) the Redis container also gets the
   # password from the Secret and starts with `--requirepass`, and its
-  # probes authenticate (`REDISCLI_AUTH`).
+  # redis-cli in it (the `exec` probes) authenticates (`REDISCLI_AUTH`).
   #
   # SAFE ENABLE SEQUENCE FOR A RUNNING DEPLOYMENT (no outage). The chart's
   # Redis is 7.4: the default user accepts `AUTH default <anything>` while
@@ -2863,6 +2912,47 @@ redis:
       memory: 1536Mi
     limits:
       memory: 2560Mi
+  # Probes of the bundled Redis. Each one's `type` is `tcpSocket` (the
+  # default) or `exec`:
+  #   - tcpSocket: the kubelet opens a TCP connection to the redis port.
+  #     Nothing is forked in the container. Redis listens while it loads
+  #     the AOF, so readiness turns true slightly earlier after a restart
+  #     (clients get -LOADING until the load ends), and liveness never
+  #     kills Redis in the middle of a long AOF load.
+  #   - exec: `redis-cli ping` (`--user ds-admin` with `acl.enabled`,
+  #     authenticated through REDISCLI_AUTH). Every period forks a process
+  #     through containerd and the shim, which is what a CPU-saturated node
+  #     can least afford (readiness alone was every 5s).
+  # As for postgresql.probes, a CNI that applies NetworkPolicy to
+  # node-local traffic would need the node admitted through
+  # networkPolicy.redisClients.
+  probes:
+    # -- startupProbe: liveness and readiness begin only once it succeeds.
+    # 5s x 60 = 5 minutes for an AOF load (with `exec`; tcpSocket passes
+    # once Redis listens). There was no startupProbe before; liveness
+    # waited a fixed 15s instead.
+    startup:
+      # -- `tcpSocket` or `exec` (redis-cli ping).
+      type: tcpSocket
+      periodSeconds: 5
+      timeoutSeconds: 5
+      failureThreshold: 60
+    # -- readinessProbe: 10s x 3 = 30s of failures before the pod turns
+    # unready (it was 5s x 6 with exec).
+    readiness:
+      # -- `tcpSocket` or `exec` (redis-cli ping).
+      type: tcpSocket
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    # -- livenessProbe: restarts Redis after 30s x 6 = 3 minutes of
+    # failures (it was 10s x 6 with exec).
+    liveness:
+      # -- `tcpSocket` or `exec` (redis-cli ping).
+      type: tcpSocket
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 6
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -4320,14 +4410,47 @@ scheduleFeed:
   # replace per delivery). OFF by default: while off, a CORPUS file is left
   # in the landing folder with a one-time "stray file" warning. See
   # docs/superpowers/specs/2026-09-28-corpus-sftp-ingest-design.md.
+  #
+  # CORPUS comes in two formats, two versions of NWR's CORPUS API that can
+  # both be subscribed to at once, loaded into the same table: the JSON
+  # extract (CORPUSExtract.json.gz, every location, ~56,000 rows) and the
+  # NLC XML snapshot (NLC<YYYYMMDD>.xml.gz, only TIPLOC-bearing locations,
+  # ~12,100 rows). Both are on by default; `formatPrecedence` decides which
+  # is loaded when both arrive. See
+  # docs/superpowers/specs/2026-10-14-corpus-nlc-xml-format-design.md.
   corpus:
     enabled: false
-    # -- Globs naming the CORPUS extract. Only this gzipped-JSON shape is
+    # -- Load the JSON extract (the older API version).
+    jsonEnabled: true
+    # -- Globs naming the JSON extract. Only this gzipped-JSON shape is
     # loaded; CORPUSExtract.csv.gz (SMART) is deliberately ignored.
     filePattern: "CORPUSExtract.json.gz"
-    # -- An extract with fewer rows is rejected (real: ~56,000), so a
+    # -- A JSON extract with fewer rows is rejected (real: ~56,000), so a
     # truncated or placeholder file cannot wipe the table.
     minRows: 10000
+    xml:
+      # -- Load the NLC XML snapshot (the newer API version), picked by
+      # the NLC prefix and the .xml.gz extension. Any other NLC* file is
+      # never loaded: it raises DistantSignalCorpusFormatDrift.
+      enabled: true
+      # -- A snapshot with fewer rows is rejected (real: 12,102 on
+      # 2026-10-09).
+      minRows: 10000
+    # -- Which file is loaded when both formats arrive: `json` (the
+    # default: the superset, and what was loaded before the XML format),
+    # `xml`, or `newest` (by mtime; with both feeds subscribed the table
+    # then alternates between them). The non-preferred format is still
+    # parsed (a broken file alerts), compared and archived, and is loaded
+    # only when the preferred one has not been loaded for
+    # `preferredGraceDays`.
+    formatPrecedence: json
+    # -- Days without a load of the preferred format before the other
+    # format takes over.
+    preferredGraceDays: 35
+    # -- Compare each file with the newest one of the other format and log
+    # and export the differences (schedule_feed_corpus_format_diff), the
+    # migration signal. Read-only.
+    compareFormats: true
     # -- gzip-bomb guard: the most bytes an extract may decompress to (the
     # real one is ~7 MB).
     maxDecompressedBytes: 268435456
@@ -5586,6 +5709,11 @@ metrics:
     # (schedule_feed_corpus_failures_total{stage}). It retries every poll
     # (120s), so 3 in 30m is about 6 minutes of a persistent failure. Kept
     # apart from "no new file yet", which is normal for days or weeks.
+    # DistantSignalCorpusFormatDrift: an NLC* file that is not .xml.gz sits
+    # in the landing folder (the NLC XML CORPUS format may have drifted; the
+    # file is ignored): a `drift` count in
+    # schedule_feed_corpus_failures_total within `corpusFailingWindow`.
+    # Fires on the first poll that sees it.
     # DistantSignalCorpusStale: the newest loaded CORPUS delivery is older
     # than `corpusStaleWarningDays` (severity `severity`) or
     # `corpusStaleCriticalDays` (`corpusStaleCriticalSeverity`); only one

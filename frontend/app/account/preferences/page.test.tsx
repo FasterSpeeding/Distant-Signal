@@ -37,17 +37,26 @@ describe('PreferencesPage', () => {
     expect(screen.getByRole('combobox', { name: /Pride flag/ })).toBeInTheDocument();
   });
 
-  it('asks a logged-out visitor to log in for notifications, rather than offering the button', async () => {
+  it('asks a logged-out visitor to log in for the account sections, rather than hiding them or redirecting', async () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedOut);
+    // Even if chat were open to everyone, the key needs an account here.
+    vi.mocked(getChatbotAccess).mockResolvedValue({ status: 'allowed', mode: 'authenticated' });
     renderWithMantine(await PreferencesPage());
-    expect(screen.getByRole('link', { name: 'Log in to turn on notifications' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Preferences' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Account settings' })).toBeInTheDocument();
+    const login = screen.getByRole('link', { name: 'Log in to manage notifications and more' });
+    expect(login.getAttribute('href')).toContain('return_to=%2Faccount%2Fpreferences');
     expect(screen.queryByRole('button', { name: 'Enable notifications' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Notifications' })).toBeNull();
+    expect(screen.queryByLabelText('Claude API key')).toBeNull();
   });
 
   it('offers the notifications button when logged in', async () => {
     vi.mocked(getSessionOrLoggedOut).mockResolvedValue(loggedIn);
     renderWithMantine(await PreferencesPage());
     expect(screen.getByRole('button', { name: 'Enable notifications' })).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', { name: 'Colour theme' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^Log in/ })).toBeNull();
   });
 
   it('shows the Claude API key only to accounts that can ask about trains', async () => {

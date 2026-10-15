@@ -84,8 +84,9 @@ export const ACCOUNT_DESTINATION: NavDestination = { href: '/account', label: 'A
 
 /** `/account/preferences`: colour theme, notifications, pride flag and the
  * Claude API key (round 2, item 4). Open to everyone, since most of it is
- * saved in the browser, so the drawer always lists it and the footer links
- * to it for logged-out desktop visitors, who have no account menu. */
+ * saved in the browser, so the drawer always lists it, the footer links to
+ * it, and logged-out desktop visitors, who have no account menu, get a gear
+ * in the bar (`PreferencesNavIcon`). */
 export const PREFERENCES_DESTINATION: NavDestination = { href: '/account/preferences', label: 'Preferences' };
 
 /** `/transit`: the tram networks Distant Signal serves

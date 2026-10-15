@@ -748,6 +748,207 @@ body[data-pride='lesbian'] [data-site-title] {
   }
 }
 
+/* The live preview beside the pride flag picker (`PridePreview` in
+   `components/PrideMode.tsx`), in the old nav toggle's shape: a round
+   badge holding the swatch, with a spinning conic-gradient ring of the
+   flag behind it once a flag is on. These are the toggle's own ring rules,
+   moved from `button[aria-pressed='true'][aria-label*='<flag>']` (the
+   toggle is gone) to the preview's `data-flag`. A ring behind the badge
+   (`::before`, `z-index: -1`, inside `.prideToggle`'s isolated stacking
+   context) rather than a border override. */
+.pridePreview {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--mantine-color-default-border);
+  background: var(--mantine-color-body);
+}
+
+.pridePreview[data-flag='rainbow']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#e40303, #ff8c00, #ffed00, #008026, #004dff, #750787, #e40303);
+  z-index: -1;
+}
+
+.pridePreview[data-flag='trans']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#5bcefa, #f5a9b8, #ffffff, #f5a9b8, #5bcefa, #5bcefa);
+  z-index: -1;
+}
+
+.pridePreview[data-flag='nonbinary']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#fcf434, #ffffff, #9c59d1, #2c2c2c, #fcf434);
+  z-index: -1;
+}
+
+.pridePreview[data-flag='bisexual']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(
+    #d60270 0deg,
+    #d60270 144deg,
+    #9b4f96 144deg,
+    #9b4f96 216deg,
+    #0038a8 216deg,
+    #0038a8 360deg
+  );
+  z-index: -1;
+}
+
+.pridePreview[data-flag='pansexual']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#ff218c, #ffd800, #21b1ff, #ff218c);
+  z-index: -1;
+}
+
+.pridePreview[data-flag='asexual']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#000000, #a3a3a3, #ffffff, #800080, #000000);
+  z-index: -1;
+}
+
+.pridePreview[data-flag='sapphic']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#fd8ba8, #fbf2ff, #c76bc5, #fbf2ff, #fd8ba8, #fd8ba8);
+  z-index: -1;
+}
+
+.pridePreview[data-flag='lesbian']::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: conic-gradient(#d52d00, #ef7627, #ff9a56, #ffffff, #d162a4, #b55690, #a30262, #d52d00);
+  z-index: -1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pridePreview:not([data-flag='off'])::before {
+    animation: pride-spin 3s linear infinite;
+  }
+}
+
+@keyframes pride-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The decorative sparkle scatter (`PrideSparkles` around the nav's
+   wordmark on every page, and the picker's preview), as the old nav toggle
+   had it. The preview's is only in the DOM while a flag is on; the nav's
+   are gated on `body[data-pride]` below. `.prideToggle` is the anchor it
+   scatters around. */
+.prideToggle {
+  position: relative;
+  display: inline-flex;
+  isolation: isolate;
+}
+
+.prideSparkles {
+  position: absolute;
+  inset: -14px;
+  pointer-events: none;
+}
+
+/* The nav's scatters (`PrideSparkles`): one per flag in the server HTML,
+   each `data-flag`, shown only when it matches `body[data-pride]`, so it
+   is on screen from the first paint like the stripe. */
+.prideSparkles[data-flag] {
+  display: none;
+}
+
+body[data-pride='rainbow'] .prideSparkles[data-flag='rainbow'],
+body[data-pride='trans'] .prideSparkles[data-flag='trans'],
+body[data-pride='nonbinary'] .prideSparkles[data-flag='nonbinary'],
+body[data-pride='bisexual'] .prideSparkles[data-flag='bisexual'],
+body[data-pride='pansexual'] .prideSparkles[data-flag='pansexual'],
+body[data-pride='asexual'] .prideSparkles[data-flag='asexual'],
+body[data-pride='sapphic'] .prideSparkles[data-flag='sapphic'],
+body[data-pride='lesbian'] .prideSparkles[data-flag='lesbian'] {
+  display: block;
+}
+
+.prideSparkle {
+  position: absolute;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.prideSparkle:nth-of-type(1) {
+  top: -4px;
+  left: -8px;
+}
+
+.prideSparkle:nth-of-type(2) {
+  top: -10px;
+  right: -4px;
+}
+
+.prideSparkle:nth-of-type(3) {
+  bottom: -6px;
+  left: 50%;
+}
+
+/* Reduced motion: sparkles stay put and fully visible rather than
+   flashing/floating -- present, not animated, matching the pride bars'
+   posture elsewhere in this file. */
+.prideSparkle {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .prideSparkle {
+    opacity: 0;
+    animation: pride-sparkle-float 2.4s ease-in-out infinite;
+  }
+
+  .prideSparkle:nth-of-type(2) {
+    animation-delay: 0.6s;
+  }
+
+  .prideSparkle:nth-of-type(3) {
+    animation-delay: 1.2s;
+  }
+}
+
+@keyframes pride-sparkle-float {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateY(4px) scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-6px) scale(1.1);
+  }
+}
+
 /* A flag-coloured scrollbar while pride mode is on. `scrollbar-color`
    (Firefox) only accepts a solid thumb colour, not a gradient -- a
    representative mid-flag shade stands in there for each mode (by

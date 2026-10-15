@@ -1,31 +1,14 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { NotificationsToggle, urlBase64ToUint8Array } from './NotificationsToggle';
-
-describe('urlBase64ToUint8Array', () => {
-  it('decodes a plain base64url string with no padding characters needed', () => {
-    // "AAECAw" (no '=' in the source) is the base64url encoding of the
-    // four raw bytes [0, 1, 2, 3].
-    expect(Array.from(urlBase64ToUint8Array('AAECAw'))).toEqual([0, 1, 2, 3]);
-  });
-
-  it('translates "-" and "_" to the standard base64 "+" and "/" alphabet', () => {
-    // "_-8" is the base64url form of standard base64 "/+8=" -- both decode
-    // to the same two bytes, [255, 239].
-    expect(Array.from(urlBase64ToUint8Array('_-8'))).toEqual([255, 239]);
-  });
-
-  it('decodes a real-shaped 65-byte uncompressed P-256 VAPID public key', () => {
-    // A well-known example VAPID public key (from the Push API reference
-    // examples) -- a real key is always 65 bytes and starts with 0x04,
-    // the uncompressed-point marker.
-    const key = 'BEl62iUYgUivxIkv69yViEuiBIa40HI0DLLuxazjBk9j4H_hMVU2fV4kX_pMcFOxIRXVFrCzYqfE_ArNVjpJUBg';
-    const decoded = urlBase64ToUint8Array(key);
-    expect(decoded).toHaveLength(65);
-    expect(decoded[0]).toBe(4);
-  });
-});
+import { NotificationsToggle } from './NotificationsToggle';
+import {
+  BLOCKED_FIREFOX_MESSAGE,
+  BLOCKED_MESSAGE,
+  GENERIC_ENABLE_ERROR,
+  UNSUPPORTED_IOS_MESSAGE,
+  UNSUPPORTED_MESSAGE,
+} from './enableNotifications';
 
 // LoginPromptModal's own LoginButtonLink calls useLoginHref(), which calls
 // usePathname()/useSearchParams() -- same stub PinToggle.test.tsx uses for
@@ -35,190 +18,441 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+const FIREFOX_ANDROID_UA = 'Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0';
+const CHROME_ANDROID_UA =
+  'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36';
+const IPHONE_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+
+const SUBSCRIPTION = {
+  endpoint: 'https://updates.push.services.mozilla.com/wpush/v2/secret-endpoint',
+  toJSON: () => ({
+    endpoint: 'https://updates.push.services.mozilla.com/wpush/v2/secret-endpoint',
+    keys: { p256dh: 'p', auth: 'a' },
+  }),
+};
+
+// A real-shaped VAPID key, so `urlBase64ToUint8Array` decodes it.
+const VAPID_KEY = 'BEl62iUYgUivxIkv69yViEuiBIa40HI0DLLuxazjBk9j4H_hMVU2fV4kX_pMcFOxIRXVFrCzYqfE_ArNVjpJUBg';
+
+/** One event in the order the browser APIs were called, to check the
+ * gesture ordering. */
+let calls: string[] = [];
+
+interface Stubs {
+  permission?: NotificationPermission;
+  /** What `requestPermission()` answers; defaults to `permission`. */
+  answer?: NotificationPermission;
+  subscribe?: ReturnType<typeof vi.fn>;
+  getSubscription?: ReturnType<typeof vi.fn>;
+  /** Whether `requestPermission()` only takes a callback (older Safari). */
+  callbackOnly?: boolean;
+}
+
+function stubPushApi(stubs: Stubs = {}) {
+  const permissionState = { value: stubs.permission ?? 'default' };
+  const answer = stubs.answer ?? stubs.permission ?? 'granted';
+  const registration = {
+    pushManager: {
+      subscribe:
+        stubs.subscribe ??
+        vi.fn(() => {
+          calls.push('subscribe');
+          return Promise.resolve(SUBSCRIPTION);
+        }),
+      getSubscription: stubs.getSubscription ?? vi.fn().mockResolvedValue(null),
+    },
+  };
+  const requestPermission = vi.fn((callback?: (permission: NotificationPermission) => void) => {
+    calls.push('requestPermission');
+    permissionState.value = answer;
+    if (stubs.callbackOnly) {
+      queueMicrotask(() => callback?.(answer));
+      return undefined;
+    }
+    return Promise.resolve(answer);
+  });
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: {
+      ready: Promise.resolve(registration),
+      getRegistration: vi.fn().mockResolvedValue(registration),
+    },
+  });
+  // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
+  window.PushManager = function () {};
+  vi.stubGlobal('Notification', {
+    requestPermission,
+    get permission() {
+      return permissionState.value;
+    },
+  });
+  return { registration, requestPermission };
+}
+
+function stubUserAgent(userAgent: string, maxTouchPoints = 0) {
+  vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(userAgent);
+  Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: maxTouchPoints });
+}
+
+/** A fetch mock for the two endpoints, recording each call in `calls`. */
+function stubFetch({ key = () => new Response(VAPID_KEY), save = () => new Response(null, { status: 204 }) } = {}) {
+  const fetchMock = vi.fn((input: string) => {
+    calls.push(`fetch ${input}`);
+    if (input.endsWith('/vapid-public-key')) return Promise.resolve(key());
+    return Promise.resolve(save());
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+async function clickEnable() {
+  const button = await screen.findByRole('button', { name: /enable notifications/i });
+  await waitFor(() => expect(button).not.toBeDisabled());
+  // Let the mount effect's key prefetch settle, as it has by the time a
+  // person taps.
+  await waitFor(() => expect(calls).toContain('fetch /api/notifications/vapid-public-key'));
+  fireEvent.click(button);
+  return button;
+}
+
 describe('NotificationsToggle', () => {
+  beforeEach(() => {
+    calls = [];
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
-    // @ts-expect-error -- undo the test-only global stubs below, so
-    // "unsupported browser" stays the real jsdom baseline for every other
-    // test file (jsdom has neither serviceWorker nor PushManager by
-    // default).
-    delete global.navigator.serviceWorker;
+    vi.restoreAllMocks();
+    // Undo the stubs so "unsupported browser" stays the real jsdom
+    // baseline for every other test (jsdom has neither serviceWorker nor
+    // PushManager).
     // @ts-expect-error -- see above.
-    delete global.window.PushManager;
+    delete navigator.serviceWorker;
     // @ts-expect-error -- see above.
-    delete global.Notification;
+    delete window.PushManager;
+    // @ts-expect-error -- see above (`stubUserAgent`).
+    delete navigator.maxTouchPoints;
   });
 
-  it('renders a permanently disabled button when the browser has no PushManager/serviceWorker support', async () => {
-    // jsdom has neither by default -- this is the real, unmocked baseline.
-    // Review §2.11: the button is reserved in the DOM either way (never
-    // `null`), so an unsupported browser still shows it, just disabled,
-    // rather than the old "renders nothing" -- which was itself half of
-    // the bug, since a *supported* browser also rendered nothing until its
-    // mount effect resolved, popping the button in afterwards.
-    renderWithMantine(<NotificationsToggle />);
-    const button = await screen.findByRole('button', { name: /enable notifications/i });
-    expect(button).toBeDisabled();
-  });
+  describe('unsupported browser', () => {
+    it('renders a disabled button and says the browser cannot show notifications', async () => {
+      // jsdom has no serviceWorker or PushManager: the real baseline.
+      renderWithMantine(<NotificationsToggle />);
+      const button = await screen.findByRole('button', { name: /enable notifications/i });
+      expect(button).toBeDisabled();
+      expect(await screen.findByText(UNSUPPORTED_MESSAGE)).toBeInTheDocument();
+    });
 
-  function stubPushApiSupport() {
-    const fakeRegistration = {
-      pushManager: {
-        subscribe: vi.fn().mockResolvedValue({
-          endpoint: 'https://push.example/ep1',
-          toJSON: () => ({ endpoint: 'https://push.example/ep1', keys: { p256dh: 'p', auth: 'a' } }),
-        }),
-      },
-    };
-    // @ts-expect-error -- test-only global stubs for Web APIs jsdom doesn't implement.
-    global.navigator.serviceWorker = { ready: Promise.resolve(fakeRegistration) };
-    // @ts-expect-error -- see above.
-    global.window.PushManager = function () {};
-    // @ts-expect-error -- see above.
-    global.Notification = { requestPermission: vi.fn().mockResolvedValue('granted') };
-  }
+    it('tells iPhone users to add the site to the home screen', async () => {
+      stubUserAgent(IPHONE_UA, 5);
+      renderWithMantine(<NotificationsToggle />);
+      expect(await screen.findByText(UNSUPPORTED_IOS_MESSAGE)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /enable notifications/i })).toBeDisabled();
+    });
+  });
 
   it('reserves the button slot and enables it once support is confirmed', async () => {
-    stubPushApiSupport();
+    stubPushApi();
+    stubFetch();
     renderWithMantine(<NotificationsToggle />);
-    // `getByRole`, not `findByRole`: the button must already be in the DOM
-    // on the very first render (server-rendered slot reserved, before the
-    // mount effect that confirms `supported` has even run) -- that's the
-    // whole point of the fix. It starts disabled, per the surrounding
-    // `!checked` guard.
+    // `getByRole`, not `findByRole`: the button must be in the DOM on the
+    // very first render, disabled until the mount effect runs.
     const button = screen.getByRole('button', { name: /enable notifications/i });
-    expect(button).toBeInTheDocument();
     await waitFor(() => expect(button).not.toBeDisabled());
+    expect(screen.queryByText(UNSUPPORTED_MESSAGE)).not.toBeInTheDocument();
   });
 
-  it('subscribes and shows LoginPromptModal on a 401 from the subscribe POST', async () => {
-    stubPushApiSupport();
-    vi.stubGlobal(
-      'fetch',
-      vi
+  describe('gesture ordering', () => {
+    it('calls requestPermission synchronously in the click, before any fetch or await', async () => {
+      const { requestPermission } = stubPushApi();
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      // Synchronously: no await has run since the click event.
+      expect(requestPermission).toHaveBeenCalledTimes(1);
+      expect(calls.at(-1)).toBe('requestPermission');
+      await screen.findByRole('button', { name: /notifications enabled/i });
+      const afterClick = calls.slice(calls.indexOf('requestPermission'));
+      // The key was fetched before the click, so nothing but subscribe
+      // and the save sit between the permission answer and the end.
+      expect(afterClick).toEqual(['requestPermission', 'subscribe', 'fetch /api/notifications/subscribe']);
+    });
+
+    // Firefox for Android: subscribe() rejects with NotAllowedError once
+    // the tap's user activation has expired. Here it expires at the next
+    // macrotask, and the network answers only after a macrotask, so any
+    // fetch between the tap and subscribe() loses it, as the old flow did.
+    it('subscribes while the user activation is still active (Firefox for Android)', async () => {
+      stubUserAgent(FIREFOX_ANDROID_UA);
+      let activationActive = false;
+      const subscribe = vi.fn(() => {
+        calls.push('subscribe');
+        return activationActive
+          ? Promise.resolve(SUBSCRIPTION)
+          : Promise.reject(new DOMException('User denied permission to use the Push API.', 'NotAllowedError'));
+      });
+      stubPushApi({ permission: 'granted', subscribe });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          (input: string) =>
+            new Promise((resolve) =>
+              setTimeout(
+                () =>
+                  resolve(
+                    input.endsWith('/vapid-public-key') ? new Response(VAPID_KEY) : new Response(null, { status: 204 }),
+                  ),
+                5,
+              ),
+            ),
+        ),
+      );
+      renderWithMantine(<NotificationsToggle />);
+      const button = await screen.findByRole('button', { name: /enable notifications/i });
+      await waitFor(() => expect(button).not.toBeDisabled());
+      // Let the prefetch land.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      activationActive = true;
+      fireEvent.click(button);
+      setTimeout(() => {
+        activationActive = false;
+      }, 0);
+
+      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(subscribe).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('permission', () => {
+    it('shows the Firefox steps when permission is denied in Firefox', async () => {
+      stubUserAgent(FIREFOX_ANDROID_UA);
+      stubPushApi({ permission: 'denied' });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(BLOCKED_FIREFOX_MESSAGE)).toBeInTheDocument();
+      expect(calls).not.toContain('subscribe');
+    });
+
+    it('shows the general steps when permission is denied in another browser', async () => {
+      stubUserAgent(CHROME_ANDROID_UA);
+      stubPushApi({ permission: 'denied' });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(BLOCKED_MESSAGE)).toBeInTheDocument();
+    });
+
+    it('shows nothing when the prompt is dismissed', async () => {
+      stubPushApi({ answer: 'default' });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      const button = await clickEnable();
+      await waitFor(() => expect(button).not.toBeDisabled());
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(calls).not.toContain('subscribe');
+    });
+
+    it('works with the callback-only requestPermission of older Safari', async () => {
+      stubPushApi({ callbackOnly: true });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+    });
+  });
+
+  describe('subscribe', () => {
+    it('passes the VAPID key as a Uint8Array', async () => {
+      const { registration } = stubPushApi();
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      await screen.findByRole('button', { name: /notifications enabled/i });
+      const options = registration.pushManager.subscribe.mock.calls[0]![0] as PushSubscriptionOptionsInit;
+      expect(options.userVisibleOnly).toBe(true);
+      expect(options.applicationServerKey).toBeInstanceOf(Uint8Array);
+      expect((options.applicationServerKey as Uint8Array).length).toBe(65);
+    });
+
+    it('shows "try again" with a reference, not a permissions message, when subscribe fails', async () => {
+      stubUserAgent(FIREFOX_ANDROID_UA);
+      stubPushApi({
+        permission: 'granted',
+        subscribe: vi.fn().mockRejectedValue(new DOMException('Error retrieving push subscription.', 'AbortError')),
+      });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      const button = await clickEnable();
+      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(screen.getByText('Reference: subscribe-AbortError')).toBeInTheDocument();
+      expect(screen.queryByText(BLOCKED_FIREFOX_MESSAGE)).not.toBeInTheDocument();
+      // The button recovers.
+      await waitFor(() => expect(button).not.toBeDisabled());
+    });
+
+    it('shows "try again" for a NotAllowedError while permission is granted (lost activation)', async () => {
+      stubUserAgent(FIREFOX_ANDROID_UA);
+      stubPushApi({
+        permission: 'granted',
+        subscribe: vi.fn().mockRejectedValue(new DOMException('User denied permission.', 'NotAllowedError')),
+      });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(screen.getByText('Reference: subscribe-NotAllowedError')).toBeInTheDocument();
+    });
+
+    it('shows the blocked steps for a NotAllowedError when permission is denied', async () => {
+      stubUserAgent(FIREFOX_ANDROID_UA);
+      const subscribe = vi.fn(() => {
+        vi.stubGlobal('Notification', { requestPermission: vi.fn(), permission: 'denied' });
+        return Promise.reject(new DOMException('User denied permission.', 'NotAllowedError'));
+      });
+      stubPushApi({ permission: 'granted', subscribe });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(BLOCKED_FIREFOX_MESSAGE)).toBeInTheDocument();
+    });
+
+    it('replaces a subscription made with an old key (InvalidStateError) and retries once', async () => {
+      const stale = { unsubscribe: vi.fn().mockResolvedValue(true) };
+      const subscribe = vi
         .fn()
-        .mockResolvedValueOnce(new Response('test-vapid-key', { status: 200 })) // GET vapid-public-key
-        .mockResolvedValueOnce(new Response(null, { status: 401 })), // POST subscribe
+        .mockRejectedValueOnce(new DOMException('different applicationServerKey', 'InvalidStateError'))
+        .mockResolvedValueOnce(SUBSCRIPTION);
+      // None on mount (else the button seeds as enabled), the stale one
+      // after the InvalidStateError.
+      const getSubscription = vi.fn().mockResolvedValueOnce(null).mockResolvedValue(stale);
+      stubPushApi({ subscribe, getSubscription });
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(stale.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(subscribe).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('VAPID key', () => {
+    it('refetches the key on click when the prefetch failed', async () => {
+      stubPushApi();
+      let keyCalls = 0;
+      stubFetch({
+        key: () => (++keyCalls === 1 ? new Response('boom', { status: 500 }) : new Response(VAPID_KEY)),
+      });
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+      expect(keyCalls).toBe(2);
+    });
+
+    it('shows "try again" with a key reference when the key cannot be fetched', async () => {
+      stubPushApi();
+      stubFetch({ key: () => new Response('boom', { status: 500 }) });
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(screen.getByText('Reference: key-Error')).toBeInTheDocument();
+    });
+  });
+
+  describe('saving the subscription', () => {
+    it('subscribes successfully on a 204', async () => {
+      stubPushApi();
+      stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
+    });
+
+    it('shows LoginPromptModal on a 401', async () => {
+      stubPushApi();
+      stubFetch({ save: () => new Response(null, { status: 401 }) });
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(/log in to enable notifications/i)).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it("shows the API's own sentence on a 409", async () => {
+      stubPushApi();
+      stubFetch({
+        save: () => new Response('that push endpoint is already registered to a different account', { status: 409 }),
+      });
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(
+        await screen.findByText('That push endpoint is already registered to a different account.'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows "try again" on a 500', async () => {
+      stubPushApi();
+      stubFetch({ save: () => new Response('boom', { status: 500 }) });
+      renderWithMantine(<NotificationsToggle />);
+      await clickEnable();
+      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(screen.getByText('Reference: save-Error')).toBeInTheDocument();
+    });
+
+    it('shows "try again" on a network failure', async () => {
+      stubPushApi();
+      const fetchMock = stubFetch();
+      renderWithMantine(<NotificationsToggle />);
+      const button = await screen.findByRole('button', { name: /enable notifications/i });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      fetchMock.mockImplementation(() =>
+        Promise.reject(new TypeError('NetworkError when attempting to fetch resource.')),
+      );
+      fireEvent.click(button);
+      expect(await screen.findByText(GENERIC_ENABLE_ERROR)).toBeInTheDocument();
+      expect(screen.getByText('Reference: save-TypeError')).toBeInTheDocument();
+    });
+  });
+
+  it('logs the failure detail without the push endpoint or keys', async () => {
+    stubUserAgent(FIREFOX_ANDROID_UA);
+    stubPushApi({ permission: 'granted' });
+    stubFetch({ save: () => new Response('boom', { status: 500 }) });
+    renderWithMantine(<NotificationsToggle />);
+    await clickEnable();
+    await screen.findByText(GENERIC_ENABLE_ERROR);
+    const warn = vi.mocked(console.warn);
+    expect(warn).toHaveBeenCalledWith(
+      'Enabling notifications failed',
+      expect.objectContaining({
+        step: 'save',
+        errorName: 'Error',
+        errorMessage: 'subscribe returned HTTP 500',
+        permission: 'granted',
+        userAgent: FIREFOX_ANDROID_UA,
+      }),
     );
-
-    renderWithMantine(<NotificationsToggle />);
-    const button = await screen.findByRole('button', { name: /enable notifications/i });
-    fireEvent.click(button);
-
-    await waitFor(() => expect(screen.getByText(/log in to enable notifications/i)).toBeInTheDocument());
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain('secret-endpoint');
+    expect(logged).not.toContain(VAPID_KEY);
   });
 
-  it('subscribes successfully on a 204 from the subscribe POST', async () => {
-    stubPushApiSupport();
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn()
-        .mockResolvedValueOnce(new Response('test-vapid-key', { status: 200 }))
-        .mockResolvedValueOnce(new Response(null, { status: 204 })),
-    );
-
-    renderWithMantine(<NotificationsToggle />);
-    const button = await screen.findByRole('button', { name: /enable notifications/i });
-    fireEvent.click(button);
-
-    await waitFor(() => expect(screen.getByRole('button', { name: /notifications enabled/i })).toBeInTheDocument());
-  });
-
-  // Bug: `enable()` was a bare `try`/`finally` with no `catch` and no error
-  // state -- a rejected `pushManager.subscribe()` (common on Firefox/Brave
-  // with push disabled, or a malformed VAPID key) threw as an unhandled
-  // promise rejection, with the button just silently re-enabling and
-  // nothing shown to the user.
-  it('shows a clear error, not a raw exception, when pushManager.subscribe() rejects', async () => {
-    const fakeRegistration = {
-      pushManager: {
-        subscribe: vi.fn().mockRejectedValue(new DOMException('push service error', 'AbortError')),
-      },
-    };
-    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
-    global.navigator.serviceWorker = { ready: Promise.resolve(fakeRegistration) };
-    // @ts-expect-error -- see above.
-    global.window.PushManager = function () {};
-    // @ts-expect-error -- see above.
-    global.Notification = { requestPermission: vi.fn().mockResolvedValue('granted') };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('test-vapid-key', { status: 200 })));
-
-    renderWithMantine(<NotificationsToggle />);
-    const button = await screen.findByRole('button', { name: /enable notifications/i });
-    fireEvent.click(button);
-
-    expect(
-      await screen.findByText("Couldn't enable notifications. Check your browser's notification permissions."),
-    ).toBeInTheDocument();
-    // The button itself recovers rather than staying stuck disabled/loading
-    // forever -- the `finally` block already reset `busy`; what was missing
-    // was only the visible error.
-    await waitFor(() => expect(button).not.toBeDisabled());
-    expect(screen.getByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
-  });
-
-  it('shows the same clear error on a non-ok vapid-key fetch', async () => {
-    stubPushApiSupport();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('boom', { status: 500 })));
-
-    renderWithMantine(<NotificationsToggle />);
-    const button = await screen.findByRole('button', { name: /enable notifications/i });
-    fireEvent.click(button);
-
-    expect(
-      await screen.findByText("Couldn't enable notifications. Check your browser's notification permissions."),
-    ).toBeInTheDocument();
-  });
-
-  // Bug: `enabled` was never seeded from the real subscription state
-  // (`pushManager.getSubscription()`), so a returning, already-subscribed
-  // visitor always saw "Enable notifications" and would call `subscribe()`
-  // again on every click instead of the button reflecting they're already
-  // subscribed.
+  // Bug: `enabled` was never seeded from the real subscription state.
   it('seeds "Notifications enabled" on mount when a subscription already exists', async () => {
-    const fakeSubscription = { endpoint: 'https://push.example/existing' };
-    const fakeRegistration = {
-      pushManager: { getSubscription: vi.fn().mockResolvedValue(fakeSubscription) },
-    };
-    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
-    global.navigator.serviceWorker = { getRegistration: vi.fn().mockResolvedValue(fakeRegistration) };
-    // @ts-expect-error -- see above.
-    global.window.PushManager = function () {};
-
+    stubPushApi({ getSubscription: vi.fn().mockResolvedValue(SUBSCRIPTION) });
+    stubFetch();
     renderWithMantine(<NotificationsToggle />);
-
     expect(await screen.findByRole('button', { name: /notifications enabled/i })).toBeInTheDocument();
   });
 
-  it('leaves "Enable notifications" on mount when getRegistration resolves with no subscription', async () => {
-    const fakeRegistration = {
-      pushManager: { getSubscription: vi.fn().mockResolvedValue(null) },
-    };
-    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
-    global.navigator.serviceWorker = { getRegistration: vi.fn().mockResolvedValue(fakeRegistration) };
-    // @ts-expect-error -- see above.
-    global.window.PushManager = function () {};
-
+  it('leaves "Enable notifications" on mount when there is no subscription', async () => {
+    stubPushApi();
+    stubFetch();
     renderWithMantine(<NotificationsToggle />);
     const button = await screen.findByRole('button', { name: /enable notifications/i });
     await waitFor(() => expect(button).not.toBeDisabled());
     expect(screen.queryByRole('button', { name: /notifications enabled/i })).not.toBeInTheDocument();
-  });
-
-  it('does nothing further when the permission prompt is denied', async () => {
-    stubPushApiSupport();
-    // @ts-expect-error -- test-only global stub for a Web API jsdom doesn't implement.
-    global.Notification = { requestPermission: vi.fn().mockResolvedValue('denied') };
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-
-    renderWithMantine(<NotificationsToggle />);
-    const button = await screen.findByRole('button', { name: /enable notifications/i });
-    fireEvent.click(button);
-
-    await waitFor(() => expect(button).not.toBeDisabled());
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
   });
 });

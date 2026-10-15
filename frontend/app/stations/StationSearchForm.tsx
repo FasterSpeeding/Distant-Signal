@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Autocomplete, Button, Group, Skeleton, Stack, Text, UnstyledButton } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { useMounted } from '@mantine/hooks';
 import { searchNearbyStations, searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
@@ -10,6 +10,7 @@ import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import type { NearbyStation } from '@/lib/types';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
+import { NearbyStationList } from './NearbyStationList';
 
 /** The "near me" lookup's own state machine -- mirrors the shape
  * `IncidentSearchForm.tsx`'s `Results` type already establishes (one
@@ -17,13 +18,16 @@ import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
  * could disagree). `'denied'` is kept apart from `'error'` on purpose: a
  * declined location prompt is a common, expected outcome that deserves
  * calm, non-alarming copy, not the same "something went wrong" treatment as
- * a genuine failure (a timeout, a GPS-less device). */
+ * a genuine failure (a timeout, a GPS-less device). `'lookupError'` is the
+ * location arriving but the station lookup failing: the device did its
+ * part, so the copy doesn't blame the location. */
 type NearbyState =
   | { status: 'idle' }
   | { status: 'loading' }
   | { status: 'success'; stations: NearbyStation[] }
   | { status: 'denied' }
-  | { status: 'error' };
+  | { status: 'error' }
+  | { status: 'lookupError' };
 
 // `GeolocationPositionError.PERMISSION_DENIED`'s standard numeric value
 // (https://developer.mozilla.org/docs/Web/API/GeolocationPositionError) --
@@ -50,8 +54,8 @@ export function StationSearchForm() {
   const mounted = useMounted();
   const geolocationSupported = mounted && typeof navigator !== 'undefined' && 'geolocation' in navigator;
 
-  // Shared by the "Look up" button and every "near me" result -- both are
-  // just "navigate to this station's page with the same pending-state UX".
+  // The "Look up" button's navigation. The "near me" results are plain
+  // links instead (`NearbyStationList`), with their own pending hint.
   function goToStation(target: string) {
     // The target `/stations/[crs]` route has no `loading.tsx` of its own,
     // so without this, `isPending` (and therefore all user feedback while
@@ -92,7 +96,7 @@ export function StationSearchForm() {
       (position) => {
         searchNearbyStations(position.coords.latitude, position.coords.longitude)
           .then((stations) => setNearby({ status: 'success', stations }))
-          .catch(() => setNearby({ status: 'error' }));
+          .catch(() => setNearby({ status: 'lookupError' }));
       },
       (error) => {
         setNearby({ status: error.code === GEOLOCATION_PERMISSION_DENIED ? 'denied' : 'error' });
@@ -174,21 +178,18 @@ export function StationSearchForm() {
               Try again, or search by name above.
             </Alert>
           )}
+          {nearby.status === 'lookupError' && (
+            <Alert color="red" title="Couldn't load nearby stations">
+              Try again, or search by name above.
+            </Alert>
+          )}
           {nearby.status === 'success' && nearby.stations.length === 0 && (
             <Text size="sm" c="dimmed" role="status">
-              No stations with known coordinates were found near you.
+              No stations found near you. Search by name above.
             </Text>
           )}
           {nearby.status === 'success' && nearby.stations.length > 0 && (
-            <Stack component="ul" gap={4} role="list" aria-label="Nearby stations" className="ds-plain-list">
-              {nearby.stations.map((station) => (
-                <li key={station.code}>
-                  <UnstyledButton onClick={() => goToStation(station.code)} disabled={isPending}>
-                    {station.name} ({station.code}), {station.distanceKm.toFixed(1)} km
-                  </UnstyledButton>
-                </li>
-              ))}
-            </Stack>
+            <NearbyStationList stations={nearby.stations} />
           )}
         </Stack>
       )}
