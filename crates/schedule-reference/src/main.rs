@@ -883,7 +883,11 @@ async fn poll_once(
 /// `common::heap`). The cycle runs on the main thread (`main`'s `block_on`),
 /// so nearly all of it is the main arena, which glibc only shrinks from the
 /// top on its own. `malloc_trim(0)` here, with the mmap threshold pinned at
-/// startup, returns it. The harness in `publish_memory_harness` measures it.
+/// startup, returns it. Measured with `publish_memory_harness` on a
+/// production-shaped synthetic delivery (peak ~1.2GiB either way): RSS after
+/// the cycle went from 1149MiB to 42MiB with the harness's thread arena, and
+/// to 11MiB with `MALLOC_ARENA_MAX=1` (the main arena only, closest to
+/// prod's main-thread cycle), against 7-8MiB before the cycle.
 ///
 /// Logs the RSS (`VmRSS`) and the process's peak (`VmHWM`) after the release,
 /// and sets [`telemetry::POST_PUBLISH_RSS_METRIC`], so the drop back to
