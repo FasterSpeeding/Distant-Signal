@@ -21,7 +21,7 @@ vi.mock('@/lib/api', async () => {
 // digest-carrying error that only framework machinery above the page
 // recognises) -- same convention `app/lines/[id]/page.test.tsx`/
 // `app/journeys/[id]/page.test.tsx` already use for the same function.
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }), notFound: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn() }), notFound: vi.fn() }));
 // Same rationale as TrendsResults.test.tsx's own mock -- this repo's
 // convention is not to assert on Recharts' SVG output.
 vi.mock('@mantine/charts', () => ({

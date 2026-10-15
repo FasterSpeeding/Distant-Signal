@@ -109,13 +109,15 @@ export function HistoryRangePicker({
     if (!start || !end) return;
     // FE-5: the picked days are London days, and the range includes the
     // whole of the end day (it used to stop at UTC midnight at its start).
-    router.push(`${basePath}?from=${londonDayStartIso(start)}&to=${londonDayEndIso(end)}`);
+    // Replace, not push (see `GranularityControl`): a new range is the same
+    // page, not a new Back stop.
+    router.replace(`${basePath}?from=${londonDayStartIso(start)}&to=${londonDayEndIso(end)}`, { scroll: false });
   }
 
   // Presets navigate by name, not by baked-in instants, so a shared link
   // keeps meaning "the last 7 days".
   function handlePreset(next: RangePreset) {
-    router.push(`${basePath}?range=${next}`);
+    router.replace(`${basePath}?range=${next}`, { scroll: false });
   }
 
   function handleSelectionChange(next: string) {

@@ -18,7 +18,7 @@ vi.mock('@/lib/api', async () => {
     getOperatorSixHourlyStats: vi.fn(),
   };
 });
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn() }) }));
 // This repo's convention (see TrendsResults.test.tsx): don't assert on
 // Recharts' own SVG output, just that the wrapping components render.
 vi.mock('@mantine/charts', () => ({

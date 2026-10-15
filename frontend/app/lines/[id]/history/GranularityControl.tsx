@@ -54,7 +54,10 @@ export function GranularityControl({
 
   function handleChange(value: string) {
     const rangeParams = preset ? `range=${preset}` : `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-    router.push(`${basePath}?${rangeParams}&granularity=${value}`);
+    // Replace, not push: changing the view is not a new place to go Back
+    // to, so Back leaves the page instead of stepping through every
+    // granularity tried. `scroll: false` keeps the charts where they were.
+    router.replace(`${basePath}?${rangeParams}&granularity=${value}`, { scroll: false });
   }
 
   return (

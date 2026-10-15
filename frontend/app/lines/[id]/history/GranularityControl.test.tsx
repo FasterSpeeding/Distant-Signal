@@ -3,8 +3,8 @@ import { screen, fireEvent } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { GranularityControl } from './GranularityControl';
 
-const push = vi.fn();
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
+const replace = vi.fn();
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace }) }));
 
 describe('GranularityControl', () => {
   it('renders all four options when all four are available', () => {
@@ -53,7 +53,7 @@ describe('GranularityControl', () => {
       />,
     );
     fireEvent.click(screen.getByText('Hourly'));
-    expect(push).toHaveBeenCalledWith('/lines/northern/history?range=30d&granularity=hour');
+    expect(replace).toHaveBeenCalledWith('/lines/northern/history?range=30d&granularity=hour', { scroll: false });
   });
 
   it('navigates with the raw from/to when a custom range is active (no preset)', () => {
@@ -68,8 +68,9 @@ describe('GranularityControl', () => {
       />,
     );
     fireEvent.click(screen.getByText('30 min'));
-    expect(push).toHaveBeenCalledWith(
+    expect(replace).toHaveBeenCalledWith(
       '/lines/northern/history?from=2026-07-22T00%3A00%3A00Z&to=2026-08-21T00%3A00%3A00Z&granularity=halfHour',
+      { scroll: false },
     );
   });
   // 2026-09-22 UX review, I9/P4: this control shipped with no
