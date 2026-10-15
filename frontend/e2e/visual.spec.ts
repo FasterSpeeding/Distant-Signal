@@ -194,6 +194,25 @@ for (const scheme of SCHEMES) {
         });
       }
 
+      // The /incidents filters panel open (a popover from `sm` up, a bottom
+      // sheet below): the tallest panel, with its chip rows and the priority
+      // range. Viewport shot, as for /lines.
+      test('incidents-filters-open', async ({ page }) => {
+        await page.clock.setFixedTime(FIXED_NOW);
+        await page.goto('/incidents', { waitUntil: 'networkidle' });
+        await page.addStyleTag({ content: NO_MOTION_CSS });
+        await page.evaluate(() => document.fonts.ready);
+        await page.getByRole('button', { name: 'Filters' }).click();
+        await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+
+        // No mask: the only clock-dependent text, the incidents' timestamps,
+        // is under the panel at both widths, and masks are painted on top.
+        await expect(page).toHaveScreenshot(`incidents-filters-open-${scheme}-${width}.png`, {
+          animations: 'disabled',
+          caret: 'hide',
+        });
+      });
+
       // The /stations "Use my location" results
       // (app/stations/NearbyStationList.tsx), which only exist after the
       // click. The location is mocked and so is the lookup, with five
