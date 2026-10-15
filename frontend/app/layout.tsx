@@ -22,6 +22,7 @@ import {
 } from '@/lib/api';
 import { GroupSummariesProvider } from '@/lib/useGroupSummaries';
 import { NONCE_HEADER } from '@/lib/csp';
+import { PRIDE_MODE_SCRIPT } from '@/lib/prideMode';
 import { previewCards, SITE_DESCRIPTION, SITE_NAME, TITLE_TEMPLATE } from '@/lib/pageMetadata';
 import { getConfiguredSiteOrigin } from '@/lib/siteOrigin';
 import type { DataFreshness } from '@/lib/types';
@@ -242,7 +243,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             (lib/csp.ts) blocks any inline script without it. */}
         <ColorSchemeScript defaultColorScheme="auto" nonce={nonce} />
       </head>
-      <body>
+      {/* `suppressHydrationWarning`: PRIDE_MODE_SCRIPT below adds
+          `data-pride` to this element before React hydrates it. */}
+      <body suppressHydrationWarning>
+        {/* The saved pride flag, applied before the first paint so it
+            doesn't pop in after hydration (lib/prideMode.ts). Same nonce
+            as ColorSchemeScript above. */}
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: PRIDE_MODE_SCRIPT }} />
         <a href="#main-content" className="skip-link">
           Skip to content
         </a>

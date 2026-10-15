@@ -166,6 +166,11 @@ used, rather than as a literal in a component.
   `/journeys`. No settings live in the bar: the theme and pride flag are
   on `/account/preferences`, reached from the account menu, the drawer and
   the footer.
+- One exception: a logged-out visitor at `md` and up gets a gear
+  (`PreferencesNavIcon`, labelled and tooltipped "Preferences") beside
+  "Log in". It is a link to the settings page, not a control, and they
+  have no account menu or drawer to reach it otherwise. Logged in, the
+  account menu does that job, so the gear is left out.
 - Primary links show at `md` (62em) and up; below that they move into the
   burger `Drawer` (`AppNavDrawer.tsx`).
 
@@ -314,11 +319,20 @@ used, rather than as a literal in a component.
   route falls back to `public/opengraph-image.png`, the template's no-title
   form. A route with its own image passes `OWN_PREVIEW_IMAGE` to
   `pageMetadata`: an explicit card image would otherwise win over it.
-- **Preferences** (`app/account/preferences/page.tsx`): open to everyone.
-  Appearance (colour theme, pride flag; saved in this browser),
-  notifications (a log in link when logged out, never a permission prompt
-  that then fails), and the Claude API key for accounts that can use "Ask
-  about trains". `/chat` links here instead of holding the key itself.
+- **Preferences** (`app/account/preferences/page.tsx`): open to everyone,
+  never a redirect. Each section is a `PreferencesSection` card.
+  - Device-local, no account needed: Appearance (colour theme, pride
+    flag), saved in this browser and applied before the first paint
+    (Mantine's `ColorSchemeScript`, `PRIDE_MODE_SCRIPT`).
+  - Account-backed: notifications, and the Claude API key for accounts
+    that can use "Ask about trains". Logged out, these give way to one
+    "Account settings" card with a log in link back to the page, never a
+    permission prompt that then fails.
+  - Logging in or out leaves the device-local settings as they are. The
+    account keeps no copy, so there is nothing to merge or overwrite.
+  - Linked from the drawer (everyone), the account menu (logged in), the
+    bar's gear (logged out, `md` and up) and the footer (everyone).
+    `/chat` links here instead of holding the key itself.
 - **Page skeletons** (`components/PageSkeleton.tsx`): a route whose server
   fetch holds up the first paint gets a `loading.tsx` built from
   `PageSkeleton` pieces (`SkeletonPageHeader`, `SkeletonText`,
@@ -375,8 +389,13 @@ used, rather than as a literal in a component.
 - **Pride mode** (`PrideMode.tsx`): decorative, off by default. Each
   flag's stripes are one `--ds-pride-<flag>` variable in `globals.css`,
   read by the page bar, nav bar, site name and the picker's swatch. The nav
-  mounts `PrideModeApplier`, which applies the saved mode with no control;
-  `PrideModeSelect` on `/account/preferences` picks the flag.
+  mounts `PrideModeApplier`, which applies the saved mode with no control,
+  and `PrideSparkles`, the flag's three-emoji sparkle scatter around the
+  wordmark (`aria-hidden`, floating, static under reduced motion).
+  `PrideModeSelect` on `/account/preferences` picks the flag, with a live
+  preview beside it: the swatch in a round badge with the flag's spinning
+  ring and sparkles, the old nav toggle's look. All of it follows
+  `body[data-pride]`, so it shows logged in or out.
 
 ## States
 
@@ -634,10 +653,11 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 ## Visual regression
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
-Stations, a station, Trains, a train, Incidents and Account (logged in) at
-390 and 1366px, light and dark: 40 full-page images in
-`frontend/e2e/visual-baselines/`. It runs against the seeded e2e stack
-(`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
+Stations, a station, Trains, a train, Incidents, Account (logged in),
+Preferences (logged out, logged in and with a pride flag) and the tram
+pages at 390 and 1366px, light and dark, plus the /lines filter bar's
+stuck and open states: 76 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 
 - **Deterministic.** The browser clock is fixed (2026-09-17T11:00Z, the
