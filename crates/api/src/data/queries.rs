@@ -3013,9 +3013,8 @@ pub async fn search_incidents(
               AND ($8::timestamptz IS NULL OR first_seen_at <= $8)
               AND ($9::text        IS NULL
                    OR numnode(to_tsquery('english'::regconfig, $9)) = 0
-                   OR {document} @@ to_tsquery('english'::regconfig, $9))
-            ",
-        document = INCIDENT_SEARCH_DOCUMENT_SQL,
+                   OR {INCIDENT_SEARCH_DOCUMENT_SQL} @@ to_tsquery('english'::regconfig, $9))
+            "
     );
 
     // `fetched_at`: the display time (plan 2c.4), as in `incident_by_id`.
