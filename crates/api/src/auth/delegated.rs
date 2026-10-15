@@ -115,6 +115,14 @@ pub enum Ingress {
     Delegated,
 }
 
+/// The delegated listener's copy of the api's router (`main.rs`): the same
+/// routes, with every request marked [`Ingress::Delegated`]. That mark is
+/// the only thing that lets [`gate`] accept a delegated bearer, and only
+/// this listener sets it.
+pub fn delegated_listener_router(router: axum::Router) -> axum::Router {
+    router.layer(axum::Extension(Ingress::Delegated))
+}
+
 /// How long a grant may go unused before it expires (D-6).
 pub const GRANT_IDLE_DAYS: i64 = 90;
 
@@ -403,27 +411,6 @@ impl DelegatedAuth {
             daily_save_limit: settings.daily_save_limit,
             daily_delete_limit: settings.daily_delete_limit,
         })
-    }
-
-    /// For tests: clients with their own verifiers.
-    #[cfg(test)]
-    pub(crate) fn with_verifiers(
-        clients: Vec<(ClientConfig, Box<dyn DelegatedTokenCheck>)>,
-    ) -> Self {
-        Self {
-            clients: clients
-                .into_iter()
-                .enumerate()
-                .map(|(index, (config, verifier))| RegisteredClient {
-                    index: u16::try_from(index).unwrap_or(u16::MAX),
-                    config: Arc::new(config),
-                    verifier,
-                })
-                .collect(),
-            listen_addr: "127.0.0.1:0".to_string(),
-            daily_save_limit: 50,
-            daily_delete_limit: 20,
-        }
     }
 
     /// No client registered: [`gate`] passes every request through.
@@ -1096,5 +1083,311 @@ mod tests {
         assert_eq!(log_hash("abc"), log_hash("abc"));
         assert_eq!(log_hash("abc").len(), 16);
         assert_ne!(log_hash("abc"), log_hash("abd"));
+    }
+
+    /// The gate in front of stand-in handlers: each says whether it ran and
+    /// whether the gate left a verified [`DelegatedToken`] for it.
+    mod gate_tests {
+        use axum::body::Body;
+        use axum::http::Request;
+        use axum::routing::{get, post};
+        use serde_json::json;
+        use tower::ServiceExt;
+
+        use super::*;
+        use crate::auth::internal_oauth::test_support::{
+            mock_authentik, sign_token, sign_token_with_typ,
+        };
+
+        const AUDIENCE: &str = "distant-signal-api";
+
+        async fn handler(token: Option<axum::Extension<DelegatedToken>>) -> String {
+            match token {
+                Some(axum::Extension(token)) => format!("reached as {}", token.sub),
+                None => "reached without a delegated token".to_string(),
+            }
+        }
+
+        fn stand_in_routes() -> axum::Router {
+            let public = axum::Router::new()
+                .route("/groups/shared-journeys", get(handler))
+                .route("/admin/users/revoke-sessions", post(handler))
+                .route("/chatbot/access", get(handler))
+                .route("/account/export", get(handler))
+                .route("/account/connected-apps/{client}", post(handler));
+            axum::Router::new()
+                .route("/Journeys", post(handler))
+                .route("/Journeys/mine", get(handler))
+                .route("/Journeys/itinerary", post(handler))
+                .route("/Journeys/{journey_id}", get(handler).delete(handler))
+                .route("/Journeys/{journey_id}/share-link", post(handler))
+                .route("/Journeys/{journey_id}/legs", post(handler))
+                .route("/Train/track", post(handler))
+                .route("/delegated-grants/revoke", post(handler))
+                .nest("/public", public)
+        }
+
+        async fn auth_for(issuer: &str, enabled: bool) -> Arc<DelegatedAuth> {
+            let settings = DelegatedSettings {
+                clients: String::new(),
+                listen_addr: "127.0.0.1:0".to_string(),
+                daily_save_limit: 50,
+                daily_delete_limit: 20,
+            };
+            let mut config = client("ds-mcp", issuer, AUDIENCE);
+            config.enabled = enabled;
+            Arc::new(DelegatedAuth::from_settings(&settings, vec![config]).unwrap())
+        }
+
+        fn routers(auth: Arc<DelegatedAuth>) -> (axum::Router, axum::Router) {
+            let router = stand_in_routes().layer(axum::middleware::from_fn_with_state(auth, gate));
+            (router.clone(), delegated_listener_router(router))
+        }
+
+        fn claims(issuer: &str, mutate: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+            let now = chrono::Utc::now().timestamp();
+            let mut claims = json!({
+                "sub": "user-1",
+                "iss": issuer,
+                "aud": AUDIENCE,
+                "azp": AUDIENCE,
+                "iat": now,
+                "exp": now + 300,
+                "jti": "jti-1",
+                "scope": "journeys:write journeys:read journeys:delete",
+            });
+            mutate(&mut claims);
+            claims
+        }
+
+        async fn send(
+            router: &axum::Router,
+            method: &str,
+            uri: &str,
+            token: &str,
+            cookie: bool,
+        ) -> (StatusCode, HeaderMap, String) {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"));
+            if cookie {
+                request = request.header(header::COOKIE, format!("{SESSION_COOKIE_NAME}=abc"));
+            }
+            let response = router
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+                .await
+                .unwrap();
+            (status, headers, String::from_utf8(body.to_vec()).unwrap())
+        }
+
+        use axum::http::HeaderMap;
+
+        #[tokio::test]
+        async fn a_delegated_token_works_only_on_the_delegated_listener() {
+            let (server, _) = mock_authentik().await;
+            let (public, delegated) = routers(auth_for(&server.uri(), true).await);
+            let token = sign_token(&claims(&server.uri(), |_| {}));
+
+            let (status, headers, body) =
+                send(&public, "GET", "/Journeys/mine", &token, false).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+            assert!(body.contains("invalid_token"), "{body}");
+            assert_eq!(
+                headers[header::WWW_AUTHENTICATE],
+                "Bearer error=\"invalid_token\""
+            );
+
+            let (status, _, body) = send(&delegated, "GET", "/Journeys/mine", &token, false).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body, "reached as user-1");
+            for (method, uri) in [
+                ("GET", "/Journeys/42"),
+                ("POST", "/Journeys/itinerary"),
+                ("DELETE", "/Journeys/42"),
+            ] {
+                let (status, _, body) = send(&delegated, method, uri, &token, false).await;
+                assert_eq!(status, StatusCode::OK, "{method} {uri}: {body}");
+                assert_eq!(body, "reached as user-1", "{method} {uri}");
+            }
+        }
+
+        #[tokio::test]
+        async fn delegated_tokens_never_reach_any_other_route() {
+            let (server, _) = mock_authentik().await;
+            let (_, delegated) = routers(auth_for(&server.uri(), true).await);
+            let token = sign_token(&claims(&server.uri(), |_| {}));
+            for (method, uri) in [
+                ("POST", "/Journeys"),
+                ("POST", "/Journeys/42/legs"),
+                ("POST", "/Journeys/42/share-link"),
+                ("POST", "/Train/track"),
+                ("POST", "/delegated-grants/revoke"),
+                ("GET", "/public/groups/shared-journeys"),
+                ("POST", "/public/admin/users/revoke-sessions"),
+                ("GET", "/public/chatbot/access"),
+                ("GET", "/public/account/export"),
+                ("POST", "/public/account/connected-apps/ds-mcp"),
+            ] {
+                let (status, _, body) = send(&delegated, method, uri, &token, false).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {body}");
+                assert!(
+                    body.contains("insufficient_scope"),
+                    "{method} {uri}: {body}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_cookie_and_a_bearer_together_are_refused() {
+            let (server, _) = mock_authentik().await;
+            let (public, delegated) = routers(auth_for(&server.uri(), true).await);
+            let token = sign_token(&claims(&server.uri(), |_| {}));
+            for router in [&public, &delegated] {
+                let (status, _, body) = send(router, "GET", "/Journeys/mine", &token, true).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+                assert!(body.contains("ambiguous_credentials"), "{body}");
+            }
+        }
+
+        #[tokio::test]
+        async fn the_kill_switch_refuses_every_token() {
+            let (server, _) = mock_authentik().await;
+            let auth = auth_for(&server.uri(), false).await;
+            assert_eq!(
+                auth.listen_addr(),
+                None,
+                "no listener for a disabled client"
+            );
+            let (_, delegated) = routers(auth);
+            let token = sign_token(&claims(&server.uri(), |_| {}));
+            let (status, _, body) = send(&delegated, "GET", "/Journeys/mine", &token, false).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        }
+
+        #[tokio::test]
+        async fn bad_tokens_for_the_client_are_refused() {
+            let (server, _) = mock_authentik().await;
+            let (_, delegated) = routers(auth_for(&server.uri(), true).await);
+            let uri = server.uri();
+            let cases = [
+                (
+                    "expired",
+                    sign_token(&claims(&uri, |c| {
+                        c["exp"] = json!(chrono::Utc::now().timestamp() - 3600);
+                    })),
+                ),
+                (
+                    "no iat",
+                    sign_token(&claims(&uri, |c| {
+                        c.as_object_mut().unwrap().remove("iat");
+                    })),
+                ),
+                (
+                    "issued in the future",
+                    sign_token(&claims(&uri, |c| {
+                        c["iat"] = json!(chrono::Utc::now().timestamp() + 3600);
+                    })),
+                ),
+                (
+                    "a logout token",
+                    sign_token_with_typ(&claims(&uri, |_| {}), "logout+jwt"),
+                ),
+                ("a bad signature", {
+                    let token = sign_token(&claims(&uri, |_| {}));
+                    let (rest, _) = token.rsplit_once('.').unwrap();
+                    format!("{rest}.AAAA")
+                }),
+            ];
+            for (what, token) in cases {
+                let (status, _, body) =
+                    send(&delegated, "GET", "/Journeys/mine", &token, false).await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{what}: {body}");
+            }
+        }
+
+        #[tokio::test]
+        async fn other_audiences_are_never_treated_as_delegated() {
+            let (server, _) = mock_authentik().await;
+            let (_, delegated) = routers(auth_for(&server.uri(), true).await);
+            // The same issuer with the SSO client's audience, and another
+            // issuer with the delegated audience: neither names the client,
+            // so the gate leaves them alone and no handler sees a delegated
+            // identity (the extractor then answers 401).
+            for token in [
+                sign_token(&claims(&server.uri(), |c| {
+                    c["aud"] = json!("distant-signal")
+                })),
+                sign_token(&claims("https://other.example/", |_| {})),
+            ] {
+                let (status, _, body) =
+                    send(&delegated, "GET", "/Journeys/mine", &token, false).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(body, "reached without a delegated token");
+            }
+        }
+
+        /// The pinned list of handlers that take [`DelegatedOrSessionUser`]
+        /// (spec §5.7): a handler added to (or removed from) it fails here
+        /// until [`DELEGATED_ROUTES`] and this list agree.
+        #[test]
+        fn the_delegated_handlers_are_pinned() {
+            assert_eq!(
+                DELEGATED_ROUTES
+                    .iter()
+                    .map(|(method, path, scope)| format!("{method} {path} {}", scope.as_str()))
+                    .collect::<Vec<_>>(),
+                [
+                    "GET /Journeys/mine journeys:read",
+                    "GET /Journeys/{journey_id} journeys:read",
+                    "POST /Journeys/itinerary journeys:write",
+                    "DELETE /Journeys/{journey_id} journeys:delete",
+                ]
+            );
+            let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+            let mut found = Vec::new();
+            let mut stack = vec![src.clone()];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|ext| ext == "rs")
+                        // This module defines the extractor (and this test
+                        // names it); only its users are counted.
+                        && !path.ends_with("auth/delegated.rs")
+                    {
+                        let text = std::fs::read_to_string(&path).unwrap();
+                        let file = path.strip_prefix(&src).unwrap().display().to_string();
+                        for (index, _) in text.match_indices("user: DelegatedOrSessionUser<") {
+                            let scope: String = text
+                                [index + "user: DelegatedOrSessionUser<".len()..]
+                                .chars()
+                                .take_while(char::is_ascii_alphanumeric)
+                                .collect();
+                            found.push(format!("{file} {scope}"));
+                        }
+                    }
+                }
+            }
+            found.sort();
+            assert_eq!(
+                found,
+                [
+                    "routes/journey_itinerary.rs WriteScope",
+                    "routes/journeys.rs DeleteScope",
+                    "routes/journeys.rs ReadScope",
+                    "routes/journeys.rs ReadScope",
+                ],
+                "the handlers taking DelegatedOrSessionUser changed; update DELEGATED_ROUTES, \
+                 the spec's §5.8 and this list together"
+            );
+        }
     }
 }

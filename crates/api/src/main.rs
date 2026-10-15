@@ -358,9 +358,7 @@ async fn server_main() -> anyhow::Result<()> {
     let delegated_listener = app.delegated.listen_addr().map(|addr| {
         (
             addr.to_string(),
-            router
-                .clone()
-                .layer(axum::Extension(api::auth::delegated::Ingress::Delegated)),
+            api::auth::delegated::delegated_listener_router(router.clone()),
         )
     });
     if let Some((addr, _)) = &delegated_listener {

@@ -5,6 +5,8 @@ pub mod admin;
 pub mod auth;
 pub mod chatbot;
 pub mod connected_apps;
+#[cfg(test)]
+mod delegated_db_tests;
 pub mod departures;
 pub mod freshness;
 pub mod groups;
