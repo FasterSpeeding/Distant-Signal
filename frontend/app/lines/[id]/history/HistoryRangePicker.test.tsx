@@ -5,8 +5,8 @@ import { renderWithMantine } from '@/test/render';
 import { theme } from '@/lib/theme';
 import { HistoryRangePicker, londonTodayDayProps } from './HistoryRangePicker';
 
-const pushMock = vi.hoisted(() => vi.fn());
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }) }));
+const replaceMock = vi.hoisted(() => vi.fn());
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: replaceMock }) }));
 
 describe('HistoryRangePicker', () => {
   it('labels the period control and gives it an accessible name', () => {
@@ -147,8 +147,22 @@ describe('HistoryRangePicker', () => {
     expect(screen.getByDisplayValue('2026-08-14 – 2026-08-21')).toBeInTheDocument();
   });
 
+  it('replaces the URL for a preset rather than adding a Back stop', () => {
+    replaceMock.mockClear();
+    renderWithMantine(
+      <HistoryRangePicker
+        basePath="/lines/northern/history"
+        preset="30d"
+        from="2026-07-22T00:00:00Z"
+        to="2026-08-21T00:00:00Z"
+      />,
+    );
+    fireEvent.click(screen.getByText('7 days'));
+    expect(replaceMock).toHaveBeenCalledWith('/lines/northern/history?range=7d', { scroll: false });
+  });
+
   it('submits London-day bounds covering the whole of the end day', () => {
-    pushMock.mockClear();
+    replaceMock.mockClear();
     renderWithMantine(
       <HistoryRangePicker
         basePath="/lines/northern/history"
@@ -158,8 +172,9 @@ describe('HistoryRangePicker', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Show history' }));
-    expect(pushMock).toHaveBeenCalledWith(
+    expect(replaceMock).toHaveBeenCalledWith(
       '/lines/northern/history?from=2026-08-13T23:00:00.000Z&to=2026-08-21T22:59:59.999Z',
+      { scroll: false },
     );
   });
 });

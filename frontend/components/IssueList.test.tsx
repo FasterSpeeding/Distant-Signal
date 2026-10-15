@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { screen, fireEvent, within } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { act, screen, fireEvent, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { theme } from '@/lib/theme';
 import { renderWithMantine } from '@/test/render';
 import { IssueList } from './IssueList';
+import { parseIssueListFilters } from '@/lib/issueListFilters';
 import type { LineStatus } from '@/lib/types';
 import type { IssueItem } from '@/lib/stationIssues';
 
@@ -61,12 +62,11 @@ const plannedRange: LineStatus = {
 
 const all = [minorNow, severePlanned, inferredNow];
 
-/** `all` above is exactly `FILTER_DISCLOSURE_MAX_ISSUES` (3) issues, so
- * every test that exercises the Severity/Source chips against it needs the
- * "Filter" disclosure opened first -- see IssueList.tsx's own comment on
- * why a short report starts with the chips tucked away. */
+/** The Severity/Source chips live behind the list's "Filters" button
+ * (`ListFilterBar`, non-sticky), in a popover; opens it if it is shut. */
 function openFilters() {
-  fireEvent.click(screen.getByRole('button', { name: /^Filter/ }));
+  const button = screen.getByRole('button', { name: /^Filters/ });
+  if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button);
 }
 
 describe('IssueList', () => {
@@ -123,7 +123,7 @@ describe('IssueList', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     fireEvent.click(screen.getByText(/^All/));
     openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor delays' }));
     expect(screen.getByText('Signal failure')).toBeInTheDocument();
     expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
     expect(screen.queryByText('10 of 12 sampled services delayed.')).not.toBeInTheDocument();
@@ -172,7 +172,7 @@ describe('IssueList', () => {
     // Active should read 0 while Upcoming still reads 1.
     fireEvent.click(screen.getByText('Active (2)'));
     openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned Closure' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Planned closure' }));
     expect(screen.getByText('All (1)')).toBeInTheDocument();
     expect(screen.getByText('Active (0)')).toBeInTheDocument();
     expect(screen.getByText('Upcoming (1)')).toBeInTheDocument();
@@ -219,7 +219,7 @@ describe('IssueList', () => {
   it('shows a message when no issues match the filters', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     // The whole pool is filtered away regardless of tab — there's no
     // sibling tab to send the user to, only the filters to blame.
@@ -296,7 +296,7 @@ describe('IssueList', () => {
     // Narrow to a single, DIFFERENT status ("Severe Delays" / inferredNow),
     // which becomes the new (and only) index 0.
     openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Severe delays' }));
 
     expect(screen.queryByText('Signal failure')).not.toBeInTheDocument();
     expect(screen.getByText('10 of 12 sampled services delayed.')).toBeInTheDocument();
@@ -392,8 +392,8 @@ describe('IssueList', () => {
   it('reports how many chips are selected in each row label', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     openFilters();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor Delays' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Severe Delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Minor delays' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Severe delays' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
     expect(screen.getByText('Severity: 2 selected')).toBeInTheDocument();
     expect(screen.getByText('Source: 1 selected')).toBeInTheDocument();
@@ -402,7 +402,7 @@ describe('IssueList', () => {
   it('renders selected chips in a visually distinct variant from unselected ones', () => {
     renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
     openFilters();
-    const minor = screen.getByRole('checkbox', { name: 'Minor Delays' });
+    const minor = screen.getByRole('checkbox', { name: 'Minor delays' });
     const planned = screen.getByRole('checkbox', { name: 'Planned' });
     expect(minor.closest('[data-variant]')).toHaveAttribute('data-variant', 'outline');
     fireEvent.click(minor);
@@ -792,47 +792,100 @@ describe('IssueList', () => {
     expect(screen.queryByText(/^All \(/)).not.toBeInTheDocument();
   });
 
-  // Review §2.14: filter chrome vs. content imbalance. `all` is exactly
-  // `FILTER_DISCLOSURE_MAX_ISSUES` (3) issues.
-  describe('the "Filter" disclosure', () => {
-    it('collapses the Severity/Source chips behind a "Filter" toggle on a short report', () => {
+  // Review §2.14: filter chrome vs. content imbalance. The chips sit behind
+  // one "Filters" button (the shared ListFilterBar, without its search or
+  // stickiness); the tabs stay inline beside it.
+  describe('the Filters button', () => {
+    it('keeps the Severity/Source chips behind it, with the tabs inline', () => {
       renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
-      expect(screen.getByRole('button', { name: 'Filter' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Filters/ })).toBeInTheDocument();
       expect(screen.queryByText(/Severity:/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/Source:/)).not.toBeInTheDocument();
-    });
-
-    it('reveals the chips once "Filter" is toggled open', () => {
-      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
-      openFilters();
-      expect(screen.getByText('Severity: showing all')).toBeInTheDocument();
-      expect(screen.getByText('Source: showing all')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Hide filters' })).toBeInTheDocument();
-    });
-
-    it('shows the chips with no disclosure toggle at all once the report exceeds the threshold', () => {
-      const fourth: LineStatus = { ...minorNow, reason: 'A fourth issue' };
-      renderWithMantine(<IssueList items={toItems([...all, fourth])} now={NOW} />);
-      expect(screen.queryByRole('button', { name: /^Filter/ })).not.toBeInTheDocument();
-      expect(screen.getByText(/Severity:/)).toBeInTheDocument();
-      expect(screen.getByText(/Source:/)).toBeInTheDocument();
-    });
-
-    it('keeps the All/Active/Upcoming control visible even while the chip filters are collapsed', () => {
-      // The All/Active/Upcoming control carries live counts and is useful
-      // standalone -- unlike the chips, it must not hide behind the
-      // disclosure just because the chips do.
-      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
       expect(screen.getByText('All (3)')).toBeInTheDocument();
       expect(screen.getByText('Active (2)')).toBeInTheDocument();
+      expect(document.querySelector('.listFilterBar')).not.toHaveAttribute('data-sticky');
     });
 
-    it('shows how many chip filters are active on the closed toggle', () => {
+    it('opens a Filters dialog with the chips and a Show button counting the rows', () => {
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      openFilters();
+      const dialog = screen.getByRole('dialog', { name: 'Filters' });
+      expect(within(dialog).getByText('Severity: showing all')).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Show 2 issues' })).toBeInTheDocument();
+    });
+
+    it('badges the button with how many chips are on, and clears them', () => {
       renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
       openFilters();
       fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }));
-      expect(screen.getByRole('button', { name: 'Filter (1 active)' })).toBeInTheDocument();
+      expect(screen.getByTestId('list-filter-count')).toHaveTextContent('1');
+      fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+      expect(screen.queryByTestId('list-filter-count')).not.toBeInTheDocument();
+    });
+
+    it('labels severity chips in sentence case, worst first', () => {
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      openFilters();
+      const group = screen.getByRole('group', { name: /^Severity/ });
+      const labels = within(group)
+        .getAllByRole('checkbox')
+        .map((chip) => (chip as HTMLInputElement).labels?.[0]?.textContent);
+      expect(labels).toEqual(['Severe delays', 'Minor delays', 'Planned closure']);
+    });
+
+    it('offers no Filters button when there is nothing to narrow', () => {
+      renderWithMantine(<IssueList items={toItems([minorNow])} now={NOW} />);
+      expect(screen.queryByRole('button', { name: /^Filters/ })).not.toBeInTheDocument();
+      expect(screen.getByText('All (1)')).toBeInTheDocument();
+    });
+  });
+
+  describe('URL state', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      window.history.replaceState(null, '', '/');
+    });
+
+    it('restores the tab and chips from the URL under its own prefix', () => {
+      const filters = parseIssueListFilters(
+        new URLSearchParams(
+          'dir=up&issueTab=all&issueSeverity=9&issueSeverity=x&issueSource=knowledgebase&issueSource=nope',
+        ),
+        'issue',
+      );
+      expect(filters).toEqual({ tab: 'all', severities: ['9'], sources: ['knowledgebase'] });
+      expect(parseIssueListFilters(new URLSearchParams('issueTab=all'), 'tflIssue')).toEqual({
+        tab: null,
+        severities: [],
+        sources: [],
+      });
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} urlPrefix="issue" initialFilters={filters} />);
+      expect(screen.getByText('Signal failure')).toBeInTheDocument();
+      expect(screen.queryByText('Engineering works')).not.toBeInTheDocument();
+      expect(screen.getByTestId('list-filter-count')).toHaveTextContent('2');
+    });
+
+    it("writes its filters to the URL with replaceState, keeping the page's other params", () => {
+      vi.useFakeTimers();
+      window.history.replaceState(null, '', '/lines/x?dir=up&at=0900');
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} urlPrefix="tflIssue" />);
+      fireEvent.click(screen.getByText('Upcoming (1)'));
+      openFilters();
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Planned' }));
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(window.location.search).toBe('?dir=up&at=0900&tflIssueTab=upcoming&tflIssueSource=planned');
+    });
+
+    it('leaves the URL alone without a prefix', () => {
+      vi.useFakeTimers();
+      window.history.replaceState(null, '', '/stations/KGX');
+      renderWithMantine(<IssueList items={toItems(all)} now={NOW} />);
+      fireEvent.click(screen.getByText('Upcoming (1)'));
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(window.location.search).toBe('');
     });
   });
 
@@ -859,6 +912,7 @@ describe('IssueList', () => {
       const trust: LineStatus = { ...minorNow, dataQuality: 'trust-inferred', reason: 'Trust reason' };
       const tfl: LineStatus = { ...minorNow, dataQuality: 'tfl', reason: 'TfL reason' };
       renderWithMantine(<IssueList items={toItems([...all, trust, tfl])} now={NOW} />);
+      openFilters();
       const sourceGroup = screen.getByRole('group', { name: /^Source/ });
       expect(within(sourceGroup).getAllByRole('checkbox')).toHaveLength(5);
     });

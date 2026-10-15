@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrainsPage, { metadata } from './page';
 import * as api from '@/lib/api';
@@ -22,11 +22,25 @@ vi.mock('@/lib/api', async () => {
   };
 });
 
+// `navigation.search` is the mocked address bar's query string, which the
+// form seeds its fields from (`useInitialSearchParams`); `searchParams`
+// below sets it to whatever the page is given.
+const navigation = vi.hoisted(() => ({ search: '' }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
   usePathname: () => '/trains',
-  useSearchParams: () => new URLSearchParams(''),
+  useSearchParams: () => new URLSearchParams(navigation.search),
 }));
+
+/** The page's `searchParams` prop, also put in the mocked address bar. */
+function searchParams(params: Record<string, string | string[]>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    for (const entry of Array.isArray(value) ? value : [value]) search.append(key, entry);
+  }
+  navigation.search = search.toString();
+  return Promise.resolve(params);
+}
 
 // The page mounts TrainSearchForm, whose suggestion hooks fire real
 // fetches on mount for any pre-filled, valid CRS -- give every test an
@@ -55,7 +69,7 @@ describe('TrainsPage', () => {
   // than through this label, and its only `getByLabelText` uses are the
   // plain TextInput time fields, which have no listbox.
   it('renders the title and the search form', async () => {
-    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({}) }));
     expect(screen.getByRole('heading', { name: 'Find a train' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Station' })).toBeInTheDocument();
   });
@@ -63,10 +77,12 @@ describe('TrainsPage', () => {
   it('pre-fills the station, origin and stops_at from the query string, uppercased', async () => {
     renderWithMantine(
       await TrainsPage({
-        searchParams: Promise.resolve({ station: 'man', origin: 'eus', stops_at: 'wat' }),
+        searchParams: searchParams({ station: 'man', origin: 'eus', stops_at: 'wat' }),
       }),
     );
     expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
+    // A URL with a station opens on the compact bar: the rest is in Filters.
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
     expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('EUS');
     expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('WAT');
   });
@@ -74,9 +90,10 @@ describe('TrainsPage', () => {
   it('uses the first value when stops_at is repeated in the query string', async () => {
     renderWithMantine(
       await TrainsPage({
-        searchParams: Promise.resolve({ station: 'man', stops_at: ['rdg', 'oxf'] }),
+        searchParams: searchParams({ station: 'man', stops_at: ['rdg', 'oxf'] }),
       }),
     );
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
     expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('RDG');
   });
 
@@ -86,7 +103,8 @@ describe('TrainsPage', () => {
   // its rendered <input>'s accessible name/role queries don't apply the
   // way Autocomplete's combobox role does.
   it('pre-fills the date from the query string', async () => {
-    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'man', date: '2026-09-16' }) }));
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ station: 'man', date: '2026-09-16' }) }));
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
     expect(screen.getByDisplayValue('2026-09-16')).toBeInTheDocument();
   });
 
@@ -102,12 +120,12 @@ describe('TrainsPage', () => {
         publishedTo: day(28),
         provisionalFrom: day(8),
       });
-      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
+      renderWithMantine(await TrainsPage({ searchParams: searchParams({}) }));
       expect(screen.getByText('Search a different day, up to 7 days back and 28 days ahead.')).toBeInTheDocument();
     });
 
     it('fall back to a week either side when the range fails to load', async () => {
-      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({}) }));
+      renderWithMantine(await TrainsPage({ searchParams: searchParams({}) }));
       expect(screen.getByText('Search a different day, up to a week either side of today.')).toBeInTheDocument();
     });
   });
@@ -153,39 +171,39 @@ describe('TrainsPage', () => {
     it('names it from the TOC list', async () => {
       vi.mocked(api.getAllTocs).mockResolvedValueOnce([{ code: 'GW', name: 'Great Western Railway' }]);
       stubSearchWithOneGwRow();
-      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'MAN' }) }));
+      renderWithMantine(await TrainsPage({ searchParams: searchParams({ station: 'MAN' }) }));
       expect(await screen.findByText('From EUS · Great Western Railway (GW)')).toBeInTheDocument();
     });
 
     it('leaves it out when the TOC list fails to load', async () => {
       vi.mocked(api.getAllTocs).mockRejectedValueOnce(new Error('api down'));
       stubSearchWithOneGwRow();
-      renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'MAN' }) }));
+      renderWithMantine(await TrainsPage({ searchParams: searchParams({ station: 'MAN' }) }));
       expect(await screen.findByText('From EUS')).toBeInTheDocument();
     });
   });
 
   it('uses the first value when a query param is repeated', async () => {
-    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: ['MAN', 'EDB'] }) }));
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ station: ['MAN', 'EDB'] }) }));
     expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
   });
 
   it('shows the ticket-attach explainer copy when arriving with a ticketId', async () => {
-    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ ticketId: '7' }) }));
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ ticketId: '7' }) }));
     expect(
       screen.getByText("Find the train your saved ticket is for. It'll be attached automatically once you track it."),
     ).toBeInTheDocument();
   });
 
   it('carries a valid ticketId through to the manual fallback link', async () => {
-    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ ticketId: '7' }) }));
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ ticketId: '7' }) }));
     expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track?ticketId=7');
   });
 
   // Same posture as app/track/page.tsx:16-21: a malformed value is treated
   // as absent rather than passed through as NaN.
   it('treats a non-numeric ticketId as absent', async () => {
-    renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ ticketId: 'nope' }) }));
+    renderWithMantine(await TrainsPage({ searchParams: searchParams({ ticketId: 'nope' }) }));
     expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track');
     expect(screen.queryByText(/it'll be attached automatically once you track it/)).not.toBeInTheDocument();
   });

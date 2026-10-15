@@ -1641,31 +1641,39 @@ a[data-text-link-tone='inherit'] {
   }
 }
 
-/* `app/lines/LinesFilterBar.tsx`: the one-row search and "Filters" bar
-   above the lines table. Sticky at every width so search is always in
-   reach (Task 3.4.2 made it sticky on phones only, but then it was the
-   whole ~300px filter block, a third of a 390x844 screen). Bled out over
-   the page's `lg` side padding so the stuck rule spans the content edge to
-   edge, and its own vertical padding is cancelled in flow so it sits where
-   the old controls did. Transparent in normal flow: a solid `--mantine-color-body` box at
-   the top of the page sat visibly on the `body` colour wash in the light
-   scheme. Gets the body colour and a bottom rule only once it is stuck
-   (`data-stuck`, set by an IntersectionObserver), where rows scroll under
-   it. `z-index` above table content, below Mantine's popovers and the
-   skip link, and above the table's own sticky header (Mantine gives that
-   `z-index: 3`). Its height is fixed to `--lines-filter-bar-height` (one
-   36px input row, its padding and the 1px rule) so the table header can
-   stick exactly underneath it. */
-.linesTableRoot {
-  --lines-filter-bar-height: calc(2.25rem + 2 * var(--mantine-spacing-xs) + 1px);
+/* `components/ListFilterBar.tsx`: the one-row search and "Filters" bar
+   above a list (/lines, /incidents, /trains, /operators, a tram network's
+   stops; docs/style-guide.md, "List search and filters"). The sticky
+   variant (`data-sticky`, the default) sticks at every width so search is
+   always in reach (Task 3.4.2 made the /lines controls sticky on phones
+   only, but then they were a ~300px block, a third of a 390x844 screen).
+
+   The sticky bar bleeds out over the page's `lg` side padding so the stuck
+   rule spans the content edge to edge, and its own vertical padding is
+   cancelled in flow so it sits where the controls above it would. That
+   bleed is why its container must have `lg` side padding (every top-level
+   page's `p="lg"`); anywhere else it would overhang. Transparent in normal
+   flow: a solid `--mantine-color-body` box at the top of the page sat
+   visibly on the `body` colour wash in the light scheme. Gets the body
+   colour and a bottom rule only once it is stuck (`data-stuck`, set by an
+   IntersectionObserver), where rows scroll under it. `z-index` above
+   table content, below Mantine's popovers and the skip link, and above a
+   table's own sticky header (Mantine gives that `z-index: 3`). Its height
+   is fixed to `--list-filter-bar-height` (one 36px input row, its padding
+   and the 1px rule) so a table header can stick exactly underneath it.
+
+   The non-sticky variant (inside a section, IssueList's) is a plain
+   wrapping row and takes none of this. */
+:root {
+  --list-filter-bar-height: calc(2.25rem + 2 * var(--mantine-spacing-xs) + 1px);
 }
 
-.linesFilterBar {
+.listFilterBar[data-sticky] {
   position: sticky;
   top: 0;
   z-index: 4;
   box-sizing: border-box;
-  height: var(--lines-filter-bar-height);
+  height: var(--list-filter-bar-height);
   margin: calc(var(--mantine-spacing-xs) * -1) calc(var(--mantine-spacing-lg) * -1);
   padding: var(--mantine-spacing-xs) var(--mantine-spacing-lg);
   border-bottom: 1px solid transparent;
@@ -1673,39 +1681,60 @@ a[data-text-link-tone='inherit'] {
 
 /* Absolutely positioned so it adds no Stack gap; it stays at its static
    position, the top of the bar, which is what the observer watches. */
-.linesFilterBarSentinel {
+.listFilterBarSentinel {
   position: absolute;
   width: 1px;
   height: 1px;
   pointer-events: none;
 }
 
-.linesFilterBar[data-stuck] {
+.listFilterBar[data-stuck] {
   background-color: var(--mantine-color-body);
   border-bottom-color: var(--mantine-color-default-border);
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .linesFilterBar {
+  .listFilterBar[data-sticky] {
     transition:
       background-color 120ms ease,
       border-color 120ms ease;
   }
 }
 
+/* A server-backed list's rows while the search for newer filters runs
+   (`useLiveSearch`): kept on screen, dimmed, so nothing jumps while the
+   visitor types. No transition when motion is reduced. */
+[data-list-pending] {
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-incident-results],
+  [data-train-results] {
+    transition: opacity 120ms ease;
+  }
+}
+
+/* A tall filters popover (`scrollablePanel`): Mantine's size middleware
+   caps its height to the room on screen, and it scrolls inside. */
+.listFilterPanelScroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 /* The phone sheet's "Filters" title, drawn like the popover's h5 title. */
-.linesFilterSheetTitle {
+.listFilterSheetTitle {
   font-size: var(--mantine-h5-font-size);
   font-weight: var(--mantine-h5-font-weight);
   line-height: var(--mantine-h5-line-height);
 }
 
-/* The phone filters sheet (`LinesFilterBar`'s bottom `Drawer`): rounded
+/* The phone filters sheet (`ListFilterBar`'s bottom `Drawer`): rounded
    top corners so it reads as a sheet, only as tall as its contents (capped
    so the page stays visible behind it), and clear of the home indicator.
    Doubled class to outrank Mantine's own `height` rule for the drawer
    content, which only takes named sizes. */
-.linesFilterSheet.linesFilterSheet {
+.listFilterSheet.listFilterSheet {
   height: auto;
   border-top-left-radius: var(--mantine-radius-lg);
   border-top-right-radius: var(--mantine-radius-lg);
@@ -1740,7 +1769,7 @@ a[data-text-link-tone='inherit'] {
    search bar is stuck; from then on the header is either directly under
    the bar or stuck to it, and body-coloured like it. Browsers without
    `:has()` keep Mantine's always-painted header. */
-.linesTableRoot:has(.linesFilterBar:not([data-stuck])) .linesTableWrap thead th {
+.linesTableRoot:has(.listFilterBar:not([data-stuck])) .linesTableWrap thead th {
   background-color: transparent;
 }
 

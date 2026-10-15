@@ -41,6 +41,8 @@ const PAGES: [name: string, path: string][] = [
   ['stations', '/stations'],
   ['station', `/stations/${REAL_STATION_CRS}`],
   ['trains', '/trains'],
+  // After a search: the compact bar, with Station in its search slot.
+  ['trains-searched', `/trains?station=${REAL_STATION_CRS}`],
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
   ['incidents', '/incidents'],
   ['account', '/account'],
@@ -162,7 +164,7 @@ for (const scheme of SCHEMES) {
         });
       });
 
-      // The /lines search and filters bar (app/lines/LinesFilterBar.tsx) in
+      // The /lines search and filters bar (components/ListFilterBar.tsx) in
       // the two states the full-page shot above can't show: stuck to the
       // top after scrolling, and with the filters open (a popover from
       // `sm` up, a bottom sheet below). Viewport shots, not full page: both
@@ -181,7 +183,7 @@ for (const scheme of SCHEMES) {
             await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
           } else {
             await page.evaluate(() => window.scrollTo(0, 1200));
-            await expect(page.locator('.linesFilterBar')).toHaveAttribute('data-stuck', 'true');
+            await expect(page.locator('.listFilterBar')).toHaveAttribute('data-stuck', 'true');
           }
 
           await expect(page).toHaveScreenshot(`${state}-${scheme}-${width}.png`, {
@@ -191,6 +193,25 @@ for (const scheme of SCHEMES) {
           });
         });
       }
+
+      // The /incidents filters panel open (a popover from `sm` up, a bottom
+      // sheet below): the tallest panel, with its chip rows and the priority
+      // range. Viewport shot, as for /lines.
+      test('incidents-filters-open', async ({ page }) => {
+        await page.clock.setFixedTime(FIXED_NOW);
+        await page.goto('/incidents', { waitUntil: 'networkidle' });
+        await page.addStyleTag({ content: NO_MOTION_CSS });
+        await page.evaluate(() => document.fonts.ready);
+        await page.getByRole('button', { name: 'Filters' }).click();
+        await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+
+        // No mask: the only clock-dependent text, the incidents' timestamps,
+        // is under the panel at both widths, and masks are painted on top.
+        await expect(page).toHaveScreenshot(`incidents-filters-open-${scheme}-${width}.png`, {
+          animations: 'disabled',
+          caret: 'hide',
+        });
+      });
 
       // The /stations "Use my location" results
       // (app/stations/NearbyStationList.tsx), which only exist after the

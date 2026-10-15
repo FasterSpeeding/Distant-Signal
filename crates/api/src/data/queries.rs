@@ -2887,6 +2887,53 @@ pub struct IncidentSearchCursor {
 pub struct IncidentSearchPage {
     pub results: Vec<IncidentSummaryRow>,
     pub next_cursor: Option<IncidentSearchCursor>,
+    /// How many incidents match the filters in all, across every page.
+    /// Counted for the first page only (`after` is `None`): a later page
+    /// belongs to a search whose total the caller already has, and
+    /// recounting it on every "Load more" would cost a second scan per
+    /// page for nothing.
+    pub total: Option<i64>,
+}
+
+/// The document `search_incidents`' free-text filter matches: an incident's
+/// summary and its (HTML) description, in the english configuration. Must
+/// stay byte for byte the expression of the `incidents_search_document`
+/// index (`20261014230000_incidents_search_document_index.sql`), or the
+/// planner can't use it; `incident_search_document_matches_its_index`
+/// checks that. The regconfig is explicit because the one-argument
+/// `to_tsvector` is not immutable and so can't be indexed.
+pub const INCIDENT_SEARCH_DOCUMENT_SQL: &str =
+    "to_tsvector('english'::regconfig, summary || ' ' || description)";
+
+/// At most this many words of a free-text incident search are used; the
+/// rest are ignored. Each word is one more index probe, and no real
+/// search needs more.
+pub const MAX_INCIDENT_SEARCH_TERMS: usize = 8;
+
+/// Turns a visitor's free text ("signal fail woking") into a `to_tsquery`
+/// string where every word is a prefix match and all must match
+/// (`signal:* & fail:* & woking:*`), so results narrow as they type and a
+/// half-typed word ("Wok") already finds "Woking". `None` when there are
+/// no words at all.
+///
+/// Only letters and digits survive: every other character splits words.
+/// That keeps tsquery's own syntax (`&`, `|`, `!`, `:`, `(`, quotes) out of
+/// the query entirely, so no input can make `to_tsquery` raise a syntax
+/// error. Stop words ("the", "at") are dropped by `to_tsquery` itself; a
+/// query of only stop words matches everything (`search_incidents` checks
+/// `numnode`), which reads better than nothing while someone types.
+pub fn incident_search_tsquery(raw: &str) -> Option<String> {
+    let terms: Vec<String> = raw
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(MAX_INCIDENT_SEARCH_TERMS)
+        .map(|word| format!("{}:*", word.to_lowercase()))
+        .collect();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" & "))
+    }
 }
 
 /// The incident archive's one read: a keyset-paginated, dynamically
@@ -2938,21 +2985,19 @@ pub async fn search_incidents(
     priority_max: Option<i32>,
     first_seen_from: Option<chrono::DateTime<chrono::Utc>>,
     first_seen_to: Option<chrono::DateTime<chrono::Utc>>,
+    text: Option<&str>,
     after: Option<&IncidentSearchCursor>,
     limit: i64,
 ) -> Result<IncidentSearchPage> {
     let fetch = limit.saturating_add(1);
 
-    // `fetched_at`: the display time (plan 2c.4), as in `incident_by_id`.
-    let sql = format!(
+    // Shared by the page and the total, so the two can't disagree about
+    // what matches. `$9` is `incident_search_tsquery`'s output (letters,
+    // digits, `:*` and ` & ` only); `numnode = 0` is a query of nothing but
+    // stop words, which filters nothing rather than everything.
+    let filters = format!(
         r"
-            SELECT incident_id, summary, operators, affected_stations,
-                   COALESCE(affected_lines, '{{}}') AS affected_lines,
-                   priority, is_planned, is_cleared, first_seen_at,
-                   {fetched_at} AS fetched_at,
-                   source_removed_at
-            FROM incidents
-            WHERE ($1::text[]      IS NULL OR operators && $1)
+              ($1::text[]      IS NULL OR operators && $1)
               AND ($2::text        IS NULL OR affected_lines @> ARRAY[$2::text])
               AND ($3::boolean     IS NULL OR is_planned = $3)
               AND ($4::text        IS NULL
@@ -2963,27 +3008,63 @@ pub async fn search_incidents(
               AND ($6::integer     IS NULL OR priority <= $6)
               AND ($7::timestamptz IS NULL OR first_seen_at >= $7)
               AND ($8::timestamptz IS NULL OR first_seen_at <= $8)
-              AND ($9::timestamptz IS NULL
-                   OR (first_seen_at, incident_id) < ($9, $10))
+              AND ($9::text        IS NULL
+                   OR numnode(to_tsquery('english'::regconfig, $9)) = 0
+                   OR {INCIDENT_SEARCH_DOCUMENT_SQL} @@ to_tsquery('english'::regconfig, $9))
+            "
+    );
+
+    // `fetched_at`: the display time (plan 2c.4), as in `incident_by_id`.
+    let sql = format!(
+        r"
+            SELECT incident_id, summary, operators, affected_stations,
+                   COALESCE(affected_lines, '{{}}') AS affected_lines,
+                   priority, is_planned, is_cleared, first_seen_at,
+                   {fetched_at} AS fetched_at,
+                   source_removed_at
+            FROM incidents
+            WHERE {filters}
+              AND ($10::timestamptz IS NULL
+                   OR (first_seen_at, incident_id) < ($10, $11))
             ORDER BY first_seen_at DESC, incident_id DESC
-            LIMIT $11
+            LIMIT $12
             ",
         fetched_at = ds_store::incidents::FETCHED_AT_SQL,
     );
     let rows: Vec<IncidentSummaryRow> = sqlx::query_as(&sql)
-        .bind(operators)
-        .bind(line)
+        .bind(operators.as_deref())
+        .bind(line.as_deref())
         .bind(is_planned)
         .bind(state.map(IncidentState::as_str))
         .bind(priority_min)
         .bind(priority_max)
         .bind(first_seen_from)
         .bind(first_seen_to)
+        .bind(text)
         .bind(after.map(|c| c.first_seen_at))
         .bind(after.map(|c| c.incident_id.as_str()))
         .bind(fetch)
         .fetch_all(pool)
         .await?;
+
+    let total = if after.is_none() {
+        let count_sql = format!("SELECT count(*) FROM incidents WHERE {filters}");
+        let count: i64 = sqlx::query_scalar(&count_sql)
+            .bind(operators.as_deref())
+            .bind(line.as_deref())
+            .bind(is_planned)
+            .bind(state.map(IncidentState::as_str))
+            .bind(priority_min)
+            .bind(priority_max)
+            .bind(first_seen_from)
+            .bind(first_seen_to)
+            .bind(text)
+            .fetch_one(pool)
+            .await?;
+        Some(count)
+    } else {
+        None
+    };
 
     let has_more = rows.len() as i64 > limit;
     let mut page_rows = rows;
@@ -3003,6 +3084,7 @@ pub async fn search_incidents(
     Ok(IncidentSearchPage {
         results: page_rows,
         next_cursor,
+        total,
     })
 }
 
@@ -3154,7 +3236,7 @@ mod incident_search_query_tests {
         .await;
 
         let page = search_incidents(
-            &pool, None, None, None, None, None, None, None, None, None, 100,
+            &pool, None, None, None, None, None, None, None, None, None, None, 100,
         )
         .await
         .expect("search");
@@ -3214,6 +3296,7 @@ mod incident_search_query_tests {
             None,
             None,
             None,
+            None,
             100,
         )
         .await
@@ -3264,6 +3347,7 @@ mod incident_search_query_tests {
             &pool,
             None,
             Some("elizabeth-line".to_string()),
+            None,
             None,
             None,
             None,
@@ -3350,6 +3434,7 @@ mod incident_search_query_tests {
             None,
             None,
             None,
+            None,
             100,
         )
         .await
@@ -3372,6 +3457,7 @@ mod incident_search_query_tests {
             &pool,
             None,
             Some("wcml".to_string()),
+            None,
             None,
             None,
             None,
@@ -3418,6 +3504,7 @@ mod incident_search_query_tests {
             None,
             None,
             None,
+            None,
             100,
         )
         .await
@@ -3435,6 +3522,7 @@ mod incident_search_query_tests {
             &pool,
             None,
             Some("wcml".to_string()),
+            None,
             None,
             None,
             None,
@@ -3513,6 +3601,7 @@ mod incident_search_query_tests {
             &pool,
             None,
             Some("elizabeth-line".to_string()),
+            None,
             None,
             None,
             None,
@@ -3629,6 +3718,7 @@ mod incident_search_query_tests {
             Some(at(8)),
             Some(at(9)),
             None,
+            None,
             100,
         )
         .await
@@ -3687,6 +3777,7 @@ mod incident_search_query_tests {
             None,
             None,
             None,
+            None,
             100,
         )
         .await
@@ -3706,6 +3797,7 @@ mod incident_search_query_tests {
             None,
             None,
             Some(IncidentState::Cleared),
+            None,
             None,
             None,
             None,
@@ -3765,6 +3857,7 @@ mod incident_search_query_tests {
                     Some(at(0)),
                     Some(at(23)),
                     None,
+                    None,
                     100,
                 )
                 .await
@@ -3804,6 +3897,7 @@ mod incident_search_query_tests {
             None,
             Some(at(0)),
             Some(at(23)),
+            None,
             None,
             100,
         )
@@ -3864,6 +3958,7 @@ mod incident_search_query_tests {
             None,
             Some(2),
             Some(2),
+            None,
             None,
             None,
             None,
@@ -3945,6 +4040,7 @@ mod incident_search_query_tests {
             None,
             Some(4),
             Some(6),
+            None,
             None,
             None,
             None,
@@ -4042,6 +4138,7 @@ mod incident_search_query_tests {
                 None,
                 None,
                 None,
+                None,
                 cursor.as_ref(),
                 1,
             )
@@ -4102,6 +4199,7 @@ mod incident_search_query_tests {
             None,
             None,
             None,
+            None,
             100,
         )
         .await
@@ -4110,6 +4208,265 @@ mod incident_search_query_tests {
         assert!(page.results.is_empty());
         assert!(page.next_cursor.is_none());
         delete_fixtures(&pool).await;
+    }
+
+    async fn seed_text_incident(
+        pool: &PgPool,
+        incident_id: &str,
+        summary: &str,
+        description: &str,
+        first_seen_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        sqlx::query(
+            "INSERT INTO incidents \
+                (incident_id, summary, description, operators, affected_stations, priority, \
+                 is_planned, is_cleared, first_seen_at) \
+             VALUES ($1, $2, $3, '{ZT}', '{}', 1, false, false, $4)",
+        )
+        .bind(incident_id)
+        .bind(summary)
+        .bind(description)
+        .bind(first_seen_at)
+        .execute(pool)
+        .await
+        .expect("seed fixture incidents row");
+    }
+
+    /// Ids of the `ZT` fixtures matching `q`, newest first, and the total.
+    async fn text_search(pool: &PgPool, q: &str) -> (Vec<String>, Option<i64>) {
+        let tsquery = incident_search_tsquery(q);
+        let page = search_incidents(
+            pool,
+            Some(vec!["ZT".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            tsquery.as_deref(),
+            None,
+            100,
+        )
+        .await
+        .expect("search");
+        (
+            page.results.into_iter().map(|r| r.incident_id).collect(),
+            page.total,
+        )
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn free_text_matches_summary_and_description_by_word_prefix_with_stemming() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        seed_text_incident(
+            &pool,
+            "archive-test-text-1",
+            "Signalling failure at Woking",
+            "<p>Trains between <b>Woking</b> and London Waterloo may be delayed.</p>",
+            at(1),
+        )
+        .await;
+        seed_text_incident(
+            &pool,
+            "archive-test-text-2",
+            "Disruption at Clapham Junction",
+            "<p>A broken down train is blocking some lines &amp; signals.</p>",
+            at(2),
+        )
+        .await;
+        seed_text_incident(
+            &pool,
+            "archive-test-text-3",
+            "Engineering works",
+            "<p>Buses replace trains between Reading and Basingstoke.</p>",
+            at(3),
+        )
+        .await;
+
+        // A half-typed word is a prefix match, in the summary.
+        assert_eq!(
+            text_search(&pool, "Wok").await,
+            (vec!["archive-test-text-1".to_string()], Some(1))
+        );
+        // Stemming: "signals" in one description and "Signalling" in the
+        // other summary both stem to "signal".
+        assert_eq!(
+            text_search(&pool, "signal").await,
+            (
+                vec![
+                    "archive-test-text-2".to_string(),
+                    "archive-test-text-1".to_string()
+                ],
+                Some(2)
+            )
+        );
+        // Every word must match, in any order, across summary and
+        // description; case and punctuation don't matter.
+        assert_eq!(
+            text_search(&pool, "waterloo, SIGNAL!").await,
+            (vec!["archive-test-text-1".to_string()], Some(1))
+        );
+        // Words only in the description's HTML markup are not text.
+        assert_eq!(text_search(&pool, "amp").await, (vec![], Some(0)));
+        // Nothing matches: an empty page, not an error.
+        assert_eq!(text_search(&pool, "Glasgow").await, (vec![], Some(0)));
+        // Only stop words: no filter, rather than no results while typing.
+        assert_eq!(text_search(&pool, "the").await.1, Some(3));
+        // tsquery operators are just separators, never syntax.
+        assert_eq!(text_search(&pool, "woking & | ! ( :* '").await.1, Some(1));
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn the_total_counts_every_page_and_is_only_on_the_first() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        for hour in 1..=5 {
+            seed_text_incident(
+                &pool,
+                &format!("archive-test-total-{hour}"),
+                "Signal failure",
+                "",
+                at(hour),
+            )
+            .await;
+        }
+        seed_text_incident(&pool, "archive-test-total-x", "Flooding", "", at(6)).await;
+        let tsquery = incident_search_tsquery("signal");
+        let first = search_incidents(
+            &pool,
+            Some(vec!["ZT".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            tsquery.as_deref(),
+            None,
+            2,
+        )
+        .await
+        .expect("search");
+        assert_eq!(first.results.len(), 2);
+        assert_eq!(first.total, Some(5), "every matching row, not one page");
+        let second = search_incidents(
+            &pool,
+            Some(vec!["ZT".to_string()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            tsquery.as_deref(),
+            first.next_cursor.as_ref(),
+            2,
+        )
+        .await
+        .expect("search");
+        assert_eq!(second.results.len(), 2);
+        assert_eq!(second.total, None, "not recounted for a later page");
+        delete_fixtures(&pool).await;
+    }
+
+    /// The free-text filter's expression must be the index's, or the
+    /// planner silently falls back to a sequential scan. With sequential
+    /// scans priced out, a plan that still doesn't name the index means the
+    /// expressions differ.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn the_free_text_filter_can_use_its_index() {
+        let pool = test_pool().await;
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query("SET LOCAL enable_seqscan = off")
+            .execute(&mut *tx)
+            .await
+            .expect("set enable_seqscan");
+        let plan: Vec<String> = sqlx::query_scalar(&format!(
+            "EXPLAIN SELECT incident_id FROM incidents \
+             WHERE {INCIDENT_SEARCH_DOCUMENT_SQL} @@ to_tsquery('english'::regconfig, 'signal:*')"
+        ))
+        .fetch_all(&mut *tx)
+        .await
+        .expect("explain");
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("incidents_search_document")),
+            "plan: {plan:#?}"
+        );
+        let valid: bool = sqlx::query_scalar(
+            "SELECT indisvalid FROM pg_index WHERE indexrelid = 'incidents_search_document'::regclass",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .expect("index exists");
+        assert!(valid);
+    }
+}
+
+#[cfg(test)]
+mod incident_search_text_tests {
+    use super::{INCIDENT_SEARCH_DOCUMENT_SQL, MAX_INCIDENT_SEARCH_TERMS, incident_search_tsquery};
+
+    #[test]
+    fn every_word_becomes_a_lowercase_prefix_term_and_all_must_match() {
+        assert_eq!(
+            incident_search_tsquery("Signal FAIL woking").as_deref(),
+            Some("signal:* & fail:* & woking:*")
+        );
+    }
+
+    #[test]
+    fn punctuation_and_tsquery_syntax_only_separate_words() {
+        assert_eq!(
+            incident_search_tsquery("a&b|!c:*(d)'e\"f <-> g").as_deref(),
+            Some("a:* & b:* & c:* & d:* & e:* & f:* & g:*")
+        );
+        assert_eq!(incident_search_tsquery("  !&|:*  "), None);
+        assert_eq!(incident_search_tsquery(""), None);
+    }
+
+    #[test]
+    fn letters_and_digits_beyond_ascii_are_kept() {
+        assert_eq!(
+            incident_search_tsquery("Llanfair 1S00 Café").as_deref(),
+            Some("llanfair:* & 1s00:* & café:*")
+        );
+    }
+
+    #[test]
+    fn only_the_first_few_words_are_used() {
+        let many = (0..20)
+            .map(|n| format!("w{n}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let query = incident_search_tsquery(&many).expect("words");
+        assert_eq!(query.split(" & ").count(), MAX_INCIDENT_SEARCH_TERMS);
+    }
+
+    /// `incidents_search_document`'s expression, as its migration builds
+    /// it, is exactly the document the query matches (see
+    /// `INCIDENT_SEARCH_DOCUMENT_SQL`).
+    #[test]
+    fn incident_search_document_matches_its_index() {
+        let migration = include_str!(
+            "../../../ds-store/migrations/20261014230000_incidents_search_document_index.sql"
+        );
+        assert!(
+            migration.contains(&format!("USING GIN ({INCIDENT_SEARCH_DOCUMENT_SQL})")),
+            "the migration's index expression must be INCIDENT_SEARCH_DOCUMENT_SQL"
+        );
     }
 }
 
@@ -8448,6 +8805,7 @@ mod incident_snapshot_db_tests {
         let page = search_incidents(
             pool,
             Some(vec!["ZZ".to_string()]),
+            None,
             None,
             None,
             None,

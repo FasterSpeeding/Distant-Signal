@@ -23,6 +23,8 @@ const notFoundMock = vi.fn(() => {
 });
 vi.mock('next/navigation', () => ({
   notFound: () => notFoundMock(),
+  // `null`, as outside the app router: "Find a stop" keeps its props.
+  useSearchParams: () => null,
 }));
 
 const params = (network: string) => ({ params: Promise.resolve({ network }) });

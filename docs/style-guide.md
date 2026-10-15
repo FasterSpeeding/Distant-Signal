@@ -377,18 +377,42 @@ used, rather than as a literal in a component.
   grape for product notices and information. No blue alerts.
 - **LastUpdated / DataFreshnessInfo**: relative time re-rendered every 30s,
   exact London time in a tooltip; SSR shows the absolute time until mounted.
-- **List search and filters** (`app/lines/LinesFilterBar.tsx`): one
-  sticky row, search on the left and a default-variant "Filters" button
-  on the right with a count badge of active filters. Search is never
-  hidden behind the button. The filters open in a `Popover` from `sm` up
-  and a bottom `Drawer` below it, both a dialog named "Filters" ending in
-  "Clear filters" and "Show *n* lines". The bar is transparent until it
-  sticks, then gets the body colour and a bottom rule. Filter state lives
-  in the URL through `history.replaceState`, not `router.replace`, and
-  the tab title names what is filtered (`Lines: Great Western Railway,
-  "west"`). Not hide-on-scroll. The table's column headers stick under
-  the bar (`stickyHeader`), so the table sits in no scroll container: it
-  has to fit a phone on its own, with names that wrap anywhere.
+- **List search and filters** (`components/ListFilterBar.tsx`): one
+  row, search on the left and a default-variant "Filters" button on the
+  right with a count badge of active filters. Search is never hidden
+  behind the button. The filters open in a `Popover` from `sm` up and a
+  bottom `Drawer` below it, both a dialog named "Filters" ending in "Clear
+  filters" and "Show *n* lines" (or "Show lines" while the count is not
+  known). Escape closes an open option list first, then the panel, and
+  focus returns to the button. Variants:
+  - *Sticky* (the default), for a page's main list: /lines, /incidents,
+    /trains (after the first search), /operators, a tram network's stops.
+    Transparent until it sticks, then the body colour and a bottom rule.
+    It bleeds over the page's `lg` side padding, so its container must
+    have that padding. A table's headers stick under it (`stickyHeader`,
+    offset by `--list-filter-bar-height`), so such a table sits in no
+    scroll container and has to fit a phone on its own.
+  - *Search only* (no panel): /operators' "Find an operator" and "Find a
+    stop", through `SearchableList`, which filters server-rendered items
+    in place.
+  - *Filters only, not sticky*, inside a section: the line and station
+    issue lists, with the All/Active/Upcoming tabs inline as `trailing`.
+    No button when there is nothing to narrow.
+  - *Another main control*: /trains puts Station in the search slot. It
+    shows the full form until the first search, then the bar.
+
+  Filter state lives in the URL through `useUrlFilterSync`
+  (`history.replaceState`, debounced), never `router.replace`, which
+  re-runs the page's server render. Keys inside a section are prefixed
+  (`issueTab`, `tflIssueSeverity`) so they can't clash with the page's
+  own. A server-backed list (/incidents, /trains) applies changes live
+  through `useLiveSearch`: one request once typing settles, the previous
+  one aborted, a spinner in place of the search glyph and the rows dimmed,
+  never blanked. The tab title names what is filtered
+  (`useFilteredDocumentTitle`: `Lines: Great Western Railway, "west"`). A
+  filtered list says how many rows are left with a way back
+  (`ListResultSummary`: "3 lines match. Show all lines"), announced from a
+  hidden `role="status"`. Not hide-on-scroll.
 - **Form fields**: Mantine `TextInput`/`Autocomplete`: label 14/500,
   description xs dimmed, error in `--mantine-color-error`.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence
@@ -660,10 +684,10 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 ## Visual regression
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
-Stations, a station, Trains, a train, Incidents, Account (logged in),
+Stations, a station, Trains (empty and searched), a train, Incidents, Account (logged in),
 Preferences (logged out, logged in and with a pride flag) and the tram
 pages at 390 and 1366px, light and dark, plus the /lines filter bar's
-stuck and open states: 76 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+stuck and open states and the /incidents filters open: 84 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
 stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 

@@ -32,10 +32,13 @@ vi.mock('next/headers', () => ({
 // regardless of whether the modal is open (see LoginPromptModal's own doc
 // comment), so both stubs are needed here too even though this file's own
 // tests never exercise the login-prompt path directly.
+// `navigation.search` is the mocked address bar's query string: the table
+// seeds its filters from it (`useInitialSearchParams`).
+const navigation = vi.hoisted(() => ({ search: '' }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
   usePathname: () => '/lines',
-  useSearchParams: () => new URLSearchParams(''),
+  useSearchParams: () => new URLSearchParams(navigation.search),
 }));
 
 const lines: LineSummary[] = [
@@ -49,6 +52,11 @@ const reports: LineStatusReport[] = [];
 const tocs: Suggestion[] = [{ code: 'VT', name: 'Avanti West Coast' }];
 
 async function renderPage(searchParams: Record<string, string | string[]> = {}) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(searchParams)) {
+    for (const entry of Array.isArray(value) ? value : [value]) search.append(key, entry);
+  }
+  navigation.search = search.toString();
   return renderWithMantine(await AllLinesPage({ searchParams: Promise.resolve(searchParams) }));
 }
 
@@ -220,6 +228,6 @@ describe('statusGroup deep link', () => {
     expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('great');
     expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'West Coast Main Line' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('2');
+    expect(screen.getByTestId('list-filter-count')).toHaveTextContent('2');
   });
 });

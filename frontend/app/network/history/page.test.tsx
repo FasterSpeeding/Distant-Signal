@@ -16,7 +16,7 @@ vi.mock('@/lib/api', async () => {
     getNetworkSixHourlyStats: vi.fn(),
   };
 });
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn() }) }));
 vi.mock('@mantine/charts', () => ({
   LineChart: () => <div data-testid="line-chart" />,
   BarChart: () => <div data-testid="bar-chart" />,

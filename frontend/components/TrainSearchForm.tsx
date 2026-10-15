@@ -1,24 +1,39 @@
 'use client';
 
-import { useEffect, useMemo, useState, type SubmitEvent } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
-import { Autocomplete, Button, Group, Stack, Text } from '@mantine/core';
+import { useId, useMemo, useState, type SubmitEvent } from 'react';
+import { Autocomplete, Button, Group, Loader, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrainSearchResults } from './TrainSearchResults';
+import { ListFilterBar, SearchIcon, type ListNoun } from './ListFilterBar';
 import type { TrainSearchDates, TrainSearchPage } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
 import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import { ButtonSpinner } from '@/components/LoadingText';
-import { hasRows, TIME_PATTERN, type TrainSearchResults as TrainSearchResultsState } from '@/lib/trainSearch';
+import { useLiveSearch } from '@/lib/useLiveSearch';
+import { paramValue, useInitialSearchParams } from '@/lib/useInitialSearchParams';
+import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
+import {
+  hasRows,
+  TIME_PATTERN,
+  TRAIN_URL_PARAMS,
+  type TrainSearchResults as TrainSearchResultsState,
+} from '@/lib/trainSearch';
+
+const TRAIN_NOUN: ListNoun = { one: 'train', other: 'trains' };
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 /** Calling-point-first, whole-network train search -- the `/trains` page's
- * one interactive component. Generalizes the earlier destination-first
+ * one interactive component.
+ *
+ * Two shapes (docs/style-guide.md, "List search and filters"): the full
+ * form with a Search button until the first search, then the compact
+ * sticky bar, with Station in the search slot and every other field behind
+ * "Filters". From then on every change searches live (`useLiveSearch`),
+ * and the URL follows through `history.replaceState`. Generalizes the earlier destination-first
  * search into "any station the train calls at" as the primary, required
  * key, with "departing from" (the schedule's TRUE origin) and "stops at"
  * (one OTHER calling point on the route, not necessarily the destination) as
@@ -88,14 +103,14 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  * absent (the read failed) falls back to a week either side of today, the
  * API's static window -- see `lib/searchDates.ts`. */
 export function TrainSearchForm({
-  initialStation = '',
-  initialOrigin = '',
-  initialStopsAt = '',
-  initialDate = '',
-  initialFrom = '',
-  initialTo = '',
-  initialArrivalFrom = '',
-  initialArrivalTo = '',
+  initialStation: initialStationProp = '',
+  initialOrigin: initialOriginProp = '',
+  initialStopsAt: initialStopsAtProp = '',
+  initialDate: initialDateProp = '',
+  initialFrom: initialFromProp = '',
+  initialTo: initialToProp = '',
+  initialArrivalFrom: initialArrivalFromProp = '',
+  initialArrivalTo: initialArrivalToProp = '',
   attachTicketId,
   operatorNames,
   searchDates,
@@ -112,12 +127,24 @@ export function TrainSearchForm({
   operatorNames?: Readonly<Record<string, string>> | undefined;
   searchDates?: TrainSearchDates | null | undefined;
 }) {
-  const router = useRouter();
+  // Seeded from the address bar, not the server props: see
+  // `useInitialSearchParams` (after Back, the props are stale). Station
+  // codes are uppercased the way the page does.
+  const urlParams = useInitialSearchParams();
+  const seed = (key: string, prop: string, code: boolean) =>
+    urlParams ? ((code ? paramValue(urlParams, key)?.toUpperCase() : paramValue(urlParams, key)) ?? '') : prop;
+  const initialStation = seed('station', initialStationProp, true);
+  const initialOrigin = seed('origin', initialOriginProp, true);
+  const initialStopsAt = seed('stops_at', initialStopsAtProp, true);
+  const initialDate = seed('date', initialDateProp, false);
+  const initialFrom = seed('from', initialFromProp, false);
+  const initialTo = seed('to', initialToProp, false);
+  const initialArrivalFrom = seed('arrival_from', initialArrivalFromProp, false);
+  const initialArrivalTo = seed('arrival_to', initialArrivalToProp, false);
   const operatorLookup = useMemo(
     () => (operatorNames ? new Map(Object.entries(operatorNames)) : undefined),
     [operatorNames],
   );
-  const pathname = usePathname();
   const [stationCrs, setStationCrs] = useState(initialStation);
   const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [stopsAt, setStopsAt] = useState(initialStopsAt);
@@ -146,19 +173,23 @@ export function TrainSearchForm({
   });
   const [results, setResults] = useState<TrainSearchResultsState>(null);
   // The RAW `dateValue` submitted with the last search that came back
-  // 404/unpublished, captured at submit time -- separate from `results`
+  // 404/unpublished, captured with the request -- separate from `results`
   // because the `'unpublished'` variant carries no payload of its own to
   // carry a `date` field on. Only ever read by the 'unpublished' branch of
   // `TrainSearchResults`; never read live from `dateValue` there, for the
   // same reason `results`' own `date` field exists (see `Results`' doc
   // comment).
   const [unpublishedDate, setUnpublishedDate] = useState<string | null>(null);
-  const [searching, setSearching] = useState(false);
-  // Separate from `searching` on purpose: a "Load more" in flight must not
-  // blank the rows already on screen the way `TrainSearchResults`'
-  // `searching` branch does, and must not re-disable the Search button.
+  /** Whether the search runs live. Off until the first Search press (or a
+   * URL that already names a station): before that the full form is shown,
+   * and a half-filled form must not start searching under the visitor. From
+   * then on the form is the compact bar and every change searches. */
+  const [live, setLive] = useState(() => CRS_PATTERN.test(initialStation.trim()));
+  // Separate from the search's own pending flag on purpose: a "Load more"
+  // in flight must not dim the rows already on screen.
   const [loadingMore, setLoadingMore] = useState(false);
 
+  const stationErrorId = useId();
   const { suggestions: stationSuggestions, loading: stationSuggestionsLoading } = useSuggestions(
     stationCrs,
     searchStations,
@@ -189,7 +220,7 @@ export function TrainSearchForm({
     !incompleteTimes.from &&
     !incompleteTimes.to &&
     (stopsAt.trim() === '' || (!incompleteTimes.arrivalFrom && !incompleteTimes.arrivalTo));
-  const canSearch =
+  const filtersValid =
     stationValid &&
     originValid &&
     stopsAtValid &&
@@ -197,8 +228,7 @@ export function TrainSearchForm({
     toValid &&
     arrivalFromValid &&
     arrivalToValid &&
-    timesComplete &&
-    !searching;
+    timesComplete;
 
   const manualHref = attachTicketId !== undefined ? `/track?ticketId=${attachTicketId}` : '/track';
   // Anchored to Europe/London (FE-4), like the server's own window, so a
@@ -210,14 +240,14 @@ export function TrainSearchForm({
   // What the "Earliest/Latest departure" and "Earliest/Latest arrival"
   // fields' `description`s name as the station they are scoped to --
   // preferring the actual entered CRS (so the helper text is concrete, e.g.
-  // "RDG") and falling back to naming the field above it when nothing valid
+  // "RDG") and falling back to naming the Station field when nothing valid
   // has been entered yet, so the sentence still reads naturally.
-  const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : 'Station above';
-  const stopsAtDisplay = stopsAtValid && stopsAt.trim() ? stopsAt.trim().toUpperCase() : 'Stops at above';
+  const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : 'Station';
+  const stopsAtDisplay = stopsAtValid && stopsAt.trim() ? stopsAt.trim().toUpperCase() : 'Stops at';
 
-  /** The current filter set as query parameters. Shared by the initial
-   * search and by "Load more" so that page 2 is unambiguously a
-   * continuation of page 1's query. */
+  /** The current filter set as query parameters. Shared by the search and
+   * by "Load more" so that page 2 is unambiguously a continuation of page
+   * 1's query. */
   function searchParams() {
     const params = new URLSearchParams({ station: stationCrs.trim().toUpperCase() });
     if (dateValue) params.set('date', dateValue);
@@ -238,24 +268,19 @@ export function TrainSearchForm({
     return params;
   }
 
-  /** The actual `GET /public/trains/search` call for page 1, shared by the
-   * explicit Search button (`handleSubmit`) and the auto-run-on-mount
-   * effect below, so a search fired either way behaves identically -- same
-   * loading state, same 404-vs-error handling, same `Results` shape
-   * installed on success. Mirrors `IncidentSearchForm.tsx`'s own identically
-   * named, identically shared `runSearch` -- see
-   * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
-   * §3.3. */
-  async function runSearch() {
-    setSearching(true);
-    // Captured synchronously, BEFORE the `await` below -- this is what makes
-    // it "the date that was actually searched" rather than a live read that
-    // could reflect a picker change the caller made while the request was
-    // in flight. Mirrors what `searchParams()` itself just read into the
-    // request that's about to go out.
-    const submittedDateValue = dateValue;
+  const query = filtersValid ? searchParams().toString() : null;
+
+  /** `GET /public/trains/search`'s page 1 for `searched`, run by
+   * `useLiveSearch`, which aborts it if the filters change first. */
+  const { pending } = useLiveSearch(live ? query : null, async (searched, signal) => {
+    // The date that was actually searched, read from the request rather
+    // than the live picker, which can move while the request is out.
+    const submittedDateValue = new URLSearchParams(searched).get('date');
+    // A function, not `signal.aborted` inline: it changes across the awaits.
+    const superseded = () => signal.aborted;
     try {
-      const response = await fetch(`/api/trains/search?${searchParams().toString()}`);
+      const response = await fetch(`/api/trains/search?${searched}`, { signal });
+      if (superseded()) return;
       if (response.status === 404) {
         setResults('unpublished');
         setUnpublishedDate(submittedDateValue);
@@ -266,68 +291,38 @@ export function TrainSearchForm({
         return;
       }
       const body = (await response.json()) as TrainSearchPage;
+      if (superseded()) return;
       setResults({
         rows: body.results,
         nextCursor: body.nextCursor,
-        date: submittedDateValue || '',
+        date: submittedDateValue ?? '',
         loadMoreFailed: false,
         provisional: body.provisional === true,
       });
     } catch {
-      setResults('error');
-    } finally {
-      setSearching(false);
+      if (!superseded()) setResults('error');
     }
-  }
+  });
 
-  async function handleSubmit(event: SubmitEvent) {
-    event.preventDefault();
-    if (!canSearch) return;
-    // Keep this /trains history entry's URL in sync with the last search
-    // that actually ran, so following a result to `/train/[uid]/[date]` and
-    // pressing Back can restore both the form and the results, rather than
-    // re-delivering the stale URL /trains first loaded with (see
-    // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
-    // §3.1). `replace`, not `push`: this should keep /trains a single
-    // history entry whose URL stays current, not add a new Back-button stop
-    // on every search -- mirrors `StationSearchForm.tsx`'s own use of
-    // `next/navigation`, for a different navigation shape. Deliberately NOT
-    // done from the mount effect below (§3.3) -- only an explicit search
-    // press writes to the URL, matching how this component already only
-    // wrote a *fetch* URL from `searchParams()`, never from a mount-time
-    // default.
-    router.replace(`${pathname}?${searchParams().toString()}`, { scroll: false });
-    await runSearch();
-  }
-
-  // Restores not just the form's fields (the `initialX` props above already
-  // do that) but the RESULTS too, when this page is entered with a station
-  // already in the URL -- most notably after Back-navigation from
-  // `/train/[uid]/[date]` once `handleSubmit` above has kept the URL
-  // current. Structurally identical to `IncidentSearchForm.tsx`'s own
-  // mount-only auto-run effect: an empty dependency array, deliberately NOT
-  // re-run on every later filter edit (that stays the Search button's own
-  // job), gated on `initialStation` specifically -- the one *required*
-  // precondition this form's own `stationValid`/`canSearch` already treat
-  // specially -- rather than "any initial value is present". See
+  // Keeps this /trains history entry's URL on the search on screen, so
+  // following a result to `/train/[uid]/[date]` and pressing Back restores
+  // both the filters and the results (see
   // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
-  // §3.3.
-  //
-  // Known, accepted limitation (§3.4): if the visitor had pressed "Load
-  // more" one or more times before leaving, only PAGE 1 of that result set
-  // is reconstructed here -- `nextCursor` is server-issued opaque pagination
-  // state with no representation in `searchParams()`/the URL at all, so
-  // there is nothing for this effect to resume from. This re-runs the FIRST
-  // page of the same search, not a resume of exactly where "Load more" had
-  // gotten to -- a correct, if smaller, restoration rather than a wrong one,
-  // and not a bug to fix in this pass.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount-only restore of the URL's search (see above)
-    if (CRS_PATTERN.test(initialStation.trim())) void runSearch();
-    // Intentionally empty: this is a mount-only effect, not one that tracks
-    // the filter state it reads -- see the comment above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only effect (see above)
-  }, []);
+  // §3.1). `history.replaceState` through `useUrlFilterSync`, not
+  // `router.replace`, which re-ran this page's server render (refetching
+  // the operator list and search dates) on every search. Only once the
+  // search is live: a form nobody has searched with yet leaves the URL
+  // alone. `ticketId` and any other param are kept.
+  useUrlFilterSync(live && query !== null ? query : null, (current, state) =>
+    state === null
+      ? current
+      : replaceUrlParams(current, TRAIN_URL_PARAMS, Object.fromEntries(new URLSearchParams(state))),
+  );
+
+  function handleSubmit(event: SubmitEvent) {
+    event.preventDefault();
+    if (filtersValid) setLive(true);
+  }
 
   async function handleLoadMore() {
     if (!hasRows(results)) return;
@@ -341,13 +336,12 @@ export function TrainSearchForm({
     // value, or absent, never a stale-vs-live mismatch either way. This
     // keeps this request unambiguously "page 2 of the same search".
     const pageOneDate = results.date;
-    // The exact result-set object this page is a continuation of. Search is
-    // not disabled while a page is in flight, so a fresh search can resolve
-    // first and leave this response describing a result set that is no
-    // longer on screen; `handleSubmit` always installs a BRAND NEW object,
-    // so identity is all that is needed to spot that. Without this check the
-    // stale page would append its rows to (and stamp its cursor, or its
-    // failure, onto) somebody else's search.
+    // The exact result-set object this page is a continuation of. A fresh
+    // search can resolve first and leave this response describing a result
+    // set that is no longer on screen; the live search always installs a
+    // BRAND NEW object, so identity is all that is needed to spot that.
+    // Without this check the stale page would append its rows to (and stamp
+    // its cursor, or its failure, onto) somebody else's search.
     const pagedFrom = results;
     setLoadingMore(true);
     try {
@@ -385,26 +379,26 @@ export function TrainSearchForm({
     }
   }
 
-  return (
-    <Stack gap="md" component="form" onSubmit={handleSubmit}>
-      <Autocomplete
-        label="Station"
-        placeholder="e.g. Reading or RDG"
-        description="Any station this train calls at along its route."
-        value={stationCrs}
-        onChange={setStationCrs}
-        {...suggestionAutocompleteProps(stationSuggestions, {
-          query: stationCrs,
-          loading: stationSuggestionsLoading,
-          noMatchMessage: 'No matching stations',
-        })}
-        error={stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter station code' : null}
-        required
-      />
+  const stationError = stationCrs.length > 0 && !stationValid ? 'Must be a 3-letter station code' : null;
+  const stationAutocompleteProps = suggestionAutocompleteProps(stationSuggestions, {
+    query: stationCrs,
+    loading: stationSuggestionsLoading,
+    noMatchMessage: 'No matching stations',
+  });
+
+  // Inside the filters popover the option lists and the date picker render
+  // in place (`withinPortal: false`): a portalled dropdown counts as outside
+  // the popover, so picking an option closed the whole panel, and it would
+  // sit outside the phone sheet's focus trap.
+  const inPanel = live;
+  const comboboxProps = inPanel ? { comboboxProps: { withinPortal: false } } : {};
+
+  /** Every field but Station: the rest of the full form, then the panel. */
+  const otherFields = (
+    <>
       {/* `clearButtonProps`: Mantine's `clearable` clear button ships with
           no accessible name, so axe's `button-name` fires (critical) as
-          soon as a date is picked. See `components/IncidentSearchForm.tsx`'s
-          own note and `app/lines/AllLinesTable.tsx` for the same fix. */}
+          soon as a date is picked. */}
       <DatePickerInput
         valueFormat="D MMM YYYY"
         label="Date (optional)"
@@ -416,6 +410,7 @@ export function TrainSearchForm({
         maxDate={dateBounds.maxDate}
         clearable
         clearButtonProps={{ 'aria-label': 'Clear the date' }}
+        {...(inPanel && { popoverProps: { withinPortal: false } })}
       />
       <Autocomplete
         label="Departing from (optional)"
@@ -428,6 +423,7 @@ export function TrainSearchForm({
           loading: originSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
+        {...comboboxProps}
         error={originCrs.length > 0 && !originValid ? 'Must be a 3-letter station code' : null}
       />
       <Autocomplete
@@ -441,43 +437,16 @@ export function TrainSearchForm({
           loading: stopsAtSuggestionsLoading,
           noMatchMessage: 'No matching stations',
         })}
+        {...comboboxProps}
         error={stopsAt.length > 0 && !stopsAtValid ? 'Must be a 3-letter station code' : null}
       />
       {/* All four time filters are `TimeFilterInput` -- a native
        * `<input type="time">` with a clock button that opens the platform
-       * time picker and a clear button -- not the free-text `TextInput`
-       * they used to be, which required the caller to TYPE "HH:MM"
-       * correctly with nothing but a "09:00" placeholder to go on. See
-       * `TimeFilterInput`'s own doc comment for why the two buttons have to
-       * be supplied explicitly rather than left to the native control, and
-       * why `@mantine/dates`' `TimePicker` isn't used instead. Typing is
-       * not taken away: the segments still accept digits and arrow keys.
-       *
-       * Value shape is unchanged, which is the whole point: a native time
-       * input's value is already exactly the `"HH:MM"` (`step` is 60, so
-       * never seconds) these four fields have always put on the wire as
-       * `from`/`to`/`arrival_from`/`arrival_to`, and an emptied field is
-       * `""` exactly as before -- so `searchParams()`, the optional-filter
-       * `.trim()` gating and `TIME_PATTERN` all keep working untouched, and
-       * clearing a field still drops its query param.
-       *
-       * `DateTimePicker`/`DatePickerInput` (this app's existing date
-       * controls, including the "Date (optional)" field just above) are
-       * deliberately NOT what's used here: those carry a calendar, and
-       * these four are time-of-day filters ON a date chosen separately --
-       * a second calendar per field would be four more ways to disagree
-       * with the one date the search actually runs against.
-       *
-       * No `placeholder`: a native time input renders its own `--:--`
-       * segment hints and never paints a `placeholder`, so the old
-       * "09:00"/"12:00" hints would show on no browser that supports the
-       * control -- and the format they used to teach is now taught by the
-       * control's own segments instead. (They WOULD still render on a
-       * browser old enough to degrade `type="time"` to a text box; that is
-       * the only thing dropping them costs, against keeping four props
-       * that are invisible everywhere else.) The four error strings now
-       * all name the same "09:00" example rather than each echoing its own
-       * removed placeholder. */}
+       * time picker and a clear button. See `TimeFilterInput`'s own doc
+       * comment. A native time input's value is already exactly the
+       * `"HH:MM"` these four fields put on the wire, and an emptied field is
+       * `""`, so clearing a field drops its query param. No `placeholder`:
+       * a native time input paints its own `--:--` segment hints. */}
       <Group grow align="flex-start">
         <TimeFilterInput
           clockHint
@@ -521,36 +490,127 @@ export function TrainSearchForm({
           />
         </Group>
       )}
+    </>
+  );
+
+  const activeCount =
+    (dateValue ? 1 : 0) +
+    (originCrs.trim() ? 1 : 0) +
+    (stopsAt.trim() ? 1 : 0) +
+    (fromTime.trim() ? 1 : 0) +
+    (toTime.trim() ? 1 : 0) +
+    (stopsAt.trim() && arrivalFrom.trim() ? 1 : 0) +
+    (stopsAt.trim() && arrivalTo.trim() ? 1 : 0);
+
+  function clearPanelFilters() {
+    setDateValue(null);
+    setOriginCrs('');
+    setStopsAt('');
+    setFromTime('');
+    setToTime('');
+    setArrivalFrom('');
+    setArrivalTo('');
+    setIncompleteTimes({ from: false, to: false, arrivalFrom: false, arrivalTo: false });
+  }
+
+  // Known only once the last page is in: the search api has no total.
+  const matchCount = !pending && hasRows(results) && results.nextCursor === null ? results.rows.length : null;
+
+  const resultsSection = (
+    <Stack gap="xs" mih={72}>
+      <TrainSearchResults
+        stationValid={stationValid}
+        searching={pending && results === null}
+        pending={pending}
+        results={results}
+        unpublishedDate={unpublishedDate}
+        loadingMore={loadingMore}
+        onLoadMore={() => void handleLoadMore()}
+        operatorLookup={operatorLookup}
+        attachTicketId={attachTicketId}
+      />
+    </Stack>
+  );
+
+  // `inline`/`underline="always"`: this link sits mid-sentence in body
+  // text, so colour alone can't be what marks it (WCAG 1.4.1), and it must
+  // render as a `<span>`, not `TextLink`'s default `<p>`.
+  const manualFallback = (
+    <Text size="sm" c="dimmed">
+      Can&apos;t find your train?{' '}
+      <TextLink href={manualHref} inline underline="always">
+        Track it manually
+      </TextLink>{' '}
+      by entering its origin station and departure time.
+    </Text>
+  );
+
+  if (live) {
+    return (
+      <Stack gap="md">
+        <ListFilterBar
+          search={
+            <Autocomplete
+              aria-label="Station"
+              placeholder="Station, e.g. Reading or RDG"
+              value={stationCrs}
+              onChange={setStationCrs}
+              {...stationAutocompleteProps}
+              // Only the red outline here: the bar is one fixed-height row,
+              // so the message itself goes below it.
+              error={stationError !== null}
+              aria-describedby={stationError ? stationErrorId : undefined}
+              leftSection={
+                pending ? <Loader size={14} aria-hidden="true" data-testid="list-filter-pending" /> : <SearchIcon />
+              }
+              flex="1 1 auto"
+              miw={0}
+            />
+          }
+          noun={TRAIN_NOUN}
+          matchCount={matchCount}
+          pending={pending}
+          activeCount={activeCount}
+          onClearFilters={clearPanelFilters}
+          panelWidth={380}
+          scrollablePanel
+        >
+          {otherFields}
+        </ListFilterBar>
+        {stationError && (
+          <Text size="sm" c="red" id={stationErrorId}>
+            {stationError}
+          </Text>
+        )}
+        {/* No count to announce (the search api has no total), but a
+            screen reader still hears that a search is running. */}
+        <VisuallyHidden role="status">{pending ? 'Searching' : ''}</VisuallyHidden>
+        {resultsSection}
+        {manualFallback}
+      </Stack>
+    );
+  }
+
+  return (
+    <Stack gap="md" component="form" onSubmit={handleSubmit}>
+      <Autocomplete
+        label="Station"
+        placeholder="e.g. Reading or RDG"
+        description="Any station this train calls at along its route."
+        value={stationCrs}
+        onChange={setStationCrs}
+        {...stationAutocompleteProps}
+        error={stationError}
+        required
+      />
+      {otherFields}
       <Group>
-        <Button type="submit" disabled={!canSearch} leftSection={searching ? <ButtonSpinner /> : undefined}>
-          {searching ? 'Searching' : 'Search'}
+        <Button type="submit" disabled={!filtersValid}>
+          Search
         </Button>
       </Group>
-      <Stack gap="xs" mih={72}>
-        <TrainSearchResults
-          stationValid={stationValid}
-          searching={searching}
-          results={results}
-          unpublishedDate={unpublishedDate}
-          loadingMore={loadingMore}
-          onLoadMore={() => void handleLoadMore()}
-          operatorLookup={operatorLookup}
-          attachTicketId={attachTicketId}
-        />
-      </Stack>
-      {/* `inline`/`underline="always"`: this link sits mid-sentence in body
-          text rather than in a nav or beside a heading, so (a) colour alone
-          can't be what marks it (WCAG 1.4.1) and (b) it must render as a
-          `<span>`, not `TextLink`'s default `<p>`, or the rest of the
-          sentence gets forced onto its own line. See `TextLink`'s own doc
-          comment. */}
-      <Text size="sm" c="dimmed">
-        Can&apos;t find your train?{' '}
-        <TextLink href={manualHref} inline underline="always">
-          Track it manually
-        </TextLink>{' '}
-        by entering its origin station and departure time.
-      </Text>
+      {resultsSection}
+      {manualFallback}
     </Stack>
   );
 }

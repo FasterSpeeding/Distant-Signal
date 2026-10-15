@@ -34,6 +34,8 @@ const replaceMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock, replace: replaceMock }),
   usePathname: () => '/trains',
+  // `null`, as outside the app router: the form falls back to its props.
+  useSearchParams: () => null,
 }));
 
 // A PARTIAL mock: only `DatePickerInput` is stubbed out, and everything
@@ -163,32 +165,58 @@ function searchCallUrl(fetchMock: ReturnType<typeof vi.fn>): string {
   return urls[urls.length - 1]!;
 }
 
-/** Clicks the Search button once it reads "Search" again, rather than
- * "Searching" -- this form's mount-time auto-search (see
- * `TrainSearchForm.tsx`'s own mount `useEffect`, and
- * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
- * §3.3) means a search can already be in flight the instant a test with a
- * valid `initialStation` renders, so the button can still show that
- * in-flight label -- and `canSearch` itself is gated on `!searching` -- for
- * the tick between render and this click. `findByRole` (not `getByRole`)
- * waits it out instead of racing it. Mirrors
- * `IncidentSearchForm.test.tsx`'s identical helper. */
+/** Runs a search. Before the first search the form is the full form with a
+ * Search button; from then on (and from the start when `initialStation` is
+ * a valid code) it is the compact bar, which searches live with no button,
+ * so there is nothing to press: this then just waits for the live search
+ * to land. */
 async function clickSearch() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Search' }));
+  const button = screen.queryByRole('button', { name: 'Search' });
+  if (button) fireEvent.click(button);
+  await searchSettled();
 }
 
-/** Waits out the same mount-triggered auto-search for a test that never
- * otherwise interacts with the network before making synchronous
- * assertions. Without this, a test that never `await`s anything finishes --
- * and React Testing Library tears down -- before that request's `.then()`
- * settles and flips `searching` back to `false`, so the resulting state
- * update lands outside any `act()` scope and prints a spurious "not wrapped
- * in act(...)" warning; and any assertion checking the Search button's
- * enabled/disabled state would otherwise be racing `searching` itself
- * (`canSearch` is gated on `!searching`), not just the condition under
- * test. */
+/** Waits for the search in flight to land: the spinner that stands in for
+ * the Station field's search glyph goes away. */
+async function searchSettled() {
+  await waitFor(() => expect(screen.queryByTestId('list-filter-pending')).not.toBeInTheDocument());
+}
+
+/** Waits out the mount-time search (a valid `initialStation`), for a test
+ * that makes its assertions synchronously afterwards. */
 async function awaitMountSettled() {
-  await screen.findByRole('button', { name: 'Search' });
+  await searchSettled();
+}
+
+/** Opens the compact bar's Filters panel, if the form is the compact bar
+ * and the panel is shut, so a field other than Station can be reached. */
+function openFiltersIfCompact() {
+  const button = screen.queryByRole('button', { name: /^Filters/ });
+  if (button && button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button);
+}
+
+/** The full form (before any search) with `MAN` typed into Station, so
+ * the Search button's enabled state can be checked. */
+function renderFullForm(props: Partial<Parameters<typeof TrainSearchForm>[0]> = {}) {
+  const result = renderWithMantine(<TrainSearchForm {...props} />);
+  fireEvent.change(screen.getByRole('combobox', { name: 'Station' }), { target: { value: 'MAN' } });
+  return result;
+}
+
+/** Changes the date, which starts a fresh live search. */
+function changeDate(value: string) {
+  fireEvent.change(panelField('Date (optional)'), { target: { value } });
+}
+
+/** A field by its label, opening the Filters panel first if need be. */
+function panelField(label: string): HTMLElement {
+  openFiltersIfCompact();
+  return screen.getByLabelText(label);
+}
+
+function panelCombobox(name: string): HTMLElement {
+  openFiltersIfCompact();
+  return screen.getByRole('combobox', { name });
 }
 
 describe('TrainSearchForm', () => {
@@ -225,7 +253,7 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
-    fireEvent.change(screen.getByLabelText('Date (optional)'), { target: { value: '2026-09-16' } });
+    fireEvent.change(panelField('Date (optional)'), { target: { value: '2026-09-16' } });
     await clickSearch();
 
     await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&date=2026-09-16'));
@@ -240,7 +268,7 @@ describe('TrainSearchForm', () => {
       renderWithMantine(
         <TrainSearchForm searchDates={{ from: day(-7), to: day(28), publishedFrom: day(-1), publishedTo: day(28) }} />,
       );
-      const input = screen.getByLabelText('Date (optional)');
+      const input = panelField('Date (optional)');
       expect(input).toHaveAttribute('data-min-date', day(-7));
       expect(input).toHaveAttribute('data-max-date', day(28));
       expect(screen.getByText('Search a different day, up to 7 days back and 28 days ahead.')).toBeInTheDocument();
@@ -249,7 +277,7 @@ describe('TrainSearchForm', () => {
     it('fall back to a week either side of London today without them', async () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
       renderWithMantine(<TrainSearchForm searchDates={null} />);
-      const input = screen.getByLabelText('Date (optional)');
+      const input = panelField('Date (optional)');
       expect(input).toHaveAttribute('data-min-date', day(-7));
       expect(input).toHaveAttribute('data-max-date', day(7));
       expect(screen.getByText('Search a different day, up to a week either side of today.')).toBeInTheDocument();
@@ -329,8 +357,8 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" initialStopsAt="OXF" />);
 
-    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
+    fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(panelField('Latest departure (optional)'), { target: { value: '12:00' } });
     await clickSearch();
 
     await waitFor(() =>
@@ -363,7 +391,7 @@ describe('TrainSearchForm', () => {
       renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
 
       for (const { label, name } of TIME_FIELDS) {
-        const input = screen.getByLabelText(label);
+        const input = panelField(label);
         expect(input).toHaveAttribute('type', 'time');
         // `step=60` is what keeps a native time input's value at "HH:MM" --
         // the exact shape `from`/`to`/`arrival_from`/`arrival_to` are parsed
@@ -384,10 +412,10 @@ describe('TrainSearchForm', () => {
       vi.stubGlobal('fetch', fetchMock);
       renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
-      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+      fireEvent.change(panelField('Earliest departure (optional)'), {
         target: { value: '09:00' },
       });
-      fireEvent.change(screen.getByLabelText('Latest departure (optional)'), {
+      fireEvent.change(panelField('Latest departure (optional)'), {
         target: { value: '12:00' },
       });
       // Driven through the field's real clear button rather than a
@@ -410,7 +438,7 @@ describe('TrainSearchForm', () => {
       expect(screen.queryByRole('button', { name: 'Clear earliest departure' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Clear latest departure' })).not.toBeInTheDocument();
 
-      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+      fireEvent.change(panelField('Earliest departure (optional)'), {
         target: { value: '09:00' },
       });
 
@@ -422,7 +450,7 @@ describe('TrainSearchForm', () => {
 
     it('still flags a time the wire format does not accept', async () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
-      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+      renderFullForm();
       // `canSearch` is gated on `!searching` too, so the disabled-button
       // assertion below would otherwise be racing this form's own
       // mount-time auto-search, not just the invalid time under test.
@@ -436,7 +464,7 @@ describe('TrainSearchForm', () => {
       // are parsed as bare `"HH:MM"`. So the component's own
       // `TIME_PATTERN` check is not dead weight after the swap to a picker
       // -- this is the case it still catches.
-      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+      fireEvent.change(panelField('Earliest departure (optional)'), {
         target: { value: '09:00:30' },
       });
 
@@ -454,10 +482,10 @@ describe('TrainSearchForm', () => {
       // to `""`). The old `TextInput` accepted the keystrokes and only
       // *then* showed an error; now there is nothing to error about,
       // and `from` is simply absent -- never sent as a malformed value.
-      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+      fireEvent.change(panelField('Earliest departure (optional)'), {
         target: { value: '25:99' },
       });
-      expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
+      expect(panelField('Earliest departure (optional)')).toHaveValue('');
 
       await clickSearch();
 
@@ -466,13 +494,13 @@ describe('TrainSearchForm', () => {
 
     it('refuses to search on a half-entered time rather than quietly dropping the filter', async () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
-      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+      renderFullForm();
       // `canSearch` is gated on `!searching` too, so the disabled-button
       // assertion below would otherwise be racing this form's own
       // mount-time auto-search, not just the incomplete time under test.
       await awaitMountSettled();
 
-      const input = screen.getByLabelText('Earliest departure (optional)');
+      const input = panelField('Earliest departure (optional)');
       // A real browser reports a half-entered time ("09:--") as `''` with
       // `validity.badInput` set; jsdom models neither, so the flag is
       // forced. Without the wiring this test covers, `''` is
@@ -489,7 +517,7 @@ describe('TrainSearchForm', () => {
       vi.stubGlobal('fetch', fetchMock);
       renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
-      const input = screen.getByLabelText('Earliest departure (optional)');
+      const input = panelField('Earliest departure (optional)');
       Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput: true }) });
       fireEvent.blur(input);
 
@@ -503,13 +531,13 @@ describe('TrainSearchForm', () => {
     it('forgets a half-entered arrival time once Stops at removes the field', async () => {
       const fetchMock = mockFetchByUrl();
       vi.stubGlobal('fetch', fetchMock);
-      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+      renderFullForm({ initialStopsAt: 'WAT' });
       // `canSearch` is gated on `!searching` too, so the "not disabled"
       // assertions below would otherwise be racing this form's own
       // mount-time auto-search, not just the condition under test.
       await awaitMountSettled();
 
-      const arrival = screen.getByLabelText('Earliest arrival (optional)');
+      const arrival = panelField('Earliest arrival (optional)');
       Object.defineProperty(arrival, 'validity', { configurable: true, get: () => ({ badInput: true }) });
       fireEvent.blur(arrival);
       expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
@@ -518,7 +546,7 @@ describe('TrainSearchForm', () => {
       // one can no longer contribute a query param -- `searchParams()`
       // gates `arrival_from`/`arrival_to` on `stops_at` -- so it must stop
       // blocking the search too.
-      fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+      fireEvent.change(panelCombobox('Stops at (optional)'), {
         target: { value: '' },
       });
       expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
@@ -528,10 +556,10 @@ describe('TrainSearchForm', () => {
       // arrival field, which reports nothing of its own (the callback only
       // fires on a transition). A flag that merely went dormant would come
       // back live here and wedge the form with no error text to explain it.
-      fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+      fireEvent.change(panelCombobox('Stops at (optional)'), {
         target: { value: 'RDG' },
       });
-      expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
+      expect(panelField('Earliest arrival (optional)')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
 
       await clickSearch();
@@ -552,7 +580,7 @@ describe('TrainSearchForm', () => {
       // Every field sits inside `<Stack component="form">`, so a
       // right-section button defaulting to `type="submit"` would fire a
       // whole search on each click.
-      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), {
+      fireEvent.change(panelField('Earliest departure (optional)'), {
         target: { value: '09:00' },
       });
       fireEvent.click(screen.getByRole('button', { name: 'Pick earliest departure' }));
@@ -563,7 +591,7 @@ describe('TrainSearchForm', () => {
 
     it('blocks the search on an unacceptable ARRIVAL time too, not just a departure one', async () => {
       vi.stubGlobal('fetch', mockFetchByUrl());
-      renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
+      renderFullForm({ initialStopsAt: 'WAT' });
       // `canSearch` is gated on `!searching` too, so the disabled-button
       // assertion below would otherwise be racing this form's own
       // mount-time auto-search, not just the invalid time under test.
@@ -572,7 +600,7 @@ describe('TrainSearchForm', () => {
       // The arrival pair is conditionally rendered, so its contribution to
       // `canSearch` is easy to lose without noticing -- pinned separately
       // from the departure pair's for that reason.
-      fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), {
+      fireEvent.change(panelField('Latest arrival (optional)'), {
         target: { value: '09:30:15' },
       });
 
@@ -728,8 +756,8 @@ describe('TrainSearchForm', () => {
     const list = document.querySelector('[data-train-results]');
     expect(list).not.toBeNull();
     expect(list?.tagName).toBe('UL');
-    const form = (list as HTMLElement).closest('form');
-    expect(form).not.toBeNull();
+    // The compact bar is not a form: walk up to the rendered root instead.
+    const form = document.body.firstElementChild as HTMLElement;
 
     // Walk the list itself plus every ancestor up to (and including) the
     // form -- a clip anywhere on that chain hides rows just as effectively
@@ -879,13 +907,8 @@ describe('TrainSearchForm', () => {
     await clickSearch();
 
     expect(await screen.findByText(/Today's scheduled timetable data isn't available yet/)).toBeInTheDocument();
-    // The click's own (second) request already shows the same text as
-    // mount's own auto-search 404, so `findByText` above can resolve before
-    // this one's response has actually settled -- wait for it too, so its
-    // state update lands before the test (and RTL's unmount) finishes,
-    // rather than racing cleanup. Same rationale as
-    // `IncidentSearchForm.test.tsx`'s identical wait.
-    await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(2));
+    // One request: the compact bar searches on mount and on change only.
+    expect(searchCallUrls(fetchMock)).toHaveLength(1);
   });
 
   it('says so when the search succeeds but matches nothing', async () => {
@@ -905,11 +928,7 @@ describe('TrainSearchForm', () => {
     await clickSearch();
 
     expect(await screen.findByText("Couldn't search for trains right now. Try again.")).toBeInTheDocument();
-    // Same rationale as the 404 test above: the click's own (second)
-    // request shows the same error text mount's own auto-search already
-    // produced, so `findByText` can resolve before this response has
-    // actually settled -- wait for it too, rather than racing cleanup.
-    await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(2));
+    expect(searchCallUrls(fetchMock)).toHaveLength(1);
   });
 
   it('labels the results as scheduled timetable data, not live status', async () => {
@@ -1026,6 +1045,7 @@ describe('TrainSearchForm', () => {
     await screen.findByText("Couldn't load more results. Try again.");
 
     failNextPage = false;
+    changeDate('2026-09-16');
     await clickSearch();
 
     await waitFor(() => expect(screen.queryByText("Couldn't load more results. Try again.")).not.toBeInTheDocument());
@@ -1077,13 +1097,11 @@ describe('TrainSearchForm', () => {
     expect(screen.getByRole('link', { name: rowName('10:05', 'WAT') })).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
-    // Index 0 is this form's own mount-time auto-search (`initialStation=
-    // "MAN"` is a valid CRS, so §3.3's effect runs it before any explicit
-    // interaction); index 1 is the explicit Search click above; index 2 is
-    // "Load more".
-    expect(urls).toHaveLength(3);
-    expect(urls[1]).toBe('/api/trains/search?station=MAN');
-    expect(urls[2]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
+    // Index 0 is the mount-time search (`initialStation="MAN"` is a valid
+    // CRS); index 1 is "Load more".
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe('/api/trains/search?station=MAN');
+    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument());
   });
@@ -1107,11 +1125,11 @@ describe('TrainSearchForm', () => {
     expect(await screen.findByRole('link', { name: rowName('13:15', 'WAT') })).toBeInTheDocument();
 
     const urls = searchCallUrls(fetchMock);
-    // Index 0 is the mount-time auto-search; index 1 the explicit Search
-    // click; indices 2/3 the two "Load more" presses.
-    expect(urls).toHaveLength(4);
-    expect(urls[2]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
-    expect(urls[3], 'the second Load more must use the cursor from the SECOND response').toBe(
+    // Index 0 is the mount-time search; indices 1/2 the two "Load more"
+    // presses.
+    expect(urls).toHaveLength(3);
+    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
+    expect(urls[2], 'the second Load more must use the cursor from the SECOND response').toBe(
       '/api/trains/search?station=MAN&after=CURSOR2',
     );
     expect(screen.getAllByRole('link', { name: rowName('11:40', 'WAT') })).toHaveLength(1);
@@ -1127,17 +1145,16 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="man" initialOrigin="eus" />);
 
-    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '12:00' } });
+    fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(panelField('Latest departure (optional)'), { target: { value: '12:00' } });
     await clickSearch();
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
 
-    await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(3));
-    // Index 0 is the mount-time auto-search (station=MAN&origin=EUS, no
-    // time filters -- it runs before the fields above are ever touched);
-    // index 1 is the explicit Search click, carrying the filled-in time
-    // filters; index 2 is "Load more", continuing THAT search.
-    expect(searchCallUrls(fetchMock)[2]).toBe(
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toContain('after=CURSOR1'));
+    // The last call is "Load more", continuing the search with the time
+    // filters (the changes land before or after the mount search; either
+    // way the rows on screen are from the search that has them).
+    expect(searchCallUrl(fetchMock)).toBe(
       '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&to=12%3A00&after=CURSOR1',
     );
   });
@@ -1156,6 +1173,7 @@ describe('TrainSearchForm', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
     expect(await screen.findByRole('link', { name: rowName('11:40', 'WAT') })).toBeInTheDocument();
 
+    changeDate('2026-09-16');
     await clickSearch();
 
     await waitFor(() => expect(screen.queryByRole('link', { name: rowName('11:40', 'WAT') })).not.toBeInTheDocument());
@@ -1192,7 +1210,8 @@ describe('TrainSearchForm', () => {
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' })); // page 2 of search 1
-    await clickSearch(); // search 2
+    changeDate('2026-09-16'); // search 2
+    await clickSearch();
     await screen.findByRole('link', { name: rowName('13:15', 'WAT') });
 
     resolvePageTwo(new Response(searchBody(PAGE_TWO, 'CURSOR2'), { status: 200 }));
@@ -1211,7 +1230,7 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="MAN" />);
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+    fireEvent.change(panelCombobox('Stops at (optional)'), {
       target: { value: 'rdg' },
     });
     await clickSearch();
@@ -1233,8 +1252,8 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
     renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="WAT" />);
 
-    expect(screen.getByLabelText('Earliest arrival (optional)')).toBeInTheDocument();
-    expect(screen.getByLabelText('Latest arrival (optional)')).toBeInTheDocument();
+    expect(panelField('Earliest arrival (optional)')).toBeInTheDocument();
+    expect(panelField('Latest arrival (optional)')).toBeInTheDocument();
 
     await awaitMountSettled();
   });
@@ -1244,8 +1263,8 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="man" initialStopsAt="wat" />);
 
-    fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), { target: { value: '09:30' } });
+    fireEvent.change(panelField('Earliest arrival (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(panelField('Latest arrival (optional)'), { target: { value: '09:30' } });
     await clickSearch();
 
     await waitFor(() =>
@@ -1260,8 +1279,8 @@ describe('TrainSearchForm', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<TrainSearchForm initialStation="MAN" initialStopsAt="RDG" />);
 
-    fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '09:00' } });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Stops at (optional)' }), {
+    fireEvent.change(panelField('Earliest arrival (optional)'), { target: { value: '09:00' } });
+    fireEvent.change(panelCombobox('Stops at (optional)'), {
       target: { value: '' },
     });
     await clickSearch();
@@ -1286,26 +1305,24 @@ describe('TrainSearchForm', () => {
       vi.stubGlobal('fetch', fetchMock);
       renderWithMantine(<TrainSearchForm initialStation="MAN" initialOrigin="EUS" />);
 
-      // Mount's own auto-search (below) does NOT itself write to the URL --
-      // only an explicit Search press does (§3.1 scopes the `router.replace`
-      // call to `handleSubmit`). Captured before the click so the assertion
-      // below is specifically about what THIS click causes, not what mount
-      // already did.
+      // Mount's own search does not write to the URL (it came from it).
+      window.history.replaceState(null, '', '/trains?station=MAN&origin=EUS&ticketId=7');
+      const replaceState = vi.spyOn(window.history, 'replaceState');
       await awaitMountSettled();
-      replaceMock.mockClear();
 
-      fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+      fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '09:00' } });
       await clickSearch();
 
-      await waitFor(() =>
-        expect(replaceMock).toHaveBeenCalledWith('/trains?station=MAN&origin=EUS&from=09%3A00', { scroll: false }),
-      );
-      expect(replaceMock).toHaveBeenCalledTimes(1);
-      // `replace`, not `push`: this should keep /trains a single history
-      // entry whose URL stays current, not add a new Back-button stop on
-      // every search -- see StationSearchForm.tsx's own `router.push` for
-      // the DIFFERENT case (a real navigation) this deliberately isn't.
+      // `history.replaceState`, never the router: `router.replace` re-ran
+      // the page's server render (refetching the operator list and search
+      // dates) on every search. Replace, not push, so /trains stays one
+      // history entry. Params the form doesn't own (`ticketId`) are kept.
+      await waitFor(() => expect(window.location.search).toBe('?station=MAN&origin=EUS&ticketId=7&from=09%3A00'));
+      expect(replaceState).toHaveBeenCalledTimes(1);
+      expect(replaceMock).not.toHaveBeenCalled();
       expect(pushMock).not.toHaveBeenCalled();
+      replaceState.mockRestore();
+      window.history.replaceState(null, '', '/');
     });
 
     it('pre-fills every field -- including all four time-range filters -- from initial props', async () => {
@@ -1325,13 +1342,13 @@ describe('TrainSearchForm', () => {
       await awaitMountSettled();
 
       expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
-      expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('EUS');
-      expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('WAT');
-      expect(screen.getByLabelText('Date (optional)')).toHaveValue('2026-09-16');
-      expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('09:00');
-      expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('12:00');
-      expect(screen.getByLabelText('Earliest arrival (optional)')).toHaveValue('10:00');
-      expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('13:00');
+      expect(panelCombobox('Departing from (optional)')).toHaveValue('EUS');
+      expect(panelCombobox('Stops at (optional)')).toHaveValue('WAT');
+      expect(panelField('Date (optional)')).toHaveValue('2026-09-16');
+      expect(panelField('Earliest departure (optional)')).toHaveValue('09:00');
+      expect(panelField('Latest departure (optional)')).toHaveValue('12:00');
+      expect(panelField('Earliest arrival (optional)')).toHaveValue('10:00');
+      expect(panelField('Latest arrival (optional)')).toHaveValue('13:00');
     });
 
     it('auto-runs the search on mount when the initial station is valid, with no click at all', async () => {

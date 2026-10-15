@@ -18,10 +18,13 @@ import type { LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
 // even though none of this file's own tests exercise the login-prompt
 // path directly.
 //
+// `navigation.search` is the mocked address bar's query string, which the
+// table seeds its filters from (`useInitialSearchParams`).
+const navigation = vi.hoisted(() => ({ search: '' }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/lines',
-  useSearchParams: () => new URLSearchParams(''),
+  useSearchParams: () => new URLSearchParams(navigation.search),
 }));
 
 // Injects exactly one synthetic non-GB modeName mapping, on top of the
@@ -48,6 +51,10 @@ vi.mock('@/lib/modes', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/modes')>();
   Object.assign(actual.MODE_TO_COUNTRY, { 'synthetic-ni-mode': 'NorthernIreland' });
   return actual;
+});
+
+beforeEach(() => {
+  navigation.search = '';
 });
 
 function report(overrides: Partial<LineStatusReport> & { id: string; name: string }): LineStatusReport {
@@ -827,17 +834,15 @@ describe('status-group filter', () => {
   });
 
   it('seeds the filter from initialStatusGroup and filters on first render', () => {
-    renderWithMantine(
-      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
-    );
+    navigation.search = 'statusGroup=mild';
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Great Western Railway' })).not.toBeInTheDocument();
   });
 
   it('"All statuses" clears the filter back to every line', () => {
-    renderWithMantine(
-      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
-    );
+    navigation.search = 'statusGroup=mild';
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     fireEvent.click(statusChip('All statuses'));
     expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Great Western Railway' })).toBeInTheDocument();
@@ -853,9 +858,8 @@ describe('status-group filter', () => {
   });
 
   it('shows a quantified count and a "Show all lines" way out for a filtered view (regression: 2026-09-22 UX review §3.3, no count and no way back)', () => {
-    renderWithMantine(
-      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="mild" />,
-    );
+    navigation.search = 'statusGroup=mild';
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     expect(screen.getByRole('status')).toHaveTextContent('1 line with Minor Disruption.');
     fireEvent.click(screen.getByRole('button', { name: 'Show all lines' }));
     expect(screen.getByRole('link', { name: 'West Coast Main Line' })).toBeInTheDocument();
@@ -864,9 +868,8 @@ describe('status-group filter', () => {
   });
 
   it('shows an honest zero-row message for a filter with no matching lines', () => {
-    renderWithMantine(
-      <AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} initialStatusGroup="severe" />,
-    );
+    navigation.search = 'statusGroup=severe';
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={[]} />);
     fireEvent.click(statusChip('Good service'));
     expect(screen.getByRole('status')).toHaveTextContent('No lines are Good Service right now.');
   });
@@ -910,10 +913,10 @@ describe('search and filters bar', () => {
 
   it('counts active filters on the button, without changing its name', () => {
     renderTable();
-    expect(screen.queryByTestId('lines-filter-count')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('list-filter-count')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('None on');
     fireEvent.click(statusChip('Severe disruption'));
-    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('list-filter-count')).toHaveTextContent('1');
     expect(screen.getByRole('button', { name: 'Filters' })).toHaveAccessibleDescription('1 on');
   });
 
@@ -924,7 +927,7 @@ describe('search and filters bar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
     expect(statusChip('All statuses')).toBeChecked();
     expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('west');
-    expect(screen.queryByTestId('lines-filter-count')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('list-filter-count')).not.toBeInTheDocument();
   });
 
   it('says how many lines are left in the panel and closes on "Show"', () => {
@@ -953,20 +956,12 @@ describe('search and filters bar', () => {
     expect(search).toHaveValue('');
   });
 
-  it('seeds the search and operator filter, dropping operator codes no line has', () => {
-    renderWithMantine(
-      <AllLinesTable
-        lines={lines}
-        reports={reports}
-        pinnedLineIds={[]}
-        tocs={tocs}
-        initialQuery="western"
-        initialOperators={['SW', 'NOPE']}
-      />,
-    );
+  it('seeds the search and operator filter from the URL, dropping operator codes no line has', () => {
+    navigation.search = 'q=western&operator=SW&operator=NOPE';
+    renderWithMantine(<AllLinesTable lines={lines} reports={reports} pinnedLineIds={[]} tocs={tocs} />);
     expect(screen.getByRole('textbox', { name: 'Find a line' })).toHaveValue('western');
     expect(rowNames()).toEqual(['South Western']);
-    expect(screen.getByTestId('lines-filter-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('list-filter-count')).toHaveTextContent('1');
   });
 
   it('writes the search, operators and status to the URL once typing settles, not on load', () => {

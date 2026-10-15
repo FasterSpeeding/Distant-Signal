@@ -840,7 +840,14 @@ describe('AllLinesTable wrapper and sticky header (2026-10-14)', () => {
   });
 
   it('sizes the search bar from the same variable the table header is offset by', () => {
-    expect(css).toMatch(/\.linesTableRoot\s*\{[^}]*--lines-filter-bar-height:/);
-    expect(/\.linesFilterBar\s*\{[^}]*\}/.exec(css)![0]).toContain('height: var(--lines-filter-bar-height)');
+    expect(css).toMatch(/:root\s*\{[^}]*--list-filter-bar-height:/);
+    expect(/\.listFilterBar\[data-sticky\]\s*\{[^}]*\}/.exec(css)![0]).toContain(
+      'height: var(--list-filter-bar-height)',
+    );
+  });
+
+  it('only sticks, bleeds and fixes the height of the sticky variant', () => {
+    // A bare `.listFilterBar` rule would also pin IssueList's in-section bar.
+    expect(css).not.toMatch(/\.listFilterBar\s*\{/);
   });
 });

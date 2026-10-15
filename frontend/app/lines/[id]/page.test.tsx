@@ -66,6 +66,8 @@ vi.mock('next/headers', () => ({
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
   notFound: vi.fn(),
+  // `null`, as outside the app router: the issue lists keep their props.
+  useSearchParams: () => null,
 }));
 // Same rationale as TrendsResults.test.tsx's own mock: this repo's
 // convention is not to assert on Recharts' SVG output, so the embedded

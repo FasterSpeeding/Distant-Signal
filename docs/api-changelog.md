@@ -79,6 +79,22 @@ route is gone and now answers `404`; use `GET /public/auth/session`
 (`authenticated`) instead. Its only caller was DS's own frontend. The
 `CHATBOT_ACCESS` and `CHATBOT_ACCESS_GROUP` settings went with it.
 
+## 2026-10-14: incident search text and total
+
+Additive, on `GET /public/incidents`.
+
+**`q`.** Optional free text, matched against each incident's summary and
+description. Every word must match, each as a prefix ("sig fail wok"
+finds "Signalling failure at Woking"), with English stemming; case and
+punctuation don't matter, and only the first 8 words count. Blank (or
+punctuation only, or only stop words such as "the") is no filter. Over
+200 characters is a `400`. It combines with every other filter, and the
+order stays newest `firstSeenAt` first.
+
+**`total`.** The response gains `total`: how many incidents match the
+filters in all, across every page. It is on the first page only and
+`null` on a page fetched with `after`.
+
 ## 2026-10-14: transit rail links
 
 Additive. New: `GET /public/transit/rail-links?crs=MAN` (3600 s):

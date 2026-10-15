@@ -84,4 +84,147 @@ export function parsePriorityParam(value: string | undefined): number | '' {
  * kept on failure -- it is still a valid cursor, so the retry the footer
  * offers is a real one. */
 export type IncidentResults =
-  { rows: IncidentSummary[]; nextCursor: string | null; query: string; loadMoreFailed: boolean } | 'error' | null;
+  | {
+      rows: IncidentSummary[];
+      nextCursor: string | null;
+      query: string;
+      loadMoreFailed: boolean;
+      /** Every incident the search matches (`GET /public/incidents`'
+       * `total`, first page only), or `null` from an api that predates it. */
+      total: number | null;
+    }
+  | 'error'
+  | null;
+
+/** The filter state `IncidentSearchForm` searches with and keeps in the
+ * URL. Dates are London calendar days (`YYYY-MM-DD`). */
+export interface IncidentFilters {
+  query: string;
+  operators: readonly string[];
+  lineId: string | null;
+  fromDate: string | null;
+  toDate: string | null;
+  preset: DatePreset | null;
+  planned: 'all' | 'planned' | 'realtime';
+  state: StateFilter;
+  priorityMin: number | '';
+  priorityMax: number | '';
+}
+
+/** The URL params `IncidentSearchForm` owns (everything else in the URL is
+ * left alone). */
+export const INCIDENT_URL_PARAMS = [
+  'q',
+  'operator',
+  'line',
+  'from',
+  'to',
+  'period',
+  'planned',
+  'state',
+  'cleared',
+  'priority_min',
+  'priority_max',
+] as const;
+
+/** `GET /public/incidents`' query for `filters`. `fromDate`/`toDate` name
+ * London calendar days (FE-5), so `to` gets the last millisecond of its
+ * day: the api's `to` is an inclusive `first_seen_at <= to`. `state`, not
+ * the legacy `cleared` boolean, which can only say "not cleared" and so
+ * can't ask for "Ended". */
+export function incidentSearchParams(
+  filters: IncidentFilters,
+  dayStartIso: (day: string) => string,
+  dayEndIso: (day: string) => string,
+): URLSearchParams {
+  const params = new URLSearchParams();
+  const query = filters.query.trim();
+  if (query) params.set('q', query);
+  if (filters.operators.length > 0) params.set('operator', filters.operators.join(','));
+  if (filters.lineId) params.set('line', filters.lineId);
+  if (filters.fromDate) params.set('from', dayStartIso(filters.fromDate));
+  if (filters.toDate) params.set('to', dayEndIso(filters.toDate));
+  if (filters.planned === 'planned') params.set('planned', 'true');
+  if (filters.planned === 'realtime') params.set('planned', 'false');
+  if (filters.state !== 'all') params.set('state', filters.state);
+  if (filters.priorityMin !== '') params.set('priority_min', String(filters.priorityMin));
+  if (filters.priorityMax !== '') params.set('priority_max', String(filters.priorityMax));
+  return params;
+}
+
+/** The URL for `filters`. A preset period is written as `period` (none
+ * for the 30-day default), not as dates, so a shared link to "the last 7
+ * days" stays the last 7 days. Custom dates are written as `from`/`to`
+ * London days, with `period=custom` when there is no lower bound: a URL
+ * with neither restores the 30-day default. `period` exists only in the
+ * URL; the api never sees it. */
+export function incidentUrlParams(
+  filters: IncidentFilters,
+  dayStartIso: (day: string) => string,
+  dayEndIso: (day: string) => string,
+): URLSearchParams {
+  const params = incidentSearchParams(filters, dayStartIso, dayEndIso);
+  if (filters.preset !== null) {
+    params.delete('from');
+    params.delete('to');
+    if (filters.preset !== '30d') params.set('period', filters.preset);
+  } else {
+    if (filters.fromDate) params.set('from', filters.fromDate);
+    if (filters.toDate) params.set('to', filters.toDate);
+    if (!filters.fromDate) params.set('period', 'custom');
+  }
+  return params;
+}
+
+/** The period a URL restores: `period` when it names one (`all` is also
+ * what links from before the other presets carried), else custom dates
+ * when `from` is set (older links wrote every search as dates), else the
+ * 30-day default. `from`/`to` may be a London day or a full timestamp. */
+export function initialIncidentPeriod(
+  period: string | undefined,
+  from: string | undefined,
+  to: string | undefined,
+  toDay: (value: string) => string,
+): { preset: DatePreset | null; fromDate: string | null; toDate: string | null } {
+  if (period === '7d' || period === '30d' || period === '90d') {
+    return { preset: period, fromDate: calendarDaysAgo(PRESET_DAYS[period]), toDate: null };
+  }
+  if (period === 'all') return { preset: 'all', fromDate: null, toDate: null };
+  if (period === 'custom' || from) {
+    return { preset: null, fromDate: from ? toDay(from) : null, toDate: to ? toDay(to) : null };
+  }
+  return { preset: '30d', fromDate: calendarDaysAgo(30), toDate: null };
+}
+
+/** How many days back each preset period reaches. */
+export const PRESET_DAYS: Record<Exclude<DatePreset, 'all'>, number> = { '7d': 7, '30d': 30, '90d': 90 };
+
+/** How many filters in the panel differ from the default view (the last 30
+ * days, everything else open): the "Filters" button's badge. */
+export function activeIncidentFilterCount(filters: IncidentFilters): number {
+  return (
+    filters.operators.length +
+    (filters.lineId ? 1 : 0) +
+    (filters.preset === '30d' ? 0 : 1) +
+    (filters.planned === 'all' ? 0 : 1) +
+    (filters.state === 'all' ? 0 : 1) +
+    (filters.priorityMin !== '' || filters.priorityMax !== '' ? 1 : 0)
+  );
+}
+
+/** The browser tab title for a filtered archive, or `null` for the default
+ * view: the line, then operators by name, then the search in quotes. */
+export function incidentsTitle(
+  filters: Pick<IncidentFilters, 'query' | 'operators' | 'lineId'>,
+  lineNamesById: ReadonlyMap<string, string>,
+  tocNamesByCode: ReadonlyMap<string, string>,
+): string | null {
+  const parts: string[] = [];
+  if (filters.lineId) parts.push(lineNamesById.get(filters.lineId) ?? filters.lineId);
+  const [onlyOperator] = filters.operators;
+  if (filters.operators.length > 1) parts.push(`${filters.operators.length} operators`);
+  else if (onlyOperator) parts.push(tocNamesByCode.get(onlyOperator) ?? onlyOperator);
+  const query = filters.query.trim();
+  if (query) parts.push(`"${query}"`);
+  return parts.length > 0 ? `Incidents: ${parts.join(', ')}` : null;
+}

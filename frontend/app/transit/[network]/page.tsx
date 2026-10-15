@@ -2,6 +2,7 @@ import { Stack, Text, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { SectionTitle } from '@/components/SectionTitle';
+import { SearchableList } from '@/components/SearchableList';
 import { TextLink } from '@/components/TextLink';
 import { TransitAttributionNote } from '@/components/TransitAttributionNote';
 import { TransitDisruptions } from '@/components/TransitDisruptions';
@@ -12,6 +13,8 @@ import { orNotFound, TRANSIT_ID } from '@/lib/transit';
 
 interface Params {
   params: Promise<{ network: string }>;
+  /** `?q=`, "Find a stop". */
+  searchParams?: Promise<{ q?: string | string[] }>;
 }
 
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
@@ -23,8 +26,9 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
 
 /** `/transit/[network]`: a tram network's lines (with their status, when
  * the network has a disruptions feed), its disruptions, and its stops. */
-export default async function TransitNetworkPage({ params }: Params) {
+export default async function TransitNetworkPage({ params, searchParams }: Params) {
   const { network } = await params;
+  const { q } = (await searchParams) ?? {};
   if (!TRANSIT_ID.test(network)) notFound();
   const [detail, stops, situations] = await Promise.all([
     orNotFound(getTransitNetwork(network)),
@@ -57,13 +61,20 @@ export default async function TransitNetworkPage({ params }: Params) {
         {stops.length === 0 ? (
           <Text c="dimmed">No stops in the timetable.</Text>
         ) : (
-          <Stack component="ul" gap={4} className="ds-plain-list">
-            {stops.map((stop) => (
-              <li key={stop.id}>
-                <TextLink href={`/transit/${network}/stops/${stop.id}`}>{stop.name}</TextLink>
-              </li>
-            ))}
-          </Stack>
+          // The list is a client component so "Find a stop" can filter it in
+          // place; the page stays a Server Component.
+          <SearchableList
+            searchLabel="Find a stop"
+            noun={{ one: 'stop', other: 'stops' }}
+            titlePrefix={`${detail.name} stops`}
+            initialQuery={Array.isArray(q) ? q[0] : q}
+            layout="list"
+            items={stops.map((stop) => ({
+              key: stop.id,
+              text: stop.name,
+              node: <TextLink href={`/transit/${network}/stops/${stop.id}`}>{stop.name}</TextLink>,
+            }))}
+          />
         )}
       </Stack>
 

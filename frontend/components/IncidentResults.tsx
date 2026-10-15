@@ -12,6 +12,7 @@ import { affectsSummary, type IncidentResults as IncidentResultsState } from '@/
 export function IncidentResults({
   results,
   searching,
+  pending = false,
   loadingMore,
   onLoadMore: handleLoadMore,
   tocNamesByCode,
@@ -19,6 +20,8 @@ export function IncidentResults({
 }: {
   results: IncidentResultsState;
   searching: boolean;
+  /** A new search is running: the rows shown are for the previous one. */
+  pending?: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
   tocNamesByCode: ReadonlyMap<string, string>;
@@ -30,7 +33,7 @@ export function IncidentResults({
   if (results === null) {
     return (
       <Text size="sm" c="dimmed">
-        Press Search to browse incidents across the network.
+        Set the filters to browse incidents across the network.
       </Text>
     );
   }
@@ -87,7 +90,7 @@ export function IncidentResults({
        * the filter form beside it is short, so there are no sticky controls to
        * preserve -- while costing real usability on touch, where it steals
        * the page's own scroll gesture. */}
-      <Stack gap="sm" data-incident-results>
+      <Stack gap="sm" data-incident-results data-list-pending={pending || undefined} aria-busy={pending}>
         {results.rows.map((row) => (
           <Stack key={row.incidentId} gap={4}>
             {/* `wrap` is left at Mantine's wrapping default rather than

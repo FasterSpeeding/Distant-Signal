@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useId, useMemo, useState, type ReactNode } from 'react';
 import {
   Box,
   Chip,
@@ -29,6 +29,7 @@ import {
   SEVERITY_GROUP_LABELS,
   severityGroupLabel,
   SEVERITY_GROUPS_BY_RANK,
+  isSeverityGroup,
   type SeverityGroup,
 } from '@/lib/severity';
 import {
@@ -39,10 +40,15 @@ import {
 } from '@/lib/sampleStats';
 import { countryForReport, type Country } from '@/lib/modes';
 import type { LineStatus, LineStatusReport, LineSummary, Suggestion } from '@/lib/types';
-import { fullTitle } from '@/lib/pageMetadata';
-import { LinesFilterBar } from './LinesFilterBar';
+import { countLabel, ListFilterBar, type ListNoun } from '@/components/ListFilterBar';
+import { ListResultSummary } from '@/components/ListResultSummary';
+import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
+import { useFilteredDocumentTitle } from '@/lib/useFilteredDocumentTitle';
+import { useInitialSearchParams } from '@/lib/useInitialSearchParams';
 import { StateBadge } from '@/components/StateBadge';
 import { noOptionsFound } from '@/components/noOptionsFound';
+
+const LINE_NOUN: ListNoun = { one: 'line', other: 'lines' };
 
 type SortField = 'name' | 'status' | 'avgDelay' | 'cancelled';
 interface SortState {
@@ -181,28 +187,17 @@ export const LINES_QUERY_PARAM = 'q';
 export const LINES_OPERATOR_PARAM = 'operator';
 export const LINES_STATUS_GROUP_PARAM = 'statusGroup';
 
-/** How long the URL waits for typing to settle before it is rewritten.
- * Safari throttles `history.replaceState` (and throws past the limit), so
- * one call per keystroke is not safe. */
-const URL_SYNC_DELAY_MS = 300;
-
 /** The current URL with the filter params replaced by `state`, leaving any
  * other params alone. */
 export function linesFilterUrl(
   current: string,
   state: { query: string; operators: readonly string[]; statusGroup: SeverityGroup | null },
 ): string {
-  const url = new URL(current);
-  const params = url.searchParams;
-  params.delete(LINES_QUERY_PARAM);
-  params.delete(LINES_OPERATOR_PARAM);
-  params.delete(LINES_STATUS_GROUP_PARAM);
-  const query = state.query.trim();
-  if (query) params.set(LINES_QUERY_PARAM, query);
-  for (const operator of state.operators) params.append(LINES_OPERATOR_PARAM, operator);
-  if (state.statusGroup) params.set(LINES_STATUS_GROUP_PARAM, state.statusGroup);
-  const search = params.toString();
-  return `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
+  return replaceUrlParams(current, [LINES_QUERY_PARAM, LINES_OPERATOR_PARAM, LINES_STATUS_GROUP_PARAM], {
+    [LINES_QUERY_PARAM]: state.query.trim(),
+    [LINES_OPERATOR_PARAM]: state.operators,
+    [LINES_STATUS_GROUP_PARAM]: state.statusGroup,
+  });
 }
 
 /** A line name with a line-break opportunity after every "/". Names like
@@ -247,9 +242,9 @@ export function AllLinesTable({
   pinnedLineIds,
   tocs,
   viewerIsAnonymous = false,
-  initialStatusGroup,
-  initialOperators,
-  initialQuery,
+  initialStatusGroup: initialStatusGroupProp,
+  initialOperators: initialOperatorsProp,
+  initialQuery: initialQueryProp,
 }: {
   lines: LineSummary[];
   reports: LineStatusReport[];
@@ -276,6 +271,19 @@ export function AllLinesTable({
   /** Seeds "Find a line" from `?q=`. */
   initialQuery?: string | undefined;
 }) {
+  // Seeded from the address bar when there is one, not the server props:
+  // after following a line and pressing Back, Next.js restores this page
+  // with the props of the URL it was first opened at, while the address
+  // bar has the filters last set (see `useInitialSearchParams`).
+  const urlParams = useInitialSearchParams();
+  const urlStatusGroup = urlParams?.get(LINES_STATUS_GROUP_PARAM) ?? undefined;
+  const initialStatusGroup = urlParams
+    ? isSeverityGroup(urlStatusGroup)
+      ? urlStatusGroup
+      : undefined
+    : initialStatusGroupProp;
+  const initialOperators = urlParams ? urlParams.getAll(LINES_OPERATOR_PARAM) : initialOperatorsProp;
+  const initialQuery = urlParams ? (urlParams.get(LINES_QUERY_PARAM) ?? undefined) : initialQueryProp;
   const [selectedOperators, setSelectedOperators] = useState<string[]>(() => {
     const known = new Set(lines.flatMap((line) => line.operators));
     return Array.from(new Set(initialOperators ?? [])).filter((code) => known.has(code));
@@ -293,34 +301,9 @@ export function AllLinesTable({
 
   // 2026-09-22 UX review §3.2: the URL stays truthful for refresh, share
   // and Back, now for the search and operator filter too (they used to
-  // reset on every reload). `history.replaceState` rather than
-  // `router.replace`: Next.js keeps `useSearchParams` in sync with it, and
-  // it does not re-run this page's server render the way `router.replace`
-  // did on every chip tap (which refetched every line and status, and could
-  // reshuffle the table under the visitor's finger). Replace, not push: a
-  // filter change is not a new place to go Back to. Debounced, and skipped
-  // on mount so landing on the page never rewrites its own URL.
-  const urlSyncedRef = useRef(false);
-  useEffect(() => {
-    if (!urlSyncedRef.current) {
-      urlSyncedRef.current = true;
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      const next = linesFilterUrl(window.location.href, {
-        query: nameQuery,
-        operators: selectedOperators,
-        statusGroup: statusGroupFilter,
-      });
-      try {
-        window.history.replaceState(null, '', next);
-      } catch {
-        // Over the browser's replaceState rate limit: the table is still
-        // right, only the address bar lags until the next change.
-      }
-    }, URL_SYNC_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [nameQuery, selectedOperators, statusGroupFilter]);
+  // reset on every reload). See `useUrlFilterSync` for why it is
+  // `history.replaceState`, debounced.
+  useUrlFilterSync({ query: nameQuery, operators: selectedOperators, statusGroup: statusGroupFilter }, linesFilterUrl);
 
   function clearPanelFilters() {
     setSelectedOperators([]);
@@ -333,26 +316,15 @@ export function AllLinesTable({
     setNameQuery('');
   }
 
-  // §3.2's own "let the title reflect it": `app/lines/page.tsx`'s
-  // `generateMetadata` is static (its own comment explains why -- a
-  // pre-filtered link is not the one people paste), so it cannot know
-  // about client-side filter changes at all. This is therefore the one
-  // place that can keep the browser tab's title honest about what's
-  // actually on screen once a chip (or a dashboard tile landing here) has
-  // filtered the table. The unfiltered title is captured once, on mount,
-  // so clearing the filter restores EXACTLY what the server rendered
-  // rather than a hand-rolled guess at it.
-  const unfilteredTitleRef = useRef<string | null>(null);
+  // §3.2's own "let the title reflect it", once a chip (or a dashboard
+  // tile landing here) has filtered the table.
   const nameByCode = useMemo(() => new Map(tocs.map((toc) => [toc.code, toc.name])), [tocs]);
   const title = filteredTitle(
     statusGroupFilter,
     selectedOperators.map((code) => nameByCode.get(code) ?? code),
     nameQuery,
   );
-  useEffect(() => {
-    unfilteredTitleRef.current ??= document.title;
-    document.title = title ? fullTitle(title) : unfilteredTitleRef.current;
-  }, [title]);
+  useFilteredDocumentTitle(title);
 
   const reportsById = useMemo(() => new Map(reports.map((report) => [report.id, report])), [reports]);
   const pinnedSet = useMemo(() => new Set(pinnedLineIds), [pinnedLineIds]);
@@ -484,7 +456,7 @@ export function AllLinesTable({
     nameQuery.trim().length > 0 || selectedOperators.length > 0 || selectedCountries.length > 0;
   const shown = sortedRows.length;
   const summaryVisible = statusGroupFilter !== null || filtersOrSearchActive;
-  const shownLabel = `${shown} line${shown === 1 ? '' : 's'}`;
+  const shownLabel = countLabel(shown, LINE_NOUN);
   // The status-only wording predates the search and operator summary and
   // is what the dashboard's counter tiles land on, so it stays.
   const resultSummary =
@@ -505,9 +477,11 @@ export function AllLinesTable({
 
   return (
     <Stack gap="md" className="linesTableRoot">
-      <LinesFilterBar
+      <ListFilterBar
+        searchLabel="Find a line"
         query={nameQuery}
         onQueryChange={setNameQuery}
+        noun={LINE_NOUN}
         activeCount={activeFilterCount}
         matchCount={sortedRows.length}
         onClearFilters={clearPanelFilters}
@@ -574,29 +548,16 @@ export function AllLinesTable({
             </ChipGroup>
           </Stack>
         )}
-      </LinesFilterBar>
+      </ListFilterBar>
       {/* 2026-09-22 UX review §3.3: a filtered view says how many rows are
           left and offers a way back, including the zero-row case a
-          `0`-count dashboard tile (or a search with no match) can produce.
-          A real click handler, not a link: the filters are client state,
-          so a plain `<Link href="/lines">` would change the address bar
-          without the mounted table re-reading it.
-
-          The count is announced from an always-mounted, visually hidden
-          `role="status"` region, so a screen reader hears it change as the
-          visitor types or filters (a live region inserted together with its
-          text is often not announced). Visually hidden is absolutely
-          positioned, so it adds no Stack gap when empty. The visible copy
-          of the sentence is `aria-hidden` so it isn't read twice. */}
-      <VisuallyHidden role="status">{summaryVisible ? resultSummary : ''}</VisuallyHidden>
-      {summaryVisible && (
-        <Text size="sm" c="dimmed">
-          <span aria-hidden="true">{resultSummary} </span>
-          <UnstyledButton onClick={clearEverything} className="textButton">
-            Show all lines
-          </UnstyledButton>
-        </Text>
-      )}
+          `0`-count dashboard tile (or a search with no match) can produce. */}
+      <ListResultSummary
+        visible={summaryVisible}
+        summary={resultSummary}
+        resetLabel="Show all lines"
+        onReset={clearEverything}
+      />
       {/* No `TableScrollContainer` (2026-10-14): its `overflow-x: auto` made
           a scroll container, which stops the sticky header below from
           sticking to the page. It isn't needed either. From `sm` up the
@@ -609,10 +570,10 @@ export function AllLinesTable({
           (e2e/nav.spec.ts's `hasHorizontalOverflow`).
 
           `stickyHeader`: the column headings stick under the sticky search
-          bar, offset by the bar's own height (`--lines-filter-bar-height`,
+          bar, offset by the bar's own height (`--list-filter-bar-height`,
           which also sizes the bar, so the two can't drift apart). */}
       <Box className="linesTableWrap">
-        <Table stickyHeader stickyHeaderOffset="var(--lines-filter-bar-height)">
+        <Table stickyHeader stickyHeaderOffset="var(--list-filter-bar-height)">
           {/* Flat `TableThead`/`TableTr`/... named exports, not the
               `Table.Thead` dot-notation compound API -- kept consistent with
               the rest of this codebase's Table usage even though this is a

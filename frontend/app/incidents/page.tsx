@@ -36,7 +36,9 @@ export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPT
  * reads initial filter values out of `searchParams` (so a filtered link is
  * shareable), fetches the two reference-data lists the filter dropdowns
  * need (both already used the same way on `app/lines/page.tsx`), and
- * passes everything down into the interactive `IncidentSearchForm`. Either
+ * passes everything down into the interactive `IncidentSearchForm`. Filter
+ * changes never re-run this render: the form writes the URL with
+ * `history.replaceState`, so the two lists are fetched once per visit. Either
  * reference-data fetch failing degrades to an empty option list rather
  * than crashing the page -- same posture `AllLinesPage` already takes for
  * `getAllTocs()`. */
@@ -44,6 +46,7 @@ export default async function IncidentsPage({
   searchParams,
 }: {
   searchParams: Promise<{
+    q?: string | string[];
     operator?: string | string[];
     line?: string | string[];
     from?: string | string[];
@@ -56,7 +59,9 @@ export default async function IncidentsPage({
     priority_max?: string | string[];
   }>;
 }) {
-  const { operator, line, from, to, period, planned, state, cleared, priority_min, priority_max } = await searchParams;
+  const { q, operator, line, from, to, period, planned, state, cleared, priority_min, priority_max } =
+    await searchParams;
+  const queryParam = Array.isArray(q) ? q[0] : q;
   const operatorParam = Array.isArray(operator) ? operator[0] : operator;
   const lineParam = Array.isArray(line) ? line[0] : line;
   const fromParam = Array.isArray(from) ? from[0] : from;
@@ -74,12 +79,13 @@ export default async function IncidentsPage({
     <Stack p="lg" gap="md">
       <Title order={1}>Incidents</Title>
       <Text c="dimmed">
-        National Rail incident messages across the network. The last 30 days by default; choose &quot;All time&quot; for
-        everything we have.
+        National Rail incident messages across the network, from the last 30 days unless you change the period in
+        Filters.
       </Text>
       <IncidentSearchForm
         lines={lines}
         tocs={tocs}
+        initialQuery={queryParam}
         initialOperator={operatorParam}
         initialLine={lineParam}
         initialFrom={fromParam}

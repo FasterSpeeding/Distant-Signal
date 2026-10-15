@@ -314,7 +314,7 @@ export default async function StationDisruptionPage({ params }: { params: Promis
               })}
             </Stack>
             <Divider />
-            <IssueList items={items} now={now} subject="station" />
+            <IssueList items={items} now={now} subject="station" urlPrefix="issue" />
           </>
         )}
 
