@@ -684,10 +684,10 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 ## Visual regression
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
-Stations, a station, Trains, a train, Incidents, Account (logged in),
+Stations, a station, Trains (empty and searched), a train, Incidents, Account (logged in),
 Preferences (logged out, logged in and with a pride flag) and the tram
 pages at 390 and 1366px, light and dark, plus the /lines filter bar's
-stuck and open states: 76 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+stuck and open states: 80 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
 stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 

@@ -41,6 +41,8 @@ const PAGES: [name: string, path: string][] = [
   ['stations', '/stations'],
   ['station', `/stations/${REAL_STATION_CRS}`],
   ['trains', '/trains'],
+  // After a search: the compact bar, with Station in its search slot.
+  ['trains-searched', `/trains?station=${REAL_STATION_CRS}`],
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
   ['incidents', '/incidents'],
   ['account', '/account'],
