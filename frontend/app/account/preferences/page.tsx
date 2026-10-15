@@ -7,6 +7,7 @@ import { AccountSettingsLoginPrompt } from './AccountSettingsLoginPrompt';
 import { AppearanceSection } from './AppearanceSection';
 import { ClaudeKeySection } from './ClaudeKeySection';
 import { NotificationsSection } from './NotificationsSection';
+import { PreferencesSection } from './PreferencesSection';
 
 // Session-dependent: never prerender (see app/page.tsx's own comment).
 export const revalidate = 0;
@@ -55,7 +56,11 @@ export default async function PreferencesPage() {
         <>
           <NotificationsSection />
           <ClaudeKeySection />
-          {connectedApps && <ConnectedApps data={connectedApps} headingOrder={2} />}
+          {connectedApps && (
+            <PreferencesSection id="connected-apps-heading" title="Connected apps">
+              <ConnectedApps data={connectedApps} headingOrder={3} showTitle={false} />
+            </PreferencesSection>
+          )}
         </>
       ) : (
         <AccountSettingsLoginPrompt />

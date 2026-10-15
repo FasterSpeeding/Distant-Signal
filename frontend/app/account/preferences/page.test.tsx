@@ -70,6 +70,7 @@ describe('PreferencesPage', () => {
     renderWithMantine(await PreferencesPage());
     const claude = screen.getByRole('heading', { name: 'Ask about trains' });
     const apps = screen.getByRole('heading', { level: 2, name: 'Connected apps' });
+    expect(screen.getByRole('heading', { level: 3, name: 'Recently deleted by the assistant' })).toBeInTheDocument();
     expect(claude.compareDocumentPosition(apps) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText('No apps are connected.')).toBeInTheDocument();
   });
