@@ -11,7 +11,7 @@ consistency fixes made after the guide was written (see
 
 Every value here is the product's own: Mantine 9 with a grape primary, the
 system font stack, and the WCAG AA overrides in `frontend/app/globals.css`.
-Rules marked _(convention)_ are patterns in the code, not decisions written
+Rules marked *(convention)* are patterns in the code, not decisions written
 down anywhere else.
 
 ## Principles
@@ -40,28 +40,29 @@ filled grape in the light scheme only.
 
 ### Grape
 
-| Shade | Hex       | Use                                                                      |
-| ----- | --------- | ------------------------------------------------------------------------ |
-| 4     | `#da77f2` | Dark scheme links (5.84:1 on `#242424`)                                  |
-| 6     | `#be4bdb` | Body wash at 6% only; never text (4.02:1 on white fails)                 |
-| 7     | `#ae3ec9` | Light scheme links, filled buttons, focus ring, skip link (white 4.85:1) |
-| 8     | `#9c36b5` | Light filled hover; dark filled (white 5.82:1)                           |
-| 9     | `#862e9c` | Dark filled hover; light-variant text on grape 1 (5.59:1)                |
+| Shade | Hex | Use |
+| --- | --- | --- |
+| 4 | `#da77f2` | Dark scheme links (5.84:1 on `#242424`) |
+| 6 | `#be4bdb` | Body wash at 6% only; never text (4.02:1 on white fails) |
+| 7 | `#ae3ec9` | Light scheme links, filled buttons, focus ring, skip link (white 4.85:1) |
+| 8 | `#9c36b5` | Light filled hover; dark filled (white 5.82:1) |
+| 9 | `#862e9c` | Dark filled hover; light-variant text on grape 1 (5.59:1) |
 
 ### Surface and text tokens
 
-| Role               | Token                                         | Light                                                               | Dark             | Note                                                     |
-| ------------------ | --------------------------------------------- | ------------------------------------------------------------------- | ---------------- | -------------------------------------------------------- |
-| Page background    | `--mantine-color-body`                        | `#ffffff`                                                           | dark 7 `#242424` | Plus a grape 6 wash at 6% fading out by 70vh             |
-| Text               | `--mantine-color-text`                        | `#000000`                                                           | dark 0 `#c9c9c9` |                                                          |
-| Dimmed text        | `--mantine-color-dimmed`                      | gray 7 `#495057`                                                    | dark 1 `#b8b8b8` | Overridden from gray 6 (3.32:1) and dark 2 (4.04:1)      |
-| Placeholder        | `--mantine-color-placeholder`                 | gray 7                                                              | dark 1           | Same override as dimmed                                  |
-| Card / surface     | Card bg                                       | `#ffffff`                                                           | dark 6 `#2e2e2e` | Border gray 3 `#dee2e6` / dark 4 `#424242`               |
-| Link               | `--mantine-color-anchor`                      | grape 7                                                             | grape 4          | Light overridden from grape 6                            |
-| Filled grape       | `--mantine-color-grape-filled`                | grape 7, hover 8                                                    | grape 8, hover 9 | Text pinned white by `variantColorResolver`              |
-| Error text         | `--ds-color-error-text`                       | red 9                                                               | red 4            | App-owned token                                          |
-| Good / bad icon    | `--ds-color-good-icon`, `--ds-color-bad-icon` | green 7 / red 7                                                     | green 4 / red 4  | Non-text glyphs                                          |
-| Light-variant text | `--mantine-color-*-light-color`               | yellow `#a85700`, orange `#bb3e0d`, green `#267b37`, teal `#087a57` | shade 0          | Off-palette hexes, each ≥4.6:1 on its shade-1 background |
+| Role | Token | Light | Dark | Note |
+| --- | --- | --- | --- | --- |
+| Page background | `--mantine-color-body` | `#ffffff` | dark 7 `#242424` | Plus a grape 6 wash at 6% fading out by 70vh |
+| Text | `--mantine-color-text` | `#000000` | dark 0 `#c9c9c9` | |
+| Dimmed text | `--mantine-color-dimmed` | gray 7 `#495057` | dark 1 `#b8b8b8` | Overridden from gray 6 (3.32:1) and dark 2 (4.04:1) |
+| Placeholder | `--mantine-color-placeholder` | gray 7 | dark 1 | Same override as dimmed |
+| Card / surface | Card bg | `#ffffff` | dark 6 `#2e2e2e` | Border gray 3 `#dee2e6` / dark 4 `#424242` |
+| Link | `--mantine-color-anchor` | grape 7 | grape 4 | Light overridden from grape 6 |
+| Filled grape | `--mantine-color-grape-filled` | grape 7, hover 8 | grape 8, hover 9 | Text pinned white by `variantColorResolver` |
+| Error text | `--ds-color-error-text` | red 9 | red 4 | App-owned token |
+| Good / bad icon | `--ds-color-good-icon`, `--ds-color-bad-icon` | green 7 / red 7 | green 4 / red 4 | Non-text glyphs |
+| Severity text | `--ds-severity-<group>-text` (`severityGroupTextColor`) | green `#267b37`, gray 7, blue 9, yellow `#a85700`, red 9 | shade 4 of each | Same hue as the group's `StatusBadge`; each ≥5.2:1 on a card |
+| Light-variant text | `--mantine-color-*-light-color` | yellow `#a85700`, orange `#bb3e0d`, green `#267b37`, teal `#087a57` | shade 0 | Off-palette hexes, each ≥4.6:1 on its shade-1 background |
 
 App-owned tokens are prefixed `--ds-`. The overrides use
 `html:root[data-mantine-color-scheme=…]` so they beat MantineProvider's
@@ -69,16 +70,16 @@ later-injected `:root` block on specificity.
 
 ### Semantic roles
 
-| Colour | Means                                                                | Used for                                                                                                                                                           |
-| ------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| green  | Good service, on time, arrived, **success**                          | Severity `good`; "On time"; "Arrived"; every success Alert ("Saved.", "Ticket saved", "Added to …")                                                                |
-| gray   | Informational, neutral, unknown                                      | Severity `informational`; unchanged platform; "Awaiting first report"; provenance badges; "Affected line"/"Affected station" tags; the trip planner's "N changes"  |
-| blue   | **A planned or changed arrangement, not a fault**                    | Severity `planned` (Planned Closure, Part Closure); incident "Planned work"; a changed platform                                                                    |
-| yellow | Minor disruption, caution, partial data                              | Severity `mild`; journey leg "Delayed"; "Some of this range isn't available"                                                                                       |
-| orange | Running late, skipped stop, draft                                    | "12 min late"; "Not stopping at your station"; draft legal page                                                                                                    |
-| teal   | Early, or a live board source                                        | "3 min early"; ETA "Live departure board"                                                                                                                          |
-| red    | Severe, cancelled, errors, destructive actions                       | Severity `severe`; cancelled trains and platforms; every error Alert; delete buttons                                                                               |
-| grape  | Brand, primary action, links, product notices, **"you need to act"** | Buttons, links, focus; informational Alerts (Delay Repay estimate, API-key note, "Creating a line needs an account"); "Needs a train picked" and the open-leg card |
+| Colour | Means | Used for |
+| --- | --- | --- |
+| green | Good service, on time, arrived, **success** | Severity `good`; "On time"; "Arrived"; every success Alert ("Saved.", "Ticket saved", "Added to …") |
+| gray | Informational, neutral, unknown | Severity `informational`; unchanged platform; "Awaiting first report"; provenance badges; "Affected line"/"Affected station" tags; the trip planner's "N changes" |
+| blue | **A planned or changed arrangement, not a fault** | Severity `planned` (Planned Closure, Part Closure); incident "Planned work"; a changed platform |
+| yellow | Minor disruption, caution, partial data | Severity `mild`; journey leg "Delayed"; "Some of this range isn't available" |
+| orange | Running late, skipped stop, draft | "12 min late"; "Not stopping at your station"; draft legal page |
+| teal | Early, or a live board source | "3 min early"; ETA "Live departure board" |
+| red | Severe, cancelled, errors, destructive actions | Severity `severe`; cancelled trains and platforms; every error Alert; delete buttons |
+| grape | Brand, primary action, links, product notices, **"you need to act"** | Buttons, links, focus; informational Alerts (Delay Repay estimate, API-key note, "Creating a line needs an account"); "Needs a train picked" and the open-leg card |
 
 Blue used to carry five meanings; see the decision recorded in
 `docs/superpowers/specs/2026-08-18-grape-theme-design.md` ("Open
@@ -92,16 +93,16 @@ are loaded anywhere, including the standalone pages. Monospace uses
 Mantine's `ui-monospace` stack. Headings are weight 700; card titles 600,
 list-row titles 500.
 
-| Size  | px / line-height | Example                                      |
-| ----- | ---------------- | -------------------------------------------- |
-| h1    | 34 / 1.3         | Account & data                               |
-| h2    | 26 / 1.35        | Page not found                               |
-| h3    | 22 / 1.4         | Download my data                             |
-| h4    | 18 / 1.45        | a subsection                                 |
-| md    | 16 / 1.55        | Body copy                                    |
-| sm    | 14 / 1.45        | Supporting copy inside cards                 |
-| xs    | 12 / 1.4         | Timestamps, credits, freshness rows (dimmed) |
-| badge | 11 / 700         | Platform 4                                   |
+| Size | px / line-height | Example |
+| --- | --- | --- |
+| h1 | 34 / 1.3 | Account & data |
+| h2 | 26 / 1.35 | Page not found |
+| h3 | 22 / 1.4 | Download my data |
+| h4 | 18 / 1.45 | a subsection |
+| md | 16 / 1.55 | Body copy |
+| sm | 14 / 1.45 | Supporting copy inside cards |
+| xs | 12 / 1.4 | Timestamps, credits, freshness rows (dimmed) |
+| badge | 11 / 700 | Platform 4 |
 
 - Heading level and visual size are set separately. Pick the level for the
   outline; the size follows from it (see [Heading rules](#heading-rules)).
@@ -137,14 +138,14 @@ list-row titles 500.
 `tokens` in `frontend/lib/theme.ts` names the app's own values on top of
 Mantine's theme. Spread them; don't repeat the numbers.
 
-| Token                          | Value                                     | Use                                                                 |
-| ------------------------------ | ----------------------------------------- | ------------------------------------------------------------------- |
-| `tokens.card.static`           | `withBorder`                              | A card that only holds content or its own controls                  |
-| `tokens.card.link`             | `withBorder`, `shadow="sm"`               | A card that is one link (`CardLink`, `LineStatusCard`)              |
-| `tokens.statusTile`            | gap 4, value xl/700, label sm             | `StatusTile`, a count and its label (`/status` top strip)           |
-| `tokens.statusCard`            | padding lg, title clamp 2, reason clamp 3 | `StatusCard` (lines, operators, the /status mode cards)             |
-| `tokens.iconButton.field`      | 36px                                      | An `ActionIcon` beside a 36px input (`CopyableLink`)                |
-| `tokens.iconButton.pageAction` | 44px                                      | Page-level pin and share (`PinToggle`, `ShareButton`, review §2.10) |
+| Token | Value | Use |
+| --- | --- | --- |
+| `tokens.card.static` | `withBorder` | A card that only holds content or its own controls |
+| `tokens.card.link` | `withBorder`, `shadow="sm"` | A card that is one link (`CardLink`, `LineStatusCard`) |
+| `tokens.statusTile` | gap 4, value xl/700, label sm | `StatusTile`, a count and its label (`/status` top strip) |
+| `tokens.statusCard` | padding lg, title clamp 2, reason clamp 3 | `StatusCard` (lines, operators, the /status mode cards) |
+| `tokens.iconButton.field` | 36px | An `ActionIcon` beside a 36px input (`CopyableLink`) |
+| `tokens.iconButton.pageAction` | 44px | Page-level pin and share (`PinToggle`, `ShareButton`, review §2.10) |
 
 A new shared value goes here first, with a comment saying where it is
 used, rather than as a literal in a component.
@@ -176,13 +177,13 @@ used, rather than as a literal in a component.
 
 ### Page widths
 
-| Width  | Use                                                                                                              |
-| ------ | ---------------------------------------------------------------------------------------------------------------- |
-| 1140px | Dashboards and lists (status, lines, trains, stations)                                                           |
-| 640px  | Single-column flow pages: `<Stack p="lg" maw={640}>` (`/account`, forms)                                         |
-| 480px  | Short creation forms: `/groups/new`, `/lines/new`, `/lines/[id]/edit`                                            |
-| 760px  | Long reading pages: `READING_PAGE_WIDTH` from `components/LegalPage.tsx`, used by `LegalPage` and `/attribution` |
-| 280px  | Tooltip max width (`DataFreshnessInfo`)                                                                          |
+| Width | Use |
+| --- | --- |
+| 1140px | Dashboards and lists (status, lines, trains, stations) |
+| 640px | Single-column flow pages: `<Stack p="lg" maw={640}>` (`/account`, forms) |
+| 480px | Short creation forms: `/groups/new`, `/lines/new`, `/lines/[id]/edit` |
+| 760px | Long reading pages: `READING_PAGE_WIDTH` from `components/LegalPage.tsx`, used by `LegalPage` and `/attribution` |
+| 280px | Tooltip max width (`DataFreshnessInfo`) |
 
 ### Heading rules
 
@@ -190,15 +191,14 @@ used, rather than as a literal in a component.
 - Everything below the h1 uses **`SectionTitle`** (`components/SectionTitle.tsx`),
   which derives the size from the level so the two can't drift:
 
-  | Level                        | Tag | Drawn at      |
-  | ---------------------------- | --- | ------------- |
-  | Section (`order` 2, default) | h2  | h3 size, 22px |
-  | Subsection (`order={3}`)     | h3  | h4 size, 18px |
-  | Sub-subsection (`order={4}`) | h4  | h5 size, 16px |
+  | Level | Tag | Drawn at |
+  | --- | --- | --- |
+  | Section (`order` 2, default) | h2 | h3 size, 22px |
+  | Subsection (`order={3}`) | h3 | h4 size, 18px |
+  | Sub-subsection (`order={4}`) | h4 | h5 size, 16px |
 
   This applies on every page, dense detail pages included. Never leave an
   `order={2}` unsized: at 26px it reads as a second page title on mobile.
-
 - Section cards are `<Card withBorder component="section" aria-labelledby=…>`
   with a `SectionTitle` carrying the matching `id`.
 - Error and not-found pages use `<Title order={1} size="h2">`, dimmed
@@ -210,12 +210,12 @@ used, rather than as a literal in a component.
 
 ### Breakpoints
 
-| Token   | Width        | What changes                                                                                                                                                                              |
-| ------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| xs      | 36em · 576px | Group header actions and member rows stack; standalone-page buttons go full width                                                                                                         |
-| sm      | 48em · 768px | Issue rows stack and clamp to 2 lines; the /lines filters open as a bottom sheet instead of a popover and its table cells drop to 6px side padding; journey-progress slots shrink 56→44px |
-| md      | 62em · 992px | Nav links move from the bar into the drawer                                                                                                                                               |
-| lg / xl | 75em / 88em  | No custom behaviour                                                                                                                                                                       |
+| Token | Width | What changes |
+| --- | --- | --- |
+| xs | 36em · 576px | Group header actions and member rows stack; standalone-page buttons go full width |
+| sm | 48em · 768px | Issue rows stack and clamp to 2 lines; the /lines filters open as a bottom sheet instead of a popover and its table cells drop to 6px side padding; journey-progress slots shrink 56→44px |
+| md | 62em · 992px | Nav links move from the bar into the drawer |
+| lg / xl | 75em / 88em | No custom behaviour |
 
 ## Components
 
@@ -302,7 +302,13 @@ used, rather than as a literal in a component.
   the /status strip. Below `sm` each tile is one compact row (count, label,
   "View lines") in a single column; from `sm` up, five across. Five tiles
   never fill a two-column grid, so there is no two-column layout. Labels
-  are sentence case (`severityGroupLabel`).
+  are sentence case (`severityGroupLabel`). `severity` colours a linked
+  tile's count in its group's hue (`--ds-severity-<group>-text`), so the
+  strip reads red to green like the badges; the label still names the
+  group, and a zero tile stays dimmed. Colour goes on the count, never a
+  left-border accent. From `sm` up, count and label sit at the top of every
+  tile, so they line up across the row whether or not a tile has the
+  "View lines" cue, which drops to the bottom edge.
 - **StateBadge** and **BadgeRow** (`components/StateBadge.tsx`): every
   badge that states a thing's state, light variant, sentence case, coloured
   by a semantic `tone` (neutral gray, good green, caution yellow, late
@@ -371,24 +377,42 @@ used, rather than as a literal in a component.
   grape for product notices and information. No blue alerts.
 - **LastUpdated / DataFreshnessInfo**: relative time re-rendered every 30s,
   exact London time in a tooltip; SSR shows the absolute time until mounted.
-- **List search and filters** (`components/ListFilterBar.tsx`, on
-  /lines): one sticky row, search on the left and a default-variant
-  "Filters" button on the right with a count badge of active filters.
-  Search is never hidden behind the button. The filters open in a
-  `Popover` from `sm` up and a bottom `Drawer` below it, both a dialog
-  named "Filters" ending in "Clear filters" and "Show _n_ lines". The bar
-  is transparent until it sticks, then gets the body colour and a bottom
-  rule. It bleeds over the page's `lg` side padding, so its container must
-  have that padding. Filter state lives in the URL through
-  `useUrlFilterSync` (`history.replaceState`, debounced), not
-  `router.replace`, and the tab title names what is filtered
-  (`useFilteredDocumentTitle`: `Lines: Great Western Railway, "west"`).
-  A filtered list says how many rows are left with a way back
+- **List search and filters** (`components/ListFilterBar.tsx`): one
+  row, search on the left and a default-variant "Filters" button on the
+  right with a count badge of active filters. Search is never hidden
+  behind the button. The filters open in a `Popover` from `sm` up and a
+  bottom `Drawer` below it, both a dialog named "Filters" ending in "Clear
+  filters" and "Show *n* lines" (or "Show lines" while the count is not
+  known). Escape closes an open option list first, then the panel, and
+  focus returns to the button. Variants:
+  - *Sticky* (the default), for a page's main list: /lines, /incidents,
+    /trains (after the first search), /operators, a tram network's stops.
+    Transparent until it sticks, then the body colour and a bottom rule.
+    It bleeds over the page's `lg` side padding, so its container must
+    have that padding. A table's headers stick under it (`stickyHeader`,
+    offset by `--list-filter-bar-height`), so such a table sits in no
+    scroll container and has to fit a phone on its own.
+  - *Search only* (no panel): /operators' "Find an operator" and "Find a
+    stop", through `SearchableList`, which filters server-rendered items
+    in place.
+  - *Filters only, not sticky*, inside a section: the line and station
+    issue lists, with the All/Active/Upcoming tabs inline as `trailing`.
+    No button when there is nothing to narrow.
+  - *Another main control*: /trains puts Station in the search slot. It
+    shows the full form until the first search, then the bar.
+
+  Filter state lives in the URL through `useUrlFilterSync`
+  (`history.replaceState`, debounced), never `router.replace`, which
+  re-runs the page's server render. Keys inside a section are prefixed
+  (`issueTab`, `tflIssueSeverity`) so they can't clash with the page's
+  own. A server-backed list (/incidents, /trains) applies changes live
+  through `useLiveSearch`: one request once typing settles, the previous
+  one aborted, a spinner in place of the search glyph and the rows dimmed,
+  never blanked. The tab title names what is filtered
+  (`useFilteredDocumentTitle`: `Lines: Great Western Railway, "west"`). A
+  filtered list says how many rows are left with a way back
   (`ListResultSummary`: "3 lines match. Show all lines"), announced from a
-  hidden `role="status"`. Not hide-on-scroll. The table's column headers
-  stick under the bar (`stickyHeader`, offset by
-  `--list-filter-bar-height`), so the table sits in no scroll container:
-  it has to fit a phone on its own, with names that wrap anywhere.
+  hidden `role="status"`. Not hide-on-scroll.
 - **Form fields**: Mantine `TextInput`/`Autocomplete`: label 14/500,
   description xs dimmed, error in `--mantine-color-error`.
 - **Footer credits** (`OpenDataAttribution.tsx`): credit wording is licence
@@ -406,16 +430,16 @@ used, rather than as a literal in a component.
 
 ## States
 
-| State           | Pattern                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Example copy                                            |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| Loading         | A page whose fetch holds up the first paint: a `loading.tsx` skeleton of its real layout (`PageSkeleton`). Inside a page: `Skeleton` inside Suspense (`LoadingPlaceholder`); inline, `LoadingText` (a plain word beside an `aria-hidden` `Loader`) in `role="status" aria-busy` where it is the region's content. A busy button keeps a word label ("Saving") with `leftSection={<ButtonSpinner />}`. No "…". The nav's fallback is the full logged-out bar. | "Loading trends", "Searching"                           |
-| Empty           | Dimmed text saying what would appear, with a route out. No illustrations.                                                                                                                                                                                                                                                                                                                                                                                    | "Nothing is affecting this line right now."             |
-| Error (page)    | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest                                                                                                                                                                                                                                                                                                                                                                 | "Couldn't load this page"                               |
-| Error (inline)  | Red Alert, title names the failed action                                                                                                                                                                                                                                                                                                                                                                                                                     | "Couldn't save this ticket"                             |
-| Not found       | h1 at h2 size, cause, three always-underlined way-out links                                                                                                                                                                                                                                                                                                                                                                                                  | "There's no page at this address."                      |
-| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4 min ago."                                                                                                                                                                                                                                                                             | "Reconnecting"                                          |
-| Cancelled       | Red badge "Cancelled", red Alert on the train page, struck-through platform                                                                                                                                                                                                                                                                                                                                                                                  | "Cancelled: the train no longer calls at this platform" |
-| Unknown         | Omit the element or say so plainly; never fabricate                                                                                                                                                                                                                                                                                                                                                                                                          | "No status yet" · "(no arrival report received)"        |
+| State | Pattern | Example copy |
+| --- | --- | --- |
+| Loading | A page whose fetch holds up the first paint: a `loading.tsx` skeleton of its real layout (`PageSkeleton`). Inside a page: `Skeleton` inside Suspense (`LoadingPlaceholder`); inline, `LoadingText` (a plain word beside an `aria-hidden` `Loader`) in `role="status" aria-busy` where it is the region's content. A busy button keeps a word label ("Saving") with `leftSection={<ButtonSpinner />}`. No "…". The nav's fallback is the full logged-out bar. | "Loading trends", "Searching" |
+| Empty | Dimmed text saying what would appear, with a route out. No illustrations. | "Nothing is affecting this line right now." |
+| Error (page) | `app/error.tsx`: h1 at h2 size, dimmed cause, "Try again", home link, xs "Reference:" digest | "Couldn't load this page" |
+| Error (inline) | Red Alert, title names the failed action | "Couldn't save this ticket" |
+| Not found | h1 at h2 size, cause, three always-underlined way-out links | "There's no page at this address." |
+| Stale / offline | Bottom-centre `Notification loading`, `role="status" aria-live="polite"`. The offline page (`public/offline.html`) shows the last successful load as "Last connected 4 min ago." | "Reconnecting" |
+| Cancelled | Red badge "Cancelled", red Alert on the train page, struck-through platform | "Cancelled: the train no longer calls at this platform" |
+| Unknown | Omit the element or say so plainly; never fabricate | "No status yet" · "(no arrival report received)" |
 
 ### Standalone pages
 
@@ -436,7 +460,7 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 - Relative time: "just now", "4 min ago", "3 hr ago", "2 days ago"
   (`lib/relativeTime.ts`), with the exact time in a tooltip. A page with
   many cards states "Updated" once, not per card.
-- Delays: light badges, sentence case, "_n_ min late" / "_n_ min early" /
+- Delays: light badges, sentence case, "*n* min late" / "*n* min early" /
   "On time". A line that runs no trains says "No trains running", not
   zero figures. Journey rollups rank good < awaiting < delayed < unmatched <
   skipped < cancelled.
@@ -520,13 +544,13 @@ never "this app".
 Every failure reads "Couldn't <verb> <noun>." plus what to do next, built
 by `describeFailure(verb, noun, status)` in `lib/failure.ts`:
 
-| Case                  | Copy                                                                            |
-| --------------------- | ------------------------------------------------------------------------------- |
-| Default, 5xx, network | "Couldn't load this train. Try again."                                          |
-| 401                   | "Couldn't save this ticket. Log in and try again."                              |
-| 403                   | "Couldn't delete this group. You don't have access."                            |
-| 404                   | "Couldn't load this journey. It may have been removed."                         |
-| 409                   | "Couldn't rename this train. It changed in the meantime. Reload and try again." |
+| Case | Copy |
+| --- | --- |
+| Default, 5xx, network | "Couldn't load this train. Try again." |
+| 401 | "Couldn't save this ticket. Log in and try again." |
+| 403 | "Couldn't delete this group. You don't have access." |
+| 404 | "Couldn't load this journey. It may have been removed." |
+| 409 | "Couldn't rename this train. It changed in the meantime. Reload and try again." |
 
 Never show a raw response body, a status code, `error.message`,
 "Something went wrong", "Request failed" or "Please try again". The one
@@ -535,35 +559,35 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 
 ### Terminology
 
-| Say                                                   | Meaning                                                         | Don't say                           |
-| ----------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------- |
-| train                                                 | What a commuter catches; named by time and route                | service (in headings), Train {UID}  |
-| service                                               | A timetabled run, in explanations only ("a timetabled service") | schedule, CIF row                   |
-| headcode                                              | The 4-character signalling ID ("1S00"), secondary text only     | identity, train ID                  |
-| UID                                                   | The timetable's 6-character ID ("W12345"), secondary text only  | id, uid                             |
-| operator                                              | A train company, by name ("South Western Railway")              | TOC, operator code alone            |
-| track                                                 | Follow a train or journey live                                  | pin a train                         |
-| pin                                                   | Keep a line, station or operator on your home page              | track a line                        |
-| log in / log out                                      | Account access                                                  | sign in, sign-in                    |
-| Delay Repay                                           | The compensation scheme, two words, capitalised                 | Delay-Repay, delay repay            |
-| platform                                              | Where the train calls                                           | track, stand                        |
-| calling point                                         | A station a train stops at                                      | stop (in tables), TIPLOC            |
-| station code                                          | The 3-letter code ("WOK")                                       | CRS, CRS code                       |
-| ID                                                    | An identifier, capitalised                                      | id, Id                              |
-| AI summary                                            | The one label on AI-shaped content                              | AI, AI-generated                    |
-| saved in this browser                                 | Local storage                                                   | localStorage                        |
-| National Rail live board / Network Rail train reports | Data sources                                                    | Darwin, LDBWS, TRUST, Knowledgebase |
+| Say | Meaning | Don't say |
+| --- | --- | --- |
+| train | What a commuter catches; named by time and route | service (in headings), Train {UID} |
+| service | A timetabled run, in explanations only ("a timetabled service") | schedule, CIF row |
+| headcode | The 4-character signalling ID ("1S00"), secondary text only | identity, train ID |
+| UID | The timetable's 6-character ID ("W12345"), secondary text only | id, uid |
+| operator | A train company, by name ("South Western Railway") | TOC, operator code alone |
+| track | Follow a train or journey live | pin a train |
+| pin | Keep a line, station or operator on your home page | track a line |
+| log in / log out | Account access | sign in, sign-in |
+| Delay Repay | The compensation scheme, two words, capitalised | Delay-Repay, delay repay |
+| platform | Where the train calls | track, stand |
+| calling point | A station a train stops at | stop (in tables), TIPLOC |
+| station code | The 3-letter code ("WOK") | CRS, CRS code |
+| ID | An identifier, capitalised | id, Id |
+| AI summary | The one label on AI-shaped content | AI, AI-generated |
+| saved in this browser | Local storage | localStorage |
+| National Rail live board / Network Rail train reports | Data sources | Darwin, LDBWS, TRUST, Knowledgebase |
 
 ### Units and dates
 
-| Thing         | Format                                                                                  | Example                                           |
-| ------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Minutes       | number, space, "min"                                                                    | "4 min late", "Avg delay 2.5 min"                 |
-| Relative time | `lib/relativeTime.ts`                                                                   | "just now", "4 min ago", "3 hr ago", "2 days ago" |
-| Clock time    | 24-hour, UK time                                                                        | "08:42"                                           |
-| Date          | `lib/dateFormat.ts`, D MMM YYYY; three-letter months ("Sep", never en-GB Intl's "Sept") | "9 Oct 2026", "17 Sep 2026"                       |
-| Date pickers  | `valueFormat="D MMM YYYY"` on every `DatePickerInput`                                   | "9 Oct 2026"                                      |
-| 24-hour hint  | Once per form, on its first time field (`clockHint`)                                    | "24-hour clock, e.g. 19:00."                      |
+| Thing | Format | Example |
+| --- | --- | --- |
+| Minutes | number, space, "min" | "4 min late", "Avg delay 2.5 min" |
+| Relative time | `lib/relativeTime.ts` | "just now", "4 min ago", "3 hr ago", "2 days ago" |
+| Clock time | 24-hour, UK time | "08:42" |
+| Date | `lib/dateFormat.ts`, D MMM YYYY; three-letter months ("Sep", never en-GB Intl's "Sept") | "9 Oct 2026", "17 Sep 2026" |
+| Date pickers | `valueFormat="D MMM YYYY"` on every `DatePickerInput` | "9 Oct 2026" |
+| 24-hour hint | Once per form, on its first time field (`clockHint`) | "24-hour clock, e.g. 19:00." |
 
 ### Banned phrases
 
@@ -653,7 +677,7 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
   (`[data-text-link]`, `[data-card-link]`, `[data-status-badge]`).
 - Theme config is one object in `lib/theme.ts`, shared by the app and tests.
 - Icons are hand-inlined 16px Feather-style SVGs (`stroke-width 2`,
-  `currentColor`, `aria-hidden`); no icon library _(convention)_. No
+  `currentColor`, `aria-hidden`); no icon library *(convention)*. No
   Unicode glyphs as functional icons.
 - Prettier 3: `printWidth: 120`, `singleQuote: true`.
 
