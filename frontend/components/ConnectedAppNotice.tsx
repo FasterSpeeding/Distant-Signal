@@ -48,7 +48,10 @@ export function ConnectedAppNotice({ notice }: { notice: ConnectedAppGrant }) {
     >
       <Text size="sm">
         Connected {formatDateTime(notice.createdAt)}. Not you?{' '}
-        <TextLink href="/account/connected-apps">Disconnect it in Connected apps</TextLink>.
+        <TextLink href="/account/connected-apps" inline underline="always">
+          Disconnect it in Connected apps
+        </TextLink>
+        .
       </Text>
     </Alert>
   );
