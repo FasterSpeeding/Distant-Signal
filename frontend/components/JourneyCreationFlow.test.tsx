@@ -49,6 +49,7 @@ function mockFetchByUrl(
     journeyDetail?: () => Response;
     addLeg?: () => Response;
     tripPlan?: () => Response;
+    itinerary?: () => Response;
   } = {},
 ) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -73,6 +74,9 @@ function mockFetchByUrl(
           status: 200,
         }),
       );
+    }
+    if (url === '/api/Journeys/itinerary' && init?.method === 'POST' && options.itinerary) {
+      return Promise.resolve(options.itinerary());
     }
     if (url === '/api/Journeys/99' && (init?.method === undefined || init.method === 'GET')) {
       return Promise.resolve((options.journeyDetail ?? (() => journeyDetailResponse([leg()])))());
@@ -210,22 +214,11 @@ describe('JourneyCreationFlow', () => {
     expect(screen.queryByRole('button', { name: 'Add a leg' })).not.toBeInTheDocument();
   });
 
-  // Final-review fix C1/I4: renders the REAL `JourneyCreationFlow` (not
-  // `PlanTripFlow` standalone the way `PlanTripFlow.test.tsx`'s own
-  // partial-failure test does) to prove the actual bug is fixed: the old
-  // code called `onCreated` (this component's own `handleLegOneCreated`)
-  // in the same tick as `PlanTripFlow` setting its `creationError` state.
-  // `handleLegOneCreated` flips `journeyId` from `null` to a real id,
-  // which unmounts the `journeyId === null` branch -- and `PlanTripFlow`,
-  // and its about-to-render error Alert -- before the visitor could ever
-  // see which leg failed. This test drives the mode selector into 'plan',
-  // runs a two-segment plan through to a leg-2 commit failure, and asserts
-  // the failure message is visible BEFORE the post-creation view (the
-  // "First leg tracked" alert / Done link) ever appears -- something
-  // `PlanTripFlow.test.tsx`'s own standalone tests, which render
-  // `PlanTripFlow` directly with a no-op `onCreated`, structurally cannot
-  // catch (there's no real parent there to unmount).
-  it('lets the visitor see which leg failed before handing off, when a plan-mode journey partially fails (mode selector -> plan -> partial failure)', async () => {
+  // Renders the real `JourneyCreationFlow` in plan mode: the whole
+  // itinerary is saved in one atomic `POST /Journeys/itinerary` (decision
+  // D-15), so there is no partial failure to show, and the parent moves to
+  // its post-creation view once the journey exists.
+  it('hands off to the post-creation view after the atomic plan-mode save (mode selector -> plan -> save)', async () => {
     const twoSegmentPlan: TripPlanResponse = {
       results: 'fastest',
       segments: [
@@ -280,7 +273,21 @@ describe('JourneyCreationFlow', () => {
 
     const fetchMock = mockFetchByUrl({
       tripPlan: () => new Response(JSON.stringify(twoSegmentPlan), { status: 200 }),
-      addLeg: () => new Response('service withdrawn', { status: 500 }),
+      itinerary: () =>
+        new Response(
+          JSON.stringify({
+            journeyId: 99,
+            legId: 1,
+            trackingId: 42,
+            resolutionStatus: null,
+            legs: [
+              { legId: 1, trackingId: 42 },
+              { legId: 2, trackingId: 43 },
+            ],
+            createdVia: 'web',
+          }),
+          { status: 200 },
+        ),
     });
     vi.stubGlobal('fetch', fetchMock);
     renderWithMantine(<JourneyCreationFlow />);
@@ -294,28 +301,12 @@ describe('JourneyCreationFlow', () => {
     await screen.findByText(byVisibleText('08:00 EUS to MKC 08:50'));
     await screen.findByText(byVisibleText('09:10 MKC to EDB 13:00'));
     // Both segments' own single itinerary is the last two radios in DOM
-    // order -- everything before them (the entry-mode selector's own two
-    // radios, plus `PlanTripForm`'s own Fastest/Compare options control)
-    // renders first, same convention `PlanTripFlow.test.tsx`'s own tests
-    // already rely on.
+    // order, after the entry-mode selector and the form's own controls.
     const radios = screen.getAllByRole('radio');
     fireEvent.click(radios[radios.length - 2]!);
     fireEvent.click(radios[radios.length - 1]!);
     fireEvent.click(screen.getByText('Track this journey'));
 
-    // The regression: the visitor must see WHICH leg failed...
-    await screen.findByText(/Tracked 1 of 2 legs/);
-    // ...and must NOT already be on the post-creation view -- if `onCreated`
-    // had fired automatically (the bug), `journeyId` would already be set
-    // and this component would have swapped to its "First leg tracked"
-    // view, unmounting `PlanTripFlow` (and this very message) in the
-    // process.
-    expect(screen.queryByText('First leg tracked')).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /view journey/i })).not.toBeInTheDocument();
-
-    // Only once the visitor acknowledges the message does the hand-off
-    // happen.
-    fireEvent.click(screen.getByText('Continue to your journey'));
     expect(await screen.findByRole('link', { name: /view journey/i })).toHaveAttribute('href', '/journeys/99');
   });
 });
