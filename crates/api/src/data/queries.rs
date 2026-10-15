@@ -30,41 +30,38 @@ pub use ds_store::incidents::{IncidentSnapshotOutcome, RowHeartbeat};
 #[cfg(test)]
 pub async fn upsert_incidents(
     pool: &PgPool,
-    redis: &redis::Client,
     line_matcher: &common::matcher::LineMatcher,
     incidents: &[IncidentMessage],
 ) -> Result<u64> {
-    let outcome = upsert_incident_snapshot(
-        pool,
-        redis,
-        line_matcher,
-        incidents,
-        false,
-        RowHeartbeat::On,
-    )
-    .await?;
+    let outcome =
+        upsert_incident_snapshot(pool, line_matcher, incidents, false, RowHeartbeat::On).await?;
     Ok(outcome.upserted)
 }
 
 /// Test fixture: one incident snapshot, the way the api's
 /// `POST /private/incidents` wrote it until release B (ingest phase 5):
-/// [`ds_store::incidents::apply_snapshot`], then the Redis
-/// `XADD incident-text-changed` of its text changes
-/// ([`common::incident_text_changed::publish`], best effort), then
-/// [`ds_store::incidents::removal::infer_removals`]. The split is plan task
-/// 2c.1; the order is unchanged (see [`upsert_incident_snapshot_with`]).
+/// [`ds_store::incidents::apply_snapshot`], then
+/// [`ds_store::incidents::removal::infer_removals`]. The api published the
+/// text changes to Redis (`XADD incident-text-changed`) in between; it has
+/// no Redis client since phase 5 step 5.4, so this fixture publishes
+/// nothing. poller-incidents' DB sink publishes them now, and its tests
+/// cover that. The order is pinned by [`upsert_incident_snapshot_with`].
 #[cfg(test)]
 pub async fn upsert_incident_snapshot(
     pool: &PgPool,
-    redis: &redis::Client,
     line_matcher: &common::matcher::LineMatcher,
     incidents: &[IncidentMessage],
     complete: bool,
     heartbeat: RowHeartbeat,
 ) -> Result<IncidentSnapshotOutcome> {
-    upsert_incident_snapshot_with(pool, line_matcher, incidents, complete, heartbeat, |ids| {
-        common::incident_text_changed::publish(redis, ids)
-    })
+    upsert_incident_snapshot_with(
+        pool,
+        line_matcher,
+        incidents,
+        complete,
+        heartbeat,
+        |_| async {},
+    )
     .await
 }
 
@@ -3404,11 +3401,6 @@ mod incident_search_query_tests {
         let lines =
             common::LineDefinition::from_dir(&lines_dir).expect("lines/ directory should parse");
         let matcher = common::matcher::LineMatcher::new(&lines);
-        // Never opens a socket unless a publish is attempted, and
-        // `upsert_incidents` logs-and-continues when it cannot connect --
-        // same placeholder this crate's route tests use.
-        let redis =
-            redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url");
 
         let incident = IncidentMessage {
             incident_id: "archive-test-elizabeth".to_string(),
@@ -3426,7 +3418,7 @@ mod incident_search_query_tests {
             is_cleared: true,
         };
 
-        let upserted = upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&incident))
+        let upserted = upsert_incidents(&pool, &matcher, std::slice::from_ref(&incident))
             .await
             .expect("upsert the incident the way the poller does");
         assert_eq!(upserted, 1);
@@ -3497,7 +3489,7 @@ mod incident_search_query_tests {
         edited.description =
             "A fault with the signalling system on the West Coast Main Line.".to_string();
         edited.operators = vec!["VT".to_string()];
-        upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&edited))
+        upsert_incidents(&pool, &matcher, std::slice::from_ref(&edited))
             .await
             .expect("re-upsert the edited incident");
 
@@ -3591,7 +3583,7 @@ mod incident_search_query_tests {
             common::LineDefinition::from_dir(&lines_dir).expect("lines/ directory should parse");
         let matcher = common::matcher::LineMatcher::new(&lines);
 
-        let report = crate::data::incident_line_backfill::run_backfill(&pool, &matcher)
+        let report = ds_store::incidents::line_backfill::run_backfill(&pool, &matcher)
             .await
             .expect("backfill");
         assert!(
@@ -3631,7 +3623,7 @@ mod incident_search_query_tests {
         // Idempotence: a second run finds nothing to do at all, and now
         // sees no never-computed rows, since the first run left every row
         // with a non-NULL array.
-        let second = crate::data::incident_line_backfill::run_backfill(&pool, &matcher)
+        let second = ds_store::incidents::line_backfill::run_backfill(&pool, &matcher)
             .await
             .expect("second backfill");
         assert_eq!(
@@ -3666,7 +3658,7 @@ mod incident_search_query_tests {
             .expect("parse placeholder database url");
         let empty = common::matcher::LineMatcher::new(&[]);
 
-        let err = crate::data::incident_line_backfill::run_backfill(&pool, &empty)
+        let err = ds_store::incidents::line_backfill::run_backfill(&pool, &empty)
             .await
             .expect_err("an empty catalogue must be refused, not silently applied");
         assert!(
@@ -8152,7 +8144,7 @@ mod db_review_guard_and_normalisation_tests {
     /// history only for new or changed incidents, and keeps the LAST copy of
     /// an incident repeated inside one chunk.
     #[tokio::test]
-    #[ignore = "requires a live database and Redis; run with `DATABASE_URL=... cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 incidents_batch_upsert -- --ignored --test-threads=1`"]
     async fn incidents_batch_upsert_records_history_only_for_changes() {
         let pool = test_pool().await;
@@ -8168,9 +8160,6 @@ mod db_review_guard_and_normalisation_tests {
         };
         cleanup(pool.clone()).await;
         let matcher = common::matcher::LineMatcher::new(&[]);
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let redis = redis::Client::open(redis_url).expect("parse redis url");
         let incident = |id: &str, description: &str, stations: &[&str]| IncidentMessage {
             incident_id: id.to_string(),
             summary: format!("{id} summary"),
@@ -8196,12 +8185,7 @@ mod db_review_guard_and_normalisation_tests {
             incident("TEST-F2-INC-A", "a", &["EUS"]),
             incident("TEST-F2-INC-B", "b", &[]),
         ];
-        assert_eq!(
-            upsert_incidents(&pool, &redis, &matcher, &first)
-                .await
-                .unwrap(),
-            2
-        );
+        assert_eq!(upsert_incidents(&pool, &matcher, &first).await.unwrap(), 2);
         assert_eq!(history(pool.clone(), "TEST-F2-INC-A").await, 1);
         assert_eq!(history(pool.clone(), "TEST-F2-INC-B").await, 1);
 
@@ -8211,9 +8195,7 @@ mod db_review_guard_and_normalisation_tests {
             incident("TEST-F2-INC-B", "b changed", &["KGX", "FPK"]),
             incident("TEST-F2-INC-C", "c", &[]),
         ];
-        upsert_incidents(&pool, &redis, &matcher, &second)
-            .await
-            .unwrap();
+        upsert_incidents(&pool, &matcher, &second).await.unwrap();
         assert_eq!(history(pool.clone(), "TEST-F2-INC-A").await, 1, "unchanged");
         assert_eq!(
             history(pool.clone(), "TEST-F2-INC-B").await,
@@ -8257,12 +8239,6 @@ mod db_review_guard_and_normalisation_tests {
     async fn incidents_upsert_skips_unchanged_content_but_advances_fetched_at() {
         let pool = test_pool().await;
         let matcher = common::matcher::LineMatcher::new(&[]);
-        // A real Redis/Valkey (`REDIS_URL`, default the local one): with an
-        // unreachable placeholder the new incident's text-changed publish
-        // stalls in connection retries for minutes before giving up.
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let redis = redis::Client::open(redis_url).expect("parse redis url");
         let incident = IncidentMessage {
             incident_id: "TEST-GUARD-INCIDENT".to_string(),
             summary: "Guard test".to_string(),
@@ -8274,7 +8250,7 @@ mod db_review_guard_and_normalisation_tests {
             is_planned: false,
             is_cleared: false,
         };
-        upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&incident))
+        upsert_incidents(&pool, &matcher, std::slice::from_ref(&incident))
             .await
             .unwrap();
         let (fetched_1, history_1): (chrono::DateTime<chrono::Utc>, i64) = sqlx::query_as(
@@ -8285,7 +8261,7 @@ mod db_review_guard_and_normalisation_tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        upsert_incidents(&pool, &redis, &matcher, std::slice::from_ref(&incident))
+        upsert_incidents(&pool, &matcher, std::slice::from_ref(&incident))
             .await
             .unwrap();
         let (fetched_2, history_2, description): (chrono::DateTime<chrono::Utc>, i64, String) =
@@ -8326,9 +8302,6 @@ mod db_review_guard_and_normalisation_tests {
         const ID: &str = "TEST-ACTIVE-SINCE";
         let pool = test_pool().await;
         let matcher = common::matcher::LineMatcher::new(&[]);
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let redis = redis::Client::open(redis_url).expect("parse redis url");
         let mut incident = IncidentMessage {
             incident_id: ID.to_string(),
             summary: "Disruption between Purley and Gatwick Airport".to_string(),
@@ -8362,9 +8335,9 @@ mod db_review_guard_and_normalisation_tests {
             .unwrap();
         };
         let post = |incident: IncidentMessage| {
-            let (pool, redis, matcher) = (pool.clone(), redis.clone(), &matcher);
+            let (pool, matcher) = (pool.clone(), &matcher);
             async move {
-                upsert_incidents(&pool, &redis, matcher, std::slice::from_ref(&incident))
+                upsert_incidents(&pool, matcher, std::slice::from_ref(&incident))
                     .await
                     .unwrap();
             }

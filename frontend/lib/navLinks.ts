@@ -73,9 +73,9 @@ export function isActiveNavHref(pathname: string | null, destination: NavDestina
  * landing state at all. */
 export const GROUPS_DESTINATION: NavDestination = { href: '/groups', label: 'Groups' };
 
-/** `/chat`. Visible only when `getChatbotAccess()` resolves to `'allowed'`
- * (fetched alongside the session in `app/layout.tsx`'s
- * `NavBarWithSession`). */
+/** `/chat`. Listed for every logged-in visitor, like `GROUPS_DESTINATION`:
+ * the chat is open to every account (since 2026-10-14), and a logged-out
+ * visitor would only meet a login prompt there. */
 export const CHAT_DESTINATION: NavDestination = { href: '/chat', label: 'Ask about trains' };
 
 /** The account page: download your data, delete your account (UK legal
@@ -99,25 +99,19 @@ export const TRANSIT_DESTINATION: NavDestination = { href: '/transit', label: 'T
 /** What the mobile drawer lists: every primary destination, plus the
  * per-account ones the bar hands to the account menu on desktop. The drawer
  * is the ONLY nav surface below `md`, so it carries the union. */
-export function navDrawerDestinations(
-  authenticated: boolean,
-  chatAllowed: boolean,
-  transitOn = false,
-): NavDestination[] {
+export function navDrawerDestinations(authenticated: boolean, transitOn = false): NavDestination[] {
   return [
     ...PRIMARY_NAV_DESTINATIONS.flatMap((destination) =>
       destination.href === '/lines' && transitOn ? [destination, TRANSIT_DESTINATION] : [destination],
     ),
-    ...(authenticated ? [GROUPS_DESTINATION] : []),
-    ...(chatAllowed ? [CHAT_DESTINATION] : []),
-    ...(authenticated ? [ACCOUNT_DESTINATION] : []),
+    ...(authenticated ? [GROUPS_DESTINATION, CHAT_DESTINATION, ACCOUNT_DESTINATION] : []),
     PREFERENCES_DESTINATION,
   ];
 }
 
 /** What the avatar-keyed account menu lists (above the session actions,
- * which the menu adds itself). Only rendered for an authenticated visitor;
- * `CHAT_DESTINATION` only for an allow-listed one. */
-export function accountMenuDestinations(chatAllowed: boolean): NavDestination[] {
-  return [GROUPS_DESTINATION, ...(chatAllowed ? [CHAT_DESTINATION] : []), ACCOUNT_DESTINATION, PREFERENCES_DESTINATION];
+ * which the menu adds itself). Only rendered for an authenticated visitor,
+ * so every entry is unconditional. */
+export function accountMenuDestinations(): NavDestination[] {
+  return [GROUPS_DESTINATION, CHAT_DESTINATION, ACCOUNT_DESTINATION, PREFERENCES_DESTINATION];
 }

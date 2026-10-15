@@ -6127,8 +6127,12 @@ mod publish_memory_harness {
     #[test]
     #[ignore = "manual memory harness: needs SCHEDULE_REFERENCE_MEMORY_STORAGE, see the module doc"]
     fn publish_memory_harness() {
-        let storage = std::env::var("SCHEDULE_REFERENCE_MEMORY_STORAGE")
-            .expect("SCHEDULE_REFERENCE_MEMORY_STORAGE names a storage dir holding one delivery");
+        // CI runs every `--ignored` test; without a delivery to measure
+        // this harness has nothing to do, so it passes as a no-op.
+        let Ok(storage) = std::env::var("SCHEDULE_REFERENCE_MEMORY_STORAGE") else {
+            eprintln!("SCHEDULE_REFERENCE_MEMORY_STORAGE is not set; skipping the memory harness");
+            return;
+        };
         let mut config = test_config();
         config.storage_dir = storage.into();
         let runtime = tokio::runtime::Builder::new_multi_thread()

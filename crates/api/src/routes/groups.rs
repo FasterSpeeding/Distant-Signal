@@ -11,11 +11,8 @@
 //! exists at all from someone with no legitimate claim to know. A group
 //! member who lacks `admin`/`owner` permission already knows the group
 //! exists (they can see it, they're a member of it) -- hiding that via
-//! `404` would be actively confusing, not protective. This mirrors
-//! `ChatbotAuthorizedUser`'s own `403` precedent (`crates/api/src/auth.rs`):
-//! "a resolved, real user who simply isn't in the group is a genuinely
-//! different case... not an ownership check hiding a secret resource."
-//! `404` is still used here for "not a member at all" (the group may or
+//! `404` would be actively confusing, not protective (the same reasoning
+//! `routes::admin` uses for its `403`). `404` is still used here for "not a member at all" (the group may or
 //! may not exist; either way, this caller has no legitimate claim to know
 //! which) and for "no member/train with that id" lookups.
 
@@ -1179,14 +1176,10 @@ mod db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             migration_database_url: None,
-            redis_url: "redis://127.0.0.1:0".to_string(),
-            redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
-            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             transit_networks: Vec::new(),
-            chatbot_access: crate::data::config::ChatbotAccessMode::Group,
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
@@ -1221,10 +1214,6 @@ mod db_tests {
             line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
-            // `Client::open` only parses the URL, never opens a socket --
-            // see `AppState::redis`'s doc comment. No route in this file
-            // touches Redis at all.
-            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
             oidc: OidcClient::new(OidcConfig {
                 issuer_url: "https://example.invalid".to_string(),
                 client_id: "test-client".to_string(),

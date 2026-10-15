@@ -3,7 +3,6 @@ use crate::app::Router;
 pub mod account;
 pub mod admin;
 pub mod auth;
-pub mod chatbot;
 pub mod departures;
 pub mod freshness;
 pub mod groups;
@@ -128,7 +127,6 @@ pub fn public_router() -> Router {
         .merge(admin::router())
         .merge(account::router())
         .merge(groups::router())
-        .merge(chatbot::router())
         .merge(station_stats::router())
         .merge(departures::router())
         .merge(stanox_crs::router())

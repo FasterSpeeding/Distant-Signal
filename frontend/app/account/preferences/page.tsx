@@ -1,6 +1,6 @@
 import { Stack, Title } from '@mantine/core';
 import type { Metadata } from 'next';
-import { getChatbotAccess, getSessionOrLoggedOut } from '@/lib/api';
+import { getSessionOrLoggedOut } from '@/lib/api';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { AccountSettingsLoginPrompt } from './AccountSettingsLoginPrompt';
 import { AppearanceSection } from './AppearanceSection';
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
  * - Device-local, saved in this browser, no account needed:
  *   `AppearanceSection` (colour theme, pride flag).
  * - Account-backed, logged in only: `NotificationsSection`,
- *   `ClaudeKeySection` (also needs "Ask about trains" access). A logged-out
+ *   `ClaudeKeySection`. A logged-out
  *   visitor sees `AccountSettingsLoginPrompt` in their place. A new
  *   account-backed section goes in the logged-in list below and is covered
  *   by that prompt; a new device-local one goes beside `AppearanceSection`.
@@ -36,9 +36,9 @@ export const metadata: Metadata = {
  * merge or overwrite, and logging out leaves them too (they are not in
  * `lib/browserAccountData.ts`'s cleared keys). */
 export default async function PreferencesPage() {
-  // Both degrade rather than throw: a logged-out visitor is a session with
-  // `authenticated: false`, and chat access a status, never a 401.
-  const [session, chatAccess] = await Promise.all([getSessionOrLoggedOut(), getChatbotAccess()]);
+  // Degrades rather than throws: a logged-out visitor is a session with
+  // `authenticated: false`, never a 401.
+  const session = await getSessionOrLoggedOut();
 
   return (
     <Stack p="lg" gap="lg" maw={640}>
@@ -47,7 +47,7 @@ export default async function PreferencesPage() {
       {session.authenticated ? (
         <>
           <NotificationsSection />
-          {chatAccess.status === 'allowed' && <ClaudeKeySection />}
+          <ClaudeKeySection />
         </>
       ) : (
         <AccountSettingsLoginPrompt />

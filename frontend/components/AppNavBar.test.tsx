@@ -189,8 +189,8 @@ describe('AppNavBar', () => {
     // Review §3.1.3: /chat was undiscoverable -- reachable only by typing
     // the URL directly. The drawer is the only nav surface below `md`, so
     // it has to carry Chat too, not just the account menu.
-    it('adds Chat only when chatAllowed is true', async () => {
-      renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} chatAllowed />);
+    it('adds Chat for every logged-in visitor', async () => {
+      renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} />);
       openDrawer();
       expect(within(await screen.findByRole('dialog')).getByRole('link', { name: 'Ask about trains' })).toHaveAttribute(
         'href',
@@ -198,8 +198,8 @@ describe('AppNavBar', () => {
       );
     });
 
-    it('omits Chat by default (chatAllowed not yet confirmed)', async () => {
-      renderWithMantine(<AppNavBar session={loggedIn} freshness={freshness} />);
+    it('omits Chat for an anonymous visitor', async () => {
+      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
       openDrawer();
       expect(within(await screen.findByRole('dialog')).queryByRole('link', { name: 'Ask about trains' })).toBeNull();
     });

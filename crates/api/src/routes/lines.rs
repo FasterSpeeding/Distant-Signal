@@ -1480,14 +1480,12 @@ mod tests {
 /// later tasks in the same plan to copy:
 ///
 /// - `test_app` builds a real `App` (`Arc<AppState>`) by hand, exactly as
-///   `AppState::init()` does but skipping `clap` and any live SSO/Redis
+///   `AppState::init()` does but skipping `clap` and any live SSO
 ///   connection — every field is a plain, directly-constructible value
 ///   except `database`, which is the one field that has to be a real,
-///   already-connected `PgPool` (`redis`/`oidc` are never touched by
-///   `get_line`, so both are inert placeholders; see `AppState::redis`'s
-///   own doc comment for why an unreachable `redis::Client::open` target
-///   is harmless, and `auth::oidc::OidcClient::new`'s doc comment for why
-///   it performs no network call).
+///   already-connected `PgPool` (`oidc` is never touched by `get_line`, so
+///   it is an inert placeholder; see `auth::oidc::OidcClient::new`'s doc
+///   comment for why it performs no network call).
 /// - `test_router` mounts this crate's *actual* `routes::public_router()`
 ///   under `/public`, the same nesting `main.rs` uses, then calls
 ///   `.with_state(app)` to turn it into a `Service` a test can drive
@@ -1539,14 +1537,10 @@ mod db_tests {
             bind_url: "0.0.0.0:0".to_string(),
             database_url: String::new(),
             migration_database_url: None,
-            redis_url: "redis://127.0.0.1:0".to_string(),
-            redis_password: None,
             internal_oauth_issuer_url: "https://example.invalid".to_string(),
             internal_oauth_client_id: "test-internal-oauth-client".to_string(),
             internal_oauth_group_mcp: "srv-ds-mcp".to_string(),
-            chatbot_access_group: "distant-signal-chatbot-users".to_string(),
             transit_networks: Vec::new(),
-            chatbot_access: crate::data::config::ChatbotAccessMode::Group,
             admin_group: String::new(),
             sso_issuer_url: "https://example.invalid".to_string(),
             sso_client_id: "test-client".to_string(),
@@ -1581,10 +1575,6 @@ mod db_tests {
             line_matcher: common::matcher::LineMatcher::new(&config.lines),
             config,
             database: pool,
-            // `Client::open` only parses the URL, never opens a socket --
-            // see `AppState::redis`'s doc comment. `get_line` never
-            // touches Redis at all.
-            redis: redis::Client::open("redis://127.0.0.1:0").expect("parse placeholder redis url"),
             oidc: OidcClient::new(OidcConfig {
                 issuer_url: "https://example.invalid".to_string(),
                 client_id: "test-client".to_string(),
