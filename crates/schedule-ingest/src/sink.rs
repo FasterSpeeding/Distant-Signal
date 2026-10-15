@@ -126,24 +126,11 @@ impl DbSink {
         database_url: &Secret,
         progress: &health_http::Progress,
     ) -> anyhow::Result<Self> {
-        common::startup::retry_until_ready(
-            "Postgres",
-            common::startup::CONNECT_BACKOFF,
-            Some(progress),
-            || async {
-                use sqlx::Connection;
-                sqlx::PgConnection::connect(database_url.expose())
-                    .await?
-                    .close()
-                    .await
-            },
-        )
-        .await;
         // The db_pool_* series at 0 (main installs the recorder first).
         ds_store::pool::register_metrics();
         let pool =
             ds_store::pool::PoolSettings::from_env(APPLICATION_NAME, DEFAULT_MAX_CONNECTIONS)?
-                .connect(database_url.expose())
+                .connect_until_ready(database_url.expose(), Some(progress))
                 .await?;
         ds_store::schema::wait_for_schema(
             &pool,
