@@ -1,4 +1,4 @@
-//! The delegated-access tables (migration `20261014200000`): grants, the
+//! The delegated-access tables (migration `20261015010000`): grants, the
 //! consent page's confirmation tokens, the record of delegated deletes and
 //! the hourly sweep. See `crate::auth::delegated` and
 //! docs/superpowers/specs/2026-10-14-ds-mcp-delegated-access-design.md §5.3.
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn reasons_match_the_check_constraint() {
         let migration =
-            include_str!("../../../ds-store/migrations/20261014200000_delegated_access.sql");
+            include_str!("../../../ds-store/migrations/20261015010000_delegated_access.sql");
         for reason in [
             RevokeReason::User,
             RevokeReason::Admin,

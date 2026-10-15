@@ -1448,7 +1448,7 @@ pub struct JourneySummaryRow {
     pub created_at: DateTime<Utc>,
     pub user_id: String,
     /// `'web'`, or the delegated client that saved it
-    /// (`crate::auth::delegated`, migration `20261014200000`).
+    /// (`crate::auth::delegated`, migration `20261015010000`).
     pub created_via: String,
 }
 

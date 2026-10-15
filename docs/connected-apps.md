@@ -66,7 +66,7 @@ and every delegated bearer is refused.
    The api refuses to start if a delegated audience equals the SSO or
    internal client id (or another client's), or a delegated issuer equals
    the SSO or internal issuer.
-3. Deploy. The migration `20261014200000_delegated_access` is expand-only;
+3. Deploy. The migration `20261015010000_delegated_access` is expand-only;
    with per-service roles on, re-run the role setup so the notifier gets
    its column grants on `delegated_grants`.
 4. ds-mcp points its delegated calls at
