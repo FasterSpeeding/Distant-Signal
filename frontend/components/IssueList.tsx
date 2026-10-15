@@ -16,6 +16,13 @@ import {
 } from '@mantine/core';
 import { ListFilterBar, type ListNoun } from './ListFilterBar';
 import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
+import { useInitialSearchParams } from '@/lib/useInitialSearchParams';
+import {
+  issueListParamKeys,
+  parseIssueListFilters,
+  type IssueListFilters,
+  type IssueTab,
+} from '@/lib/issueListFilters';
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
@@ -28,44 +35,9 @@ import { BadgeRow, StateBadge } from './StateBadge';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 import { coverageProvenanceNote } from '@/lib/sampleStats';
 
-type ActiveFilter = 'all' | IssueBucket;
+type ActiveFilter = IssueTab;
 
 const ISSUE_NOUN: ListNoun = { one: 'issue', other: 'issues' };
-
-/** An IssueList's filters as its page's URL carries them, under the
- * list's own `urlPrefix` (`issueTab`, `issueSeverity`, `issueSource`) so
- * they can't clash with the page's other params (the line page's `dir`,
- * `at`, `from`, `to` and `view`), or with a second list on the same page
- * (the line page's TfL list is `tflIssue`). */
-export interface IssueListFilters {
-  tab: ActiveFilter | null;
-  /** `statusSeverity` numbers, as strings. */
-  severities: string[];
-  sources: string[];
-}
-
-/** The URL keys for a list with `prefix`. */
-export function issueListParamKeys(prefix: string) {
-  return { tab: `${prefix}Tab`, severity: `${prefix}Severity`, source: `${prefix}Source` } as const;
-}
-
-/** Reads a list's filters from a page's `searchParams`. Anything malformed
- * is dropped; an unknown severity or source simply matches nothing until
- * cleared, which the list's empty state explains. */
-export function parseIssueListFilters(
-  raw: Record<string, string | string[] | undefined>,
-  prefix: string,
-): IssueListFilters {
-  const keys = issueListParamKeys(prefix);
-  const all = (value: string | string[] | undefined) =>
-    (Array.isArray(value) ? value : value === undefined ? [] : [value]).filter((entry) => entry !== '');
-  const [tab] = all(raw[keys.tab]);
-  return {
-    tab: tab === 'all' || tab === 'active' || tab === 'upcoming' || tab === 'ended' ? tab : null,
-    severities: all(raw[keys.severity]).filter((entry) => /^\d+$/.test(entry)),
-    sources: all(raw[keys.source]).filter((entry) => entry in DATA_QUALITY_LABELS),
-  };
-}
 
 /** Selects the noun used in the empty-state copy below. The line detail
  * page renders one `IssueList` per line, so 'line' is the sensible default
@@ -178,7 +150,7 @@ export function IssueList({
   now,
   subject = 'line',
   urlPrefix,
-  initialFilters,
+  initialFilters: initialFiltersProp,
 }: {
   items: IssueItem[];
   now: number;
@@ -186,9 +158,14 @@ export function IssueList({
   /** Keeps the filters in the page's URL under these keys (see
    * `IssueListFilters`); without it they are not kept. */
   urlPrefix?: string | undefined;
-  /** The filters the page's URL restores (`parseIssueListFilters`). */
+  /** The filters to start with outside the app router (tests); in the
+   * app they come from the address bar under `urlPrefix`. */
   initialFilters?: IssueListFilters | undefined;
 }) {
+  // From the address bar, not server props, so Back restores what was last
+  // set (see `useInitialSearchParams`).
+  const urlParams = useInitialSearchParams();
+  const initialFilters = urlPrefix && urlParams ? parseIssueListFilters(urlParams, urlPrefix) : initialFiltersProp;
   const severityLabelId = useId();
   const sourceLabelId = useId();
   const statuses = useMemo(() => items.map((item) => item.status), [items]);

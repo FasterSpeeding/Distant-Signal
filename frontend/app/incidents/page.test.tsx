@@ -10,6 +10,8 @@ import type { LineSummary, Suggestion } from '@/lib/types';
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/incidents',
+  // `null`, as outside the app router: the form falls back to its props.
+  useSearchParams: () => null,
 }));
 
 vi.mock('@/lib/api', async (importOriginal) => {

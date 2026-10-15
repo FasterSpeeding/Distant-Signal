@@ -3,7 +3,8 @@ import { act, screen, fireEvent, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { theme } from '@/lib/theme';
 import { renderWithMantine } from '@/test/render';
-import { IssueList, parseIssueListFilters } from './IssueList';
+import { IssueList } from './IssueList';
+import { parseIssueListFilters } from '@/lib/issueListFilters';
 import type { LineStatus } from '@/lib/types';
 import type { IssueItem } from '@/lib/stationIssues';
 
@@ -846,11 +847,13 @@ describe('IssueList', () => {
 
     it('restores the tab and chips from the URL under its own prefix', () => {
       const filters = parseIssueListFilters(
-        { dir: 'up', issueTab: 'all', issueSeverity: ['9', 'x'], issueSource: ['knowledgebase', 'nope'] },
+        new URLSearchParams(
+          'dir=up&issueTab=all&issueSeverity=9&issueSeverity=x&issueSource=knowledgebase&issueSource=nope',
+        ),
         'issue',
       );
       expect(filters).toEqual({ tab: 'all', severities: ['9'], sources: ['knowledgebase'] });
-      expect(parseIssueListFilters({ issueTab: 'all' }, 'tflIssue')).toEqual({
+      expect(parseIssueListFilters(new URLSearchParams('issueTab=all'), 'tflIssue')).toEqual({
         tab: null,
         severities: [],
         sources: [],

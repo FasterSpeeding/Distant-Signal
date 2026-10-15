@@ -26,6 +26,7 @@ import {
   type StateFilter,
 } from '@/lib/incidentSearch';
 import { useLiveSearch } from '@/lib/useLiveSearch';
+import { paramValue, useInitialSearchParams } from '@/lib/useInitialSearchParams';
 import { useUrlFilterSync } from '@/lib/useUrlFilterSync';
 import { useFilteredDocumentTitle } from '@/lib/useFilteredDocumentTitle';
 
@@ -98,17 +99,17 @@ function ChipRow<T extends string>({
 export function IncidentSearchForm({
   lines,
   tocs,
-  initialQuery = '',
-  initialOperator = '',
-  initialLine = '',
-  initialFrom,
-  initialTo,
-  initialPeriod,
-  initialPlanned,
-  initialState,
-  initialCleared,
-  initialPriorityMin,
-  initialPriorityMax,
+  initialQuery: initialQueryProp,
+  initialOperator: initialOperatorProp,
+  initialLine: initialLineProp,
+  initialFrom: initialFromProp,
+  initialTo: initialToProp,
+  initialPeriod: initialPeriodProp,
+  initialPlanned: initialPlannedProp,
+  initialState: initialStateProp,
+  initialCleared: initialClearedProp,
+  initialPriorityMin: initialPriorityMinProp,
+  initialPriorityMax: initialPriorityMaxProp,
 }: {
   lines: LineSummary[];
   tocs: Suggestion[];
@@ -130,6 +131,21 @@ export function IncidentSearchForm({
   initialPriorityMin?: string | undefined;
   initialPriorityMax?: string | undefined;
 }) {
+  // Seeded from the address bar, not the server props: see
+  // `useInitialSearchParams` (after Back, the props are stale).
+  const urlParams = useInitialSearchParams();
+  const seed = (key: string, prop: string | undefined) => (urlParams ? paramValue(urlParams, key) : prop);
+  const initialQuery = seed('q', initialQueryProp) ?? '';
+  const initialOperator = seed('operator', initialOperatorProp) ?? '';
+  const initialLine = seed('line', initialLineProp) ?? '';
+  const initialFrom = seed('from', initialFromProp);
+  const initialTo = seed('to', initialToProp);
+  const initialPeriod = seed('period', initialPeriodProp);
+  const initialPlanned = seed('planned', initialPlannedProp);
+  const initialState = seed('state', initialStateProp);
+  const initialCleared = seed('cleared', initialClearedProp);
+  const initialPriorityMin = seed('priority_min', initialPriorityMinProp);
+  const initialPriorityMax = seed('priority_max', initialPriorityMaxProp);
   const catalogueLines = useMemo(() => lines.filter((line) => line.source === 'catalogue'), [lines]);
   /** Line id -> display name, so a result row's `affectedLines` renders as
    * "Elizabeth line" rather than "elizabeth-line". An id with no entry (a

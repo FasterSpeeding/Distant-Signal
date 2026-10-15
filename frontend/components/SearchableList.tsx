@@ -6,6 +6,7 @@ import { countLabel, ListFilterBar, type ListNoun } from './ListFilterBar';
 import { ListResultSummary } from './ListResultSummary';
 import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
 import { useFilteredDocumentTitle } from '@/lib/useFilteredDocumentTitle';
+import { useInitialSearchParams } from '@/lib/useInitialSearchParams';
 
 /** One row of a `SearchableList`: `node` is rendered by the page (it may be
  * a Server Component's output), `text` is what the search matches. */
@@ -55,7 +56,10 @@ export function SearchableList({
   initialQuery?: string | undefined;
   layout: 'grid' | 'list';
 }) {
-  const [query, setQuery] = useState(initialQuery);
+  // From the address bar when there is one, so Back restores the last
+  // search (see `useInitialSearchParams`).
+  const urlParams = useInitialSearchParams();
+  const [query, setQuery] = useState(urlParams ? (urlParams.get(SEARCHABLE_LIST_QUERY_PARAM) ?? '') : initialQuery);
   const shown = matchingItems(items, query);
   const searching = query.trim() !== '';
 

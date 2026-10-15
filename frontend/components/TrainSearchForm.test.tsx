@@ -34,6 +34,8 @@ const replaceMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock, replace: replaceMock }),
   usePathname: () => '/trains',
+  // `null`, as outside the app router: the form falls back to its props.
+  useSearchParams: () => null,
 }));
 
 // A PARTIAL mock: only `DatePickerInput` is stubbed out, and everything

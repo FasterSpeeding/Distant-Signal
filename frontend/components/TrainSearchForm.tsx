@@ -14,6 +14,7 @@ import { searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { useLiveSearch } from '@/lib/useLiveSearch';
+import { paramValue, useInitialSearchParams } from '@/lib/useInitialSearchParams';
 import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
 import {
   hasRows,
@@ -102,14 +103,14 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  * absent (the read failed) falls back to a week either side of today, the
  * API's static window -- see `lib/searchDates.ts`. */
 export function TrainSearchForm({
-  initialStation = '',
-  initialOrigin = '',
-  initialStopsAt = '',
-  initialDate = '',
-  initialFrom = '',
-  initialTo = '',
-  initialArrivalFrom = '',
-  initialArrivalTo = '',
+  initialStation: initialStationProp = '',
+  initialOrigin: initialOriginProp = '',
+  initialStopsAt: initialStopsAtProp = '',
+  initialDate: initialDateProp = '',
+  initialFrom: initialFromProp = '',
+  initialTo: initialToProp = '',
+  initialArrivalFrom: initialArrivalFromProp = '',
+  initialArrivalTo: initialArrivalToProp = '',
   attachTicketId,
   operatorNames,
   searchDates,
@@ -126,6 +127,20 @@ export function TrainSearchForm({
   operatorNames?: Readonly<Record<string, string>> | undefined;
   searchDates?: TrainSearchDates | null | undefined;
 }) {
+  // Seeded from the address bar, not the server props: see
+  // `useInitialSearchParams` (after Back, the props are stale). Station
+  // codes are uppercased the way the page does.
+  const urlParams = useInitialSearchParams();
+  const seed = (key: string, prop: string, code: boolean) =>
+    urlParams ? ((code ? paramValue(urlParams, key)?.toUpperCase() : paramValue(urlParams, key)) ?? '') : prop;
+  const initialStation = seed('station', initialStationProp, true);
+  const initialOrigin = seed('origin', initialOriginProp, true);
+  const initialStopsAt = seed('stops_at', initialStopsAtProp, true);
+  const initialDate = seed('date', initialDateProp, false);
+  const initialFrom = seed('from', initialFromProp, false);
+  const initialTo = seed('to', initialToProp, false);
+  const initialArrivalFrom = seed('arrival_from', initialArrivalFromProp, false);
+  const initialArrivalTo = seed('arrival_to', initialArrivalToProp, false);
   const operatorLookup = useMemo(
     () => (operatorNames ? new Map(Object.entries(operatorNames)) : undefined),
     [operatorNames],

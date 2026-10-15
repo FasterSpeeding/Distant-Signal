@@ -15,7 +15,7 @@ import {
 } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { StatusBadge } from '@/components/StatusBadge';
-import { IssueList, parseIssueListFilters } from '@/components/IssueList';
+import { IssueList } from '@/components/IssueList';
 import { PinToggle } from '@/components/PinToggle';
 import { ShareButton } from '@/components/ShareButton';
 import { StationAccessibilitySection } from '@/components/StationAccessibilitySection';
@@ -175,16 +175,7 @@ export async function generateMetadata({ params }: { params: Promise<{ crs: stri
   return pageMetadata(title, description, OWN_PREVIEW_IMAGE);
 }
 
-export default async function StationDisruptionPage({
-  params,
-  searchParams,
-}: {
-  params: Promise<{ crs: string }>;
-  /** The issue list's filters (`issueTab`, `issueSeverity`,
-   * `issueSource`; `parseIssueListFilters`). Optional: tests and the plain
-   * URL have none. */
-  searchParams?: Promise<Record<string, string | string[] | undefined>>;
-}) {
+export default async function StationDisruptionPage({ params }: { params: Promise<{ crs: string }> }) {
   const { crs } = await params;
 
   // Deliberately awaited before the disruption fetch rather than in
@@ -323,13 +314,7 @@ export default async function StationDisruptionPage({
               })}
             </Stack>
             <Divider />
-            <IssueList
-              items={items}
-              now={now}
-              subject="station"
-              urlPrefix="issue"
-              initialFilters={parseIssueListFilters((await searchParams) ?? {}, 'issue')}
-            />
+            <IssueList items={items} now={now} subject="station" urlPrefix="issue" />
           </>
         )}
 

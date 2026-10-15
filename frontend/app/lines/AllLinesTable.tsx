@@ -29,6 +29,7 @@ import {
   SEVERITY_GROUP_LABELS,
   severityGroupLabel,
   SEVERITY_GROUPS_BY_RANK,
+  isSeverityGroup,
   type SeverityGroup,
 } from '@/lib/severity';
 import {
@@ -43,6 +44,7 @@ import { countLabel, ListFilterBar, type ListNoun } from '@/components/ListFilte
 import { ListResultSummary } from '@/components/ListResultSummary';
 import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
 import { useFilteredDocumentTitle } from '@/lib/useFilteredDocumentTitle';
+import { useInitialSearchParams } from '@/lib/useInitialSearchParams';
 import { StateBadge } from '@/components/StateBadge';
 import { noOptionsFound } from '@/components/noOptionsFound';
 
@@ -240,9 +242,9 @@ export function AllLinesTable({
   pinnedLineIds,
   tocs,
   viewerIsAnonymous = false,
-  initialStatusGroup,
-  initialOperators,
-  initialQuery,
+  initialStatusGroup: initialStatusGroupProp,
+  initialOperators: initialOperatorsProp,
+  initialQuery: initialQueryProp,
 }: {
   lines: LineSummary[];
   reports: LineStatusReport[];
@@ -269,6 +271,19 @@ export function AllLinesTable({
   /** Seeds "Find a line" from `?q=`. */
   initialQuery?: string | undefined;
 }) {
+  // Seeded from the address bar when there is one, not the server props:
+  // after following a line and pressing Back, Next.js restores this page
+  // with the props of the URL it was first opened at, while the address
+  // bar has the filters last set (see `useInitialSearchParams`).
+  const urlParams = useInitialSearchParams();
+  const urlStatusGroup = urlParams?.get(LINES_STATUS_GROUP_PARAM) ?? undefined;
+  const initialStatusGroup = urlParams
+    ? isSeverityGroup(urlStatusGroup)
+      ? urlStatusGroup
+      : undefined
+    : initialStatusGroupProp;
+  const initialOperators = urlParams ? urlParams.getAll(LINES_OPERATOR_PARAM) : initialOperatorsProp;
+  const initialQuery = urlParams ? (urlParams.get(LINES_QUERY_PARAM) ?? undefined) : initialQueryProp;
   const [selectedOperators, setSelectedOperators] = useState<string[]>(() => {
     const known = new Set(lines.flatMap((line) => line.operators));
     return Array.from(new Set(initialOperators ?? [])).filter((code) => known.has(code));
