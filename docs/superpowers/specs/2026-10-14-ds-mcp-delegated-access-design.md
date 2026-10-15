@@ -1,11 +1,10 @@
 # ds-mcp delegated access to a user's Distant Signal journeys (2026-10-14)
 
-**Status: design approved in direction (2026-10-14), not implemented. A dev
-Authentik spike passed on 2026-10-14 (§9.5).** The
-user answered every open question on 2026-10-14, in four rounds. Section
-0a records those decisions, and the rest of the document has been updated
-to match. Nothing here is implemented, and no code was changed to write
-it.
+**Status: design approved (2026-10-14). The Authentik spike passed on dev
+and production (§9.5). Phase 1b (the DS side) is built, off by default;
+see "Phase 1b progress" in §7.** The user answered every open question on
+2026-10-14, in four rounds. Section 0a records those decisions, and the
+rest of the document has been updated to match.
 
 Requested by the user. The aim: a user who plans a trip with the
 Distant-Signal-MCP server's (ds-mcp's) `plan_journey` tool can save the
@@ -1371,6 +1370,36 @@ production steps.**
    - Creating a grant enqueues the push notification.
 10. **Documentation.** Chart values, `docs/session-revocation.md`, and a new
     `docs/connected-apps.md`.
+
+**Phase 1b progress (2026-10-15).** Built on the DS side, off by default
+(`api.delegated.clients` empty); operator guide `docs/connected-apps.md`,
+contract in `docs/api-changelog.md` (2026-10-15).
+
+- Done: items 1 to 10, with these choices made while building:
+  - The listener (D-14) serves the same router; a request extension set
+    only by that listener is what lets the gate accept a delegated
+    bearer. Its Service is always ClusterIP, and the chart fails a render
+    whose delegated port equals the public one.
+  - The gate rejects a delegated token on any route outside the four
+    before the rate limiter (`403 insufficient_scope`), and checks the
+    cookie-plus-bearer case there (`400 ambiguous_credentials`).
+  - The confirmation token is issued by a JSON route the consent page
+    calls from the browser (`GET /public/account/connected-apps/{client}/consent`);
+    every page already sends `frame-ancestors 'none'`.
+  - `POST /Journeys/itinerary` takes up to 8 legs from a delegated caller
+    and up to 20 (the journey's leg cap) with a cookie, so `PlanTripFlow`
+    keeps its range. Its response is a superset of `POST /Journeys`'.
+  - `createdVia` is added to the journey list and detail responses, so the
+    assistant can tell which journeys it may delete.
+  - Revoked grant rows are deleted 90 days after revocation (the spec set
+    no retention for them).
+  - The grant notice is a notifier cycle (`grant_notice`) on the
+    skip-check interval, recorded in `delegated_grants.push_notified_at`,
+    for grants made in the last 24 hours.
+- Not done in Phase 1b: the Preferences page's copy of Connected apps
+  (the page is on another branch; `ConnectedAppsSection` is ready to
+  mount), dashboard panels and alerts (Phase 2), and "Saved by assistant"
+  in the UI (Phase 2).
 
 **Phase 1c: ds-mcp.**
 

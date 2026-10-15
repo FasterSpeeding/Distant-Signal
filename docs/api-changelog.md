@@ -3,6 +3,72 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-15: delegated access (connected apps), Phase 1
+
+Off by default: nothing below exists for a delegated client until the chart
+lists it in `api.delegated.clients`. Spec:
+`docs/superpowers/specs/2026-10-14-ds-mcp-delegated-access-design.md`;
+operator doc: `docs/connected-apps.md`.
+
+**For ds-mcp (the delegated client).** Send a `distant-signal-api` token
+(`iss=https://sso.cursed.solutions/application/o/distant-signal-api/`,
+`aud=distant-signal-api`, from RFC 8693 token exchange) as
+`Authorization: Bearer` to the **delegated listener**,
+`http://<release>-api-delegated.<namespace>.svc:8082`. The same token on the
+public port is `401 invalid_token`. Never send a cookie with it (`400
+ambiguous_credentials`). Routes, each needing its scope in the token, in the
+user's grant and in the client's `maxScopes`:
+
+| Route | Scope | Notes |
+|---|---|---|
+| `GET /Journeys/mine` | `journeys:read` | Unchanged shape, plus `createdVia` per row |
+| `GET /Journeys/{id}` | `journeys:read` | Own journeys only (a group-shared one is `404`); `shareLink` always `null` |
+| `POST /Journeys/itinerary` | `journeys:write` | Body below. `Idempotency-Key` header required (1 to 200 visible ASCII characters) |
+| `DELETE /Journeys/{id}` | `journeys:delete` | Only journeys this client saved (`createdVia` = client name) and not shared: else `404 not_found` or `409 journey_shared`. `204` on success |
+
+Every other route refuses a delegated token with `403 insufficient_scope`.
+Errors are JSON `{error, message}` with stable codes: `400
+ambiguous_credentials | idempotency_key_required | invalid_itinerary`, `401
+invalid_token` (bad, expired, or issued before the grant or a "log out other
+sessions"; exchange again once), `403 delegation_not_granted` (no active
+grant, or no DS account: send the user to
+`https://<ds>/account/connected-apps/ds-mcp`), `403 insufficient_scope`
+(with `WWW-Authenticate: Bearer error="insufficient_scope",
+scope="..."`), `404 not_found`, `409 idempotency_conflict | journey_shared`,
+`429 rate_limited | daily_limit` (with `Retry-After`), and the existing
+`503 service_unavailable`. Limits: per user 60 reads, 10 saves and 5 deletes
+a minute (bursts 20, 5, 3), 20 times that per client, and 50 saves and 20
+deletes per rolling 24 hours.
+
+`POST /delegated-grants/revoke {"sub": "..."}`, with the client's existing
+internal-OAuth token (group `srv-ds-mcp`), revokes that user's grant for
+that client only. Always `204` for a recognised service; `401` without a
+valid token, `403` for a token in no client's `serviceGroup`. Either port.
+
+**`POST /Journeys/itinerary`** (also for the web app, with the cookie; the
+key is optional there and errors are plain text):
+
+```json
+{"customName": "optional", "legs": [
+  {"trainUid": "C12345", "serviceDate": "2026-10-20", "originCrs": "CRE", "destinationCrs": "PRE"}]}
+```
+
+1 to 8 legs for a delegated client (20 with a cookie); `originCrs` and
+`destinationCrs` optional; unknown fields refused. One transaction. The
+response is `POST /Journeys`' shape plus the legs: `{journeyId, legId,
+trackingId, resolutionStatus: null, legs: [{legId, trackingId}], createdVia}`
+(`legId`/`trackingId` are the first leg's). A repeat with the same key and
+body returns the first response; keys are kept 24 hours per user.
+
+**Additive for everyone.** `GET /Journeys/mine` rows and `GET
+/Journeys/{id}` (and the share-link route) gain `createdVia`: `"web"` or the
+client's name. `POST /public/admin/users/revoke-sessions` gains
+`grantsRevoked`. The account export gains `connectedApps`,
+`connectedAppConfirmations`, `connectedAppDeletions` and `journeySaveKeys`.
+New cookie routes under `/public/account/`: `connected-apps` (GET),
+`connected-apps-notice` (GET), `connected-apps/{client}/consent` (GET) and
+`connected-apps/{client}` (POST, DELETE).
+
 ## 2026-10-14: transit rail links
 
 Additive. New: `GET /public/transit/rail-links?crs=MAN` (3600 s):

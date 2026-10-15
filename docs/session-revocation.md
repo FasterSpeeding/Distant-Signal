@@ -24,6 +24,13 @@ rows in one transaction. The next request from a revoked browser is anonymous.
 The user can log in again immediately unless they are also disabled in
 Authentik.
 
+**Connected apps.** The admin revoke and the Authentik back-channel logout
+also revoke every delegated-access grant the user holds (reasons `admin` and
+`backchannel`), in the same transaction, so an assistant connected on the
+Connected apps page stops working on its next request and the user must
+connect it again. "Log out other sessions" keeps the grants but refuses
+delegated tokens issued before it. See [connected-apps.md](connected-apps.md).
+
 ## When a group change takes effect
 
 `users.groups` is overwritten from the ID token on every login and on no other
