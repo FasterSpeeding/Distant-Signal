@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ns2:TSDBData xmlns:ns2="http://tempuri.org/XMLSchema.xsd" xmlns:ns3="http://www.example.org/UICExtract" xmlns:ns4="http://www.era.europa.eu/schemes/TAFTSI/5.2">
+    <ns2:TSDBDataItem>
+        <ns2:NLCTiplocCode>QZAPLTN</ns2:NLCTiplocCode>
+        <ns2:NLCCapts-Ident>0</ns2:NLCCapts-Ident>
+        <ns2:NLCLocationCode>370100</ns2:NLCLocationCode>
+        <ns2:NLCCheckChar>K</ns2:NLCCheckChar>
+        <ns2:NLCDescription>APPLETON QUAY</ns2:NLCDescription>
+        <ns2:NLCCapriDesc> </ns2:NLCCapriDesc>
+        <ns2:NLCCrsCode>QZA</ns2:NLCCrsCode>
+        <ns2:NLCTiplocOwner> </ns2:NLCTiplocOwner>
+        <ns2:NLCEuroLocation>37010</ns2:NLCEuroLocation>
+        <ns2:NLCStanoxCode>90101</ns2:NLCStanoxCode>
+        <ns2:NLCPoMcpCode>0</ns2:NLCPoMcpCode>
+    </ns2:TSDBDataItem>
+    <ns2:TSDBDataItem>
+        <ns2:NLCTiplocCode>QZBRMTH</ns2:NLCTiplocCode>
+        <ns2:NLCCapts-Ident>8</ns2:NLCCapts-Ident>
+        <ns2:NLCLocationCode>370200</ns2:NLCLocationCode>
+        <ns2:NLCCheckChar>T</ns2:NLCCheckChar>
+        <ns2:NLCDescription>BRAMBLE &amp; THORN</ns2:NLCDescription>
+        <ns2:NLCCapriDesc>BRAMBLE&amp;THORN</ns2:NLCCapriDesc>
+        <ns2:NLCCrsCode>QZB</ns2:NLCCrsCode>
+        <ns2:NLCTiplocOwner>QQ</ns2:NLCTiplocOwner>
+        <ns2:NLCEuroLocation>37020</ns2:NLCEuroLocation>
+        <ns2:NLCStanoxCode>90102</ns2:NLCStanoxCode>
+        <ns2:NLCPoMcpCode>9999</ns2:NLCPoMcpCode>
+    </ns2:TSDBDataItem>
+    <ns2:TSDBDataItem>
+        <ns2:NLCTiplocCode>QZCRSTJ</ns2:NLCTiplocCode>
+        <ns2:NLCCapts-Ident>56</ns2:NLCCapts-Ident>
+        <ns2:NLCLocationCode>370301</ns2:NLCLocationCode>
+        <ns2:NLCCheckChar>A</ns2:NLCCheckChar>
+        <ns2:NLCDescription>CRESTWICK JUNCTION</ns2:NLCDescription>
+        <ns2:NLCCapriDesc> </ns2:NLCCapriDesc>
+        <ns2:NLCTiplocOwner>QQ</ns2:NLCTiplocOwner>
+        <ns2:NLCEuroLocation> </ns2:NLCEuroLocation>
+        <ns2:NLCStanoxCode>90103</ns2:NLCStanoxCode>
+        <ns2:NLCPoMcpCode>0</ns2:NLCPoMcpCode>
+    </ns2:TSDBDataItem>
+    <ns2:TSDBDataItem>
+        <ns2:NLCTiplocCode>QZCRS12</ns2:NLCTiplocCode>
+        <ns2:NLCCapts-Ident>0</ns2:NLCCapts-Ident>
+        <ns2:NLCLocationCode>370302</ns2:NLCLocationCode>
+        <ns2:NLCCheckChar>B</ns2:NLCCheckChar>
+        <ns2:NLCDescription>CRESTWICK SIG QX12   </ns2:NLCDescription>
+        <ns2:NLCCapriDesc> </ns2:NLCCapriDesc>
+        <ns2:NLCCrsCode> </ns2:NLCCrsCode>
+        <ns2:NLCTiplocOwner>QQ</ns2:NLCTiplocOwner>
+        <ns2:NLCEuroLocation> </ns2:NLCEuroLocation>
+        <ns2:NLCPoMcpCode>0</ns2:NLCPoMcpCode>
+    </ns2:TSDBDataItem>
+    <ns2:TSDBDataItem>
+        <ns2:NLCTiplocCode>QZDNMRE</ns2:NLCTiplocCode>
+        <ns2:NLCCapts-Ident>0</ns2:NLCCapts-Ident>
+        <ns2:NLCLocationCode>370400</ns2:NLCLocationCode>
+        <ns2:NLCCheckChar>D</ns2:NLCCheckChar>
+        <ns2:NLCDescription>DUNMORE</ns2:NLCDescription>
+        <ns2:NLCCapriDesc> </ns2:NLCCapriDesc>
+        <ns2:NLCCrsCode>QZD</ns2:NLCCrsCode>
+        <ns2:NLCTiplocOwner>QQ</ns2:NLCTiplocOwner>
+        <ns2:NLCEuroLocation>37040</ns2:NLCEuroLocation>
+        <ns2:NLCStanoxCode>90104</ns2:NLCStanoxCode>
+        <ns2:NLCPoMcpCode>0</ns2:NLCPoMcpCode>
+    </ns2:TSDBDataItem>
+    <ns2:TSDBDataItem>
+        <ns2:NLCTiplocCode>QZDNMRP</ns2:NLCTiplocCode>
+        <ns2:NLCCapts-Ident>0</ns2:NLCCapts-Ident>
+        <ns2:NLCLocationCode>370403</ns2:NLCLocationCode>
+        <ns2:NLCCheckChar>E</ns2:NLCCheckChar>
+        <ns2:NLCDescription>DUNMORE PLATFORM 3</ns2:NLCDescription>
+        <ns2:NLCCapriDesc>DUNMORE P3</ns2:NLCCapriDesc>
+        <ns2:NLCTiplocOwner>QQ</ns2:NLCTiplocOwner>
+        <ns2:NLCEuroLocation>37043</ns2:NLCEuroLocation>
+        <ns2:NLCStanoxCode>90104</ns2:NLCStanoxCode>
+        <ns2:NLCPoMcpCode>0</ns2:NLCPoMcpCode>
+    </ns2:TSDBDataItem>
+</ns2:TSDBData>

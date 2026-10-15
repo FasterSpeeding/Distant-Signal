@@ -39,6 +39,8 @@ mod audit;
 mod cif_check;
 mod config;
 mod corpus;
+mod corpus_formats;
+mod corpus_xml;
 mod delivery;
 mod pattern;
 mod scan;
@@ -134,19 +136,8 @@ async fn run() -> anyhow::Result<()> {
             .map_err(|err| anyhow::anyhow!("CIF_FILE_PATTERN: {err}"))?,
         cif_exclude: FilePattern::parse(&config.cif_exclude_pattern)
             .map_err(|err| anyhow::anyhow!("CIF_EXCLUDE_PATTERN: {err}"))?,
-        corpus: if config.corpus.corpus_ingest_enabled {
-            Some(
-                FilePattern::parse(&config.corpus.corpus_file_pattern)
-                    .map_err(|err| anyhow::anyhow!("CORPUS_FILE_PATTERN: {err}"))?,
-            )
-        } else {
-            None
-        },
+        corpus: corpus_routing(&config.corpus)?,
     };
-    if config.corpus.corpus_ingest_enabled {
-        corpus::register_metrics();
-        tracing::info!(pattern = %config.corpus.corpus_file_pattern, "CORPUS ingest enabled");
-    }
 
     // Plan 2d.1: feed markers and CORPUS loads go to Postgres directly, as
     // the schedule_ingest role (the api's routes went in release B).
@@ -237,6 +228,39 @@ async fn run() -> anyhow::Result<()> {
         ))
         .record(cycle_start.elapsed().as_secs_f64());
     }
+}
+
+/// The CORPUS formats to route (`None` while CORPUS ingest is off), with
+/// the CORPUS metrics registered and the configuration logged when on.
+fn corpus_routing(args: &config::CorpusArgs) -> anyhow::Result<Option<pattern::CorpusRouting>> {
+    if !args.corpus_ingest_enabled {
+        return Ok(None);
+    }
+    let json = if args.corpus_json_enabled {
+        Some(
+            FilePattern::parse(&args.corpus_file_pattern)
+                .map_err(|err| anyhow::anyhow!("CORPUS_FILE_PATTERN: {err}"))?,
+        )
+    } else {
+        None
+    };
+    corpus::register_metrics();
+    tracing::info!(
+        json = args.corpus_json_enabled,
+        json_pattern = %args.corpus_file_pattern,
+        xml = args.corpus_xml_enabled,
+        precedence = ?args.corpus_format_precedence,
+        "CORPUS ingest enabled"
+    );
+    if !args.corpus_json_enabled && !args.corpus_xml_enabled {
+        tracing::warn!(
+            "CORPUS ingest is enabled with both formats off (CORPUS_JSON_ENABLED and CORPUS_XML_ENABLED); nothing will be loaded"
+        );
+    }
+    Ok(Some(pattern::CorpusRouting {
+        json,
+        xml: args.corpus_xml_enabled,
+    }))
 }
 
 /// One poll interval's worth of work: scan `watch_dir`, feed the snapshot
@@ -1234,6 +1258,12 @@ mod tests {
                 corpus_max_decompressed_bytes: 256 * 1024 * 1024,
                 corpus_min_rows: 1,
                 corpus_retention_keep: 3,
+                corpus_json_enabled: true,
+                corpus_xml_enabled: true,
+                corpus_xml_min_rows: 1,
+                corpus_format_precedence: config::FormatPrecedence::Json,
+                corpus_preferred_grace_days: 35,
+                corpus_compare_formats: true,
             },
             check_times: "22:00,16:00".to_string(),
             poll_interval_secs: 120,
