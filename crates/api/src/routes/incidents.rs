@@ -111,6 +111,32 @@ struct IncidentSearchParams {
     /// Optional opaque keyset cursor from a previous response's
     /// `nextCursor`.
     after: Option<String>,
+    /// Optional free text, matched against each incident's summary and
+    /// description (added 2026-10-14). Every word must match, as a prefix
+    /// ("sig fail" finds "Signalling failure"), with English stemming;
+    /// punctuation only separates words. Blank is no filter; over
+    /// `MAX_INCIDENT_SEARCH_QUERY_CHARS` is a `400`. See
+    /// `queries::incident_search_tsquery`.
+    q: Option<String>,
+}
+
+/// Longest `q` accepted, in characters. Generous for any real search, and
+/// keeps an absurd one from reaching the database.
+const MAX_INCIDENT_SEARCH_QUERY_CHARS: usize = 200;
+
+/// Parses `q` into the tsquery `queries::search_incidents` binds: `None`
+/// for absent, blank or punctuation-only, a `400` when too long.
+fn normalize_text_query(raw: Option<&str>) -> Result<Option<String>, (StatusCode, String)> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if raw.chars().count() > MAX_INCIDENT_SEARCH_QUERY_CHARS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("q must be at most {MAX_INCIDENT_SEARCH_QUERY_CHARS} characters"),
+        ));
+    }
+    Ok(queries::incident_search_tsquery(raw))
 }
 
 /// Parses and bounds the page size -- same shape as
@@ -252,6 +278,11 @@ fn incident_summary_json(row: &queries::IncidentSummaryRow) -> Value {
 /// before `20260917090000_incidents_affected_lines.sql` match no line until
 /// the `backfill_incident_lines` binary has been run (see
 /// docs/incident-affected-lines-backfill.md).
+///
+/// `total` (added 2026-10-14) is how many incidents match in all, for "Show
+/// 12 incidents" on /incidents. It is on the first page only and `null` on
+/// a page fetched with `after`, which belongs to a search whose total the
+/// caller already has.
 async fn search_incidents(
     State(app): State<App>,
     Query(params): Query<IncidentSearchParams>,
@@ -318,6 +349,7 @@ async fn search_incidents(
     }
 
     let state = normalize_state(params.state.as_deref(), params.cleared)?;
+    let text = normalize_text_query(params.q.as_deref())?;
 
     let limit = normalize_limit(params.limit.as_deref())?;
     let after = params
@@ -337,6 +369,7 @@ async fn search_incidents(
         params.priority_max,
         from,
         to,
+        text.as_deref(),
         after.as_ref(),
         limit,
     )
@@ -346,6 +379,7 @@ async fn search_incidents(
     Ok(Json(json!({
         "results": page.results.iter().map(incident_summary_json).collect::<Vec<Value>>(),
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
+        "total": page.total,
     })))
 }
 
@@ -1585,6 +1619,59 @@ mod db_tests {
             StatusCode::OK,
             "an over-large limit is clamped to MAX_INCIDENT_SEARCH_LIMIT, never rejected"
         );
+        delete_fixtures(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search -- --ignored --test-threads=1`"]
+    async fn incident_search_q_matches_text_and_the_first_page_carries_the_total() {
+        let pool = connect().await;
+        delete_fixtures(&pool).await;
+        for id in ["route-test-q1", "route-test-q2", "route-test-q3"] {
+            seed_incident(&pool, id, &["QZ"], &[], 1, false, false).await;
+        }
+        sqlx::query(
+            "UPDATE incidents SET summary = 'Signal failure at Woking' \
+             WHERE incident_id IN ('route-test-q1', 'route-test-q2')",
+        )
+        .execute(&pool)
+        .await
+        .expect("set fixture summaries");
+
+        let (status, body) = get(
+            &pool,
+            vec![],
+            "/incidents?operator=QZ&q=signal%20wok&limit=1",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(results(&body).len(), 1);
+        assert_eq!(json["total"], 2, "every match, not just this page: {body}");
+        let cursor = next_cursor(&body).expect("a second page");
+
+        let (status, body) = get(
+            &pool,
+            vec![],
+            &format!("/incidents?operator=QZ&q=signal%20wok&limit=1&after={cursor}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(results(&body).len(), 1);
+        assert_eq!(json["total"], Value::Null, "only the first page counts");
+
+        // Blank or punctuation-only is no filter at all.
+        let (status, body) = get(&pool, vec![], "/incidents?operator=QZ&q=%20%26%21").await;
+        assert_eq!(status, StatusCode::OK);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["total"], 3);
+
+        let long = "a".repeat(201);
+        let (status, body) = get(&pool, vec![], &format!("/incidents?q={long}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains('q'), "400 body should name the field: {body}");
         delete_fixtures(&pool).await;
     }
 
