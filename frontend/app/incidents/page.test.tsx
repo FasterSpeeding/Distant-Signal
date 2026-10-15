@@ -1,16 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import IncidentsPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import type { LineSummary, Suggestion } from '@/lib/types';
 
-// `IncidentSearchForm` now calls `useRouter`/`usePathname` (train-search-
-// state-persistence-design task 5) to keep this page's URL in sync with the
-// last search that ran -- outside a real Next.js app router tree (which
-// this unit test doesn't mount), those hooks throw ("invariant expected app
-// router to be mounted") the instant the form renders. Same fix, same mock
-// shape, as `app/trains/page.test.tsx`'s identical mock for `TrainSearchForm`.
+// Children of the page (the pin and login prompts) call the router hooks,
+// which throw outside a mounted Next.js app router.
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/incidents',
@@ -54,10 +50,10 @@ describe('IncidentsPage', () => {
     renderWithMantine(await IncidentsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByText('Incidents')).toBeInTheDocument();
-    // Waits out `IncidentSearchForm`'s own mount-triggered auto-search
-    // (review §3.3) so its state update lands before this test (and RTL's
-    // unmount) finishes, rather than racing cleanup.
-    expect(await screen.findByRole('button', { name: 'Search' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Find an incident' })).toBeInTheDocument();
+    // Waits out `IncidentSearchForm`'s own mount search so its state update
+    // lands before this test (and RTL's unmount) finishes.
+    await screen.findByText('No incidents match these filters.');
   });
 
   it('degrades to empty reference-data lists if either fetch fails, rather than crashing the page', async () => {
@@ -67,7 +63,7 @@ describe('IncidentsPage', () => {
     renderWithMantine(await IncidentsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByText('Incidents')).toBeInTheDocument();
-    await screen.findByRole('button', { name: 'Search' });
+    await screen.findByText('No incidents match these filters.');
   });
 
   it('passes searchParams through as initial filter values', async () => {
@@ -76,9 +72,11 @@ describe('IncidentsPage', () => {
 
     renderWithMantine(
       await IncidentsPage({
-        searchParams: Promise.resolve({ operator: 'SW,VT', line: 'south-western' }),
+        searchParams: Promise.resolve({ q: 'signal', operator: 'SW,VT', line: 'south-western' }),
       }),
     );
+    expect(screen.getByRole('textbox', { name: 'Find an incident' })).toHaveValue('signal');
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
 
     // The MultiSelect renders its selected values as removable pills with
     // this exact label text -- confirms initialOperator was parsed and
@@ -87,7 +85,8 @@ describe('IncidentsPage', () => {
     // in the DOM with the same "CODE · Name" text, so an unscoped
     // `getByText` matches both.
     expect(screen.getByText('SW · South Western Railway', { selector: '.mantine-Pill-label' })).toBeInTheDocument();
-    await screen.findByRole('button', { name: 'Search' });
+    await screen.findByText('No incidents match these filters.');
+    expect(new URL(String(fetchMock.mock.calls[0]![0]), 'http://localhost').searchParams.get('q')).toBe('signal');
   });
 });
 

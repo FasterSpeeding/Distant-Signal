@@ -1479,6 +1479,27 @@ a[data-text-link-tone='inherit'] {
   }
 }
 
+/* A server-backed list's rows while the search for newer filters runs
+   (`useLiveSearch`): kept on screen, dimmed, so nothing jumps while the
+   visitor types. No transition when motion is reduced. */
+[data-list-pending] {
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-incident-results],
+  [data-train-results] {
+    transition: opacity 120ms ease;
+  }
+}
+
+/* A tall filters popover (`scrollablePanel`): Mantine's size middleware
+   caps its height to the room on screen, and it scrolls inside. */
+.listFilterPanelScroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 /* The phone sheet's "Filters" title, drawn like the popover's h5 title. */
 .listFilterSheetTitle {
   font-size: var(--mantine-h5-font-size);

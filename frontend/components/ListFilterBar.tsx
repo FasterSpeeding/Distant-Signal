@@ -121,6 +121,7 @@ export function ListFilterBar({
   sticky = true,
   trailing,
   panelWidth = 340,
+  scrollablePanel = false,
   children,
 }: {
   /** The search box's label and placeholder ("Find a line"). */
@@ -143,6 +144,9 @@ export function ListFilterBar({
   trailing?: ReactNode;
   /** The popover's width from `sm` up, in px. */
   panelWidth?: number | undefined;
+  /** A panel taller than some screens: the popover is capped to the room
+   * below (or above) the button and scrolls inside. */
+  scrollablePanel?: boolean | undefined;
   children?: ReactNode;
 }) {
   const theme = useMantineTheme();
@@ -270,12 +274,14 @@ export function ListFilterBar({
               // only close an open option list closed the whole panel.
               closeOnEscape={false}
               transitionProps={transitionProps}
+              {...(scrollablePanel && { middlewares: { flip: true, shift: true, size: true } })}
             >
               <PopoverTarget>{button}</PopoverTarget>
               <PopoverDropdown
                 id={panelId}
                 role="dialog"
                 aria-labelledby={titleId}
+                className={scrollablePanel ? 'listFilterPanelScroll' : undefined}
                 onKeyDown={(event) => {
                   if (event.key !== 'Escape') return;
                   // A combobox whose list was open has just closed it.

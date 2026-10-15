@@ -114,6 +114,9 @@ export interface RecentlyClearedIncident {
 export interface IncidentSearchResponse {
   results: IncidentSummary[];
   nextCursor: string | null;
+  /** Every match across all pages; first page only, `null` with `after`.
+   * Absent from an api older than 2026-10-14. */
+  total?: number | null;
 }
 
 export interface SampleStats {
