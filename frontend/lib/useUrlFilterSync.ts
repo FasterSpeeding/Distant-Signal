@@ -7,9 +7,9 @@ import { useEffect, useRef } from 'react';
  * one call per keystroke is not safe. */
 export const URL_SYNC_DELAY_MS = 300;
 
-/** `url` with every param in `keys` removed and `values` set in their
- * place (an array appends one param per entry; empty strings and empty
- * arrays are left out), keeping any other params and the hash. Returns a
+/** `url` with the params in `keys` replaced by `values` (an array appends
+ * one param per entry; empty strings, nulls and empty arrays remove the
+ * param), keeping any other params and the hash. Returns a
  * path, not an absolute URL, for `history.replaceState`. */
 export function replaceUrlParams(
   url: string,
@@ -18,7 +18,15 @@ export function replaceUrlParams(
 ): string {
   const parsed = new URL(url);
   const params = parsed.searchParams;
-  for (const key of keys) params.delete(key);
+  // A single value already in the URL is replaced where it stands, so a
+  // shared link's params keep their order; everything else is removed and
+  // appended.
+  for (const key of keys) {
+    const value = values[key];
+    if (typeof value !== 'string' || value === '' || !params.has(key) || params.getAll(key).length > 1) {
+      params.delete(key);
+    }
+  }
   for (const [key, value] of Object.entries(values)) {
     if (value === null || value === undefined) continue;
     if (typeof value === 'string') {

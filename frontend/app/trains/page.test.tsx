@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import TrainsPage, { metadata } from './page';
 import * as api from '@/lib/api';
@@ -67,6 +67,8 @@ describe('TrainsPage', () => {
       }),
     );
     expect(screen.getByRole('combobox', { name: 'Station' })).toHaveValue('MAN');
+    // A URL with a station opens on the compact bar: the rest is in Filters.
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
     expect(screen.getByRole('combobox', { name: 'Departing from (optional)' })).toHaveValue('EUS');
     expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('WAT');
   });
@@ -77,6 +79,7 @@ describe('TrainsPage', () => {
         searchParams: Promise.resolve({ station: 'man', stops_at: ['rdg', 'oxf'] }),
       }),
     );
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
     expect(screen.getByRole('combobox', { name: 'Stops at (optional)' })).toHaveValue('RDG');
   });
 
@@ -87,6 +90,7 @@ describe('TrainsPage', () => {
   // way Autocomplete's combobox role does.
   it('pre-fills the date from the query string', async () => {
     renderWithMantine(await TrainsPage({ searchParams: Promise.resolve({ station: 'man', date: '2026-09-16' }) }));
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }));
     expect(screen.getByDisplayValue('2026-09-16')).toBeInTheDocument();
   });
 

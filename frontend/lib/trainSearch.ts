@@ -28,6 +28,19 @@ import type { ServiceModeFields, TrainSearchResult } from '@/lib/types';
  * whatsoever. */
 export const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/** The URL params `TrainSearchForm` owns; `ticketId` and anything else in
+ * the URL are left alone. */
+export const TRAIN_URL_PARAMS = [
+  'station',
+  'origin',
+  'stops_at',
+  'date',
+  'from',
+  'to',
+  'arrival_from',
+  'arrival_to',
+] as const;
+
 /** The track button's noun for a search row. */
 export function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {
   if (row.serviceMode === 'ferry') return 'ferry';

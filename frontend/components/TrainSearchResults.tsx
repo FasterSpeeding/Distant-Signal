@@ -13,6 +13,7 @@ import { resolvedDate, trackNoun, type TrainSearchResults as TrainSearchResultsS
 export function TrainSearchResults({
   stationValid,
   searching,
+  pending = false,
   results,
   unpublishedDate,
   loadingMore,
@@ -22,6 +23,8 @@ export function TrainSearchResults({
 }: {
   stationValid: boolean;
   searching: boolean;
+  /** A new search is running: the rows shown are for the previous one. */
+  pending?: boolean;
   results: TrainSearchResultsState;
   unpublishedDate: string | null;
   loadingMore: boolean;
@@ -113,7 +116,12 @@ export function TrainSearchResults({
        * row's actions slot: the destination is the link to the train's
        * page, so the button is never nested in a link. On a phone the
        * actions wrap onto a line of their own under the destination. */}
-      <ServiceRowList aria-label="Trains" data-train-results>
+      <ServiceRowList
+        aria-label="Trains"
+        data-train-results
+        data-list-pending={pending || undefined}
+        aria-busy={pending}
+      >
         {results.rows.map((row) => (
           <ServiceRow
             key={`${row.uid}-${row.scheduled ?? ''}`}
