@@ -9,7 +9,7 @@ import { withStaleFallback } from '@/lib/liveDataCache';
 import { categoryLabel, operatorLabel, tocNameLookup } from '@/lib/displayLabels';
 import { StatusBadge } from '@/components/StatusBadge';
 import { RepresentativeInfo } from '@/components/RepresentativeInfo';
-import { IssueList } from '@/components/IssueList';
+import { IssueList, parseIssueListFilters } from '@/components/IssueList';
 import { UpcomingDisruptions } from '@/components/UpcomingDisruptions';
 import { RecentlyCleared } from '@/components/RecentlyCleared';
 import { DeleteLineButton } from '@/components/DeleteLineButton';
@@ -253,12 +253,15 @@ export default async function LineDetailPage({
   params: Promise<{ id: string }>;
   /** `dir`, `at`, `from`, `to`, `view` -- the "Trains on this line"
    * section's state (`lib/lineTrains.ts`'s `parseLinePageParams`), so a
-   * shared link opens the same view. Optional: tests and the plain
+   * shared link opens the same view -- and the issue lists' filters, under
+   * their own prefixed keys (`issueTab`, `tflIssueSeverity`, ...;
+   * `parseIssueListFilters`). Optional: tests and the plain
    * `/lines/{id}` default to now. */
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { id } = await params;
-  const trainParams = parseLinePageParams((await searchParams) ?? {});
+  const rawSearchParams = (await searchParams) ?? {};
+  const trainParams = parseLinePageParams(rawSearchParams);
 
   // A real line id is always a lowercase slug: a catalogue line's id comes
   // straight from its config filename (`lines/*.toml`, e.g.
@@ -528,7 +531,12 @@ export default async function LineDetailPage({
               heading, so no per-issue line attribution is needed — that's
               what the optional `lines` on IssueItem is for on the station
               page. */}
-          <IssueList items={statusResult.report.lineStatuses.map((status) => ({ status }))} now={now} />
+          <IssueList
+            items={statusResult.report.lineStatuses.map((status) => ({ status }))}
+            now={now}
+            urlPrefix="issue"
+            initialFilters={parseIssueListFilters(rawSearchParams, 'issue')}
+          />
           <UpcomingDisruptions upcoming={statusResult.report.upcoming} />
         </>
       ) : (
@@ -545,7 +553,12 @@ export default async function LineDetailPage({
               above rather than merged into one list, since only the primary
               side has real sampleStats and merging would blur that. */}
             <Text fw={500}>TfL also reports:</Text>
-            <IssueList items={statusResult.report.tflStatus.map((status) => ({ status }))} now={now} />
+            <IssueList
+              items={statusResult.report.tflStatus.map((status) => ({ status }))}
+              now={now}
+              urlPrefix="tflIssue"
+              initialFilters={parseIssueListFilters(rawSearchParams, 'tflIssue')}
+            />
           </Stack>
         )}
       {/* Info only, never part of the status above; hidden when empty.

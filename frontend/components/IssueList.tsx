@@ -6,30 +6,66 @@ import {
   AccordionControl,
   AccordionItem,
   AccordionPanel,
-  Button,
   Chip,
   ChipGroup,
-  Collapse,
   Group,
   SegmentedControl,
   Stack,
   Text,
   Tooltip,
 } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
+import { ListFilterBar, type ListNoun } from './ListFilterBar';
+import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
 import { StatusBadge } from './StatusBadge';
 import { DisruptionDetail } from './DisruptionDetail';
 import type { LineStatus } from '@/lib/types';
 import { statusKey, type IssueItem } from '@/lib/stationIssues';
 import { bucketFor, governingPeriod, periodIsActive, type IssueBucket } from '@/lib/validity';
 import { formatDate, formatDateTime } from '@/lib/dateFormat';
-import { isGoodSeverity } from '@/lib/severity';
+import { isGoodSeverity, severityBadgeLabel, severityRank } from '@/lib/severity';
 import { impactTypeLabel } from '@/lib/impactType';
 import { BadgeRow, StateBadge } from './StateBadge';
 import { AiGeneratedBadge, ENRICHED_INCIDENT_SHORT_NOTE, isEnricherInfluenced } from './AiGeneratedBadge';
 import { coverageProvenanceNote } from '@/lib/sampleStats';
 
 type ActiveFilter = 'all' | IssueBucket;
+
+const ISSUE_NOUN: ListNoun = { one: 'issue', other: 'issues' };
+
+/** An IssueList's filters as its page's URL carries them, under the
+ * list's own `urlPrefix` (`issueTab`, `issueSeverity`, `issueSource`) so
+ * they can't clash with the page's other params (the line page's `dir`,
+ * `at`, `from`, `to` and `view`), or with a second list on the same page
+ * (the line page's TfL list is `tflIssue`). */
+export interface IssueListFilters {
+  tab: ActiveFilter | null;
+  /** `statusSeverity` numbers, as strings. */
+  severities: string[];
+  sources: string[];
+}
+
+/** The URL keys for a list with `prefix`. */
+export function issueListParamKeys(prefix: string) {
+  return { tab: `${prefix}Tab`, severity: `${prefix}Severity`, source: `${prefix}Source` } as const;
+}
+
+/** Reads a list's filters from a page's `searchParams`. Anything malformed
+ * is dropped; an unknown severity or source simply matches nothing until
+ * cleared, which the list's empty state explains. */
+export function parseIssueListFilters(
+  raw: Record<string, string | string[] | undefined>,
+  prefix: string,
+): IssueListFilters {
+  const keys = issueListParamKeys(prefix);
+  const all = (value: string | string[] | undefined) =>
+    (Array.isArray(value) ? value : value === undefined ? [] : [value]).filter((entry) => entry !== '');
+  const [tab] = all(raw[keys.tab]);
+  return {
+    tab: tab === 'all' || tab === 'active' || tab === 'upcoming' || tab === 'ended' ? tab : null,
+    severities: all(raw[keys.severity]).filter((entry) => /^\d+$/.test(entry)),
+    sources: all(raw[keys.source]).filter((entry) => entry in DATA_QUALITY_LABELS),
+  };
+}
 
 /** Selects the noun used in the empty-state copy below. The line detail
  * page renders one `IssueList` per line, so 'line' is the sensible default
@@ -40,16 +76,6 @@ type ActiveFilter = 'all' | IssueBucket;
 export type IssueListSubject = 'line' | 'station';
 
 const BUCKET_SORT_RANK: Record<IssueBucket, number> = { active: 0, upcoming: 1, ended: 2 };
-
-/** Review §2.14: chip-filter chrome (two rows of pills) competing for
- * attention with a report that's short enough to just read outright is the
- * imbalance the review names. A short report is exactly the case where
- * "narrow the list" isn't a real need yet, so at or below this many issues
- * the chips are tucked behind a "Filter" disclosure instead of always
- * shown. The All/Active/Upcoming `SegmentedControl` is NOT part of this --
- * it carries live counts and is useful standalone even on a one-issue
- * report. */
-const FILTER_DISCLOSURE_MAX_ISSUES = 3;
 
 const DATA_QUALITY_LABELS: Record<LineStatus['dataQuality'], string> = {
   knowledgebase: 'National Rail incidents',
@@ -151,16 +177,28 @@ export function IssueList({
   items,
   now,
   subject = 'line',
+  urlPrefix,
+  initialFilters,
 }: {
   items: IssueItem[];
   now: number;
   subject?: IssueListSubject;
+  /** Keeps the filters in the page's URL under these keys (see
+   * `IssueListFilters`); without it they are not kept. */
+  urlPrefix?: string | undefined;
+  /** The filters the page's URL restores (`parseIssueListFilters`). */
+  initialFilters?: IssueListFilters | undefined;
 }) {
   const severityLabelId = useId();
   const sourceLabelId = useId();
   const statuses = useMemo(() => items.map((item) => item.status), [items]);
   const linesByStatus = useMemo(() => new Map(items.map((item) => [item.status, item.lines ?? []])), [items]);
-  const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverityDescription)));
+  // Keyed by severity number, worst first, and labelled in sentence case
+  // like the badges ("Minor delays"), not the feed's Title Case
+  // description.
+  const severityOptions = Array.from(new Set(statuses.map((status) => status.statusSeverity)))
+    .sort((a, b) => severityRank(b) - severityRank(a))
+    .map((severity) => ({ value: String(severity), label: severityBadgeLabel(severity) }));
   // Review §2.14: only offer a Source chip for a source actually present in
   // THIS loaded report, rather than every source `DATA_QUALITY_LABELS`
   // knows about network-wide -- a two-source report showing all five
@@ -171,15 +209,8 @@ export function IssueList({
   const sourceOptions = Object.entries(DATA_QUALITY_LABELS).filter(([value]) =>
     presentSources.has(value as LineStatus['dataQuality']),
   );
-  const [severityFilter, setSeverityFilter] = useState<string[]>([]);
-  const [sourceFilter, setSourceFilter] = useState<string[]>([]);
-  // Review §2.14: collapsed behind a disclosure on a short report -- see
-  // `FILTER_DISCLOSURE_MAX_ISSUES`'s own comment. Always called (never
-  // conditionally) for the same Rules-of-Hooks reason every other hook in
-  // this component sits above the `allGood` early return below: the report
-  // length that decides whether the disclosure is even offered can itself
-  // change between renders of the same mounted instance.
-  const [filtersOpened, { toggle: toggleFilters }] = useDisclosure(false);
+  const [severityFilter, setSeverityFilter] = useState<string[]>(initialFilters?.severities ?? []);
+  const [sourceFilter, setSourceFilter] = useState<string[]>(initialFilters?.sources ?? []);
 
   // `now` is stamped once by the Server Component page and passed in,
   // rather than read from `Date.now()` here. That keeps the server-rendered
@@ -202,8 +233,26 @@ export function IssueList({
   // Deliberately keyed off `statuses`, not `chipFiltered`, and never
   // recomputed: re-deriving would move the tab under the user the moment a
   // chip toggle happened to empty the current tab.
-  const [activeFilter, setActiveFilter] = useState<ActiveFilter>(() =>
-    statuses.some((status) => bucketFor(status, now) === 'active') ? 'active' : 'all',
+  // A tab restored from the URL wins, so a shared or reloaded link opens
+  // where it was left.
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>(
+    () => initialFilters?.tab ?? (statuses.some((status) => bucketFor(status, now) === 'active') ? 'active' : 'all'),
+  );
+
+  // The URL follows the filters (`history.replaceState`, debounced; see
+  // `useUrlFilterSync`). The tab is always written once it has changed, as
+  // the landing tab depends on the report and could differ on reload.
+  useUrlFilterSync(
+    urlPrefix ? { tab: activeFilter, severities: severityFilter, sources: sourceFilter } : null,
+    (current, state) => {
+      if (!urlPrefix || !state) return current;
+      const keys = issueListParamKeys(urlPrefix);
+      return replaceUrlParams(current, [keys.tab, keys.severity, keys.source], {
+        [keys.tab]: state.tab,
+        [keys.severity]: state.severities,
+        [keys.source]: state.sources,
+      });
+    },
   );
 
   // A line with nothing wrong doesn't need a filter UI. The old output was
@@ -237,7 +286,7 @@ export function IssueList({
   // the other tabs' counts, matching a standard faceted-filter count
   // pattern.
   const chipFiltered = statuses.filter((status) => {
-    if (severityFilter.length > 0 && !severityFilter.includes(status.statusSeverityDescription)) return false;
+    if (severityFilter.length > 0 && !severityFilter.includes(String(status.statusSeverity))) return false;
     if (sourceFilter.length > 0 && !sourceFilter.includes(status.dataQuality)) return false;
     return true;
   });
@@ -272,10 +321,9 @@ export function IssueList({
     .filter((status) => activeFilter === 'all' || buckets.get(status) === activeFilter)
     .sort(compareByUrgency);
 
-  // Extracted so it can render either always-visible (a report large enough
-  // that narrowing it is plausibly useful on first paint) or tucked behind
-  // the "Filter" disclosure below (a short report, where it's dead chrome
-  // until asked for) -- same chip rows, same handlers, either way.
+  // The Filters panel's fields (`ListFilterBar`). Only offered when there
+  // is something to narrow: one severity from one source has nothing to
+  // choose between.
   const chipRows = (
     <Stack gap="xs">
       <Stack gap={4}>
@@ -289,12 +337,12 @@ export function IssueList({
               // reads as an empty control you can press, a selected one as a
               // solid, obviously-on state — indistinguishable before.
               <Chip
-                key={option}
-                value={option}
-                size="xs"
-                variant={severityFilter.includes(option) ? 'filled' : 'outline'}
+                key={option.value}
+                value={option.value}
+                size="sm"
+                variant={severityFilter.includes(option.value) ? 'filled' : 'outline'}
               >
-                {option}
+                {option.label}
               </Chip>
             ))}
           </Group>
@@ -307,7 +355,7 @@ export function IssueList({
         <ChipGroup multiple value={sourceFilter} onChange={setSourceFilter}>
           <Group gap="xs" role="group" aria-labelledby={sourceLabelId}>
             {sourceOptions.map(([value, label]) => (
-              <Chip key={value} value={value} size="xs" variant={sourceFilter.includes(value) ? 'filled' : 'outline'}>
+              <Chip key={value} value={value} size="sm" variant={sourceFilter.includes(value) ? 'filled' : 'outline'}>
                 {label}
               </Chip>
             ))}
@@ -316,55 +364,45 @@ export function IssueList({
       </Stack>
     </Stack>
   );
-  const showFilterDisclosure = statuses.length <= FILTER_DISCLOSURE_MAX_ISSUES;
   const filterSelectionCount = severityFilter.length + sourceFilter.length;
+  const hasFilters = severityOptions.length > 1 || sourceOptions.length > 1 || filterSelectionCount > 0;
 
   return (
     <Stack gap="md">
-      <Stack gap="xs">
-        {showFilterDisclosure ? (
-          <Stack gap={4}>
-            <Button variant="subtle" size="compact-xs" onClick={toggleFilters} aria-expanded={filtersOpened}>
-              {filtersOpened
-                ? 'Hide filters'
-                : filterSelectionCount > 0
-                  ? `Filter (${filterSelectionCount} active)`
-                  : 'Filter'}
-            </Button>
-            {/* `keepMounted={false}`: same rationale as the `Accordion`
-                below -- Mantine's default keeps collapsed content in the
-                DOM (via React's Activity API), merely `inert`/hidden from
-                view, which `screen.queryByText` still finds. Unmounting
-                outright means "collapsed" also means the chip filters
-                genuinely aren't reachable, not just invisible.
-                `transitionDuration={0}`: a two-chip-row toggle doesn't need
-                a slide animation, and it keeps `keepMounted={false}`'s
-                mount/unmount synchronous with the click that drives it
-                (Mantine's `useCollapse` otherwise defers the mount across a
-                `requestAnimationFrame` pair plus a real `transitionend`
-                event -- neither of which jsdom ever fires on its own). */}
-            <Collapse expanded={filtersOpened} keepMounted={false} transitionDuration={0}>
-              {chipRows}
-            </Collapse>
-          </Stack>
-        ) : (
-          chipRows
-        )}
-        <SegmentedControl
-          value={activeFilter}
-          onChange={(value) => setActiveFilter(value as ActiveFilter)}
-          data={[
-            { label: `All (${chipFiltered.length})`, value: 'all' },
-            { label: `Active (${activeCount})`, value: 'active' },
-            { label: `Upcoming (${upcomingCount})`, value: 'upcoming' },
-            // Only offered when something is actually in it. Three buckets
-            // could never make the counts add up — an issue whose window
-            // has closed is neither active nor upcoming — and "3 issues,
-            // 0 active, 0 upcoming" is exactly the nonsense this fixes.
-            ...(endedCount > 0 ? [{ label: `Ended (${endedCount})`, value: 'ended' }] : []),
-          ]}
-        />
-      </Stack>
+      {/* The non-sticky, search-less bar: "Filters" (the chip rows, in a
+          popover or a phone's bottom sheet) and the tabs, which carry live
+          counts and are useful even on a one-issue report, inline beside
+          it. */}
+      <ListFilterBar
+        noun={ISSUE_NOUN}
+        matchCount={filtered.length}
+        activeCount={filterSelectionCount}
+        onClearFilters={() => {
+          setSeverityFilter([]);
+          setSourceFilter([]);
+        }}
+        sticky={false}
+        trailing={
+          <SegmentedControl
+            value={activeFilter}
+            onChange={(value) => setActiveFilter(value as ActiveFilter)}
+            data={[
+              { label: `All (${chipFiltered.length})`, value: 'all' },
+              { label: `Active (${activeCount})`, value: 'active' },
+              { label: `Upcoming (${upcomingCount})`, value: 'upcoming' },
+              // Only offered when something is actually in it. Three buckets
+              // could never make the counts add up — an issue whose window
+              // has closed is neither active nor upcoming — and "3 issues,
+              // 0 active, 0 upcoming" is exactly the nonsense this fixes.
+              ...(endedCount > 0 || activeFilter === 'ended'
+                ? [{ label: `Ended (${endedCount})`, value: 'ended' }]
+                : []),
+            ]}
+          />
+        }
+      >
+        {hasFilters ? chipRows : undefined}
+      </ListFilterBar>
 
       {filtered.length === 0 && (
         <Text c="dimmed">
