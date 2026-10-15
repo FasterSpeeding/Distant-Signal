@@ -1,8 +1,9 @@
-import { Stack, Text, SimpleGrid, Title } from '@mantine/core';
+import { Stack, Text, Title } from '@mantine/core';
 import type { Metadata } from 'next';
 import { getAllOperators, getPreferences, getSessionOrLoggedOut } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
+import { SearchableList } from '@/components/SearchableList';
 import { severityRank } from '@/lib/severity';
 import type { OperatorSummary, Preferences } from '@/lib/types';
 import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
@@ -34,7 +35,14 @@ function worstFirst(operators: OperatorSummary[]): OperatorSummary[] {
   });
 }
 
-export default async function OperatorsPage() {
+export default async function OperatorsPage({
+  searchParams,
+}: {
+  /** `?q=`, "Find an operator". Optional: tests and the plain URL have none. */
+  searchParams?: Promise<{ q?: string | string[] }>;
+} = {}) {
+  const { q } = (await searchParams) ?? {};
+  const initialQuery = Array.isArray(q) ? q[0] : q;
   const [operators, preferences, viewerIsAnonymous] = await Promise.all([
     withStaleFallback('allOperators', () => getAllOperators()),
     getPreferences().catch(() => NO_PREFERENCES),
@@ -64,16 +72,26 @@ export default async function OperatorsPage() {
       {sortedOperators.length === 0 ? (
         <Text c="dimmed">No operator status data available right now.</Text>
       ) : (
-        <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="md">
-          {sortedOperators.map((operator) => (
-            <OperatorStatusCard
-              key={operator.code}
-              operator={operator}
-              pinned={pinnedSet.has(operator.code)}
-              needsAccountHint={viewerIsAnonymous}
-            />
-          ))}
-        </SimpleGrid>
+        // "Find an operator" filters the cards in place: each card is
+        // rendered here, on the server, and matched on name and code.
+        <SearchableList
+          searchLabel="Find an operator"
+          noun={{ one: 'operator', other: 'operators' }}
+          titlePrefix="Operators"
+          initialQuery={initialQuery}
+          layout="grid"
+          items={sortedOperators.map((operator) => ({
+            key: operator.code,
+            text: `${operator.name} ${operator.code}`,
+            node: (
+              <OperatorStatusCard
+                operator={operator}
+                pinned={pinnedSet.has(operator.code)}
+                needsAccountHint={viewerIsAnonymous}
+              />
+            ),
+          }))}
+        />
       )}
     </Stack>
   );
