@@ -16,8 +16,9 @@ export const metadata: Metadata = {
 };
 
 /** `/account/preferences` (round 2, item 4): the one place for settings
- * that used to be scattered. Reached from the drawer, the account menu and
- * the footer (`PREFERENCES_DESTINATION` in `lib/navLinks.ts`).
+ * that used to be scattered. Reached from the drawer, the account menu, the
+ * logged-out bar's gear and the footer (`PREFERENCES_DESTINATION` in
+ * `lib/navLinks.ts`).
  *
  * Open to everyone, and never a redirect: a logged-out visitor gets the
  * device-local sections in full and one prompt to log in for the rest.

@@ -4,7 +4,8 @@ import { Box, Container, Group, Text } from '@mantine/core';
 import { AppNavDrawer } from './AppNavDrawer';
 import { AuthStatus } from './AuthStatus';
 import { DataFreshnessInfo } from './DataFreshnessInfo';
-import { PrideModeApplier } from './PrideMode';
+import { PreferencesNavIcon } from './PreferencesNavIcon';
+import { PrideModeApplier, PrideSparkles } from './PrideMode';
 import { PrimaryNavLink } from './PrimaryNavLink';
 import { Wordmark } from './Wordmark';
 import { navDrawerDestinations, PRIMARY_NAV_DESTINATIONS } from '@/lib/navLinks';
@@ -162,9 +163,14 @@ export function AppNavBar({
                 `component` prop — a different, safe pattern. (Inside
                 `AppNavDrawer`, which IS a Client Component,
                 `component={Link}` is fine and is used.) */}
-            <Link href="/" data-card-link>
-              <Wordmark />
-            </Link>
+            {/* `prideToggle` anchors the decorative sparkle scatter
+                (`PrideSparkles`, only there while a pride flag is on). */}
+            <span className="prideToggle">
+              <Link href="/" data-card-link>
+                <Wordmark />
+              </Link>
+              <PrideSparkles />
+            </span>
           </Group>
           {/* `gap="xs"` here and between the links: see the gap note
               above this component. */}
@@ -176,9 +182,12 @@ export function AppNavBar({
             </Group>
             {/* The always-on controls: the freshness readout, plus the
                 pride flag applier, which renders nothing. The theme and
-                pride controls themselves live on /account/preferences. */}
+                pride controls themselves live on /account/preferences:
+                logged out, the gear links there from `md` up (below it the
+                drawer does); logged in, the account menu does. */}
             <Group gap="xs" wrap="nowrap">
               <DataFreshnessInfo freshness={freshness} />
+              {!session.authenticated && <PreferencesNavIcon visibleFrom={NAV_BREAKPOINT} />}
               <PrideModeApplier />
             </Group>
             {/* This boundary is load-bearing and has nothing to do with

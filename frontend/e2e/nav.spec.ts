@@ -117,6 +117,19 @@ test.describe('desktop nav bar (1440x900)', () => {
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
 
+  test('links Preferences from a gear beside Log in, logged out', async ({ page }) => {
+    await page.goto('/lines');
+    const gear = page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' });
+    await expect(gear).toBeVisible();
+    await expect(gear).toHaveAttribute('href', '/account/preferences');
+    // Retried: a hover before hydration opens nothing.
+    await expect(async () => {
+      await page.mouse.move(0, 0);
+      await gear.hover();
+      await expect(page.getByRole('tooltip')).toHaveText('Preferences', { timeout: 1_000 });
+    }).toPass({ timeout: 20_000 });
+  });
+
   test('shows the primary links inline, and no burger', async ({ page }) => {
     await page.goto('/lines');
     const nav = page.locator('nav[aria-label="Main"]');
@@ -243,8 +256,21 @@ test.describe('the md breakpoint the bar pivots on', () => {
     await page.goto('/lines');
     const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeVisible();
+    // The logged-out bar's widest form: the Preferences gear sits beside
+    // "Log in" from here up.
+    await expect(nav.getByRole('link', { name: 'Preferences' })).toBeVisible();
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);
+    expect(await navHeight(page)).toBe(61);
+    expect(await hasHorizontalOverflow(page)).toBe(false);
+  });
+
+  test('keeps the logged-out bar, gear included, on one row at 1366px', async ({ page }) => {
+    await page.setViewportSize({ width: 1366, height: 900 });
+    await page.goto('/lines');
+    await expect(page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' })).toBeVisible();
+    expect(await barRowCount(page)).toBe(1);
+    expect(await navHeight(page)).toBe(61);
     expect(await hasHorizontalOverflow(page)).toBe(false);
   });
 
@@ -254,6 +280,8 @@ test.describe('the md breakpoint the bar pivots on', () => {
     const nav = page.locator('nav[aria-label="Main"]');
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeVisible();
     await expect(nav.getByRole('link', { name: 'Lines' })).toBeHidden();
+    // Below md the drawer links Preferences instead of the gear.
+    await expect(nav.getByRole('link', { name: 'Preferences' })).toBeHidden();
     expect(await barRowCount(page)).toBe(1);
   });
 });

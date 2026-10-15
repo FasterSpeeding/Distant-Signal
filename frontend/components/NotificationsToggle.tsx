@@ -1,44 +1,33 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button, Text } from '@mantine/core';
+import { failureFromResponse } from '@/lib/failure';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
+import {
+  EnableNotificationsError,
+  GENERIC_ENABLE_ERROR,
+  SERVICE_WORKER_TIMEOUT_MS,
+  blockedMessage,
+  errorName,
+  failureReference,
+  fetchVapidKey,
+  logEnableFailure,
+  pushSupported,
+  requestNotificationPermission,
+  subscribeToPush,
+  unsupportedMessage,
+  withTimeout,
+} from './enableNotifications';
 
-/** Shown for any failure in `enable()` -- a rejected `pushManager.subscribe()`
- * (common on Firefox/Brave with push disabled at the OS/browser level, or a
- * malformed VAPID key), a denied `Notification.requestPermission()` prompt
- * the user backs out of via the browser chrome rather than an explicit
- * "Block", or a network failure on either `fetch()`. Deliberately generic
- * rather than the raw `Error#message` -- those come from `DOMException`s
- * whose wording ("The user denied permission for the notification" /
- * "Registration failed - push service error", depending on browser) is not
- * written for an end user, and other browsers throw with no message text at
- * all. */
-const ENABLE_ERROR_MESSAGE = "Couldn't enable notifications. Check your browser's notification permissions.";
+export { urlBase64ToUint8Array } from './enableNotifications';
 
-/** Converts the VAPID public key (base64url, as returned by
- * `GET /public/notifications/vapid-public-key`) into the raw
- * `Uint8Array` form `PushManager.subscribe({ applicationServerKey })`
- * expects. Newer browsers accept the base64url string directly per the
- * Push API spec's `(BufferSource or DOMString)` union, but Safari/WebKit
- * has historically required the `BufferSource` form -- converting always
- * is the one call shape that works across every supported browser,
- * so this is not a browser-conditional fallback, just the safe default.
- * Exported standalone so it's unit-testable without any Web Push globals. */
-export function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64);
-  // `new Uint8Array(new ArrayBuffer(n))`, not `new Uint8Array(n)` -- the
-  // latter types as `Uint8Array<ArrayBufferLike>` under this project's TS
-  // lib version, which `PushManager.subscribe`'s `BufferSource` parameter
-  // (an `ArrayBufferView<ArrayBuffer>`) rejects.
-  const outputArray = new Uint8Array(new ArrayBuffer(rawData.length));
-  for (let i = 0; i < rawData.length; i++) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray;
+/** A shown failure: the sentence, and for an unexpected failure a short
+ * reference code naming the step (`failureReference`). */
+interface Failure {
+  message: string;
+  reference?: string;
 }
 
 /** Global "Enable notifications" control (Decision 6) -- not per-line,
@@ -46,8 +35,13 @@ export function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuf
  * Renders for every visitor (Tier 2, per docs/superpowers/specs/2026-08-31-anonymous-user-ux-design.md),
  * gated on browser capability, not install state (Decision 1 -- Android
  * and every desktop browser get real push from a bare open tab; only iOS
- * requires Home Screen install, which this component makes no attempt to
- * detect or require).
+ * requires Home Screen install, which this component doesn't require: on
+ * iOS outside the home screen, Safari has no `PushManager`, so the button
+ * stays disabled and a line under it says to add the site to the home
+ * screen).
+ *
+ * The click flow and why its order matters (Firefox for Android) are in
+ * `enableNotifications.ts`.
  *
  * Mirrors `PinToggle.tsx`'s established `useNeedsLogin()`/`LoginPromptModal`
  * Tier-2 shape exactly -- same anonymous-user-UX pattern, just triggered
@@ -59,35 +53,41 @@ export function NotificationsToggle() {
   // browser), so collapsing them into one flag would make the pre-check
   // and "genuinely unsupported" states indistinguishable, and this
   // component render nothing for both -- which is exactly the review
-  // §2.11 bug (button pops in after hydration, splitting the mobile hero
-  // between the `<h1>` and tagline on the most-visited page in the app).
-  // Reserving the slot instead means the button is in the DOM from the
-  // very first (server) render, `disabled` until the capability check
-  // resolves on mount; a supported browser's button then just becomes
-  // clickable in place, with nothing inserted or removed around it.
+  // §2.11 bug (button pops in after hydration). Reserving the slot instead
+  // means the button is in the DOM from the very first (server) render,
+  // `disabled` until the capability check resolves on mount; a supported
+  // browser's button then just becomes clickable in place.
   const [checked, setChecked] = useState(false);
   const [supported, setSupported] = useState(false);
+  const [unsupportedNote, setUnsupportedNote] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const needsLoginState = useNeedsLogin();
+  // The VAPID key, fetched on mount rather than after the click, so
+  // `subscribe()` can follow the permission answer with no network round
+  // trip in between (see enableNotifications.ts). Null after a failed
+  // fetch, which the click then retries.
+  const vapidKeyRef = useRef<Promise<string> | null>(null);
 
   useEffect(() => {
-    const isSupported = 'serviceWorker' in navigator && 'PushManager' in window;
+    const isSupported = pushSupported();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- feature detection needs navigator/window, which exist only after mount
     setSupported(isSupported);
     setChecked(true);
-    if (!isSupported) return;
+    if (!isSupported) {
+      setUnsupportedNote(unsupportedMessage(navigator));
+      return;
+    }
+
+    void prefetchVapidKey(vapidKeyRef);
 
     // Seed `enabled` from the REAL subscription state, not just an assumed
     // `false` -- without this a returning subscriber sees "Enable
-    // notifications" on every visit and would call `subscribe()` again on
-    // every click, rather than the button reflecting they're already
-    // subscribed. `getRegistration()` (not `.ready`, which resolves only
-    // once a service worker HAS become active, and hangs forever until
-    // then) resolves to `undefined` immediately when there is none yet to
-    // check. Optional-chained/guarded throughout since a partial or
-    // stubbed `serviceWorker` implementation may not expose it.
+    // notifications" on every visit. `getRegistration()` (not `.ready`,
+    // which hangs until a service worker is active) resolves to
+    // `undefined` immediately when there is none yet. Optional-chained
+    // since a partial or stubbed `serviceWorker` may not expose it.
     let cancelled = false;
     const serviceWorker: Partial<Pick<ServiceWorkerContainer, 'getRegistration'>> = navigator.serviceWorker;
     const registrationPromise = serviceWorker.getRegistration?.();
@@ -99,74 +99,82 @@ export function NotificationsToggle() {
         }
       })
       .catch(() => {
-        // Nothing to seed -- falls back to the same "not yet enabled"
-        // default a browser that was never subscribed would show.
+        // Nothing to seed -- falls back to "not yet enabled".
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  async function enable() {
-    setBusy(true);
-    setError(null);
-    needsLoginState.reset();
+  async function finishEnable(permissionRequest: Promise<NotificationPermission>) {
     try {
-      const permission = await Notification.requestPermission();
+      let permission: NotificationPermission;
+      try {
+        permission = await permissionRequest;
+      } catch (error) {
+        throw new EnableNotificationsError('permission', error);
+      }
+      if (permission === 'denied') {
+        logEnableFailure(
+          new EnableNotificationsError('permission', new DOMException('Permission is denied', 'NotAllowedError')),
+        );
+        setFailure({ message: blockedMessage(navigator.userAgent) });
+        return;
+      }
       if (permission !== 'granted') {
+        // The prompt was dismissed: nothing to report.
         return;
       }
 
-      const keyResponse = await fetch('/api/notifications/vapid-public-key');
-      if (!keyResponse.ok) {
-        setError(ENABLE_ERROR_MESSAGE);
+      // Both were started before the click, so these normally settle at
+      // once and `subscribe()` runs while the tap still counts as one.
+      const [key, registration] = await Promise.all([vapidKey(vapidKeyRef), serviceWorkerRegistration()]);
+      const subscriptionJson = (await subscribeToPush(registration, key)).toJSON();
+
+      let response: Response;
+      try {
+        response = await fetch('/api/notifications/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: subscriptionJson.endpoint, keys: subscriptionJson.keys }),
+        });
+      } catch (error) {
+        throw new EnableNotificationsError('save', error);
+      }
+      if (response.status === 401) {
+        needsLoginState.markNeedsLogin();
         return;
       }
-      const vapidPublicKey = await keyResponse.text();
-
-      // Resolves once whatever service worker the sibling PWA effort
-      // registers is active -- this component makes no assumption about
-      // that SW's own file location or scope.
-      const registration = await navigator.serviceWorker.ready;
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-      });
-      const subscriptionJson = subscription.toJSON();
-
-      const subscribeResponse = await fetch('/api/notifications/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint: subscriptionJson.endpoint, keys: subscriptionJson.keys }),
-      });
-      if (!subscribeResponse.ok) {
-        if (subscribeResponse.status === 401) {
-          needsLoginState.markNeedsLogin();
-        } else {
-          setError(ENABLE_ERROR_MESSAGE);
-        }
+      if (!response.ok) {
+        const error = new EnableNotificationsError('save', new Error(`subscribe returned HTTP ${response.status}`));
+        logEnableFailure(error);
+        setFailure({
+          message: await failureFromResponse('turn on', 'notifications', response),
+          reference: failureReference(error),
+        });
         return;
       }
       setEnabled(true);
-    } catch {
-      // A rejected `Notification.requestPermission()`, `pushManager.subscribe()`
-      // (common on Firefox/Brave with push disabled, or a malformed VAPID
-      // key), or either `fetch()` all land here -- previously an unhandled
-      // promise rejection, with the button just silently re-enabling and
-      // no indication anything went wrong.
-      setError(ENABLE_ERROR_MESSAGE);
-    } finally {
-      setBusy(false);
+    } catch (error) {
+      logEnableFailure(error);
+      setFailure(describeEnableFailure(error));
     }
   }
 
-  // No `if (!supported) return null` branch any more: that's the reserved
-  // slot above. A genuinely unsupported browser (rare -- effectively every
-  // current mainstream browser has both `serviceWorker` and `PushManager`)
-  // now keeps a permanently `disabled` "Enable notifications" button rather
-  // than the button vanishing again post-mount, which would just move the
-  // layout-shift problem from "pops in" to "pops out" for that same
-  // Tier-2-anonymous, most-visited page.
+  function enable() {
+    // `requestPermission()` comes first, synchronously, before any await
+    // or state update can yield: Firefox only allows the prompt during the
+    // tap's user activation.
+    const permissionRequest = requestNotificationPermission();
+    setFailure(null);
+    needsLoginState.reset();
+    setBusy(true);
+    void finishEnable(permissionRequest).finally(() => setBusy(false));
+  }
+
+  // No `if (!supported) return null` branch: that's the reserved slot
+  // above. An unsupported browser keeps a permanently `disabled` button,
+  // with a line under it saying why.
   return (
     <>
       <Button
@@ -176,10 +184,75 @@ export function NotificationsToggle() {
       >
         {enabled ? 'Notifications enabled' : 'Enable notifications'}
       </Button>
-      {error && <Text c="var(--ds-color-error-text)">{error}</Text>}
+      {unsupportedNote && (
+        <Text size="sm" c="dimmed">
+          {unsupportedNote}
+        </Text>
+      )}
+      {failure && (
+        <div role="alert">
+          <Text c="var(--ds-color-error-text)">{failure.message}</Text>
+          {failure.reference && (
+            <Text size="xs" c="dimmed">
+              Reference: {failure.reference}
+            </Text>
+          )}
+        </div>
+      )}
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to enable notifications.
       </LoginPromptModal>
     </>
   );
+}
+
+/** Starts fetching the VAPID key into `ref`. A failed fetch clears `ref`,
+ * so the click fetches again. */
+function prefetchVapidKey(ref: RefObject<Promise<string> | null>): Promise<string> {
+  const key = fetchVapidKey();
+  ref.current = key;
+  key.catch(() => {
+    if (ref.current === key) ref.current = null;
+  });
+  return key;
+}
+
+/** The prefetched VAPID key, or a fresh fetch when there is none or it
+ * failed. */
+function vapidKey(ref: RefObject<Promise<string> | null>): Promise<string> {
+  const cached = ref.current;
+  const key = cached ? cached.catch(() => prefetchVapidKey(ref)) : prefetchVapidKey(ref);
+  return key.catch((error: unknown) => {
+    throw new EnableNotificationsError('key', error);
+  });
+}
+
+/** The active service worker registration, or a `worker` failure when none
+ * becomes active in time. */
+function serviceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
+  return withTimeout(navigator.serviceWorker.ready, SERVICE_WORKER_TIMEOUT_MS, 'serviceWorker.ready').catch(
+    (error: unknown) => {
+      throw new EnableNotificationsError('worker', error);
+    },
+  );
+}
+
+/** The message for a failure thrown out of the click flow:
+ *
+ * - no Notification API at all: say the browser can't;
+ * - a `NotAllowedError` while permission really is denied (Firefox also
+ *   rejects `subscribe()` this way when push is blocked for the site):
+ *   the "blocked" steps;
+ * - anything else, including Firefox's `NotAllowedError` from a lost user
+ *   activation while permission is granted, which a second tap fixes:
+ *   "Couldn't turn on notifications. Try again." with a reference code. */
+function describeEnableFailure(error: unknown): Failure {
+  if (typeof Notification === 'undefined') {
+    return { message: unsupportedMessage(navigator) };
+  }
+  const cause = error instanceof EnableNotificationsError ? error.cause : error;
+  if (errorName(cause) === 'NotAllowedError' && Notification.permission === 'denied') {
+    return { message: blockedMessage(navigator.userAgent) };
+  }
+  return { message: GENERIC_ENABLE_ERROR, reference: failureReference(error) };
 }

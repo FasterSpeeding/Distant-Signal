@@ -92,6 +92,10 @@ test.describe('Preferences, logged out', () => {
       await page.goto(path);
       await expect(page.locator('body')).toHaveAttribute('data-pride', 'trans');
       expect(await prideStripeHeight(page)).toBe(6);
+      // The trans flag's sparkle trio around the wordmark, decorative only.
+      const sparkles = page.locator('nav[aria-label="Main"] .prideSparkles:visible');
+      await expect(sparkles).toHaveAttribute('aria-hidden', 'true');
+      await expect(sparkles.locator('.prideSparkle')).toHaveText(['🩵', '🩷', '✨']);
     }
 
     // The flag is applied by an inline script before the first paint,
@@ -99,9 +103,15 @@ test.describe('Preferences, logged out', () => {
     expect(cspErrors).toEqual([]);
 
     await page.goto(PREFERENCES);
+    // The picker's live preview carries the same trio.
+    await expect(page.locator('.pridePreview')).toHaveAttribute('data-flag', 'trans');
+    await expect(page.locator('main .prideSparkle')).toHaveText(['🩵', '🩷', '✨']);
     await choosePrideFlag(page, 'Off', 'off');
+    // Gone at once, not only after a reload.
+    await expect(page.locator('.prideSparkles:visible')).toHaveCount(0);
     await page.reload();
     expect(await prideStripeHeight(page)).toBe(0);
+    await expect(page.locator('.prideSparkles:visible')).toHaveCount(0);
   });
 
   test('keeps the colour theme across reloads', async ({ page }) => {
@@ -121,14 +131,15 @@ test.describe('Preferences, logged out', () => {
   test.describe('on a desktop', () => {
     test.use({ viewport: { width: 1366, height: 900 } });
 
-    test('links Preferences from the footer, not the bar', async ({ page }) => {
+    test('links Preferences from the bar and the footer', async ({ page }) => {
       await page.goto('/lines');
       const footerLink = page.getByRole('navigation', { name: 'Site information' }).getByRole('link', {
         name: 'Preferences',
       });
       await expect(footerLink).toHaveAttribute('href', PREFERENCES);
-      await expect(page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' })).toHaveCount(0);
-      await footerLink.click();
+      const gear = page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' });
+      await expect(gear).toHaveAttribute('href', PREFERENCES);
+      await gear.click();
       await expect(page.getByRole('heading', { level: 1, name: 'Preferences' })).toBeVisible();
     });
   });
@@ -172,9 +183,11 @@ test.describe('Preferences, logged in', () => {
   test.describe('on a desktop', () => {
     test.use({ viewport: { width: 1366, height: 900 } });
 
-    test('links Preferences from the account menu and the footer', async ({ page, context }) => {
+    test('links Preferences from the account menu and the footer, not a gear', async ({ page, context }) => {
       await logIn(context);
       await page.goto('/lines');
+      // No gear when logged in: the account menu is the bar's way there.
+      await expect(page.locator('nav[aria-label="Main"]').getByRole('link', { name: 'Preferences' })).toHaveCount(0);
       await page
         .locator('nav[aria-label="Main"]')
         .getByRole('button', { name: /^Account menu for/ })

@@ -41,6 +41,28 @@ export function parseStoredMode(raw: string | null): PrideMode {
   return 'off';
 }
 
+/** The three emoji each flag's decorative sparkle scatter floats
+ * (`PrideSparkles`, around the wordmark on every page and the picker's
+ * preview), unchanged from the old nav toggle. */
+export const PRIDE_SPARKLES: Readonly<Record<Exclude<PrideMode, 'off'>, readonly [string, string, string]>> = {
+  rainbow: ['✨', '💖', '✨'],
+  trans: ['🩵', '🩷', '✨'],
+  // Four flag stripes (yellow/white/purple/black), only three sparkle
+  // slots -- same squeeze the asexual flag's four stripes hit below. Black
+  // is the one dropped here (rather than, say, yellow) since 🖤 is already
+  // asexual's sparkle below; keeping yellow/white/purple gives non-binary a
+  // visibly distinct trio instead of overlapping it.
+  nonbinary: ['💛', '🤍', '💜'],
+  bisexual: ['💗', '💜', '💙'],
+  pansexual: ['💗', '💛', '💙'],
+  asexual: ['🖤', '🤍', '💜'],
+  // The violet flower is this flag's whole signature (see the `sapphic`
+  // note in `globals.css`), so it gets a literal blossom rather than a
+  // generic heart.
+  sapphic: ['💜', '🤍', '🌸'],
+  lesbian: ['🧡', '🤍', '💗'],
+};
+
 /** Reads the saved mode from this browser, or `'off'` where storage is
  * blocked. Client only. */
 export function readStoredPrideMode(): PrideMode {
