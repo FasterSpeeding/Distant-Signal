@@ -403,12 +403,30 @@ test.describe('accessibility: interactive sub-states', () => {
   });
 
   test('/incidents, results rendered', async ({ page }) => {
-    await page.goto('/incidents');
-    await page
-      .getByRole('button', { name: /^Search/ })
-      .first()
-      .click();
-    await expect(page.getByRole('button', { name: /^Search/ }).first()).toBeEnabled();
+    await page.goto('/incidents?period=all');
+    await expect(page.locator('[data-incident-results]')).toBeVisible();
+    await expectNoViolations(page);
+  });
+
+  test('/incidents, filters panel open', async ({ page }) => {
+    await page.goto('/incidents?period=custom');
+    await page.getByRole('button', { name: 'Filters' }).click();
+    await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+    await expectNoViolations(page);
+  });
+
+  test('/trains, filters panel open after a search', async ({ page }) => {
+    await page.goto(`/trains?station=${REAL_STATION_CRS}&stops_at=PBO`);
+    await page.getByRole('button', { name: 'Filters' }).click();
+    await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+    await expectNoViolations(page);
+  });
+
+  // "Find a stop", the search-only bar (the e2e seed has no operators, so
+  // /operators has no cards to search).
+  test('/transit/metrolink, stops searched', async ({ page }) => {
+    await page.goto('/transit/metrolink?q=picc');
+    await expect(page.getByRole('textbox', { name: 'Find a stop' })).toHaveValue('picc');
     await expectNoViolations(page);
   });
 
@@ -460,10 +478,13 @@ test.describe('accessibility: interactive sub-states', () => {
   // surfaces that mount one.
   test('/incidents, operator and line comboboxes open', async ({ page }) => {
     await page.goto('/incidents');
+    await page.getByRole('button', { name: 'Filters' }).click();
     await page.getByRole('combobox', { name: /Operator/i }).click();
     await expect(page.getByRole('listbox').first()).toBeVisible();
     await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
+    // Escape closes only the open list, never the whole panel.
     await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Filters' })).toBeVisible();
     await page.getByRole('combobox', { name: /^Line/i }).click();
     await expect(page.getByRole('listbox').first()).toBeVisible();
     await expectNoViolations(page, COMBOBOX_PORTAL_WAIVERS);
