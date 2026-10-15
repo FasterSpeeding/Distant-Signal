@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { DEFAULT_THEME } from '@mantine/core';
 import { theme } from '@/lib/theme';
+import { SEVERITY_GROUP_COLORS, SEVERITY_GROUPS_BY_RANK } from '@/lib/severity';
 
 // Vitest runs with `frontend/` as its root (see vitest.config.ts).
 const css = readFileSync('app/globals.css', 'utf8');
@@ -602,6 +604,35 @@ describe('background theming', () => {
     // so pride mode layers a second effect rather than fighting this one.
     expect(divider![0]).toMatch(/bottom:\s*2px/);
     expect(prideBar![0]).toMatch(/bottom:\s*-3px/);
+  });
+});
+
+// `severityGroupTextColor` (`lib/severity.ts`): the /status tile counts.
+describe('severity-group text colours', () => {
+  /** The palette colour a `var(--mantine-color-<hue>-<shade>)` or
+   * `var(--mantine-color-<hue>-light-color)` token resolves to in the light
+   * scheme, honouring the hand-mixed `-light-color` overrides above. */
+  function resolve(block: string, group: string): { hue: string; hex: string } {
+    const match = new RegExp(`--ds-severity-${group}-text: var\\(--mantine-color-([a-z]+)-(\\d|light-color)\\)`).exec(
+      block,
+    );
+    expect(match, `--ds-severity-${group}-text`).not.toBeNull();
+    const [, hue, shade] = match!;
+    if (shade === 'light-color') {
+      const override = new RegExp(`--mantine-color-${hue}-light-color: (#[0-9a-f]{6})`).exec(block);
+      return { hue: hue!, hex: override?.[1] ?? DEFAULT_THEME.colors[hue!]![9] };
+    }
+    return { hue: hue!, hex: DEFAULT_THEME.colors[hue!]![Number(shade)]! };
+  }
+
+  it.each(SEVERITY_GROUPS_BY_RANK)('draws %s in its badge hue and clears AA on a card in both schemes', (group) => {
+    const light = resolve(schemeBlock('light'), group);
+    const dark = resolve(schemeBlock('dark'), group);
+    expect(light.hue).toBe(SEVERITY_GROUP_COLORS[group]);
+    expect(dark.hue).toBe(SEVERITY_GROUP_COLORS[group]);
+    expect(contrast(light.hex, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(dark.hex, DARK_6)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
+    expect(contrast(dark.hex, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT);
   });
 });
 

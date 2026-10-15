@@ -159,21 +159,9 @@ impl AppState {
         // INF-5: wait for Postgres (e.g. still in crash recovery after a
         // node reboot) rather than exiting into CrashLoopBackOff. The
         // listener isn't bound until after this and the migrations, so the
-        // startup/readiness probes stay failing meanwhile.
-        common::startup::retry_until_ready(
-            "Postgres",
-            common::startup::CONNECT_BACKOFF,
-            None,
-            || async {
-                use sqlx::Connection;
-                sqlx::PgConnection::connect_with(&connect_options)
-                    .await?
-                    .close()
-                    .await
-            },
-        )
-        .await;
-
+        // startup/readiness probes stay failing meanwhile. The pool connect
+        // itself is what's retried (`connect_with_until_ready`).
+        //
         // application_name, statement_timeout (60s), idle-in-transaction
         // timeout (30s) and a 5s acquire_timeout, all overridable by env --
         // see `common::pg`. Statements that legitimately run longer (the
@@ -182,9 +170,8 @@ impl AppState {
         // `distant_signal_db_pool_*` (plan task 1A.11).
         let pool_settings = ds_store::pool::PoolSettings::from_env(API_APPLICATION_NAME, 50)?;
         let db = pool_settings
-            .connect_with(connect_options)
-            .await
-            .context("Could not connect to database")?;
+            .connect_with_until_ready(connect_options, None)
+            .await;
 
         // No eager connect: only the URL is validated here. See the `redis`
         // field's doc comment on `AppState`.

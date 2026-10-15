@@ -159,14 +159,20 @@ export default async function NetworkStatusPage() {
  * tile the app's card-as-link treatment (`app/globals.css`): a hover/focus
  * border-colour change plus a visible focus ring, since Mantine's own focus
  * ring only ever applies to Mantine interactive components, not a bare
- * `<a>`. Sizes come from `tokens.statusTile`. */
+ * `<a>`. Sizes come from `tokens.statusTile`.
+ *
+ * Each linked tile's count is in its group's colour (`StatusTile`'s
+ * `severity`), as the tiles had been until a 2026-10-09 change dropped
+ * their coloured left borders: the style guide bans those accents, so the
+ * colour now lives on the count itself. */
 function SeverityCounterTile({ group, count }: { group: SeverityGroup; count: number }) {
   const label = severityGroupLabel(group);
-  if (count === 0) return <StatusTile count={0} label={label} />;
+  if (count === 0) return <StatusTile count={0} label={label} severity={group} />;
   return (
     <StatusTile
       count={count}
       label={label}
+      severity={group}
       href={`/lines?statusGroup=${group}`}
       ariaLabel={`${count} line${count === 1 ? '' : 's'} with ${label.toLowerCase()}, view in Lines`}
     />

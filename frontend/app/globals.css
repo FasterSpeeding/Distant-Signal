@@ -222,6 +222,19 @@ html:root[data-mantine-color-scheme='light'] {
   --ds-chart-delay: var(--mantine-color-orange-8);
   --ds-chart-cancellation: var(--mantine-color-red-8);
   --ds-chart-skip: var(--mantine-color-yellow-light-color);
+
+  /* Severity-group text (`severityGroupTextColor` in `lib/severity.ts`):
+     the count on a /status tile, in its group's hue. Same hue per group
+     as `SEVERITY_GROUP_COLORS` (so `StatusBadge`), but not its filled
+     shade 6, which is a background (green 6 is 2.36:1 on white). Each is
+     the light-variant text colour, or the shade it would be, on a white
+     card: green #267b37 5.29:1, gray 7 8.18:1, blue 9 6.09:1, yellow
+     #a85700 5.21:1, red 9 5.46:1. */
+  --ds-severity-good-text: var(--mantine-color-green-light-color);
+  --ds-severity-informational-text: var(--mantine-color-gray-7);
+  --ds-severity-planned-text: var(--mantine-color-blue-9);
+  --ds-severity-mild-text: var(--mantine-color-yellow-light-color);
+  --ds-severity-severe-text: var(--mantine-color-red-9);
 }
 
 /* The dark scheme is NOT the "already fine" case the light-scheme comments
@@ -267,6 +280,14 @@ html:root[data-mantine-color-scheme='dark'] {
   --ds-chart-delay: var(--mantine-color-orange-4);
   --ds-chart-cancellation: var(--mantine-color-red-4);
   --ds-chart-skip: var(--mantine-color-yellow-4);
+  /* The dark half of the severity-group text: shade 4 of each hue, on the
+     #2e2e2e card: green 7.78:1, gray 9.09:1, blue 5.49:1, yellow 9.53:1,
+     red 5.86:1. */
+  --ds-severity-good-text: var(--mantine-color-green-4);
+  --ds-severity-informational-text: var(--mantine-color-gray-4);
+  --ds-severity-planned-text: var(--mantine-color-blue-4);
+  --ds-severity-mild-text: var(--mantine-color-yellow-4);
+  --ds-severity-severe-text: var(--mantine-color-red-4);
 }
 
 /* Exactly the same defect as `--mantine-color-dimmed` above, in a place
@@ -1882,7 +1903,8 @@ a[data-text-link-tone='inherit'] {
 /* `components/StatusTile.tsx`, the /status counter tiles. Five tiles never
    fill a two-column phone grid, so below `sm` each is a compact row (count,
    label, then the "View lines" cue at the far end) in a one-column list;
-   from `sm` up, count over label, centred, five across. */
+   from `sm` up, count over label, centred, five across. The count's colour
+   is its severity group's (`--ds-severity-*-text`), set by `StatusTile`. */
 .statusTile {
   display: flex;
   align-items: center;
@@ -1900,9 +1922,14 @@ a[data-text-link-tone='inherit'] {
 }
 
 @media (min-width: $mantine-breakpoint-sm) {
+  /* Top-aligned, not centred: a linked tile has a third line ("View
+     lines") that a zero tile lacks, and centring each tile's own content
+     sat the linked tiles' counts higher than the zero tiles' on the same
+     row. Count and label start at the same height in every tile; the cue
+     drops to the bottom edge. */
   .statusTile {
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 4px;
     height: 100%;
     padding: var(--mantine-spacing-lg) var(--mantine-spacing-sm);
@@ -1911,6 +1938,7 @@ a[data-text-link-tone='inherit'] {
 
   .statusTile__cue {
     margin-inline-start: 0;
+    margin-block-start: auto;
   }
 }
 
