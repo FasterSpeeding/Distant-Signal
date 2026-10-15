@@ -310,6 +310,15 @@ pub struct DelegatedSettings {
     /// Delegated deletes per user per rolling 24 hours (D-11).
     #[arg(long, env = "DELEGATED_DAILY_DELETE_LIMIT", default_value_t = 20)]
     pub daily_delete_limit: i64,
+    /// Days a revoked grant is kept before the hourly sweep deletes it
+    /// (the record of when and why access ended). Also read by the
+    /// `maintenance` binary.
+    #[arg(
+        long,
+        env = "DELEGATED_REVOKED_GRANT_RETENTION_DAYS",
+        default_value_t = crate::data::delegated::DEFAULT_REVOKED_GRANT_RETENTION_DAYS
+    )]
+    pub revoked_grant_retention_days: i64,
 }
 
 impl DelegatedSettings {
@@ -360,12 +369,26 @@ pub struct RegisteredClient {
 
 /// Every registered client, and the daily caps. `Default` is the inert
 /// state: no client, no listener.
-#[derive(Default)]
 pub struct DelegatedAuth {
     clients: Vec<RegisteredClient>,
     listen_addr: String,
     pub daily_save_limit: i64,
     pub daily_delete_limit: i64,
+    /// Days a revoked grant row is kept (`DELEGATED_REVOKED_GRANT_RETENTION_DAYS`).
+    pub revoked_grant_retention_days: i64,
+}
+
+impl Default for DelegatedAuth {
+    fn default() -> Self {
+        Self {
+            clients: Vec::new(),
+            listen_addr: String::new(),
+            daily_save_limit: 50,
+            daily_delete_limit: 20,
+            revoked_grant_retention_days:
+                crate::data::delegated::DEFAULT_REVOKED_GRANT_RETENTION_DAYS,
+        }
+    }
 }
 
 impl std::fmt::Debug for DelegatedAuth {
@@ -382,6 +405,10 @@ impl std::fmt::Debug for DelegatedAuth {
             .field("listen_addr", &self.listen_addr)
             .field("daily_save_limit", &self.daily_save_limit)
             .field("daily_delete_limit", &self.daily_delete_limit)
+            .field(
+                "revoked_grant_retention_days",
+                &self.revoked_grant_retention_days,
+            )
             .finish()
     }
 }
@@ -393,6 +420,10 @@ impl DelegatedAuth {
         ensure!(
             settings.daily_save_limit > 0 && settings.daily_delete_limit > 0,
             "DELEGATED_DAILY_SAVE_LIMIT and DELEGATED_DAILY_DELETE_LIMIT must be at least 1"
+        );
+        ensure!(
+            (1..=36_500).contains(&settings.revoked_grant_retention_days),
+            "DELEGATED_REVOKED_GRANT_RETENTION_DAYS must be 1 to 36500"
         );
         let mut registered = Vec::with_capacity(clients.len());
         for (index, config) in clients.into_iter().enumerate() {
@@ -410,6 +441,7 @@ impl DelegatedAuth {
             listen_addr: settings.listen_addr.clone(),
             daily_save_limit: settings.daily_save_limit,
             daily_delete_limit: settings.daily_delete_limit,
+            revoked_grant_retention_days: settings.revoked_grant_retention_days,
         })
     }
 
@@ -1148,6 +1180,7 @@ mod tests {
                 listen_addr: "127.0.0.1:0".to_string(),
                 daily_save_limit: 50,
                 daily_delete_limit: 20,
+                revoked_grant_retention_days: 365,
             };
             let mut config = client("ds-mcp", issuer, AUDIENCE);
             config.enabled = enabled;

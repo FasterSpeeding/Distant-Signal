@@ -1046,8 +1046,11 @@ struct JourneyDetailResponse {
     created_at: DateTime<Utc>,
     legs: Vec<JourneyLegDetailResponse>,
     /// `'web'`, or the delegated client that saved it (spec 2026-10-14
-    /// §5.8).
-    created_via: String,
+    /// §5.8). Only for the journey's owner: absent from the public
+    /// share-link route and from a group member's view, which have no use
+    /// for how the owner saved it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_via: Option<String>,
     /// Whether the CALLER owns this journey, as opposed to reading it via a
     /// group it's been shared into (`journey_readable_by`). The frontend
     /// gates every owner-only action (share-to-group button, unmatched-leg
@@ -1568,7 +1571,7 @@ async fn build_journey_detail_response(
         id: summary.id,
         custom_name: summary.custom_name,
         created_at: summary.created_at,
-        created_via: summary.created_via,
+        created_via: is_owner.then_some(summary.created_via),
         legs,
         is_owner,
         share_link,
@@ -4144,6 +4147,8 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK, "resolve share token: {body:?}");
         assert_eq!(body["isOwner"], false);
         assert_eq!(body["shareLink"], Value::Null);
+        // How the owner saved it is not for a link holder.
+        assert!(body.get("createdVia").is_none(), "{body:?}");
         let legs = body["legs"].as_array().expect("legs array");
         assert_eq!(legs.len(), 1);
         assert_eq!(legs[0]["matchMode"], "manual");

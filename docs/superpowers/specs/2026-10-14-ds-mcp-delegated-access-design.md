@@ -951,7 +951,7 @@ Delegated { client, grant_id, jti } }`:
 
 | Route | Today | Delegated scope | Phase | Notes |
 |---|---|---|---|---|
-| `POST /Journeys/itinerary` (**new**) | — | `journeys:write` | 1 | Creates a journey and 1–8 `knownTrain` legs in **one transaction**. Optional `customName`. Requires an `Idempotency-Key` header from delegated callers; the key is remembered per user for 24 h and a repeat returns the original response. Checks the train-pin cap and the journey cap. Also available with a cookie: `PlanTripFlow` moves to it in Phase 1 and drops its non-atomic loop (D-15) |
+| `POST /Journeys/itinerary` (**new**) | — | `journeys:write` | 1 | Creates a journey and 1 to 20 `knownTrain` legs (the journey's leg cap, for every caller) in **one transaction**. Optional `customName`. Requires an `Idempotency-Key` header from delegated callers; the key is remembered per user for 24 h and a repeat returns the original response. Checks the train-pin cap and the journey cap. Also available with a cookie: `PlanTripFlow` moves to it in Phase 1 and drops its non-atomic loop (D-15) |
 | `GET /Journeys/mine` | cookie | `journeys:read` | 1 | Unchanged response |
 | `GET /Journeys/{id}` | cookie (`journey_readable_by`) | `journeys:read` (own only) / `journeys:read_shared` | 1 / 3 | For a delegated caller without `read_shared`, ownership only. `shareLink` is always `null` for a delegated caller |
 | `DELETE /Journeys/{id}` | cookie, owner | `journeys:delete` | 1 | Delegated callers: only journeys this client created that are not shared (§5.5a). The cookie path is unchanged |
@@ -1385,20 +1385,27 @@ contract in `docs/api-changelog.md` (2026-10-15).
   - The confirmation token is issued by a JSON route the consent page
     calls from the browser (`GET /public/account/connected-apps/{client}/consent`);
     every page already sends `frame-ancestors 'none'`.
-  - `POST /Journeys/itinerary` takes up to 8 legs from a delegated caller
-    and up to 20 (the journey's leg cap) with a cookie, so `PlanTripFlow`
-    keeps its range. Its response is a superset of `POST /Journeys`'.
-  - `createdVia` is added to the journey list and detail responses, so the
-    assistant can tell which journeys it may delete.
-  - Revoked grant rows are deleted 90 days after revocation (the spec set
-    no retention for them).
+  - `POST /Journeys/itinerary` takes up to 20 legs (the journey's leg
+    cap) from every caller, delegated or cookie. Its response is a
+    superset of `POST /Journeys`'.
+  - `createdVia` is added to the journey list, and to the detail response
+    for the journey's owner only (never on the public share-link route or
+    a group member's view), so the assistant can tell which journeys it
+    may delete.
+  - Revoked grant rows are deleted 365 days after revocation, configurable
+    with `DELEGATED_REVOKED_GRANT_RETENTION_DAYS` (the spec set no
+    retention for them).
   - The grant notice is a notifier cycle (`grant_notice`) on the
-    skip-check interval, recorded in `delegated_grants.push_notified_at`,
-    for grants made in the last 24 hours.
-- Not done in Phase 1b: the Preferences page's copy of Connected apps
-  (the page is on another branch; `ConnectedAppsSection` is ready to
-  mount), dashboard panels and alerts (Phase 2), and "Saved by assistant"
-  in the UI (Phase 2).
+    skip-check interval. Every active grant not yet notified gets exactly
+    one push, whatever its age, recorded in
+    `delegated_grants.push_notified_at`; at most one per user per cycle,
+    so a backlog cannot flood a user.
+  - Follow-ups decided on 2026-10-15: the leg limit (8 for a delegated
+    caller at first), `createdVia` owner-only, a year of revoked-grant
+    retention (90 days at first), and the notice with no 24-hour cutoff.
+- Connected apps is also a card on the Preferences page.
+- Not done in Phase 1b: dashboard panels and alerts (Phase 2), and "Saved
+  by assistant" in the UI (Phase 2).
 
 **Phase 1c: ds-mcp.**
 

@@ -83,6 +83,7 @@ describe('PrivacyPage assistant connection', () => {
     expect(text).toMatch(/log out of our login service/);
     expect(text).toMatch(/keep these logs for 7 days/);
     expect(text).toMatch(/for 30 days/);
+    expect(text).toMatch(/After a connection ends we keep a record of it .* for one year, then delete it\./);
   });
 });
 

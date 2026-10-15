@@ -7,15 +7,17 @@
 //! - **The web planner** (`PlanTripFlow.tsx`, decision D-15), with the
 //!   session cookie. It used to send one `POST /Journeys` and then one
 //!   `POST /Journeys/{id}/legs` per further leg, so a failure part-way left
-//!   a half-built journey. Up to [`journeys::MAX_LEGS_PER_JOURNEY`] legs;
-//!   the key is optional; errors are plain-text sentences, like every other
+//!   a half-built journey. The key is optional; errors are plain-text sentences, like every other
 //!   journey route.
-//! - **A delegated client** (ds-mcp, `journeys:write`). At most
-//!   [`MAX_DELEGATED_LEGS`] legs, `Idempotency-Key` required, at most
+//! - **A delegated client** (ds-mcp, `journeys:write`). `Idempotency-Key`
+//!   required, at most
 //!   `DELEGATED_DAILY_SAVE_LIMIT` (50) saves per user per rolling 24 hours,
 //!   and errors in the delegated JSON contract (§5.15). The journey is
 //!   stamped `created_via = <client>`, which is what lets that client
 //!   delete it later (§5.5a).
+//!
+//! Either caller may send 1 to [`MAX_ITINERARY_LEGS`] legs, the journey's
+//! own leg cap.
 //!
 //! Body (camelCase, unknown fields refused):
 //!
@@ -43,8 +45,9 @@ use crate::auth::delegated::{DelegatedOrSessionUser, WriteScope, error_response}
 use crate::data::delegated::IdempotencyClaim;
 use crate::data::{journeys, train_tracking};
 
-/// Legs a delegated caller may save in one itinerary (§5.8).
-pub const MAX_DELEGATED_LEGS: usize = 8;
+/// Legs one itinerary may have, for every caller: the journey's own cap,
+/// [`journeys::MAX_LEGS_PER_JOURNEY`] (a test keeps the two equal).
+pub const MAX_ITINERARY_LEGS: usize = 20;
 /// The longest `Idempotency-Key` accepted (the column's own limit).
 pub const MAX_IDEMPOTENCY_KEY_LENGTH: usize = 200;
 
@@ -278,11 +281,6 @@ async fn save_itinerary(
     body: &[u8],
 ) -> Result<Response, RouteError> {
     let client = user.client().cloned();
-    let max_legs = if client.is_some() {
-        MAX_DELEGATED_LEGS
-    } else {
-        usize::try_from(journeys::MAX_LEGS_PER_JOURNEY).unwrap_or(MAX_DELEGATED_LEGS)
-    };
     let key = idempotency_key(headers)?;
     if client.is_some() && key.is_none() {
         return Err(RouteError::coded(
@@ -291,7 +289,7 @@ async fn save_itinerary(
             "A delegated save needs an Idempotency-Key header.",
         ));
     }
-    let (request, custom_name, legs) = validate(body, max_legs)?;
+    let (request, custom_name, legs) = validate(body, MAX_ITINERARY_LEGS)?;
     let request_hash = {
         let canonical =
             serde_json::to_vec(&request).map_err(|err| internal("hash request")(err.into()))?;
@@ -499,18 +497,22 @@ mod tests {
     }
 
     #[test]
-    fn leg_counts_are_bounded_per_caller() {
+    fn leg_counts_are_bounded() {
+        assert_eq!(
+            i64::try_from(MAX_ITINERARY_LEGS).unwrap(),
+            journeys::MAX_LEGS_PER_JOURNEY
+        );
         let leg = r#"{"trainUid":"C12345","serviceDate":"2099-01-01"}"#;
         let body = |n: usize| format!(r#"{{"legs":[{}]}}"#, vec![leg; n].join(","));
         assert!(matches!(
-            validate(body(0).as_bytes(), MAX_DELEGATED_LEGS),
+            validate(body(0).as_bytes(), MAX_ITINERARY_LEGS),
             Err(RouteError::Coded {
                 code: "invalid_itinerary",
                 ..
             })
         ));
         assert!(matches!(
-            validate(body(9).as_bytes(), MAX_DELEGATED_LEGS),
+            validate(body(21).as_bytes(), MAX_ITINERARY_LEGS),
             Err(RouteError::Coded {
                 code: "invalid_itinerary",
                 ..

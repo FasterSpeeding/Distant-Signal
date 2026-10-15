@@ -53,6 +53,10 @@ struct Args {
     stale_push_subscription_days: i64,
     #[arg(long, env, default_value_t = 0)]
     inactive_account_retention_days: i64,
+    /// Days a revoked delegated-access grant is kept, as the api's
+    /// `DELEGATED_REVOKED_GRANT_RETENTION_DAYS`.
+    #[arg(long, env = "DELEGATED_REVOKED_GRANT_RETENTION_DAYS", default_value_t = api::data::delegated::DEFAULT_REVOKED_GRANT_RETENTION_DAYS)]
+    delegated_revoked_grant_retention_days: i64,
     /// How long to keep retrying the first connection (a saturated node, a
     /// late `NetworkPolicy`) before exiting non-zero. Seconds, at least 1.
     #[arg(long, env, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..))]
@@ -102,7 +106,13 @@ async fn run() -> anyhow::Result<()> {
         || settings.connect(args.database_url.expose()),
     )
     .await?;
-    let report = run_pass(&pool, args.retention_policy(), chrono::Utc::now()).await;
+    let report = run_pass(
+        &pool,
+        args.retention_policy(),
+        args.delegated_revoked_grant_retention_days,
+        chrono::Utc::now(),
+    )
+    .await;
     pool.close().await;
     tracing::info!(
         expired_sessions = report.expired_sessions,
@@ -125,6 +135,7 @@ async fn run() -> anyhow::Result<()> {
 async fn run_pass(
     pool: &sqlx::PgPool,
     policy: RetentionPolicy,
+    revoked_grant_retention_days: i64,
     now: chrono::DateTime<chrono::Utc>,
 ) -> PassReport {
     let mut report = PassReport::default();
@@ -149,7 +160,8 @@ async fn run_pass(
             report.failed.push("personal_data");
         }
     }
-    report.delegated = api::data::delegated::run_sweep(pool, now).await;
+    report.delegated =
+        api::data::delegated::run_sweep(pool, now, revoked_grant_retention_days).await;
     if report.delegated.is_none() {
         report.failed.push("delegated");
     }
@@ -186,6 +198,31 @@ mod tests {
             };
             assert_eq!(find(&ours), find(&server), "{id}");
         }
+    }
+
+    /// The revoked-grant retention reads the api's own variable, with the
+    /// api's default (365 days).
+    #[test]
+    fn the_revoked_grant_retention_matches_the_api_server() {
+        let find = |command: clap::Command, id: &str| {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .unwrap_or_else(|| panic!("no {id}"));
+            (
+                arg.get_env().map(std::ffi::OsStr::to_os_string),
+                arg.get_default_values().to_vec(),
+            )
+        };
+        let ours = find(Args::command(), "delegated_revoked_grant_retention_days");
+        assert_eq!(
+            ours,
+            find(
+                api::auth::delegated::DelegatedSettings::command(),
+                "revoked_grant_retention_days"
+            )
+        );
+        assert_eq!(ours.1, ["365"]);
     }
 
     /// The chart sets `MAINTENANCE_CONNECT_DEADLINE_SECS`
@@ -301,7 +338,7 @@ mod tests {
             stale_push_subscription_days: 0,
             inactive_account_days: 0,
         };
-        let report = run_pass(&pool, policy, chrono::Utc::now()).await;
+        let report = run_pass(&pool, policy, 365, chrono::Utc::now()).await;
         assert!(report.failed.is_empty(), "{report:?}");
         assert!(report.expired_sessions >= Some(1), "{report:?}");
         assert!(report.dead_links >= Some(1), "{report:?}");
@@ -328,7 +365,7 @@ mod tests {
         assert_eq!(kept, "new");
 
         // Idempotent: a second pass finds nothing more of ours.
-        let again = run_pass(&pool, policy, chrono::Utc::now()).await;
+        let again = run_pass(&pool, policy, 365, chrono::Utc::now()).await;
         assert!(again.failed.is_empty(), "{again:?}");
         assert_eq!(count(&pool, sessions, USER).await, 1);
         assert_eq!(count(&pool, links, USER).await, 1);

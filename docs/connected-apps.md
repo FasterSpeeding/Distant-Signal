@@ -115,13 +115,16 @@ WHERE client = 'ds-mcp' AND revoked_at IS NULL;
 Per user: 60 reads, 10 saves and 5 deletes a minute (bursts 20, 5, 3); per
 client, 20 times that (`api.rateLimit.delegated`). Per user per rolling 24
 hours: 50 saves and 20 deletes (`api.delegated.dailySaveLimit`,
-`dailyDeleteLimit`), answered `429 daily_limit` with `Retry-After`.
+`dailyDeleteLimit`), answered `429 daily_limit` with `Retry-After`. An
+itinerary may have 1 to 20 legs, the journey's own leg cap, for a
+delegated client as for the web app.
 
 ## Retention
 
 The hourly maintenance pass (the api loop, or the `api-maintenance`
-CronJob) revokes grants unused for 90 days, deletes revoked grants 90 days
-after revocation, `delegated_deletions` after 30 days, `Idempotency-Key`s
+CronJob) revokes grants unused for 90 days, deletes revoked grants 365 days
+after revocation (`api.delegated.revokedGrantRetentionDays`,
+`DELEGATED_REVOKED_GRANT_RETENTION_DAYS`), `delegated_deletions` after 30 days, `Idempotency-Key`s
 after 24 hours and expired confirmation tokens. See
 [personal-data-retention.md](personal-data-retention.md).
 

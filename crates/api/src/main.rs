@@ -860,7 +860,12 @@ async fn session_cleanup_sweep_loop(app: App) {
         // Delegated access (spec 2026-10-14 §5.3, §5.5a): grants unused for
         // 90 days, `delegated_deletions` past 30 days, expired idempotency
         // keys and confirmation tokens. Same hourly cadence.
-        data::delegated::run_sweep(&app.database, chrono::Utc::now()).await;
+        data::delegated::run_sweep(
+            &app.database,
+            chrono::Utc::now(),
+            app.delegated.revoked_grant_retention_days,
+        )
+        .await;
     }
 }
 

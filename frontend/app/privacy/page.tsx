@@ -235,7 +235,9 @@ export default function PrivacyPage() {
         <Text>
           We log each request your assistant makes (your account, the time, what it asked for and whether it worked),
           never the journey contents, and keep these logs for 7 days. We keep a list of the journeys it deleted (name,
-          date, stations and train) for 30 days, shown in Connected apps so you can save them again.
+          date, stations and train) for 30 days, shown in Connected apps so you can save them again. After a connection
+          ends we keep a record of it (which app, what it could do, and when it was connected, last used and ended) for
+          one year, then delete it.
         </Text>
       </LegalSection>
 

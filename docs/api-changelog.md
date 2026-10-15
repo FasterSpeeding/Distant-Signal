@@ -3,6 +3,19 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-15: delegated access follow-ups
+
+- **`createdVia` is owner-only.** `GET /Journeys/{id}` includes it only
+  for the journey's owner; the public `GET /Journeys/shared/{token}` and a
+  group member's view no longer carry the field at all. `GET
+  /Journeys/mine` (always the caller's own) is unchanged.
+- **Leg limit.** `POST /Journeys/itinerary` takes 1 to 20 legs from every
+  caller, a delegated client included (it was 8 for a delegated client).
+- **Retention.** Revoked delegated grants are kept 365 days after
+  revocation (was 90), configurable with
+  `DELEGATED_REVOKED_GRANT_RETENTION_DAYS` (`api.delegated.revokedGrantRetentionDays`).
+  No API shape changes.
+
 ## 2026-10-15: delegated access (connected apps), Phase 1
 
 Off by default: nothing below exists for a delegated client until the chart

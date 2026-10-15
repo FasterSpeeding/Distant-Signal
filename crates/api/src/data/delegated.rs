@@ -12,9 +12,11 @@ use sqlx::PgPool;
 pub const CONFIRMATION_TTL_MINUTES: i64 = 10;
 /// How long a `delegated_deletions` row is kept (§5.5a).
 pub const DELETION_RETENTION_DAYS: i64 = 30;
-/// How long a revoked grant row is kept, as the record of when and why the
-/// access ended (§5.11), before the sweep deletes it.
-pub const REVOKED_GRANT_RETENTION_DAYS: i64 = 90;
+/// The default for how long a revoked grant row is kept, as the record of
+/// when and why the access ended (§5.11), before the sweep deletes it:
+/// `DELEGATED_REVOKED_GRANT_RETENTION_DAYS`
+/// (`crate::auth::delegated::DelegatedSettings`).
+pub const DEFAULT_REVOKED_GRANT_RETENTION_DAYS: i64 = 365;
 /// How long an `Idempotency-Key` is remembered (§5.8).
 pub const IDEMPOTENCY_RETENTION_HOURS: i64 = 24;
 /// How long the "an app was connected" banner shows (§5.3).
@@ -491,10 +493,16 @@ impl SweepOutcome {
 }
 
 /// The hourly pass (§5.3, §5.5a): grants unused for `idle_days` are
-/// revoked (`inactive`); grants revoked more than 90 days ago,
+/// revoked (`inactive`); grants revoked more than `revoked_retention_days`
+/// ago,
 /// `delegated_deletions` rows past 30 days, expired idempotency keys and
 /// confirmation tokens are deleted. Idempotent.
-pub async fn sweep(pool: &PgPool, now: DateTime<Utc>, idle_days: i64) -> Result<SweepOutcome> {
+pub async fn sweep(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    idle_days: i64,
+    revoked_retention_days: i64,
+) -> Result<SweepOutcome> {
     let inactive_grants = sqlx::query(
         "UPDATE delegated_grants SET revoked_at = $1, revoked_reason = 'inactive' \
          WHERE revoked_at IS NULL \
@@ -510,7 +518,7 @@ pub async fn sweep(pool: &PgPool, now: DateTime<Utc>, idle_days: i64) -> Result<
          WHERE revoked_at IS NOT NULL AND revoked_at < $1 - make_interval(days => $2)",
     )
     .bind(now)
-    .bind(i32::try_from(REVOKED_GRANT_RETENTION_DAYS)?)
+    .bind(i32::try_from(revoked_retention_days)?)
     .execute(pool)
     .await?
     .rows_affected();
@@ -549,8 +557,19 @@ pub async fn sweep(pool: &PgPool, now: DateTime<Utc>, idle_days: i64) -> Result<
 /// the `delegated_grants_active` gauge refreshed. Shared by the api's
 /// hourly loop and the `maintenance` binary. `None` when the sweep failed
 /// (already logged), for the binary's exit status.
-pub async fn run_sweep(pool: &PgPool, now: DateTime<Utc>) -> Option<SweepOutcome> {
-    let outcome = match sweep(pool, now, crate::auth::delegated::GRANT_IDLE_DAYS).await {
+pub async fn run_sweep(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    revoked_retention_days: i64,
+) -> Option<SweepOutcome> {
+    let outcome = match sweep(
+        pool,
+        now,
+        crate::auth::delegated::GRANT_IDLE_DAYS,
+        revoked_retention_days,
+    )
+    .await
+    {
         Ok(outcome) => outcome,
         Err(err) => {
             tracing::error!(error = ?err, "delegated-access sweep failed; will retry next interval");

@@ -58,6 +58,7 @@ async fn harness(pool: PgPool) -> Harness {
         listen_addr: "127.0.0.1:0".to_string(),
         daily_save_limit: 3,
         daily_delete_limit: 2,
+        revoked_grant_retention_days: 365,
     };
     let client = ClientConfig {
         name: "ds-mcp".to_string(),
@@ -624,6 +625,10 @@ async fn delegated_reads_need_an_active_grant_and_the_scope() {
         StatusCode::OK,
         "group members read it with a cookie"
     );
+    assert!(
+        web.json().get("createdVia").is_none(),
+        "only the owner sees createdVia"
+    );
     let reply = send(
         &h,
         "GET",
@@ -1038,8 +1043,8 @@ async fn the_itinerary_save_is_atomic_and_idempotent() {
     assert_eq!(reply.error(), "invalid_itinerary");
     let reply = post(json!({ "legs": [] }), Some("bad-2")).await;
     assert_eq!(reply.error(), "invalid_itinerary");
-    let nine: Vec<&str> = std::iter::repeat_n(UIDS[0], 9).collect();
-    let reply = post(itinerary(&nine), Some("bad-3")).await;
+    let too_many: Vec<&str> = std::iter::repeat_n(UIDS[0], 21).collect();
+    let reply = post(itinerary(&too_many), Some("bad-3")).await;
     assert_eq!(reply.error(), "invalid_itinerary");
     // A failing leg leaves nothing behind (horizon on the last leg).
     let mut body = itinerary(&UIDS[..2]);
@@ -1147,6 +1152,14 @@ async fn the_sweep_expires_idle_grants_and_purges_old_rows() {
     .await;
     let old_revoked = insert_grant(
         "sweep-gone",
+        "now() - INTERVAL '500 days'",
+        "NULL",
+        "now() - INTERVAL '366 days'",
+    )
+    .await;
+    // Revoked under a year ago: kept, as the record of the access.
+    let recent_revoked = insert_grant(
+        "sweep-kept",
         "now() - INTERVAL '200 days'",
         "NULL",
         "now() - INTERVAL '91 days'",
@@ -1169,7 +1182,7 @@ async fn the_sweep_expires_idle_grants_and_purges_old_rows() {
     .await
     .unwrap();
 
-    let outcome = crate::data::delegated::sweep(&pool, chrono::Utc::now(), 90)
+    let outcome = crate::data::delegated::sweep(&pool, chrono::Utc::now(), 90, 365)
         .await
         .unwrap();
     assert!(
@@ -1194,7 +1207,12 @@ async fn the_sweep_expires_idle_grants_and_purges_old_rows() {
     assert_eq!(
         reason(old_revoked).await,
         None,
-        "deleted 90 days after revocation"
+        "deleted a year after revocation"
+    );
+    assert_eq!(
+        reason(recent_revoked).await,
+        Some(Some("user".to_string())),
+        "kept until a year after revocation"
     );
     let deletions: Vec<i64> =
         sqlx::query_scalar("SELECT journey_id FROM delegated_deletions WHERE user_id = $1")
@@ -1212,7 +1230,7 @@ async fn the_sweep_expires_idle_grants_and_purges_old_rows() {
     .unwrap();
     assert_eq!(keys, vec!["new".to_string()]);
     // Idempotent.
-    let again = crate::data::delegated::sweep(&pool, chrono::Utc::now(), 90)
+    let again = crate::data::delegated::sweep(&pool, chrono::Utc::now(), 90, 365)
         .await
         .unwrap();
     assert_eq!(again.inactive_grants, 0, "{again:?}");
