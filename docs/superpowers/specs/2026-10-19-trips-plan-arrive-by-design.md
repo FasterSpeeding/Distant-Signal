@@ -187,7 +187,7 @@ ellipses or arrows.
 | Arrive by 00:30, service on the previous evening | Previous service date with `dayOffset=1` (§4.2). Found. |
 | Arrive by 02:00, nothing that late | `noResultReason.arriveBy` with the earliest arrival. The "Earlier" button still works from the last plan that had results. |
 | Later from a 23:58 departure | Depart after 23:59. Then from 23:59 to the following calendar day's 00:00, which searches that calendar date. A train from the previous service date leaving after midnight is not offered on that page. Known limitation, see §8. |
-| Same origin and destination | The same answer as depart-after gives for that request. Arrive-by adds no case of its own, and a DB test pins it (§7). |
+| Same origin and destination | The same answer as depart-after: a 200 with no journeys and `noResultReason.constraint: "noRoute"`. A DB test pins it (§7). |
 | Via, OR-group via, waypoints | Unchanged engine paths (`staged_arrive_by`). The summary's anchors come from `journeys`, so paging is whole-journey. |
 | Live overlay | Unchanged: a live arrival past the deadline makes the itinerary `liveFeasible: false` and triggers a re-plan within the budget. |
 | Both times in a hand-edited URL | The form keeps `arriveBy`. The API would 400, but the form never sends both. |

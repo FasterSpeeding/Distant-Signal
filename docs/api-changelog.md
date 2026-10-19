@@ -3,6 +3,29 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-19: `/Trips/plan` overnight times (`dayOffset`)
+
+Additive; no existing request or field changes meaning. Spec:
+`docs/superpowers/specs/2026-10-19-trips-plan-arrive-by-design.md`.
+
+- **`dayOffset=0|1`.** `1` puts `departAfter` or `arriveBy` on the
+  morning after `date`, still searching `date`'s trains. "Arrive by 00:30
+  on Saturday" is `date=<Friday>&arriveBy=00:30&dayOffset=1`, which finds
+  Friday's late trains. Absent or empty is `0`. These are 400s: any other
+  value (`dayOffset must be 0 or 1, not '2'`), and `dayOffset` without
+  `departAfter` or `arriveBy`.
+- **Top-level `departAfter`.** A new top-level key, `{time, dayOffset}`:
+  the effective start of a depart-after search (`00:00:00` when none was
+  sent), `null` for arrive-by. The top-level `arriveBy` already had this
+  shape and now carries the offset.
+- **Unchanged, for reference.** Arrive-by itself dates from 2026-09-29.
+  `fastest` returns the latest departure that arrives in time. `options`
+  lists fewest changes first, each departing strictly later.
+  `departAfter` with `arriveBy` is a 400.
+- **For ds-mcp.** Nothing to change. A `plan_journey` with an arrival time
+  after midnight can now be sent as the previous `date` with
+  `dayOffset=1` instead of going to the local planner.
+
 ## 2026-10-15: delegated access follow-ups
 
 - **`createdVia` is owner-only.** `GET /Journeys/{id}` includes it only
