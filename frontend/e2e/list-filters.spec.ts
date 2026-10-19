@@ -122,11 +122,9 @@ test.describe('search-only lists', () => {
   test('/operators filters its cards and keeps the search through a reload', async ({ page }) => {
     await page.goto('/operators');
     const cards = page.locator('main a[href^="/operators/"]');
+    // The seed's one TOC, c2c (see e2e/fixtures/seed.sql).
+    await expect(page.getByRole('link', { name: 'History for c2c' })).toBeVisible();
     const before = await cards.count();
-    // The e2e seed has no `tocs` rows (adding them would rename operators
-    // on most of the visual baselines), so there are no cards and no bar
-    // to search; SearchableList.test.tsx covers the search itself.
-    test.skip(before === 0, 'the e2e seed has no operators');
     await page.getByRole('textbox', { name: 'Find an operator' }).fill('zzzz');
     await expect(page.getByRole('status').filter({ hasText: 'No operators match.' })).toHaveCount(1);
     await expect(cards).toHaveCount(0);
@@ -162,6 +160,43 @@ test.describe('issue list', () => {
     await expect(page).toHaveURL(/[?&]dir=up(&|$)/);
     await page.reload();
     await expect(page.getByRole('radio', { name: /^Upcoming/ }).first()).toBeChecked();
+  });
+
+  test("the line page's train links keep the issue filters", async ({ page }) => {
+    // c2c: the seed gives it an empty train population, so "Trains on this
+    // line" draws its links. It has nothing wrong, so its issue list has no
+    // filters to click: the filter set after load is written to the URL the
+    // way the list writes it (useUrlFilterSync).
+    await page.goto('/lines/c2c?tflIssueTab=ended');
+    // Retried: Next.js only follows `replaceState` once it has hydrated.
+    const byRoute = page.getByRole('navigation', { name: 'Group trains' }).getByRole('link', { name: 'By route' });
+    await expect(async () => {
+      await page.evaluate(() => {
+        const url = new URL(window.location.href);
+        url.searchParams.set('issueSeverity', '6');
+        window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+      });
+      await expect(byRoute).toHaveAttribute('href', /[?&]issueSeverity=6(&|#)/, { timeout: 1000 });
+    }).toPass();
+    await byRoute.click();
+    await expect(page).toHaveURL(/[?&]view=routes(&|#|$)/);
+    await expect(page).toHaveURL(/[?&]tflIssueTab=ended(&|#|$)/);
+    await expect(page).toHaveURL(/[?&]issueSeverity=6(&|#|$)/);
+
+    await page.getByRole('link', { name: 'Later trains' }).filter({ visible: true }).click();
+    await expect(page).toHaveURL(/[?&]at=\d\d%3A\d\d(&|#|$)/);
+    await expect(page).toHaveURL(/[?&]view=routes(&|#|$)/);
+    await expect(page).toHaveURL(/[?&]issueSeverity=6(&|#|$)/);
+
+    // The station picker is a GET form: its hidden inputs carry them too.
+    await page.getByText('Pick stations').click();
+    const from = page.getByRole('combobox', { name: 'From' });
+    await from.selectOption({ index: 1 });
+    await page.getByRole('combobox', { name: 'To' }).selectOption({ index: 2 });
+    await page.getByRole('button', { name: 'Show trains' }).click();
+    await expect(page).toHaveURL(/[?&]from=[A-Z]{3}(&|#|$)/);
+    await expect(page).toHaveURL(/[?&]tflIssueTab=ended(&|#|$)/);
+    await expect(page).toHaveURL(/[?&]issueSeverity=6(&|#|$)/);
   });
 });
 
