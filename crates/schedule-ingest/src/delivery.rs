@@ -183,6 +183,17 @@ impl ExtractedFile {
     }
 }
 
+/// Whether a read error is zip's own "inflated past the declared size" check
+/// (zip >= 9.0.1). zip only gives it as message text; the test
+/// `extract_zip_rejects_an_entry_that_inflates_past_its_declared_size` fails
+/// if a zip release rewords it.
+fn is_past_declared_size(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::InvalidData
+        && err
+            .to_string()
+            .contains("larger than its declared uncompressed size")
+}
+
 /// Whether `err` is a [`RejectedZip`] (permanent) rather than an IO or
 /// transient failure worth retrying.
 pub(crate) fn is_rejected(err: &anyhow::Error) -> bool {
@@ -257,8 +268,13 @@ pub(crate) fn extract_zip(
             continue;
         }
         let Some(enclosed) = entry.enclosed_name() else {
+            // zip 9 decodes names on access and returns a Result; fall back to
+            // the raw bytes so the warning always names the entry.
+            let name = entry
+                .name()
+                .unwrap_or_else(|_| String::from_utf8_lossy(entry.name_raw()));
             tracing::warn!(
-                entry = entry.name(),
+                entry = &*name,
                 "skipping zip entry with an unsafe/unresolvable path"
             );
             continue;
@@ -275,7 +291,13 @@ pub(crate) fn extract_zip(
         let declared = entry.size();
         let out_path = dest_dir.join(&enclosed);
         let mut out = crate::audit::HashingWriter::new(std::fs::File::create(&out_path)?);
-        let bytes = std::io::copy(&mut entry.take(declared.saturating_add(1)), &mut out)?;
+        let bytes = match std::io::copy(&mut entry.take(declared.saturating_add(1)), &mut out) {
+            Ok(bytes) => bytes,
+            // zip 9 fails the read itself once an entry inflates past its
+            // declared size, before `take()` would stop it: still permanent.
+            Err(err) if is_past_declared_size(&err) => declared.saturating_add(1),
+            Err(err) => return Err(err.into()),
+        };
         let (out_file, sha256) = out.finish();
         out_file.sync_all()?;
         if bytes != declared {
@@ -1096,8 +1118,8 @@ mod tests {
 
     /// R-096: an entry whose real inflated size is larger than the size the
     /// zip declares for it (a zip bomb that lies to slip under the
-    /// declared-size cap) is cut off at `declared + 1` bytes by the `take()`
-    /// and rejected, not written out in full.
+    /// declared-size cap) is cut off by `declared + 1` bytes (zip's own size
+    /// check, or our `take()`) and rejected, not written out in full.
     #[test]
     fn extract_zip_rejects_an_entry_that_inflates_past_its_declared_size() {
         const DECLARED: u32 = 10;
@@ -1144,11 +1166,12 @@ mod tests {
             err.to_string().contains("inflated to more than 10 bytes"),
             "{err}"
         );
-        // ...and the read stopped at declared + 1, not the real 64 KiB.
+        // ...and the read stopped by declared + 1, not the real 64 KiB (zip 9
+        // fails the over-read itself, so nothing past the declared size lands).
         let written = std::fs::metadata(dest_dir.join("RJTTF942MCA.txt"))
             .unwrap()
             .len();
-        assert_eq!(written, u64::from(DECLARED) + 1);
+        assert!(written <= u64::from(DECLARED) + 1, "{written}");
     }
 
     fn fixture_zip(dir: &Path) -> PathBuf {

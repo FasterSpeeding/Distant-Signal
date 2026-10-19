@@ -73,7 +73,7 @@ tower-http = { version = "0.6.10", features = ["cors", "limit", "normalize-path"
 tracing = "0.1.44"
 trip-planner = { path = "../trip-planner" }
 trust-schema = { path = "../trust-schema" }
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 # `test-support`: the shared DB-test fixtures (`ds_store::test_support`) and
