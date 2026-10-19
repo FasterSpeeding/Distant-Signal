@@ -1318,6 +1318,8 @@ export interface TripPlanResponse extends TimetableCertaintyFields {
   segments: TripPlanSegment[];
   /** The arrive-by deadline, `null` for a depart-after request. */
   arriveBy?: { time: string; dayOffset: number } | null;
+  /** The effective depart-after start (2026-10-19), `null` for arrive-by. */
+  departAfter?: { time: string; dayOffset: number } | null;
   /** Whole journeys, aligned with every segment's `itineraries`. */
   journeys?: TripPlanJourney[];
   /** The avoid lists as applied (CRS codes). */

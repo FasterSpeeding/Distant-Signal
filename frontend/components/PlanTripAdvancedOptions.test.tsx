@@ -203,7 +203,7 @@ describe('PlanTripForm advanced options', () => {
     expect(screen.getByRole('combobox', { name: 'From' })).toHaveValue('EUS');
     expect(screen.getByRole('combobox', { name: 'To' })).toHaveValue('GLA');
     expect(screen.getByRole('combobox', { name: /Call at/ })).toHaveValue('PRE');
-    expect(screen.getByLabelText('Depart after (optional)')).toHaveValue('09:15');
+    expect(screen.getByLabelText('Time (optional)')).toHaveValue('09:15');
     expect(screen.getByRole('radio', { name: 'Compare options' })).toBeChecked();
   });
 });

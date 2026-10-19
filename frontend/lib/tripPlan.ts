@@ -64,6 +64,10 @@ export interface TripPlanQuery {
   departAfter?: string | undefined; // "HH:MM"
   /** "HH:MM"; the backend rejects it together with `departAfter`. */
   arriveBy?: string | undefined;
+  /** `1`: the time is on the morning after `date`, on `date`'s trains
+   * (2026-10-19). Only ever set by `apiQuery` (`lib/tripPlanTiming.ts`);
+   * the form and the `/plan` URL hold the visitor's own calendar date. */
+  dayOffset?: 1 | undefined;
   /** Never call at or pass through these stations. */
   avoidCrs?: string[] | undefined;
   /** Pass these, but never call at them. */
@@ -129,6 +133,9 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
   }
   if (query.arriveBy) {
     params.set('arriveBy', `${query.arriveBy}:00`);
+  }
+  if (query.dayOffset && (query.departAfter || query.arriveBy)) {
+    params.set('dayOffset', String(query.dayOffset));
   }
   if (query.maxChanges !== undefined) {
     params.set('maxChanges', String(query.maxChanges));
@@ -255,6 +262,10 @@ export function noResultHint(reason: TripPlanNoResultReason, name: (code: string
       return `Try removing ${names || 'a station'} from "Don't stop at".`;
     case 'avoidChange':
       return `Try removing ${names || 'a station'} from "Don't change at".`;
+    case 'arriveBy':
+      return 'Try a later arrival time, or search by departure time.';
+    case 'departAfter':
+      return 'Try an earlier departure time, or search by arrival time.';
     case 'avoidCombined':
       return 'Try removing some of the stations in Advanced options: together they rule out every route.';
     default:

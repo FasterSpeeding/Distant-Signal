@@ -13,6 +13,7 @@ import type { Suggestion, TrainSearchDates } from '@/lib/types';
 import { searchDateBounds } from '@/lib/searchDates';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
+import { timingMode, type TimingMode } from '@/lib/tripPlanTiming';
 import { PlanTripAdvancedOptions, advancedOptionErrors } from './PlanTripAdvancedOptions';
 import { ButtonSpinner } from '@/components/LoadingText';
 
@@ -141,6 +142,7 @@ export function PlanTripForm({
   initialOriginCrs = '',
   initial = {},
   searchDates,
+  timing,
 }: {
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
@@ -155,6 +157,10 @@ export function PlanTripForm({
    * (`lib/searchDates.ts`). Absent (a caller that doesn't read the range),
    * the picker has no upper bound. */
   searchDates?: TrainSearchDates | null | undefined;
+  /** Earlier/later paging (`PlanTripFlow`): the search it just ran, shown
+   * in the date, mode and time fields. Applied once per `seq`, so the
+   * visitor can edit the fields again afterwards. */
+  timing?: { date: string; mode: TimingMode; time: string; seq: number } | undefined;
 }) {
   const maxDate = searchDates === undefined ? undefined : searchDateBounds(searchDates, londonToday()).maxDate;
   const [originCrs, setOriginCrs] = useState(initial.originCrs ?? initialOriginCrs);
@@ -209,7 +215,20 @@ export function PlanTripForm({
   // `GET /Trips/plan` reads both fields as London wall-clock values, so a
   // browser-zone default would search hours away (or on the wrong rail
   // day) for any visitor whose device isn't on UK time.
-  const [departAfter, setDepartAfter] = useState(() => initial.departAfter ?? nowInLondon().format('HH:mm'));
+  // The same field serves both modes (2026-10-19): the earliest departure
+  // or, with "Arrive by", the latest arrival. Switching keeps the time.
+  const [mode, setMode] = useState<TimingMode>(() => timingMode(initial));
+  const [time, setTime] = useState(() => initial.arriveBy ?? initial.departAfter ?? nowInLondon().format('HH:mm'));
+  // A paged search's timing, applied while rendering (React's "adjusting
+  // state when a prop changes"), once per `seq`.
+  const [appliedTimingSeq, setAppliedTimingSeq] = useState(timing?.seq);
+  if (timing && timing.seq !== appliedTimingSeq) {
+    setAppliedTimingSeq(timing.seq);
+    setDate(timing.date);
+    setMode(timing.mode);
+    setTime(timing.time);
+  }
+  const timingLabelId = useId();
   const [results, setResults] = useState<'fastest' | 'options'>(initial.results ?? 'fastest');
   const resultsLabelId = useId();
 
@@ -284,7 +303,9 @@ export function PlanTripForm({
       destinationCrs: destinationCrs.trim(),
       waypointCrs: waypoints,
       date,
-      departAfter: departAfter || undefined,
+      // Arrive-by needs its time (`canSubmit`); depart-after without one
+      // searches from the start of the day, as before.
+      ...(mode === 'arriveBy' ? { arriveBy: time } : { departAfter: time || undefined }),
       results,
       ...(advanced.viaCrs?.length ? { viaCrs: advanced.viaCrs } : {}),
       ...(advanced.avoidCrs?.length ? { avoidCrs: advanced.avoidCrs } : {}),
@@ -294,7 +315,11 @@ export function PlanTripForm({
     });
   }
 
-  const canSubmit = originCrs.trim().length > 0 && destinationCrs.trim().length > 0 && date !== null;
+  const canSubmit =
+    originCrs.trim().length > 0 &&
+    destinationCrs.trim().length > 0 &&
+    date !== null &&
+    (mode === 'departAfter' || time.length > 0);
 
   return (
     <Stack gap="md">
@@ -361,11 +386,31 @@ export function PlanTripForm({
         minDate={londonToday()}
         {...(maxDate !== undefined && { maxDate })}
       />
-      <TimeInput
-        label="Depart after (optional)"
-        value={departAfter}
-        onChange={(event) => setDepartAfter(event.currentTarget.value)}
-      />
+      {/* "Depart after", not "Depart at": the search offers trains leaving
+          at or after the time, and "at" would promise an exact one. */}
+      <Stack gap={4}>
+        <Text id={timingLabelId} size="xs" fw={600} c="dimmed">
+          Search by
+        </Text>
+        <Group gap="sm" align="flex-end" wrap="wrap">
+          <SegmentedControl
+            aria-labelledby={timingLabelId}
+            value={mode}
+            onChange={setMode}
+            data={[
+              { label: 'Depart after', value: 'departAfter' },
+              { label: 'Arrive by', value: 'arriveBy' },
+            ]}
+          />
+          <TimeInput
+            label={mode === 'arriveBy' ? 'Time' : 'Time (optional)'}
+            value={time}
+            onChange={(event) => setTime(event.currentTarget.value)}
+            required={mode === 'arriveBy'}
+            withAsterisk={false}
+          />
+        </Group>
+      </Stack>
       {/* I3: mirrors `TrackTrainForm.tsx`'s own `modeLabelId` +
           `aria-labelledby` fix for its mode toggle (2026-09-22 UX review) --
           without a visible `Text` label wired as the name, a screen reader
@@ -387,7 +432,8 @@ export function PlanTripForm({
           change anything visible until the NEXT search, but a screen
           reader user should still hear that the choice registered. */}
       <VisuallyHidden role="status" aria-live="polite">
-        {results === 'options' ? 'Will compare route options.' : 'Will show the fastest route only.'}
+        {results === 'options' ? 'Will compare route options.' : 'Will show the fastest route only.'}{' '}
+        {mode === 'arriveBy' ? 'Will search by arrival time.' : 'Will search by departure time.'}
       </VisuallyHidden>
       <PlanTripAdvancedOptions
         options={advanced}

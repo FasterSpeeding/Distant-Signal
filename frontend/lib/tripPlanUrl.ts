@@ -4,7 +4,7 @@ import { MAX_AVOIDED, MAX_CHANGES_LIMIT, MAX_VIAS, setListParams, type TripPlanQ
 /** The `/plan` page's own query string: the last search, so the address bar
  * can be shared or bookmarked and reopens the same form. It uses the same
  * parameter names as `GET /Trips/plan` (`origin`, `destination`, `date`,
- * `departAfter`, `results`, `waypoints`, `via`, `avoid`, `avoidStop`,
+ * `departAfter` or `arriveBy`, `results`, `waypoints`, `via`, `avoid`, `avoidStop`,
  * `avoidChange`, `maxChanges`), but times stay `HH:MM`, as the form shows
  * them. `origin` alone is what a station page's "Plan a journey from here"
  * link sends. */
@@ -13,7 +13,9 @@ export function planPageSearch(query: TripPlanQuery): string {
   if (query.originCrs.trim()) params.set('origin', normalizeLocationCode(query.originCrs));
   if (query.destinationCrs.trim()) params.set('destination', normalizeLocationCode(query.destinationCrs));
   params.set('date', query.date);
-  if (query.departAfter) params.set('departAfter', query.departAfter);
+  // One time, never both: the API rejects the pair.
+  if (query.arriveBy) params.set('arriveBy', query.arriveBy);
+  else if (query.departAfter) params.set('departAfter', query.departAfter);
   if (query.results !== 'fastest') params.set('results', query.results);
   setListParams(params, query);
   if (query.maxChanges !== undefined) params.set('maxChanges', String(query.maxChanges));
@@ -80,8 +82,12 @@ export function parsePlanSearchParams(raw: RawSearchParams): PlanFormInitial {
   if (destination) initial.destinationCrs = destination;
   const date = first(raw.date);
   if (date && DATE.test(date)) initial.date = date;
+  // `arriveBy` wins when a hand-edited URL has both: the form only ever
+  // writes one.
+  const arriveBy = first(raw.arriveBy);
   const departAfter = first(raw.departAfter);
-  if (departAfter && TIME.test(departAfter)) initial.departAfter = departAfter;
+  if (arriveBy && TIME.test(arriveBy)) initial.arriveBy = arriveBy;
+  else if (departAfter && TIME.test(departAfter)) initial.departAfter = departAfter;
   const results = first(raw.results);
   if (results === 'fastest' || results === 'options') initial.results = results;
   const waypoints = codeList(first(raw.waypoints), { allowStops: true, allowGroups: true, max: 20 });

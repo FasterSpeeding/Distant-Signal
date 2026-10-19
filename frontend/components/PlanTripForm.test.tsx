@@ -1,5 +1,6 @@
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
 
@@ -99,7 +100,7 @@ describe('PlanTripForm', () => {
 
     it('pre-fills the Depart after field with the current local time on mount', () => {
       renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
-      expect(screen.getByLabelText('Depart after (optional)')).toHaveValue('15:32'); // London BST wall clock (FE-4);
+      expect(screen.getByLabelText('Time (optional)')).toHaveValue('15:32'); // London BST wall clock (FE-4);
     });
 
     it('submits the current time as departAfter when the visitor never touches the field', () => {
@@ -127,7 +128,7 @@ describe('PlanTripForm', () => {
       renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
       fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
       fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
-      fireEvent.change(screen.getByLabelText('Depart after (optional)'), { target: { value: '' } });
+      fireEvent.change(screen.getByLabelText('Time (optional)'), { target: { value: '' } });
       fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
       expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ departAfter: undefined }));
     });
@@ -220,6 +221,76 @@ describe('PlanTripForm', () => {
       fireEvent.focus(screen.getByLabelText('Date'));
       expect(await dayButton('6 September 2026')).not.toBeDisabled();
       expect(await dayButton('5 September 2026')).toBeDisabled();
+    });
+  });
+
+  describe('Depart after / Arrive by (2026-10-19)', () => {
+    function fillEnds() {
+      fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
+    }
+
+    it('submits the time as arriveBy once Arrive by is chosen, keeping the typed time', () => {
+      const onSubmit = vi.fn();
+      renderWithMantine(<PlanTripForm onSubmit={onSubmit} initial={{ departAfter: '08:15' }} />);
+      fillEnds();
+      expect(screen.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+      fireEvent.click(screen.getByRole('radio', { name: 'Arrive by' }));
+      expect(screen.getByLabelText('Time')).toHaveValue('08:15');
+      fireEvent.change(screen.getByLabelText('Time'), { target: { value: '09:00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      const query = onSubmit.mock.calls[0]![0];
+      expect(query).toMatchObject({ arriveBy: '09:00' });
+      expect(query).not.toHaveProperty('departAfter');
+    });
+
+    it('switching back sends departAfter and no arriveBy', () => {
+      const onSubmit = vi.fn();
+      renderWithMantine(<PlanTripForm onSubmit={onSubmit} initial={{ arriveBy: '09:00' }} />);
+      fillEnds();
+      fireEvent.click(screen.getByRole('radio', { name: 'Depart after' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      const query = onSubmit.mock.calls[0]![0];
+      expect(query).toMatchObject({ departAfter: '09:00' });
+      expect(query).not.toHaveProperty('arriveBy');
+    });
+
+    it('restores arrive-by from the URL', () => {
+      renderWithMantine(<PlanTripForm onSubmit={vi.fn()} initial={{ arriveBy: '17:45' }} />);
+      expect(screen.getByRole('radio', { name: 'Arrive by' })).toBeChecked();
+      expect(screen.getByLabelText('Time')).toHaveValue('17:45');
+    });
+
+    it('needs a time to search by arrival', () => {
+      renderWithMantine(<PlanTripForm onSubmit={vi.fn()} initial={{ arriveBy: '09:00' }} />);
+      fillEnds();
+      fireEvent.change(screen.getByLabelText('Time'), { target: { value: '' } });
+      expect(screen.getByRole('button', { name: 'Find routes' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('radio', { name: 'Depart after' }));
+      expect(screen.getByRole('button', { name: 'Find routes' })).toBeEnabled();
+    });
+
+    it('shows a paged search in the fields, once per seq', () => {
+      const timing = { date: '2026-10-24', mode: 'arriveBy' as const, time: '07:59', seq: 1 };
+      function Harness() {
+        const [current, setCurrent] = useState<typeof timing | undefined>(undefined);
+        return (
+          <>
+            <button type="button" onClick={() => setCurrent({ ...timing })}>
+              page
+            </button>
+            <PlanTripForm onSubmit={vi.fn()} timing={current} />
+          </>
+        );
+      }
+      renderWithMantine(<Harness />);
+      fireEvent.click(screen.getByRole('button', { name: 'page' }));
+      expect(screen.getByRole('radio', { name: 'Arrive by' })).toBeChecked();
+      expect(screen.getByLabelText('Time')).toHaveValue('07:59');
+      // The visitor edits it; the same seq does not overwrite the edit.
+      fireEvent.change(screen.getByLabelText('Time'), { target: { value: '10:00' } });
+      fireEvent.click(screen.getByRole('button', { name: 'page' }));
+      expect(screen.getByLabelText('Time')).toHaveValue('10:00');
     });
   });
 });
