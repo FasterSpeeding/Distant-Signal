@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { act, fireEvent, screen, render } from '@testing-library/react';
+import { act, fireEvent, screen, render, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { countLabel, ListFilterBar } from './ListFilterBar';
 import { ListResultSummary } from './ListResultSummary';
@@ -209,5 +209,35 @@ describe('useFilteredDocumentTitle', () => {
     expect(document.title).toContain('Incidents: "signal"');
     rerender(<TitleProbe title={null} />);
     expect(document.title).toBe('Incidents · Distant Signal');
+  });
+
+  // DS-53: React re-wrote the metadata <title>'s text after the hook had
+  // set the filtered title, so the tab went back to the unfiltered one.
+  it("puts the filtered title back when something rewrites the <title>'s text", async () => {
+    document.title = 'Operators · Distant Signal';
+    render(<TitleProbe title={'Operators: "zzzz"'} />);
+    expect(document.title).toBe('Operators: "zzzz" · Distant Signal');
+
+    // What React's late text update does: the text node itself, not the
+    // `document.title` setter.
+    const text = document.head.querySelector('title')!.firstChild as Text;
+    text.data = 'Operators · Distant Signal';
+    await waitFor(() => expect(document.title).toBe('Operators: "zzzz" · Distant Signal'));
+  });
+
+  it('stops watching once the filter is cleared, or the list is gone', async () => {
+    document.title = 'Operators · Distant Signal';
+    const { rerender, unmount } = render(<TitleProbe title={'Operators: "zzzz"'} />);
+    rerender(<TitleProbe title={null} />);
+    document.title = 'Something else';
+    await Promise.resolve();
+    expect(document.title).toBe('Something else');
+
+    rerender(<TitleProbe title={'Operators: "zzzz"'} />);
+    unmount();
+    // The next page's own title, rendered as this one goes away.
+    document.title = 'Lines · Distant Signal';
+    await Promise.resolve();
+    expect(document.title).toBe('Lines · Distant Signal');
   });
 });
