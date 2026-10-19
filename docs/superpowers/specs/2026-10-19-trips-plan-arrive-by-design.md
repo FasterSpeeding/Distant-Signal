@@ -201,8 +201,7 @@ Arrive-by is the existing code path. Its cost was measured in the
 2026-09-29 spec §5 and re-measured for this spec with
 `crates/trip-planner/tests/bench_arrive_by.rs`. That is a release build on
 the synthetic day: 27.9k trains and 401k connections, against about 290k in
-production. The numbers are in the implementation commit's report and in
-§6.1.
+production. The numbers are in §6.1.
 
 - `dayOffset` adds nothing: it is an addition to the deadline.
 - The overnight mapping can read the previous date's graph. The graph
@@ -217,7 +216,27 @@ production. The numbers are in the implementation commit's report and in
 
 ### 6.1 Measured
 
-Filled in at implementation: see the table below.
+`cargo test --release -p trip-planner --test bench_arrive_by -- --ignored
+--nocapture`, on 2026-10-19, 10 origin-destination pairs, median of 5. The
+bench's five tests run concurrently, so the absolute numbers are a little
+high. The ratios are what matter.
+
+| Search | Depart after 08:00 | Arrive by 12:00 |
+|---|---|---|
+| CSA (`fastest`), median | 14.6 ms | 16.0 ms |
+| CSA (`fastest`), max | 120.2 ms (an unreachable pair) | 36.0 ms |
+| RAPTOR rounds (`options`), median | 575.1 ms | 131.4 ms |
+| RAPTOR rounds (`options`), max | 692.7 ms | 339.7 ms |
+| CSA with `avoidStop`, median | 13.9 ms | 24.2 ms |
+
+Without waypoints, arrive-by `fastest` costs about the same as
+depart-after, and arrive-by `options` is cheaper, because the backward
+rounds only search up to the deadline. With 4 waypoints and 3 vias,
+arrive-by `fastest` costs about twice depart-after: 402 ms against 192 ms
+by CSA. Arrive-by `options` is again cheaper: 2.9 s against 4.3 s at six
+rounds. Both are below the same rows in the 2026-10-06 spec §4.2 (CSA
+0.80 s and 1.3 s), so nothing here moves an existing budget. A page of
+"Earlier routes" or "Later routes" is one of these searches.
 
 ## 7. Tests
 
