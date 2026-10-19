@@ -1,13 +1,27 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Chip, Group, SegmentedControl, Stack, Switch, Text, TextInput } from '@mantine/core';
+import {
+  Alert,
+  Autocomplete,
+  Button,
+  Chip,
+  Group,
+  SegmentedControl,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+} from '@mantine/core';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
 import type { JourneyTemplateDetail, PutJourneyTemplateRequest, TemplateLegRequest } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { searchStations } from '@/lib/suggestions';
+import { useSuggestions } from '@/lib/useSuggestions';
+import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 
 interface EditableLeg {
   // A stable, position-independent identity for this leg -- used for React
@@ -21,8 +35,16 @@ interface EditableLeg {
   // `addLeg` gets a monotonic counter value instead, since it has no
   // backend id yet.
   key: string;
+  // What each station field shows: a code, or a station name typed into
+  // the search.
   originCrs: string;
   destinationCrs: string;
+  // The CRS each station field's text stands for (`resolveStationCode`),
+  // or `null` while it stands for none. Reported by that leg's
+  // `StationField` once its suggestions arrive; this, not the text, is
+  // what Save sends.
+  originResolved: string | null;
+  destinationResolved: string | null;
   departFrom: string;
   departTo: string;
   arriveFrom: string;
@@ -34,6 +56,9 @@ function toEditableLeg(leg: JourneyTemplateDetail['legs'][number]): EditableLeg 
     key: `server-${leg.id}`,
     originCrs: leg.originCrs ?? '',
     destinationCrs: leg.destinationCrs ?? '',
+    // A saved leg's fields hold its codes, which resolve without a search.
+    originResolved: resolveStationCode(leg.originCrs ?? '', []),
+    destinationResolved: resolveStationCode(leg.destinationCrs ?? '', []),
     departFrom: leg.departAfter ?? '',
     departTo: leg.departBefore ?? '',
     arriveFrom: leg.arriveAfter ?? '',
@@ -60,6 +85,58 @@ const NO_INCOMPLETE_TIMES: LegIncompleteFlags = {
   arriveFrom: false,
   arriveTo: false,
 };
+
+/** One leg's From or To field: the site's standard station search (the
+ * same `Autocomplete` + `useSuggestions(searchStations)` +
+ * `suggestionAutocompleteProps` trio as `AddJourneyLegButton.tsx`), so a
+ * station can be found by its code or its name. Its own component because
+ * each field needs its own `useSuggestions`, and the form has as many legs
+ * as the template does. Reports the CRS its text resolves to
+ * (`resolveStationCode`) through `onResolvedChange`, since the template
+ * API takes codes: a picked suggestion or a typed code as is, a typed full
+ * name as its station's code. */
+function StationField({
+  label,
+  placeholder,
+  value,
+  onChange,
+  onResolvedChange,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+  onResolvedChange: (code: string | null) => void;
+}) {
+  const { suggestions, loading } = useSuggestions(value, searchStations);
+  // The "not a station" error waits for the field to lose focus: while
+  // someone is still typing a name, it isn't a code yet, and that's fine.
+  const [touched, setTouched] = useState(false);
+  const resolved = resolveStationCode(value, suggestions);
+  const reportResolved = useEffectEvent((code: string | null) => onResolvedChange(code));
+  useEffect(() => {
+    reportResolved(resolved);
+  }, [resolved]);
+
+  const error =
+    touched && value.trim().length > 0 && resolved === null && !loading ? 'Must be a 3-letter station code' : null;
+
+  return (
+    <Autocomplete
+      label={label}
+      placeholder={placeholder}
+      value={value}
+      onChange={onChange}
+      onBlur={() => setTouched(true)}
+      {...suggestionAutocompleteProps(suggestions, {
+        query: value,
+        loading,
+        noMatchMessage: 'No matching stations',
+      })}
+      error={error}
+    />
+  );
+}
 
 /** Mon=bit 0 (value 1) .. Sun=bit 6 (value 64), mirroring the backend's
  * own `weekday_bit`/`due_templates_for` convention
@@ -128,6 +205,17 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
     setLegs((current) => current.map((leg) => (leg.key === key ? { ...leg, ...patch } : leg)));
   }
 
+  /** Records what a station field's text resolves to. Not an edit, so it
+   * leaves "Saved." alone, and it keeps the same `legs` array when nothing
+   * changed so a field reporting its unchanged code doesn't re-render. */
+  function setLegResolved(key: string, field: 'originResolved' | 'destinationResolved', code: string | null) {
+    setLegs((current) =>
+      current.some((leg) => leg.key === key && leg[field] !== code)
+        ? current.map((leg) => (leg.key === key ? { ...leg, [field]: code } : leg))
+        : current,
+    );
+  }
+
   function setLegIncomplete(key: string, field: keyof LegIncompleteFlags, value: boolean) {
     setIncompleteByLeg((current) => ({
       ...current,
@@ -140,7 +228,17 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
     const key = `client-${nextClientLegId.current++}`;
     setLegs((current) => [
       ...current,
-      { key, originCrs: '', destinationCrs: '', departFrom: '', departTo: '', arriveFrom: '', arriveTo: '' },
+      {
+        key,
+        originCrs: '',
+        destinationCrs: '',
+        originResolved: null,
+        destinationResolved: null,
+        departFrom: '',
+        departTo: '',
+        arriveFrom: '',
+        arriveTo: '',
+      },
     ]);
   }
 
@@ -170,7 +268,7 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
 
   const isValid =
     legs.length > 0 &&
-    legs.every((leg) => leg.originCrs.trim() !== '' && leg.destinationCrs.trim() !== '') &&
+    legs.every((leg) => leg.originResolved !== null && leg.destinationResolved !== null) &&
     allTimesComplete;
 
   async function handleSave() {
@@ -183,8 +281,9 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
       const body: PutJourneyTemplateRequest = {
         ...(customName.trim() ? { customName: customName.trim() } : {}),
         legs: legs.map((leg): TemplateLegRequest => ({
-          originCrs: leg.originCrs.trim(),
-          destinationCrs: leg.destinationCrs.trim(),
+          // `isValid` has already checked both resolve.
+          originCrs: leg.originResolved ?? '',
+          destinationCrs: leg.destinationResolved ?? '',
           departWindow: { after: leg.departFrom || null, before: leg.departTo || null },
           arriveWindow: { after: leg.arriveFrom || null, before: leg.arriveTo || null },
         })),
@@ -293,16 +392,20 @@ export function EditJourneyTemplateForm({ template }: { template: JourneyTemplat
               </Button>
             )}
           </Group>
-          <Group grow>
-            <TextInput
-              label="From (station code)"
+          <Group grow align="flex-start">
+            <StationField
+              label="From station"
+              placeholder="e.g. Woking or WOK"
               value={leg.originCrs}
-              onChange={(event) => updateLeg(leg.key, { originCrs: event.currentTarget.value })}
+              onChange={(value) => updateLeg(leg.key, { originCrs: value })}
+              onResolvedChange={(code) => setLegResolved(leg.key, 'originResolved', code)}
             />
-            <TextInput
-              label="To (station code)"
+            <StationField
+              label="To station"
+              placeholder="e.g. London Waterloo or WAT"
               value={leg.destinationCrs}
-              onChange={(event) => updateLeg(leg.key, { destinationCrs: event.currentTarget.value })}
+              onChange={(value) => updateLeg(leg.key, { destinationCrs: value })}
+              onResolvedChange={(code) => setLegResolved(leg.key, 'destinationResolved', code)}
             />
           </Group>
           <Group grow align="flex-start">
