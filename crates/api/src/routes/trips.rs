@@ -219,6 +219,12 @@ struct TripPlanParams {
     /// Mutually exclusive with `departAfter` (a 400 when both are given).
     #[serde(default)]
     arrive_by: Option<NaiveTime>,
+    /// `?dayOffset=0|1` (2026-10-19): `1` puts `departAfter`/`arriveBy` on
+    /// the day after `date` -- `date=FRI&arriveBy=00:30&dayOffset=1` is "by
+    /// 00:30 on Saturday, on Friday's trains". Kept as a raw string for
+    /// [`parse_day_offset`]'s own 400.
+    #[serde(default)]
+    day_offset: Option<String>,
     /// `?avoid=CRS[,CRS]`: never call at, run through, change at or walk
     /// via these stations. See [`trip_planning_itinerary::build_restrictions`].
     #[serde(default)]
@@ -264,8 +270,15 @@ fn default_results() -> String {
 }
 
 /// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&via=]
-/// [&departAfter=|&arriveBy=][&avoid=][&avoidStop=][&avoidChange=]
+/// [&departAfter=|&arriveBy=][&dayOffset=0|1][&avoid=][&avoidStop=][&avoidChange=]
 /// [&results=fastest|options][&maxChanges=0..6][&live=true|false]`.
+///
+/// - `dayOffset=1` (2026-10-19): the `departAfter`/`arriveBy` time is on
+///   the morning after `date`, still on `date`'s trains -- "arrive by 00:30
+///   on Saturday" is `date=<Friday>&arriveBy=00:30&dayOffset=1`. The
+///   top-level `arriveBy` and (new) `departAfter` echoes carry it as
+///   `{time, dayOffset}`. See
+///   docs/superpowers/specs/2026-10-19-trips-plan-arrive-by-design.md.
 ///
 /// - `arriveBy=HH:MM` (2026-09-29): instead of the earliest arrival after
 ///   `departAfter` (exclusive with it: both given is a 400), the
@@ -420,7 +433,11 @@ async fn get_trip_plan(
     let waypoints = parse_waypoints(params.waypoints.as_deref())?;
     let max_changes = parse_max_changes(params.max_changes.as_deref())?;
     let live_requested = parse_live(params.live.as_deref())?;
-    let time = parse_time_bound(params.depart_after, params.arrive_by)?;
+    let day_offset = parse_day_offset(
+        params.day_offset.as_deref(),
+        params.depart_after.is_some() || params.arrive_by.is_some(),
+    )?;
+    let time = parse_time_bound(params.depart_after, params.arrive_by, day_offset)?;
     // A CRS, or a bus stop's or ferry terminal's `tiploc:` code.
     let origin = common::location_naming::normalize_location_code(&params.origin);
     let destination = common::location_naming::normalize_location_code(&params.destination);
@@ -672,6 +689,13 @@ async fn get_trip_plan(
         "arriveBy": match request.time {
             trip_planning_itinerary::TimeBound::ArriveBy(minutes) => Some(segment_clock(minutes)),
             trip_planning_itinerary::TimeBound::DepartAfter(_) => None,
+        },
+        // Additive (2026-10-19): the effective depart-after start (00:00
+        // when none was given), `null` for an arrive-by request. Both
+        // echoes carry `dayOffset` (see `?dayOffset=`).
+        "departAfter": match request.time {
+            trip_planning_itinerary::TimeBound::DepartAfter(minutes) => Some(segment_clock(minutes)),
+            trip_planning_itinerary::TimeBound::ArriveBy(_) => None,
         },
         "avoid": request.avoid.avoid,
         "avoidStop": request.avoid.avoid_stop,
@@ -1346,14 +1370,44 @@ fn check_options_search_size(
     ))
 }
 
+/// `?dayOffset=`: absent or empty is 0; otherwise `0` or `1`, and only
+/// with `departAfter` or `arriveBy` (`has_time`) -- an offset for no time
+/// would be silently meaningless.
+fn parse_day_offset(raw: Option<&str>, has_time: bool) -> Result<u32, (StatusCode, String)> {
+    let raw = raw.map(str::trim).unwrap_or_default();
+    if raw.is_empty() {
+        return Ok(0);
+    }
+    let offset = match raw {
+        "0" => 0,
+        "1" => 1,
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("dayOffset must be 0 or 1, not '{raw}'"),
+            ));
+        }
+    };
+    if !has_time {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "dayOffset needs departAfter or arriveBy".to_string(),
+        ));
+    }
+    Ok(offset)
+}
+
 /// `?departAfter=` / `?arriveBy=`: at most one. Neither means departing
-/// after 00:00, as before.
+/// after 00:00, as before. `day_offset` (0 or 1, [`parse_day_offset`])
+/// adds that many days: the engine's minutes run on past 1440 for a
+/// service date's post-midnight calls.
 fn parse_time_bound(
     depart_after: Option<NaiveTime>,
     arrive_by: Option<NaiveTime>,
+    day_offset: u32,
 ) -> Result<trip_planning_itinerary::TimeBound, (StatusCode, String)> {
     use chrono::Timelike;
-    let minutes = |time: NaiveTime| time.num_seconds_from_midnight() / 60;
+    let minutes = |time: NaiveTime| time.num_seconds_from_midnight() / 60 + day_offset * 1440;
     match (depart_after, arrive_by) {
         (Some(_), Some(_)) => Err((
             StatusCode::BAD_REQUEST,
@@ -1589,21 +1643,63 @@ mod tests {
     #[test]
     fn depart_after_and_arrive_by_are_mutually_exclusive() {
         let at = |h| NaiveTime::from_hms_opt(h, 30, 0);
-        let (status, message) = parse_time_bound(at(9), at(10)).unwrap_err();
+        let (status, message) = parse_time_bound(at(9), at(10), 0).unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(message.contains("mutually exclusive"), "{message}");
         assert_eq!(
-            parse_time_bound(None, at(10)),
+            parse_time_bound(None, at(10), 0),
             Ok(trip_planning_itinerary::TimeBound::ArriveBy(630))
         );
         assert_eq!(
-            parse_time_bound(at(9), None),
+            parse_time_bound(at(9), None, 0),
             Ok(trip_planning_itinerary::TimeBound::DepartAfter(570))
         );
         assert_eq!(
-            parse_time_bound(None, None),
+            parse_time_bound(None, None, 0),
             Ok(trip_planning_itinerary::TimeBound::DepartAfter(0))
         );
+    }
+
+    /// `dayOffset=1` moves either bound onto the next morning: past 1440,
+    /// where a service date's post-midnight calls already sit.
+    #[test]
+    fn a_day_offset_moves_the_time_bound_past_midnight() {
+        let at = |h| NaiveTime::from_hms_opt(h, 30, 0);
+        assert_eq!(
+            parse_time_bound(None, at(0), 1),
+            Ok(trip_planning_itinerary::TimeBound::ArriveBy(1440 + 30))
+        );
+        assert_eq!(
+            parse_time_bound(at(1), None, 1),
+            Ok(trip_planning_itinerary::TimeBound::DepartAfter(1440 + 90))
+        );
+    }
+
+    #[test]
+    fn day_offset_is_0_or_1_and_needs_a_time() {
+        assert_eq!(parse_day_offset(None, false), Ok(0));
+        assert_eq!(parse_day_offset(Some(""), false), Ok(0));
+        assert_eq!(parse_day_offset(Some(" 1 "), true), Ok(1));
+        assert_eq!(parse_day_offset(Some("0"), true), Ok(0));
+        for bad in ["2", "-1", "x", "1.0"] {
+            let (status, message) = parse_day_offset(Some(bad), true).unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(message.contains("0 or 1"), "{bad}: {message}");
+        }
+        let (status, message) = parse_day_offset(Some("1"), false).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("departAfter or arriveBy"), "{message}");
+    }
+
+    #[test]
+    fn day_offset_is_read_from_its_camel_case_wire_name() {
+        let uri: axum::http::Uri = "http://example.com/Trips/plan?origin=EUS&destination=MKC&\
+                                     date=2026-09-23&arriveBy=00:30&dayOffset=1"
+            .parse()
+            .expect("parse uri");
+        let Query(params) =
+            Query::<TripPlanParams>::try_from_uri(&uri).expect("valid query string");
+        assert_eq!(params.day_offset.as_deref(), Some("1"));
     }
 
     #[test]
@@ -3943,6 +4039,172 @@ mod db_tests {
             "/Trips/plan?origin=ZVA&destination=ZVC&date={}{query}",
             live_date()
         )
+    }
+
+    // ---------------------------------------------------------------------
+    // Overnight (2026-10-19): `dayOffset=1` puts the time bound on the next
+    // morning, on `date`'s trains.
+    //
+    //   TOVN2  ZOA 23:00 -> ZOB 23:50
+    //   TOVN1  ZOA 23:30 -> ZOB 00:20 (+1)
+    //   TOVN3  ZOA 00:15 (+1) -> ZOB 00:45 (+1)
+    // ---------------------------------------------------------------------
+
+    /// `(uid, seq, tiploc, kind, arrival, departure, day_offset)`.
+    type OvernightCall<'a> = (
+        &'a str,
+        i32,
+        &'a str,
+        &'a str,
+        Option<&'a str>,
+        Option<&'a str>,
+        i16,
+    );
+
+    async fn seed_overnight_network(pool: &PgPool) -> [&'static str; 3] {
+        let uids = ["TOVN1", "TOVN2", "TOVN3"];
+        cleanup_live(pool, &uids, "TOVNET").await;
+        seed_stations(pool, "TOVNET", &[("ZOA", "TOVA"), ("ZOB", "TOVB")]).await;
+        let rows: [OvernightCall<'_>; 6] = [
+            ("TOVN2", 0, "TOVA", "origin", None, Some("23:00:00"), 0),
+            ("TOVN2", 1, "TOVB", "terminate", Some("23:50:00"), None, 0),
+            ("TOVN1", 0, "TOVA", "origin", None, Some("23:30:00"), 0),
+            ("TOVN1", 1, "TOVB", "terminate", Some("00:20:00"), None, 1),
+            ("TOVN3", 0, "TOVA", "origin", None, Some("00:15:00"), 1),
+            ("TOVN3", 1, "TOVB", "terminate", Some("00:45:00"), None, 1),
+        ];
+        for (uid, seq, tiploc, kind, arrival, departure, day_offset) in rows {
+            sqlx::query(
+                "INSERT INTO schedule_calling_points_full \
+                 (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+                 VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, $8) ON CONFLICT DO NOTHING",
+            )
+            .bind(live_date())
+            .bind(uid)
+            .bind(seq)
+            .bind(tiploc)
+            .bind(kind)
+            .bind(arrival)
+            .bind(departure)
+            .bind(day_offset)
+            .execute(pool)
+            .await
+            .expect("seed calling point");
+        }
+        uids
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn day_offset_plans_across_midnight_live_on_and_off() {
+        let pool = connect().await;
+        let uids = seed_overnight_network(&pool).await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+
+        for live in ["&live=false", ""] {
+            let plan = |query: &str| {
+                let pool = pool.clone();
+                let uri = format!(
+                    "/Trips/plan?origin=ZOA&destination=ZOB&date={}{query}{live}",
+                    live_date()
+                );
+                async move { get(test_router(test_app(pool)), uri).await }
+            };
+
+            // By 00:30 the next morning: the 23:30, arriving 00:20.
+            let (status, body) = plan("&arriveBy=00:30&dayOffset=1").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(train_uids(&body, 0), ["TOVN1"], "{live} {body:?}");
+            assert_eq!(
+                body["arriveBy"],
+                serde_json::json!({"time": "00:30:00", "dayOffset": 1}),
+                "{body:?}"
+            );
+            assert!(body["departAfter"].is_null(), "{body:?}");
+            assert_eq!(
+                body["journeys"][0]["arrival"],
+                serde_json::json!({"time": "00:20:00", "dayOffset": 1}),
+                "{body:?}"
+            );
+
+            // By 00:30 on the service date itself: nothing (the trains are
+            // all late evening), with the earliest arrival named.
+            let (status, body) = plan("&arriveBy=00:30").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(
+                body["segments"][0]["noResultReason"]["constraint"], "arriveBy",
+                "{body:?}"
+            );
+
+            // By 23:59: the 23:00, not the 00:20 arrival.
+            let (_, body) = plan("&arriveBy=23:59").await;
+            assert_eq!(train_uids(&body, 0), ["TOVN2"], "{live} {body:?}");
+
+            // Depart after 00:10 the next morning: the 00:15, and the echo.
+            let (status, body) = plan("&departAfter=00:10&dayOffset=1").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(train_uids(&body, 0), ["TOVN3"], "{live} {body:?}");
+            assert_eq!(
+                body["departAfter"],
+                serde_json::json!({"time": "00:10:00", "dayOffset": 1}),
+                "{body:?}"
+            );
+            assert!(body["arriveBy"].is_null(), "{body:?}");
+
+            // No time given: the echo is the effective 00:00 start.
+            let (_, body) = plan("").await;
+            assert_eq!(
+                body["departAfter"],
+                serde_json::json!({"time": "00:00:00", "dayOffset": 0}),
+                "{body:?}"
+            );
+        }
+
+        // The 400s, checked before any search.
+        for (query, needle) in [
+            ("&arriveBy=00:30&dayOffset=2", "0 or 1"),
+            ("&dayOffset=1", "departAfter or arriveBy"),
+            ("&departAfter=09:00&arriveBy=10:00", "mutually exclusive"),
+        ] {
+            let uri = format!(
+                "/Trips/plan?origin=ZOA&destination=ZOB&date={}{query}",
+                live_date()
+            );
+            let (status, body) = get(test_router(test_app(pool.clone())), uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body:?}");
+            assert!(body.to_string().contains(needle), "{query}: {body:?}");
+        }
+
+        // The same station at both ends: arrive-by answers as depart-after.
+        let same = |query: &'static str| {
+            let pool = pool.clone();
+            let uri = format!(
+                "/Trips/plan?origin=ZOA&destination=ZOA&date={}{query}&live=false",
+                live_date()
+            );
+            async move { get(test_router(test_app(pool)), uri).await }
+        };
+        let (depart_status, depart) = same("&departAfter=22:00").await;
+        let (arrive_status, arrive) = same("&arriveBy=23:59").await;
+        assert_eq!(depart_status, arrive_status, "{depart:?} {arrive:?}");
+        assert_eq!(
+            depart["segments"][0]["itineraries"]
+                .as_array()
+                .map(Vec::len),
+            arrive["segments"][0]["itineraries"]
+                .as_array()
+                .map(Vec::len),
+            "{depart:?} {arrive:?}"
+        );
+        for body in [&depart, &arrive] {
+            assert_eq!(
+                body["segments"][0]["noResultReason"]["constraint"], "noRoute",
+                "{body:?}"
+            );
+        }
+
+        cleanup_live(&pool, &uids, "TOVNET").await;
     }
 
     #[tokio::test]

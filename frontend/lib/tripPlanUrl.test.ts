@@ -114,4 +114,31 @@ describe('planPageSearch / parsePlanSearchParams', () => {
     });
     expect(parsePlanSearchParams(toRaw(search))).toMatchObject({ waypointCrs: ['group:LON'], viaCrs: ['group:LON'] });
   });
+
+  it('round-trips an arrive-by search, never writing both times', () => {
+    const query: TripPlanQuery = {
+      originCrs: 'EUS',
+      destinationCrs: 'MKC',
+      waypointCrs: [],
+      date: '2026-10-24',
+      arriveBy: '00:30',
+      results: 'fastest',
+    };
+    const search = planPageSearch({ ...query, departAfter: '08:00' });
+    // The visitor's own calendar date and time: the overnight mapping is
+    // the API request's business, not the address bar's.
+    expect(search).toBe('origin=EUS&destination=MKC&date=2026-10-24&arriveBy=00%3A30');
+    expect(parsePlanSearchParams(toRaw(search))).toEqual({
+      originCrs: 'EUS',
+      destinationCrs: 'MKC',
+      date: '2026-10-24',
+      arriveBy: '00:30',
+    });
+  });
+
+  it('keeps arriveBy when a hand-edited URL has both times, and drops a malformed one', () => {
+    expect(parsePlanSearchParams({ departAfter: '08:00', arriveBy: '09:00' })).toEqual({ arriveBy: '09:00' });
+    expect(parsePlanSearchParams({ departAfter: '08:00', arriveBy: '25:00' })).toEqual({ departAfter: '08:00' });
+    expect(parsePlanSearchParams({ arriveBy: '9am' })).toEqual({});
+  });
 });

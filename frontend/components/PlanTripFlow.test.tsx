@@ -998,3 +998,136 @@ describe('PlanTripFlow advanced options', () => {
     expect(await screen.findByText(/Allow more changes in Advanced options/)).toBeInTheDocument();
   });
 });
+
+describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    mockStationNames.clear();
+    window.history.replaceState(null, '', '/');
+  });
+
+  // A future date, so the form keeps it (a past one is replaced by today).
+  const DATE = '2030-10-24';
+
+  function planWith(departure: [string, number], arrival: [string, number]): TripPlanResponse {
+    return {
+      ...singleSegmentPlan,
+      journeys: [
+        {
+          changeCount: 0,
+          departure: { time: departure[0], dayOffset: departure[1] },
+          arrival: { time: arrival[0], dayOffset: arrival[1] },
+          totalDurationMinutes: 50,
+        },
+      ],
+    };
+  }
+
+  function ok(plan: TripPlanResponse) {
+    return { ok: true, json: () => Promise.resolve(plan) };
+  }
+
+  function sentParams(fetchMock: ReturnType<typeof vi.fn>, call: number): URLSearchParams {
+    return new URL(String(fetchMock.mock.calls[call]![0]), 'http://localhost').searchParams;
+  }
+
+  async function searchArriveBy(fetchMock: ReturnType<typeof vi.fn>, arriveBy: string) {
+    vi.stubGlobal('fetch', fetchMock);
+    renderWithMantine(
+      <PlanTripFlow
+        onCreated={vi.fn()}
+        syncUrl
+        initialQuery={{ originCrs: 'EUS', destinationCrs: 'MKC', date: DATE, arriveBy }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  }
+
+  it('plans by arrival time and says so above the results', async () => {
+    window.history.replaceState(null, '', '/plan');
+    const fetchMock = vi.fn().mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])));
+    await searchArriveBy(fetchMock, '09:00');
+    const sent = sentParams(fetchMock, 0);
+    expect(sent.get('arriveBy')).toBe('09:00:00');
+    expect(sent.has('departAfter')).toBe(false);
+    expect(sent.has('dayOffset')).toBe(false);
+    expect(await screen.findByText('Arrive by 09:00, 24 Oct 2030')).toBeInTheDocument();
+    expect(window.location.search).toContain('arriveBy=09%3A00');
+    expect(window.location.search).not.toContain('departAfter');
+  });
+
+  it("sends an arrival just after midnight as the previous day with dayOffset 1, but shows the visitor's date", async () => {
+    window.history.replaceState(null, '', '/plan');
+    const fetchMock = vi.fn().mockResolvedValueOnce(ok(planWith(['23:30:00', 0], ['00:20:00', 1])));
+    await searchArriveBy(fetchMock, '00:30');
+    const sent = sentParams(fetchMock, 0);
+    expect(sent.get('date')).toBe('2030-10-23');
+    expect(sent.get('arriveBy')).toBe('00:30:00');
+    expect(sent.get('dayOffset')).toBe('1');
+    expect(await screen.findByText('Arrive by 00:30, 24 Oct 2030')).toBeInTheDocument();
+    // The address bar keeps what the visitor asked for.
+    expect(window.location.search).toContain(`date=${DATE}`);
+    expect(window.location.search).not.toContain('dayOffset');
+  });
+
+  it('pages later by departure and earlier by arrival, updating the form, summary and URL', async () => {
+    window.history.replaceState(null, '', '/plan');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])))
+      .mockResolvedValueOnce(ok(planWith(['08:30:00', 0], ['09:20:00', 0])))
+      .mockResolvedValueOnce(ok(planWith(['07:30:00', 0], ['08:20:00', 0])));
+    await searchArriveBy(fetchMock, '09:00');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Later routes' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    let sent = sentParams(fetchMock, 1);
+    expect(sent.get('departAfter')).toBe('08:01:00');
+    expect(sent.has('arriveBy')).toBe(false);
+    expect(await screen.findByText('Depart after 08:01, 24 Oct 2030')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+    expect(screen.getByLabelText('Time (optional)')).toHaveValue('08:01');
+    expect(window.location.search).toContain('departAfter=08%3A01');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier routes' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    sent = sentParams(fetchMock, 2);
+    expect(sent.get('arriveBy')).toBe('09:19:00');
+    expect(sent.has('departAfter')).toBe(false);
+    expect(await screen.findByText('Arrive by 09:19, 24 Oct 2030')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Arrive by' })).toBeChecked();
+  });
+
+  it('pages from the last plan with a journey when this page has none', async () => {
+    const empty: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          ...singleSegmentPlan.segments[0]!,
+          itineraries: [],
+          noResultReason: { constraint: 'departAfter', values: ['08:01'], message: 'Nothing leaves after 08:01.' },
+        },
+      ],
+      journeys: [],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])))
+      .mockResolvedValueOnce(ok(empty))
+      .mockResolvedValueOnce(ok(planWith(['07:30:00', 0], ['08:20:00', 0])));
+    await searchArriveBy(fetchMock, '09:00');
+    fireEvent.click(await screen.findByRole('button', { name: 'Later routes' }));
+    expect(await screen.findByText(/Try an earlier departure time, or search by arrival time\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier routes' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(sentParams(fetchMock, 2).get('arriveBy')).toBe('08:49:00');
+  });
+
+  it('offers no paging before a search', () => {
+    renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Later routes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Earlier routes' })).not.toBeInTheDocument();
+  });
+});

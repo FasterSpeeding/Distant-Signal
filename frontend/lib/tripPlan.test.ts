@@ -54,6 +54,20 @@ describe('buildTripPlanQuery', () => {
     expect(new URLSearchParams(query).get('waypoints')).toBe('YRK');
   });
 
+  it('sends dayOffset only with a time', () => {
+    const query = {
+      originCrs: 'EUS',
+      destinationCrs: 'MKC',
+      waypointCrs: [],
+      date: '2026-10-23',
+      results: 'fastest' as const,
+    };
+    expect(
+      new URLSearchParams(buildTripPlanQuery({ ...query, arriveBy: '00:30', dayOffset: 1 })).get('dayOffset'),
+    ).toBe('1');
+    expect(new URLSearchParams(buildTripPlanQuery({ ...query, dayOffset: 1 })).has('dayOffset')).toBe(false);
+  });
+
   it('appends :00 to a departAfter HH:MM value', () => {
     const query = buildTripPlanQuery({
       originCrs: 'EUS',
@@ -386,6 +400,12 @@ describe('advanced options', () => {
       `Try removing Stafford from "Don't stop at".`,
     );
     expect(noResultHint({ constraint: 'noRoute', values: [], message: '' }, name)).toBeNull();
+    expect(noResultHint({ constraint: 'arriveBy', values: ['09:00'], message: '' }, name)).toBe(
+      'Try a later arrival time, or search by departure time.',
+    );
+    expect(noResultHint({ constraint: 'departAfter', values: ['23:00'], message: '' }, name)).toBe(
+      'Try an earlier departure time, or search by arrival time.',
+    );
   });
 
   it('recognises the options-mode search-size 400', () => {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Button, List, ListItem, Stack, Text } from '@mantine/core';
+import { Alert, Button, Group, List, ListItem, Stack, Text } from '@mantine/core';
 import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -16,6 +16,7 @@ import {
   type TripPlanQuery,
 } from '@/lib/tripPlan';
 import { planPageSearch, type PlanFormInitial } from '@/lib/tripPlanUrl';
+import { apiQuery, earlierQuery, laterQuery, timingMode, timingSummary, type TimingMode } from '@/lib/tripPlanTiming';
 import { getStationNames } from '@/lib/suggestions';
 import { groupLabels, useStationGroups } from '@/lib/stationGroups';
 import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
@@ -35,6 +36,15 @@ function idempotencyKey(): string {
 
 interface SegmentSelection {
   itinerary: TripPlanItinerary | null;
+}
+
+/** A plan with the visitor's search that produced it, and the service date
+ * that search was sent as (`apiQuery`: an arrive-by time after midnight is
+ * the previous day's trains). */
+interface AnsweredSearch {
+  query: TripPlanQuery;
+  serviceDate: string;
+  plan: TripPlanResponse;
 }
 
 /** "Plan a route for me" (design spec §5.3): the form (Task 3) → results
@@ -98,6 +108,15 @@ export function PlanTripFlow({
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  // The search the shown plan answers (for its summary line), and the last
+  // one that found a journey: earlier/later page from the plan on screen,
+  // or from this one when the page on screen is empty.
+  const [answered, setAnswered] = useState<AnsweredSearch | null>(null);
+  const [pagingAnchor, setPagingAnchor] = useState<AnsweredSearch | null>(null);
+  // A paged search's timing, pushed into the form's fields.
+  const [formTiming, setFormTiming] = useState<
+    { date: string; mode: TimingMode; time: string; seq: number } | undefined
+  >(undefined);
   const needsLoginState = useNeedsLogin();
   // Monotonic guard against a stale `GET /Trips/plan` response landing
   // after a newer search was already issued (I2) -- `GET /Trips/plan` can
@@ -116,7 +135,7 @@ export function PlanTripFlow({
   // identity check, together, not either alone).
   const searchRequestId = useRef(0);
 
-  async function handleSearch(query: TripPlanQuery) {
+  async function handleSearch(query: TripPlanQuery, paged = false) {
     // Whole-branch final-review finding: data correctness was already
     // covered by the `searchRequestId` guard below (a stale response can
     // never overwrite a newer one), but nothing stopped a second click
@@ -139,15 +158,22 @@ export function PlanTripFlow({
       window.history.replaceState(null, '', `${window.location.pathname}?${planPageSearch(query)}`);
     }
     setPlan(null);
+    setAnswered(null);
+    // A new search from the form starts paging afresh.
+    if (!paged) setPagingAnchor(null);
     // Clears out the PREVIOUS search's resolved names immediately (not
     // just once the new lookup resolves) -- otherwise a code the new plan
     // never mentions could keep rendering the old plan's name for the
     // brief window before `getStationNames` below resolves.
     setStationNames(new Map());
     try {
-      const result = await fetchTripPlan(query);
+      const sent = apiQuery(query);
+      const result = await fetchTripPlan(sent);
       if (searchRequestId.current !== requestId) return; // superseded by a newer search
       setPlan(result);
+      const search = { query, serviceDate: sent.date, plan: result };
+      setAnswered(search);
+      if ((result.journeys ?? []).length > 0) setPagingAnchor(search);
       setSelections(result.segments.map(() => ({ itinerary: null })));
       // Best-effort, non-blocking: the plan itself is already fully
       // renderable with bare codes (`codeRouteLabel`'s own fallback), so
@@ -252,6 +278,23 @@ export function PlanTripFlow({
     }
   }
 
+  // Earlier/later: one request each, from the plan on screen, or from the
+  // last one with a journey when this page is empty (spec §4.3).
+  const pagingFrom = answered && (answered.plan.journeys ?? []).length > 0 ? answered : pagingAnchor;
+  const earlier = pagingFrom ? earlierQuery(pagingFrom.query, pagingFrom.serviceDate, pagingFrom.plan) : null;
+  const later = pagingFrom ? laterQuery(pagingFrom.query, pagingFrom.serviceDate, pagingFrom.plan) : null;
+
+  function page(query: TripPlanQuery) {
+    if (searching) return;
+    setFormTiming((current) => ({
+      date: query.date,
+      mode: timingMode(query),
+      time: query.arriveBy ?? query.departAfter ?? '',
+      seq: (current?.seq ?? 0) + 1,
+    }));
+    void handleSearch(query, true);
+  }
+
   const hintFor = (reason: Parameters<typeof noResultHint>[0]) =>
     noResultHint(reason, (code) => codeStationLabel(code, stationNames.get(code)));
 
@@ -263,6 +306,7 @@ export function PlanTripFlow({
         initialOriginCrs={initialOriginCrs}
         initial={initialQuery}
         searchDates={searchDates}
+        timing={formTiming}
       />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
@@ -281,6 +325,11 @@ export function PlanTripFlow({
             <ListItem>Lower &quot;Most changes&quot; in Advanced options.</ListItem>
           </List>
         </Alert>
+      )}
+      {plan && answered && (
+        <Text fw={600} data-testid="plan-timing-summary">
+          {timingSummary(answered.query)}
+        </Text>
       )}
       {plan && <ProvisionalTimetableNote provisional={plan.provisional} />}
       {plan?.segments.map((segment, segmentIndex) => {
@@ -331,6 +380,20 @@ export function PlanTripFlow({
           </Stack>
         );
       })}
+      {plan && (earlier ?? later) && (
+        <Group gap="sm">
+          {earlier && (
+            <Button variant="default" disabled={searching} onClick={() => page(earlier)}>
+              Earlier routes
+            </Button>
+          )}
+          {later && (
+            <Button variant="default" disabled={searching} onClick={() => page(later)}>
+              Later routes
+            </Button>
+          )}
+        </Group>
+      )}
       {creationError && (
         <Alert color="red" title="Couldn't track this journey">
           {creationError}
