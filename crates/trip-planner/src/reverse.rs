@@ -891,6 +891,69 @@ mod tests {
     }
 
     #[test]
+    fn an_overnight_deadline_takes_the_latest_train_across_midnight() {
+        // Minutes run on past 1440 for a service day's post-midnight calls:
+        // U2 leaves 23:30 and arrives 00:20 the next morning (1460).
+        let connections = sorted(vec![
+            conn("U1", "A", "B", 1380, 1430),
+            conn("U2", "A", "B", 1410, 1460),
+            conn("U3", "A", "B", 1425, 1475),
+        ]);
+        let ic = interchange(&[]);
+        let (from, to) = (s("A"), s("B"));
+        // By 00:30 the next morning (1470): U2, not U3 (00:35).
+        let journey =
+            scan_connections_arrive_by(arrive_by(&connections, &ic, &from, &to, 1470), None, None)
+                .expect("U2 arrives by 00:30");
+        assert_eq!(uids(&journey), vec!["U2"]);
+        assert_eq!((journey.departure_min, journey.arrival_min), (1410, 1460));
+        // By 23:59 the same evening: U1. U2's 00:20 is not "20 minutes".
+        let journey =
+            scan_connections_arrive_by(arrive_by(&connections, &ic, &from, &to, 1439), None, None)
+                .expect("U1 arrives by 23:59");
+        assert_eq!(uids(&journey), vec!["U1"]);
+    }
+
+    #[test]
+    fn a_change_across_midnight_still_needs_its_change_time() {
+        // At B (5 min): U0 arrives 00:02 (1442), too late for V1's 00:05
+        // (1445); U1 arrives 23:55 (1435) and makes it.
+        let connections = sorted(vec![
+            conn("U1", "A", "B", 1420, 1435),
+            conn("U0", "A", "B", 1430, 1442),
+            conn("V1", "B", "C", 1445, 1470),
+        ]);
+        let ic = interchange(&[("B", 5)]);
+        let (from, to) = (s("A"), s("C"));
+        let journey =
+            scan_connections_arrive_by(arrive_by(&connections, &ic, &from, &to, 1480), None, None)
+                .expect("U1 then V1");
+        assert_eq!(uids(&journey), vec!["U1", "V1"]);
+        assert_eq!(journey.departure_min, 1420);
+    }
+
+    #[test]
+    fn the_round_cap_is_a_max_changes_cap() {
+        // As above: direct D1 leaves 420, U1 + U2 (one change) leaves 450.
+        // One round (`maxChanges=0`) offers only D1; the latest departure
+        // with no change is 420 even though 450 exists with one.
+        let connections = sorted(vec![
+            conn("D1", "A", "C", 420, 590),
+            conn("U1", "A", "B", 450, 500),
+            conn("U2", "B", "C", 510, 580),
+        ]);
+        let ic = interchange(&[("B", 5)]);
+        let (from, to) = (s("A"), s("C"));
+        let options = arrive_by(&connections, &ic, &from, &to, 600);
+        let journeys = raptor_arrive_by(options, None, None, 1);
+        let shape: Vec<(u32, u32, usize)> = journeys
+            .iter()
+            .map(|j| (j.changes, j.departure_min, j.legs.len()))
+            .collect();
+        assert_eq!(shape, vec![(0, 420, 1)]);
+    }
+
+    #[test]
     fn restrictions_apply_backwards_too() {
         // The only change point is B; avoiding changes there leaves the
         // slower direct train.
