@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Autocomplete, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
 import { nowInLondon } from '@/lib/londonWallClock';
@@ -11,14 +11,11 @@ import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { searchStations } from '@/lib/suggestions';
+import { useSuggestions } from '@/lib/useSuggestions';
+import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 
 type LegMode = NewJourneyLegRequest['mode'];
-
-// Same convention as `TrainSearchForm.tsx`/`TrackTrainForm.tsx`/
-// `TicketEntryForm.tsx`'s own `CRS_PATTERN` -- a bare 3-letter code, checked
-// client-side so a malformed value gets a friendly inline message here
-// rather than reaching the backend and coming back as a raw 400.
-const CRS_PATTERN = /^[A-Za-z]{3}$/;
 
 /** Bug: this form's Service date field is free text (`placeholder`
  * "YYYY-MM-DD" is only a hint, not enforced) with no client-side format
@@ -61,9 +58,18 @@ function isValidServiceDate(value: string): boolean {
  * `TrainSearchForm.tsx`'s window-entry UI (no live results list to pick
  * a UID from) -- there is no standalone, embeddable time-window-search
  * component in this codebase to reuse; that UI lives inline inside
- * `TrackTrainForm.tsx`. Plain `TextInput`/`SegmentedControl` fields
- * submit the window criteria straight to the backend, which does its own
- * matching (`POST /Journeys/{journeyId}/legs`, `mode: 'window'`). */
+ * `TrackTrainForm.tsx`. Plain fields submit the window criteria straight
+ * to the backend, which does its own matching
+ * (`POST /Journeys/{journeyId}/legs`, `mode: 'window'`).
+ *
+ * The two station fields are the site's standard station search (the same
+ * `Autocomplete` + `useSuggestions(searchStations)` +
+ * `suggestionAutocompleteProps` trio as `TrackTrainForm.tsx` and the
+ * /stations lookup), so a station can be found by its code or its name.
+ * They used to be bare code-only text inputs. The leg API takes CRS codes,
+ * so each field's text goes through `resolveStationCode`: a picked
+ * suggestion (which writes its code) or a typed code is used as is, and a
+ * typed full name resolves to its station's code. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
@@ -105,6 +111,18 @@ export function AddJourneyLegButton({
   // that component's own doc comment. Tracked the same way
   // `TrackTrainForm.tsx`'s `windowIncompleteTimes` is, so a half-typed
   // bound blocks submission instead of silently vanishing from the request.
+  const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
+    originCrs,
+    searchStations,
+  );
+  const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
+    destinationCrs,
+    searchStations,
+  );
+  // The "not a station" error waits for the field to lose focus: while
+  // someone is still typing a name, it isn't a code yet, and that's fine.
+  const [originTouched, setOriginTouched] = useState(false);
+  const [destinationTouched, setDestinationTouched] = useState(false);
   const [incompleteTimes, setIncompleteTimes] = useState({
     departFrom: false,
     departTo: false,
@@ -123,6 +141,8 @@ export function AddJourneyLegButton({
     // component's own doc comment.
     setOriginCrs(priorDestinationCrs ?? '');
     setDestinationCrs('');
+    setOriginTouched(false);
+    setDestinationTouched(false);
     // London's today, not the browser's (FE-4): a rail service date.
     setServiceDate(nowInLondon().format('YYYY-MM-DD'));
     setTrainUid('');
@@ -134,13 +154,16 @@ export function AddJourneyLegButton({
     open();
   }
 
+  const resolvedOrigin = resolveStationCode(originCrs, originSuggestions);
+  const resolvedDestination = resolveStationCode(destinationCrs, destinationSuggestions);
+
   function currentRequest(): NewJourneyLegRequest {
     return mode === 'knownTrain'
       ? { mode: 'knownTrain', trainUid, serviceDate }
       : {
           mode: 'window',
-          originCrs,
-          destinationCrs,
+          originCrs: resolvedOrigin ?? '',
+          destinationCrs: resolvedDestination ?? '',
           serviceDate,
           departWindow: { after: departFrom || null, before: departTo || null },
           arriveWindow: { after: arriveFrom || null, before: arriveTo || null },
@@ -158,8 +181,16 @@ export function AddJourneyLegButton({
     (!departFrom || !departTo || departFrom <= departTo) && (!arriveFrom || !arriveTo || arriveFrom <= arriveTo);
 
   const serviceDateValid = isValidServiceDate(serviceDate);
-  const originCrsValid = CRS_PATTERN.test(originCrs.trim());
-  const destinationCrsValid = CRS_PATTERN.test(destinationCrs.trim());
+  const originCrsValid = resolvedOrigin !== null;
+  const destinationCrsValid = resolvedDestination !== null;
+  const originError =
+    originTouched && originCrs.trim().length > 0 && !originCrsValid && !originSuggestionsLoading
+      ? 'Must be a 3-letter station code'
+      : null;
+  const destinationError =
+    destinationTouched && destinationCrs.trim().length > 0 && !destinationCrsValid && !destinationSuggestionsLoading
+      ? 'Must be a 3-letter station code'
+      : null;
 
   const isValid =
     mode === 'knownTrain'
@@ -240,19 +271,31 @@ export function AddJourneyLegButton({
           />
           {mode === 'window' && (
             <>
-              <TextInput
-                label="From (station code)"
-                placeholder="e.g. WOK"
+              <Autocomplete
+                label="From station"
+                placeholder="e.g. Woking or WOK"
                 value={originCrs}
-                onChange={(event) => setOriginCrs(event.currentTarget.value)}
-                error={originCrs.length > 0 && !originCrsValid ? 'Must be a 3-letter station code' : null}
+                onChange={setOriginCrs}
+                onBlur={() => setOriginTouched(true)}
+                {...suggestionAutocompleteProps(originSuggestions, {
+                  query: originCrs,
+                  loading: originSuggestionsLoading,
+                  noMatchMessage: 'No matching stations',
+                })}
+                error={originError}
               />
-              <TextInput
-                label="To (station code)"
-                placeholder="e.g. WAT"
+              <Autocomplete
+                label="To station"
+                placeholder="e.g. London Waterloo or WAT"
                 value={destinationCrs}
-                onChange={(event) => setDestinationCrs(event.currentTarget.value)}
-                error={destinationCrs.length > 0 && !destinationCrsValid ? 'Must be a 3-letter station code' : null}
+                onChange={setDestinationCrs}
+                onBlur={() => setDestinationTouched(true)}
+                {...suggestionAutocompleteProps(destinationSuggestions, {
+                  query: destinationCrs,
+                  loading: destinationSuggestionsLoading,
+                  noMatchMessage: 'No matching stations',
+                })}
+                error={destinationError}
               />
               {/* Review §2.2/I17: same fix as `TrackTrainForm`'s own window
                   fields -- states the at-least-one-of-four rule up front
@@ -269,7 +312,7 @@ export function AddJourneyLegButton({
                   clockHint
                   label="Earliest departure (optional)"
                   name="earliest departure"
-                  description={`Only trains leaving ${originCrs.trim() || 'the origin'} at or after this time.`}
+                  description={`Only trains leaving ${resolvedOrigin ?? 'the origin'} at or after this time.`}
                   value={departFrom}
                   onChange={setDepartFrom}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, departFrom: v }))}
@@ -278,7 +321,7 @@ export function AddJourneyLegButton({
                 <TimeFilterInput
                   label="Latest departure (optional)"
                   name="latest departure"
-                  description={`Only trains leaving ${originCrs.trim() || 'the origin'} at or before this time.`}
+                  description={`Only trains leaving ${resolvedOrigin ?? 'the origin'} at or before this time.`}
                   value={departTo}
                   onChange={setDepartTo}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, departTo: v }))}
@@ -289,7 +332,7 @@ export function AddJourneyLegButton({
                 <TimeFilterInput
                   label="Earliest arrival (optional)"
                   name="earliest arrival"
-                  description={`Only trains reaching ${destinationCrs.trim() || 'the destination'} at or after this time.`}
+                  description={`Only trains reaching ${resolvedDestination ?? 'the destination'} at or after this time.`}
                   value={arriveFrom}
                   onChange={setArriveFrom}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, arriveFrom: v }))}
@@ -298,7 +341,7 @@ export function AddJourneyLegButton({
                 <TimeFilterInput
                   label="Latest arrival (optional)"
                   name="latest arrival"
-                  description={`Only trains reaching ${destinationCrs.trim() || 'the destination'} at or before this time.`}
+                  description={`Only trains reaching ${resolvedDestination ?? 'the destination'} at or before this time.`}
                   value={arriveTo}
                   onChange={setArriveTo}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, arriveTo: v }))}

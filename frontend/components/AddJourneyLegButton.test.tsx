@@ -14,9 +14,38 @@ function legResponse() {
   return new Response(JSON.stringify({ legId: 9, trackingId: null }), { status: 200 });
 }
 
+const STATIONS = [
+  { code: 'WAT', name: 'London Waterloo' },
+  { code: 'CLJ', name: 'Clapham Junction' },
+  { code: 'WOK', name: 'Woking' },
+];
+
+/** Routes the mocked `fetch` by URL: the station fields' own type-ahead
+ * search (`/api/stations?q=`, matched on code or name like the real API)
+ * gets the `STATIONS` fixture, and the add-leg POST gets `legs()`. */
+function mockFetch(legs: () => Response = legResponse) {
+  const fetchMock = vi.mocked(fetch);
+  fetchMock.mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith('/api/stations?')) {
+      const q = (new URLSearchParams(url.split('?')[1]).get('q') ?? '').toLowerCase();
+      const matches = STATIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
+      return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
+    }
+    return Promise.resolve(legs());
+  });
+  return fetchMock;
+}
+
+/** The add-leg POSTs made so far (station searches left out). */
+function legPosts() {
+  return vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes('/legs'));
+}
+
 describe('AddJourneyLegButton', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
+    mockFetch();
     refreshMock.mockClear();
   });
 
@@ -38,7 +67,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const origin = await screen.findByLabelText('From (station code)');
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
     expect(origin).toHaveValue('WAT');
   });
 
@@ -46,26 +75,25 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const origin = await screen.findByLabelText('From (station code)');
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
     fireEvent.change(origin, { target: { value: 'CLJ' } });
     expect(origin).toHaveValue('CLJ');
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByLabelText('From (station code)')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('combobox', { name: 'From station' })).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
-    const reopenedOrigin = await screen.findByLabelText('From (station code)');
+    const reopenedOrigin = await screen.findByRole('combobox', { name: 'From station' });
     expect(reopenedOrigin).toHaveValue('WAT');
   });
 
   it('POSTs a window-mode request with the entered origin/destination/date/departWindow', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(legResponse());
+    const fetchMock = mockFetch(legResponse);
 
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -97,7 +125,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -125,7 +153,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '18:00' } });
@@ -135,8 +163,7 @@ describe('AddJourneyLegButton', () => {
   });
 
   it('POSTs a knownTrain-mode request when the direct-pick mode is selected', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(legResponse());
+    const fetchMock = mockFetch(legResponse);
 
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
@@ -168,14 +195,12 @@ describe('AddJourneyLegButton', () => {
   // response instead of the refresh this button's other caller
   // (`app/journeys/[id]/page.tsx`) relies on.
   it('with onAdded: calls it with the add-leg response instead of router.refresh()', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(legResponse());
     const onAdded = vi.fn();
 
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" onAdded={onAdded} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -189,13 +214,12 @@ describe('AddJourneyLegButton', () => {
   });
 
   it('surfaces the server error text on a non-OK response', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response('no schedule matched that window', { status: 400 }));
+    mockFetch(() => new Response('no schedule matched that window', { status: 400 }));
 
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     const serviceDate = screen.getByLabelText('Service date');
     fireEvent.change(serviceDate, { target: { value: '2026-09-22' } });
@@ -218,19 +242,68 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const origin = await screen.findByLabelText('From (station code)');
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
     fireEvent.change(origin, { target: { value: 'WOKX' } });
+    fireEvent.blur(origin);
 
     expect(await screen.findByText('Must be a 3-letter station code')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(legPosts()).toHaveLength(0);
+  });
+
+  it('shows no station error while a name is still being typed', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
+    fireEvent.change(origin, { target: { value: 'Wok' } });
+
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/stations?q=Wok', expect.anything()));
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
+  });
+
+  it('resolves a typed full station name to its code', async () => {
+    const fetchMock = mockFetch(legResponse);
+
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
+    fireEvent.change(destination, { target: { value: 'clapham junction' } });
+    fireEvent.blur(destination);
+    fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled());
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
+    expect(screen.getByText('Only trains reaching CLJ at or after this time.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Journeys/1/legs',
+        expect.objectContaining({ body: expect.stringContaining('"destinationCrs":"CLJ"') as unknown }),
+      );
+    });
+  });
+
+  it('fills in the code when a station is picked from the suggestions by name', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
+    fireEvent.focus(destination);
+    fireEvent.change(destination, { target: { value: 'Clapham' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'CLJ · Clapham Junction', hidden: true }));
+
+    expect(destination).toHaveValue('CLJ');
   });
 
   it('shows no CRS error while the Origin field is still empty', async () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    await screen.findByLabelText('From (station code)');
+    await screen.findByRole('combobox', { name: 'From station' });
     expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
   });
 
@@ -238,24 +311,21 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-02-30' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
 
     expect(await screen.findByText('Must be a valid date (YYYY-MM-DD)')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    expect(legPosts()).toHaveLength(0);
   });
 
   it('accepts a well-formed CRS and date and allows submission', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(legResponse());
-
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
@@ -265,6 +335,6 @@ describe('AddJourneyLegButton', () => {
     expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(legPosts()).toHaveLength(1));
   });
 });

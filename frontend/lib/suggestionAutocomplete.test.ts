@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { suggestionAutocompleteProps } from './suggestionAutocomplete';
+import { resolveStationCode, suggestionAutocompleteProps } from './suggestionAutocomplete';
 import { NO_MATCH_OPTION_VALUE } from './autocompleteNoMatch';
 import type { Suggestion } from './types';
 
@@ -90,5 +90,23 @@ describe('suggestionAutocompleteProps', () => {
       ];
       expect(filter!({ options, search: 'reading', limit: Infinity })).toBe(options);
     });
+  });
+});
+
+describe('resolveStationCode', () => {
+  it('takes a typed 3-letter value as a code, uppercased', () => {
+    expect(resolveStationCode(' wok ', [])).toBe('WOK');
+  });
+
+  it("resolves a station's full name, in any case, from the live suggestions", () => {
+    expect(resolveStationCode('reading', STATIONS)).toBe('RDG');
+  });
+
+  it('does not resolve a partial name to the first suggestion', () => {
+    expect(resolveStationCode('Read', STATIONS)).toBeNull();
+  });
+
+  it('resolves nothing for an empty field', () => {
+    expect(resolveStationCode('  ', STATIONS)).toBeNull();
   });
 });

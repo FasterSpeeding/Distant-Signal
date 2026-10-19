@@ -187,7 +187,7 @@ describe('JourneyCreationFlow', () => {
     await screen.findByRole('link', { name: /view journey/i });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add a leg' }));
-    const destination = await screen.findByLabelText('To (station code)');
+    const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
     fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
