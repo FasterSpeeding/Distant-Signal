@@ -45,6 +45,10 @@ const PAGES: [name: string, path: string][] = [
   ['trains-searched', `/trains?station=${REAL_STATION_CRS}`],
   ['train', `/train/${TRAIN_UID}/${TRAIN_DATE}`],
   ['incidents', '/incidents'],
+  // The plan form in each timing mode (2026-10-19), restored from the URL;
+  // the seed's /plan timetable codes. The time and date fields are masked.
+  ['plan', '/plan?origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=08:00'],
+  ['plan-arrive-by', '/plan?origin=ZEA&destination=ZEC&date=2026-09-17&arriveBy=09:00'],
   ['account', '/account'],
   // Open to everyone: logged out it is the appearance settings and one log
   // in prompt, logged in the account sections too.

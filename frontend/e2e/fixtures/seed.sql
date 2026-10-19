@@ -367,3 +367,29 @@ ON CONFLICT (line_id) DO NOTHING;
 INSERT INTO transit_rail_links (network, stop_id, crs, tiploc, kind, note, observed_at)
 VALUES ('metrolink', '9400ZZMAPIC', 'MAN', 'MNCRPIC', 'interchange', NULL, NOW())
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- A tiny timetable for /plan (plan.spec.ts and the plan screenshots in
+-- visual.spec.ts), on the seed's service date. Made-up station codes (ZEA,
+-- ZEC) and TIPLOCs, so no other page's data changes: they are in
+-- `stanox_crs` only, not `stations`.
+--   E2EPL3  ZEA 07:30 -> ZEC 08:20
+--   E2EPL1  ZEA 08:00 -> ZEC 08:50
+--   E2EPL2  ZEA 08:30 -> ZEC 09:20
+-- ---------------------------------------------------------------------
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES
+  ('E2EPLAN-ZEA', 'ZEA', 'E2EPLA', 'Fixture Junction', 1),
+  ('E2EPLAN-ZEC', 'ZEC', 'E2EPLC', 'Fixture Central', 1)
+ON CONFLICT (stanox) DO NOTHING;
+
+INSERT INTO schedule_calling_points_full
+  (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset)
+VALUES
+  ('2026-09-17', 'E2EPL3', 0, 'E2EPLA', 'origin', NULL, '07:30:00', 0),
+  ('2026-09-17', 'E2EPL3', 1, 'E2EPLC', 'terminate', '08:20:00', NULL, 0),
+  ('2026-09-17', 'E2EPL1', 0, 'E2EPLA', 'origin', NULL, '08:00:00', 0),
+  ('2026-09-17', 'E2EPL1', 1, 'E2EPLC', 'terminate', '08:50:00', NULL, 0),
+  ('2026-09-17', 'E2EPL2', 0, 'E2EPLA', 'origin', NULL, '08:30:00', 0),
+  ('2026-09-17', 'E2EPL2', 1, 'E2EPLC', 'terminate', '09:20:00', NULL, 0)
+ON CONFLICT DO NOTHING;
