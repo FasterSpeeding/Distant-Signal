@@ -104,17 +104,20 @@ extra `departAfter` echo, which is a new key.
 
 ### 4.1 The form
 
-- A `SegmentedControl` with two options, "Depart after" and "Arrive by",
-  sits next to the time field. The time field takes its label from the
-  mode. The copy stays "Depart after", not "Depart at", because the
-  search returns trains leaving at or after the time, and "at" would
-  promise an exact match. The style guide asks us to say what is true.
+- A `SegmentedControl` labelled "Search by", with "Depart after" and
+  "Arrive by", sits next to the time field. The field is labelled "Time".
+  It is optional for depart-after, where an empty time searches from
+  00:00 as before, and required for arrive-by, where Find routes stays
+  disabled until there is a time.
+- The copy stays "Depart after", not "Depart at", because the search
+  returns trains leaving at or after the time, and "at" would promise an
+  exact match. The style guide asks us to say what is true.
 - Switching modes keeps the time the visitor typed.
 - **URL state.** `/plan` writes `departAfter=HH:MM` or `arriveBy=HH:MM`
   into its query string, never both. That is the calendar date and the
   time the visitor sees. On reload the form restores the mode and the
-  time. A URL carrying both keeps `arriveBy`, matching the API's own
-  precedence for a valid request.
+  time. A hand-edited URL carrying both keeps `arriveBy`. The API would
+  400 on the pair, and the form never sends both.
 
 ### 4.2 Overnight mapping
 
@@ -135,14 +138,14 @@ with Friday's last train.
 
 ### 4.3 Earlier and later
 
-Under the results there are two buttons, "Earlier" and "Later". Each runs
-one request.
+Under the results there are two buttons, "Earlier routes" and "Later
+routes". Each runs one request.
 
-- **Later**: depart after the earliest departure shown, plus one minute.
-- **Earlier**: arrive by the latest arrival shown, minus one minute.
+- **Later routes**: depart after the earliest departure shown, plus one minute.
+- **Earlier routes**: arrive by the latest arrival shown, minus one minute.
 
-So "Later" always switches to depart-after and "Earlier" always switches
-to arrive-by, in either mode. That is the only one-request way to page
+So "Later routes" always switches to depart-after and "Earlier routes"
+always switches to arrive-by, in either mode. That is the only one-request way to page
 backwards from a depart-after result, and forwards from an arrive-by
 result. The form, the summary line and the URL are updated to the paged
 search, so what the visitor sees, what the URL reopens and what was asked
@@ -159,10 +162,10 @@ then turned back into a calendar date and time, so they go through §4.2's
 mapping like a typed time. With a waypoint, `journeys` is the whole-journey
 summary, so paging moves the whole journey.
 
-The buttons show only when the plan has at least one journey. When a page
-has nothing, the visitor can still step back the other way, because the
-anchor comes from the last plan that had results. The buttons are
-disabled while a search runs.
+The buttons show once a search has found a journey. When a page has
+nothing, both buttons page from the last plan that had a journey, so the
+visitor can step back the other way. A new search from the form starts
+afresh. The buttons are disabled while a search runs.
 
 ### 4.4 Results copy
 
@@ -185,7 +188,7 @@ ellipses or arrows.
 | Case | Behaviour |
 |---|---|
 | Arrive by 00:30, service on the previous evening | Previous service date with `dayOffset=1` (§4.2). Found. |
-| Arrive by 02:00, nothing that late | `noResultReason.arriveBy` with the earliest arrival. The "Earlier" button still works from the last plan that had results. |
+| Arrive by 02:00, nothing that late | `noResultReason.arriveBy` with the earliest arrival. "Earlier routes" still works from the last plan that had a journey. |
 | Later from a 23:58 departure | Depart after 23:59. Then from 23:59 to the following calendar day's 00:00, which searches that calendar date. A train from the previous service date leaving after midnight is not offered on that page. Known limitation, see §8. |
 | Same origin and destination | The same answer as depart-after: a 200 with no journeys and `noResultReason.constraint: "noRoute"`. A DB test pins it (§7). |
 | Via, OR-group via, waypoints | Unchanged engine paths (`staged_arrive_by`). The summary's anchors come from `journeys`, so paging is whole-journey. |
