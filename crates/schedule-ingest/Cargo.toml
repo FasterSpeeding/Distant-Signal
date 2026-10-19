@@ -35,7 +35,7 @@ tracing = "0.1.44"
 # (deflate-only, no default features) -- the real delivery zip uses
 # standard Deflate compression (confirmed via `unzip -v timetable_full.zip`
 # during this crate's research), so no other compression method is needed.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"
