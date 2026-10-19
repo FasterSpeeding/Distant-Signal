@@ -4050,12 +4050,22 @@ mod db_tests {
     //   TOVN3  ZOA 00:15 (+1) -> ZOB 00:45 (+1)
     // ---------------------------------------------------------------------
 
+    /// `(uid, seq, tiploc, kind, arrival, departure, day_offset)`.
+    type OvernightCall<'a> = (
+        &'a str,
+        i32,
+        &'a str,
+        &'a str,
+        Option<&'a str>,
+        Option<&'a str>,
+        i16,
+    );
+
     async fn seed_overnight_network(pool: &PgPool) -> [&'static str; 3] {
         let uids = ["TOVN1", "TOVN2", "TOVN3"];
         cleanup_live(pool, &uids, "TOVNET").await;
         seed_stations(pool, "TOVNET", &[("ZOA", "TOVA"), ("ZOB", "TOVB")]).await;
-        // `(uid, seq, tiploc, kind, arrival, departure, day_offset)`.
-        let rows: [(&str, i32, &str, &str, Option<&str>, Option<&str>, i16); 6] = [
+        let rows: [OvernightCall<'_>; 6] = [
             ("TOVN2", 0, "TOVA", "origin", None, Some("23:00:00"), 0),
             ("TOVN2", 1, "TOVB", "terminate", Some("23:50:00"), None, 0),
             ("TOVN1", 0, "TOVA", "origin", None, Some("23:30:00"), 0),
