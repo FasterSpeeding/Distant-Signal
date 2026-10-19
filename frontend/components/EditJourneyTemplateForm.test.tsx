@@ -22,6 +22,35 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
+const STATIONS = [
+  { code: 'YRK', name: 'York' },
+  { code: 'NCL', name: 'Newcastle' },
+  { code: 'WOK', name: 'Woking' },
+];
+
+/** Routes the mocked `fetch` by URL: the station fields' own type-ahead
+ * search (`/api/stations?q=`, matched on code or name like the real API)
+ * gets the `STATIONS` fixture, and anything else (the template PUT) gets
+ * `put()`. */
+function mockFetch(put: () => Response = () => new Response(null, { status: 204 })) {
+  const fetchMock = vi.mocked(fetch);
+  fetchMock.mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith('/api/stations?')) {
+      const q = (new URLSearchParams(url.split('?')[1]).get('q') ?? '').toLowerCase();
+      const matches = STATIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
+      return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
+    }
+    return Promise.resolve(put());
+  });
+  return fetchMock;
+}
+
+/** The template PUTs made so far (station searches left out). */
+function putCalls() {
+  return vi.mocked(fetch).mock.calls.filter(([input]) => String(input).startsWith('/api/JourneyTemplates/'));
+}
+
 function template(overrides: Partial<JourneyTemplateDetail> = {}): JourneyTemplateDetail {
   return {
     id: 167,
@@ -54,6 +83,7 @@ function template(overrides: Partial<JourneyTemplateDetail> = {}): JourneyTempla
 describe('EditJourneyTemplateForm', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
+    mockFetch();
     refreshMock.mockClear();
   });
 
@@ -65,8 +95,8 @@ describe('EditJourneyTemplateForm', () => {
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
 
     expect(screen.getByLabelText('Template name')).toHaveValue('My commute');
-    expect(screen.getByLabelText('From (station code)')).toHaveValue('KGX');
-    expect(screen.getByLabelText('To (station code)')).toHaveValue('EDB');
+    expect(screen.getByRole('combobox', { name: 'From station' })).toHaveValue('KGX');
+    expect(screen.getByRole('combobox', { name: 'To station' })).toHaveValue('EDB');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('09:00');
     expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('10:00');
   });
@@ -80,7 +110,7 @@ describe('EditJourneyTemplateForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
 
     expect(screen.getByText('Leg 2')).toBeInTheDocument();
-    expect(screen.getAllByLabelText('From (station code)')).toHaveLength(2);
+    expect(screen.getAllByRole('combobox', { name: 'From station' })).toHaveLength(2);
     // Now that there's more than one leg, a remove control appears -- a
     // plain text-labeled Button, not an icon (no @tabler/icons-react in
     // this project).
@@ -91,11 +121,11 @@ describe('EditJourneyTemplateForm', () => {
   it('removes a leg client-side via the plain-text Remove button', () => {
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
-    expect(screen.getAllByLabelText('From (station code)')).toHaveLength(2);
+    expect(screen.getAllByRole('combobox', { name: 'From station' })).toHaveLength(2);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove leg 2' }));
 
-    expect(screen.getAllByLabelText('From (station code)')).toHaveLength(1);
+    expect(screen.getAllByRole('combobox', { name: 'From station' })).toHaveLength(1);
     expect(screen.queryByText('Leg 2')).not.toBeInTheDocument();
     // Back down to one leg -- the remove control disappears again.
     expect(screen.queryByRole('button', { name: 'Remove leg 1' })).not.toBeInTheDocument();
@@ -108,17 +138,89 @@ describe('EditJourneyTemplateForm', () => {
     // The newly-added second leg has no origin/destination yet.
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
 
-    const originFields = screen.getAllByLabelText('From (station code)');
-    const destinationFields = screen.getAllByLabelText('To (station code)');
+    const originFields = screen.getAllByRole('combobox', { name: 'From station' });
+    const destinationFields = screen.getAllByRole('combobox', { name: 'To station' });
     fireEvent.change(originFields[1]!, { target: { value: 'YRK' } });
     fireEvent.change(destinationFields[1]!, { target: { value: 'NCL' } });
 
     expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
   });
 
+  it("uses the site's station search for each leg's From and To, with the same placeholders as adding a leg", () => {
+    renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+
+    const from = screen.getByRole('combobox', { name: 'From station' });
+    const to = screen.getByRole('combobox', { name: 'To station' });
+    expect(from).toHaveAttribute('placeholder', 'e.g. Woking or WOK');
+    expect(to).toHaveAttribute('placeholder', 'e.g. London Waterloo or WAT');
+  });
+
+  it('PUTs the CRS code for a station typed by its full name', async () => {
+    renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
+
+    const origin = screen.getAllByRole('combobox', { name: 'From station' })[1]!;
+    const destination = screen.getAllByRole('combobox', { name: 'To station' })[1]!;
+    fireEvent.change(origin, { target: { value: 'York' } });
+    fireEvent.blur(origin);
+    fireEvent.change(destination, { target: { value: 'ncl' } });
+    fireEvent.blur(destination);
+
+    // Save waits for "York" to resolve through the station search.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled());
+    // The field keeps the name the user typed.
+    expect(origin).toHaveValue('York');
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    const body = JSON.parse(putCalls()[0]![1]?.body as string);
+    expect(body.legs[1]).toMatchObject({ originCrs: 'YRK', destinationCrs: 'NCL' });
+  });
+
+  it('fills in the code when a station is picked from the suggestions by name', async () => {
+    renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+
+    const origin = screen.getByRole('combobox', { name: 'From station' });
+    fireEvent.change(origin, { target: { value: 'wok' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'WOK · Woking', hidden: true }));
+
+    expect(origin).toHaveValue('WOK');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    const body = JSON.parse(putCalls()[0]![1]?.body as string);
+    expect(body.legs[0]).toMatchObject({ originCrs: 'WOK', destinationCrs: 'EDB' });
+  });
+
+  it('says when a typed value is not a station, once the field loses focus, and blocks Save', async () => {
+    renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+
+    const origin = screen.getByRole('combobox', { name: 'From station' });
+    fireEvent.change(origin, { target: { value: 'Nowhere at all' } });
+    // Not while it is still being typed.
+    expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+
+    fireEvent.blur(origin);
+    expect(await screen.findByText('Must be a 3-letter station code')).toBeInTheDocument();
+    expect(origin).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(putCalls()).toHaveLength(0);
+  });
+
+  it('uppercases a station code typed in lower case', async () => {
+    renderWithMantine(<EditJourneyTemplateForm template={template()} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'yrk' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    const body = JSON.parse(putCalls()[0]![1]?.body as string);
+    expect(body.legs[0]).toMatchObject({ originCrs: 'KGX', destinationCrs: 'YRK' });
+  });
+
   it('PUTs the whole leg list, shows "Saved.", and calls router.refresh() on success', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -159,7 +261,6 @@ describe('EditJourneyTemplateForm', () => {
 
   it('a leg with no time fields at all is valid and PUTs every window bound as null (backend allows a fully-open-window template leg -- see api::data::journey_templates::validate_template_leg)', async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
     renderWithMantine(
       <EditJourneyTemplateForm
@@ -217,22 +318,19 @@ describe('EditJourneyTemplateForm', () => {
   });
 
   it('a newly-added leg (all four time fields blank by construction) is valid once origin/destination are filled in, with no time field required', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add another leg' }));
 
-    const originFields = screen.getAllByLabelText('From (station code)');
-    const destinationFields = screen.getAllByLabelText('To (station code)');
+    const originFields = screen.getAllByRole('combobox', { name: 'From station' });
+    const destinationFields = screen.getAllByRole('combobox', { name: 'To station' });
     fireEvent.change(originFields[1]!, { target: { value: 'YRK' } });
     fireEvent.change(destinationFields[1]!, { target: { value: 'NCL' } });
 
     expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]?.body as string);
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    const body = JSON.parse(putCalls()[0]![1]?.body as string);
     expect(body.legs[1]).toEqual({
       originCrs: 'YRK',
       destinationCrs: 'NCL',
@@ -252,9 +350,6 @@ describe('EditJourneyTemplateForm', () => {
   // `TimeFilterInput`'s own doc comment describes and its own test file
   // exercises the same way.
   it('a half-typed time on a leg blocks Save, rather than silently dropping the bound', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
 
@@ -267,7 +362,7 @@ describe('EditJourneyTemplateForm', () => {
 
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(putCalls()).toHaveLength(0);
   });
 
   // Compounding bug: legs were keyed by array index, so removing a middle
@@ -277,9 +372,6 @@ describe('EditJourneyTemplateForm', () => {
   // block on leg 2 must travel with leg 2's own data when leg 1 is removed,
   // not linger on whatever now occupies index 0.
   it('removing an earlier leg does not carry its incomplete-time block onto the remaining leg', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
     renderWithMantine(
       <EditJourneyTemplateForm
         template={template({
@@ -330,8 +422,8 @@ describe('EditJourneyTemplateForm', () => {
     expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]?.body as string);
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    const body = JSON.parse(putCalls()[0]![1]?.body as string);
     expect(body.legs).toEqual([
       {
         originCrs: 'EDB',
@@ -343,8 +435,7 @@ describe('EditJourneyTemplateForm', () => {
   });
 
   it('a 401 shows a login prompt instead of the raw backend error text', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response('no session', { status: 401 }));
+    mockFetch(() => new Response('no session', { status: 401 }));
 
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -356,8 +447,7 @@ describe('EditJourneyTemplateForm', () => {
   });
 
   it('shows the server error message on a non-401 failure', async () => {
-    const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response('destination must differ from origin', { status: 400 }));
+    mockFetch(() => new Response('destination must differ from origin', { status: 400 }));
 
     renderWithMantine(<EditJourneyTemplateForm template={template()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -367,54 +457,41 @@ describe('EditJourneyTemplateForm', () => {
   });
 
   describe('recurrence controls', () => {
-    function sentBody(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
-      const call = fetchMock.mock.calls[0];
-      return JSON.parse(call![1]?.body as string);
+    function sentBody() {
+      return JSON.parse(putCalls()[0]![1]?.body as string);
     }
 
     it('toggling Monday sends daysOfWeek: 1 (bit 0)', async () => {
-      const fetchMock = vi.mocked(fetch);
-      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
       renderWithMantine(<EditJourneyTemplateForm template={template()} />);
       fireEvent.click(screen.getByRole('checkbox', { name: 'Mon' }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      expect(sentBody(fetchMock).daysOfWeek).toBe(1);
+      await waitFor(() => expect(putCalls()).toHaveLength(1));
+      expect(sentBody().daysOfWeek).toBe(1);
     });
 
     it('toggling Wednesday sends daysOfWeek: 4 (bit 2)', async () => {
-      const fetchMock = vi.mocked(fetch);
-      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
       renderWithMantine(<EditJourneyTemplateForm template={template()} />);
       fireEvent.click(screen.getByRole('checkbox', { name: 'Wed' }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      expect(sentBody(fetchMock).daysOfWeek).toBe(4);
+      await waitFor(() => expect(putCalls()).toHaveLength(1));
+      expect(sentBody().daysOfWeek).toBe(4);
     });
 
     it('combines multiple selected days into one bitmask', async () => {
-      const fetchMock = vi.mocked(fetch);
-      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
       renderWithMantine(<EditJourneyTemplateForm template={template()} />);
       fireEvent.click(screen.getByRole('checkbox', { name: 'Mon' }));
       fireEvent.click(screen.getByRole('checkbox', { name: 'Wed' }));
       fireEvent.click(screen.getByRole('checkbox', { name: 'Sun' }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await waitFor(() => expect(putCalls()).toHaveLength(1));
       // Mon (1) | Wed (4) | Sun (64) = 69.
-      expect(sentBody(fetchMock).daysOfWeek).toBe(69);
+      expect(sentBody().daysOfWeek).toBe(69);
     });
 
     it('deselecting every day sends daysOfWeek: null, not 0 or []', async () => {
-      const fetchMock = vi.mocked(fetch);
-      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
       // Start from a template that already recurs on Monday, then deselect it.
       renderWithMantine(<EditJourneyTemplateForm template={template({ daysOfWeek: 1 })} />);
       expect(screen.getByRole('checkbox', { name: 'Mon' })).toBeChecked();
@@ -422,8 +499,8 @@ describe('EditJourneyTemplateForm', () => {
       fireEvent.click(screen.getByRole('checkbox', { name: 'Mon' }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      expect(sentBody(fetchMock).daysOfWeek).toBeNull();
+      await waitFor(() => expect(putCalls()).toHaveLength(1));
+      expect(sentBody().daysOfWeek).toBeNull();
     });
 
     it('shows "Not recurring" when no day is selected, and switches away once one is', () => {
@@ -436,45 +513,36 @@ describe('EditJourneyTemplateForm', () => {
     });
 
     it('switching to "auto" always sends autoCommitRule: nearest_to_now', async () => {
-      const fetchMock = vi.mocked(fetch);
-      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
       renderWithMantine(<EditJourneyTemplateForm template={template()} />);
       fireEvent.click(screen.getByRole('radio', { name: 'Auto-commit for me' }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      const body = sentBody(fetchMock);
+      await waitFor(() => expect(putCalls()).toHaveLength(1));
+      const body = sentBody();
       expect(body.defaultMatchMode).toBe('auto');
       expect(body.autoCommitRule).toBe('nearest_to_now');
     });
 
     it('switching back to "manual" sends autoCommitRule: null', async () => {
-      const fetchMock = vi.mocked(fetch);
-      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
       renderWithMantine(
         <EditJourneyTemplateForm template={template({ defaultMatchMode: 'auto', autoCommitRule: 'nearest_to_now' })} />,
       );
       fireEvent.click(screen.getByRole('radio', { name: "Remind me, don't guess" }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      const body = sentBody(fetchMock);
+      await waitFor(() => expect(putCalls()).toHaveLength(1));
+      const body = sentBody();
       expect(body.defaultMatchMode).toBe('manual');
       expect(body.autoCommitRule).toBeNull();
     });
 
     it('the Paused switch sends the real active boolean, inverted', async () => {
-      const fetchMock = vi.mocked(fetch);
-      fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
-
       renderWithMantine(<EditJourneyTemplateForm template={template({ active: true })} />);
       fireEvent.click(screen.getByRole('switch', { name: /^Paused/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      expect(sentBody(fetchMock).active).toBe(false);
+      await waitFor(() => expect(putCalls()).toHaveLength(1));
+      expect(sentBody().active).toBe(false);
     });
   });
 });

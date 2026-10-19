@@ -184,5 +184,10 @@ test.describe('add a leg', () => {
 
     // The error is tied to the field.
     await expect(to).toHaveAttribute('aria-invalid', 'true');
+
+    // The field error is legible: Mantine's error red is the site's
+    // error-text token (app/globals.css), not its 3.28:1 default.
+    const results = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
+    expect(results.violations).toEqual([]);
   });
 });
