@@ -2,7 +2,17 @@
 
 import { useEffect, useId, useMemo, useState } from 'react';
 import { londonToday, nowInLondon } from '@/lib/londonWallClock';
-import { Autocomplete, Button, Group, SegmentedControl, Stack, Text, ActionIcon, VisuallyHidden } from '@mantine/core';
+import {
+  Autocomplete,
+  Button,
+  Group,
+  InputLabel,
+  SegmentedControl,
+  Stack,
+  Text,
+  ActionIcon,
+  VisuallyHidden,
+} from '@mantine/core';
 import { DateInput, TimeInput } from '@mantine/dates';
 import { getStationNames, searchPlannerLocations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
@@ -388,11 +398,13 @@ export function PlanTripForm({
       />
       {/* "Depart after", not "Depart at": the search offers trains leaving
           at or after the time, and "at" would promise an exact one. */}
-      <Stack gap={4}>
-        <Text id={timingLabelId} size="xs" fw={600} c="dimmed">
-          Search by
-        </Text>
-        <Group gap="sm" align="flex-end" wrap="wrap">
+      <Group gap="sm" align="flex-end" wrap="wrap">
+        {/* Labelled like the time field beside it, so the two labels line
+            up as one row. */}
+        <Stack gap={4}>
+          <InputLabel id={timingLabelId} component="span">
+            Search by
+          </InputLabel>
           <SegmentedControl
             aria-labelledby={timingLabelId}
             value={mode}
@@ -402,15 +414,15 @@ export function PlanTripForm({
               { label: 'Arrive by', value: 'arriveBy' },
             ]}
           />
-          <TimeInput
-            label={mode === 'arriveBy' ? 'Time' : 'Time (optional)'}
-            value={time}
-            onChange={(event) => setTime(event.currentTarget.value)}
-            required={mode === 'arriveBy'}
-            withAsterisk={false}
-          />
-        </Group>
-      </Stack>
+        </Stack>
+        <TimeInput
+          label={mode === 'arriveBy' ? 'Time' : 'Time (optional)'}
+          value={time}
+          onChange={(event) => setTime(event.currentTarget.value)}
+          required={mode === 'arriveBy'}
+          withAsterisk={false}
+        />
+      </Group>
       {/* I3: mirrors `TrackTrainForm.tsx`'s own `modeLabelId` +
           `aria-labelledby` fix for its mode toggle (2026-09-22 UX review) --
           without a visible `Text` label wired as the name, a screen reader
