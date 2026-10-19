@@ -99,6 +99,28 @@ VALUES
   ('lner-ecml', '[{"severity":10,"reason":"Good Service","validity":{"from_date":"2026-09-16T00:00:00Z","to_date":"2026-09-17T06:00:00Z","is_now":false}}]'::jsonb, NOW() - INTERVAL '1 day');
 
 -- ---------------------------------------------------------------------
+-- One TOC, so /operators has a card to search (list-filters.spec.ts)
+-- ---------------------------------------------------------------------
+-- c2c only: an operator is listed for a `tocs` row with a status row
+-- (the c2c line above). Not GR, which the screenshotted line, station,
+-- train and incident pages name: a GR row would rename it on most of the
+-- visual baselines. No screenshotted page names CC.
+INSERT INTO tocs (atoc_code, name, legal_name, atoc_member, station_operator)
+VALUES ('CC', 'c2c', 'c2c Limited', TRUE, TRUE)
+ON CONFLICT (atoc_code) DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- An empty train population for c2c, so its line page draws "Trains on
+-- this line" with its links (list-filters.spec.ts). Yesterday to
+-- tomorrow, London time, as the page asks for London's today. Not
+-- lner-ecml, whose line page is a visual baseline.
+-- ---------------------------------------------------------------------
+INSERT INTO schedule_line_population (line_id, service_date, population)
+SELECT 'c2c', (NOW() AT TIME ZONE 'Europe/London')::date + offset_days, '[]'::jsonb
+FROM generate_series(-1, 1) AS offset_days
+ON CONFLICT (line_id, service_date) DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- Stations with real accessibility payloads (captured production fixtures)
 -- ---------------------------------------------------------------------
 INSERT INTO stations (crs, name, latitude, longitude, station_operator, accessibility, fetched_at)

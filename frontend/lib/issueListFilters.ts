@@ -42,3 +42,37 @@ export function parseIssueListFilters(params: URLSearchParams, prefix: string): 
     sources: params.getAll(keys.source).filter((entry) => (SOURCES as readonly string[]).includes(entry)),
   };
 }
+
+/** The line page's issue lists, by URL prefix: the main list and TfL's. */
+export const LINE_PAGE_ISSUE_LISTS = ['issue', 'tflIssue'] as const;
+
+/** Every URL key the lists under `prefixes` use. */
+function issueListKeys(prefixes: readonly string[]): string[] {
+  return prefixes.flatMap((prefix) => Object.values(issueListParamKeys(prefix)));
+}
+
+/** The issue list params in `current` (the page's live query params), as
+ * `[key, value]` pairs in their URL order. */
+export function issueListEntries(
+  current: URLSearchParams,
+  prefixes: readonly string[] = LINE_PAGE_ISSUE_LISTS,
+): [string, string][] {
+  const keys = issueListKeys(prefixes);
+  return [...current.entries()].filter(([key]) => keys.includes(key));
+}
+
+/** `href` with its issue list params replaced by those in `current`,
+ * keeping its other params and its hash. A link built on the server only
+ * knows the filters the page was opened with; this carries the ones the
+ * visitor has set since. */
+export function withIssueListParams(
+  href: string,
+  current: URLSearchParams,
+  prefixes: readonly string[] = LINE_PAGE_ISSUE_LISTS,
+): string {
+  const url = new URL(href, 'http://localhost');
+  for (const key of issueListKeys(prefixes)) url.searchParams.delete(key);
+  for (const [key, value] of issueListEntries(current, prefixes)) url.searchParams.append(key, value);
+  const search = url.searchParams.toString();
+  return `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
+}
