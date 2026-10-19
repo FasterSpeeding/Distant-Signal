@@ -86,3 +86,21 @@ export function suggestionAutocompleteProps(
     },
   };
 }
+
+const TYPED_CRS = /^[A-Za-z]{3}$/;
+
+/** The CRS a station field's typed text stands for, or `null` when it
+ * stands for none yet. Picking a suggestion writes its bare code into the
+ * field (see `suggestionAutocompleteProps`), so a 3-letter value is taken
+ * as a code, uppercased. Anything else counts only when it is a station's
+ * full name, matched case-insensitively against the field's own live
+ * `suggestions`: a partial name is still a search, not a choice, so it
+ * never resolves to whichever station happens to be listed first. */
+export function resolveStationCode(value: string, suggestions: Suggestion[]): string | null {
+  const trimmed = value.trim();
+  if (TYPED_CRS.test(trimmed)) return trimmed.toUpperCase();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  const match = suggestions.find((s) => s.name.toLowerCase() === lower && TYPED_CRS.test(s.code));
+  return match ? match.code.toUpperCase() : null;
+}
