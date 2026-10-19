@@ -183,6 +183,16 @@ html:root[data-mantine-color-scheme='light'] {
      would make the pair harder to read together. */
   --ds-color-error-text: var(--mantine-color-red-9);
 
+  /* Mantine's own field-error colour -- the text under every input in its
+     error state (`.m_8f816625`), plus that input's border, value text,
+     placeholder, section icons and the required asterisk -- reads
+     `--mantine-color-error`, which Mantine defaults to red 6 (#fa5252,
+     3.28:1 on white) in light and red 8 (3.44:1 on the #242424 body) in
+     dark. Pointed at the error-text token above so field errors and inline
+     action errors share one red per scheme, and so the error border stays
+     the same red as the message under it. */
+  --mantine-color-error: var(--ds-color-error-text);
+
   /* Mantine's input placeholder is gray 5 (#adb5bd): 2.07:1 on white, the
      worst single ratio the full-ruleset sweep found anywhere in the app,
      across all 30 `placeholder=` call sites. Surfaced on `/trains`, whose
@@ -269,6 +279,9 @@ html:root[data-mantine-color-scheme='dark'] {
      6.70:1 on the #242424 body, 5.86:1 on a #2e2e2e Card, against the
      3.44:1/3.01:1 that `--mantine-color-red-filled` (red 8 here) gave. */
   --ds-color-error-text: var(--mantine-color-red-4);
+  /* Mantine's field-error colour, as in the light block: red 4 rather than
+     Mantine's dark default red 8. */
+  --mantine-color-error: var(--ds-color-error-text);
   /* The dark half of `AvailabilityIcon`'s glyph colour -- see the light
      block's comment above. Red 4 here doubles as `--ds-color-error-text`'s
      own dark value, already measured at 6.70:1 on the #242424 body. */

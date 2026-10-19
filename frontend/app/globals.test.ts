@@ -413,6 +413,36 @@ describe('inline error text', () => {
   });
 });
 
+// Mantine's field error (the message under an input with `error=`, and that
+// input's border and value text) reads `--mantine-color-error`, a separate
+// variable from the `--ds-color-error-text` the inline errors above use.
+// Its defaults are red 6 in light and red 8 in dark -- the same failing pair
+// as a bare `c="red"`. axe caught it on the add-a-leg form's station error,
+// but it is every field error in the app.
+describe('field error text', () => {
+  it("confirms Mantine's default field-error reds failed AA in both schemes", () => {
+    expect(contrast(RED_6, WHITE)).toBeLessThan(AA_BODY_TEXT); // 3.28:1, light
+    expect(contrast(RED_8, DARK_7)).toBeLessThan(AA_BODY_TEXT); // 3.44:1, dark body
+    expect(contrast(RED_8, DARK_6)).toBeLessThan(AA_BODY_TEXT); // 3.01:1, dark Card / input
+  });
+
+  it('points --mantine-color-error at --ds-color-error-text in both schemes', () => {
+    // Both blocks, not just light: Mantine sets its own dark default (red 8)
+    // in a dark-scheme block, which a light-only override would not reach.
+    expect(schemeBlock('light')).toContain('--mantine-color-error: var(--ds-color-error-text)');
+    expect(schemeBlock('dark')).toContain('--mantine-color-error: var(--ds-color-error-text)');
+  });
+
+  it('clears AA in both schemes, on the body, a Card and an input surface', () => {
+    // Light: the message sits on white (body or Card); the default input is
+    // white too. Dark: the message sits on the #242424 body or a #2e2e2e
+    // Card, and the default input background is also dark 6 (#2e2e2e).
+    expect(contrast(RED_9, WHITE)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.46:1
+    expect(contrast(RED_4, DARK_7)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 6.70:1
+    expect(contrast(RED_4, DARK_6)).toBeGreaterThanOrEqual(AA_BODY_TEXT); // 5.86:1
+  });
+});
+
 describe('TextLink underline affordance', () => {
   // `textDecoration: 'none'` left these links distinguished from the text
   // around them by colour alone (WCAG 1.4.1). The rules live here rather
