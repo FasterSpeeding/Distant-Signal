@@ -405,7 +405,9 @@ used, rather than as a literal in a component.
   (`history.replaceState`, debounced), never `router.replace`, which
   re-runs the page's server render. Keys inside a section are prefixed
   (`issueTab`, `tflIssueSeverity`) so they can't clash with the page's
-  own. A server-backed list (/incidents, /trains) applies changes live
+  own. A server-built link or GET form back to the same page carries them
+  through `KeepIssueFilters.tsx`, which reads the live URL (the line page's
+  train links and station picker). A server-backed list (/incidents, /trains) applies changes live
   through `useLiveSearch`: one request once typing settles, the previous
   one aborted, a spinner in place of the search glyph and the rows dimmed,
   never blanked. The tab title names what is filtered

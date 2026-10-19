@@ -1,9 +1,9 @@
-import Link from 'next/link';
 import { Group, Paper, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import { ApiNotFoundError, getLineTrainsSummary, searchTrainsBetween } from '@/lib/api';
 import type { LineCatalogueStation, LineTrainSummary, LineTrainsSummary, TrainSearchResult } from '@/lib/types';
 import { TextLink } from '@/components/TextLink';
+import { IssueFiltersHiddenInputs, IssueFiltersLink, IssueFiltersTextLink } from '@/components/KeepIssueFilters';
 import { ServiceModeBadge } from '@/components/ServiceModeBadge';
 import { isTimetableOnly, serviceNoun } from '@/lib/serviceMode';
 import { LastUpdated } from '@/components/LastUpdated';
@@ -62,7 +62,7 @@ function DirectionChips({ id, params, summary }: { id: string; params: LinePageP
       <ul className={classes.chips}>
         {tabs.map((tab) => (
           <li key={tab.dir ?? 'all'}>
-            <Link
+            <IssueFiltersLink
               className={classes.chip}
               href={lineHref(id, { ...paramsForHref(params), dir: tab.dir })}
               aria-current={params.dir === tab.dir ? 'page' : undefined}
@@ -72,7 +72,7 @@ function DirectionChips({ id, params, summary }: { id: string; params: LinePageP
                 {tab.count}
                 <VisuallyHidden> trains</VisuallyHidden>
               </span>
-            </Link>
+            </IssueFiltersLink>
           </li>
         ))}
       </ul>
@@ -91,13 +91,13 @@ function ViewChips({ id, params }: { id: string; params: LinePageParams }) {
       <ul className={classes.chips}>
         {options.map((option) => (
           <li key={option.label}>
-            <Link
+            <IssueFiltersLink
               className={classes.chip}
               href={lineHref(id, { ...paramsForHref(params), view: option.view })}
               aria-current={params.view === option.view ? 'page' : undefined}
             >
               {option.label}
-            </Link>
+            </IssueFiltersLink>
           </li>
         ))}
       </ul>
@@ -146,29 +146,29 @@ function WindowNav({
       </Text>
       <Group gap="md" wrap="wrap">
         <span className={classes.desktopOnly}>
-          <TextLink href={at(window.earlierDesktop)} ariaLabel="Earlier trains">
+          <IssueFiltersTextLink href={at(window.earlierDesktop)} ariaLabel="Earlier trains">
             Earlier
-          </TextLink>
+          </IssueFiltersTextLink>
         </span>
         <span className={classes.phoneOnly}>
-          <TextLink href={at(window.earlierPhone)} ariaLabel="Earlier trains">
+          <IssueFiltersTextLink href={at(window.earlierPhone)} ariaLabel="Earlier trains">
             Earlier
-          </TextLink>
+          </IssueFiltersTextLink>
         </span>
         {params.at !== null && (
-          <TextLink href={lineHref(id, { ...base, at: null })} ariaLabel="Trains due now">
+          <IssueFiltersTextLink href={lineHref(id, { ...base, at: null })} ariaLabel="Trains due now">
             Now
-          </TextLink>
+          </IssueFiltersTextLink>
         )}
         <span className={classes.desktopOnly}>
-          <TextLink href={at(window.laterDesktop)} ariaLabel="Later trains">
+          <IssueFiltersTextLink href={at(window.laterDesktop)} ariaLabel="Later trains">
             Later
-          </TextLink>
+          </IssueFiltersTextLink>
         </span>
         <span className={classes.phoneOnly}>
-          <TextLink href={at(window.laterPhone)} ariaLabel="Later trains">
+          <IssueFiltersTextLink href={at(window.laterPhone)} ariaLabel="Later trains">
             Later
-          </TextLink>
+          </IssueFiltersTextLink>
         </span>
       </Group>
     </Group>
@@ -363,6 +363,7 @@ function StationPicker({
   return (
     <form action={`/lines/${encodeURIComponent(id)}#trains`} method="get" className={classes.picker}>
       {params.at !== null && <input type="hidden" name="at" value={formatApiMinute(params.at)} />}
+      <IssueFiltersHiddenInputs />
       <label>
         <Text span size="sm" display="block">
           From
@@ -442,7 +443,7 @@ function StationPairResults({
         {result.error === 'unpublished'
           ? 'No timetable is published for today yet.'
           : "Trains between these stations aren't available right now."}{' '}
-        <TextLink href={clear}>Show all trains on this line</TextLink>
+        <IssueFiltersTextLink href={clear}>Show all trains on this line</IssueFiltersTextLink>
       </Empty>
     );
   }
@@ -454,7 +455,7 @@ function StationPairResults({
         <SectionTitle order={3}>
           {fromName} to {toName}
         </SectionTitle>
-        <TextLink href={clear}>Show all trains on this line</TextLink>
+        <IssueFiltersTextLink href={clear}>Show all trains on this line</IssueFiltersTextLink>
       </Group>
       <Text size="sm" c="dimmed">
         Every train calling at {fromName} and later at {toName}, any operator, leaving {fromName} between{' '}
