@@ -1,5 +1,10 @@
 # ds-mcp delegated access to a user's Distant Signal journeys (2026-10-14)
 
+> **Status (2026-10-19):** phase 1 is live and switched on in production
+> since 2026-10-15 (DS `d3b6c369`, ds-mcp `91353fc`), not only built as
+> the status line below says. The chart default is still off (empty
+> `api.delegated.clients`). Phases 2 and 3 are not built.
+
 **Status: design approved (2026-10-14). The Authentik spike passed on dev
 and production (§9.5). Phase 1b (the DS side) is built, off by default;
 see "Phase 1b progress" in §7.** The user answered every open question on

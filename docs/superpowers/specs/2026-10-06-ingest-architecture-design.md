@@ -1,5 +1,9 @@
 # Ingest architecture: take ingest out of the public api
 
+> **Status (2026-10-19):** release C is live, not only built: it was
+> deployed on 2026-10-15 (Helm v256). 5.5's narrowing and the app-role
+> drop remain, as below.
+
 Design, 2026-10-06. Status: **partly implemented** (2026-10-14): phases
 0–4 and phase 5's releases A and B are live, release C is built; 5.5's
 narrowing and the app-role drop remain

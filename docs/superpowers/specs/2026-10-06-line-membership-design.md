@@ -1,5 +1,10 @@
 # Design: per-line train membership ("scope")
 
+> **Status (2026-10-19):** implemented, line pages included. Since
+> 2026-10-07 the line page's "Trains on this line" reads `view=summary`,
+> whose `scope` defaults to `line,shared`, and the full-coverage switch
+> runs `scope` in production. The status line below is out of date.
+
 Status: implemented 2026-10-06 (schedule-reference, schedule-query, api,
 full-coverage-consumer, line catalogue). Line pages do not use it yet.
 
