@@ -55,7 +55,18 @@ test.describe('edit a journey template', () => {
       await expect(to).toHaveValue('London Euston');
       await expect(page.getByText('Must be a 3-letter station code')).toHaveCount(0);
 
+      // Waited on directly so a rejected save fails here with its status,
+      // not later as a missing "Saved.".
+      const put = page.waitForResponse(
+        (response) =>
+          response.request().method() === 'PUT' && response.url().endsWith(`/api/JourneyTemplates/${templateId}`),
+      );
       await page.getByRole('button', { name: 'Save changes' }).click();
+      const putResponse = await put;
+      // A 204 has no body to read, so the body is only fetched for a failure.
+      if (!putResponse.ok()) {
+        throw new Error(`PUT answered ${putResponse.status()}: ${await putResponse.text()}`);
+      }
       await expect(page.getByText('Saved.')).toBeVisible();
 
       const saved = await page.request.get(`/api/JourneyTemplates/${templateId}`);
