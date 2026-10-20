@@ -578,14 +578,30 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
         stop.last_event_type.clone_from(&event.event_type);
         stop.variation_status.clone_from(&event.variation_status);
 
+        // TRUST's planned time fills a booked time the schedule left blank,
+        // except at a passing point: there the blank IS the schedule saying
+        // "no stop here". Backfilling it made a passed location look like a
+        // booked call once the train had gone by -- the stop list (which
+        // hides a row with no booked time) showed it, and
+        // `apply_stop_status` treated it as a booked stop. The actual times
+        // and the delay below are still set: they are the train's progress.
+        let passing_point = stop.timetable.passing_point;
+        let backfill = |booked: Option<DateTime<Utc>>| {
+            if passing_point {
+                booked
+            } else {
+                booked.or(event.planned_timestamp)
+            }
+        };
+
         match event.event_type.as_deref() {
             Some("ARRIVAL") => {
                 stop.actual_arrival = event.actual_timestamp;
-                stop.scheduled_arrival = stop.scheduled_arrival.or(event.planned_timestamp);
+                stop.scheduled_arrival = backfill(stop.scheduled_arrival);
             }
             Some("DEPARTURE") => {
                 stop.actual_departure = event.actual_timestamp;
-                stop.scheduled_departure = stop.scheduled_departure.or(event.planned_timestamp);
+                stop.scheduled_departure = backfill(stop.scheduled_departure);
             }
             Some("PASS") => {
                 // A PASS at a genuine BOOKED calling point (`Intermediate`,
@@ -620,8 +636,8 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
                     stop.actual_arrival = event.actual_timestamp;
                     stop.actual_departure = event.actual_timestamp;
                 }
-                stop.scheduled_arrival = stop.scheduled_arrival.or(event.planned_timestamp);
-                stop.scheduled_departure = stop.scheduled_departure.or(event.planned_timestamp);
+                stop.scheduled_arrival = backfill(stop.scheduled_arrival);
+                stop.scheduled_departure = backfill(stop.scheduled_departure);
             }
             _ => {}
         }
@@ -2588,6 +2604,98 @@ mod tests {
         assert_eq!(stops[0].actual_departure, expected);
     }
 
+    /// THE PASSING-POINT BUG. A schedule that runs through Watford Junction
+    /// without stopping (a pass time only) plus a TRUST PASS there: the row
+    /// must stay a passing point -- no booked time backfilled from TRUST's
+    /// planned time, `stopStatus` `Unknown` -- so the stop list keeps it out,
+    /// while the PASS still records the train's progress and delay there.
+    #[test]
+    fn a_pass_at_a_passing_point_records_progress_but_never_makes_it_a_stop() {
+        let service_date: NaiveDate = "2026-10-01".parse().unwrap();
+        let raw: Vec<RawCallingPoint> = serde_json::from_value(serde_json::json!([
+            { "tiploc": "EUSTON ", "kind": "Origin", "bookedDeparture": "20:16:00",
+              "publicDeparture": "20:16:00" },
+            { "tiploc": "WATFDJ ", "kind": "Intermediate", "workingPass": "20:31:00" },
+            { "tiploc": "MKNSCEN", "kind": "Intermediate",
+              "bookedArrival": "20:50:00", "bookedDeparture": "20:52:00",
+              "publicArrival": "20:50:00", "publicDeparture": "20:52:00" },
+            { "tiploc": "WVRMPTN", "kind": "Terminate", "bookedArrival": "21:40:00",
+              "publicArrival": "21:40:00" }
+        ]))
+        .unwrap();
+        let tiploc_to_crs: HashMap<String, String> = [
+            ("EUSTON", "EUS"),
+            ("WATFDJ", "WFJ"),
+            ("MKNSCEN", "MKC"),
+            ("WVRMPTN", "WVH"),
+        ]
+        .into_iter()
+        .map(|(tiploc, crs)| (tiploc.to_string(), crs.to_string()))
+        .collect();
+        let mut stops = stops_from_calling_points(&raw, &tiploc_to_crs, service_date);
+        let at = |s: &str| Some(s.parse::<DateTime<Utc>>().unwrap());
+        let mut departed = event("EUS", "DEPARTURE", "2026-10-01T19:16:00Z");
+        departed.actual_timestamp = at("2026-10-01T19:17:00Z");
+        let mut passed = event("WFJ", "PASS", "2026-10-01T19:31:00Z");
+        passed.actual_timestamp = at("2026-10-01T19:35:00Z");
+
+        overlay_movement_events(&mut stops, &[departed, passed]);
+        apply_stop_status(&mut stops, &[]);
+        apply_delay_estimates(&mut stops, Some(4));
+
+        let watford = &stops[1];
+        assert!(watford.timetable.passing_point);
+        assert_eq!(
+            (watford.scheduled_arrival, watford.scheduled_departure),
+            (None, None),
+            "TRUST's planned pass time must not become a booked call"
+        );
+        assert_eq!(watford.stop_status, StopStatus::Unknown);
+        assert_eq!(watford.last_event_type.as_deref(), Some("PASS"));
+        assert_eq!(watford.actual_arrival, at("2026-10-01T19:35:00Z"));
+        assert_eq!(watford.actual_departure, at("2026-10-01T19:35:00Z"));
+        assert_eq!(
+            watford.delay_minutes,
+            Some(4),
+            "the pass still measures the delay"
+        );
+        assert!(
+            stops
+                .iter()
+                .enumerate()
+                .all(|(index, stop)| stop.timetable.passing_point == (index == 1))
+        );
+
+        // The later booked stop is forecast from the delay the pass reported.
+        assert_eq!(stops[2].estimated_arrival, at("2026-10-01T19:54:00Z"));
+        assert_eq!(stops[2].stop_status, StopStatus::Scheduled);
+
+        let wire = serde_json::to_value(&stops).unwrap();
+        assert_eq!(wire[1]["passingPoint"], serde_json::json!(true));
+        assert_eq!(wire[1]["scheduledArrival"], serde_json::Value::Null);
+        assert_eq!(wire[2]["passingPoint"], serde_json::json!(false));
+    }
+
+    /// An unbooked stop TRUST reports as an ARRIVAL (the train was held at
+    /// a signal by the junction) is still a passing point, not a call.
+    #[test]
+    fn an_arrival_at_a_passing_point_does_not_backfill_a_booked_time() {
+        use schedule_query::CallingPointKind::Intermediate;
+        let mut stops = vec![JourneyStop {
+            timetable: StopTimetable {
+                passing_point: true,
+                ..StopTimetable::default()
+            },
+            ..stop_at("WFJ", Intermediate)
+        }];
+        let events = vec![event("WFJ", "ARRIVAL", "2026-10-01T19:31:00Z")];
+
+        overlay_movement_events(&mut stops, &events);
+
+        assert_eq!(stops[0].scheduled_arrival, None);
+        assert!(stops[0].actual_arrival.is_some());
+    }
+
     // --- `apply_stop_status` (the "Skipped" follow-up) ---
 
     /// A booked calling point exactly like
@@ -4246,6 +4354,7 @@ mod db_tests {
         let at = |s: &str| Some(s.parse::<DateTime<Utc>>().unwrap());
         assert_eq!(stops.len(), 4);
         assert_eq!(stops[1].timetable.working_pass, at("2026-10-01T15:30:30Z"));
+        assert!(stops[1].timetable.passing_point && !stops[2].timetable.passing_point);
         let motherwell = &stops[2].timetable;
         assert_eq!(motherwell.public_arrival, at("2026-10-01T16:01:00Z"));
         assert_eq!(motherwell.public_departure, None);
