@@ -464,8 +464,14 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   many cards states "Updated" once, not per card.
 - Delays: light badges, sentence case, "*n* min late" / "*n* min early" /
   "On time". A line that runs no trains says "No trains running", not
-  zero figures. Journey rollups rank good < awaiting < delayed < unmatched <
-  skipped < cancelled.
+  zero figures. Journey rollups rank untracked legs (done, planned, in
+  progress) < good < planned < awaiting < delayed < not in the timetable <
+  unmatched < skipped < cancelled.
+- A tracked train is "Planned" (gray) until Network Rail's first report is
+  due, and "Not in the timetable" (grape: check the UID or date) when it has
+  no timetable and no report. An untracked leg (Tube, bus, walk) says
+  "Planned", "In progress (not live tracked)" or "Done", and that we have
+  no live data for it.
 - Severity labels are TfL's own Title Case names; unknown codes read
   "Unknown" in gray (`lib/severity.ts`).
 
