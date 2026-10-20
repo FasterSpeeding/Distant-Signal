@@ -26,6 +26,7 @@ import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantB
 import { AddJourneyToGroupButton } from '@/components/AddJourneyToGroupButton';
 import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton';
 import { StatusBadge } from '@/components/StatusBadge';
+import { SharedJourneyStatusBadge } from '@/components/SharedJourneyStatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { LoginControl } from '@/components/LoginControl';
@@ -504,22 +505,9 @@ function SharedJourneyRow({
         }
         trailing={
           <Group gap="xs" wrap="nowrap">
-            {/* `TrackedTrainStatusBadge`'s prop type requires a non-nullable
-                `resolutionStatus`, but `GroupJourney.resolutionStatus` is
-                nullable (a journey's first leg may have no bound train yet)
-                -- coalesce to 'unresolved' here rather than widening that
-                component's prop type, which `SharedTrainRow` above also
-                relies on staying non-nullable. 'unresolved' already renders
-                as the red "Unmatched" badge via that component's own
-                `STATUS_LABELS` map, the accurate reading for a leg with no
-                train bound yet. */}
-            <TrackedTrainStatusBadge
-              train={{
-                resolutionStatus: journey.resolutionStatus ?? 'unresolved',
-                status: journey.status,
-                delayMinutes: journey.delayMinutes,
-              }}
-            />
+            {/* An untracked-only journey, one still needing its train, or a
+                picked train with its phase and mode: the owner's words. */}
+            <SharedJourneyStatusBadge journey={journey} />
             {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
           </Group>
         }

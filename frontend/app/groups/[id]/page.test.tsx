@@ -146,6 +146,68 @@ describe('GroupDetailPage', () => {
     expect(screen.queryByText('en_route')).not.toBeInTheDocument();
   });
 
+  it("a shared train's badge uses the owner's tracking phase and mode", async () => {
+    vi.mocked(getGroup).mockResolvedValue({
+      id: 'grp-1',
+      name: 'Family',
+      ownerId: 'user-1',
+      ownerName: 'Alex',
+      ownerTag: null,
+      memberCount: 2,
+      role: 'member',
+      inviteLink: null,
+    });
+    vi.mocked(getGroupMembers).mockResolvedValue([]);
+    const shared = {
+      pinOriginCrs: 'WOK',
+      pinDestinationCrs: 'WAT',
+      pinOriginName: 'Woking',
+      pinDestinationName: 'London Waterloo',
+      pinScheduledDeparture: '2026-09-11T08:00:00Z',
+      serviceDate: '2026-09-11',
+      resolutionStatus: 'schedule_matched',
+      status: null,
+      delayMinutes: null,
+      customName: null,
+      addedBy: 'user-2',
+      addedByName: 'Sam',
+      addedByTag: null,
+    };
+    vi.mocked(getGroupTrains).mockResolvedValue([
+      { ...shared, trainSubscriptionId: 1, trainUid: 'P00001', trackingPhase: 'planned' },
+      {
+        ...shared,
+        trainSubscriptionId: 2,
+        trainUid: 'P00002',
+        resolutionStatus: 'pending',
+        trackingPhase: 'noTimetable',
+      },
+      {
+        ...shared,
+        trainSubscriptionId: 3,
+        trainUid: 'B00001',
+        trackingPhase: 'timetableOnly',
+        serviceMode: 'bus',
+        liveTracking: false,
+      },
+    ]);
+    vi.mocked(getSessionOrLoggedOut).mockResolvedValue({
+      authenticated: true,
+      id: 'user-1',
+      username: null,
+      name: 'Alex',
+    });
+
+    renderWithMantine(await GroupDetailPage({ params: Promise.resolve({ id: 'grp-1' }) }));
+
+    expect(screen.getByText('Planned')).toBeInTheDocument();
+    expect(screen.getByText('Not in the timetable')).toBeInTheDocument();
+    expect(screen.getByText('Bus service')).toBeInTheDocument();
+    expect(screen.getByText('Timetabled only')).toBeInTheDocument();
+    expect(screen.queryByText('Pending match')).not.toBeInTheDocument();
+    expect(screen.queryByText('Matched to schedule')).not.toBeInTheDocument();
+  });
+
   /** A member whose identity provider has no name on file for them used to
    * arrive here as a BLANK `displayName`/`addedByName`, not a null one
    * (Authentik and friends send `"name": ""` rather than omitting the
@@ -890,19 +952,70 @@ describe('GroupDetailPage', () => {
       expect(screen.queryByText(/more leg/)).not.toBeInTheDocument();
     });
 
-    it('shows a red "Unmatched" badge, not the raw resolutionStatus, for a leg with no train bound yet', async () => {
-      // `resolutionStatus` is nullable on the wire (a journey's first leg
-      // may have no bound train yet) -- SharedJourneyRow coalesces this to
-      // 'unresolved' before handing it to TrackedTrainStatusBadge, whose
-      // 'unresolved' branch is the one WCAG 1.4.1 colour-plus-text case
-      // (red AND the word "Unmatched", never colour alone).
+    it('asks for a train, not a red "Unmatched", for a leg with no train picked yet', async () => {
+      // `resolutionStatus` is null on the wire when the summarised leg is
+      // still an open search. It used to be coalesced to 'unresolved' and
+      // read as a red "Unmatched"; the owner's journey list says it needs
+      // a train picked.
       vi.mocked(getGroupJourneys).mockResolvedValue([
-        journey({ resolutionStatus: null, status: null, delayMinutes: null, trainUid: null }),
+        journey({ kind: 'train', resolutionStatus: null, status: null, delayMinutes: null, trainUid: null }),
       ]);
       await renderAsViewer('user-other', 'member');
 
-      expect(screen.getByText('Unmatched')).toBeInTheDocument();
+      expect(screen.getByText('Needs a train picked')).toBeInTheDocument();
+      expect(screen.queryByText('Unmatched')).not.toBeInTheDocument();
       expect(screen.queryByText('null')).not.toBeInTheDocument();
+    });
+
+    it('a walk-and-Tube journey shows its leg clock state, not "Unmatched"', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([
+        journey({
+          journeyId: 601,
+          kind: 'untracked',
+          transitMode: 'walk',
+          plannedDeparture: '2026-09-11T08:00:00Z',
+          plannedArrival: '2026-09-11T08:10:00Z',
+          untrackedStatus: 'inProgress',
+          resolutionStatus: null,
+          status: null,
+          delayMinutes: null,
+          trainUid: null,
+        }),
+      ]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByText('In progress (not live tracked)')).toBeInTheDocument();
+      expect(screen.queryByText('Unmatched')).not.toBeInTheDocument();
+    });
+
+    it("shows the owner's phase and mode words for a picked train", async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([
+        journey({
+          journeyId: 701,
+          kind: 'train',
+          resolutionStatus: 'schedule_matched',
+          status: null,
+          delayMinutes: null,
+          trackingPhase: 'planned',
+          serviceMode: 'train',
+          liveTracking: true,
+        }),
+        journey({
+          journeyId: 702,
+          kind: 'train',
+          resolutionStatus: 'schedule_matched',
+          status: null,
+          delayMinutes: null,
+          trackingPhase: 'timetableOnly',
+          serviceMode: 'bus',
+          liveTracking: false,
+        }),
+      ]);
+      await renderAsViewer('user-other', 'member');
+
+      expect(screen.getByText('Planned')).toBeInTheDocument();
+      expect(screen.getByText('Timetabled only')).toBeInTheDocument();
+      expect(screen.queryByText('Matched to schedule')).not.toBeInTheDocument();
     });
 
     // Same blank-vs-null attribution gap `GroupTrain.addedByName` already
