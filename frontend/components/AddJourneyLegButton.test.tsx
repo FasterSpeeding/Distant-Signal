@@ -328,6 +328,24 @@ describe('AddJourneyLegButton', () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
+  it("shows a 422 for a train that can't serve the leg in the form's error alert", async () => {
+    const sentence = "Train A12345 doesn't stop at Woking (WOK) on 22 Sep 2026.";
+    mockFetch(() => new Response(sentence, { status: 422 }));
+
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    fireEvent.click(await screen.findByText('I know the train'));
+    fireEvent.change(await screen.findByLabelText('Train UID'), { target: { value: 'A12345' } });
+    fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-09-22' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(sentence);
+    expect(refreshMock).not.toHaveBeenCalled();
+    // The dialog stays open with the traveller's entry, to fix and resend.
+    expect(screen.getByLabelText('Train UID')).toHaveValue('A12345');
+  });
+
   // Bug: the Origin/Destination CRS and Service date fields were free text
   // with no client-side format check, so a malformed value used to sail
   // straight through to the backend and come back as a raw 400 instead of

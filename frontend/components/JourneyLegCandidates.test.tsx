@@ -356,6 +356,20 @@ describe('JourneyLegCandidates', () => {
     expect(onPicked).not.toHaveBeenCalled();
   });
 
+  it("shows the API's own sentence when the pick is refused because the train can't serve the leg", async () => {
+    const sentence =
+      "You can't board train C11052 at Stirling (STG) on 22 Sep 2026: it only lets passengers off there.";
+    vi.stubGlobal('fetch', mockFetchByUrl({ train: () => new Response(sentence, { status: 422 }) }));
+    renderWithMantine(<JourneyLegCandidates journeyId={1} legId={2} serviceDate="2026-09-22" onPicked={onPicked} />);
+
+    const buttons = await screen.findAllByRole('button', { name: /^Track this train/ });
+    fireEvent.click(buttons[0]!);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(sentence);
+    expect(onPicked).not.toHaveBeenCalled();
+  });
+
   it('renders the "Search manually" fallback link when there are no candidates', async () => {
     vi.stubGlobal(
       'fetch',
