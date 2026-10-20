@@ -3,6 +3,24 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: `journeyStops[].passingPoint`
+
+Additive. Every `journeyStops` entry (train detail, tracked trains,
+journey legs) now carries `passingPoint: boolean`: `true` where the
+schedule books no stop, only a pass (`workingPass`) or no time at all.
+It comes from the schedule and never changes with live data.
+
+- **Fix.** A TRUST movement at a passing point used to fill its
+  `scheduledArrival`/`scheduledDeparture` from TRUST's planned time, so
+  once the train had gone by the location looked like a booked call
+  (and could get `stopStatus: Skipped`). Those now stay `null` at a
+  passing point and `stopStatus` stays `Unknown`. `actualArrival`,
+  `actualDeparture`, `delayMinutes` and `lastEventType: PASS` are still
+  set there: they are the train's progress.
+- **For ds-mcp.** To list a train's stops, drop entries with
+  `passingPoint: true`. Keep them only for a working-timetable or
+  position view.
+
 ## 2026-10-19: `/Trips/plan` overnight times (`dayOffset`)
 
 Additive; no existing request or field changes meaning. Spec:
