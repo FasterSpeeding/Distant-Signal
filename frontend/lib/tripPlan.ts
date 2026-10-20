@@ -68,6 +68,9 @@ export interface TripPlanQuery {
    * (2026-10-19). Only ever set by `apiQuery` (`lib/tripPlanTiming.ts`);
    * the form and the `/plan` URL hold the visitor's own calendar date. */
   dayOffset?: 1 | undefined;
+  /** With `dayOffset: 1`: search the next service date's trains too and
+   * merge (2026-10-20). Only ever set by `apiQuery`. */
+  acrossMidnight?: true | undefined;
   /** Never call at or pass through these stations. */
   avoidCrs?: string[] | undefined;
   /** Pass these, but never call at them. */
@@ -136,6 +139,7 @@ export function buildTripPlanQuery(query: TripPlanQuery): string {
   }
   if (query.dayOffset && (query.departAfter || query.arriveBy)) {
     params.set('dayOffset', String(query.dayOffset));
+    if (query.acrossMidnight) params.set('acrossMidnight', 'true');
   }
   if (query.maxChanges !== undefined) {
     params.set('maxChanges', String(query.maxChanges));

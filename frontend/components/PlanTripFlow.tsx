@@ -40,7 +40,7 @@ interface SegmentSelection {
 
 /** `form` with `paged`'s date and time (and so its mode). */
 function withPagedTiming(form: TripPlanQuery, paged: TripPlanQuery): TripPlanQuery {
-  const { departAfter: _depart, arriveBy: _arrive, dayOffset: _offset, ...rest } = form;
+  const { departAfter: _depart, arriveBy: _arrive, dayOffset: _offset, acrossMidnight: _across, ...rest } = form;
   return {
     ...rest,
     date: paged.date,

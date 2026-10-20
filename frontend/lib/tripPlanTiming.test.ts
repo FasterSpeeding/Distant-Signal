@@ -33,36 +33,46 @@ describe('timingMode', () => {
 });
 
 describe('apiQuery (overnight mapping)', () => {
-  it('sends an arrive-by time before the cutoff as the previous day with dayOffset 1', () => {
+  it('sends a time before the cutoff, in either mode, as the previous day searched across midnight', () => {
     expect(OVERNIGHT_CUTOFF).toBe('03:00');
-    const sent = apiQuery({ ...base, arriveBy: '00:30' });
-    expect(sent).toMatchObject({ date: '2026-10-23', arriveBy: '00:30', dayOffset: 1 });
-    const params = new URLSearchParams(buildTripPlanQuery(sent));
-    expect(params.get('date')).toBe('2026-10-23');
-    expect(params.get('arriveBy')).toBe('00:30:00');
-    expect(params.get('dayOffset')).toBe('1');
+    for (const [query, field] of [
+      [{ ...base, arriveBy: '00:30' }, 'arriveBy'],
+      [{ ...base, departAfter: '00:30' }, 'departAfter'],
+    ] as const) {
+      const sent = apiQuery(query);
+      expect(sent).toMatchObject({ date: '2026-10-23', [field]: '00:30', dayOffset: 1, acrossMidnight: true });
+      const params = new URLSearchParams(buildTripPlanQuery(sent));
+      expect(params.get('date')).toBe('2026-10-23');
+      expect(params.get(field)).toBe('00:30:00');
+      expect(params.get('dayOffset')).toBe('1');
+      expect(params.get('acrossMidnight')).toBe('true');
+    }
   });
 
   it('crosses a month and a year boundary', () => {
     expect(apiQuery({ ...base, date: '2027-01-01', arriveBy: '02:59' }).date).toBe('2026-12-31');
   });
 
-  it('leaves the cutoff itself, later arrivals and every depart-after time alone', () => {
+  it('leaves the cutoff itself, later times and no time at all alone', () => {
     for (const query of [
       { ...base, arriveBy: '03:00' },
       { ...base, arriveBy: '09:00' },
-      { ...base, departAfter: '00:30' },
+      { ...base, departAfter: '03:00' },
       { ...base },
     ]) {
       const sent = apiQuery(query);
       expect(sent.date).toBe('2026-10-24');
       expect(sent.dayOffset).toBeUndefined();
-      expect(new URLSearchParams(buildTripPlanQuery(sent)).has('dayOffset')).toBe(false);
+      const params = new URLSearchParams(buildTripPlanQuery(sent));
+      expect(params.has('dayOffset')).toBe(false);
+      expect(params.has('acrossMidnight')).toBe(false);
     }
   });
 
   it('never carries a stale dayOffset over', () => {
-    expect(apiQuery({ ...base, departAfter: '09:00', dayOffset: 1 }).dayOffset).toBeUndefined();
+    const sent = apiQuery({ ...base, departAfter: '09:00', dayOffset: 1, acrossMidnight: true });
+    expect(sent.dayOffset).toBeUndefined();
+    expect(sent.acrossMidnight).toBeUndefined();
   });
 });
 
@@ -92,10 +102,24 @@ describe('laterQuery / earlierQuery', () => {
     const earlier = earlierQuery({ ...base, arriveBy: '00:30' }, '2026-10-23', shown);
     expect(earlier).toMatchObject({ date: '2026-10-24', arriveBy: '00:19' });
     // ...which the overnight mapping sends back to the 23rd's trains.
-    expect(apiQuery(earlier!)).toMatchObject({ date: '2026-10-23', arriveBy: '00:19', dayOffset: 1 });
+    expect(apiQuery(earlier!)).toMatchObject({
+      date: '2026-10-23',
+      arriveBy: '00:19',
+      dayOffset: 1,
+      acrossMidnight: true,
+    });
     // Later from 23:59 rolls over to 00:00 the next day.
     const late = plan(journey(['23:59:00', 0], ['00:30:00', 1]));
-    expect(laterQuery(base, '2026-10-24', late)).toMatchObject({ date: '2026-10-25', departAfter: '00:00' });
+    const later = laterQuery(base, '2026-10-24', late);
+    expect(later).toMatchObject({ date: '2026-10-25', departAfter: '00:00' });
+    // ...which searches both dates: the 24th's trains after midnight and
+    // the 25th's first ones.
+    expect(apiQuery(later!)).toMatchObject({
+      date: '2026-10-24',
+      departAfter: '00:00',
+      dayOffset: 1,
+      acrossMidnight: true,
+    });
   });
 
   it('rolls back a day from an arrival at midnight', () => {

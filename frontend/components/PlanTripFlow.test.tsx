@@ -1058,7 +1058,7 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     expect(window.location.search).not.toContain('departAfter');
   });
 
-  it("sends an arrival just after midnight as the previous day with dayOffset 1, but shows the visitor's date", async () => {
+  it("sends an arrival just after midnight as the previous day across midnight, but shows the visitor's date", async () => {
     window.history.replaceState(null, '', '/plan');
     const fetchMock = vi.fn().mockResolvedValueOnce(ok(planWith(['23:30:00', 0], ['00:20:00', 1])));
     await searchArriveBy(fetchMock, '00:30');
@@ -1066,6 +1066,7 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     expect(sent.get('date')).toBe('2030-10-23');
     expect(sent.get('arriveBy')).toBe('00:30:00');
     expect(sent.get('dayOffset')).toBe('1');
+    expect(sent.get('acrossMidnight')).toBe('true');
     expect(await screen.findByText('Arrive by 00:30, 24 Oct 2030')).toBeInTheDocument();
     // The address bar keeps what the visitor asked for.
     expect(window.location.search).toContain(`date=${DATE}`);
