@@ -3,6 +3,34 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: incident state from the validity windows
+
+Spec: `docs/superpowers/specs/2026-10-20-incident-validity-state-design.md`.
+New fields and a new filter value are additive; `state=active` (and
+`cleared=false`) now returns fewer rows.
+
+- **`state` on every incident.** `GET /public/incidents` rows and `GET
+  /public/incidents/{id}` gain `state`: `active`, `upcoming`, `ended` or
+  `cleared`. First match wins: `cleared` when RDM cleared it; `ended` when
+  the feed stopped listing it (`sourceRemovedAt`); then by the incident's
+  own `validityPeriods`: `active` while one covers now (or there are none),
+  `upcoming` while none has started yet (or now is between two), `ended`
+  once every one has finished. Until now "active" only meant "not cleared
+  and still listed", so planned work next week read as active.
+- **`startsAt`** (RFC3339 or `null`): when the next window starts, for
+  `upcoming`. **`validityEndedAt`** (RFC3339 or `null`): when the last
+  window finished, once every one has; `sourceRemovedAt` still says when a
+  removed one was last listed.
+- **`state=upcoming`** is a new filter value. `state=active` and the
+  legacy `cleared=false` now exclude upcoming incidents and listed ones
+  whose windows have all finished; `state=ended` now includes the latter.
+  `total` counts the same rows as the filter.
+- **Unchanged.** `isCleared`, `sourceRemovedAt`, `validityPeriods` and
+  `isNow` (which means "open-ended", not "covers now"). The line status
+  routes were already gated on the same windows.
+- **For ds-mcp.** Prefer `state` over deriving one from `isCleared` and
+  `sourceRemovedAt`; a client that ignores it keeps working.
+
 ## 2026-10-19: `/Trips/plan` overnight times (`dayOffset`)
 
 Additive; no existing request or field changes meaning. Spec:
