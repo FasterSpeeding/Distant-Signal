@@ -3,6 +3,28 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: insert a leg, edit an untracked leg, `metro`
+
+Additive. Spec: `docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md` §11.
+
+- **Insert before.** `POST /Journeys/{id}/legs?before={legId}` adds the
+  leg (any mode) in front of that leg; it and every later leg move one
+  place down. Without `before`, the leg is appended as before. An unknown
+  `before` (not a leg of this journey) is 404 and adds nothing; any other
+  query key is a 400. Leg numbers everywhere (the journey's own list, push
+  copy's "leg 2 of 3") follow the new order.
+- **Edit an untracked leg.** `PUT /Journeys/{id}/legs/{legId}` with the
+  untracked fields (`transitMode`, `plannedDeparture`, `plannedArrival`,
+  optional `originName`, `destinationName`, `lineName`; no `mode`)
+  replaces them in place: same id, same place. 204; 404 for no such leg or
+  not the caller's; 400 for a train leg or invalid fields.
+- **`metro`** is a new `transitMode` (Tyne and Wear Metro and similar),
+  which the planner's fixed links use.
+- **Web planner.** "Track this journey" now sends each Tube, walk, metro,
+  bus or ferry transfer as an untracked leg between its train legs.
+- **For ds-mcp.** Nothing to change. A planned route's transfers can be
+  sent the same way, as `kind: "untracked"` itinerary legs.
+
 ## 2026-10-20: untracked journey legs, `trackingPhase`
 
 Additive; no existing request or field changes meaning. Spec:
@@ -11,8 +33,8 @@ Additive; no existing request or field changes meaning. Spec:
 - **Untracked legs.** A journey leg for transport we have no data for
   (Tube, bus, walk, ferry). `POST /Journeys` (`leg`) and `POST
   /Journeys/{id}/legs` take `"mode": "untracked"` with `transitMode`
-  (`tube`, `bus`, `tram`, `rail`, `walk`, `ferry`, `taxi`, `cycle`,
-  `other`), optional `lineName` (60 characters), `originName` and
+  (`tube`, `bus`, `tram`, `metro`, `rail`, `walk`, `ferry`, `taxi`,
+  `cycle`, `other`), optional `lineName` (60 characters), `originName` and
   `destinationName` (100 each, free text), and required
   `plannedDeparture`/`plannedArrival` (RFC3339; arrival not before
   departure, at most 24 hours later; departure at most 28 days ahead and 7
