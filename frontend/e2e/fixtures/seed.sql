@@ -179,9 +179,10 @@ ON CONFLICT (incident_id) DO UPDATE SET
 -- An "Upcoming" incident: listed and uncleared, but its only validity
 -- window is next week, so it is not in effect yet (2026-10-20,
 -- docs/superpowers/specs/2026-10-20-incident-validity-state-design.md).
--- The window is relative to NOW() so it stays upcoming. First seen 40 days
--- ago, outside /incidents' default 30 days, so the default list (and its
--- screenshot) is unchanged; `period=all` shows it. No "signal" or
+-- The window is relative to NOW() so it stays upcoming. First seen on a
+-- fixed date more than 30 days before both today and visual.spec.ts's
+-- FIXED_NOW (2026-09-17), so /incidents' default 30 days (and its
+-- screenshot) leaves it out; `period=all` shows it. No "signal" or
 -- "engineering" in its text: list-filters.spec.ts searches for both.
 INSERT INTO incidents (
     incident_id, summary, description, operators, affected_stations,
@@ -198,7 +199,7 @@ VALUES (
         'from_date', to_char((NOW() + interval '5 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
         'to_date', to_char((NOW() + interval '6 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
         'is_now', false)),
-    TRUE, FALSE, NOW(), NOW() - interval '40 days', '{}'
+    TRUE, FALSE, NOW(), '2026-07-01T09:00:00Z', '{}'
 )
 ON CONFLICT (incident_id) DO UPDATE SET
   summary = EXCLUDED.summary, description = EXCLUDED.description,
