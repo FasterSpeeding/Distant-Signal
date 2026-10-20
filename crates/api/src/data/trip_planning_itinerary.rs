@@ -142,6 +142,16 @@ pub enum PlannedLeg {
         origin_crs: Option<String>,
         destination_crs: Option<String>,
         minutes: i32,
+        /// For a `TUBE` or `METRO` transfer, the TfL stop at each end
+        /// (`{id, name, modes, lines}`; additive, 2026-10-20, docs/superpowers/
+        /// specs/2026-10-20-tfl-stop-lookup-design.md §5), so a client saving
+        /// the transfer as an untracked leg can send its `originStopId` and
+        /// place name. Absent when unknown. Filled in by
+        /// `tfl_stops::attach_transfer_stops`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        origin_stop: Option<crate::data::tfl_stops::TflStopSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination_stop: Option<crate::data::tfl_stops::TflStopSummary>,
     },
 }
 
@@ -305,6 +315,8 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
             origin_crs: crs_for_tiploc(interchange, &transfer.from_tiploc),
             destination_crs: crs_for_tiploc(interchange, &transfer.to_tiploc),
             minutes: transfer.minutes,
+            origin_stop: None,
+            destination_stop: None,
         },
     }
 }
@@ -4162,6 +4174,8 @@ mod tests {
             origin_crs: None,
             destination_crs: None,
             minutes: 5,
+            origin_stop: None,
+            destination_stop: None,
         };
         let segment = |from: &str, to: &str, itineraries| SegmentResult {
             origin_crs: from.to_string(),

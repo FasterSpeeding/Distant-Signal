@@ -33,6 +33,7 @@ pub mod reference;
 pub mod schedule_rows;
 pub mod stanox_crs;
 pub mod station_stats;
+pub mod tfl_stops;
 pub mod train;
 pub mod trains;
 pub mod transit;
@@ -141,4 +142,5 @@ pub fn public_router() -> Router {
         .merge(stanox_crs::router())
         .merge(trains::router())
         .merge(transit::router())
+        .merge(tfl_stops::router())
 }
