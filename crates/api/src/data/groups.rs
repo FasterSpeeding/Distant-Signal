@@ -1092,6 +1092,7 @@ struct GroupTrainRow {
     added_by: String,
     added_by_name: Option<String>,
     added_by_username: Option<String>,
+    timetable_on_row: bool,
 }
 
 /// A shared train's display shape for `GET /groups/{id}/trains`. Carries
@@ -1137,6 +1138,22 @@ pub struct GroupTrain {
     /// gives this app no showable name are still told apart. Same
     /// contract, same derivation, as `GroupMember.display_tag`.
     pub added_by_tag: Option<String>,
+    /// `serviceMode`/`liveTracking`, from `schedule_services` (see
+    /// `TrackedTrainListItem::service`). A train when unknown. Additive
+    /// (2026-10-20).
+    #[serde(flatten)]
+    pub service: crate::data::schedule_services::ServiceModeFields,
+    /// Whether the shared `trains` row carries timetable data, internal:
+    /// an input to `tracking_phase`.
+    #[serde(skip_serializing)]
+    pub timetable_on_row: bool,
+    /// See `TrackedTrainState::tracking_phase`. Derived from the
+    /// subscription's resolution and live status and public timetable data
+    /// only, so it widens nothing past the "Never shown" list. Additive
+    /// (2026-10-20).
+    pub tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    /// See `TrackedTrainState::first_report_expected_at`.
+    pub first_report_expected_at: Option<DateTime<Utc>>,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for GroupTrain {
@@ -1187,6 +1204,10 @@ impl From<GroupTrainRow> for GroupTrain {
             // doesn't; see `display_name_collapse_tests` below.
             added_by_name: added_by.label,
             added_by_tag: added_by.tag,
+            service: crate::data::schedule_services::ServiceModeFields::default(),
+            timetable_on_row: row.timetable_on_row,
+            tracking_phase: None,
+            first_report_expected_at: None,
         }
     }
 }
@@ -1220,6 +1241,11 @@ struct GroupJourneyRow {
     added_by: String,
     added_by_name: Option<String>,
     added_by_username: Option<String>,
+    timetable_on_row: bool,
+    kind: String,
+    transit_mode: Option<String>,
+    planned_departure: Option<DateTime<Utc>>,
+    planned_arrival: Option<DateTime<Utc>>,
 }
 
 /// A shared journey's display shape for `GET /groups/{id}/journeys` --
@@ -1273,6 +1299,34 @@ pub struct GroupJourney {
     pub added_by_name: Option<String>,
     /// Same contract as `GroupTrain.added_by_tag`.
     pub added_by_tag: Option<String>,
+    /// `serviceMode`/`liveTracking` of the summarised leg's train, from
+    /// `schedule_services`; absent (not `train`) when that leg has no
+    /// matched train. Additive (2026-10-20).
+    #[serde(flatten)]
+    pub service: Option<crate::data::schedule_services::ServiceModeFields>,
+    /// Whether the leg's `trains` row carries timetable data, internal: an
+    /// input to `tracking_phase`.
+    #[serde(skip_serializing)]
+    pub timetable_on_row: bool,
+    /// The summarised leg's `trackingPhase` (see
+    /// `TrackedTrainState::tracking_phase`); `None` for an open or
+    /// untracked leg. Additive (2026-10-20).
+    pub tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    /// See `TrackedTrainState::first_report_expected_at`.
+    pub first_report_expected_at: Option<DateTime<Utc>>,
+    /// The summarised leg's kind: `train` or `untracked`. The row
+    /// summarises the journey's first train leg, else its first leg, so
+    /// `untracked` means the journey has no train legs. Additive
+    /// (2026-10-20).
+    pub kind: String,
+    /// The untracked leg's mode (`tube`, `walk`, ...); `None` on a train
+    /// leg.
+    pub transit_mode: Option<String>,
+    /// The untracked leg's planned times; `None` on a train leg.
+    pub planned_departure: Option<DateTime<Utc>>,
+    pub planned_arrival: Option<DateTime<Utc>>,
+    /// The untracked leg's clock-only state; `None` on a train leg.
+    pub untracked_status: Option<crate::data::journeys::UntrackedStatus>,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for GroupJourney {
@@ -1321,6 +1375,15 @@ impl From<GroupJourneyRow> for GroupJourney {
             added_by: row.added_by,
             added_by_name: added_by.label,
             added_by_tag: added_by.tag,
+            service: None,
+            timetable_on_row: row.timetable_on_row,
+            tracking_phase: None,
+            first_report_expected_at: None,
+            kind: row.kind,
+            transit_mode: row.transit_mode,
+            planned_departure: row.planned_departure,
+            planned_arrival: row.planned_arrival,
+            untracked_status: None,
         }
     }
 }
@@ -1331,6 +1394,144 @@ impl From<GroupJourneyRow> for GroupJourney {
 /// lists were unbounded. Each list keeps its newest rows past the cap; the
 /// per-group lists still return them oldest-first. Far above real use.
 pub const MAX_GROUP_LIST_ITEMS: i64 = 500;
+
+// `trackingPhase` and `serviceMode`/`liveTracking` on the group and shared
+// rows (2026-10-20), the same derivation the owner's own lists use
+// (`TrackedTrainListItem`, `journeys::JourneyListItem`), so a train reads
+// the same on every page. The inputs are the subscription's resolution and
+// live status, its train UID and date, and public timetable data: nothing
+// the rows did not already show.
+
+/// The phase and mode impls for a shared train row: always about a train.
+macro_rules! impl_train_states {
+    ($row:ty) => {
+        impl crate::data::tracking_phase::PhaseRow for $row {
+            fn phase_key(&self) -> Option<(&str, chrono::NaiveDate)> {
+                self.train_uid
+                    .as_deref()
+                    .map(|uid| (uid, self.service_date))
+            }
+
+            fn phase_signals(&self) -> crate::data::tracking_phase::PhaseSignals<'_> {
+                crate::data::tracking_phase::PhaseSignals {
+                    applies: true,
+                    activated: self.resolution_status == "resolved",
+                    status: self.status.as_deref(),
+                    timetable_on_row: self.timetable_on_row,
+                }
+            }
+
+            fn set_phase(
+                &mut self,
+                phase: crate::data::tracking_phase::TrackingPhase,
+                expected: Option<DateTime<Utc>>,
+            ) {
+                self.tracking_phase = Some(phase);
+                self.first_report_expected_at = expected;
+            }
+        }
+
+        impl crate::data::schedule_services::HasServiceMode for $row {
+            fn schedule_key(&self) -> Option<(&str, chrono::NaiveDate)> {
+                self.train_uid
+                    .as_deref()
+                    .map(|uid| (uid, self.service_date))
+            }
+
+            fn set_service_mode(&mut self, mode: crate::data::schedule_services::ServiceMode) {
+                self.service = crate::data::schedule_services::ServiceModeFields(mode);
+            }
+        }
+    };
+}
+
+/// The same for a shared journey row, whose summarised leg may be an open
+/// train leg (no subscription) or an untracked one: neither has a phase or
+/// a service mode, and the untracked one gets its clock-only status.
+macro_rules! impl_journey_states {
+    ($row:ty) => {
+        impl $row {
+            /// The summarised leg is a train leg with a train picked.
+            fn has_train(&self) -> bool {
+                self.kind == crate::data::journeys::LEG_KIND_TRAIN
+                    && self.resolution_status.is_some()
+            }
+
+            /// The untracked leg's status at `now`, by the same rule as
+            /// `GET /Journeys/mine`.
+            fn set_untracked_status_at(&mut self, now: DateTime<Utc>) {
+                if let (Some(departure), Some(arrival)) =
+                    (self.planned_departure, self.planned_arrival)
+                {
+                    self.untracked_status = Some(crate::data::journeys::untracked_status(
+                        departure, arrival, now,
+                    ));
+                }
+            }
+        }
+
+        impl crate::data::tracking_phase::PhaseRow for $row {
+            fn phase_key(&self) -> Option<(&str, chrono::NaiveDate)> {
+                self.train_uid
+                    .as_deref()
+                    .map(|uid| (uid, self.service_date))
+            }
+
+            fn phase_signals(&self) -> crate::data::tracking_phase::PhaseSignals<'_> {
+                crate::data::tracking_phase::PhaseSignals {
+                    applies: self.has_train(),
+                    activated: self.resolution_status.as_deref() == Some("resolved"),
+                    status: self.status.as_deref(),
+                    timetable_on_row: self.timetable_on_row,
+                }
+            }
+
+            fn set_phase(
+                &mut self,
+                phase: crate::data::tracking_phase::TrackingPhase,
+                expected: Option<DateTime<Utc>>,
+            ) {
+                self.tracking_phase = Some(phase);
+                self.first_report_expected_at = expected;
+            }
+        }
+
+        impl crate::data::schedule_services::HasServiceMode for $row {
+            fn schedule_key(&self) -> Option<(&str, chrono::NaiveDate)> {
+                if !self.has_train() {
+                    return None;
+                }
+                self.train_uid
+                    .as_deref()
+                    .map(|uid| (uid, self.service_date))
+            }
+
+            fn set_service_mode(&mut self, mode: crate::data::schedule_services::ServiceMode) {
+                // `attach` sets a train on every row it has no key for; an
+                // open or untracked leg has no train to describe.
+                self.service = self
+                    .has_train()
+                    .then_some(crate::data::schedule_services::ServiceModeFields(mode));
+            }
+        }
+    };
+}
+
+impl_train_states!(GroupTrain);
+impl_train_states!(SharedTrain);
+impl_journey_states!(GroupJourney);
+impl_journey_states!(SharedJourney);
+
+/// `serviceMode` and `trackingPhase` for group and shared rows. Both
+/// lookups are best effort: a failure leaves the defaults (a train, or no
+/// mode on a journey row; no phase).
+async fn attach_train_states<T>(pool: &PgPool, items: &mut [T], now: DateTime<Utc>)
+where
+    T: crate::data::tracking_phase::PhaseRow + crate::data::schedule_services::HasServiceMode,
+{
+    crate::data::schedule_services::attach(pool, items).await;
+    crate::data::tracking_phase::attach(pool, items, now).await;
+}
 
 /// Every train shared into `group_id`, oldest-shared first. No permission
 /// check here -- the route's own `get_member_role` call gates "is the
@@ -1344,7 +1545,8 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, ts.custom_name, \
-                gt.added_by, u.name AS added_by_name, u.username AS added_by_username \
+                gt.added_by, u.name AS added_by_name, u.username AS added_by_username, \
+                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row \
          FROM group_trains gt \
          JOIN train_subscriptions ts ON ts.id = gt.train_subscription_id \
          JOIN users u ON u.id = gt.added_by \
@@ -1363,6 +1565,7 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
     // Newest `MAX_GROUP_LIST_ITEMS` fetched, returned oldest-first as before.
     let mut items: Vec<GroupTrain> = rows.into_iter().rev().map(GroupTrain::from).collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    attach_train_states(pool, &mut items, Utc::now()).await;
     Ok(items)
 }
 
@@ -1409,7 +1612,9 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
                 COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
                 fl.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
-                gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
+                gj.added_by, u.name AS added_by_name, u.username AS added_by_username, \
+                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row, \
+                jl.kind, jl.transit_mode, jl.planned_departure, jl.planned_arrival \
          FROM group_journeys gj \
          JOIN journeys j ON j.id = gj.journey_id \
          JOIN journey_legs jl ON jl.journey_id = j.id \
@@ -1443,6 +1648,11 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
     .await?;
     let mut items: Vec<GroupJourney> = rows.into_iter().rev().map(GroupJourney::from).collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    let now = Utc::now();
+    for item in &mut items {
+        item.set_untracked_status_at(now);
+    }
+    attach_train_states(pool, &mut items, now).await;
     Ok(items)
 }
 
@@ -1466,6 +1676,7 @@ struct SharedTrainRow {
     added_by: String,
     added_by_name: Option<String>,
     added_by_username: Option<String>,
+    timetable_on_row: bool,
 }
 
 /// One train shared into one group the CALLER is a member of -- `GroupTrain`
@@ -1511,6 +1722,22 @@ pub struct SharedTrain {
     pub added_by_name: Option<String>,
     /// Same contract as `GroupTrain.added_by_tag`.
     pub added_by_tag: Option<String>,
+    /// `serviceMode`/`liveTracking`, from `schedule_services` (see
+    /// `TrackedTrainListItem::service`). A train when unknown. Additive
+    /// (2026-10-20).
+    #[serde(flatten)]
+    pub service: crate::data::schedule_services::ServiceModeFields,
+    /// Whether the shared `trains` row carries timetable data, internal:
+    /// an input to `tracking_phase`.
+    #[serde(skip_serializing)]
+    pub timetable_on_row: bool,
+    /// See `TrackedTrainState::tracking_phase`. Derived from the
+    /// subscription's resolution and live status and public timetable data
+    /// only, so it widens nothing past the "Never shown" list. Additive
+    /// (2026-10-20).
+    pub tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    /// See `TrackedTrainState::first_report_expected_at`.
+    pub first_report_expected_at: Option<DateTime<Utc>>,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for SharedTrain {
@@ -1562,6 +1789,10 @@ impl From<SharedTrainRow> for SharedTrain {
             // last place that should be laxer about it.
             added_by_name: added_by.label,
             added_by_tag: added_by.tag,
+            service: crate::data::schedule_services::ServiceModeFields::default(),
+            timetable_on_row: row.timetable_on_row,
+            tracking_phase: None,
+            first_report_expected_at: None,
         }
     }
 }
@@ -1623,7 +1854,8 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, ts.custom_name, \
-                gt.added_by, u.name AS added_by_name, u.username AS added_by_username \
+                gt.added_by, u.name AS added_by_name, u.username AS added_by_username, \
+                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row \
          FROM group_members me \
          JOIN groups g ON g.id = me.group_id \
          JOIN group_trains gt ON gt.group_id = g.id \
@@ -1643,6 +1875,7 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
     .await?;
     let mut items: Vec<SharedTrain> = rows.into_iter().map(SharedTrain::from).collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    attach_train_states(pool, &mut items, Utc::now()).await;
     Ok(items)
 }
 
@@ -1671,6 +1904,11 @@ struct SharedJourneyRow {
     added_by: String,
     added_by_name: Option<String>,
     added_by_username: Option<String>,
+    timetable_on_row: bool,
+    kind: String,
+    transit_mode: Option<String>,
+    planned_departure: Option<DateTime<Utc>>,
+    planned_arrival: Option<DateTime<Utc>>,
 }
 
 /// One journey shared into one group the CALLER is a member of --
@@ -1719,6 +1957,34 @@ pub struct SharedJourney {
     pub added_by: String,
     pub added_by_name: Option<String>,
     pub added_by_tag: Option<String>,
+    /// `serviceMode`/`liveTracking` of the summarised leg's train, from
+    /// `schedule_services`; absent (not `train`) when that leg has no
+    /// matched train. Additive (2026-10-20).
+    #[serde(flatten)]
+    pub service: Option<crate::data::schedule_services::ServiceModeFields>,
+    /// Whether the leg's `trains` row carries timetable data, internal: an
+    /// input to `tracking_phase`.
+    #[serde(skip_serializing)]
+    pub timetable_on_row: bool,
+    /// The summarised leg's `trackingPhase` (see
+    /// `TrackedTrainState::tracking_phase`); `None` for an open or
+    /// untracked leg. Additive (2026-10-20).
+    pub tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    /// See `TrackedTrainState::first_report_expected_at`.
+    pub first_report_expected_at: Option<DateTime<Utc>>,
+    /// The summarised leg's kind: `train` or `untracked`. The row
+    /// summarises the journey's first train leg, else its first leg, so
+    /// `untracked` means the journey has no train legs. Additive
+    /// (2026-10-20).
+    pub kind: String,
+    /// The untracked leg's mode (`tube`, `walk`, ...); `None` on a train
+    /// leg.
+    pub transit_mode: Option<String>,
+    /// The untracked leg's planned times; `None` on a train leg.
+    pub planned_departure: Option<DateTime<Utc>>,
+    pub planned_arrival: Option<DateTime<Utc>>,
+    /// The untracked leg's clock-only state; `None` on a train leg.
+    pub untracked_status: Option<crate::data::journeys::UntrackedStatus>,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for SharedJourney {
@@ -1769,6 +2035,15 @@ impl From<SharedJourneyRow> for SharedJourney {
             added_by: row.added_by,
             added_by_name: added_by.label,
             added_by_tag: added_by.tag,
+            service: None,
+            timetable_on_row: row.timetable_on_row,
+            tracking_phase: None,
+            first_report_expected_at: None,
+            kind: row.kind,
+            transit_mode: row.transit_mode,
+            planned_departure: row.planned_departure,
+            planned_arrival: row.planned_arrival,
+            untracked_status: None,
         }
     }
 }
@@ -1801,7 +2076,9 @@ pub async fn list_shared_journeys_for_user(
                 COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
                 fl.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
-                gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
+                gj.added_by, u.name AS added_by_name, u.username AS added_by_username, \
+                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row, \
+                jl.kind, jl.transit_mode, jl.planned_departure, jl.planned_arrival \
          FROM group_members me \
          JOIN groups g ON g.id = me.group_id \
          JOIN group_journeys gj ON gj.group_id = g.id \
@@ -1837,6 +2114,11 @@ pub async fn list_shared_journeys_for_user(
     .await?;
     let mut items: Vec<SharedJourney> = rows.into_iter().map(SharedJourney::from).collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
+    let now = Utc::now();
+    for item in &mut items {
+        item.set_untracked_status_at(now);
+    }
+    attach_train_states(pool, &mut items, now).await;
     Ok(items)
 }
 
@@ -4310,6 +4592,353 @@ mod db_tests {
         cleanup(&pool, &[owner, viewer]).await;
     }
 
+    /// Timetable and live fixtures (`trains`, `train_current_state`, the
+    /// schedule products) go in as the schema owner when the role split is
+    /// on, as the other suites seed schedule products; the api role is not
+    /// what writes them in production.
+    async fn fixture_pool(pool: &PgPool) -> PgPool {
+        match std::env::var("MIGRATION_DATABASE_URL") {
+            Ok(url) if !url.is_empty() => PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await
+                .expect("connect to MIGRATION_DATABASE_URL for fixtures"),
+            _ => pool.clone(),
+        }
+    }
+
+    /// 2026-10-20: every group and shared list carries the owner's
+    /// `trackingPhase` and `serviceMode`, and a journey row says what its
+    /// summarised leg is, so a planned train, one not in the timetable, a
+    /// bus, a live train and a walk-and-Tube journey read the same as on
+    /// the owner's own pages.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                group_and_shared_rows_carry_the_tracking_phase -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture set read back through all four lists"
+    )]
+    async fn group_and_shared_rows_carry_the_tracking_phase() {
+        use crate::data::journeys::UntrackedStatus;
+        use crate::data::schedule_services::ServiceMode;
+        use crate::data::tracking_phase::TrackingPhase;
+
+        let pool = connect().await;
+        let fixtures = fixture_pool(&pool).await;
+        let owner = "TEST-GROUPS-PHASE-OWNER";
+        let viewer = "TEST-GROUPS-PHASE-VIEWER";
+        // Planned, not in the timetable, a bus, live.
+        let uids = ["ZGPH01", "ZGPH02", "ZGPH03", "ZGPH04"];
+        let date = crate::routes::london_today() + chrono::Duration::days(3);
+        let clear = || async {
+            for user in [owner, viewer] {
+                sqlx::query("DELETE FROM journeys WHERE user_id = $1")
+                    .bind(user)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+                    .bind(user)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                sqlx::query("DELETE FROM groups WHERE created_by = $1")
+                    .bind(user)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            cleanup(&pool, &[owner, viewer]).await;
+            sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = ANY($1)")
+                .bind(uids.to_vec())
+                .execute(&fixtures)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM schedule_services WHERE uid = ANY($1)")
+                .bind(uids.to_vec())
+                .execute(&fixtures)
+                .await
+                .unwrap();
+            sqlx::query(
+                "DELETE FROM train_current_state WHERE trains_id IN \
+                 (SELECT id FROM trains WHERE train_uid = ANY($1))",
+            )
+            .bind(uids.to_vec())
+            .execute(&fixtures)
+            .await
+            .unwrap();
+            sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+                .bind(uids.to_vec())
+                .execute(&fixtures)
+                .await
+                .unwrap();
+        };
+        clear().await;
+
+        // ZGPH01 leaves its origin at 07:10 London time three days out: its
+        // Activation is not due. ZGPH03 is a bus. ZGPH04 is running.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, 'WAT', '07:10', 'ZGPH01', 'WOK', 'WOK'), \
+                    ($1, 'WAT', '09:00', 'ZGPH03', 'GLD', 'GLD')",
+        )
+        .bind(date)
+        .execute(&fixtures)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, stp) \
+             VALUES ($1, 'ZGPH03', 'bus', 'P')",
+        )
+        .bind(date)
+        .execute(&fixtures)
+        .await
+        .unwrap();
+        let mut trains_ids = Vec::new();
+        for uid in uids {
+            let (id,): (i64,) = sqlx::query_as(
+                "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2) RETURNING id",
+            )
+            .bind(uid)
+            .bind(date)
+            .fetch_one(&fixtures)
+            .await
+            .unwrap();
+            trains_ids.push(id);
+        }
+        sqlx::query(
+            "INSERT INTO train_current_state (trains_id, status, last_reported_location, \
+                 delay_minutes, updated_at) VALUES ($1, 'en_route', 'Woking', 0, NOW())",
+        )
+        .bind(trains_ids[3])
+        .execute(&fixtures)
+        .await
+        .unwrap();
+
+        seed_user(&pool, owner).await;
+        seed_user(&pool, viewer).await;
+        let group_id = create_group(&pool, "Phase Test", owner)
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .expect("seed member");
+
+        let mut journey_ids = Vec::new();
+        for (trains_id, resolution) in trains_ids.iter().zip([
+            "schedule_matched",
+            "schedule_matched",
+            "schedule_matched",
+            "resolved",
+        ]) {
+            let (subscription,): (i64,) = sqlx::query_as(
+                "INSERT INTO train_subscriptions \
+                    (user_id, service_date, pin_origin_crs, pin_destination_crs, \
+                     pin_scheduled_departure, trains_id, resolution_status) \
+                 VALUES ($1, $2, 'WOK', 'WAT', NOW(), $3, $4) RETURNING id",
+            )
+            .bind(owner)
+            .bind(date)
+            .bind(trains_id)
+            .bind(resolution)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            add_train_to_group(&pool, &group_id, subscription, owner)
+                .await
+                .expect("share the train");
+            let (journey_id,): (i64,) =
+                sqlx::query_as("INSERT INTO journeys (user_id) VALUES ($1) RETURNING id")
+                    .bind(owner)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            // A walk before the train: the row still summarises the train.
+            sqlx::query(
+                "INSERT INTO journey_legs \
+                    (journey_id, leg_order, service_date, match_mode, kind, transit_mode, \
+                     planned_departure, planned_arrival) \
+                 VALUES ($1, 1, $2, 'manual', 'untracked', 'walk', NOW(), NOW())",
+            )
+            .bind(journey_id)
+            .bind(date)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO journey_legs \
+                    (journey_id, leg_order, origin_crs, destination_crs, service_date, \
+                     match_mode, train_subscription_id) \
+                 VALUES ($1, 2, 'WOK', 'WAT', $2, 'manual', $3)",
+            )
+            .bind(journey_id)
+            .bind(date)
+            .bind(subscription)
+            .execute(&pool)
+            .await
+            .unwrap();
+            journey_ids.push(journey_id);
+        }
+        // Walk then Tube, no train at all; and a journey still searching
+        // for its train.
+        let (untracked_journey,): (i64,) =
+            sqlx::query_as("INSERT INTO journeys (user_id) VALUES ($1) RETURNING id")
+                .bind(owner)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, service_date, match_mode, kind, transit_mode, \
+                 planned_departure, planned_arrival) \
+             VALUES ($1, 1, $2, 'manual', 'untracked', 'walk', \
+                     NOW() + INTERVAL '2 hours', NOW() + INTERVAL '130 minutes'), \
+                    ($1, 2, $2, 'manual', 'untracked', 'tube', \
+                     NOW() + INTERVAL '130 minutes', NOW() + INTERVAL '150 minutes')",
+        )
+        .bind(untracked_journey)
+        .bind(date)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let open_journey = seed_journey(&pool, owner).await;
+        for journey_id in journey_ids
+            .iter()
+            .chain([&untracked_journey, &open_journey])
+        {
+            add_journey_to_group(&pool, &group_id, *journey_id, owner)
+                .await
+                .expect("share the journey");
+        }
+
+        let expected = [
+            (TrackingPhase::Planned, ServiceMode::Train),
+            (TrackingPhase::NoTimetable, ServiceMode::Train),
+            (TrackingPhase::TimetableOnly, ServiceMode::Bus),
+            (TrackingPhase::Live, ServiceMode::Train),
+        ];
+        let group_trains = list_group_trains(&pool, &group_id).await.expect("list");
+        let shared_trains = list_shared_trains_for_user(&pool, viewer)
+            .await
+            .expect("list shared");
+        for (list, rows) in [
+            (
+                "group",
+                group_trains
+                    .iter()
+                    .map(|t| {
+                        (
+                            t.train_uid.clone(),
+                            t.tracking_phase,
+                            t.service.0,
+                            t.first_report_expected_at,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "shared",
+                shared_trains
+                    .iter()
+                    .map(|t| {
+                        (
+                            t.train_uid.clone(),
+                            t.tracking_phase,
+                            t.service.0,
+                            t.first_report_expected_at,
+                        )
+                    })
+                    .collect(),
+            ),
+        ] {
+            assert_eq!(rows.len(), 4, "{list}: {rows:?}");
+            for (uid, (phase, mode)) in uids.iter().zip(expected) {
+                let row = rows
+                    .iter()
+                    .find(|row| row.0.as_deref() == Some(*uid))
+                    .unwrap_or_else(|| panic!("{list}: {uid} missing"));
+                assert_eq!((row.1, row.2), (Some(phase), mode), "{list}: {uid}");
+                assert_eq!(
+                    row.3.is_some(),
+                    phase == TrackingPhase::Planned,
+                    "{list}: {uid} first report time"
+                );
+            }
+        }
+
+        let group_journeys = list_group_journeys(&pool, &group_id)
+            .await
+            .expect("list journeys");
+        let shared_journeys = list_shared_journeys_for_user(&pool, viewer)
+            .await
+            .expect("list shared journeys");
+        let group_json = serde_json::to_value(&group_journeys).unwrap();
+        let shared_json = serde_json::to_value(&shared_journeys).unwrap();
+        for (list, rows) in [("group", group_json), ("shared", shared_json)] {
+            let rows = rows.as_array().unwrap();
+            assert_eq!(rows.len(), 6, "{list}");
+            let row = |journey_id: i64| {
+                rows.iter()
+                    .find(|row| row["journeyId"] == journey_id)
+                    .unwrap_or_else(|| panic!("{list}: journey {journey_id} missing"))
+            };
+            for ((journey_id, uid), (phase, mode)) in journey_ids.iter().zip(uids).zip(expected) {
+                let row = row(*journey_id);
+                assert_eq!(row["kind"], "train", "{list}: {uid}");
+                assert_eq!(row["trainUid"], uid, "{list}: the train, not the walk");
+                assert_eq!(
+                    row["trackingPhase"],
+                    serde_json::to_value(phase).unwrap(),
+                    "{list}: {uid}"
+                );
+                assert_eq!(
+                    row["serviceMode"],
+                    serde_json::to_value(mode).unwrap(),
+                    "{list}: {uid}"
+                );
+                assert_eq!(row["liveTracking"], mode == ServiceMode::Train);
+                assert!(row["untrackedStatus"].is_null());
+                assert!(row["transitMode"].is_null());
+            }
+            let untracked = row(untracked_journey);
+            assert_eq!(untracked["kind"], "untracked", "{list}");
+            assert_eq!(untracked["transitMode"], "walk", "{list}: the first leg");
+            assert_eq!(
+                untracked["untrackedStatus"],
+                serde_json::to_value(UntrackedStatus::Planned).unwrap()
+            );
+            assert!(untracked["plannedDeparture"].is_string());
+            assert!(untracked["plannedArrival"].is_string());
+            assert!(untracked["resolutionStatus"].is_null());
+            assert!(untracked["trackingPhase"].is_null());
+            assert!(
+                untracked.get("serviceMode").is_none(),
+                "{list}: no train, no mode"
+            );
+            let open = row(open_journey);
+            assert_eq!(open["kind"], "train", "{list}");
+            assert!(open["resolutionStatus"].is_null());
+            assert!(open["trackingPhase"].is_null());
+            assert!(open["untrackedStatus"].is_null());
+            assert!(open.get("serviceMode").is_none());
+            for row in rows {
+                let keys = row.as_object().unwrap();
+                for never in ["trackedAt", "addedAt", "notificationsEnabled", "tickets"] {
+                    assert!(!keys.contains_key(never), "{list}: {never}");
+                }
+            }
+        }
+
+        clear().await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 list_shared_journeys_for_user_survives_deletion_of_the_journeys_first_leg \
@@ -5309,6 +5938,10 @@ mod group_train_wire_shape_tests {
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
             added_by_tag: None,
+            service: crate::data::schedule_services::ServiceModeFields::default(),
+            timetable_on_row: false,
+            tracking_phase: None,
+            first_report_expected_at: None,
         };
         let value = serde_json::to_value(&train).expect("serialize");
         let mut keys: Vec<&str> = value
@@ -5328,6 +5961,8 @@ mod group_train_wire_shape_tests {
                 "delayBasis",
                 "delayMinutes",
                 "delayProvisional",
+                "firstReportExpectedAt",
+                "liveTracking",
                 "pinDestinationCrs",
                 "pinDestinationName",
                 "pinOriginCrs",
@@ -5335,11 +5970,242 @@ mod group_train_wire_shape_tests {
                 "pinScheduledDeparture",
                 "resolutionStatus",
                 "serviceDate",
+                "serviceMode",
                 "status",
+                "trackingPhase",
                 "trainSubscriptionId",
                 "trainUid",
             ]
         );
+    }
+
+    fn group_journey() -> GroupJourney {
+        GroupJourney {
+            journey_id: 1,
+            custom_name: None,
+            leg_count: 2,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            first_origin_crs: None,
+            first_origin_name: Some("Home".to_string()),
+            last_destination_crs: None,
+            last_destination_name: Some("Work".to_string()),
+            service_date: "2026-10-21".parse().unwrap(),
+            resolution_status: None,
+            train_uid: None,
+            status: None,
+            delay_minutes: None,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: None,
+            working_delay_minutes: None,
+            added_by: "user-1".to_string(),
+            added_by_name: Some("Alex".to_string()),
+            added_by_tag: None,
+            service: None,
+            timetable_on_row: false,
+            tracking_phase: None,
+            first_report_expected_at: None,
+            kind: "untracked".to_string(),
+            transit_mode: Some("walk".to_string()),
+            planned_departure: Some("2026-10-21T08:00:00Z".parse().unwrap()),
+            planned_arrival: Some("2026-10-21T08:10:00Z".parse().unwrap()),
+            untracked_status: Some(crate::data::journeys::UntrackedStatus::Planned),
+        }
+    }
+
+    fn keys_of(value: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = value.as_object().expect("object").keys().cloned().collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// `GroupJourney`'s exact keys, with the 2026-10-20 leg and phase
+    /// fields. An untracked or open leg has no `serviceMode`/`liveTracking`
+    /// at all, rather than a made-up `train`.
+    #[test]
+    fn group_journey_json_keys() {
+        let untracked = serde_json::to_value(group_journey()).expect("serialize");
+        assert_eq!(
+            keys_of(&untracked),
+            vec![
+                "addedBy",
+                "addedByName",
+                "addedByTag",
+                "customName",
+                "delayBasis",
+                "delayMinutes",
+                "delayProvisional",
+                "firstOriginCrs",
+                "firstOriginName",
+                "firstReportExpectedAt",
+                "journeyId",
+                "kind",
+                "lastDestinationCrs",
+                "lastDestinationName",
+                "legCount",
+                "pinDestinationCrs",
+                "pinDestinationName",
+                "pinOriginCrs",
+                "pinOriginName",
+                "pinScheduledDeparture",
+                "plannedArrival",
+                "plannedDeparture",
+                "resolutionStatus",
+                "serviceDate",
+                "status",
+                "trackingPhase",
+                "trainUid",
+                "transitMode",
+                "untrackedStatus",
+            ]
+        );
+        assert_eq!(untracked["untrackedStatus"], "planned");
+        let bus = GroupJourney {
+            service: Some(crate::data::schedule_services::ServiceModeFields(
+                crate::data::schedule_services::ServiceMode::Bus,
+            )),
+            ..group_journey()
+        };
+        let bus = serde_json::to_value(bus).expect("serialize");
+        assert_eq!(bus["serviceMode"], "bus");
+        assert_eq!(bus["liveTracking"], false);
+    }
+
+    /// The shared-groups spec's "Never shown" list, after the 2026-10-20
+    /// phase and leg fields: no row shape gains a tracked-at or added-at
+    /// time, a ticket, or the owner's notification setting, however its
+    /// new fields are filled.
+    #[test]
+    fn the_phase_fields_widen_nothing_past_the_never_shown_list() {
+        let phase = Some(crate::data::tracking_phase::TrackingPhase::Planned);
+        let expected = Some("2026-10-21T07:15:00Z".parse().unwrap());
+        let train = GroupTrain {
+            train_subscription_id: 1,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: "2026-10-21".parse().unwrap(),
+            resolution_status: "schedule_matched".to_string(),
+            train_uid: Some("P00001".to_string()),
+            status: None,
+            delay_minutes: None,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: Some(1),
+            working_delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: None,
+            added_by_tag: None,
+            service: crate::data::schedule_services::ServiceModeFields::default(),
+            timetable_on_row: true,
+            tracking_phase: phase,
+            first_report_expected_at: expected,
+        };
+        let shared = SharedTrain {
+            group_id: "group-1".to_string(),
+            group_name: "Family".to_string(),
+            train_subscription_id: train.train_subscription_id,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            service_date: train.service_date,
+            resolution_status: train.resolution_status.clone(),
+            train_uid: train.train_uid.clone(),
+            status: None,
+            delay_minutes: None,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: Some(1),
+            working_delay_minutes: None,
+            custom_name: None,
+            added_by: "user-1".to_string(),
+            added_by_name: None,
+            added_by_tag: None,
+            service: train.service,
+            timetable_on_row: true,
+            tracking_phase: phase,
+            first_report_expected_at: expected,
+        };
+        let journey = GroupJourney {
+            kind: "train".to_string(),
+            transit_mode: None,
+            planned_departure: None,
+            planned_arrival: None,
+            untracked_status: None,
+            resolution_status: Some("resolved".to_string()),
+            train_uid: Some("P00001".to_string()),
+            service: Some(train.service),
+            timetable_on_row: true,
+            tracking_phase: phase,
+            first_report_expected_at: expected,
+            ..group_journey()
+        };
+        let shared_journey = SharedJourney {
+            group_id: "group-1".to_string(),
+            group_name: "Family".to_string(),
+            journey_id: journey.journey_id,
+            custom_name: None,
+            leg_count: journey.leg_count,
+            pin_origin_crs: None,
+            pin_destination_crs: None,
+            pin_origin_name: None,
+            pin_destination_name: None,
+            pin_scheduled_departure: None,
+            first_origin_crs: None,
+            first_origin_name: None,
+            last_destination_crs: None,
+            last_destination_name: None,
+            service_date: journey.service_date,
+            resolution_status: journey.resolution_status.clone(),
+            train_uid: journey.train_uid.clone(),
+            status: None,
+            delay_minutes: None,
+            delay_basis: None,
+            delay_provisional: false,
+            trains_id: None,
+            working_delay_minutes: None,
+            added_by: "user-1".to_string(),
+            added_by_name: None,
+            added_by_tag: None,
+            service: journey.service,
+            timetable_on_row: true,
+            tracking_phase: phase,
+            first_report_expected_at: expected,
+            kind: "train".to_string(),
+            transit_mode: None,
+            planned_departure: None,
+            planned_arrival: None,
+            untracked_status: None,
+        };
+        for value in [
+            serde_json::to_value(&train).unwrap(),
+            serde_json::to_value(&shared).unwrap(),
+            serde_json::to_value(&journey).unwrap(),
+            serde_json::to_value(&shared_journey).unwrap(),
+        ] {
+            assert_eq!(value["trackingPhase"], "planned");
+            assert_eq!(value["serviceMode"], "train");
+            for key in keys_of(&value) {
+                let lower = key.to_ascii_lowercase();
+                assert!(
+                    !(lower.contains("ticket")
+                        || lower.contains("notification")
+                        || lower == "trackedat"
+                        || lower == "addedat"
+                        || lower.contains("timetableonrow")),
+                    "{key} must never be on a group or shared row"
+                );
+            }
+        }
     }
 }
 
@@ -5370,6 +6236,10 @@ mod shared_train_wire_shape_tests {
             added_by: "user-1".to_string(),
             added_by_name: Some("Alex".to_string()),
             added_by_tag: None,
+            service: crate::data::schedule_services::ServiceModeFields::default(),
+            timetable_on_row: false,
+            tracking_phase: None,
+            first_report_expected_at: None,
         }
     }
 
@@ -5400,8 +6270,10 @@ mod shared_train_wire_shape_tests {
                 "delayBasis",
                 "delayMinutes",
                 "delayProvisional",
+                "firstReportExpectedAt",
                 "groupId",
                 "groupName",
+                "liveTracking",
                 "pinDestinationCrs",
                 "pinDestinationName",
                 "pinOriginCrs",
@@ -5409,7 +6281,9 @@ mod shared_train_wire_shape_tests {
                 "pinScheduledDeparture",
                 "resolutionStatus",
                 "serviceDate",
+                "serviceMode",
                 "status",
+                "trackingPhase",
                 "trainSubscriptionId",
                 "trainUid",
             ]
@@ -5443,6 +6317,7 @@ mod shared_train_wire_shape_tests {
             added_by: "user-1".to_string(),
             added_by_name: name.map(str::to_string),
             added_by_username: username.map(str::to_string),
+            timetable_on_row: false,
         };
 
         assert_eq!(
@@ -5549,6 +6424,7 @@ mod display_name_collapse_tests {
             added_by: "user-1".to_string(),
             added_by_name: name.map(str::to_string),
             added_by_username: username.map(str::to_string),
+            timetable_on_row: false,
         }
     }
 
@@ -5572,6 +6448,7 @@ mod display_name_collapse_tests {
             added_by: "user-1".to_string(),
             added_by_name: name.map(str::to_string),
             added_by_username: username.map(str::to_string),
+            timetable_on_row: false,
         }
     }
 
