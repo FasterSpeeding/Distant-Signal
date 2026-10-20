@@ -276,7 +276,7 @@ fn default_results() -> String {
 }
 
 /// `GET /Trips/plan?origin=&destination=&date=[&waypoints=][&via=]
-/// [&departAfter=|&arriveBy=][&dayOffset=0|1][&avoid=][&avoidStop=][&avoidChange=]
+/// [&departAfter=|&arriveBy=][&dayOffset=0|1][&acrossMidnight=true][&avoid=][&avoidStop=][&avoidChange=]
 /// [&results=fastest|options][&maxChanges=0..6][&live=true|false]`.
 ///
 /// - `dayOffset=1` (2026-10-19): the `departAfter`/`arriveBy` time is on
@@ -285,6 +285,11 @@ fn default_results() -> String {
 ///   top-level `arriveBy` and (new) `departAfter` echoes carry it as
 ///   `{time, dayOffset}`. See
 ///   docs/superpowers/specs/2026-10-19-trips-plan-arrive-by-design.md.
+/// - `acrossMidnight=true` (2026-10-20, with `dayOffset=1` only): also
+///   plan `date + 1`'s trains from the same clock time, concurrently, and
+///   merge (`data::trip_plan_overnight`): one journey set, deduplicated,
+///   with the usual ordering rules, every time on `date`'s clock. The
+///   top-level `serviceDates` lists the dates searched.
 ///
 /// - `arriveBy=HH:MM` (2026-09-29): instead of the earliest arrival after
 ///   `departAfter` (exclusive with it: both given is a 400), the
@@ -3854,6 +3859,50 @@ mod db_tests {
         }
     }
 
+    /// `bench_across_midnight`'s network: 676 `BQ`/`Q` stations and 20,000
+    /// ten-stop `BX` trains on each of `date` and `next`.
+    async fn seed_across_midnight_bench(pool: &PgPool, date: NaiveDate, next: NaiveDate) {
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             SELECT 'BQ-' || c, 'Q' || c, 'BQ' || c, 'Q' || c, 1 FROM ( \
+               SELECT chr(65 + s / 26) || chr(65 + s % 26) AS c \
+               FROM generate_series(0, 675) s) codes",
+        )
+        .execute(pool)
+        .await
+        .expect("seed stations");
+        sqlx::query("SELECT setseed(0.42)")
+            .execute(pool)
+            .await
+            .expect("seed the random generator");
+        sqlx::query(
+            "WITH trains AS ( \
+               SELECT d AS service_date, 'BX' || lpad(t::text, 5, '0') AS uid, \
+                      (300 + floor(random() * 1230))::int AS start, \
+                      floor(random() * 676)::int AS s0, (1 + floor(random() * 40))::int AS step \
+               FROM unnest(ARRAY[$1::date, $2::date]) d, generate_series(1, 20000) t), \
+             stops AS ( \
+               SELECT tr.*, k AS seq, tr.start + k * 8 AS minute, (tr.s0 + k * tr.step) % 676 AS st \
+               FROM trains tr, generate_series(0, 9) k) \
+             INSERT INTO schedule_calling_points_full \
+               (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             SELECT service_date, uid, seq, 'BQ' || chr(65 + st / 26) || chr(65 + st % 26), \
+                    CASE WHEN seq = 0 THEN 'origin' WHEN seq = 9 THEN 'terminate' \
+                         ELSE 'intermediate' END, \
+                    CASE WHEN seq = 0 THEN NULL \
+                         ELSE make_time((minute % 1440) / 60, minute % 60, 0) END, \
+                    CASE WHEN seq = 9 THEN NULL \
+                         ELSE make_time((minute % 1440) / 60, minute % 60, 0) END, \
+                    (minute / 1440)::smallint \
+             FROM stops",
+        )
+        .bind(date)
+        .bind(next)
+        .execute(pool)
+        .await
+        .expect("seed schedules");
+    }
+
     /// Latency of `acrossMidnight` (2026-10-20) against one service date,
     /// end to end through the route, on a synthetic network seeded here:
     /// 676 stations and 20,000 ten-stop trains on each of two dates (about
@@ -3886,45 +3935,7 @@ mod db_tests {
                 .expect("clean stations");
         };
         cleanup().await;
-        sqlx::query(
-            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
-             SELECT 'BQ-' || c, 'Q' || c, 'BQ' || c, 'Q' || c, 1 FROM ( \
-               SELECT chr(65 + s / 26) || chr(65 + s % 26) AS c \
-               FROM generate_series(0, 675) s) codes",
-        )
-        .execute(&pool)
-        .await
-        .expect("seed stations");
-        sqlx::query("SELECT setseed(0.42)")
-            .execute(&pool)
-            .await
-            .expect("seed the random generator");
-        sqlx::query(
-            "WITH trains AS ( \
-               SELECT d AS service_date, 'BX' || lpad(t::text, 5, '0') AS uid, \
-                      (300 + floor(random() * 1230))::int AS start, \
-                      floor(random() * 676)::int AS s0, (1 + floor(random() * 40))::int AS step \
-               FROM unnest(ARRAY[$1::date, $2::date]) d, generate_series(1, 20000) t), \
-             stops AS ( \
-               SELECT tr.*, k AS seq, tr.start + k * 8 AS minute, (tr.s0 + k * tr.step) % 676 AS st \
-               FROM trains tr, generate_series(0, 9) k) \
-             INSERT INTO schedule_calling_points_full \
-               (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
-             SELECT service_date, uid, seq, 'BQ' || chr(65 + st / 26) || chr(65 + st % 26), \
-                    CASE WHEN seq = 0 THEN 'origin' WHEN seq = 9 THEN 'terminate' \
-                         ELSE 'intermediate' END, \
-                    CASE WHEN seq = 0 THEN NULL \
-                         ELSE make_time((minute % 1440) / 60, minute % 60, 0) END, \
-                    CASE WHEN seq = 9 THEN NULL \
-                         ELSE make_time((minute % 1440) / 60, minute % 60, 0) END, \
-                    (minute / 1440)::smallint \
-             FROM stops",
-        )
-        .bind(date)
-        .bind(next)
-        .execute(&pool)
-        .await
-        .expect("seed schedules");
+        seed_across_midnight_bench(&pool, date, next).await;
 
         let router = test_router(test_app(pool.clone()));
         let pairs = [
