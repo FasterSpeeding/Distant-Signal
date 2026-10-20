@@ -1,3 +1,5 @@
+SET LOCAL lock_timeout = '5s';
+
 -- -------------------------------------------------------------------------
 -- TfL's Tube, DLR and tram stops (docs/superpowers/specs/
 -- 2026-10-20-tfl-stop-lookup-design.md §2): the untracked-leg stop lookup
