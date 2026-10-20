@@ -430,6 +430,92 @@ describe('PlanTripFlow', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  // Spec 2026-10-20 §2, follow-up: a cross-London Tube transfer is saved
+  // as an untracked leg with its mode, station names and planned times,
+  // instead of being dropped.
+  it('saves a Tube transfer between two trains as an untracked leg', async () => {
+    const plan: TripPlanResponse = {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'MKC',
+          destinationCrs: 'YRK',
+          cappedByMaxChanges: false,
+          itineraries: [
+            {
+              legs: [
+                {
+                  kind: 'train',
+                  trainUid: 'A11111',
+                  serviceDate: '2026-10-21',
+                  originCrs: 'MKC',
+                  destinationCrs: 'EUS',
+                  scheduledDeparture: '09:00:00',
+                  scheduledArrival: '09:50:00',
+                  arrivalDayOffset: 0,
+                },
+                { kind: 'transfer', mode: 'TUBE', originCrs: 'EUS', destinationCrs: 'KGX', minutes: 20 },
+                {
+                  kind: 'train',
+                  trainUid: 'B22222',
+                  serviceDate: '2026-10-21',
+                  originCrs: 'KGX',
+                  destinationCrs: 'YRK',
+                  scheduledDeparture: '10:30:00',
+                  scheduledArrival: '12:30:00',
+                  arrivalDayOffset: 0,
+                },
+              ],
+              changeCount: 1,
+              totalDurationMinutes: 210,
+            },
+          ],
+        },
+      ],
+    };
+    mockStationNames.set('EUS', 'London Euston');
+    mockStationNames.set('KGX', 'London Kings Cross');
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/Journeys/itinerary')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ journeyId: 42, legId: 1, trackingId: 7, resolutionStatus: null }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(plan) });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const onCreated = vi.fn();
+    renderWithMantine(<PlanTripFlow onCreated={onCreated} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'MKC' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'YRK' } });
+    fireEvent.click(screen.getByText('Find routes'));
+    await waitFor(() => expect(screen.getAllByRole('radio').length).toBeGreaterThan(0));
+    const radios = screen.getAllByRole('radio');
+    fireEvent.click(radios[radios.length - 1]!);
+    // Station names arrive with the plan; wait for them before saving.
+    await screen.findAllByText(/London Euston/);
+    fireEvent.click(screen.getByText('Track this journey'));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
+    const saved = fetchMock.mock.calls.find(([input]) => String(input).startsWith('/api/Journeys/itinerary'));
+    const body = JSON.parse(String((saved?.[1] as RequestInit | undefined)?.body)) as { legs: unknown[] };
+    expect(body.legs).toEqual([
+      { trainUid: 'A11111', serviceDate: '2026-10-21', originCrs: 'MKC', destinationCrs: 'EUS' },
+      {
+        kind: 'untracked',
+        transitMode: 'tube',
+        originName: 'London Euston',
+        destinationName: 'London Kings Cross',
+        plannedDeparture: '2026-10-21T08:50:00.000Z',
+        plannedArrival: '2026-10-21T09:10:00.000Z',
+      },
+      { trainUid: 'B22222', serviceDate: '2026-10-21', originCrs: 'KGX', destinationCrs: 'YRK' },
+    ]);
+  });
+
   it("sends the train leg's own origin/destination, not the segment's, for a leg that boards/alights mid-route", async () => {
     // The plan's own Birmingham->Glasgow/Crewe->Preston example, made
     // concrete: a single segment advertised as BHM -> GLC whose one

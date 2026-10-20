@@ -18,8 +18,9 @@ import {
 import { planPageSearch, type PlanFormInitial } from '@/lib/tripPlanUrl';
 import { apiQuery, earlierQuery, laterQuery, timingMode, timingSummary, type TimingMode } from '@/lib/tripPlanTiming';
 import { getStationNames } from '@/lib/suggestions';
+import { itineraryLegsForSaving } from '@/lib/tripPlanSave';
 import { groupLabels, useStationGroups } from '@/lib/stationGroups';
-import { codeRouteLabel, codeStationLabel, isGroupCode, isTiplocCode } from '@/lib/stationLabel';
+import { codeRouteLabel, codeStationLabel, isGroupCode } from '@/lib/stationLabel';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import type { CreateJourneyResponse, TrainSearchDates, TripPlanItinerary, TripPlanResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
@@ -225,12 +226,13 @@ export function PlanTripFlow({
     setCreationError(null);
     needsLoginState.reset();
 
-    // Every TRAIN leg across every selected segment, in order -- a
-    // TransferLeg never becomes a journey_legs row (this plan's own
-    // Judgment Call 3).
-    const trainLegs = trainLegsForTracking(
-      selections.flatMap((selection) => (selection.itinerary ? [selection.itinerary] : [])),
-    );
+    // Every leg across every selected segment, in order: each train leg,
+    // and each Tube, walk, bus or ferry transfer between them as an
+    // untracked leg with its planned times (spec 2026-10-20 §2, follow-up;
+    // until then a transfer was dropped). The itinerary still needs a train.
+    const chosen = selections.flatMap((selection) => (selection.itinerary ? [selection.itinerary] : []));
+    const trainLegs = trainLegsForTracking(chosen);
+    const legsToSave = itineraryLegsForSaving(chosen, (code) => stationNames.get(code));
 
     if (trainLegs.length === 0) {
       setCreationError('This route needs no train, so there is nothing to track.');
@@ -244,7 +246,7 @@ export function PlanTripFlow({
       // journey and every train leg are created in one transaction, so a
       // failure can no longer leave a journey with only some of its legs.
       //
-      // Each leg's `originCrs`/`destinationCrs` (from `GET /Trips/plan`)
+      // Each train leg's `originCrs`/`destinationCrs` (from `GET /Trips/plan`)
       // are its real boarding and alighting points, which can differ from
       // the matched train's own full route (boarding a Birmingham to
       // Glasgow service at Crewe and leaving it at Preston). A `null` end,
@@ -258,14 +260,7 @@ export function PlanTripFlow({
       const response = await fetch('/api/Journeys/itinerary', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey() },
-        body: JSON.stringify({
-          legs: trainLegs.map((leg) => ({
-            trainUid: leg.trainUid,
-            serviceDate: leg.serviceDate,
-            ...(leg.originCrs && !isTiplocCode(leg.originCrs) ? { originCrs: leg.originCrs } : {}),
-            ...(leg.destinationCrs && !isTiplocCode(leg.destinationCrs) ? { destinationCrs: leg.destinationCrs } : {}),
-          })),
-        }),
+        body: JSON.stringify({ legs: legsToSave }),
       });
       // I1: `GET /Trips/plan` is deliberately unauthenticated, so an
       // anonymous visitor can plan a full route with no friction, but
