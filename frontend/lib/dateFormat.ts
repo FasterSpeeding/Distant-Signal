@@ -190,3 +190,14 @@ export const TIMES_IN_UK_LOCAL_TIME = 'Times in UK local time';
  * when the timetable gives none. On screen a narrow time column shows an
  * `aria-hidden` en dash beside it instead (`ServiceRow`). */
 export const NO_TIME = 'No time';
+
+/** `valueFormat` for every `@mantine/dates` date field (`DateInput`,
+ * `DatePickerInput`): "17 Sep 2026", the same text `formatDate` prints.
+ * Mantine's own default for `DateInput` is "September 17, 2026". Display
+ * only: the fields still take and emit "YYYY-MM-DD" strings. dayjs's
+ * default `en` locale names September "Sep", so no locale is loaded. */
+export const PICKER_DATE_FORMAT = 'D MMM YYYY';
+
+/** `valueFormat` for a `DateTimePicker`: "17 Sep 2026, 08:42", as
+ * `formatDateTime` prints. Mantine's own default is "17/09/2026 08:42". */
+export const PICKER_DATE_TIME_FORMAT = 'D MMM YYYY, HH:mm';

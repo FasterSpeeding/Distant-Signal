@@ -282,6 +282,29 @@ used, rather than as a literal in a component.
   reader alike. `lib/stationLabel.ts` (`routeLabel`, `codeRouteLabel`)
   joins the ends with "to", so its strings go straight into JSX, titles,
   `aria-label`s and `Select` options. Never "→" in copy.
+- **Journey names**: one rule, `lib/journeyName.ts`, wherever a journey
+  is listed, headed or previewed (the Track list, the journey page, group
+  rows, templates, share-link previews, Connected apps). The name is the
+  owner's custom name, verbatim. Without one it is the whole route and the
+  first day: the FIRST leg's origin to the LAST leg's destination,
+  "London Kings Cross (KGX) to Edinburgh (EDB), 17 Sep 2026", through
+  `routeLabel`, so both ends fall back to codes together ("KGX to EDB").
+  Never the current leg's or the first leg's destination. A secondary
+  line, `journeyPreviewLine`, brings back the route and date a custom name
+  hides and adds "3 legs" for a multi-leg journey, joined by " · ". The
+  journey page shows the route and date under a custom name; its per-leg
+  summary already counts the legs. Only a date, no time: until a leg has
+  a train its time is a window, and a name must not change shape when a
+  leg resolves. Unresolved, untracked and cancelled legs name the journey
+  like any other (a leg end with a name but no code shows its name); the
+  status badge says what is wrong. No legs: "Journey with no legs yet". A
+  template has no day, so its name is the route alone. A share-link
+  preview leaves the custom name out (it is the owner's private label) and
+  uses the default name. Push notifications name a journey "'Custom
+  name'" or "your journey to Edinburgh" and a leg by its position and
+  route, "Leg 2 of your journey to Edinburgh is delayed", stations by name
+  ("York to Newcastle"), or codes on both ends when either name is
+  unknown.
 - **Buttons**: Mantine Button sm, 36px, 14px/600, radius 8. Filled grape
   for the primary action, light for secondary, default for neutral, red
   filled for destructive (text via `autoContrast`). Icon buttons are
@@ -606,7 +629,7 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 | Relative time | `lib/relativeTime.ts` | "just now", "4 min ago", "3 hr ago", "2 days ago" |
 | Clock time | 24-hour, UK time | "08:42" |
 | Date | `lib/dateFormat.ts`, D MMM YYYY; three-letter months ("Sep", never en-GB Intl's "Sept") | "9 Oct 2026", "17 Sep 2026" |
-| Date pickers | `valueFormat="D MMM YYYY"` on every `DatePickerInput` | "9 Oct 2026" |
+| Date fields | `valueFormat={PICKER_DATE_FORMAT}` (`lib/dateFormat.ts`, D MMM YYYY) on every `DateInput` and `DatePickerInput`; `PICKER_DATE_TIME_FORMAT` on a `DateTimePicker`. Never a free-text "YYYY-MM-DD" field | "9 Oct 2026", "9 Oct 2026, 08:42" |
 | 24-hour hint | Once per form, on its first time field (`clockHint`) | "24-hour clock, e.g. 19:00." |
 
 ### Banned phrases

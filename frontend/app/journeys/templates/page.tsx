@@ -4,7 +4,7 @@ import { getMyJourneyTemplates } from '@/lib/api';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { formatDate } from '@/lib/dateFormat';
-import { routeLabel } from '@/lib/stationLabel';
+import { journeyDisplayName, journeyRouteLabel, type JourneyNameInput } from '@/lib/journeyName';
 import type { JourneyTemplateListItem } from '@/lib/types';
 import type { Metadata } from 'next';
 
@@ -49,13 +49,17 @@ export default async function JourneyTemplatesPage() {
 }
 
 function TemplateCard({ template }: { template: JourneyTemplateListItem }) {
-  const route = routeLabel(
-    template.firstOriginCrs,
-    template.firstOriginName,
-    template.lastDestinationCrs,
-    template.lastDestinationName,
-  );
-  const title = template.customName ?? route;
+  // The one journey-naming rule (`lib/journeyName.ts`) minus the date: a
+  // template is a journey's shape, with no day of its own.
+  const name: JourneyNameInput = {
+    customName: template.customName,
+    origin: { crs: template.firstOriginCrs, name: template.firstOriginName },
+    destination: { crs: template.lastDestinationCrs, name: template.lastDestinationName },
+    serviceDate: null,
+    legCount: template.legCount,
+  };
+  const route = journeyRouteLabel(name);
+  const title = journeyDisplayName(name);
   return (
     <Card withBorder>
       <Group justify="space-between">
@@ -63,7 +67,7 @@ function TemplateCard({ template }: { template: JourneyTemplateListItem }) {
           <Anchor component={Link} href={`/journeys/templates/${template.id}`} fw={600}>
             {title}
           </Anchor>
-          {template.customName && (
+          {template.customName?.trim() && (
             <Text size="sm" c="dimmed">
               {route}
             </Text>

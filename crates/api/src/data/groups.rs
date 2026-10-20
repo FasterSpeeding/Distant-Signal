@@ -1207,6 +1207,10 @@ struct GroupJourneyRow {
     pin_origin_name: Option<String>,
     pin_destination_name: Option<String>,
     pin_scheduled_departure: Option<DateTime<Utc>>,
+    first_origin_crs: Option<String>,
+    first_origin_name: Option<String>,
+    last_destination_crs: Option<String>,
+    last_destination_name: Option<String>,
     service_date: chrono::NaiveDate,
     resolution_status: Option<String>,
     train_uid: Option<String>,
@@ -1241,6 +1245,15 @@ pub struct GroupJourney {
     pub pin_origin_name: Option<String>,
     pub pin_destination_name: Option<String>,
     pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    /// The journey's own ends, for naming it: the first leg's planned
+    /// origin and the LAST leg's planned destination (`journey_legs`, not
+    /// the first leg's train pin above, which is empty until that leg is
+    /// matched and names only that leg). Names via `stations`, `None` when
+    /// unresolved. Additive (2026-10-20).
+    pub first_origin_crs: Option<String>,
+    pub first_origin_name: Option<String>,
+    pub last_destination_crs: Option<String>,
+    pub last_destination_name: Option<String>,
     pub service_date: chrono::NaiveDate,
     pub resolution_status: Option<String>,
     pub train_uid: Option<String>,
@@ -1292,6 +1305,10 @@ impl From<GroupJourneyRow> for GroupJourney {
             pin_origin_name: row.pin_origin_name,
             pin_destination_name: row.pin_destination_name,
             pin_scheduled_departure: row.pin_scheduled_departure,
+            first_origin_crs: row.first_origin_crs,
+            first_origin_name: row.first_origin_name,
+            last_destination_crs: row.last_destination_crs,
+            last_destination_name: row.last_destination_name,
             service_date: row.service_date,
             resolution_status: row.resolution_status,
             train_uid: row.train_uid,
@@ -1385,7 +1402,12 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
                 (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                ts.pin_scheduled_departure, jl.service_date, ts.resolution_status, \
+                ts.pin_scheduled_departure, \
+                fl.origin_crs AS first_origin_crs, \
+                COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
+                ll.destination_crs AS last_destination_crs, \
+                COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
+                fl.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_journeys gj \
@@ -1393,12 +1415,24 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
          JOIN journey_legs jl ON jl.journey_id = j.id \
              AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
                           ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
+         CROSS JOIN LATERAL ( \
+             SELECT jl5.origin_crs, jl5.origin_place, jl5.service_date \
+             FROM journey_legs jl5 WHERE jl5.journey_id = j.id \
+             ORDER BY jl5.leg_order LIMIT 1 \
+         ) fl \
+         CROSS JOIN LATERAL ( \
+             SELECT jl4.destination_crs, jl4.destination_place \
+             FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
+             ORDER BY jl4.leg_order DESC LIMIT 1 \
+         ) ll \
          JOIN users u ON u.id = gj.added_by \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
+         LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
+         LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
          WHERE gj.group_id = $1 \
          ORDER BY gj.added_at DESC, gj.journey_id DESC \
          LIMIT $2",
@@ -1624,6 +1658,10 @@ struct SharedJourneyRow {
     pin_origin_name: Option<String>,
     pin_destination_name: Option<String>,
     pin_scheduled_departure: Option<DateTime<Utc>>,
+    first_origin_crs: Option<String>,
+    first_origin_name: Option<String>,
+    last_destination_crs: Option<String>,
+    last_destination_name: Option<String>,
     service_date: chrono::NaiveDate,
     resolution_status: Option<String>,
     train_uid: Option<String>,
@@ -1654,6 +1692,15 @@ pub struct SharedJourney {
     pub pin_origin_name: Option<String>,
     pub pin_destination_name: Option<String>,
     pub pin_scheduled_departure: Option<DateTime<Utc>>,
+    /// The journey's own ends, for naming it: the first leg's planned
+    /// origin and the LAST leg's planned destination (`journey_legs`, not
+    /// the first leg's train pin above, which is empty until that leg is
+    /// matched and names only that leg). Names via `stations`, `None` when
+    /// unresolved. Additive (2026-10-20).
+    pub first_origin_crs: Option<String>,
+    pub first_origin_name: Option<String>,
+    pub last_destination_crs: Option<String>,
+    pub last_destination_name: Option<String>,
     pub service_date: chrono::NaiveDate,
     pub resolution_status: Option<String>,
     pub train_uid: Option<String>,
@@ -1706,6 +1753,10 @@ impl From<SharedJourneyRow> for SharedJourney {
             pin_origin_name: row.pin_origin_name,
             pin_destination_name: row.pin_destination_name,
             pin_scheduled_departure: row.pin_scheduled_departure,
+            first_origin_crs: row.first_origin_crs,
+            first_origin_name: row.first_origin_name,
+            last_destination_crs: row.last_destination_crs,
+            last_destination_name: row.last_destination_name,
             service_date: row.service_date,
             resolution_status: row.resolution_status,
             train_uid: row.train_uid,
@@ -1743,7 +1794,12 @@ pub async fn list_shared_journeys_for_user(
                 (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                ts.pin_scheduled_departure, jl.service_date, ts.resolution_status, \
+                ts.pin_scheduled_departure, \
+                fl.origin_crs AS first_origin_crs, \
+                COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
+                ll.destination_crs AS last_destination_crs, \
+                COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
+                fl.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_members me \
@@ -1753,12 +1809,24 @@ pub async fn list_shared_journeys_for_user(
          JOIN journey_legs jl ON jl.journey_id = j.id \
              AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
                           ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
+         CROSS JOIN LATERAL ( \
+             SELECT jl5.origin_crs, jl5.origin_place, jl5.service_date \
+             FROM journey_legs jl5 WHERE jl5.journey_id = j.id \
+             ORDER BY jl5.leg_order LIMIT 1 \
+         ) fl \
+         CROSS JOIN LATERAL ( \
+             SELECT jl4.destination_crs, jl4.destination_place \
+             FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
+             ORDER BY jl4.leg_order DESC LIMIT 1 \
+         ) ll \
          JOIN users u ON u.id = gj.added_by \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
+         LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
+         LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
          WHERE me.user_id = $1 AND j.user_id <> $1 \
          ORDER BY gj.added_at DESC, gj.journey_id DESC \
          LIMIT $2",
@@ -4162,8 +4230,88 @@ mod db_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a live database; see the plan's Global Constraints for the \
-                DATABASE_URL incantation, then run with `cargo test -p api \
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                group_journey_lists_name_the_whole_journey_from_its_legs \
+                -- --ignored --test-threads=1`"]
+    async fn group_journey_lists_name_the_whole_journey_from_its_legs() {
+        // An unmatched journey has no train pin, so the pin fields are
+        // empty; the whole-journey fields still name it from the first
+        // leg's origin to the LAST leg's destination.
+        let pool = connect().await;
+        let owner = "TEST-GROUPS-JOURNEY-NAME-OWNER";
+        let viewer = "TEST-GROUPS-JOURNEY-NAME-VIEWER";
+        seed_user(&pool, owner).await;
+        seed_user(&pool, viewer).await;
+        let group_id = create_group(&pool, "Journey Name Test", owner)
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let journey_id = seed_journey(&pool, owner).await;
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 2, 'WAT', 'PAD', CURRENT_DATE, 'manual'), \
+                    ($1, 4, 'PAD', 'BRI', CURRENT_DATE, 'manual')",
+        )
+        .bind(journey_id)
+        .execute(&pool)
+        .await
+        .expect("seed later legs");
+        add_journey_to_group(&pool, &group_id, journey_id, owner)
+            .await
+            .expect("add");
+
+        let in_group = list_group_journeys(&pool, &group_id)
+            .await
+            .expect("list group journeys");
+        let shared = list_shared_journeys_for_user(&pool, viewer)
+            .await
+            .expect("list shared journeys");
+        for (first_origin, last_destination, leg_count, pin_origin) in [
+            (
+                in_group[0].first_origin_crs.as_deref(),
+                in_group[0].last_destination_crs.as_deref(),
+                in_group[0].leg_count,
+                in_group[0].pin_origin_crs.as_deref(),
+            ),
+            (
+                shared[0].first_origin_crs.as_deref(),
+                shared[0].last_destination_crs.as_deref(),
+                shared[0].leg_count,
+                shared[0].pin_origin_crs.as_deref(),
+            ),
+        ] {
+            assert_eq!(first_origin, Some("WOK"));
+            assert_eq!(last_destination, Some("BRI"));
+            assert_eq!(leg_count, 3);
+            assert_eq!(pin_origin, None, "no train bound, so no pin");
+        }
+        let json = serde_json::to_value(&in_group[0]).expect("serialize");
+        assert_eq!(json["lastDestinationCrs"], "BRI");
+        assert_eq!(json["firstOriginCrs"], "WOK");
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &[owner, viewer]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 list_shared_journeys_for_user_survives_deletion_of_the_journeys_first_leg \
                 -- --ignored --test-threads=1`"]
     async fn list_shared_journeys_for_user_survives_deletion_of_the_journeys_first_leg() {

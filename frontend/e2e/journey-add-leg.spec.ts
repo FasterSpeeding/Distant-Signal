@@ -169,7 +169,7 @@ test.describe('add a leg', () => {
     const legBodies = await mockApi(page, MATCHED_LEG_WITH_ARRIVAL);
     const dialog = await openPrefilledAddLeg(page);
 
-    await expect(dialog.getByLabel('Service date')).toHaveValue('2026-09-23');
+    await expect(dialog.getByLabel('Service date')).toHaveValue('23 Sep 2026');
     const departFrom = dialog.getByLabel('Earliest departure (optional)');
     await expect(departFrom).toHaveValue('00:12');
     await expect(dialog.getByText(/Your last leg arrives at 00:12\./)).toBeVisible();

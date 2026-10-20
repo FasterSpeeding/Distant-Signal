@@ -3636,6 +3636,13 @@ mod db_tests {
         assert_eq!(row["untrackedStatus"], "inProgress");
         assert_eq!(row["originName"], "King's Cross St Pancras");
         assert!(row["trackingPhase"].is_null());
+        // The whole-journey name fields fall back to the untracked legs'
+        // places (no station codes to resolve).
+        assert!(row["firstOriginCrs"].is_null());
+        assert_eq!(row["firstOriginName"], "King's Cross St Pancras");
+        assert!(row["lastDestinationCrs"].is_null());
+        assert_eq!(row["lastDestinationName"], "Victoria");
+        assert_eq!(row["legCount"], 3);
 
         // The train routes refuse an untracked leg.
         let leg_id = legs[1]["id"].as_i64().unwrap();

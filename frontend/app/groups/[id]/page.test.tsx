@@ -15,7 +15,6 @@ import {
   ApiUnauthorizedError,
 } from '@/lib/api';
 import type { GroupCustomLine, GroupJourney, GroupMember, GroupRole, GroupTrain, LineStatusReport } from '@/lib/types';
-import { byVisibleText } from '@/test/routeText';
 
 vi.mock('@/lib/api', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
@@ -845,16 +844,50 @@ describe('GroupDetailPage', () => {
       expect(screen.queryByText('en_route')).not.toBeInTheDocument();
     });
 
-    it('appends a "+N more legs" suffix for a multi-leg journey, and omits it for a single leg', async () => {
+    it('names a journey by the one journey rule: whole route and date, a leg count for several legs', async () => {
       vi.mocked(getGroupJourneys).mockResolvedValue([
-        journey({ journeyId: 501, legCount: 1 }),
-        journey({ journeyId: 502, legCount: 3, customName: 'Scotland trip' }),
+        journey({
+          journeyId: 501,
+          legCount: 1,
+          firstOriginCrs: 'WOK',
+          firstOriginName: 'Woking',
+          lastDestinationCrs: 'WAT',
+          lastDestinationName: 'London Waterloo',
+        }),
+        // First leg unmatched (no pin at all): still named from its legs,
+        // ending at the LAST leg's destination.
+        journey({
+          journeyId: 502,
+          legCount: 3,
+          pinOriginCrs: null,
+          pinDestinationCrs: null,
+          pinOriginName: null,
+          pinDestinationName: null,
+          firstOriginCrs: 'KGX',
+          firstOriginName: 'London Kings Cross',
+          lastDestinationCrs: 'EDB',
+          lastDestinationName: 'Edinburgh',
+        }),
+        journey({
+          journeyId: 503,
+          legCount: 2,
+          customName: 'Scotland trip',
+          firstOriginCrs: 'WOK',
+          lastDestinationCrs: 'EDB',
+        }),
       ]);
       await renderAsViewer('user-other', 'member');
 
-      expect(screen.getByText(byVisibleText(/Woking \(WOK\) to London Waterloo \(WAT\)/))).toBeInTheDocument();
-      expect(screen.queryByText(/\+0 more leg/)).not.toBeInTheDocument();
-      expect(screen.getByText(/Scotland trip \(\+2 more legs\)/)).toBeInTheDocument();
+      expect(
+        screen.getByRole('link', { name: 'Woking (WOK) to London Waterloo (WAT), 11 Sep 2026' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('link', { name: 'London Kings Cross (KGX) to Edinburgh (EDB), 11 Sep 2026' }),
+      ).toHaveAttribute('href', '/journeys/502');
+      expect(screen.getByText('3 legs')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Scotland trip' })).toBeInTheDocument();
+      expect(screen.getByText('WOK to EDB, 11 Sep 2026 · 2 legs')).toBeInTheDocument();
+      expect(screen.queryByText(/more leg/)).not.toBeInTheDocument();
     });
 
     it('shows a red "Unmatched" badge, not the raw resolutionStatus, for a leg with no train bound yet', async () => {

@@ -8,7 +8,6 @@ import { SaveAsTemplateButton } from './SaveAsTemplateButton';
 import { ShareJourneyButton } from './ShareJourneyButton';
 import { ShareJourneyLinkButton } from './ShareJourneyLinkButton';
 import { TrackJourneyAgainButton } from './TrackJourneyAgainButton';
-import { formatDate } from '@/lib/dateFormat';
 import {
   connectionGapMinutes,
   journeyCanAddLeg,
@@ -17,49 +16,38 @@ import {
   journeyPriorDestinationName,
 } from '@/lib/journeyLegChaining';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
-import { routeLabel } from '@/lib/stationLabel';
+import {
+  journeyDefaultName,
+  journeyDisplayName,
+  journeyNameInputFromLegs,
+  type JourneyNameInput,
+} from '@/lib/journeyName';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
 import { formatTime } from '@/lib/dateFormat';
 import { isUntrackedLeg, UNTRACKED_STATUS_LABEL } from '@/lib/untrackedLeg';
 
-/** 2026-09-22 UX review finding M18: the fallback `<h1>` for a journey
- * with no `customName` used to be the flat, generic "Tracked journey" --
- * the spec's own rename-the-journey pattern is noted as deferred in the
- * code, but until it lands the title should default to the route, the
- * same "route is the identity" fix I16/2.7 makes for each leg's own card
- * (09-17 review recommended the identical default for the single-train
- * page). Spans the WHOLE journey -- the first leg's own origin to the
- * last leg's own destination -- not just the first leg, so a multi-leg
- * journey's title still reads as one trip. Name resolution reuses
- * `legEndpointName` (see its own doc comment) so this never disagrees
- * with what each leg's own card/table already shows for the same
- * station, falling back to the leg's own server-resolved
- * `originName`/`destinationName` (`stations` reference lookup) -- which
- * is the ONLY name available for a journey whose first leg is still
- * open, since an unmatched leg has neither `journeyStops` nor a pin for
- * `legEndpointName` to read. Bare CRS codes remain the last resort;
- * never a fabricated name. */
-function defaultJourneyTitle(journey: JourneyDetail): string {
-  const firstLeg = journey.legs[0];
-  if (!firstLeg) return 'Tracked journey';
-  const lastLeg = journey.legs.at(-1) ?? firstLeg;
-  const originName =
-    legEndpointName(
-      firstLeg.originCrs,
-      firstLeg.trackedTrainState?.journeyStops,
-      firstLeg.trackedTrainState,
-      'origin',
-    ) ?? firstLeg.originName;
-  const destinationName =
-    legEndpointName(
-      lastLeg.destinationCrs,
-      lastLeg.trackedTrainState?.journeyStops,
-      lastLeg.trackedTrainState,
-      'destination',
-    ) ?? lastLeg.destinationName;
-  const route = routeLabel(firstLeg.originCrs, originName, lastLeg.destinationCrs, destinationName);
-  return `${route}, ${formatDate(firstLeg.serviceDate)}`;
+/** The page's name for the journey (2026-09-22 UX review finding M18: never
+ * the generic "Tracked journey"), by the one journey-naming rule in
+ * `lib/journeyName.ts`: the custom name, else the first leg's origin to the
+ * LAST leg's destination and the first leg's date, exactly what the Track
+ * list row shows for the same journey. Names are the server-resolved
+ * `originName`/`destinationName` the list uses too, so the two never
+ * disagree; `legEndpointName` (the calling-point table's own name) only
+ * fills in where the server had none. */
+function journeyNameInput(journey: JourneyDetail): JourneyNameInput {
+  return journeyNameInputFromLegs(
+    journey.customName,
+    journey.legs.map((leg) => ({
+      ...leg,
+      originName:
+        leg.originName ??
+        legEndpointName(leg.originCrs, leg.trackedTrainState?.journeyStops, leg.trackedTrainState, 'origin'),
+      destinationName:
+        leg.destinationName ??
+        legEndpointName(leg.destinationCrs, leg.trackedTrainState?.journeyStops, leg.trackedTrainState, 'destination'),
+    })),
+  );
 }
 
 /** One short status phrase per leg, for the multi-leg rollup summary line
@@ -163,11 +151,12 @@ export function JourneyDetailView({
   const priorPlaceName = journeyPriorDestinationName(journey);
   const canAddLeg = journeyCanAddLeg(journey);
   const multiLeg = journey.legs.length > 1;
+  const name = journeyNameInput(journey);
 
   return (
     <>
       <Group justify="space-between" align="baseline">
-        <Title order={1}>{journey.customName ?? defaultJourneyTitle(journey)}</Title>
+        <Title order={1}>{journeyDisplayName(name)}</Title>
         <Group gap="xs">
           {/* Phase 2's status badge is a pure read -- shown to every viewer,
               owner or shared-group member alike. */}
@@ -211,6 +200,14 @@ export function JourneyDetailView({
           <TrackJourneyAgainButton journey={journey} />
         </Group>
       </Group>
+      {/* A custom name hides the route and date, so they come back here,
+          as on every journey row (`journeyPreviewLine`). The per-leg
+          summary below already says how many legs there are. */}
+      {name.customName?.trim() && (
+        <Text size="sm" c="dimmed">
+          {journeyDefaultName(name)}
+        </Text>
+      )}
       {/* 2026-09-22 UX review finding I12/2.6: the header badge above shows
           only the single WORST leg's status -- `LEG_STATUS_RANK` puts
           `unmatched` above `delayed`, so "Needs a train picked" from one

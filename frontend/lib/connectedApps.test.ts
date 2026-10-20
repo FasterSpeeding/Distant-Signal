@@ -31,6 +31,23 @@ describe('connected apps helpers', () => {
     expect(
       deletionSummary({ id: 2, client: 'ds-mcp', journeyId: 7, deletedAt: '2026-10-14T10:00:00Z', summary: {} }),
     ).toEqual({ title: 'Journey 7', legs: [] });
+    // No custom name: the journey's whole route and first day, as every
+    // other journey surface names it, not "Journey 9".
+    expect(
+      deletionSummary({
+        id: 3,
+        client: 'ds-mcp',
+        journeyId: 9,
+        deletedAt: '2026-10-14T10:00:00Z',
+        summary: {
+          customName: null,
+          legs: [
+            { serviceDate: '2026-10-20', originCrs: 'EUS', destinationCrs: 'MKC', trainUid: null },
+            { serviceDate: '2026-10-20', originCrs: 'MKC', destinationCrs: 'BHM', trainUid: null },
+          ],
+        },
+      }).title,
+    ).toBe('EUS to BHM, 20 Oct 2026');
   });
 
   it('names an untracked leg by its mode, line and places', () => {

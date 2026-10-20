@@ -1,5 +1,6 @@
 import { formatDate } from './dateFormat';
 import { untrackedLegTitle } from './untrackedLeg';
+import { journeyDisplayName, journeyNameInputFromLegs } from './journeyName';
 import type { ConnectedAppDeletion, ConnectedAppScope } from './types';
 
 /** Every scope, in the order the pages list them. */
@@ -37,10 +38,30 @@ export function preselectedScopes(requested: string | undefined, allowed: readon
 }
 
 /** A one-line description of a deleted journey: its name, then each leg's
- * stations, date and train, for re-saving it by hand. */
+ * stations, date and train, for re-saving it by hand. The name follows the
+ * one journey-naming rule (`lib/journeyName.ts`): the custom name, else
+ * first origin to last destination and the first day. The snapshot holds
+ * station codes only, so the route is in codes ("EUS to MKC"). With no
+ * legs to name it by, it is "Journey" and its number. */
 export function deletionSummary(deletion: ConnectedAppDeletion): { title: string; legs: string[] } {
-  const title = deletion.summary.customName?.trim() || `Journey ${deletion.journeyId}`;
-  const legs = (deletion.summary.legs ?? []).map((leg) => {
+  const snapshotLegs = deletion.summary.legs ?? [];
+  const title =
+    snapshotLegs.length > 0
+      ? journeyDisplayName(
+          journeyNameInputFromLegs(
+            deletion.summary.customName,
+            snapshotLegs.map((leg) => ({
+              originCrs: leg.originCrs ?? null,
+              // An untracked leg's ends are its place names (no code).
+              originName: leg.originName ?? null,
+              destinationCrs: leg.destinationCrs ?? null,
+              destinationName: leg.destinationName ?? null,
+              serviceDate: leg.serviceDate ?? null,
+            })),
+          ),
+        )
+      : deletion.summary.customName?.trim() || `Journey ${deletion.journeyId}`;
+  const legs = snapshotLegs.map((leg) => {
     if (leg.kind === 'untracked') {
       // A Tube ride, bus or walk: its mode and line, then its places.
       const route = [leg.originName, leg.destinationName].filter(Boolean).join(' to ');

@@ -333,6 +333,17 @@ describe('JourneyDetailPage title (M18)', () => {
     await screen.findAllByText(/No scheduled trains match this window\./);
 
     expect(screen.getByRole('heading', { level: 1, name: 'My commute' })).toBeInTheDocument();
+    // The route and date the custom name hides come back under it, as on
+    // the Track list row (the open leg's own card says the same once more).
+    expect(screen.getAllByText('KGX to EDB, 22 Sep 2026')).toHaveLength(2);
+  });
+
+  it('names a journey with no legs plainly', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(openSuiteJourney({ legs: [] }));
+
+    renderWithMantine(await JourneyDetailPage({ params: Promise.resolve({ id: '1' }) }));
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Journey with no legs yet' })).toBeInTheDocument();
   });
 
   it("spans a multi-leg journey from the first leg's origin to the last leg's destination", async () => {
@@ -504,6 +515,8 @@ describe('JourneyDetailPage: untracked legs', () => {
     await renderPage();
     // Walk arrives 15:48 BST, the train leaves King's Cross at 16:00.
     expect(screen.getByText(/Change at York Minster, arrive 15:48\. 12 min to change\./)).toBeInTheDocument();
+    // Named from the walk's place, never "Unknown station".
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^York to York \(YRK\), 22 Sep 2026$/);
   });
 
   it('summarises a multi-leg journey with each untracked state', async () => {

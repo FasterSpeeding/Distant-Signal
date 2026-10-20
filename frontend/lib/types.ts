@@ -58,6 +58,11 @@ export interface IncidentDetail {
    * `incidentState` (`lib/incidents.ts`). Optional only for a bundle served
    * against an api that predates it. */
   sourceRemovedAt?: string | null;
+  /** The api's `state`, `startsAt` and `validityEndedAt` (2026-10-20):
+   * see `IncidentTiming`. */
+  state?: IncidentTiming['state'];
+  startsAt?: IncidentTiming['startsAt'];
+  validityEndedAt?: IncidentTiming['validityEndedAt'];
   currentlyAffectsLines: IncidentLineRef[];
   history: IncidentHistoryEntry[];
 }
@@ -88,6 +93,27 @@ export interface IncidentSummary {
   fetchedAt: string; // RFC3339
   /** See `IncidentDetail.sourceRemovedAt`. */
   sourceRemovedAt?: string | null;
+  /** See `IncidentTiming`. */
+  state?: IncidentTiming['state'];
+  startsAt?: IncidentTiming['startsAt'];
+  validityEndedAt?: IncidentTiming['validityEndedAt'];
+}
+
+/** Where an incident stands, as the api derives it from RDM's clear flag,
+ * the feed's listing and the incident's validity windows (2026-10-20,
+ * `queries::IncidentState`; docs/api-changelog.md). Every field is
+ * optional on the wire only for a bundle served against an older api,
+ * which `incidentState` (`lib/incidents.ts`) falls back from. */
+export interface IncidentTiming {
+  /** `active`: a validity window covers now; `upcoming`: none has started
+   * yet (or now is between two); `ended`: no longer listed by the feed, or
+   * every window has finished; `cleared`: RDM cleared it. */
+  state: 'active' | 'upcoming' | 'ended' | 'cleared';
+  /** RFC3339: when the next window starts, for `upcoming`; else `null`. */
+  startsAt: string | null;
+  /** RFC3339: when the last window finished, once every window has; else
+   * `null`. */
+  validityEndedAt: string | null;
 }
 
 /** One item of `GET /public/incidents/recently-cleared` (docs/api-changelog.md,
@@ -1093,6 +1119,18 @@ export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields
    * code. */
   originName: string | null;
   destinationName: string | null;
+  /** The whole journey's ends, which is what names it
+   * (`lib/journeyName.ts`): the FIRST leg's origin and the LAST leg's
+   * destination, whatever the current leg is. Optional: absent from an
+   * older backend, when `journeyListItemNameInput` falls back to the
+   * current leg's own ends. */
+  firstOriginCrs?: string | null;
+  firstOriginName?: string | null;
+  lastDestinationCrs?: string | null;
+  lastDestinationName?: string | null;
+  /** The first leg's service date: the day the journey starts. */
+  firstServiceDate?: string;
+  legCount?: number;
   matchMode: 'unmatched' | 'manual' | 'auto';
   trainSubscriptionId: number | null;
   resolutionStatus: string | null;
@@ -2109,6 +2147,15 @@ export interface GroupJourney {
   pinOriginName: string | null;
   pinDestinationName: string | null;
   pinScheduledDeparture: string | null; // RFC3339
+  /** The journey's own ends, from its legs rather than the first leg's
+   * train: the first leg's origin and the last leg's destination. What
+   * names the row (`lib/journeyName.ts`). Optional: absent from an older
+   * backend. */
+  firstOriginCrs?: string | null;
+  firstOriginName?: string | null;
+  lastDestinationCrs?: string | null;
+  lastDestinationName?: string | null;
+  /** The FIRST leg's service date. */
   serviceDate: string; // "YYYY-MM-DD"
   resolutionStatus: string | null;
   trainUid: string | null;

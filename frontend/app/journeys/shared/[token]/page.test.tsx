@@ -210,11 +210,11 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.title).toBe('London Kings Cross to York');
-    expect(metadata.openGraph?.title).toBe('London Kings Cross to York · Distant Signal');
+    expect(metadata.title).toBe('London Kings Cross (KGX) to York (YRK), 22 Sep 2026');
+    expect(metadata.openGraph?.title).toBe('London Kings Cross (KGX) to York (YRK), 22 Sep 2026 · Distant Signal');
     expect(metadata.twitter).toMatchObject({
       card: 'summary_large_image',
-      title: 'London Kings Cross to York · Distant Signal',
+      title: 'London Kings Cross (KGX) to York (YRK), 22 Sep 2026 · Distant Signal',
     });
   });
 
@@ -227,7 +227,7 @@ describe('generateMetadata', () => {
 
     const metadata = await generateMetadata({ params: Promise.resolve({ token: 'tok123' }) });
 
-    expect(metadata.title).toBe('KGX to YRK');
+    expect(metadata.title).toBe('KGX to YRK, 22 Sep 2026');
   });
 
   it('falls back to a generic title when the leg has no origin/destination at all (unmatched, no window)', async () => {

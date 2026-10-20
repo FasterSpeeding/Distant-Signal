@@ -66,6 +66,10 @@ const PAGES: [name: string, path: string][] = [
   // in prompt, logged in the account sections too.
   ['preferences', '/account/preferences'],
   ['preferences-logged-in', '/account/preferences'],
+  // The Track page's lists, logged in: the seed's tracked trains and its
+  // planned three-leg journey, named end to end (docs/style-guide.md,
+  // "Journey names").
+  ['track', '/track/mine'],
   // Tram pages (the seed's metrolink network; API_TRANSIT_NETWORKS in the
   // frontend-e2e job). Dated, so the board and timetable don't follow the
   // server's clock.
@@ -79,6 +83,7 @@ const PAGES: [name: string, path: string][] = [
 const LOGGED_IN_PAGES: ReadonlySet<string> = new Set([
   'account',
   'preferences-logged-in',
+  'track',
   'train-no-timetable',
   'train-planned',
   'journey',

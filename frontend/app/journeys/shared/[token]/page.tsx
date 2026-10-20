@@ -5,6 +5,7 @@ import { getJourney, getJourneyByShareToken, ApiNotFoundError, ApiUnauthorizedEr
 import { JourneyDetailView } from '@/components/JourneyDetailView';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import { formatDate } from '@/lib/dateFormat';
+import { journeyDefaultName, journeyNameInputFromLegs } from '@/lib/journeyName';
 import { worstLegStatus, type LegStatusGroup } from '@/lib/journeyStatus';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
@@ -119,10 +120,9 @@ function journeyStatusPhrase(legs: JourneyLegDetail[]): string {
  * journey's own `customName` (an owner-chosen free-text label, unlike a
  * group's `groupName` in `groups/join`'s own equivalent function) -- title
  * and description are built from the route and a coarse status only, the
- * same "route is the identity" shape `defaultJourneyTitle`
- * (`components/JourneyDetailView.tsx`) already falls back to for a journey
- * with no custom name, kept unconditional here rather than conditional on
- * one being set. `JourneyDetail` carries no owner name/id at all to leak
+ * same default name (`journeyDefaultName`, `lib/journeyName.ts`) every
+ * journey surface falls back to for a journey with no custom name, kept
+ * unconditional here rather than conditional on one being set. `JourneyDetail` carries no owner name/id at all to leak
  * in the first place (`journey_readable_by`'s own read-only, ownership-
  * blind contract). */
 export async function generateMetadata({ params }: { params: Promise<{ token: string }> }): Promise<Metadata> {
@@ -143,10 +143,13 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
   }
 
   const firstLeg = journey.legs[0];
-  const lastLeg = journey.legs.at(-1) ?? firstLeg;
-  const origin = firstLeg?.originName ?? firstLeg?.originCrs ?? null;
-  const destination = lastLeg?.destinationName ?? lastLeg?.destinationCrs ?? null;
-  const title = origin && destination ? `${origin} to ${destination}` : 'Shared journey';
+  const lastLeg = journey.legs.at(-1);
+  // The one journey-naming rule's DEFAULT name (`lib/journeyName.ts`), with
+  // the custom name deliberately left out (see above): the same route and
+  // date the owner's own Track list shows when no custom name is set.
+  const hasRoute =
+    !!(firstLeg?.originCrs || firstLeg?.originName) && !!(lastLeg?.destinationCrs || lastLeg?.destinationName);
+  const title = hasRoute ? journeyDefaultName(journeyNameInputFromLegs(null, journey.legs)) : 'Shared journey';
   const description = firstLeg
     ? `A journey on ${formatDate(firstLeg.serviceDate)}, ${journeyStatusPhrase(journey.legs)}.`
     : 'A shared journey on Distant Signal.';

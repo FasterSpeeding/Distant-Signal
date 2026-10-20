@@ -1,4 +1,6 @@
 import { formatDateTime } from './dateFormat';
+import type { IncidentTiming, ValidityPeriod } from './types';
+import { validityPhase } from './validity';
 
 const KNOWLEDGEBASE_INCIDENT_PREFIX = 'knowledgebase-incident-';
 
@@ -15,28 +17,57 @@ export function incidentIdFromSource(source: string | null | undefined): string 
   return source.slice(KNOWLEDGEBASE_INCIDENT_PREFIX.length);
 }
 
-/** An incident's lifecycle state (2026-10-06,
- * docs/superpowers/specs/2026-10-06-incident-source-removal-design.md):
+/** An incident's state (2026-10-06,
+ * docs/superpowers/specs/2026-10-06-incident-source-removal-design.md;
+ * validity windows since 2026-10-20,
+ * docs/superpowers/specs/2026-10-20-incident-validity-state-design.md),
+ * first match wins:
  * - `cleared`: RDM's own Knowledgebase set `ClearedIncident`;
  * - `ended`: the feed stopped listing it without ever clearing it (it purges
  *   nightly, and never clears planned work), so it is no longer live but
  *   was not "cleared" either -- `sourceRemovedAt` is when it was last listed;
- * - `active`: neither.
- * `sourceRemovedAt` is optional so a bundle served against an api that
- * predates the field (a rolling deploy) reads every uncleared row as active,
- * exactly as before. */
-export type IncidentState = 'active' | 'cleared' | 'ended';
+ * - by its validity windows: `active` while one covers now, `upcoming`
+ *   while none has started yet, `ended` once every one has finished
+ *   (`validityEndedAt`).
+ *
+ * The api derives this (`state`, one rule shared with its Status filter
+ * and counts), and its answer is used whenever it is there. Against an api
+ * that predates `state` (a rolling deploy), the same rule runs here on
+ * `validityPeriods` when the caller has them (the detail page), else every
+ * uncleared, listed row reads as active, exactly as before. */
+export type IncidentState = IncidentTiming['state'];
 
-export function incidentState(incident: {
-  isCleared: boolean;
-  sourceRemovedAt?: string | null | undefined;
-}): IncidentState {
+const STATES: readonly IncidentState[] = ['active', 'upcoming', 'ended', 'cleared'];
+
+export function incidentState(
+  incident: {
+    isCleared: boolean;
+    sourceRemovedAt?: string | null | undefined;
+    state?: string | null | undefined;
+    validityPeriods?: readonly ValidityPeriod[] | undefined;
+  },
+  now: number = Date.now(),
+): IncidentState {
+  const served = STATES.find((state) => state === incident.state);
+  if (served) return served;
   if (incident.isCleared) return 'cleared';
   if (incident.sourceRemovedAt) return 'ended';
-  return 'active';
+  return incident.validityPeriods ? validityPhase(incident.validityPeriods, now) : 'active';
 }
 
-/** The words behind an "Ended" badge. */
+/** The words behind an "Ended" badge for an incident the feed stopped
+ * listing. */
 export function endedDescription(sourceRemovedAt: string): string {
   return `No longer listed by the source since ${formatDateTime(sourceRemovedAt)}`;
+}
+
+/** The words behind an "Ended" badge for an incident still listed whose
+ * every validity window has finished. */
+export function validityEndedDescription(validityEndedAt: string): string {
+  return `Its validity period ended ${formatDateTime(validityEndedAt)}`;
+}
+
+/** The words behind an "Upcoming" badge. */
+export function upcomingDescription(startsAt: string): string {
+  return `Not in effect yet: starts ${formatDateTime(startsAt)}`;
 }

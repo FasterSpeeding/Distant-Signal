@@ -182,7 +182,7 @@ test.describe('untracked legs', () => {
 
     // Seeded from leg 1: where and when it arrives.
     await expect(dialog.getByLabel('From (optional)')).toHaveValue('London Euston');
-    await expect(dialog.getByLabel('Date', { exact: true })).toHaveValue('2026-10-21');
+    await expect(dialog.getByLabel('Date', { exact: true })).toHaveValue('21 Oct 2026');
     await expect(dialog.getByRole('textbox', { name: 'Leaves', exact: true })).toHaveValue('09:52');
     await expect(dialog.getByText('Your last leg arrives at 09:52.')).toBeVisible();
 
@@ -216,7 +216,6 @@ test.describe('untracked legs', () => {
     await page.getByRole('combobox', { name: 'How' }).click();
     await page.getByRole('option', { name: 'Walk' }).click();
     await page.getByLabel('To (optional)').fill('London Euston');
-    await page.getByLabel('Date', { exact: true }).fill('2026-10-21');
     await page.getByRole('textbox', { name: 'Leaves', exact: true }).fill('08:30');
     await page.getByRole('textbox', { name: 'Arrives', exact: true }).fill('08:45');
     await page.getByRole('button', { name: 'Start journey' }).click();

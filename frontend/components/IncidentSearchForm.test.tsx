@@ -305,6 +305,73 @@ describe('IncidentSearchForm', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
+  it('picks Upcoming in the Status filter and writes state=upcoming to both the request and the URL', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    await searchSettled();
+    openFilters();
+    fireEvent.click(screen.getByRole('radio', { name: 'Upcoming' }));
+
+    await waitFor(() => expect(lastRequestUrl().searchParams.get('state')).toBe('upcoming'));
+    await waitFor(() => expect(window.location.search).toContain('state=upcoming'));
+  });
+
+  it('restores Upcoming from ?state=upcoming', async () => {
+    fetchMock.mockReturnValue(okResponse({ results: [], nextCursor: null }));
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} initialState="upcoming" />);
+    await waitFor(() => expect(lastRequestUrl().searchParams.get('state')).toBe('upcoming'));
+  });
+
+  // 2026-10-20: the row's badge is the api's `state`, so planned work that
+  // hasn't started reads "Upcoming", not "Active".
+  it("badges each row by the api's state, saying when an upcoming one starts", async () => {
+    fetchMock.mockReturnValue(
+      okResponse({
+        results: [
+          summary({
+            incidentId: 'u',
+            summary: 'Buses on Sunday',
+            isPlanned: true,
+            state: 'upcoming',
+            startsAt: '2026-10-24T23:00:00+00:00',
+            validityEndedAt: null,
+          }),
+          summary({
+            incidentId: 'p',
+            summary: 'Last weekend',
+            isPlanned: true,
+            state: 'ended',
+            startsAt: null,
+            validityEndedAt: '2026-10-18T22:59:00+00:00',
+          }),
+          summary({
+            incidentId: 'a',
+            summary: 'Signal failure',
+            state: 'active',
+            startsAt: null,
+            validityEndedAt: null,
+          }),
+        ],
+        nextCursor: null,
+      }),
+    );
+    renderWithMantine(<IncidentSearchForm lines={TEST_LINES} tocs={TEST_TOCS} />);
+    await screen.findByText('Buses on Sunday');
+
+    const states = Array.from(document.querySelectorAll('[data-incident-state]')).map((el) =>
+      el.getAttribute('data-incident-state'),
+    );
+    expect(states).toEqual(['upcoming', 'ended', 'active']);
+    expect(document.querySelector('[data-incident-state="upcoming"]')).toHaveAttribute(
+      'title',
+      'Not in effect yet: starts 25 Oct 2026, 00:00',
+    );
+    expect(document.querySelector('[data-incident-state="ended"]')).toHaveAttribute(
+      'title',
+      'Its validity period ended 18 Oct 2026, 23:59',
+    );
+  });
+
   it('badges each row Active, Ended or Cleared, saying when an ended one was last listed', async () => {
     fetchMock.mockReturnValue(
       okResponse({

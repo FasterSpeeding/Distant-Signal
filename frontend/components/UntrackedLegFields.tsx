@@ -1,8 +1,10 @@
 'use client';
 
 import { Group, Select, Stack, Text, TextInput } from '@mantine/core';
+import { DateInput } from '@mantine/dates';
 import dayjs from 'dayjs';
 import { TimeFilterInput } from './TimeFilterInput';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { addCalendarDays, LONDON_TZ } from '@/lib/londonWallClock';
 import { TRANSIT_MODES } from '@/lib/untrackedLeg';
 import type { TransitMode, UntrackedLegRequest } from '@/lib/types';
@@ -107,7 +109,6 @@ export function UntrackedLegFields({
   const setIncomplete = (field: 'leaves' | 'arrives', incomplete: boolean) => {
     onChange((current) => ({ ...current, incomplete: { ...current.incomplete, [field]: incomplete } }));
   };
-  const dateError = draft.date.length > 0 && !isValidDate(draft.date) ? 'Must be a valid date (YYYY-MM-DD)' : null;
   return (
     <Stack gap="sm">
       <Text size="sm" c="dimmed">
@@ -146,12 +147,11 @@ export function UntrackedLegFields({
           onChange={(event) => set({ destinationName: event.currentTarget.value })}
         />
       </Group>
-      <TextInput
+      <DateInput
         label="Date"
-        placeholder="YYYY-MM-DD"
-        value={draft.date}
-        onChange={(event) => set({ date: event.currentTarget.value })}
-        error={dateError}
+        valueFormat={PICKER_DATE_FORMAT}
+        value={draft.date || null}
+        onChange={(value) => set({ date: value ?? '' })}
       />
       <Group grow align="flex-start">
         <TimeFilterInput
