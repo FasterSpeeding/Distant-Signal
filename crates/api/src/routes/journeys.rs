@@ -239,10 +239,34 @@ struct UntrackedLegRequest {
     planned_departure: Option<DateTime<Utc>>,
     #[serde(default)]
     planned_arrival: Option<DateTime<Utc>>,
+    /// The TfL stop each place was picked from (`GET /tfl/stops`), when it
+    /// was (spec 2026-10-20-tfl-stop-lookup-design.md §4).
+    #[serde(default)]
+    origin_stop_id: Option<String>,
+    #[serde(default)]
+    destination_stop_id: Option<String>,
 }
 
 impl UntrackedLegRequest {
-    fn validate(&self) -> Result<journeys::UntrackedLeg, (StatusCode, String)> {
+    /// The leg's fields (`journeys::validate_untracked_leg`), then its
+    /// stop ids (`journeys::attach_untracked_stops`).
+    async fn validate(
+        &self,
+        pool: &sqlx::PgPool,
+    ) -> Result<journeys::UntrackedLeg, (StatusCode, String)> {
+        let leg = self.validate_fields()?;
+        journeys::attach_untracked_stops(
+            pool,
+            leg,
+            self.origin_stop_id.as_deref(),
+            self.destination_stop_id.as_deref(),
+        )
+        .await
+        .map_err(internal_error("check untracked leg stops"))?
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))
+    }
+
+    fn validate_fields(&self) -> Result<journeys::UntrackedLeg, (StatusCode, String)> {
         journeys::validate_untracked_leg(
             journeys::UntrackedLegInput {
                 transit_mode: &self.transit_mode,
@@ -904,7 +928,7 @@ async fn post_journey(
         }
         CreateJourneyLegRequest::Untracked(request) => {
             // No tracked-train cap: an untracked leg tracks nothing.
-            let leg = request.validate()?;
+            let leg = request.validate(&app.database).await?;
             let (journey_id, leg_id) = journeys::create_journey_with_untracked_leg(
                 &app.database,
                 &user.id,
@@ -1055,7 +1079,7 @@ async fn post_journey_leg(
             }))
         }
         AddJourneyLegRequest::Untracked(request) => {
-            let leg = request.validate()?;
+            let leg = request.validate(&app.database).await?;
             let added =
                 journeys::add_untracked_leg_to_journey(&app.database, journey_id, &user.id, &leg)
                     .await
@@ -1214,6 +1238,11 @@ struct JourneyLegDetailResponse {
     planned_arrival: Option<DateTime<Utc>>,
     /// The untracked leg's clock-only state at read time.
     untracked_status: Option<journeys::UntrackedStatus>,
+    /// The TfL stop ids of an untracked leg's places, when they were
+    /// picked from `GET /tfl/stops` (additive, 2026-10-20); `null` for free
+    /// text and on a train leg.
+    origin_stop_id: Option<String>,
+    destination_stop_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1650,6 +1679,8 @@ async fn build_journey_detail_response(
             planned_departure: leg.planned_departure,
             planned_arrival: leg.planned_arrival,
             untracked_status,
+            origin_stop_id: leg.origin_stop_id,
+            destination_stop_id: leg.destination_stop_id,
         });
     }
 
@@ -3722,7 +3753,7 @@ mod db_tests {
             ),
             (
                 untracked_leg("hovercraft", 30, 40),
-                "transitMode must be one of: tube, bus, tram, rail, walk, ferry, taxi, cycle, other.",
+                "transitMode must be one of: tube, dlr, bus, tram, rail, walk, ferry, taxi, cycle, other.",
             ),
             (
                 serde_json::json!({ "mode": "untracked", "transitMode": "bus" }),
@@ -3908,6 +3939,104 @@ mod db_tests {
                 .unwrap();
         assert_eq!(legs, 0);
         cleanup_user(&pool, user).await;
+    }
+
+    /// TfL stop lookup (spec 2026-10-20-tfl-stop-lookup-design.md §4): an
+    /// untracked Tube leg keeps the stop ids its places were picked from,
+    /// a blank place takes its stop's name, and the ids read back on the
+    /// detail and in the export. An unknown or malformed id, or one on a
+    /// bus leg, is a 400.
+    #[tokio::test]
+    #[ignore = "requires a live database: DATABASE_URL=... cargo test -p api \
+                untracked_legs_ -- --ignored --test-threads=1"]
+    async fn untracked_legs_keep_their_tfl_stop_ids() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-UNTRACKED-STOPS";
+        cleanup_user(&pool, user).await;
+        let fixture = "DELETE FROM tfl_stops WHERE stop_id = '940GZZTESTJ'";
+        sqlx::query(fixture).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO tfl_stops (stop_id, name, search_name, modes, fetched_at) \
+             VALUES ('940GZZTESTJ', 'Testbury Cross', 'testbury cross', '{tube}', NOW())",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let mut leg = untracked_leg("tube", 30, 50);
+        leg["originName"] = Value::Null;
+        leg["originStopId"] = "940GZZTESTJ".into();
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": leg }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        let journey_id = created["journeyId"].as_i64().unwrap();
+
+        for (field, value, mode, message) in [
+            (
+                "destinationStopId",
+                "940GZZNOWHERE",
+                "tube",
+                "destinationStopId 940GZZNOWHERE is not a stop we know.",
+            ),
+            (
+                "originStopId",
+                "940gzz lower",
+                "tube",
+                "originStopId must be a TfL stop id from GET /tfl/stops.",
+            ),
+            (
+                "originStopId",
+                "940GZZTESTJ",
+                "bus",
+                "Only a tube, dlr, tram leg can have a stop id.",
+            ),
+        ] {
+            let mut leg = untracked_leg(mode, 60, 70);
+            leg[field] = value.into();
+            let (status, body) = post_json(
+                router.clone(),
+                format!("/Journeys/{journey_id}/legs"),
+                Some(&token),
+                leg,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{field}={value}");
+            assert_eq!(body, Value::String(message.to_string()));
+        }
+
+        let (status, detail) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{detail:?}");
+        let legs = detail["legs"].as_array().unwrap();
+        assert_eq!(legs.len(), 1, "the refused legs were not added");
+        assert_eq!(legs[0]["originStopId"], "940GZZTESTJ");
+        assert_eq!(legs[0]["originName"], "Testbury Cross", "the stop's name");
+        assert!(legs[0]["destinationStopId"].is_null());
+        assert_eq!(legs[0]["destinationName"], "Victoria");
+
+        let export = crate::data::account::export_account(&pool, user)
+            .await
+            .expect("export")
+            .expect("the user exists");
+        let exported = serde_json::to_value(&export).unwrap();
+        assert_eq!(
+            exported["journeys"][0]["legs"][0]["origin_stop_id"],
+            "940GZZTESTJ"
+        );
+
+        cleanup_user(&pool, user).await;
+        sqlx::query(fixture).execute(&pool).await.unwrap();
     }
 
     #[tokio::test]
