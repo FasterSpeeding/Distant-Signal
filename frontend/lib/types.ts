@@ -550,6 +550,48 @@ export interface SessionInfo {
 }
 
 export type ResolutionStatus = 'pending' | 'schedule_matched' | 'resolved' | 'unresolved';
+
+/** Where a tracked train is from the traveller's point of view
+ * (`crates/api/src/data/tracking_phase.rs`, spec
+ * docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
+ * §4.3): a bus or ferry (`timetableOnly`), reported by Network Rail
+ * (`live`), not in the timetable and never reported (`noTimetable`),
+ * timetabled with its first report not due yet (`planned`), or due
+ * (`awaitingReport`, the waiting states as before). Derived by the api on
+ * every read. */
+export type TrackingPhase = 'timetableOnly' | 'live' | 'noTimetable' | 'planned' | 'awaitingReport';
+
+/** `trackingPhase` and `firstReportExpectedAt` (RFC3339: the Activation
+ * before the train is activated, its origin departure after; `null` once
+ * live or when unknown). Optional and nullable: an older backend, or a
+ * failed lookup, sends neither, which reads as today's display. */
+export interface TrackingPhaseFields {
+  trackingPhase?: TrackingPhase | null;
+  firstReportExpectedAt?: string | null;
+}
+
+/** An untracked leg's mode (`data::journeys::TRANSIT_MODES`). */
+export type TransitMode = 'tube' | 'bus' | 'tram' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
+
+/** An untracked leg's state from the clock alone, computed by the api. */
+export type UntrackedStatus = 'planned' | 'inProgress' | 'done';
+
+/** `train` (a train we track, or a search for one) or `untracked` (a Tube
+ * ride, bus or walk we have no data for). Absent from an older backend,
+ * which means `train`. */
+export type JourneyLegKind = 'train' | 'untracked';
+
+/** The fields an untracked leg adds to a journey leg or list row, `null`
+ * (or absent) on a train leg. Its place names are the leg's own
+ * `originName`/`destinationName`. */
+export interface UntrackedLegFields {
+  kind?: JourneyLegKind;
+  transitMode?: TransitMode | null;
+  lineName?: string | null;
+  plannedDeparture?: string | null; // RFC3339
+  plannedArrival?: string | null; // RFC3339
+  untrackedStatus?: UntrackedStatus | null;
+}
 export type JourneyStatus = 'awaiting_activation' | 'en_route' | 'cancelled' | 'completed';
 export type EtaSource = 'trust-propagated' | 'darwin-estimated';
 
@@ -812,7 +854,7 @@ export interface TrackedTrainState extends TrainJourneyState {
  * fabricate a `trackingId` it doesn't have. See `PublicTrainState` below
  * for the surrogate-key collision that made that distinction load-bearing
  * rather than cosmetic. */
-export interface TrainJourneyState extends ServiceModeFields {
+export interface TrainJourneyState extends ServiceModeFields, TrackingPhaseFields {
   serviceDate: string; // "YYYY-MM-DD"
   // `null` for a subscription created the NR-primary way
   // (`POST /Train/by-uid/{uid}/{date}/track`) against a shared `trains` row
@@ -911,7 +953,7 @@ export interface TrainJourneyState extends ServiceModeFields {
  * `BIGSERIAL` space that also starts at 1, so the two collide freely. That
  * is exactly the bug this field's old name (`id`) caused on
  * `app/train/[uid]/[date]/page.tsx`. */
-export interface PublicTrainState extends ServiceModeFields, TimetableCertaintyFields {
+export interface PublicTrainState extends ServiceModeFields, TimetableCertaintyFields, TrackingPhaseFields {
   trainsId: number;
   trainUid: string;
   serviceDate: string; // "YYYY-MM-DD"
@@ -985,7 +1027,7 @@ export interface TrainResolveResult {
  * calling point, ETA), appropriate for one train's detail page, not a
  * multi-row list. `pinScheduledDeparture` is new: neither
  * `TrackedTrainState` nor any other existing route exposes it. */
-export interface TrackedTrainListItem extends ServiceModeFields {
+export interface TrackedTrainListItem extends ServiceModeFields, TrackingPhaseFields {
   id: number;
   serviceDate: string; // "YYYY-MM-DD"
   // See `TrackedTrainState.pinOriginCrs`'s comment -- same contract, same
@@ -1028,7 +1070,7 @@ export interface TimeWindow {
  * (`crates/api/src/data/journeys.rs::JourneyListItem`, camelCase).
  * Deliberately lighter than `JourneyDetail` below -- see that Rust
  * struct's own doc comment for why. */
-export interface JourneyListItem {
+export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields {
   id: number;
   customName: string | null;
   createdAt: string;
@@ -1075,7 +1117,7 @@ export interface LegSkipStatus {
  * `trackedTrainState` is `null` for an unmatched leg, and otherwise the
  * EXACT SAME shape `GET /Train/{trackingId}` returns -- `TrackedTrainState`
  * is reused verbatim, not a narrower/different type. */
-export interface JourneyLegDetail {
+export interface JourneyLegDetail extends UntrackedLegFields {
   id: number;
   originCrs: string | null;
   /** `null` whenever `originCrs` is `null`, or there is no `stations`
@@ -1380,7 +1422,21 @@ export type NewJourneyLegRequest =
       serviceDate: string; // "YYYY-MM-DD"
       departWindow?: TimeWindow;
       arriveWindow?: TimeWindow;
-    };
+    }
+  | UntrackedLegRequest;
+
+/** An untracked leg for `POST /Journeys` (`leg`) or `POST
+ * /Journeys/{id}/legs` (spec 2026-10-20 §2.4). Places and line are
+ * optional; both times are RFC3339 instants. */
+export interface UntrackedLegRequest {
+  mode: 'untracked';
+  transitMode: TransitMode;
+  originName?: string;
+  destinationName?: string;
+  lineName?: string;
+  plannedDeparture: string;
+  plannedArrival: string;
+}
 
 /** `POST /Journeys/{journeyId}/legs`'s response
  * (`crates/api/src/routes/journeys.rs::AddLegResponse`). `trackingId` is
@@ -2578,6 +2634,14 @@ export interface ConnectedAppDeletion {
       originCrs?: string | null;
       destinationCrs?: string | null;
       trainUid?: string | null;
+      /** An untracked leg's fields (spec 2026-10-20 §2.4), absent from a
+       * deletion recorded before them. */
+      kind?: JourneyLegKind | null;
+      transitMode?: TransitMode | null;
+      originName?: string | null;
+      destinationName?: string | null;
+      lineName?: string | null;
+      plannedDeparture?: string | null;
     }[];
   };
 }

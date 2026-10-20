@@ -73,6 +73,10 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
     mayHaveArrived: train.mayHaveArrived,
     serviceMode: train.serviceMode,
     liveTracking: train.liveTracking,
+    // Planned / not in the timetable (spec 2026-10-20 §3, §4), computed by
+    // the api for the shared train the same way as for a tracked one.
+    trackingPhase: train.trackingPhase ?? null,
+    firstReportExpectedAt: train.firstReportExpectedAt ?? null,
   };
 }
 
@@ -120,6 +124,12 @@ function trackNoun(train: Pick<PublicTrainState, 'serviceMode'>): 'train' | 'bus
 export function trainStatusSummary(state: TrainJourneyState): string {
   if (isTimetableOnly(state)) {
     return `${serviceModeLabel(state.serviceMode) ?? 'This service'}: ${TIMETABLE_ONLY_MESSAGE}.`;
+  }
+  if (state.trackingPhase === 'noTimetable' && state.resolutionStatus !== 'unresolved') {
+    return "Not matched to a timetable, so we can't track this train.";
+  }
+  if (state.trackingPhase === 'planned') {
+    return 'Planned. These are the timetabled times.';
   }
   if (state.resolutionStatus === 'pending') {
     return "Waiting to hear from Network Rail. This train hasn't been matched to a live service yet.";

@@ -965,3 +965,124 @@ describe('TrainJourney: buses and ferries (timetable-only)', () => {
     expect(screen.queryByTestId('timetable-only')).not.toBeInTheDocument();
   });
 });
+
+/** Spec 2026-10-20 §3 and §4: the api's `trackingPhase` decides between
+ * "Planned", "Not matched to a timetable" and the existing waiting copy. */
+describe('TrainJourney: tracking phases', () => {
+  const stops = [
+    journeyStop({ crs: 'WAT', name: 'London Waterloo', kind: 'Origin', scheduledDeparture: '2026-08-28T07:10:00Z' }),
+    journeyStop({ crs: 'WOK', name: 'Woking', kind: 'Terminate', scheduledArrival: '2026-08-28T07:40:00Z' }),
+  ];
+
+  it('planned: says planned and when the first report is due, not that it is waiting', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          trainUid: 'W12345',
+          journeyStops: stops,
+          trackingPhase: 'planned',
+          firstReportExpectedAt: '2026-08-28T06:25:00Z',
+        })}
+      />,
+    );
+    expect(screen.getByText('Planned')).toBeInTheDocument();
+    expect(screen.getByText(/We expect Network Rail's first report by 07:25\./)).toBeInTheDocument();
+    expect(screen.queryByText('Waiting to hear from Network Rail')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for its first movement report/)).not.toBeInTheDocument();
+    expect(screen.getByText('Planned. The timetabled route is shown.')).toBeInTheDocument();
+  });
+
+  it('planned and activated: no "No movement data" summary and no waiting caption', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          status: 'awaiting_activation',
+          trainUid: 'W12345',
+          journeyStops: stops,
+          trackingPhase: 'planned',
+          firstReportExpectedAt: '2026-08-28T07:10:00Z',
+        })}
+      />,
+    );
+    expect(screen.getByText(/first report by 08:10\./)).toBeInTheDocument();
+    expect(screen.queryByText('No movement data reported yet.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for its first movement report/)).not.toBeInTheDocument();
+  });
+
+  it('planned for a train leaving just after midnight dates the evening-before report', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          trainUid: 'W12345',
+          trackingPhase: 'planned',
+          firstReportExpectedAt: '2026-08-27T22:30:00Z',
+        })}
+      />,
+    );
+    expect(screen.getByText(/first report by 27 Aug 2026, 23:30\./)).toBeInTheDocument();
+  });
+
+  it('after the threshold, awaitingReport keeps the existing waiting copy', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          trainUid: 'W12345',
+          journeyStops: stops,
+          trackingPhase: 'awaitingReport',
+          firstReportExpectedAt: '2026-08-28T06:25:00Z',
+        })}
+      />,
+    );
+    expect(screen.getByText('Waiting to hear from Network Rail')).toBeInTheDocument();
+    expect(screen.queryByText('Planned')).not.toBeInTheDocument();
+  });
+
+  it('noTimetable with a UID: says it cannot be tracked and to check the UID and date', () => {
+    renderWithMantine(<TrainJourney state={baseState({ trainUid: 'W99999', trackingPhase: 'noTimetable' })} />);
+    expect(screen.getByText('Not matched to a timetable')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "We can't find train W99999 in the timetable for 28 Aug 2026, so we can't track it. Check the UID and date. If they're right, it may have been cancelled or not published yet.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Waiting to hear from Network Rail')).not.toBeInTheDocument();
+  });
+
+  it('noTimetable for a station pick: says to check the station, time and date', () => {
+    renderWithMantine(
+      <TrainJourney state={baseState({ pinOriginName: 'London Waterloo', trackingPhase: 'noTimetable' })} />,
+    );
+    expect(
+      screen.getByText(
+        "We can't find a timetabled train from London Waterloo on 28 Aug 2026, so we can't track it. Check the station, time and date.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('unresolved keeps its own copy even when the phase is noTimetable', () => {
+    renderWithMantine(
+      <TrainJourney state={baseState({ resolutionStatus: 'unresolved', trackingPhase: 'noTimetable' })} />,
+    );
+    expect(screen.getByText("Couldn't be matched to a live service")).toBeInTheDocument();
+    expect(screen.queryByText('Not matched to a timetable')).not.toBeInTheDocument();
+  });
+
+  it('live: a delayed en-route train shows its delay whatever the clock says', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          status: 'en_route',
+          trainUid: 'W12345',
+          delayMinutes: 12,
+          lastReportedLocation: 'Clapham Junction',
+          trackingPhase: 'live',
+        })}
+      />,
+    );
+    expect(screen.getByText(/Last reported: Clapham Junction/)).toBeInTheDocument();
+    expect(screen.getByText('12 min late')).toBeInTheDocument();
+    expect(screen.queryByText('Planned')).not.toBeInTheDocument();
+  });
+});

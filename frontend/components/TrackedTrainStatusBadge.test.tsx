@@ -86,4 +86,42 @@ describe('TrackedTrainStatusBadge: buses and ferries', () => {
     expect(screen.getByText('Timetabled only')).toBeInTheDocument();
     expect(screen.queryByText('Matched to schedule')).not.toBeInTheDocument();
   });
+
+  // Spec 2026-10-20 §3 and §4.
+  it('says a train with no timetable match is not in the timetable, not "Pending match"', () => {
+    renderWithMantine(
+      <TrackedTrainStatusBadge
+        train={{ resolutionStatus: 'pending', status: null, delayMinutes: null, trackingPhase: 'noTimetable' }}
+      />,
+    );
+    expect(screen.getByText('Not in the timetable')).toBeInTheDocument();
+    expect(screen.queryByText('Pending match')).not.toBeInTheDocument();
+  });
+
+  it('says a timetabled train whose first report is not due yet is planned', () => {
+    renderWithMantine(
+      <TrackedTrainStatusBadge
+        train={{ resolutionStatus: 'pending', status: null, delayMinutes: null, trackingPhase: 'planned' }}
+      />,
+    );
+    expect(screen.getByText('Planned')).toBeInTheDocument();
+  });
+
+  it('keeps the waiting badge once the first report is due', () => {
+    renderWithMantine(
+      <TrackedTrainStatusBadge
+        train={{ resolutionStatus: 'pending', status: null, delayMinutes: null, trackingPhase: 'awaitingReport' }}
+      />,
+    );
+    expect(screen.getByText('Pending match')).toBeInTheDocument();
+  });
+
+  it('keeps the unresolved badge for a pin the sweep gave up on', () => {
+    renderWithMantine(
+      <TrackedTrainStatusBadge
+        train={{ resolutionStatus: 'unresolved', status: null, delayMinutes: null, trackingPhase: 'noTimetable' }}
+      />,
+    );
+    expect(screen.getByText('Unmatched')).toBeInTheDocument();
+  });
 });
