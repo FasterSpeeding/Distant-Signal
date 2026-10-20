@@ -91,6 +91,10 @@ pub struct RawTimetable {
 ///   list leaves these rows out.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a wire shape: each bool is an independent CIF schedule flag served as its own field"
+)]
 pub struct StopTimetable {
     pub public_arrival: Option<DateTime<Utc>>,
     pub public_departure: Option<DateTime<Utc>>,
