@@ -1125,6 +1125,23 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     expect(sentParams(fetchMock, 2).get('arriveBy')).toBe('08:49:00');
   });
 
+  it('pages with the stations in the form now, not the stale search', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])))
+      .mockResolvedValueOnce(ok(planWith(['08:30:00', 0], ['09:20:00', 0])));
+    await searchArriveBy(fetchMock, '09:00');
+    await screen.findByRole('button', { name: 'Later routes' });
+    // The visitor changes To but pages instead of pressing Find routes.
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'PRE' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Later routes' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const sent = sentParams(fetchMock, 1);
+    expect(sent.get('origin')).toBe('EUS');
+    expect(sent.get('destination')).toBe('PRE');
+    expect(sent.get('departAfter')).toBe('08:01:00');
+  });
+
   it('offers no paging before a search', () => {
     renderWithMantine(<PlanTripFlow onCreated={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Later routes' })).not.toBeInTheDocument();

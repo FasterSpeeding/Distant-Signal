@@ -167,6 +167,13 @@ nothing, both buttons page from the last plan that had a journey, so the
 visitor can step back the other way. A new search from the form starts
 afresh. The buttons are disabled while a search runs.
 
+Only the time comes from the results (2026-10-20). Everything else, From
+and To included, comes from the form as it is when the button is pressed.
+So a visitor who changes To and pages without pressing Find routes gets
+the new To, at the paged time. If the form can't run as it stands (From
+or To empty, or an advanced option with a problem), the page uses the
+search that produced the results.
+
 ### 4.4 Results copy
 
 A summary line above the segments says what was asked for: "Arrive by

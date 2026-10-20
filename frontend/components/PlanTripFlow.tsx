@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { Alert, Button, Group, List, ListItem, Stack, Text } from '@mantine/core';
-import { PlanTripForm } from './PlanTripForm';
+import { PlanTripForm, type PlanTripFormHandle } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
@@ -36,6 +36,16 @@ function idempotencyKey(): string {
 
 interface SegmentSelection {
   itinerary: TripPlanItinerary | null;
+}
+
+/** `form` with `paged`'s date and time (and so its mode). */
+function withPagedTiming(form: TripPlanQuery, paged: TripPlanQuery): TripPlanQuery {
+  const { departAfter: _depart, arriveBy: _arrive, dayOffset: _offset, ...rest } = form;
+  return {
+    ...rest,
+    date: paged.date,
+    ...(paged.arriveBy ? { arriveBy: paged.arriveBy } : { departAfter: paged.departAfter }),
+  };
 }
 
 /** A plan with the visitor's search that produced it, and the service date
@@ -284,8 +294,14 @@ export function PlanTripFlow({
   const earlier = pagingFrom ? earlierQuery(pagingFrom.query, pagingFrom.serviceDate, pagingFrom.plan) : null;
   const later = pagingFrom ? laterQuery(pagingFrom.query, pagingFrom.serviceDate, pagingFrom.plan) : null;
 
-  function page(query: TripPlanQuery) {
+  const formHandle = useRef<PlanTripFormHandle>(null);
+
+  function page(paged: TripPlanQuery) {
     if (searching) return;
+    // The time comes from the results on screen; everything else from the
+    // form as it is now, so a From or To changed since that search is the
+    // one paged (and re-run), not the stale one.
+    const query = withPagedTiming(formHandle.current?.currentQuery() ?? paged, paged);
     setFormTiming((current) => ({
       date: query.date,
       mode: timingMode(query),
@@ -307,6 +323,7 @@ export function PlanTripFlow({
         initial={initialQuery}
         searchDates={searchDates}
         timing={formTiming}
+        handleRef={formHandle}
       />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
