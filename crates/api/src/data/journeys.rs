@@ -1019,7 +1019,6 @@ pub fn untracked_status(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code")]
 mod untracked_tests {
     use super::*;
 

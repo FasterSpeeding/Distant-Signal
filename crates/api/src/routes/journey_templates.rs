@@ -1132,9 +1132,7 @@ mod db_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             body,
-            serde_json::Value::String(
-                "This journey has no train legs to save as a template.".to_string()
-            )
+            Value::String("This journey has no train legs to save as a template.".to_string())
         );
 
         let (status, created) = post_json(

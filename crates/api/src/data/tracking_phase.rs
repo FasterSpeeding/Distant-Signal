@@ -129,6 +129,9 @@ pub struct TimetableFacts {
     pub live_tracking: bool,
 }
 
+/// One [`timetable_facts`] row: UID, service date, origin departure, mode.
+type FactsRow = (String, NaiveDate, Option<DateTime<Utc>>, Option<String>);
+
 /// The timetable facts for many `(uid, service_date)` pairs in one query.
 /// A pair with no timetable row and no `schedule_services` row is absent.
 ///
@@ -154,7 +157,7 @@ pub async fn timetable_facts(
     if uids.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows: Vec<(String, NaiveDate, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
+    let rows: Vec<FactsRow> = sqlx::query_as(
         "SELECT k.uid, k.service_date, \
                 (SELECT (d.service_date + d.scheduled) AT TIME ZONE 'Europe/London' \
                  FROM schedule_destination_departures d \
@@ -210,6 +213,10 @@ pub async fn attach<T: PhaseRow>(pool: &PgPool, rows: &mut [T], now: DateTime<Ut
 
 /// The pure half of [`attach`]: one phase per applicable row from already
 /// read facts.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn apply<T: PhaseRow>(
     rows: &mut [T],
     facts: &HashMap<(String, NaiveDate), TimetableFacts>,
@@ -240,7 +247,6 @@ pub fn apply<T: PhaseRow>(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code")]
 mod tests {
     use super::*;
 
@@ -383,7 +389,7 @@ mod tests {
         uid: Option<&'static str>,
         applies: bool,
         activated: bool,
-        timetable_on_row: bool,
+        timetable_known: bool,
         phase: Option<TrackingPhase>,
         expected: Option<DateTime<Utc>>,
     }
@@ -398,7 +404,7 @@ mod tests {
                 applies: self.applies,
                 activated: self.activated,
                 status: None,
-                timetable_on_row: self.timetable_on_row,
+                timetable_on_row: self.timetable_known,
             }
         }
         fn set_phase(&mut self, phase: TrackingPhase, expected: Option<DateTime<Utc>>) {
@@ -412,7 +418,7 @@ mod tests {
             uid,
             applies: true,
             activated: false,
-            timetable_on_row: false,
+            timetable_known: false,
             phase: None,
             expected: None,
         }
@@ -443,7 +449,7 @@ mod tests {
             row(Some("X99999")),
             row(None),
             Row {
-                timetable_on_row: true,
+                timetable_known: true,
                 ..row(None)
             },
             Row {

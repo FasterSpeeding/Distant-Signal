@@ -930,6 +930,10 @@ async fn post_journey(
 /// Same 404-never-403 ownership convention as every other route in this
 /// app: "journey doesn't exist" and "journey exists but isn't yours" are
 /// indistinguishable to the caller.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per leg mode; long but linear"
+)]
 async fn post_journey_leg(
     State(app): State<App>,
     user: AuthenticatedUser,
