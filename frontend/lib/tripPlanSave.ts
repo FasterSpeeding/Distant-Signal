@@ -61,11 +61,18 @@ export function transferAsUntracked(
 }
 
 /** A train leg's departure from its boarding call or arrival at its
- * alighting call, as a UTC instant: the working time the planner chained
- * on, on its own service date plus the day offset. */
+ * alighting call, as a UTC instant: the PUBLIC time the planner planned on
+ * (`schedule_query::Connection`'s times are public, falling back to
+ * working), with its own day offset, falling back to the working time and
+ * its offset only when the leg has no public time. On its service date. */
 function trainInstant(leg: TrainLeg, end: 'departure' | 'arrival'): dayjs.Dayjs | null {
-  const time = end === 'departure' ? leg.scheduledDeparture : leg.scheduledArrival;
-  const offset = end === 'departure' ? (leg.departureDayOffset ?? 0) : leg.arrivalDayOffset;
+  const publicTime = end === 'departure' ? leg.publicDeparture : leg.publicArrival;
+  const publicOffset = end === 'departure' ? leg.publicDepartureDayOffset : leg.publicArrivalDayOffset;
+  const [time, offset] = publicTime
+    ? [publicTime, publicOffset ?? 0]
+    : end === 'departure'
+      ? [leg.scheduledDeparture, leg.departureDayOffset ?? 0]
+      : [leg.scheduledArrival, leg.arrivalDayOffset];
   const instant = dayjs.tz(`${leg.serviceDate} ${time}`, LONDON_TZ).add(offset, 'day');
   return instant.isValid() ? instant : null;
 }
@@ -74,7 +81,8 @@ function trainInstant(leg: TrainLeg, end: 'departure' | 'arrival'): dayjs.Dayjs 
  * `trainLegsForTracking` (lib/tripPlan.ts) would pick (a train ridden
  * through a waypoint stays one leg), with each Tube, walk, bus or ferry transfer between them as an
  * untracked leg. A transfer starts when the train before it arrives (the
- * planner walks straight off it) and lasts its minutes; one with no train
+ * planner walks straight off it; public time, else working) and lasts its
+ * minutes; one with no train
  * before it ends when the next train leaves. A transfer with neither, or a
  * change within a station, is left out. */
 export function itineraryLegsForSaving(
