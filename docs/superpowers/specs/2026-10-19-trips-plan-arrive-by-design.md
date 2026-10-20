@@ -282,6 +282,42 @@ rounds. Both are below the same rows in the 2026-10-06 spec §4.2 (CSA
 0.80 s and 1.3 s), so nothing here moves an existing budget. A page of
 "Earlier routes" or "Later routes" is one of these searches.
 
+### 6.2 Both dates (`acrossMidnight`, 2026-10-20)
+
+The two dates are planned concurrently under the request's one plan slot
+(`tokio::try_join!` in `get_trip_plan`). The wait is therefore the slower
+date's, plus a merge measured in microseconds. A request still takes one
+rate-limit token. The graph cache keeps two dates, which is exactly the
+pair.
+
+Measured end to end through the route by `bench_across_midnight`
+(`routes/trips.rs`, release build, `live=false`, warm cache). The network
+is synthetic: 676 stations and 20,000 ten-stop trains a date, about 180k
+connections. Each figure is over 8 origin-destination pairs, the median of
+5 runs each.
+
+| Search | Median | Max | Pairs with a journey |
+|---|---|---|---|
+| `fastest` arrive by 12:00, one date | 18.3 ms | 32.1 ms | 8/8 |
+| `fastest` arrive by 00:30 +1, one date | 25.4 ms | 32.6 ms | 8/8 |
+| `fastest` arrive by 00:30 +1, both dates | 23.1 ms | 30.1 ms | 8/8 |
+| `fastest` depart 00:30 +1, one date | 16.3 ms | 24.5 ms | 3/8 |
+| `fastest` depart 00:30 +1, both dates | 22.6 ms | 31.8 ms | 8/8 |
+| `options` arrive by 12:00, one date | 102.7 ms | 192.8 ms | 8/8 |
+| `options` arrive by 00:30 +1, one date | 145.1 ms | 279.3 ms | 8/8 |
+| `options` arrive by 00:30 +1, both dates | 158.9 ms | 305.7 ms | 8/8 |
+| `options` depart 08:00, one date | 381.6 ms | 409.8 ms | 8/8 |
+| `options` depart 00:30 +1, one date | 32.6 ms | 59.7 ms | 3/8 |
+| `options` depart 00:30 +1, both dates | 480.3 ms | 577.9 ms | 8/8 |
+
+- `fastest` costs the same as one date.
+- Arrive-by `options` costs about 10% more.
+- Depart-after `options` just after midnight now costs about as much as a
+  daytime `options` search (480 ms against 382 ms). That is because the
+  next date's whole day is now searched. Before, the search covered only a
+  few late trains, and found a journey for 3 pairs in 8.
+- The first request for a date still builds its graph: 0.6 to 1.0 s here.
+
 ## 7. Tests
 
 - Engine (Rust unit tests): the latest-departing direct journey, with vias

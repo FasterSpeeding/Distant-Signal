@@ -525,28 +525,34 @@ async fn get_trip_plan(
         max_changes,
         live_requested,
     };
-    let first = plan_on_date(&app, &graph, &inputs, date, time, &permit).await?;
     // `acrossMidnight` (2026-10-20): the next service date's trains too,
     // from the same clock time, merged in (`data::trip_plan_overnight`).
-    // A next date with no published timetable just adds nothing.
-    let next_date = date.succ_opt();
-    let second = match (across_midnight, next_date) {
-        (true, Some(next)) => match load_graph(&app, next, marker).await? {
-            Some(next_graph) => Some(
-                plan_on_date(
-                    &app,
-                    &next_graph,
-                    &inputs,
-                    next,
-                    time.a_day_earlier(),
-                    &permit,
-                )
-                .await?,
-            ),
-            None => None,
-        },
-        _ => None,
+    // The two dates are planned concurrently, under this request's one
+    // permit, so the wait is the slower date's rather than the sum. A next
+    // date with no published timetable just adds nothing.
+    let next_date = date.succ_opt().filter(|_| across_midnight);
+    let second_plan = async {
+        let Some(next) = next_date else {
+            return Ok(None);
+        };
+        let Some(next_graph) = load_graph(&app, next, marker).await? else {
+            return Ok(None);
+        };
+        plan_on_date(
+            &app,
+            &next_graph,
+            &inputs,
+            next,
+            time.a_day_earlier(),
+            &permit,
+        )
+        .await
+        .map(Some)
     };
+    let (first, second) = tokio::try_join!(
+        plan_on_date(&app, &graph, &inputs, date, time, &permit),
+        second_plan
+    )?;
     drop(permit);
     let request = first.request.clone();
     let (segments, live_outcome, service_dates) = match (second, next_date) {
@@ -3846,6 +3852,155 @@ mod db_tests {
                 );
             }
         }
+    }
+
+    /// Latency of `acrossMidnight` (2026-10-20) against one service date,
+    /// end to end through the route, on a synthetic network seeded here:
+    /// 676 stations and 20,000 ten-stop trains on each of two dates (about
+    /// 180k connections a date; production is about 290k), some running
+    /// past midnight. Does nothing unless `TRIP_PLAN_ACROSS_BENCH` is set.
+    /// Seeds and removes `BX%` schedules and `BQ-%` stations; run it on a
+    /// scratch database, in release mode:
+    ///
+    /// ```text
+    /// TRIP_PLAN_ACROSS_BENCH=1 cargo test --release -p api --lib \
+    ///   bench_across_midnight -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "benchmark; see its doc comment"]
+    async fn bench_across_midnight() {
+        if std::env::var("TRIP_PLAN_ACROSS_BENCH").is_err() {
+            return;
+        }
+        let pool = connect().await;
+        let date = NaiveDate::from_ymd_opt(2026, 11, 6).unwrap();
+        let next = date.succ_opt().unwrap();
+        let cleanup = || async {
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'BX%'")
+                .execute(&pool)
+                .await
+                .expect("clean schedules");
+            sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'BQ-%'")
+                .execute(&pool)
+                .await
+                .expect("clean stations");
+        };
+        cleanup().await;
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             SELECT 'BQ-' || c, 'Q' || c, 'BQ' || c, 'Q' || c, 1 FROM ( \
+               SELECT chr(65 + s / 26) || chr(65 + s % 26) AS c \
+               FROM generate_series(0, 675) s) codes",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stations");
+        sqlx::query("SELECT setseed(0.42)")
+            .execute(&pool)
+            .await
+            .expect("seed the random generator");
+        sqlx::query(
+            "WITH trains AS ( \
+               SELECT d AS service_date, 'BX' || lpad(t::text, 5, '0') AS uid, \
+                      (300 + floor(random() * 1230))::int AS start, \
+                      floor(random() * 676)::int AS s0, (1 + floor(random() * 40))::int AS step \
+               FROM unnest(ARRAY[$1::date, $2::date]) d, generate_series(1, 20000) t), \
+             stops AS ( \
+               SELECT tr.*, k AS seq, tr.start + k * 8 AS minute, (tr.s0 + k * tr.step) % 676 AS st \
+               FROM trains tr, generate_series(0, 9) k) \
+             INSERT INTO schedule_calling_points_full \
+               (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             SELECT service_date, uid, seq, 'BQ' || chr(65 + st / 26) || chr(65 + st % 26), \
+                    CASE WHEN seq = 0 THEN 'origin' WHEN seq = 9 THEN 'terminate' \
+                         ELSE 'intermediate' END, \
+                    CASE WHEN seq = 0 THEN NULL \
+                         ELSE make_time((minute % 1440) / 60, minute % 60, 0) END, \
+                    CASE WHEN seq = 9 THEN NULL \
+                         ELSE make_time((minute % 1440) / 60, minute % 60, 0) END, \
+                    (minute / 1440)::smallint \
+             FROM stops",
+        )
+        .bind(date)
+        .bind(next)
+        .execute(&pool)
+        .await
+        .expect("seed schedules");
+
+        let router = test_router(test_app(pool.clone()));
+        let pairs = [
+            ("QAA", "QMZ"),
+            ("QBC", "QXY"),
+            ("QDE", "QPQ"),
+            ("QFG", "QRS"),
+            ("QHI", "QTU"),
+            ("QJK", "QVW"),
+            ("QLM", "QAB"),
+            ("QNO", "QCD"),
+        ];
+        let cases = [
+            ("arriveBy 12:00 (one date)", "&arriveBy=12:00"),
+            ("arriveBy 00:30+1 (one date)", "&arriveBy=00:30&dayOffset=1"),
+            (
+                "arriveBy 00:30+1 acrossMidnight",
+                "&arriveBy=00:30&dayOffset=1&acrossMidnight=true",
+            ),
+            ("departAfter 08:00 (one date)", "&departAfter=08:00"),
+            (
+                "departAfter 00:30+1 (one date)",
+                "&departAfter=00:30&dayOffset=1",
+            ),
+            (
+                "departAfter 00:30+1 acrossMidnight",
+                "&departAfter=00:30&dayOffset=1&acrossMidnight=true",
+            ),
+        ];
+        // Warm both dates' graphs.
+        for day in [date, next] {
+            let warm = std::time::Instant::now();
+            let (status, body) = get(
+                router.clone(),
+                format!("/Trips/plan?origin=QAA&destination=QMZ&date={day}&live=false"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            println!("graph build {day}: {:?}", warm.elapsed());
+        }
+        for results in ["fastest", "options"] {
+            for (label, query) in cases {
+                let mut samples = Vec::new();
+                let mut found = 0;
+                for (origin, destination) in pairs {
+                    let mut runs = Vec::new();
+                    for _ in 0..5 {
+                        let started = std::time::Instant::now();
+                        let (status, body) = get(
+                            router.clone(),
+                            format!(
+                                "/Trips/plan?origin={origin}&destination={destination}\
+                                 &date={date}&results={results}&live=false{query}"
+                            ),
+                        )
+                        .await;
+                        runs.push(started.elapsed());
+                        assert_eq!(status, StatusCode::OK, "{body:?}");
+                        if runs.len() == 1 && !body["journeys"].as_array().is_none_or(Vec::is_empty)
+                        {
+                            found += 1;
+                        }
+                    }
+                    runs.sort();
+                    samples.push(runs[2]);
+                }
+                samples.sort();
+                println!(
+                    "{results:8} {label:36} median {:>9.1?} max {:>9.1?} found {found}/{}",
+                    samples[samples.len() / 2],
+                    samples[samples.len() - 1],
+                    pairs.len()
+                );
+            }
+        }
+        cleanup().await;
     }
 
     /// Live data is only applied for today's (or yesterday's) service date.
