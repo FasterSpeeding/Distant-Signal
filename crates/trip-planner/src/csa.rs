@@ -9,7 +9,8 @@
 //! and why the sibling's own per-lookup memoization caches are not ported
 //! (Judgment Call 3).
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
@@ -141,7 +142,7 @@ struct Scan<'a> {
     best_dest_tiploc: Option<String>,
 }
 
-impl Scan<'_> {
+impl<'a> Scan<'a> {
     /// The time a NEW boarding becomes possible at `tiploc`. The origin
     /// needs no interchange time. Every other stop folds in
     /// `minimum_change_time`, which can be `ChangeTime::NoInterchange` at
@@ -218,9 +219,8 @@ impl Scan<'_> {
     /// destination was just reached, and relaxes every fixed link
     /// reachable from this stop at this new, better time. A no-op when
     /// `arrival_min` does not improve on what's already known, which is
-    /// what keeps the recursive call into `relax_fixed_links` safe (every
-    /// link has strictly positive `minutes`, and there are finitely many
-    /// CRS codes, so this always terminates -- direct translation of
+    /// what makes `relax_fixed_links` terminate (every link has strictly
+    /// positive `minutes`, and there are finitely many CRS codes -- after
     /// `csa.ts:306-318`).
     fn relax(&mut self, tiploc: &str, arrival_min: u32, via: ArrivalSource) {
         // Normalize before this becomes an `earliest_arrival`/`arrived_via`
@@ -228,10 +228,25 @@ impl Scan<'_> {
         // straight off a `Connection::to_tiploc`, potentially still padded
         // (Finding 2 of the whole-branch review).
         let tiploc = normalize_tiploc(tiploc);
+        if let Some(walk_from) = self.record_arrival(tiploc, arrival_min, via) {
+            self.relax_fixed_links(tiploc, walk_from);
+        }
+    }
+
+    /// The bookkeeping half of [`Self::relax`]: records `arrival_min` at
+    /// `tiploc` (normalized) if it improves on the earliest known, and
+    /// returns the time fixed links may be started from there. `None` when
+    /// it is no improvement or `tiploc` is avoided.
+    fn record_arrival(
+        &mut self,
+        tiploc: &str,
+        arrival_min: u32,
+        via: ArrivalSource,
+    ) -> Option<u32> {
         // Never alight at (or walk into) an avoided station; a train that
         // calls there simply carries on.
         if !restrictions::allows_interchange(self.restrictions, tiploc) {
-            return;
+            return None;
         }
         let current_best = self
             .earliest_arrival
@@ -239,7 +254,7 @@ impl Scan<'_> {
             .copied()
             .unwrap_or(u32::MAX);
         if arrival_min >= current_best {
-            return;
+            return None;
         }
         let walk_from = arrival_min + alighting_buffer(self.interchange, &via);
         self.earliest_arrival
@@ -249,47 +264,72 @@ impl Scan<'_> {
             self.best_dest_arrival = arrival_min;
             self.best_dest_tiploc = Some(tiploc.to_string());
         }
-        self.relax_fixed_links(tiploc, walk_from);
+        Some(walk_from)
     }
 
     /// Connection Scan WITH footpaths: after a stop's arrival improves,
     /// also relax every stop reachable from it by a fixed link, so the
     /// search recognises that two platforms a short walk apart are
-    /// effectively the same station. Direct translation of `csa.ts:343-359`.
+    /// effectively the same station. Started from `from_tiploc` at
+    /// `at_min`, and on through further links from every stop it improves.
+    ///
+    /// Earliest-first (a min-heap on the time the next links start), so a
+    /// stop is expanded once per call at its best time. The depth-first
+    /// recursion of `csa.ts:343-359` re-expanded a stop each time another
+    /// route improved it, and with every fixed link usable both ways
+    /// (`schedule_query::index_fixed_links_both_ways`) London's links are
+    /// one dense component, where that multiplied the work.
+    fn relax_fixed_links(&mut self, from_tiploc: &str, at_min: u32) {
+        let mut queue: BinaryHeap<Reverse<(u32, u32, String)>> = BinaryHeap::new();
+        self.expand_fixed_links(from_tiploc, at_min, &mut queue);
+        while let Some(Reverse((walk_from, arrival_min, tiploc))) = queue.pop() {
+            // Superseded by an earlier arrival found since it was queued.
+            if self.earliest_arrival.get(&tiploc) != Some(&arrival_min) {
+                continue;
+            }
+            self.expand_fixed_links(&tiploc, walk_from, &mut queue);
+        }
+    }
+
+    /// One step of [`Self::relax_fixed_links`]: records every stop one
+    /// fixed link from `from_tiploc`, started at `at_min`, that this
+    /// improves, and queues it to be expanded in turn.
     #[expect(
         clippy::cast_sign_loss,
         reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
     )]
-    fn relax_fixed_links(&mut self, from_tiploc: &str, at_min: u32) {
+    fn expand_fixed_links(
+        &mut self,
+        from_tiploc: &str,
+        at_min: u32,
+        queue: &mut BinaryHeap<Reverse<(u32, u32, String)>>,
+    ) {
         // Normalize before the `tiploc_to_crs` lookup (keyed on the bare
         // form) and before this value is stored as an `ArrivalSource::Link`
         // endpoint that `reconstruct_legs` later walks back through and
         // compares against `origin` (Finding 2 of the whole-branch review).
         let from_tiploc = normalize_tiploc(from_tiploc);
-        let Some(crs) = self.interchange.tiploc_to_crs.get(from_tiploc).cloned() else {
+        // The interchange data outlives `self`'s borrow: read links and
+        // TIPLOCs from it without copying while recording updates `self`.
+        let interchange: &'a InterchangeData = self.interchange;
+        let Some(crs) = interchange.tiploc_to_crs.get(from_tiploc) else {
             return;
         };
-        let links: Vec<_> = fixed_links_from(self.interchange, &crs, self.date, at_min)
-            .into_iter()
-            .cloned()
-            .collect();
-        for link in links {
+        for link in fixed_links_from(interchange, crs, self.date, at_min) {
             let candidate = at_min + link.minutes as u32;
-            let Some(destination_tiplocs) =
-                self.interchange.crs_to_tiplocs.get(&link.to_crs).cloned()
-            else {
+            let Some(destination_tiplocs) = interchange.crs_to_tiplocs.get(&link.to_crs) else {
                 continue;
             };
             for to_tiploc in destination_tiplocs {
-                self.relax(
-                    &to_tiploc,
-                    candidate,
-                    ArrivalSource::Link {
-                        from_tiploc: from_tiploc.to_string(),
-                        mode: link.mode.clone(),
-                        minutes: link.minutes,
-                    },
-                );
+                let to_tiploc = normalize_tiploc(to_tiploc);
+                let via = ArrivalSource::Link {
+                    from_tiploc: from_tiploc.to_string(),
+                    mode: link.mode.clone(),
+                    minutes: link.minutes,
+                };
+                if let Some(walk_from) = self.record_arrival(to_tiploc, candidate, via) {
+                    queue.push(Reverse((walk_from, candidate, to_tiploc.to_string())));
+                }
             }
         }
     }

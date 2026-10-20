@@ -41,11 +41,12 @@
 //!
 //! See docs/superpowers/specs/2026-09-29-trips-plan-arrive-by-avoid-design.md.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
-    Connection, InterchangeData, fixed_links_from, normalize_tiploc, sibling_tiplocs,
+    Connection, InterchangeData, fixed_link_between, fixed_links_between, normalize_tiploc,
+    sibling_tiplocs,
 };
 
 use crate::csa::{Journey, ScanOptions, scan_connections_restricted};
@@ -168,14 +169,101 @@ impl<'a> Reverse<'a> {
     /// link into it, and -- at a waypoint or via -- to the state before it
     /// (being there at stage `s + 1` is being there at stage `s`, then
     /// calling; likewise for a via's progress).
+    ///
+    /// The propagation runs latest-first (a max-heap on time), so each stop
+    /// is expanded once per call however many links lead back to it. A
+    /// depth-first walk re-expanded a stop every time a later arrival
+    /// reached it by another route, and with every fixed link usable both
+    /// ways (`schedule_query::index_fixed_links_both_ways`) London's links
+    /// form one dense component in which that multiplied the work many
+    /// times over.
     #[expect(
         clippy::cast_sign_loss,
         reason = "fixed-link minutes are small and strictly positive (see relax_in_round)"
     )]
     fn set_arrival(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32) {
         let tiploc = normalize_tiploc(tiploc);
-        if !restrictions::allows_interchange(self.restrictions, tiploc) {
+        if !self.record_arrival(labels, state, tiploc, time) {
             return;
+        }
+        let mut queue: BinaryHeap<(u32, usize, String)> = BinaryHeap::new();
+        queue.push((time, state, tiploc.to_string()));
+        while let Some((time, state, tiploc)) = queue.pop() {
+            let tiploc = tiploc.as_str();
+            // Superseded: a later arrival for this state was recorded (and
+            // expanded) after this entry was queued.
+            let current = labels
+                .latest_arrival
+                .get(tiploc)
+                .and_then(|found| found.iter().find(|(known, _)| *known == state))
+                .map(|&(_, latest)| latest);
+            if current != Some(time) {
+                continue;
+            }
+            let mut push = |labels: &mut Labels, state: usize, tiploc: &str, time: u32| {
+                if self.record_arrival(labels, state, tiploc, time) {
+                    queue.push((time, state, tiploc.to_string()));
+                }
+            };
+            let grid = self.grid;
+            let (at_stage, progress) = (grid.stage(state), grid.progress(state));
+            if at_stage > 0 && self.targets[at_stage - 1].contains(tiploc) {
+                push(labels, grid.state(at_stage - 1, progress), tiploc, time);
+            }
+            // Arriving here with the via before `progress` still to pass
+            // passes it on arrival.
+            if progress > 0 && advance_at(self.vias, progress - 1, tiploc) >= progress {
+                push(labels, grid.state(at_stage, progress - 1), tiploc, time);
+            }
+
+            let Some(crs) = self.interchange.tiploc_to_crs.get(tiploc) else {
+                continue;
+            };
+            let Some(sources) = self.links_into.get(crs.as_str()) else {
+                continue;
+            };
+            for &from_crs in sources {
+                let mut minutes: Vec<u32> = fixed_links_between(self.interchange, from_crs, crs)
+                    .filter(|link| link.minutes > 0)
+                    .map(|link| link.minutes as u32)
+                    .collect();
+                minutes.sort_unstable();
+                minutes.dedup();
+                for walk in minutes {
+                    let Some(start) = time.checked_sub(walk) else {
+                        continue;
+                    };
+                    // The forward search takes the shortest link valid at
+                    // the walk's start time; accept `start` only if that
+                    // link arrives in time.
+                    let fits =
+                        fixed_link_between(self.interchange, from_crs, crs, self.date, start)
+                            .is_some_and(|link| start + link.minutes.max(0) as u32 <= time);
+                    if !fits {
+                        continue;
+                    }
+                    let Some(from_tiplocs) = self.interchange.crs_to_tiplocs.get(from_crs) else {
+                        continue;
+                    };
+                    for from_tiploc in from_tiplocs {
+                        let from_tiploc = normalize_tiploc(from_tiploc);
+                        if state == 0 && self.origin.contains(from_tiploc) {
+                            labels.offer_origin(start);
+                        } else {
+                            push(labels, state, from_tiploc, start);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Records that `tiploc` may be arrived at, at `state`, as late as
+    /// `time`, unless that is dominated. Returns whether it was recorded
+    /// (and so needs propagating).
+    fn record_arrival(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32) -> bool {
+        if !restrictions::allows_interchange(self.restrictions, tiploc) {
+            return false;
         }
         let grid = self.grid;
         if let Some(existing) = labels.latest_arrival.get_mut(tiploc) {
@@ -186,7 +274,7 @@ impl<'a> Reverse<'a> {
                 .iter()
                 .any(|&(known_state, known)| known >= time && grid.covers(state, known_state))
             {
-                return;
+                return false;
             }
             match existing.iter_mut().find(|(known, _)| *known == state) {
                 Some(entry) => entry.1 = time,
@@ -198,55 +286,7 @@ impl<'a> Reverse<'a> {
                 .insert(tiploc.to_string(), vec![(state, time)]);
         }
         labels.touched = true;
-        let (at_stage, progress) = (grid.stage(state), grid.progress(state));
-        if at_stage > 0 && self.targets[at_stage - 1].contains(tiploc) {
-            self.set_arrival(labels, grid.state(at_stage - 1, progress), tiploc, time);
-        }
-        // Arriving here with the via before `progress` still to pass passes
-        // it on arrival.
-        if progress > 0 && advance_at(self.vias, progress - 1, tiploc) >= progress {
-            self.set_arrival(labels, grid.state(at_stage, progress - 1), tiploc, time);
-        }
-
-        let Some(crs) = self.interchange.tiploc_to_crs.get(tiploc) else {
-            return;
-        };
-        let Some(sources) = self.links_into.get(crs.as_str()) else {
-            return;
-        };
-        for &from_crs in sources {
-            let mut minutes: Vec<u32> = self.interchange.fixed_links_from_crs[from_crs]
-                .iter()
-                .filter(|link| link.to_crs == *crs && link.minutes > 0)
-                .map(|link| link.minutes as u32)
-                .collect();
-            minutes.sort_unstable();
-            minutes.dedup();
-            for walk in minutes {
-                let Some(start) = time.checked_sub(walk) else {
-                    continue;
-                };
-                // The forward search takes the shortest link valid at the
-                // walk's start time; accept `start` only if that link
-                // arrives in time.
-                let fits = fixed_links_from(self.interchange, from_crs, self.date, start)
-                    .into_iter()
-                    .any(|link| link.to_crs == *crs && start + link.minutes.max(0) as u32 <= time);
-                if !fits {
-                    continue;
-                }
-                let Some(from_tiplocs) = self.interchange.crs_to_tiplocs.get(from_crs) else {
-                    continue;
-                };
-                for from_tiploc in from_tiplocs {
-                    if state == 0 && self.origin.contains(normalize_tiploc(from_tiploc)) {
-                        labels.offer_origin(start);
-                    } else {
-                        self.set_arrival(labels, state, from_tiploc, start);
-                    }
-                }
-            }
-        }
+        true
     }
 
     /// The mirror of the forward searches' bus and ferry buffer on the
