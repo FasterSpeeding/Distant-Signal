@@ -64,6 +64,13 @@ pub enum PlannedLeg {
         /// "CIF times are Europe/London local, rendered as HH:MM, never
         /// converted to UTC on this wire shape" convention (e.g.
         /// `schedule_query::ScheduleDeparture::scheduled`).
+        ///
+        /// The PUBLIC departure at the boarding call (arrival at the
+        /// alighting call), falling back to the working time where the call
+        /// has none in that direction -- the times the search planned on.
+        /// The working times until `trip_leg_details::attach_leg_details`
+        /// fills the public ones in. Working (WTT) on the wire until
+        /// 2026-10-20 (design doc §9 decision 1); see `working_*`.
         scheduled_departure: NaiveTime,
         scheduled_arrival: NaiveTime,
         /// How many calendar days past `service_date` `scheduled_departure`
@@ -77,6 +84,15 @@ pub enum PlannedLeg {
         /// actually falls on -- same field, same meaning, as
         /// `schedule_query::records::CallingPoint::day_offset`.
         arrival_day_offset: u8,
+        /// The working-timetable (WTT) departure at the boarding call and
+        /// arrival at the alighting call, truncated to the minute, and their
+        /// days past `service_date` (additive, 2026-10-20: what
+        /// `scheduled_*` served until then). What
+        /// `trip_leg_details::attach_leg_details` finds the calls by.
+        working_departure: NaiveTime,
+        working_arrival: NaiveTime,
+        working_departure_day_offset: u8,
+        working_arrival_day_offset: u8,
         /// CIF booked (timetabled) platform at the boarding calling point,
         /// and at the alighting one -- `schedule_calling_points_full.platform`.
         /// Never live/Darwin. `None` until `trip_leg_details::attach_leg_details`
@@ -87,9 +103,8 @@ pub enum PlannedLeg {
         /// the alighting call -- what the passenger timetable and station
         /// screens show, and what the planner searched on (falling back to
         /// the working time for a call with none). `scheduled_departure`/
-        /// `scheduled_arrival` are the working (WTT) times; they are kept as
-        /// WTT for one release (deprecated), then switched to public or
-        /// removed. `None` until
+        /// `scheduled_arrival` are the same times with that fallback filled
+        /// in. `None` until
         /// `trip_leg_details::attach_leg_details` fills them in, and when the
         /// CIF has no public time there (or the schedule predates the
         /// column). Local clock time, like `scheduled_*`.
@@ -266,10 +281,11 @@ fn minutes_to_clock(total_minutes: u32) -> (NaiveTime, u8) {
 fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData) -> PlannedLeg {
     match leg {
         JourneyLeg::Train(train) => {
-            // `scheduled*` stay the working-timetable times for one release
-            // (design doc §9 decision 1); the search itself, and
-            // `departure_min`/`arrival_min` below, are on public times
-            // (`schedule_query::Connection::departure_min`).
+            // `scheduled*` start as the working-timetable times;
+            // `trip_leg_details::attach_leg_details` finds the leg's calls by
+            // `working_*` and switches `scheduled*` to the public times. The
+            // search itself, and `departure_min`/`arrival_min` below, are on
+            // public times (`schedule_query::Connection::departure_min`).
             let (scheduled_departure, departure_day_offset) =
                 minutes_to_clock(train.working_departure_min);
             let (scheduled_arrival, arrival_day_offset) =
@@ -283,6 +299,10 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
                 scheduled_arrival,
                 departure_day_offset,
                 arrival_day_offset,
+                working_departure: scheduled_departure,
+                working_arrival: scheduled_arrival,
+                working_departure_day_offset: departure_day_offset,
+                working_arrival_day_offset: arrival_day_offset,
                 // Filled in after planning -- see `trip_leg_details`.
                 booked_departure_platform: None,
                 booked_arrival_platform: None,

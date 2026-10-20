@@ -389,6 +389,23 @@ mod leg_candidate_json_tests {
         assert_eq!(json["destinationArrival"], "21:40");
     }
 
+    /// `scheduled` and `legDestinationArrival` serve the public times where
+    /// they differ from the working ones, which stay available as
+    /// `workingDeparture`/`legWorkingDestinationArrival`.
+    #[test]
+    fn leg_times_are_public_with_the_working_ones_alongside() {
+        let mut row = row();
+        row["scheduled"] = json!("18:59:00");
+        row["public_departure"] = json!("19:00:00");
+        row["leg_public_destination_arrival"] = json!("19:57:00");
+        let json = leg_candidate_json(&row, "YRK", "NCL", &HashMap::new());
+        assert_eq!(json["scheduled"], "19:00");
+        assert_eq!(json["workingDeparture"], "18:59");
+        assert_eq!(json["legDestinationArrival"], "19:57");
+        assert_eq!(json["legPublicDestinationArrival"], "19:57");
+        assert_eq!(json["legWorkingDestinationArrival"], "19:55");
+    }
+
     #[test]
     fn a_missing_leg_arrival_is_an_explicit_null_not_a_guess_from_the_terminus() {
         let mut row = row();
@@ -1898,7 +1915,10 @@ async fn get_leg_candidates(
 ///
 /// `legDestinationArrival` is `null` whenever the schedule records neither
 /// an arrival nor a booked departure at the leg's destination -- the row
-/// then shows no arrival rather than a fabricated one.
+/// then shows no arrival rather than a fabricated one. Like `scheduled`, it
+/// is the public time, else the working one (`render::public_else_working`);
+/// `legWorkingDestinationArrival` is the working time alone, which
+/// `legDestinationArrival` was until 2026-10-20.
 ///
 /// `destination_names` is threaded straight through to the shared renderer
 /// -- see `render::calling_point_departure_json`'s own doc comment for the
@@ -1916,17 +1936,20 @@ fn leg_candidate_json(
 ) -> serde_json::Value {
     let mut json =
         crate::render::calling_point_departure_json(row, leg_origin_crs, destination_names);
-    let arrival = row
-        .get("leg_destination_arrival")
-        .and_then(serde_json::Value::as_str)
-        // Trimmed "HH:MM:SS" -> "HH:MM" exactly as the shared renderer
-        // trims `scheduled` and `destinationArrival`, so the two times on
-        // one row are always the same shape.
-        .map(|s| s.chars().take(5).collect::<String>());
-    let day_offset = row
+    // The public arrival at the leg's destination, else the working one,
+    // trimmed "HH:MM:SS" -> "HH:MM" exactly as the shared renderer serves
+    // `scheduled` and `destinationArrival`, so the times on one row are
+    // always the same shape and basis.
+    let working_day_offset = row
         .get("leg_destination_arrival_day_offset")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
+    let (arrival, day_offset) = crate::render::public_else_working(
+        row,
+        "leg_public_destination_arrival",
+        "leg_destination_arrival",
+        working_day_offset,
+    );
     if let Some(object) = json.as_object_mut() {
         object.insert(
             "legOriginCrs".to_string(),
@@ -1954,6 +1977,14 @@ fn leg_candidate_json(
         object.insert(
             "legPublicDestinationArrival".to_string(),
             public_arrival.map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
+        let working_arrival = row
+            .get("leg_destination_arrival")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.chars().take(5).collect::<String>());
+        object.insert(
+            "legWorkingDestinationArrival".to_string(),
+            working_arrival.map_or(serde_json::Value::Null, serde_json::Value::String),
         );
     }
     json

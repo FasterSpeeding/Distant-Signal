@@ -45,7 +45,8 @@ interface CandidateRow extends TrainSearchResult {
   /** Echoed back by the backend; identical to `stationCrs`. */
   legOriginCrs: string;
   legDestinationCrs: string;
-  /** Arrival at the leg's own destination, `"HH:MM"`. `null` when the
+  /** Arrival at the leg's own destination, `"HH:MM"`: the public time,
+   * else the working one (working only, from an older backend). `null` when the
    * schedule records neither an arrival nor a booked departure there --
    * the row then shows no arrival rather than a guessed one. */
   legDestinationArrival: string | null;
@@ -53,10 +54,12 @@ interface CandidateRow extends TrainSearchResult {
    * `0` for the overwhelming majority, non-zero for an overnight leg. */
   legDestinationArrivalDayOffset: number;
   /** The PUBLIC (passenger timetable) arrival at the leg's destination,
-   * `"HH:MM"`, shown in place of `legDestinationArrival` (working
-   * timetable) when present. Optional: absent from an older backend. The
-   * departure's public time is `publicDeparture`. */
+   * `"HH:MM"`, shown in place of `legDestinationArrival` when present (an
+   * older backend sent the working time there). Optional: absent from an
+   * older backend. The departure's public time is `publicDeparture`. */
   legPublicDestinationArrival?: string | null;
+  /** The working-timetable arrival there; absent from an older backend. */
+  legWorkingDestinationArrival?: string | null;
 }
 
 interface CandidatesResponse {

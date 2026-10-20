@@ -3,6 +3,51 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: `scheduled*` times are now public
+
+A meaning change, no field removed: the second step of the 2026-10-01
+deprecation (public times, phase 2, below; design doc §9 decision 1).
+Every passenger-facing `scheduled*` time is now the **public** (GBTT)
+time, falling back to the working (WTT) time, truncated to the minute,
+only where the call has no public time in that direction (the departure
+of a set-down-only stop, the arrival of a pick-up-only one, a schedule
+stored before public times were). The same rule the trip planner
+searches on (`schedule_query::Connection::departure_min`). Read
+`working*` for the WTT.
+
+| Where | Now public (else working) | Working (WTT) |
+| --- | --- | --- |
+| `JourneyStop` (`journeyStops[]` on the train pages, tracked trains, journey legs, groups and share links) | `scheduledArrival`, `scheduledDeparture` | `workingArrival`, `workingDeparture` (exact, `:30` for a half-minute), unchanged |
+| Trip-plan train legs (`GET /Trips/plan`) | `scheduledDeparture`, `scheduledArrival`, `departureDayOffset`, `arrivalDayOffset` | new `workingDeparture`, `workingArrival` (`"HH:MM:SS"`), `workingDepartureDayOffset`, `workingArrivalDayOffset` |
+| `GET /public/stations/{crs}/schedule-departures` rows | `scheduled`, `dayOffset` | new `workingDeparture` (`"HH:MM"`), `workingDayOffset` |
+| `GET /public/trains/search` rows | `scheduled`, `dayOffset`, `destinationArrival`, `destinationArrivalDayOffset` | new `workingDeparture`, `workingDayOffset`, `workingDestinationArrival` |
+| `GET /Journeys/{journeyId}/legs/{legId}/candidates` rows | `scheduled`, `destinationArrival`, `destinationArrivalDayOffset`, `legDestinationArrival`, `legDestinationArrivalDayOffset` | new `workingDeparture`, `workingDestinationArrival`, `legWorkingDestinationArrival` |
+
+- **Day offsets follow the served time.** A public time rounded across
+  midnight from its working one (a 23:59H working arrival is a 00:00
+  public one) is dated on its own day, so a `dayOffset` can differ from
+  the matching `working*DayOffset`.
+- **`public*` fields are unchanged**: still the public time alone, `null`
+  where there is none. Where both are present a `public*` field and its
+  `scheduled*` twin now agree.
+- **Unchanged**: `estimatedArrival`/`estimatedDeparture` (the working time
+  plus TRUST's running delay), every `delayMinutes`, `status`/
+  `lateMinutes` (already on the public basis since phase 2), the
+  train-level `scheduledDeparture` (the tracked train's departure instant,
+  including `liveStatus.scheduledDeparture` on line trains), station
+  boards (LDBWS, already public), Manchester Metrolink and Irish Rail
+  `scheduled*` (no working timetable), and the opaque
+  `GET /public/lines/{id}/schedule` population. TRUST and Darwin matching
+  and schedule matching stay on the working timetable (design doc P8).
+- **Pins.** A pin made from a `schedule-departures` row should send the
+  working time (`workingDeparture` on `serviceDate + workingDayOffset`),
+  as the web app does, since schedule matching keys on it. A public time
+  is still matched (within `MATCH_TOLERANCE`, as a live-board pick is).
+- **For ds-mcp.** If it mapped `scheduled*` as WTT next to `public*`, the
+  two now coincide wherever a public time exists; map `working*` where a
+  WTT time is wanted. A client that showed `public* ?? scheduled*` sees no
+  change.
+
 ## 2026-10-20: `trackingPhase` on group and shared rows
 
 Additive; no existing field changes meaning. The group and shared lists
@@ -1674,6 +1719,9 @@ trip planner plans on public times. Working-timetable (WTT) times stay
 internal, for matching, except where noted.
 
 ### Deprecation: `scheduled*` (working timetable)
+
+**Done 2026-10-20:** these are now the public time (else the working one);
+see "`scheduled*` times are now public" above.
 
 These fields still carry the **working** (WTT) time, truncated to the
 minute, for one more release. After that they are switched to the public

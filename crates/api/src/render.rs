@@ -276,20 +276,52 @@ fn hh_mm(d: &Value, key: &str) -> Option<String> {
         .map(|s| s.chars().take(5).collect::<String>())
 }
 
-/// `scheduled` is the working-timetable (WTT) departure truncated to the
-/// minute, kept as WTT for one release and documented as deprecated-soon;
-/// `publicDeparture` is the public (GBTT) departure the station screens
-/// show, `null` until the next schedule publish. See
-/// docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md.
+/// The served time of a stored row: `"HH:MM"` of the public time at
+/// `public_key`, else of the working time at `working_key` when the call has
+/// no public time in that direction (or the row predates public times), with
+/// the day offset of whichever is served. `working_offset` is the stored
+/// working time's own day offset; the public one is the same day unless
+/// rounding straddles midnight (a 23:59H working arrival is a 00:00 public
+/// one), the same rule as `trip_leg_details::public_day_offset`.
+pub(crate) fn public_else_working(
+    d: &Value,
+    public_key: &str,
+    working_key: &str,
+    working_offset: u64,
+) -> (Option<String>, u64) {
+    let time = |key: &str| {
+        d.get(key)
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::NaiveTime::parse_from_str(s, "%H:%M:%S").ok())
+    };
+    let working = time(working_key);
+    let Some(public) = time(public_key) else {
+        return (hh_mm(d, working_key), working_offset);
+    };
+    let offset = match working.map(|working| public.signed_duration_since(working)) {
+        Some(gap) if gap < -chrono::Duration::hours(12) => working_offset + 1,
+        Some(gap) if gap > chrono::Duration::hours(12) => working_offset.saturating_sub(1),
+        _ => working_offset,
+    };
+    (Some(public.format("%H:%M").to_string()), offset)
+}
+
+/// `scheduled` is the public (GBTT) departure the station screens show,
+/// else the working (WTT) one, truncated to the minute, where the call has no
+/// public departure or the row predates public times; `dayOffset` is
+/// `scheduled`'s. `publicDeparture` is the public time alone (`null` when
+/// there is none) and `workingDeparture` (with its own `workingDayOffset`)
+/// the working one: `scheduled`/`dayOffset` were the working time until
+/// 2026-10-20, and a pin made from a row should still use it, as
+/// schedule matching keys on the working time. See
+/// docs/superpowers/specs/2026-10-01-working-vs-public-times-design.md §9.
 pub(crate) fn schedule_departure_json(
     d: &Value,
     destination_names: &HashMap<String, String>,
 ) -> Value {
-    let scheduled = d
-        .get("scheduled")
-        .and_then(Value::as_str)
-        .map(|s| s.chars().take(5).collect::<String>());
-    let day_offset = d.get("day_offset").and_then(Value::as_u64).unwrap_or(0);
+    let working_day_offset = d.get("day_offset").and_then(Value::as_u64).unwrap_or(0);
+    let (scheduled, day_offset) =
+        public_else_working(d, "public_departure", "scheduled", working_day_offset);
     // `.filter(...)`: `schedule_network_departures` is published by
     // `schedule-reference` (`crates/schedule-query::resolve`'s
     // `departures_by_crs`), which resolves a destination TIPLOC to
@@ -313,6 +345,8 @@ pub(crate) fn schedule_departure_json(
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
         "publicDeparture": hh_mm(d, "public_departure"),
+        "workingDeparture": hh_mm(d, "scheduled"),
+        "workingDayOffset": working_day_offset,
         "dayOffset": day_offset,
         "destinationCrs": destination_crs,
         "destinationName": destination_name,
@@ -342,8 +376,12 @@ pub(crate) fn schedule_departure_json(
 ///   varies per row and is read out of `d`, the same shape switch
 ///   `schedule_departure_json` already uses for its own destination field.
 ///
-/// `scheduled` is trimmed from the stored `"HH:MM:SS"` to `"HH:MM"`,
-/// identical to `schedule_departure_json`.
+/// `scheduled` and `destinationArrival` are the public times, else the
+/// working ones where the call has none in that direction, trimmed from the
+/// stored `"HH:MM:SS"` to `"HH:MM"`, like `schedule_departure_json`'s
+/// `scheduled`; `destinationArrivalDayOffset` is `destinationArrival`'s.
+/// `workingDeparture`/`workingDestinationArrival` are the working times
+/// (what `scheduled`/`destinationArrival` were until 2026-10-20).
 ///
 /// `destinationArrivalDayOffset` mirrors `schedule_departure_json`'s own
 /// `dayOffset` null-tolerance posture (a plain number, `unwrap_or(0)`, not
@@ -395,10 +433,7 @@ pub(crate) fn calling_point_departure_json(
     station_crs: &str,
     destination_names: &HashMap<String, String>,
 ) -> Value {
-    let scheduled = d
-        .get("scheduled")
-        .and_then(Value::as_str)
-        .map(|s| s.chars().take(5).collect::<String>());
+    let (scheduled, _) = public_else_working(d, "public_departure", "scheduled", 0);
     let origin_crs = d
         .get("true_origin_crs")
         .and_then(Value::as_str)
@@ -414,16 +449,19 @@ pub(crate) fn calling_point_departure_json(
         .and_then(|crs| destination_names.get(&crs.to_uppercase()));
     // `destination_arrival` is absent from `d` both when the key is
     // missing and when it is JSON `null` -- either way this ends up
-    // `None`, and `json!`'s `None::<String>` still serializes as an
-    // explicit `null` below, matching `originCrs`'s own null handling.
-    let destination_arrival = d
-        .get("destination_arrival")
-        .and_then(Value::as_str)
-        .map(|s| s.chars().take(5).collect::<String>());
-    let destination_arrival_day_offset = d
+    // `None` (unless there is a public one), and `json!`'s `None::<String>`
+    // still serializes as an explicit `null` below, matching `originCrs`'s
+    // own null handling.
+    let working_destination_arrival_day_offset = d
         .get("destination_arrival_day_offset")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let (destination_arrival, destination_arrival_day_offset) = public_else_working(
+        d,
+        "public_destination_arrival",
+        "destination_arrival",
+        working_destination_arrival_day_offset,
+    );
     json!({
         "uid": d.get("uid").cloned().unwrap_or(Value::Null),
         "scheduled": scheduled,
@@ -433,10 +471,12 @@ pub(crate) fn calling_point_departure_json(
         "destinationName": destination_name,
         "destinationArrival": destination_arrival,
         "destinationArrivalDayOffset": destination_arrival_day_offset,
-        // Public (GBTT) counterparts of `scheduled`/`destinationArrival`,
-        // which stay WTT for one release. `null` until the next publish.
+        // The public (GBTT) and working (WTT) times alone; `scheduled`/
+        // `destinationArrival` are the public ones, else the working ones.
         "publicDeparture": hh_mm(d, "public_departure"),
         "publicDestinationArrival": hh_mm(d, "public_destination_arrival"),
+        "workingDeparture": hh_mm(d, "scheduled"),
+        "workingDestinationArrival": hh_mm(d, "destination_arrival"),
         "operator": d.get("operator_atoc").cloned().unwrap_or(Value::Null),
         "identity": d.get("headcode").filter(|v| v.is_string()).cloned().unwrap_or(Value::Null),
     })
@@ -1134,6 +1174,8 @@ mod tests {
                 "uid": "C11052",
                 "scheduled": "08:22",
                 "publicDeparture": null,
+                "workingDeparture": "08:22",
+                "workingDayOffset": 0,
                 "dayOffset": 0,
                 "destinationCrs": "CRE",
                 "destinationName": null,
@@ -1260,10 +1302,13 @@ mod tests {
         assert_eq!(json["destinationCrs"], "WAT");
     }
 
-    /// The public (GBTT) times ride alongside the WTT `scheduled` /
-    /// `destinationArrival`, trimmed the same way.
+    /// `scheduled`/`destinationArrival` serve the public (GBTT) times where
+    /// they differ from the working (WTT) ones, which stay available as
+    /// `working*` (design doc §9 decision 1, switched 2026-10-20). Avanti
+    /// 9G44's real CIF line: WTT 20:16 departure; the public arrival at
+    /// Wolverhampton is two minutes after the WTT one.
     #[test]
-    fn board_and_search_rows_carry_public_times_next_to_the_working_ones() {
+    fn board_and_search_rows_serve_public_times_as_scheduled_and_keep_the_working_ones() {
         let row = serde_json::json!({
             "uid": "C01355",
             "destination_crs": "WVH",
@@ -1274,16 +1319,67 @@ mod tests {
             "public_destination_arrival": "22:13:00",
         });
         let json = calling_point_departure_json(&row, "EUS", &HashMap::new());
+        assert_eq!(json["scheduled"], "20:16");
         assert_eq!(json["publicDeparture"], "20:16");
+        assert_eq!(json["workingDeparture"], "20:16");
+        assert_eq!(json["destinationArrival"], "22:13");
         assert_eq!(json["publicDestinationArrival"], "22:13");
-        assert_eq!(json["destinationArrival"], "22:11");
+        assert_eq!(json["workingDestinationArrival"], "22:11");
 
         let board = schedule_departure_json(
             &serde_json::json!({"uid": "C01355", "scheduled": "18:18:00", "public_departure": "18:15:00"}),
             &HashMap::new(),
         );
-        assert_eq!(board["scheduled"], "18:18");
+        assert_eq!(board["scheduled"], "18:15");
         assert_eq!(board["publicDeparture"], "18:15");
+        assert_eq!(board["workingDeparture"], "18:18");
+    }
+
+    /// A call with no public time in that direction (or a row stored before
+    /// public times were) serves the working time as `scheduled`.
+    #[test]
+    fn scheduled_falls_back_to_the_working_time_without_a_public_one() {
+        let row = serde_json::json!({
+            "uid": "C01372",
+            "destination_crs": "GLC",
+            "scheduled": "16:02:00",
+            "destination_arrival": "17:30:00",
+            "public_departure": null,
+            "public_destination_arrival": null,
+        });
+        let json = calling_point_departure_json(&row, "CAR", &HashMap::new());
+        assert_eq!(json["scheduled"], "16:02");
+        assert!(json["publicDeparture"].is_null());
+        assert_eq!(json["destinationArrival"], "17:30");
+        assert!(json["publicDestinationArrival"].is_null());
+    }
+
+    /// Rounding can carry a public time across midnight from its working
+    /// one (a 23:59H working arrival is a 00:00 public one): the served day
+    /// offset follows the public time.
+    #[test]
+    fn a_public_time_across_midnight_moves_the_served_day_offset() {
+        let row = serde_json::json!({
+            "uid": "C00001",
+            "destination_crs": "EDB",
+            "scheduled": "21:00:00",
+            "destination_arrival": "23:59:00",
+            "destination_arrival_day_offset": 0,
+            "public_destination_arrival": "00:00:00",
+        });
+        let json = calling_point_departure_json(&row, "KGX", &HashMap::new());
+        assert_eq!(json["destinationArrival"], "00:00");
+        assert_eq!(json["destinationArrivalDayOffset"], 1);
+        assert_eq!(json["workingDestinationArrival"], "23:59");
+
+        let board = schedule_departure_json(
+            &serde_json::json!({"uid": "C00002", "scheduled": "00:01:00", "day_offset": 1, "public_departure": "23:59:00"}),
+            &HashMap::new(),
+        );
+        assert_eq!(board["scheduled"], "23:59");
+        assert_eq!(board["dayOffset"], 0);
+        assert_eq!(board["workingDeparture"], "00:01");
+        assert_eq!(board["workingDayOffset"], 1);
     }
 
     #[test]

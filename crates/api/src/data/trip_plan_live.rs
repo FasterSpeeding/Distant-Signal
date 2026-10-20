@@ -265,10 +265,12 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
 
     for stop in input.stops {
         let sched_arr = stop
-            .scheduled_arrival
+            .timetable
+            .working_minute_arrival
             .and_then(|at| service_minute(date, at));
         let sched_dep = stop
-            .scheduled_departure
+            .timetable
+            .working_minute_departure
             .and_then(|at| service_minute(date, at));
         let tiploc = stop
             .tiploc
@@ -288,8 +290,8 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
         // - Darwin's board: `etd - std`, both public;
         // - an estimate: the working time plus TRUST's running delay, against
         //   the public time, both CIF-derived.
-        let public_departure = stop.timetable.public_departure.or(stop.scheduled_departure);
-        let public_arrival = stop.timetable.public_arrival.or(stop.scheduled_arrival);
+        let public_departure = stop.timetable.scheduled_departure();
+        let public_arrival = stop.timetable.scheduled_arrival();
         let reported = |side: &str| {
             (stop.last_event_type.as_deref() == Some(side)
                 || stop.last_event_type.as_deref() == Some("PASS"))
@@ -466,7 +468,8 @@ pub struct ChainPoint {
     pub sched_arr: Option<u32>,
     pub sched_dep: Option<u32>,
     /// The same calls' working-timetable minutes: what TRUST and Darwin
-    /// facts are looked up by, and what a leg's `scheduled*` serve.
+    /// facts are looked up by (design doc P8), and what a leg's calls are
+    /// found by in `trip_leg_details`.
     pub work_arr: Option<u32>,
     pub work_dep: Option<u32>,
     pub live_arr: Option<u32>,
@@ -883,10 +886,10 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                         to_tiploc,
                         departure_min,
                         arrival_min,
-                        scheduled_departure,
-                        scheduled_arrival,
-                        departure_day_offset,
-                        arrival_day_offset,
+                        working_departure,
+                        working_arrival,
+                        working_departure_day_offset,
+                        working_arrival_day_offset,
                         live,
                         ..
                     } => {
@@ -923,16 +926,20 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                             ),
                             None => (*departure_min, *departure_min, *arrival_min),
                         };
-                        // `scheduled*` stay working-timetable times for one
-                        // release (design doc §9 decision 1).
+                        // The leg's working times from the timetable, not the
+                        // live minutes an overlaid search ran on:
+                        // `trip_leg_details::attach_leg_details`, which runs
+                        // after this, finds the leg's calls by them and sets
+                        // `scheduled*` (public, else working).
                         if in_overlay
                             && let Some((_, board, alight)) = &matched
                             && let (Some(work_dep), Some(work_arr)) =
                                 (board.work_dep, alight.work_arr)
                         {
-                            (*scheduled_departure, *departure_day_offset) =
+                            (*working_departure, *working_departure_day_offset) =
                                 minutes_to_clock(work_dep);
-                            (*scheduled_arrival, *arrival_day_offset) = minutes_to_clock(work_arr);
+                            (*working_arrival, *working_arrival_day_offset) =
+                                minutes_to_clock(work_arr);
                         }
                         *departure_min = live_dep;
                         *arrival_min = live_arr;
@@ -1240,8 +1247,8 @@ mod tests {
             CallingPointKind::Intermediate,
             None,
         );
-        s.scheduled_arrival = arr.map(utc);
-        s.scheduled_departure = dep.map(utc);
+        s.timetable.working_minute_arrival = arr.map(utc);
+        s.timetable.working_minute_departure = dep.map(utc);
         s.stop_status = StopStatus::Scheduled;
         s
     }

@@ -4230,18 +4230,21 @@ mod db_tests {
             }
         };
 
-        // The leg: `scheduled*` is the working minute (half-minute
-        // truncated), `public*` the public one, and the itinerary's
-        // duration runs public departure to public arrival (09:58 -> 10:44).
+        // The leg: `scheduled*` is the public time (design doc §9 decision
+        // 1, switched 2026-10-20), `working*` the working minute
+        // (half-minute truncated), and the itinerary's duration runs public
+        // departure to public arrival (09:58 -> 10:44).
         let (status, body) = plan("origin=ZWA&destination=ZWC&departAfter=09:55".into()).await;
         assert_eq!(status, StatusCode::OK, "{body:?}");
         let itinerary = &body["segments"][0]["itineraries"][0];
         let leg = &itinerary["legs"][0];
         assert_eq!(leg["trainUid"], "TESTPUBW1", "{body:?}");
-        assert_eq!(leg["scheduledDeparture"], "10:00:00", "{leg:?}");
+        assert_eq!(leg["scheduledDeparture"], "09:58:00", "{leg:?}");
         assert_eq!(leg["publicDeparture"], "09:58:00", "{leg:?}");
-        assert_eq!(leg["scheduledArrival"], "10:40:00", "{leg:?}");
+        assert_eq!(leg["workingDeparture"], "10:00:00", "{leg:?}");
+        assert_eq!(leg["scheduledArrival"], "10:44:00", "{leg:?}");
         assert_eq!(leg["publicArrival"], "10:44:00", "{leg:?}");
+        assert_eq!(leg["workingArrival"], "10:40:00", "{leg:?}");
         assert_eq!(leg["publicDepartureDayOffset"], 0, "{leg:?}");
         assert_eq!(leg["publicArrivalDayOffset"], 0, "{leg:?}");
         assert_eq!(itinerary["totalDurationMinutes"], 46, "{itinerary:?}");
@@ -4293,7 +4296,8 @@ mod db_tests {
             .collect();
         assert_eq!(uids, ["TESTPUBW1", "TESTPUBW3"], "{body:?}");
         assert_eq!(legs[0]["publicArrival"], "10:21:00", "{body:?}");
-        assert_eq!(legs[0]["scheduledArrival"], "10:20:00", "{body:?}");
+        assert_eq!(legs[0]["scheduledArrival"], "10:21:00", "{body:?}");
+        assert_eq!(legs[0]["workingArrival"], "10:20:00", "{body:?}");
 
         sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'TESTPUBW%'")
             .execute(&pool)

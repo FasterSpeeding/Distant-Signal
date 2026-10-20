@@ -208,7 +208,7 @@ fn match_stop<'a>(
     terminus_crs: Option<&str>,
     now: DateTime<Utc>,
 ) -> Option<(&'a common::StationDeparture, DateTime<Utc>)> {
-    let booked = stop.scheduled_departure?;
+    let booked = stop.timetable.working_minute_departure?;
     let stop_tiploc = stop.tiploc.as_deref();
 
     struct Candidate<'a> {

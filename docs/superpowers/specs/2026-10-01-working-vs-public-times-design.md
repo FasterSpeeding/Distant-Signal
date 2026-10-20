@@ -449,7 +449,14 @@ The user answered §8 on 2026-10-01:
    `workingArrival`/`workingDeparture` and `canBoard`/`canAlight`/
    `requestStop` per stop now. `scheduled*` keeps its WTT meaning for one
    release, documented as deprecated-soon, and is then switched to public
-   or removed.
+   or removed. **Done 2026-10-20: switched to public** (else working where
+   the call has no public time in that direction, the planner's rule);
+   `working*` carry the WTT, and trip-plan legs and board, search and
+   leg-candidate rows gained `working*` fields for it
+   (`docs/api-changelog.md`, "`scheduled*` times are now public"). WTT
+   stays internal for TRUST/Darwin and schedule matching (P8):
+   `StopTimetable::working_minute_*`, `trip_plan_live`'s `work_*`, and the
+   trip-plan legs' calls are found by their working times.
 2. **`delayMinutes` switches to the public basis** at the user's own stop.
    This changes the meaning of the 15-minute notification threshold. The
    WTT delay is kept internally, for matching only.
@@ -570,7 +577,8 @@ it.
   - `schedule_query::Connection::departure_min`/`arrival_min` are public
     times, falling back per call and direction to WTT.
     `working_departure_min`/`working_arrival_min` (also on `TrainLeg`)
-    keep the WTT ones for `scheduled*`.
+    keep the WTT ones (for `scheduled*` until 2026-10-20; now for the
+    legs' `working*` and for finding their calls).
   - Every search and the minimum change times use the public minutes.
 - **Live overlay.**
   - A reported call uses the delay the journey overlay measured from that
@@ -602,7 +610,8 @@ it.
   both replays. Rows stored before the fix keep NULL, apart from what
   `scripts/backfill-gbtt-from-movement-stream.py` can recover from the
   stream's retention window.
-- `scheduled*` stay WTT for this release (§9 decision 1).
+- ~~`scheduled*` stay WTT for this release (§9 decision 1).~~ Switched
+  to public on 2026-10-20 (§9 decision 1).
 
 ## Decisions (2026-10-07)
 
