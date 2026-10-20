@@ -131,7 +131,7 @@ pub struct JourneyLegWithNamesRow {
     pub line_name: Option<String>,
     pub planned_departure: Option<DateTime<Utc>>,
     pub planned_arrival: Option<DateTime<Utc>>,
-    /// The TfL stops an untracked leg's places were picked from (spec
+    /// The `TfL` stops an untracked leg's places were picked from (spec
     /// 2026-10-20-tfl-stop-lookup-design.md §4), `None` for free text and
     /// on a train leg.
     pub origin_stop_id: Option<String>,
@@ -897,7 +897,7 @@ pub struct UntrackedLeg {
     pub line_name: Option<String>,
     pub planned_departure: DateTime<Utc>,
     pub planned_arrival: DateTime<Utc>,
-    /// The TfL stops its places were picked from (spec
+    /// The `TfL` stops its places were picked from (spec
     /// 2026-10-20-tfl-stop-lookup-design.md §4): `None` from
     /// [`validate_untracked_leg`], set by [`attach_untracked_stops`].
     pub origin_stop_id: Option<String>,
@@ -1002,7 +1002,7 @@ pub fn validate_untracked_leg(
     })
 }
 
-/// Gives a validated untracked leg the TfL stops its places were picked
+/// Gives a validated untracked leg the `TfL` stops its places were picked
 /// from (spec 2026-10-20-tfl-stop-lookup-design.md §4): `originStopId` and
 /// `destinationStopId`, each optional. Each must be a stop in `tfl_stops`;
 /// the inner `Err` is the 400's sentence otherwise. A place left blank
@@ -1065,7 +1065,7 @@ pub async fn attach_untracked_stops(
     Ok(Ok(leg))
 }
 
-/// The untracked-leg modes whose places may carry a TfL stop id.
+/// The untracked-leg modes whose places may carry a `TfL` stop id.
 pub const TFL_STOP_MODES: [&str; 3] = ["tube", "dlr", "tram"];
 
 /// An untracked leg's state, from the clock alone (spec §2.2).

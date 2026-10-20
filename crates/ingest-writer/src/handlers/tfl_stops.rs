@@ -8,7 +8,7 @@
 //! snapshot would delete every stop the other parts carry. A split one is
 //! poison (the producer never splits it). An empty snapshot, and one older
 //! than the stored stops, write nothing and are not errors. A row the
-//! store refuses before writing (not a NaPTAN id, no name, no mode) is left
+//! store refuses before writing (not a `NaPTAN` id, no name, no mode) is left
 //! out and logged.
 
 use common::tfl_stops::TflStop;

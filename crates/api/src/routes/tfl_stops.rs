@@ -1,4 +1,4 @@
-//! `/public/tfl/stops` and `/public/tfl/stops/by-crs`: TfL's Tube, DLR and
+//! `/public/tfl/stops` and `/public/tfl/stops/by-crs`: `TfL`'s Tube, DLR and
 //! tram stops (docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md
 //! §3). Unauthenticated and read-only, like `/stations` (`reference.rs`):
 //! the stop list is public data. Empty until poller-tfl's stops job has run
@@ -51,7 +51,7 @@ async fn search_stops(
     tfl_stops::search(&app.database, &q, &modes, SUGGESTION_LIMIT)
         .await
         .map(Json)
-        .map_err(internal_error)
+        .map_err(|err| internal_error(&err))
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +62,7 @@ struct ByCrsQuery {
 }
 
 /// `GET /public/tfl/stops/by-crs?crs=EUS[,KGX][&modes=]`: each National
-/// Rail station's TfL stops, best first, by CRS (`tfl_stops::stops_for_crs`:
+/// Rail station's `TfL` stops, best first, by CRS (`tfl_stops::stops_for_crs`:
 /// overrides, the hub crosswalk, then the nearest stop within 300 m). A code
 /// with no stop is absent. 400 without `crs`, with a code that is not three
 /// letters, or with more than 20.
@@ -76,7 +76,7 @@ async fn stops_by_crs(
     tfl_stops::stops_for_crs(&app.database, &codes, &modes)
         .await
         .map(Json)
-        .map_err(internal_error)
+        .map_err(|err| internal_error(&err))
 }
 
 fn parse_crs_list(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String)> {
@@ -104,8 +104,8 @@ fn parse_crs_list(raw: Option<&str>) -> Result<Vec<String>, (StatusCode, String)
     Ok(codes)
 }
 
-fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
-    if let Some(unavailable) = crate::unavailable::response_for(&err) {
+fn internal_error(err: &anyhow::Error) -> (StatusCode, String) {
+    if let Some(unavailable) = crate::unavailable::response_for(err) {
         return unavailable;
     }
     tracing::error!(error = ?err, "TfL stops read failed");

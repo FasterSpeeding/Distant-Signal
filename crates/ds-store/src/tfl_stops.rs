@@ -15,11 +15,11 @@ use crate::freshness::record_ingest;
 pub struct Replaced {
     /// Stops inserted or updated (every stop of the snapshot).
     pub written: u64,
-    /// Stops that left TfL's data, deleted.
+    /// Stops that left `TfL`'s data, deleted.
     pub deleted: u64,
     /// Stop-to-CRS links written.
     pub links: u64,
-    /// Rows refused before writing: an id that is not a NaPTAN id, an
+    /// Rows refused before writing: an id that is not a `NaPTAN` id, an
     /// empty name or no in-scope mode.
     pub invalid: Vec<String>,
     /// The stored stops are from a newer snapshot: nothing was written.
@@ -39,7 +39,7 @@ struct Row<'a> {
     longitude: Option<f64>,
 }
 
-/// One stop-to-CRS candidate: the hub code's CRS or a rail TIPLOC.
+/// One stop-to-CRS candidate: the hub code's CRS or a rail `TIPLOC`.
 #[derive(Serialize)]
 struct Link<'a> {
     stop_id: &'a str,
@@ -51,7 +51,7 @@ struct Link<'a> {
 /// `tfl_stop_crs`:
 ///
 /// - an empty snapshot writes nothing (the producer never sends one; it
-///   would read as "TfL has no stops");
+///   would read as "`TfL` has no stops");
 /// - a snapshot older than the stored stops is skipped
 ///   ([`Replaced::skipped_older`]);
 /// - an invalid row is left out ([`Replaced::invalid`]) and the rest is
@@ -59,7 +59,7 @@ struct Link<'a> {
 /// - stops absent from the snapshot are deleted, with their links;
 /// - each stop's links are its hub CRS when `stations` or `tiploc_crs`
 ///   knows that CRS (`source = 'hub'`), and the CRS of each of its rail
-///   TIPLOCs in `tiploc_crs` (`source = 'tiploc'`);
+///   `TIPLOCs` in `tiploc_crs` (`source = 'tiploc'`);
 /// - freshness `tfl-stops` is `observed_at`.
 pub async fn replace(
     conn: &mut PgConnection,
@@ -138,6 +138,17 @@ pub async fn replace(
         .await?
         .rows_affected();
 
+    outcome.links = rebuild_links(conn, stops, &ids).await?;
+
+    record_ingest(conn, common::tfl_stops::FRESHNESS_SOURCE, Some(observed_at)).await?;
+    Ok(outcome)
+}
+
+/// Rebuilds `tfl_stop_crs` from the snapshot's stops whose ids are in
+/// `ids` (the ones written): each stop's hub CRS when `stations` or
+/// `tiploc_crs` knows it, and the CRS of each of its rail TIPLOCs. Returns
+/// the links written.
+async fn rebuild_links(conn: &mut PgConnection, stops: &[TflStop], ids: &[&str]) -> Result<u64> {
     let valid: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
     let hub_links: Vec<Link<'_>> = stops
         .iter()
@@ -192,8 +203,5 @@ pub async fn replace(
     .execute(&mut *conn)
     .await?
     .rows_affected();
-    outcome.links = hub + tiploc;
-
-    record_ingest(conn, common::tfl_stops::FRESHNESS_SOURCE, Some(observed_at)).await?;
-    Ok(outcome)
+    Ok(hub + tiploc)
 }

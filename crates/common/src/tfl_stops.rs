@@ -1,4 +1,4 @@
-//! TfL's Tube, DLR and tram stops (docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md):
+//! `TfL`'s Tube, DLR and tram stops (docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md):
 //! the `tfl-stops/1` row poller-tfl publishes on `ds:ingest:tfl-stops` and the
 //! ingest-writer applies to `tfl_stops`, plus the name rules both ends and
 //! the api share.
@@ -22,16 +22,16 @@ pub const NAME_MAX_CHARS: usize = 100;
 /// One line serving a stop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TflStopLine {
-    /// TfL's line id (`victoria`, `dlr`, `tram`).
+    /// `TfL`'s line id (`victoria`, `dlr`, `tram`).
     pub id: String,
-    /// TfL's line name (`Victoria`).
+    /// `TfL`'s line name (`Victoria`).
     pub name: String,
 }
 
 /// One stop of a `tfl-stops/1` snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TflStop {
-    /// The NaPTAN stop-area id (`940GZZLUEUS`).
+    /// The `NaPTAN` stop-area id (`940GZZLUEUS`).
     pub id: String,
     /// The cleaned name ([`clean_stop_name`]): `Euston`.
     pub name: String,
@@ -40,7 +40,7 @@ pub struct TflStop {
     /// Its lines in those modes.
     #[serde(default)]
     pub lines: Vec<TflStopLine>,
-    /// TfL's interchange hub (`HUBEUS`), when it is part of one.
+    /// `TfL`'s interchange hub (`HUBEUS`), when it is part of one.
     #[serde(default)]
     pub hub_code: Option<String>,
     #[serde(default)]
@@ -51,14 +51,14 @@ pub struct TflStop {
     /// producer can tell (the hub code's own letters).
     #[serde(default)]
     pub crs: Vec<String>,
-    /// The TIPLOCs of the National Rail stations at the same hub (TfL's
+    /// The `TIPLOCs` of the National Rail stations at the same hub (`TfL`'s
     /// `910G<TIPLOC>` ids), which the writer resolves to CRS codes through
     /// `tiploc_crs`.
     #[serde(default)]
     pub rail_tiplocs: Vec<String>,
 }
 
-/// Whether `id` looks like a stop id this lookup stores: NaPTAN ids are
+/// Whether `id` looks like a stop id this lookup stores: `NaPTAN` ids are
 /// upper-case letters and digits.
 pub fn is_stop_id(id: &str) -> bool {
     (4..=20).contains(&id.len())
@@ -67,7 +67,7 @@ pub fn is_stop_id(id: &str) -> bool {
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
-/// TfL's `commonName` without its mode suffix: `Euston Underground
+/// `TfL`'s `commonName` without its mode suffix: `Euston Underground
 /// Station` -> `Euston`, `Canary Wharf DLR Station` -> `Canary Wharf`,
 /// `Wimbledon Tram Stop` -> `Wimbledon`. A name that would be left empty
 /// is kept whole.

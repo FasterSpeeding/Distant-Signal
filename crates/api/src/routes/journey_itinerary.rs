@@ -103,7 +103,7 @@ struct ItineraryLegRequest {
     planned_departure: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     planned_arrival: Option<chrono::DateTime<chrono::Utc>>,
-    /// An untracked leg's TfL stops (additive, 2026-10-20). Skipped when
+    /// An untracked leg's `TfL` stops (additive, 2026-10-20). Skipped when
     /// absent, so a body without them hashes as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin_stop_id: Option<String>,

@@ -224,13 +224,13 @@ pub(crate) fn hub_codes(stops: &BTreeMap<String, TflStop>) -> Vec<String> {
         .collect()
 }
 
-/// What a hub says about National Rail: its rail stations' TIPLOCs.
+/// What a hub says about National Rail: its rail stations' `TIPLOCs`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct HubRail {
     pub tiplocs: BTreeSet<String>,
 }
 
-/// The rail TIPLOCs of every hub in `hubs` (a parsed `/StopPoint/{ids}`
+/// The rail `TIPLOCs` of every hub in `hubs` (a parsed `/StopPoint/{ids}`
 /// body): each hub's `910G<TIPLOC>` children.
 pub(crate) fn hub_rail(hubs: Vec<StopPoint>) -> BTreeMap<String, HubRail> {
     let mut out = BTreeMap::new();
@@ -264,7 +264,7 @@ fn hub_crs(hub: &str) -> Option<String> {
 }
 
 /// Gives every stop at a hub with a National Rail station that station:
-/// its TIPLOCs, and the hub code's CRS.
+/// its `TIPLOCs`, and the hub code's CRS.
 pub(crate) fn apply_hubs(stops: &mut BTreeMap<String, TflStop>, hubs: &BTreeMap<String, HubRail>) {
     for stop in stops.values_mut() {
         let Some(rail) = stop.hub_code.as_ref().and_then(|hub| hubs.get(hub)) else {
@@ -342,7 +342,7 @@ mod tests {
 
     /// Hand-written in the shape of `GET /StopPoint/Mode/tube,dlr,tram?page=1`
     /// (`StopPointsResponse`). Every id is invented (`ZZLUX..`, `HUBXA.`),
-    /// so nothing here is TfL data.
+    /// so nothing here is `TfL` data.
     const PAGE_JSON: &str = r#"{
       "$type": "Tfl.Api.Presentation.Entities.StopPointsResponse, Tfl.Api.Presentation.Entities",
       "centrePoint": [],

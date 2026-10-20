@@ -239,7 +239,7 @@ struct UntrackedLegRequest {
     planned_departure: Option<DateTime<Utc>>,
     #[serde(default)]
     planned_arrival: Option<DateTime<Utc>>,
-    /// The TfL stop each place was picked from (`GET /tfl/stops`), when it
+    /// The `TfL` stop each place was picked from (`GET /tfl/stops`), when it
     /// was (spec 2026-10-20-tfl-stop-lookup-design.md §4).
     #[serde(default)]
     origin_stop_id: Option<String>,
@@ -1238,7 +1238,7 @@ struct JourneyLegDetailResponse {
     planned_arrival: Option<DateTime<Utc>>,
     /// The untracked leg's clock-only state at read time.
     untracked_status: Option<journeys::UntrackedStatus>,
-    /// The TfL stop ids of an untracked leg's places, when they were
+    /// The `TfL` stop ids of an untracked leg's places, when they were
     /// picked from `GET /tfl/stops` (additive, 2026-10-20); `null` for free
     /// text and on a train leg.
     origin_stop_id: Option<String>,
@@ -3941,7 +3941,7 @@ mod db_tests {
         cleanup_user(&pool, user).await;
     }
 
-    /// TfL stop lookup (spec 2026-10-20-tfl-stop-lookup-design.md §4): an
+    /// `TfL` stop lookup (spec 2026-10-20-tfl-stop-lookup-design.md §4): an
     /// untracked Tube leg keeps the stop ids its places were picked from,
     /// a blank place takes its stop's name, and the ids read back on the
     /// detail and in the export. An unknown or malformed id, or one on a

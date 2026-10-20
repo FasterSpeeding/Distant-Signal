@@ -1,4 +1,4 @@
-//! Reads of TfL's Tube, DLR and tram stops (`tfl_stops`, `tfl_stop_crs`;
+//! Reads of `TfL`'s Tube, DLR and tram stops (`tfl_stops`, `tfl_stop_crs`;
 //! docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md §3 and §5):
 //! the stop search behind the untracked-leg form, the stop-id check of a
 //! saved leg, and the mapping from a National Rail station (CRS) to its
@@ -23,7 +23,7 @@ use crate::data::trip_planning_itinerary::{PlannedLeg, SegmentResult};
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TflStopSummary {
-    /// The NaPTAN id (`940GZZLUEUS`): what a leg stores.
+    /// The `NaPTAN` id (`940GZZLUEUS`): what a leg stores.
     pub id: String,
     /// `Euston`.
     pub name: String,
@@ -190,9 +190,9 @@ impl CrsStopRow {
     }
 }
 
-/// Each of `crs_codes`' TfL stops with one of `modes`, best first: the
+/// Each of `crs_codes`' `TfL` stops with one of `modes`, best first: the
 /// override ([`CRS_OVERRIDES`]), then the hub crosswalk (`tfl_stop_crs`;
-/// a stop serving `modes[0]` before others, a hub link before a TIPLOC
+/// a stop serving `modes[0]` before others, a hub link before a `TIPLOC`
 /// one), and only for a code with neither, the nearest stop within
 /// [`NEAREST_MAX_METRES`] of the station's `stations` coordinates. A code
 /// with no stop is absent.
@@ -375,6 +375,7 @@ pub async fn attach_transfer_stops(pool: &PgPool, segments: &mut [SegmentResult]
                 crs.as_ref()
                     .and_then(|crs| found.get(&(modes.clone(), crs.to_ascii_uppercase())))
                     .cloned()
+                    .map(Box::new)
             };
             *origin_stop = lookup(origin_crs);
             *destination_stop = lookup(destination_crs);

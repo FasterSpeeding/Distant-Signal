@@ -8,7 +8,7 @@
 //!
 //! A snapshot replaces the whole of `tfl_stops`, so this test owns that
 //! table while it runs. Fixture ids are invented (`940GZZTEST..`), the CRS
-//! codes `Z9A`/`Z9B` and the TIPLOC `ZZTSTTPL` too.
+//! codes `Z9A`/`Z9B` and the `TIPLOC` `ZZTSTTPL` too.
 
 #![expect(
     clippy::unwrap_used,
