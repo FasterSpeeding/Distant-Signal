@@ -93,6 +93,25 @@ describe('isPassingPoint', () => {
     expect(isPassingPoint(stop({ workingPass: '2026-10-01T10:52:30Z' }))).toBe(true);
     expect(isPassingPoint(stop({ scheduledArrival: '2026-10-01T10:52:00Z' }))).toBe(false);
   });
+
+  it('follows passingPoint when the API sends it', () => {
+    expect(isPassingPoint(stop({ passingPoint: true }))).toBe(true);
+    expect(isPassingPoint(stop({ passingPoint: false, workingPass: '2026-10-01T10:52:30Z' }))).toBe(false);
+  });
+
+  it('stays a passing point once the train has passed it', () => {
+    // An older API filled scheduled* in from the TRUST pass.
+    const passed = stop({
+      workingPass: '2026-10-01T10:52:30Z',
+      scheduledArrival: '2026-10-01T10:52:00Z',
+      scheduledDeparture: '2026-10-01T10:52:00Z',
+      actualArrival: '2026-10-01T10:55:00Z',
+      actualDeparture: '2026-10-01T10:55:00Z',
+      lastEventType: 'PASS',
+    });
+    expect(isPassingPoint(passed)).toBe(true);
+    expect(isPassingPoint({ ...passed, workingArrival: '2026-10-01T10:52:00Z' })).toBe(false);
+  });
 });
 
 describe('formatWorkingTime', () => {

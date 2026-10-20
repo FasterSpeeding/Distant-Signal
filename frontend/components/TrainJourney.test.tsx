@@ -532,6 +532,66 @@ describe('TrainJourney', () => {
     expect(within(table).getByText('Reading')).toBeInTheDocument();
   });
 
+  it('leaves a passing point the train has gone by out of the stop list', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          lastReportedLocation: 'Watford Junction',
+          lastEventType: 'PASS',
+          delayMinutes: 4,
+          journeyStops: [
+            journeyStop({
+              crs: 'EUS',
+              name: 'London Euston',
+              kind: 'Origin',
+              scheduledDeparture: '2026-10-01T19:16:00Z',
+              actualDeparture: '2026-10-01T19:17:00Z',
+              passingPoint: false,
+            }),
+            // Passed: TRUST reported it, so it has actual times (and,
+            // from an older API, scheduled* filled in from the pass).
+            journeyStop({
+              crs: 'WFJ',
+              name: 'Watford Junction',
+              workingPass: '2026-10-01T19:31:00Z',
+              scheduledArrival: '2026-10-01T19:31:00Z',
+              scheduledDeparture: '2026-10-01T19:31:00Z',
+              actualArrival: '2026-10-01T19:35:00Z',
+              actualDeparture: '2026-10-01T19:35:00Z',
+              lastEventType: 'PASS',
+              delayMinutes: 4,
+              passingPoint: true,
+            }),
+            journeyStop({
+              crs: 'MKC',
+              name: 'Milton Keynes Central',
+              scheduledArrival: '2026-10-01T19:50:00Z',
+              scheduledDeparture: '2026-10-01T19:52:00Z',
+              stopStatus: 'Scheduled',
+              passingPoint: false,
+            }),
+            journeyStop({
+              crs: 'WVH',
+              name: 'Wolverhampton',
+              kind: 'Terminate',
+              scheduledArrival: '2026-10-01T20:40:00Z',
+              passingPoint: false,
+            }),
+          ],
+        })}
+      />,
+    );
+    const table = screen.getByRole('table', { name: 'Journey timeline' });
+    expect(within(table).getByText('Milton Keynes Central')).toBeInTheDocument();
+    expect(within(table).queryByText('Watford Junction')).not.toBeInTheDocument();
+    // The pass still drives the live position and delay.
+    expect(screen.getByText(/Last reported: Watford Junction/)).toBeInTheDocument();
+    expect(screen.getByText('4 min late')).toBeInTheDocument();
+  });
+
   it('renders no JourneyTimeline for pending, even if journeyStops were somehow non-null', () => {
     renderWithMantine(
       <TrainJourney
