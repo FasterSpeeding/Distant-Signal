@@ -34,6 +34,8 @@ const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE;
 const TRACKING_ID = process.env.E2E_TRACKING_ID ?? '1';
 const PLANNED_TRACKING_ID = process.env.E2E_PLANNED_TRACKING_ID ?? '3';
 const JOURNEY_ID = process.env.E2E_JOURNEY_ID ?? '1';
+// The seed's group, with trains and journeys shared into it by both users.
+const GROUP_ID = process.env.E2E_GROUP_ID ?? 'fixture-group-1';
 
 /** The browser's "now": midday on the seed's service date, in UK summer
  * time. Only the client's clock is fixed; the server's isn't (see VOLATILE). */
@@ -70,6 +72,11 @@ const PAGES: [name: string, path: string][] = [
   // planned three-leg journey, named end to end (docs/style-guide.md,
   // "Journey names").
   ['track', '/track/mine'],
+  // A group's shared trains and journeys, logged in as its owner: a live
+  // train, a planned one, a timetabled bus, a journey whose train is
+  // planned and a walk-and-Tube journey (2026-10-20: the owner's own
+  // badge words on group rows).
+  ['group', `/groups/${GROUP_ID}`],
   // Tram pages (the seed's metrolink network; API_TRANSIT_NETWORKS in the
   // frontend-e2e job). Dated, so the board and timetable don't follow the
   // server's clock.
@@ -84,6 +91,7 @@ const LOGGED_IN_PAGES: ReadonlySet<string> = new Set([
   'account',
   'preferences-logged-in',
   'track',
+  'group',
   'train-no-timetable',
   'train-planned',
   'journey',
@@ -105,13 +113,17 @@ const SCHEMES = ['light', 'dark'] as const;
  *    to the server's today;
  *  - the trains date field's hint ("Search a day from 6 Oct 2026 to 20 Oct
  *    2026."): the searchable range is the server's, around its own today,
- *    while the browser's today is FIXED_NOW. */
+ *    while the browser's today is FIXED_NOW;
+ *  - a group's invite link expiry ("Expires 27 Oct 2026."): the seed
+ *    dates it a week after the seeding. */
 function volatile(page: Page) {
   return [
     page.getByText(/\b(updated|last updated|fetched)\b.*\d/i),
     page.getByText(/\b\d+ (min|hr|days?) ago\b|\bjust now\b/),
     page.getByText(/\b\d{1,2} [A-Z][a-z]{2,3} \d{4}, \d{1,2}:\d{2}\b/),
     page.getByText(/^(Search (a|a different|a later|an earlier) day\b|Only .* can be searched\.)/),
+    // The group's invite link expiry: the seed sets it a week after seeding.
+    page.getByText(/^Expires \d{1,2} [A-Z][a-z]{2,3} \d{4}\.$/),
     page.locator('.mantine-DatePickerInput-input, .mantine-TimeInput-input, input[type="date"], input[type="time"]'),
   ];
 }
