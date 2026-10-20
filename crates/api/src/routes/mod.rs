@@ -20,6 +20,8 @@ pub mod island_of_ireland;
 pub mod journey_itinerary;
 pub mod journey_templates;
 pub mod journeys;
+#[cfg(test)]
+mod leg_validation_db_tests;
 pub mod line_status;
 pub mod line_timetable;
 pub mod line_trains_summary;

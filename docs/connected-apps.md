@@ -119,6 +119,31 @@ hours: 50 saves and 20 deletes (`api.delegated.dailySaveLimit`,
 itinerary may have 1 to 20 legs, the journey's own leg cap, for a
 delegated client as for the web app.
 
+## Itinerary errors
+
+`POST /Journeys/itinerary` answers a delegated client with JSON `{error,
+message}`; `message` is a sentence ds-mcp can show the user as is. The web
+app gets the same message as plain text.
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `idempotency_key_required` | No, or a malformed, `Idempotency-Key` |
+| 400 | `invalid_itinerary` | Bad JSON, 0 or more than 20 legs, a bad UID, CRS code or name, a date past the tracking horizon, the journey or tracked-train cap |
+| 409 | `idempotency_conflict` | The key was used for a different body |
+| 422 | `train_does_not_call_at_origin` | The train doesn't stop at `originCrs` on that date (a pass is not a stop) |
+| 422 | `train_does_not_call_at_destination` | The train doesn't stop at `destinationCrs` on that date |
+| 422 | `destination_before_origin` | It stops at both, but reaches `destinationCrs` first |
+| 422 | `boarding_not_allowed` | `originCrs` is set-down only for this train, or its terminus |
+| 422 | `alighting_not_allowed` | `destinationCrs` is pick-up only for this train (a sleeper's `U` stops) |
+| 429 | `daily_limit`, `rate_limited` | With `Retry-After` |
+
+The 422 checks run only on train legs with `originCrs` or `destinationCrs` and
+only when the timetable has the train (`schedule_calling_points_full` for
+that UID and date). A train not in it yet is saved unchecked, as before,
+and resolves through tracking. The first failing leg wins; with more than
+one leg its message starts `Leg N: `, N counting untracked legs too. Nothing is saved on any error, and
+the `Idempotency-Key` stays unused. Code: `crates/api/src/data/leg_validation.rs`.
+
 ## Retention
 
 The hourly maintenance pass (the api loop, or the `api-maintenance`
