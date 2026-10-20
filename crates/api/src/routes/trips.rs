@@ -225,6 +225,12 @@ struct TripPlanParams {
     /// [`parse_day_offset`]'s own 400.
     #[serde(default)]
     day_offset: Option<String>,
+    /// `?acrossMidnight=true` (2026-10-20), with `dayOffset=1` only: also
+    /// search `date + 1`'s trains from the same clock time and merge, so a
+    /// time just after midnight sees the trains of both service dates
+    /// running then. See [`parse_across_midnight`].
+    #[serde(default)]
+    across_midnight: Option<String>,
     /// `?avoid=CRS[,CRS]`: never call at, run through, change at or walk
     /// via these stations. See [`trip_planning_itinerary::build_restrictions`].
     #[serde(default)]
@@ -438,6 +444,7 @@ async fn get_trip_plan(
         params.depart_after.is_some() || params.arrive_by.is_some(),
     )?;
     let time = parse_time_bound(params.depart_after, params.arrive_by, day_offset)?;
+    let across_midnight = parse_across_midnight(params.across_midnight.as_deref(), day_offset)?;
     // A CRS, or a bus stop's or ferry terminal's `tiploc:` code.
     let origin = common::location_naming::normalize_location_code(&params.origin);
     let destination = common::location_naming::normalize_location_code(&params.destination);
@@ -492,51 +499,12 @@ async fn get_trip_plan(
         ));
     };
 
-    // TRIPS-1: the day's graph comes from the per-date cache, keyed on the
-    // latest schedule publish; only a miss reads and builds it.
+    let permit = Arc::new(permit);
     let marker = trip_planning::latest_schedule_publish(&app.database)
         .await
         .map_err(internal_error("read the latest schedule publish"))?;
     let date = params.date;
-    let pool = app.database.clone();
-    let cached = GRAPH_CACHE
-        .get_or_build(date, marker, move || async move {
-            let Some(calling_points) =
-                trip_planning::fetch_calling_points_for_date(&pool, date).await?
-            else {
-                return Ok(None);
-            };
-            let mut interchange = trip_planning::fetch_interchange_data(&pool).await?;
-            let road_or_water = trip_planning::fetch_road_or_water_tiplocs(&pool).await?;
-            // Per-UID published modes; an error degrades to the bus-stop
-            // heuristic for every UID rather than failing the plan.
-            let modes = crate::data::schedule_services::all_modes_for_date(&pool, date)
-                .await
-                .unwrap_or_else(|err| {
-                    tracing::warn!(error = ?err, %date, "could not read service modes");
-                    std::collections::HashMap::new()
-                });
-            interchange.modal_change = trip_planning::modal_change_buffer(
-                &calling_points,
-                &modes,
-                &road_or_water,
-                trip_planning::road_water_change_minutes(),
-            );
-            // The sort over every calling point of the day, on the blocking
-            // pool (bound 4 in this fn's doc comment).
-            let (connections, passes) = tokio::task::spawn_blocking(move || {
-                trip_planning::build_connections_with_passes(calling_points)
-            })
-            .await?;
-            Ok(Some(trip_planning::PlanningGraph {
-                connections,
-                interchange,
-                passes,
-            }))
-        })
-        .await
-        .map_err(internal_error("build the connections graph"))?;
-    let Some((graph, outcome)) = cached else {
+    let Some(graph) = load_graph(&app, date, marker).await? else {
         return Err((
             StatusCode::NOT_FOUND,
             format!(
@@ -545,95 +513,56 @@ async fn get_trip_plan(
             ),
         ));
     };
-    metrics::counter!(
-        common::metrics::metric_name("api_trip_plan_graph_cache_total"),
-        "result" => match outcome {
-            trip_planning::CacheOutcome::Hit => "hit",
-            trip_planning::CacheOutcome::Built => "miss",
-        }
-    )
-    .increment(1);
-
-    // The per-leg searches, on the blocking pool. The graph is shared, not
-    // copied: an `Arc` into the cache. The permit is shared with every
-    // blocking search (the live overlay may run several) and released only
-    // when the last of them finishes -- see bound 3 in this fn's doc comment.
-    let permit = Arc::new(permit);
-    // The avoid lists' search restrictions and the vias' search state, once
-    // per request (each walks the day's connections for the trains that
-    // call at or run through its stations).
-    let (restrictions, via_search) = if avoid.is_empty() && vias.is_empty() {
-        (None, None)
-    } else {
-        let graph = graph.clone();
-        let lists = avoid.clone();
-        let codes = via_codes;
-        let permit = permit.clone();
-        let (restrictions, via_search) = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            let restrictions = trip_planning_itinerary::build_restrictions(
-                &graph.connections,
-                &graph.interchange,
-                Some(&graph.passes),
-                &lists,
-            )?;
-            let via_search = trip_planning_itinerary::build_vias(
-                &graph.connections,
-                &graph.interchange,
-                Some(&graph.passes),
-                &codes,
-            )?;
-            Ok::<_, String>((restrictions, via_search))
-        })
-        .await
-        .map_err(|join_err| {
-            tracing::error!(error = ?join_err, "trip planning task panicked or was cancelled");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to plan trip".to_string(),
-            )
-        })?
-        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
-        (restrictions.map(Arc::new), via_search.map(Arc::new))
-    };
-    let request = Arc::new(PlanRequest {
-        date,
+    let inputs = DateInputs {
         origin,
         destination,
         waypoints,
         waypoint_codes: has_waypoint_choice.then_some(waypoint_codes),
-        time,
         avoid,
-        restrictions,
         vias,
-        via_search,
+        via_codes,
         results: params.results.clone(),
         max_changes,
-    });
-    let mut segments = run_plan(graph.clone(), request.clone(), None, permit.clone())
-        .await?
-        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
-
-    let live_summary = if live_requested {
-        let config = &*LIVE_CONFIG;
-        let today = crate::routes::london_today();
-        let outcome = if !config.enabled {
-            Err("disabled")
-        } else if date != today && Some(date) != today.pred_opt() {
-            Err("outsideLiveWindow")
-        } else {
-            let now = crate::routes::london_now().with_timezone(&chrono::Utc);
-            match plan_live(&app, &graph, &request, &permit, &segments, config, now).await {
-                Ok((live_segments, summary)) => {
-                    segments = live_segments;
-                    Ok(summary)
-                }
-                Err(err) => {
-                    tracing::warn!(error = ?err, "trip plan live overlay failed; serving the timetable plan");
-                    Err("unavailable")
-                }
-            }
-        };
+        live_requested,
+    };
+    let first = plan_on_date(&app, &graph, &inputs, date, time, &permit).await?;
+    // `acrossMidnight` (2026-10-20): the next service date's trains too,
+    // from the same clock time, merged in (`data::trip_plan_overnight`).
+    // A next date with no published timetable just adds nothing.
+    let next_date = date.succ_opt();
+    let second = match (across_midnight, next_date) {
+        (true, Some(next)) => match load_graph(&app, next, marker).await? {
+            Some(next_graph) => Some(
+                plan_on_date(
+                    &app,
+                    &next_graph,
+                    &inputs,
+                    next,
+                    time.a_day_earlier(),
+                    &permit,
+                )
+                .await?,
+            ),
+            None => None,
+        },
+        _ => None,
+    };
+    drop(permit);
+    let request = first.request.clone();
+    let (segments, live_outcome, service_dates) = match (second, next_date) {
+        (Some(second), Some(next)) => (
+            crate::data::trip_plan_overnight::merge_across_midnight(
+                first.segments,
+                second.segments,
+                time,
+                &params.results,
+            ),
+            combine_live(first.live, second.live),
+            vec![date, next],
+        ),
+        _ => (first.segments, first.live, vec![date]),
+    };
+    let live_summary = live_outcome.map(|outcome| {
         let label = match &outcome {
             Ok(_) => "applied",
             Err("disabled") => "disabled",
@@ -645,7 +574,7 @@ async fn get_trip_plan(
             "outcome" => label
         )
         .increment(1);
-        Some(match outcome {
+        match outcome {
             Ok(summary) => serde_json::json!({
                 "applied": true,
                 "reason": null,
@@ -654,21 +583,15 @@ async fn get_trip_plan(
                 "adjustedTrains": summary.adjusted_trains,
             }),
             Err(reason) => serde_json::json!({ "applied": false, "reason": reason }),
-        })
-    } else {
+        }
+    });
+    if live_summary.is_none() {
         metrics::counter!(
             common::metrics::metric_name("api_trip_plan_live_requests_total"),
             "outcome" => "not_requested"
         )
         .increment(1);
-        None
-    };
-    drop(permit);
-
-    crate::data::trip_leg_details::attach_leg_details(&app.database, date, &mut segments)
-        .await
-        .map_err(internal_error("attach trip leg details"))?;
-
+    }
     let waypoint_stops = if request.waypoint_codes.is_some() {
         trip_planning_itinerary::waypoint_satisfied_by(
             &segments,
@@ -697,6 +620,11 @@ async fn get_trip_plan(
             trip_planning_itinerary::TimeBound::DepartAfter(minutes) => Some(segment_clock(minutes)),
             trip_planning_itinerary::TimeBound::ArriveBy(_) => None,
         },
+        // Additive (2026-10-20): the service dates whose trains were
+        // searched -- `[date]`, or `[date, date + 1]` with
+        // `acrossMidnight`. Every time in this body is on `date`'s clock;
+        // each train leg also names its own `serviceDate`.
+        "serviceDates": service_dates,
         "avoid": request.avoid.avoid,
         "avoidStop": request.avoid.avoid_stop,
         "avoidChange": request.avoid.avoid_change,
@@ -763,11 +691,12 @@ async fn get_trip_plan(
         body["live"] = summary;
     }
     // Additive (2026-10-08): whether `date`'s timetable is still
-    // provisional. Once per response, not per journey or leg: every leg of
-    // a plan runs on the one requested service date.
+    // provisional. Once per response, not per journey or leg. With
+    // `acrossMidnight`, the later of the two dates: it is the one that can
+    // be provisional when the earlier is not.
     if let Some(object) = body.as_object_mut() {
         crate::routes::provisional::TimetableCertainty::for_date(
-            date,
+            service_dates.last().copied().unwrap_or(date),
             crate::routes::london_today(),
         )
         .insert_into(object);
@@ -776,6 +705,207 @@ async fn get_trip_plan(
 }
 
 /// One request's planning inputs, shared with every blocking search.
+/// Everything about a request that doesn't depend on the service date
+/// planned (the graph-dependent search state is built per date).
+struct DateInputs {
+    origin: String,
+    destination: String,
+    waypoints: Vec<String>,
+    waypoint_codes: Option<Vec<Vec<String>>>,
+    avoid: trip_planning_itinerary::AvoidLists,
+    vias: Vec<String>,
+    via_codes: Vec<Vec<String>>,
+    results: String,
+    max_changes: u32,
+    live_requested: bool,
+}
+
+/// One service date's finished plan: searched, live-checked (when asked)
+/// and with leg details attached.
+struct DatePlan {
+    request: Arc<PlanRequest>,
+    segments: Vec<trip_planning_itinerary::SegmentResult>,
+    /// `None` when live data was not asked for; `Err(reason)` when it was
+    /// but did not apply.
+    live: Option<Result<LiveSummary, &'static str>>,
+}
+
+/// TRIPS-1: `date`'s graph from the per-date cache, keyed on the latest
+/// schedule publish; only a miss reads and builds it. `None` when nothing
+/// is published for `date`.
+async fn load_graph(
+    app: &App,
+    date: NaiveDate,
+    marker: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Option<Arc<trip_planning::PlanningGraph>>, (StatusCode, String)> {
+    let pool = app.database.clone();
+    let cached = GRAPH_CACHE
+        .get_or_build(date, marker, move || async move {
+            let Some(calling_points) =
+                trip_planning::fetch_calling_points_for_date(&pool, date).await?
+            else {
+                return Ok(None);
+            };
+            let mut interchange = trip_planning::fetch_interchange_data(&pool).await?;
+            let road_or_water = trip_planning::fetch_road_or_water_tiplocs(&pool).await?;
+            // Per-UID published modes; an error degrades to the bus-stop
+            // heuristic for every UID rather than failing the plan.
+            let modes = crate::data::schedule_services::all_modes_for_date(&pool, date)
+                .await
+                .unwrap_or_else(|err| {
+                    tracing::warn!(error = ?err, %date, "could not read service modes");
+                    std::collections::HashMap::new()
+                });
+            interchange.modal_change = trip_planning::modal_change_buffer(
+                &calling_points,
+                &modes,
+                &road_or_water,
+                trip_planning::road_water_change_minutes(),
+            );
+            // The sort over every calling point of the day, on the blocking
+            // pool (bound 4 in `get_trip_plan`'s doc comment).
+            let (connections, passes) = tokio::task::spawn_blocking(move || {
+                trip_planning::build_connections_with_passes(calling_points)
+            })
+            .await?;
+            Ok(Some(trip_planning::PlanningGraph {
+                connections,
+                interchange,
+                passes,
+            }))
+        })
+        .await
+        .map_err(internal_error("build the connections graph"))?;
+    let Some((graph, outcome)) = cached else {
+        return Ok(None);
+    };
+    metrics::counter!(
+        common::metrics::metric_name("api_trip_plan_graph_cache_total"),
+        "result" => match outcome {
+            trip_planning::CacheOutcome::Hit => "hit",
+            trip_planning::CacheOutcome::Built => "miss",
+        }
+    )
+    .increment(1);
+    Ok(Some(graph))
+}
+
+/// Plans `inputs` on one service date's `graph`, from `time` on that
+/// date's clock: the searches, the live overlay and the leg details.
+async fn plan_on_date(
+    app: &App,
+    graph: &Arc<trip_planning::PlanningGraph>,
+    inputs: &DateInputs,
+    date: NaiveDate,
+    time: trip_planning_itinerary::TimeBound,
+    permit: &PlanPermit,
+) -> Result<DatePlan, (StatusCode, String)> {
+    // The avoid lists' search restrictions and the vias' search state, once
+    // per date (each walks the day's connections for the trains that call
+    // at or run through its stations).
+    let (restrictions, via_search) = if inputs.avoid.is_empty() && inputs.vias.is_empty() {
+        (None, None)
+    } else {
+        let graph = graph.clone();
+        let lists = inputs.avoid.clone();
+        let codes = inputs.via_codes.clone();
+        let permit = permit.clone();
+        let (restrictions, via_search) = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let restrictions = trip_planning_itinerary::build_restrictions(
+                &graph.connections,
+                &graph.interchange,
+                Some(&graph.passes),
+                &lists,
+            )?;
+            let via_search = trip_planning_itinerary::build_vias(
+                &graph.connections,
+                &graph.interchange,
+                Some(&graph.passes),
+                &codes,
+            )?;
+            Ok::<_, String>((restrictions, via_search))
+        })
+        .await
+        .map_err(|join_err| {
+            tracing::error!(error = ?join_err, "trip planning task panicked or was cancelled");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to plan trip".to_string(),
+            )
+        })?
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+        (restrictions.map(Arc::new), via_search.map(Arc::new))
+    };
+    let request = Arc::new(PlanRequest {
+        date,
+        origin: inputs.origin.clone(),
+        destination: inputs.destination.clone(),
+        waypoints: inputs.waypoints.clone(),
+        waypoint_codes: inputs.waypoint_codes.clone(),
+        time,
+        avoid: inputs.avoid.clone(),
+        restrictions,
+        vias: inputs.vias.clone(),
+        via_search,
+        results: inputs.results.clone(),
+        max_changes: inputs.max_changes,
+    });
+    let mut segments = run_plan(graph.clone(), request.clone(), None, permit.clone())
+        .await?
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+
+    let live = if inputs.live_requested {
+        let config = &*LIVE_CONFIG;
+        let today = crate::routes::london_today();
+        Some(if !config.enabled {
+            Err("disabled")
+        } else if date != today && Some(date) != today.pred_opt() {
+            Err("outsideLiveWindow")
+        } else {
+            let now = crate::routes::london_now().with_timezone(&chrono::Utc);
+            match plan_live(app, graph, &request, permit, &segments, config, now).await {
+                Ok((live_segments, summary)) => {
+                    segments = live_segments;
+                    Ok(summary)
+                }
+                Err(err) => {
+                    tracing::warn!(error = ?err, "trip plan live overlay failed; serving the timetable plan");
+                    Err("unavailable")
+                }
+            }
+        })
+    } else {
+        None
+    };
+
+    crate::data::trip_leg_details::attach_leg_details(&app.database, date, &mut segments)
+        .await
+        .map_err(internal_error("attach trip leg details"))?;
+    Ok(DatePlan {
+        request,
+        segments,
+        live,
+    })
+}
+
+/// Both dates' live outcomes as one: applied when either applied (its
+/// counts summed), else the request date's reason.
+fn combine_live(
+    first: Option<Result<LiveSummary, &'static str>>,
+    second: Option<Result<LiveSummary, &'static str>>,
+) -> Option<Result<LiveSummary, &'static str>> {
+    match (first, second) {
+        (Some(Ok(a)), Some(Ok(b))) => Some(Ok(LiveSummary {
+            replans: a.replans + b.replans,
+            trains_read: a.trains_read + b.trains_read,
+            adjusted_trains: a.adjusted_trains + b.adjusted_trains,
+        })),
+        (Some(Err(_)), Some(Ok(b))) => Some(Ok(b)),
+        (first, _) => first,
+    }
+}
+
 struct PlanRequest {
     date: NaiveDate,
     origin: String,
@@ -1397,6 +1527,29 @@ fn parse_day_offset(raw: Option<&str>, has_time: bool) -> Result<u32, (StatusCod
     Ok(offset)
 }
 
+/// `?acrossMidnight=`: absent, empty or `false` is off; `true` needs
+/// `dayOffset=1` (a time on the morning after `date`, the only place two
+/// service dates' trains overlap). Anything else is a 400.
+fn parse_across_midnight(raw: Option<&str>, day_offset: u32) -> Result<bool, (StatusCode, String)> {
+    match raw
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" | "false" => Ok(false),
+        "true" if day_offset == 1 => Ok(true),
+        "true" => Err((
+            StatusCode::BAD_REQUEST,
+            "acrossMidnight needs dayOffset=1 (a time on the morning after date)".to_string(),
+        )),
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            format!("acrossMidnight must be true or false, not '{other}'"),
+        )),
+    }
+}
+
 /// `?departAfter=` / `?arriveBy=`: at most one. Neither means departing
 /// after 00:00, as before. `day_offset` (0 or 1, [`parse_day_offset`])
 /// adds that many days: the engine's minutes run on past 1440 for a
@@ -1689,6 +1842,20 @@ mod tests {
         let (status, message) = parse_day_offset(Some("1"), false).unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(message.contains("departAfter or arriveBy"), "{message}");
+    }
+
+    #[test]
+    fn across_midnight_is_true_or_false_and_needs_day_offset_1() {
+        assert_eq!(parse_across_midnight(None, 0), Ok(false));
+        assert_eq!(parse_across_midnight(Some(""), 1), Ok(false));
+        assert_eq!(parse_across_midnight(Some("false"), 0), Ok(false));
+        assert_eq!(parse_across_midnight(Some("TRUE"), 1), Ok(true));
+        let (status, message) = parse_across_midnight(Some("true"), 0).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("needs dayOffset=1"), "{message}");
+        let (status, message) = parse_across_midnight(Some("1"), 1).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("true or false"), "{message}");
     }
 
     #[test]
@@ -4048,6 +4215,8 @@ mod db_tests {
     //   TOVN2  ZOA 23:00 -> ZOB 23:50
     //   TOVN1  ZOA 23:30 -> ZOB 00:20 (+1)
     //   TOVN3  ZOA 00:15 (+1) -> ZOB 00:45 (+1)
+    // and on the NEXT service date (2026-10-20, `acrossMidnight`):
+    //   TOVN4  ZOA 00:05 -> ZOB 00:25
     // ---------------------------------------------------------------------
 
     /// `(uid, seq, tiploc, kind, arrival, departure, day_offset)`.
@@ -4061,8 +4230,8 @@ mod db_tests {
         i16,
     );
 
-    async fn seed_overnight_network(pool: &PgPool) -> [&'static str; 3] {
-        let uids = ["TOVN1", "TOVN2", "TOVN3"];
+    async fn seed_overnight_network(pool: &PgPool) -> [&'static str; 4] {
+        let uids = ["TOVN1", "TOVN2", "TOVN3", "TOVN4"];
         cleanup_live(pool, &uids, "TOVNET").await;
         seed_stations(pool, "TOVNET", &[("ZOA", "TOVA"), ("ZOB", "TOVB")]).await;
         let rows: [OvernightCall<'_>; 6] = [
@@ -4090,6 +4259,26 @@ mod db_tests {
             .execute(pool)
             .await
             .expect("seed calling point");
+        }
+        let next = live_date().succ_opt().expect("a next day");
+        for (seq, tiploc, kind, arrival, departure) in [
+            (0, "TOVA", "origin", None, Some("00:05:00")),
+            (1, "TOVB", "terminate", Some("00:25:00"), None),
+        ] {
+            sqlx::query(
+                "INSERT INTO schedule_calling_points_full \
+                 (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+                 VALUES ($1, 'TOVN4', $2, $3, $4, $5::time, $6::time, 0) ON CONFLICT DO NOTHING",
+            )
+            .bind(next)
+            .bind(seq)
+            .bind(tiploc)
+            .bind(kind)
+            .bind(arrival)
+            .bind(departure)
+            .execute(pool)
+            .await
+            .expect("seed next-day calling point");
         }
         uids
     }
@@ -4202,6 +4391,87 @@ mod db_tests {
                 body["segments"][0]["noResultReason"]["constraint"], "noRoute",
                 "{body:?}"
             );
+        }
+
+        cleanup_live(&pool, &uids, "TOVNET").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    async fn across_midnight_merges_the_next_service_dates_trains() {
+        let pool = connect().await;
+        let uids = seed_overnight_network(&pool).await;
+        let _now = crate::routes::pin_london_now_for_tests(live_now());
+        let next = live_date().succ_opt().unwrap().to_string();
+
+        for live in ["&live=false", ""] {
+            let plan = |query: &str| {
+                let pool = pool.clone();
+                let uri = format!(
+                    "/Trips/plan?origin=ZOA&destination=ZOB&date={}{query}{live}",
+                    live_date()
+                );
+                async move { get(test_router(test_app(pool)), uri).await }
+            };
+
+            // Without it: only the 5th's trains, so the 23:30.
+            let (_, body) = plan("&arriveBy=00:30&dayOffset=1").await;
+            assert_eq!(train_uids(&body, 0), ["TOVN1"], "{live} {body:?}");
+            assert_eq!(
+                body["serviceDates"],
+                serde_json::json!([live_date().to_string()]),
+                "{body:?}"
+            );
+
+            // With it: the 6th's 00:05 leaves later and still arrives by
+            // 00:30. Its time is on the 5th's clock (+1); the leg names its
+            // own service date.
+            let (status, body) = plan("&arriveBy=00:30&dayOffset=1&acrossMidnight=true").await;
+            assert_eq!(status, StatusCode::OK, "{body:?}");
+            assert_eq!(train_uids(&body, 0), ["TOVN4"], "{live} {body:?}");
+            assert_eq!(
+                body["serviceDates"],
+                serde_json::json!([live_date().to_string(), next]),
+                "{body:?}"
+            );
+            assert_eq!(
+                body["journeys"][0]["departure"],
+                serde_json::json!({"time": "00:05:00", "dayOffset": 1}),
+                "{body:?}"
+            );
+            assert_eq!(
+                body["segments"][0]["itineraries"][0]["legs"][0]["serviceDate"], next,
+                "{body:?}"
+            );
+
+            // Depart after 00:00: the earliest arrival of either date (the
+            // 6th's 00:25, not the 5th's 00:45).
+            let (_, body) = plan("&departAfter=00:00&dayOffset=1&acrossMidnight=true").await;
+            assert_eq!(train_uids(&body, 0), ["TOVN4"], "{live} {body:?}");
+
+            // options: one journey per change count, deduplicated.
+            let (_, body) =
+                plan("&arriveBy=00:50&dayOffset=1&acrossMidnight=true&results=options").await;
+            let itineraries = body["segments"][0]["itineraries"].as_array().unwrap();
+            assert_eq!(itineraries.len(), 1, "all direct: {body:?}");
+            assert_eq!(itineraries[0]["legs"][0]["trainUid"], "TOVN3", "{body:?}");
+        }
+
+        for (query, needle) in [
+            ("&arriveBy=09:00&acrossMidnight=true", "needs dayOffset=1"),
+            (
+                "&arriveBy=00:30&dayOffset=1&acrossMidnight=yes",
+                "true or false",
+            ),
+        ] {
+            let uri = format!(
+                "/Trips/plan?origin=ZOA&destination=ZOB&date={}{query}",
+                live_date()
+            );
+            let (status, body) = get(test_router(test_app(pool.clone())), uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {body:?}");
+            assert!(body.to_string().contains(needle), "{query}: {body:?}");
         }
 
         cleanup_live(&pool, &uids, "TOVNET").await;

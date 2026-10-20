@@ -448,6 +448,18 @@ pub enum TimeBound {
     ArriveBy(u32),
 }
 
+impl TimeBound {
+    /// The same moment on the next service date's clock (a day less;
+    /// `acrossMidnight`, 2026-10-20). Saturates at 00:00.
+    #[must_use]
+    pub fn a_day_earlier(self) -> Self {
+        match self {
+            Self::DepartAfter(m) => Self::DepartAfter(m.saturating_sub(1440)),
+            Self::ArriveBy(m) => Self::ArriveBy(m.saturating_sub(1440)),
+        }
+    }
+}
+
 /// Everything one segment search needs besides its endpoints and time.
 #[derive(Clone, Copy)]
 pub struct SegmentSearch<'a> {

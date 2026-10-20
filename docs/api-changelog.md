@@ -3,6 +3,32 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: `/Trips/plan` searches both service dates (`acrossMidnight`)
+
+Additive; a request without the new parameter is unchanged.
+
+- **`acrossMidnight=true`**, only with `dayOffset=1`. The route also
+  searches `date + 1`'s trains from the same clock time and merges the two
+  plans, so a time just after midnight sees the late trains of `date` and
+  the first trains of `date + 1`. Example: `date=<Friday>&arriveBy=00:30&
+  dayOffset=1&acrossMidnight=true`.
+  - The ordering rules are unchanged. `fastest` is the one best journey:
+    the latest departure for arrive-by, the earliest arrival for
+    depart-after. `options` is one journey per change count, each better
+    than the ones with fewer changes.
+  - Identical journeys are kept once.
+- **Times.** Every time in the body is on `date`'s clock, so `date + 1`'s
+  trains show `dayOffset: 1`. Each train leg still names its own
+  `serviceDate`, with day offsets relative to it.
+- **New top-level `serviceDates`.** The dates searched: `[date]`, or
+  `[date, date + 1]`. It is always present.
+- **400s.** `acrossMidnight=true` without `dayOffset=1` (`acrossMidnight
+  needs dayOffset=1 ...`), and any value other than `true` or `false`.
+- **Other fields.** `live` sums both dates' counts and is `applied` when
+  either date's live data applied. `provisional` follows the later date.
+- **For ds-mcp.** Nothing to change. To plan "arrive by 00:30 on Saturday",
+  send `date=<Friday>&arriveBy=00:30&dayOffset=1&acrossMidnight=true`.
+
 ## 2026-10-19: `/Trips/plan` overnight times (`dayOffset`)
 
 Additive; no existing request or field changes meaning. Spec:
