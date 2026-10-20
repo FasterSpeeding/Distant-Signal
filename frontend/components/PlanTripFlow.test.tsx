@@ -475,7 +475,7 @@ describe('PlanTripFlow', () => {
     };
     mockStationNames.set('EUS', 'London Euston');
     mockStationNames.set('KGX', 'London Kings Cross');
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith('/api/Journeys/itinerary')) {
         return Promise.resolve({
@@ -501,7 +501,7 @@ describe('PlanTripFlow', () => {
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ journeyId: 42 })));
     const saved = fetchMock.mock.calls.find(([input]) => String(input).startsWith('/api/Journeys/itinerary'));
-    const body = JSON.parse(String((saved?.[1] as RequestInit | undefined)?.body)) as { legs: unknown[] };
+    const body = JSON.parse(String(saved?.[1]?.body)) as { legs: unknown[] };
     expect(body.legs).toEqual([
       { trainUid: 'A11111', serviceDate: '2026-10-21', originCrs: 'MKC', destinationCrs: 'EUS' },
       {
