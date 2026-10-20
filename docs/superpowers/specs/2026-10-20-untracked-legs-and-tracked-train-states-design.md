@@ -511,3 +511,31 @@ Differences from the design above, and things it left implicit:
   phases on every surface). Frontend: vitest for each display, Playwright
   for adding a Tube leg and starting with a walk (`page.route` mocks) and
   for the not-in-the-timetable and planned trains (seeded stack).
+
+## 11. Follow-up: planner transfers, editing and inserting legs (DS-76)
+
+The user's answers to open questions 1 and 2.
+
+- **Planner transfers.** `GET /Trips/plan` gives a transfer its fixed-link
+  `mode` (WALK, TUBE, METRO, BUS, FERRY, TRANSFER), both ends' station
+  codes and its `minutes`, but no clock times. The planner walks off the
+  train before it straight away (`trip-planner` sets a transfer's
+  departure to its start stop's arrival), so the web save times it from
+  that train's working arrival for its minutes; a transfer before the
+  first train ends when that train leaves. Its ends are the stations'
+  names. TRANSFER (a change within one station) is not saved. The mode
+  and name mapping is one function (`transferAsUntracked`,
+  `frontend/lib/tripPlanSave.ts`), where a TfL stop lookup can add
+  canonical names and stop ids later. `metro` joins the modes.
+- **Edit in place.** `PUT /Journeys/{id}/legs/{legId}` replaces an
+  untracked leg's fields, keeping its id and place. Train legs are
+  refused: picking another train already exists.
+- **Insert before.** `POST .../legs?before={legId}`, any mode, under the
+  journey row lock: the target leg and every later one move down one
+  place (two statements through negative values, since `UNIQUE
+  (journey_id, leg_order)` is checked row by row), and the new leg takes
+  the target's place. Gaps from deleted legs are left alone. Every reader
+  numbers legs by position in `leg_order` order, the notifier's "leg N of
+  M" included (it counts legs at or before the leg), so positions follow.
+  The web shows "Add a leg at the start", which opens on Tube, bus or walk
+  and ends the new leg where and when the first leg starts.

@@ -263,6 +263,55 @@ async fn owned_next_leg_order(
     Ok(AddLegOutcome::Added(next_leg_order))
 }
 
+/// [`owned_next_leg_order`], or, with `before_leg_id`, the `leg_order` of
+/// that leg after moving it and every later leg one place down (spec
+/// 2026-10-20 §2.3, "insert a leg before"): the new leg takes the freed
+/// place. Same journey row lock, ownership check and cap; `NoSuchLeg` when
+/// `before_leg_id` isn't one of this journey's legs.
+///
+/// The shift is two statements, through negative values, because
+/// `UNIQUE (journey_id, leg_order)` is checked row by row: `leg_order + 1`
+/// in one statement can collide with the next row before it moves. Gaps
+/// left by deleted legs stay as they are; only the order matters. Every
+/// reader numbers legs by their position in `leg_order` order (the journey
+/// detail, the notifier's "leg 2 of 3", which counts legs at or before
+/// it), so an inserted leg renumbers the later ones there too.
+async fn owned_leg_order_at(
+    tx: &mut sqlx::PgConnection,
+    journey_id: i64,
+    user_id: &str,
+    before_leg_id: Option<i64>,
+) -> anyhow::Result<AddLegOutcome<i32>> {
+    let next = owned_next_leg_order(&mut *tx, journey_id, user_id).await?;
+    let (AddLegOutcome::Added(_), Some(before_leg_id)) = (&next, before_leg_id) else {
+        return Ok(next);
+    };
+    let target: Option<(i32,)> =
+        sqlx::query_as("SELECT leg_order FROM journey_legs WHERE id = $1 AND journey_id = $2")
+            .bind(before_leg_id)
+            .bind(journey_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((target_order,)) = target else {
+        return Ok(AddLegOutcome::NoSuchLeg);
+    };
+    sqlx::query(
+        "UPDATE journey_legs SET leg_order = -(leg_order + 1) \
+         WHERE journey_id = $1 AND leg_order >= $2",
+    )
+    .bind(journey_id)
+    .bind(target_order)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE journey_legs SET leg_order = -leg_order WHERE journey_id = $1 AND leg_order < 0",
+    )
+    .bind(journey_id)
+    .execute(&mut *tx)
+    .await?;
+    Ok(AddLegOutcome::Added(target_order))
+}
+
 /// How many legs one journey may have. Same value as
 /// `journey_templates::MAX_LEGS_PER_TEMPLATE`, deliberately: a template
 /// materializes 1:1 into a journey's legs, so the two caps answer the same
@@ -304,6 +353,8 @@ pub async fn count_manual_journeys_for_user(pool: &PgPool, user_id: &str) -> any
 pub enum AddLegOutcome<T> {
     NotFound,
     AtCap,
+    /// The leg to insert before isn't one of this journey's (route: 404).
+    NoSuchLeg,
     Added(T),
 }
 
@@ -312,7 +363,7 @@ impl<T> AddLegOutcome<T> {
     pub fn into_added(self) -> Option<T> {
         match self {
             AddLegOutcome::Added(value) => Some(value),
-            AddLegOutcome::NotFound | AddLegOutcome::AtCap => None,
+            AddLegOutcome::NotFound | AddLegOutcome::AtCap | AddLegOutcome::NoSuchLeg => None,
         }
     }
 }
@@ -505,12 +556,43 @@ pub async fn add_known_train_leg_to_journey(
     origin_crs_override: Option<&str>,
     destination_crs_override: Option<&str>,
 ) -> anyhow::Result<AddLegOutcome<(i64, i64)>> {
+    add_known_train_leg_to_journey_at(
+        pool,
+        journey_id,
+        user_id,
+        trains_id,
+        service_date,
+        origin_crs_override,
+        destination_crs_override,
+        None,
+    )
+    .await
+}
+
+/// [`add_known_train_leg_to_journey`], placed before `before_leg_id` when
+/// given (see [`owned_leg_order_at`]), else at the end.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
+pub async fn add_known_train_leg_to_journey_at(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+    trains_id: i64,
+    service_date: NaiveDate,
+    origin_crs_override: Option<&str>,
+    destination_crs_override: Option<&str>,
+    before_leg_id: Option<i64>,
+) -> anyhow::Result<AddLegOutcome<(i64, i64)>> {
     let mut tx = pool.begin().await?;
-    let next_leg_order = match owned_next_leg_order(&mut tx, journey_id, user_id).await? {
-        AddLegOutcome::Added(next) => next,
-        AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
-        AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
-    };
+    let next_leg_order =
+        match owned_leg_order_at(&mut tx, journey_id, user_id, before_leg_id).await? {
+            AddLegOutcome::Added(next) => next,
+            AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
+            AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
+            AddLegOutcome::NoSuchLeg => return Ok(AddLegOutcome::NoSuchLeg),
+        };
     // 2026-09 Signal Box Audit Low finding: `create_subscription_for_train`
     // used to run as its own bare statement against `pool`, committed
     // immediately, BEFORE the `insert_leg` call below that actually
@@ -835,12 +917,44 @@ pub async fn add_window_leg_to_journey(
     depart_window: TimeWindow,
     arrive_window: TimeWindow,
 ) -> anyhow::Result<AddLegOutcome<i64>> {
+    add_window_leg_to_journey_at(
+        pool,
+        journey_id,
+        user_id,
+        origin_crs,
+        destination_crs,
+        service_date,
+        depart_window,
+        arrive_window,
+        None,
+    )
+    .await
+}
+
+/// [`add_window_leg_to_journey`], placed before `before_leg_id` when given.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent input from the single caller; a struct would only wrap them"
+)]
+pub async fn add_window_leg_to_journey_at(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+    origin_crs: &str,
+    destination_crs: &str,
+    service_date: NaiveDate,
+    depart_window: TimeWindow,
+    arrive_window: TimeWindow,
+    before_leg_id: Option<i64>,
+) -> anyhow::Result<AddLegOutcome<i64>> {
     let mut tx = pool.begin().await?;
-    let next_leg_order = match owned_next_leg_order(&mut tx, journey_id, user_id).await? {
-        AddLegOutcome::Added(next) => next,
-        AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
-        AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
-    };
+    let next_leg_order =
+        match owned_leg_order_at(&mut tx, journey_id, user_id, before_leg_id).await? {
+            AddLegOutcome::Added(next) => next,
+            AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
+            AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
+            AddLegOutcome::NoSuchLeg => return Ok(AddLegOutcome::NoSuchLeg),
+        };
     let leg_id = insert_leg(
         &mut *tx,
         journey_id,
@@ -872,8 +986,8 @@ pub const LEG_KIND_UNTRACKED: &str = "untracked";
 /// Every `transit_mode` an untracked leg may have, in the order the form
 /// offers them. Checked here, not by the database (whose CHECK only bounds
 /// the shape), so adding a mode needs no migration.
-pub const TRANSIT_MODES: [&str; 9] = [
-    "tube", "bus", "tram", "rail", "walk", "ferry", "taxi", "cycle", "other",
+pub const TRANSIT_MODES: [&str; 10] = [
+    "tube", "bus", "tram", "metro", "rail", "walk", "ferry", "taxi", "cycle", "other",
 ];
 /// The longest place name an untracked leg keeps (the migration's CHECK).
 pub const UNTRACKED_PLACE_MAX_CHARS: usize = 100;
@@ -1195,15 +1309,87 @@ pub async fn add_untracked_leg_to_journey(
     user_id: &str,
     leg: &UntrackedLeg,
 ) -> anyhow::Result<AddLegOutcome<i64>> {
+    add_untracked_leg_to_journey_at(pool, journey_id, user_id, leg, None).await
+}
+
+/// [`add_untracked_leg_to_journey`], placed before `before_leg_id` when
+/// given.
+pub async fn add_untracked_leg_to_journey_at(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+    leg: &UntrackedLeg,
+    before_leg_id: Option<i64>,
+) -> anyhow::Result<AddLegOutcome<i64>> {
     let mut tx = pool.begin().await?;
-    let next_leg_order = match owned_next_leg_order(&mut tx, journey_id, user_id).await? {
-        AddLegOutcome::Added(next) => next,
-        AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
-        AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
-    };
+    let next_leg_order =
+        match owned_leg_order_at(&mut tx, journey_id, user_id, before_leg_id).await? {
+            AddLegOutcome::Added(next) => next,
+            AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
+            AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
+            AddLegOutcome::NoSuchLeg => return Ok(AddLegOutcome::NoSuchLeg),
+        };
     let leg_id = insert_untracked_leg(&mut *tx, journey_id, next_leg_order, leg).await?;
     tx.commit().await?;
     Ok(AddLegOutcome::Added(leg_id))
+}
+
+/// What [`update_untracked_leg`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateUntrackedOutcome {
+    /// No such leg, or not the caller's (route: 404).
+    NotFound,
+    /// A train leg: only an untracked leg is edited this way (route: 400).
+    NotUntracked,
+    Updated,
+}
+
+/// Replaces an untracked leg's mode, places, line and times in place (spec
+/// 2026-10-20 §2.4, `PUT /Journeys/{id}/legs/{legId}`), keeping its id and
+/// place in the journey. `service_date` follows the new departure.
+/// Ownership is folded into the same statement; a train leg is refused, not
+/// converted.
+pub async fn update_untracked_leg(
+    pool: &PgPool,
+    journey_id: i64,
+    leg_id: i64,
+    user_id: &str,
+    leg: &UntrackedLeg,
+) -> anyhow::Result<UpdateUntrackedOutcome> {
+    let mut tx = pool.begin().await?;
+    let kind: Option<(String,)> = sqlx::query_as(
+        "SELECT jl.kind FROM journey_legs jl JOIN journeys j ON j.id = jl.journey_id \
+         WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3 FOR UPDATE OF jl",
+    )
+    .bind(leg_id)
+    .bind(journey_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    match kind {
+        None => return Ok(UpdateUntrackedOutcome::NotFound),
+        Some((kind,)) if kind != LEG_KIND_UNTRACKED => {
+            return Ok(UpdateUntrackedOutcome::NotUntracked);
+        }
+        Some(_) => {}
+    }
+    sqlx::query(
+        "UPDATE journey_legs SET transit_mode = $2, origin_place = $3, destination_place = $4, \
+             line_name = $5, planned_departure = $6, planned_arrival = $7, service_date = $8 \
+         WHERE id = $1",
+    )
+    .bind(leg_id)
+    .bind(&leg.transit_mode)
+    .bind(&leg.origin_place)
+    .bind(&leg.destination_place)
+    .bind(&leg.line_name)
+    .bind(leg.planned_departure)
+    .bind(leg.planned_arrival)
+    .bind(leg.service_date())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(UpdateUntrackedOutcome::Updated)
 }
 
 /// Binds (or re-binds) a leg to a real train working -- the `manual`-mode
@@ -3812,7 +3998,9 @@ mod db_tests {
             {
                 AddLegOutcome::Added(_) => added += 1,
                 AddLegOutcome::AtCap => at_cap += 1,
-                AddLegOutcome::NotFound => panic!("the journey is the caller's"),
+                AddLegOutcome::NotFound | AddLegOutcome::NoSuchLeg => {
+                    panic!("the journey is the caller's")
+                }
             }
         }
         assert_eq!(added, MAX_LEGS_PER_JOURNEY - 1);

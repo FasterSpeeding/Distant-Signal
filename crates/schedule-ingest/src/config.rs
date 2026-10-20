@@ -293,6 +293,226 @@ pub(crate) struct Config {
     /// `/livez` listener and stall window (SVC-08/INF-9).
     #[command(flatten)]
     pub health: common::service_args::HealthArgs,
+
+    /// Which delivery sources run: the SFTP watch directory and the GCS
+    /// bucket (`sources.rs`, `bucket.rs`).
+    #[command(flatten)]
+    pub sources: SourceArgs,
+}
+
+/// The delivery sources (docs/schedule-feed-bucket.md; the env contract is
+/// the bucket chart plan's "The interface contract").
+#[derive(Debug, Clone, clap::Args)]
+pub(crate) struct SourceArgs {
+    /// Scan `WATCH_DIR` (the SFTP landing folder). `false`: never read it.
+    #[arg(long, env, default_value_t = true, action = clap::ArgAction::Set)]
+    pub sftp_source_enabled: bool,
+
+    /// Run the GCS bucket source (`bucket.rs`). Off by default.
+    #[arg(long, env, default_value_t = false, action = clap::ArgAction::Set)]
+    pub bucket_source_enabled: bool,
+
+    /// Which source wins when the two deliver different content within
+    /// `DISAGREEMENT_WINDOW_MINUTES` (decision D5: the bucket): a
+    /// permutation of `bucket,sftp`. Only used with the bucket on.
+    #[arg(long, env, default_value = "bucket,sftp")]
+    pub source_precedence: crate::sources::Precedence,
+
+    /// Different content of the same kind from the two sources within this
+    /// many minutes is a disagreement
+    /// (`DistantSignalScheduleFeedSourcesDisagree`).
+    #[arg(long, env, default_value_t = 120)]
+    pub disagreement_window_minutes: u32,
+
+    #[command(flatten)]
+    pub bucket: BucketArgs,
+}
+
+/// The GCS bucket source (`BUCKET_*`, `GOOGLE_*`). Only read when
+/// `BUCKET_SOURCE_ENABLED`.
+#[derive(Debug, Clone, clap::Args)]
+pub(crate) struct BucketArgs {
+    /// The bucket, listed at its root. Required with the bucket on.
+    #[arg(long, env)]
+    pub bucket_name: Option<String>,
+
+    /// Base URL of the GCS JSON API. Empty: `https://storage.googleapis.com`.
+    /// Set only for a fake-GCS test server.
+    #[arg(long, env)]
+    pub bucket_base_url: Option<String>,
+
+    /// Key mode: the reader service account's JSON key (mounted from a
+    /// sealed Secret). Missing or unreadable is revoked access, retried;
+    /// never logged.
+    #[arg(long, env)]
+    pub google_service_account_path: Option<PathBuf>,
+
+    /// Keyless mode: an `external_account` credential configuration
+    /// (`common::gcp_external_account`). Exactly one of this and
+    /// `GOOGLE_SERVICE_ACCOUNT_PATH`.
+    #[arg(long, env)]
+    pub google_application_credentials: Option<PathBuf>,
+
+    /// Comma-separated, case-insensitive `*` globs of the object names to
+    /// download (the same matcher as `CIF_FILE_PATTERN`). A match is
+    /// downloaded only if it also routes to CIF or (with CORPUS on) CORPUS.
+    #[arg(long, env)]
+    pub bucket_expected_keys: Option<String>,
+
+    /// Seconds between bucket listings.
+    #[arg(long, env, default_value_t = 300)]
+    pub bucket_poll_interval_secs: u64,
+
+    /// Delete a confirmed or unexpected object only once it is this old
+    /// (by its creation time), so the publisher's read-back and scan
+    /// finish first.
+    #[arg(long, env, default_value_t = 3600)]
+    pub bucket_delete_min_age_secs: u64,
+
+    /// Raw objects kept under `STORAGE_DIR/sources/bucket/archive`.
+    #[arg(long, env, default_value_t = 5)]
+    pub bucket_archive_keep: u32,
+
+    /// A listed object larger than this is never downloaded (unexpected,
+    /// reason `size`).
+    #[arg(long, env, default_value_t = 268_435_456)]
+    pub bucket_max_object_bytes: u64,
+
+    /// Downloads per poll; the rest wait for the next poll.
+    #[arg(long, env, default_value_t = 2)]
+    pub bucket_max_downloads_per_poll: u32,
+
+    /// Bytes downloaded per rolling hour (`download_capped` past it).
+    #[arg(long, env, default_value_t = 268_435_456)]
+    pub bucket_max_download_bytes_per_hour: u64,
+
+    /// Bytes downloaded per rolling 24 hours (`download_capped` past it).
+    #[arg(long, env, default_value_t = 1_073_741_824)]
+    pub bucket_max_download_bytes_per_day: u64,
+
+    /// Ceiling of the exponential backoff after errors, and the retry
+    /// interval while access is revoked.
+    #[arg(long, env, default_value_t = 3600)]
+    pub bucket_max_backoff_secs: u64,
+
+    /// Ship the bucket's Cloud Audit Logs to stdout. Not implemented yet
+    /// (the GCS spec's phase 5): a warning at start says so.
+    #[arg(long, env, default_value_t = false, action = clap::ArgAction::Set)]
+    pub bucket_audit_logs_ship: bool,
+
+    /// The audit-log bucket (phase 5).
+    #[arg(long, env)]
+    pub bucket_audit_logs_bucket: Option<String>,
+
+    /// Seconds between audit-log listings (phase 5).
+    #[arg(long, env, default_value_t = 600)]
+    pub bucket_audit_logs_poll_interval_secs: u64,
+}
+
+/// The bucket's credential (exactly one of the two paths).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BucketCredential {
+    /// `GOOGLE_SERVICE_ACCOUNT_PATH`.
+    Key(PathBuf),
+    /// `GOOGLE_APPLICATION_CREDENTIALS`.
+    ExternalAccount(PathBuf),
+}
+
+impl SourceArgs {
+    /// Refuses a configuration the process cannot run: no source at all,
+    /// or the bucket on without what it needs. (The chart refuses the same
+    /// values at render time.)
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if !self.sftp_source_enabled && !self.bucket_source_enabled {
+            anyhow::bail!(
+                "no delivery source: set SFTP_SOURCE_ENABLED=true and/or BUCKET_SOURCE_ENABLED=true"
+            );
+        }
+        if self.bucket_source_enabled {
+            self.bucket.validate()?;
+        }
+        Ok(())
+    }
+
+    /// SFTP alone, every bucket setting at its default (tests).
+    #[cfg(test)]
+    pub(crate) fn sftp_only() -> Self {
+        use clap::Parser as _;
+        #[derive(Parser)]
+        struct Only {
+            #[command(flatten)]
+            sources: SourceArgs,
+        }
+        Only::parse_from(["schedule-ingest"]).sources
+    }
+}
+
+impl BucketArgs {
+    fn validate(&self) -> anyhow::Result<()> {
+        let name = self.bucket_name.as_deref().unwrap_or_default();
+        let valid_name = (3..=63).contains(&name.len())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            && name.as_bytes()[0].is_ascii_alphanumeric()
+            && name.as_bytes()[name.len() - 1].is_ascii_alphanumeric();
+        if !valid_name {
+            anyhow::bail!(
+                "BUCKET_NAME must be a GCS bucket name (3-63 of a-z, 0-9, - and _, no dots), got {name:?}"
+            );
+        }
+        if self
+            .bucket_expected_keys
+            .as_deref()
+            .is_none_or(|keys| keys.split(',').all(|k| k.trim().is_empty()))
+        {
+            anyhow::bail!("BUCKET_EXPECTED_KEYS must list at least one object name (glob)");
+        }
+        if let Some(url) = self.bucket_base_url.as_deref().filter(|u| !u.is_empty())
+            && !(url.starts_with("https://") || url.starts_with("http://"))
+        {
+            anyhow::bail!("BUCKET_BASE_URL must be an http(s):// URL, got {url:?}");
+        }
+        self.credential()?;
+        if self.bucket_poll_interval_secs == 0 {
+            anyhow::bail!("BUCKET_POLL_INTERVAL_SECS must be at least 1");
+        }
+        if self.bucket_max_backoff_secs < self.bucket_poll_interval_secs {
+            anyhow::bail!("BUCKET_MAX_BACKOFF_SECS must be at least BUCKET_POLL_INTERVAL_SECS");
+        }
+        if self.bucket_archive_keep == 0 || self.bucket_max_downloads_per_poll == 0 {
+            anyhow::bail!(
+                "BUCKET_ARCHIVE_KEEP and BUCKET_MAX_DOWNLOADS_PER_POLL must be at least 1"
+            );
+        }
+        if !(1 <= self.bucket_max_object_bytes
+            && self.bucket_max_object_bytes <= self.bucket_max_download_bytes_per_hour
+            && self.bucket_max_download_bytes_per_hour <= self.bucket_max_download_bytes_per_day)
+        {
+            anyhow::bail!(
+                "the bucket caps need 1 <= BUCKET_MAX_OBJECT_BYTES <= BUCKET_MAX_DOWNLOAD_BYTES_PER_HOUR <= BUCKET_MAX_DOWNLOAD_BYTES_PER_DAY"
+            );
+        }
+        Ok(())
+    }
+
+    /// Exactly one of the two credential paths.
+    pub(crate) fn credential(&self) -> anyhow::Result<BucketCredential> {
+        let nonempty = |p: &Option<PathBuf>| p.clone().filter(|p| !p.as_os_str().is_empty());
+        match (
+            nonempty(&self.google_service_account_path),
+            nonempty(&self.google_application_credentials),
+        ) {
+            (Some(key), None) => Ok(BucketCredential::Key(key)),
+            (None, Some(config)) => Ok(BucketCredential::ExternalAccount(config)),
+            (Some(_), Some(_)) => anyhow::bail!(
+                "set exactly one of GOOGLE_SERVICE_ACCOUNT_PATH (key) and GOOGLE_APPLICATION_CREDENTIALS (keyless), not both"
+            ),
+            (None, None) => anyhow::bail!(
+                "the bucket source needs GOOGLE_SERVICE_ACCOUNT_PATH (key) or GOOGLE_APPLICATION_CREDENTIALS (keyless)"
+            ),
+        }
+    }
 }
 
 /// Every routing/CORPUS/URL env var this `Config` declares must be set on
@@ -349,14 +569,30 @@ mod chart_env_wiring_tests {
             // (checked below).
             .filter(|env| *env != "DATABASE_URL")
             .filter(|env| {
-                env.starts_with("CORPUS_") || env.starts_with("CIF_") || env.ends_with("_URL")
+                ["CORPUS_", "CIF_", "SFTP_SOURCE_", "BUCKET_", "SOURCE_", "DISAGREEMENT_", "GOOGLE_"]
+                    .iter()
+                    .any(|prefix| env.starts_with(prefix))
+                    || env.ends_with("_URL")
             })
             .map(str::to_string)
             .collect();
         assert!(
-            declared.len() >= 15,
-            "sanity check: expected the CIF_*, CORPUS_* and *_URL env vars; got {declared:?}"
+            declared.len() >= 35,
+            "sanity check: expected the CIF_*, CORPUS_*, source, BUCKET_*, GOOGLE_* and *_URL env vars; got {declared:?}"
         );
+        for env in [
+            "SFTP_SOURCE_ENABLED",
+            "BUCKET_SOURCE_ENABLED",
+            "SOURCE_PRECEDENCE",
+            "DISAGREEMENT_WINDOW_MINUTES",
+            "BUCKET_NAME",
+            "GOOGLE_SERVICE_ACCOUNT_PATH",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "BUCKET_EXPECTED_KEYS",
+            "BUCKET_MAX_BACKOFF_SECS",
+        ] {
+            assert!(declared.iter().any(|d| d == env), "{env} is declared");
+        }
         let missing: Vec<&String> = declared
             .iter()
             .filter(|env| !block.contains(&format!("- name: {env}\n")))
@@ -424,5 +660,116 @@ mod chart_env_wiring_tests {
             Some("DATABASE_URL")
         );
         assert!(arg("database_url").is_required_set());
+    }
+}
+
+#[cfg(test)]
+mod source_args_tests {
+    use super::*;
+    use crate::sources::{Precedence, SourceId};
+
+    #[derive(clap::Parser)]
+    struct Only {
+        #[command(flatten)]
+        sources: SourceArgs,
+    }
+
+    fn parse(args: &[&str]) -> SourceArgs {
+        Only::try_parse_from(std::iter::once("schedule-ingest").chain(args.iter().copied()))
+            .unwrap()
+            .sources
+    }
+
+    const BUCKET_ON: [&str; 6] = [
+        "--bucket-source-enabled=true",
+        "--bucket-name=example-ds-ingest",
+        "--bucket-expected-keys=timetable_full.zip,CORPUSExtract.json.gz",
+        "--google-service-account-path=/var/run/secrets/distant-signal/gcs/service-account.json",
+        "--bucket-poll-interval-secs=300",
+        "--bucket-max-backoff-secs=3600",
+    ];
+
+    /// The contract's code defaults: SFTP on, the bucket off, D5's
+    /// precedence, a two-hour window, and the chart's numeric defaults.
+    #[test]
+    fn the_defaults_are_sftp_only_and_match_the_chart() {
+        let args = SourceArgs::sftp_only();
+        assert!(args.sftp_source_enabled);
+        assert!(!args.bucket_source_enabled);
+        assert_eq!(args.source_precedence, Precedence::default());
+        assert_eq!(args.source_precedence.0[0], SourceId::Bucket);
+        assert_eq!(args.disagreement_window_minutes, 120);
+        let b = &args.bucket;
+        assert_eq!(b.bucket_poll_interval_secs, 300);
+        assert_eq!(b.bucket_delete_min_age_secs, 3600);
+        assert_eq!(b.bucket_archive_keep, 5);
+        assert_eq!(b.bucket_max_object_bytes, 268_435_456);
+        assert_eq!(b.bucket_max_downloads_per_poll, 2);
+        assert_eq!(b.bucket_max_download_bytes_per_hour, 268_435_456);
+        assert_eq!(b.bucket_max_download_bytes_per_day, 1_073_741_824);
+        assert_eq!(b.bucket_max_backoff_secs, 3600);
+        assert!(!b.bucket_audit_logs_ship);
+        // Off, nothing else is checked: a stray GOOGLE_* var is harmless.
+        args.validate().unwrap();
+    }
+
+    #[test]
+    fn a_bucket_configuration_is_validated_at_start() {
+        parse(&BUCKET_ON).validate().unwrap();
+        let keyless = parse(&[
+            "--bucket-source-enabled=true",
+            "--sftp-source-enabled=false",
+            "--bucket-name=example-ds-ingest",
+            "--bucket-expected-keys=timetable_full.zip",
+            "--google-application-credentials=/var/run/secrets/distant-signal/gcs/credential-config.json",
+            "--source-precedence=sftp,bucket",
+        ]);
+        keyless.validate().unwrap();
+        assert!(matches!(
+            keyless.bucket.credential().unwrap(),
+            BucketCredential::ExternalAccount(_)
+        ));
+        assert_eq!(keyless.source_precedence.0[0], SourceId::Sftp);
+
+        // BUCKET_ON with `extra` replacing (or adding) flags.
+        let refused = |extra: &[&str]| {
+            let flag = |arg: &str| arg.split('=').next().unwrap_or_default().to_string();
+            let mut args: Vec<&str> = BUCKET_ON
+                .iter()
+                .copied()
+                .filter(|arg| !extra.iter().any(|e| flag(e) == flag(arg)))
+                .collect();
+            args.extend_from_slice(extra);
+            parse(&args).validate().unwrap_err().to_string()
+        };
+        assert!(refused(&["--bucket-name=Bad.Name"]).contains("BUCKET_NAME"));
+        assert!(refused(&["--bucket-expected-keys= , "]).contains("BUCKET_EXPECTED_KEYS"));
+        assert!(refused(&["--google-application-credentials=/x"]).contains("exactly one"));
+        let keyless_without_config: Vec<&str> = BUCKET_ON
+            .iter()
+            .copied()
+            .filter(|arg| !arg.starts_with("--google-"))
+            .collect();
+        assert!(
+            parse(&keyless_without_config)
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("needs")
+        );
+        assert!(refused(&["--bucket-max-backoff-secs=60"]).contains("BACKOFF"));
+        assert!(refused(&["--bucket-max-object-bytes=999999999999"]).contains("caps"));
+        assert!(refused(&["--bucket-base-url=ftp://x"]).contains("BUCKET_BASE_URL"));
+        assert!(
+            parse(&["--sftp-source-enabled=false"])
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("no delivery source")
+        );
+        assert!(
+            Only::try_parse_from(["x", "--source-precedence=bucket,bucket"]).is_err(),
+            "not a permutation"
+        );
     }
 }

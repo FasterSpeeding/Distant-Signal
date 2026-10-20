@@ -22,6 +22,7 @@ import { formatDate, formatTime } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
+import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
 import { journeyListItemStatusGroup } from '@/lib/journeyStatus';
@@ -154,26 +155,17 @@ export default async function MyTrackedTrainsPage() {
   // trains") would be both wrong and -- since it's the branch that hides
   // the list entirely -- the very bug this page had.
   const journeyRows = journeys ?? [];
-  // A journey's CURRENT leg, once matched, owns a real `train_subscriptions`
-  // row -- which is also one of this user's own tracked trains, so
-  // `getMyTrackedTrains()` returns it too. Showing both would put the same
-  // service on screen twice under two different nouns, which is exactly
-  // the confusion the review's I22 names. The journey row wins: it links
-  // to `/journeys/{id}` (the page the user was shown when they created it)
-  // and it knows about the journey's other legs, which the bare train row
-  // does not.
-  //
-  // HONEST LIMIT: `GET /Journeys/mine` surfaces only the current leg's
-  // `trainSubscriptionId`, so an EARLIER, already-completed leg's train
-  // still appears as its own row. That is a degraded case, not a wrong
-  // one -- a completed train genuinely is a tracked train -- and closing
-  // it properly means returning every leg's subscription id from that
-  // endpoint, which belongs with the wider I22 vocabulary work rather
-  // than here.
-  const journeyTrainIds = new Set(
-    journeyRows.map((journey) => journey.trainSubscriptionId).filter((id): id is number => id !== null),
-  );
-  const standaloneTrains = trains.filter((train) => !journeyTrainIds.has(train.id));
+  // A train a journey leg is bound to is also one of this user's own
+  // tracked trains, so `getMyTrackedTrains()` returns it too. Showing both
+  // would put the same service on screen twice under two different nouns
+  // (the review's I22). The journey row wins, for EVERY leg's train, not
+  // only the current leg's: it links to `/journeys/{id}` and knows about
+  // the journey's other legs, which a bare train row does not. Tickets
+  // attached to a folded train move under its journey, so they stay on
+  // this page. See `splitJourneyTrains` for the rule and its fallbacks.
+  const { standalone: standaloneTrains, trainIdsByJourney } = splitJourneyTrains(trains, journeys);
+  const ticketsForJourney = (journeyId: number): TicketListItem[] =>
+    (trainIdsByJourney.get(journeyId) ?? []).flatMap((trainId) => ticketsByTrain.get(trainId) ?? []);
 
   // `hasOwnContent` still gates the reliability digest ALONE and so still
   // counts only trains and tickets -- a journey with no train picked yet is
@@ -200,7 +192,7 @@ export default async function MyTrackedTrainsPage() {
             <Stack gap="xs">
               <SectionTitle>Your journeys</SectionTitle>
               {journeyRows.map((journey) => (
-                <JourneyListRow key={journey.id} journey={journey} />
+                <JourneyListRow key={journey.id} journey={journey} tickets={ticketsForJourney(journey.id)} />
               ))}
             </Stack>
           )}
@@ -296,7 +288,7 @@ function TrackHeader({ authenticated = false }: { authenticated?: boolean }) {
  * `Group justify="space-between"`, for the shrink-safe title/trailing
  * behaviour the primitive encodes (review P2) -- the same reason
  * `ScheduleRow` is built on it. */
-function JourneyListRow({ journey }: { journey: JourneyListItem }) {
+function JourneyListRow({ journey, tickets }: { journey: JourneyListItem; tickets: TicketListItem[] }) {
   const name = journeyListItemNameInput(journey);
   const preview = journeyPreviewLine(name);
 
@@ -319,8 +311,40 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
             {preview}
           </Text>
         )}
+        <AttachedTickets tickets={tickets} />
       </Stack>
     </Card>
+  );
+}
+
+/** Tickets attached to a tracked train, under its row -- or under its
+ * journey's row, once the train is folded into the journey. Only the row's
+ * header is a link, so these controls never nest inside one. */
+function AttachedTickets({ tickets }: { tickets: TicketListItem[] }) {
+  if (tickets.length === 0) {
+    return null;
+  }
+  return (
+    <Stack gap="md" pl="md" className="attachedTickets">
+      {tickets.map((ticket) => (
+        <Stack key={ticket.id} gap={4}>
+          <TicketSummary ticket={ticket} />
+          {/* Imported and used exactly as-is, no new props, no
+              wrapper -- literal reuse of the already-reviewed
+              rendering, same as both predecessor pages. */}
+          <DelayRepayEstimate response={delayRepayResponse(ticket)} />
+          <Group gap="xs">
+            <RenameTicketButton
+              ticketId={ticket.id}
+              customName={ticket.customName}
+              defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` · ${ticket.ticketType}` : ''}`}
+            />
+            <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
+            <DeleteTicketButton ticketId={ticket.id} />
+          </Group>
+        </Stack>
+      ))}
+    </Stack>
   );
 }
 
@@ -402,28 +426,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
             />
           }
         />
-        {tickets.length > 0 && (
-          <Stack gap="md" pl="md" className="attachedTickets">
-            {tickets.map((ticket) => (
-              <Stack key={ticket.id} gap={4}>
-                <TicketSummary ticket={ticket} />
-                {/* Imported and used exactly as-is, no new props, no
-                    wrapper -- literal reuse of the already-reviewed
-                    rendering, same as both predecessor pages. */}
-                <DelayRepayEstimate response={delayRepayResponse(ticket)} />
-                <Group gap="xs">
-                  <RenameTicketButton
-                    ticketId={ticket.id}
-                    customName={ticket.customName}
-                    defaultName={`${ticket.operator ?? 'Ticket'}${ticket.ticketType ? ` · ${ticket.ticketType}` : ''}`}
-                  />
-                  <CreateJourneyLegFromTicketButton ticketId={ticket.id} />
-                  <DeleteTicketButton ticketId={ticket.id} />
-                </Group>
-              </Stack>
-            ))}
-          </Stack>
-        )}
+        <AttachedTickets tickets={tickets} />
       </Stack>
     </Card>
   );

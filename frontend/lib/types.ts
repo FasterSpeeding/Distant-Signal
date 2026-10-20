@@ -597,7 +597,7 @@ export interface TrackingPhaseFields {
 }
 
 /** An untracked leg's mode (`data::journeys::TRANSIT_MODES`). */
-export type TransitMode = 'tube' | 'bus' | 'tram' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
+export type TransitMode = 'tube' | 'bus' | 'tram' | 'metro' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
 
 /** An untracked leg's state from the clock alone, computed by the api. */
 export type UntrackedStatus = 'planned' | 'inProgress' | 'done';
@@ -1089,6 +1089,10 @@ export interface TrackedTrainListItem extends ServiceModeFields, TrackingPhaseFi
   // `DeleteTrainButton` off a `TrackedTrainListItem` match (`GET
   // /Train/mine`), not a `TrackedTrainState`.
   sharedGroupCount: number;
+  /** The caller's journeys this train belongs to (any leg, ascending);
+   * empty for a train tracked on its own. Optional: absent from an older
+   * backend. See `lib/journeyTrains.ts`. */
+  journeyIds?: number[];
 }
 
 /** `common::TimeWindow` on the wire -- `crates/common/src/lib.rs`. Both

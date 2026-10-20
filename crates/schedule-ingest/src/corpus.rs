@@ -81,6 +81,7 @@ use crate::delivery::delivery_dir_name;
 use crate::pattern::{NLC_PREFIX, Routing, is_nlc_drift_name, is_nlc_xml_name};
 use crate::scan::{DirSnapshot, StabilityTracker, scan_incoming};
 use crate::sink::{CorpusLoadRequest, IngestSink};
+use crate::sources::Lane;
 
 /// Counts rejected CORPUS files, by `format`; `DistantSignalCorpusRejected`
 /// reads it.
@@ -166,6 +167,8 @@ impl std::fmt::Display for Rejected {
 enum Dest {
     Loaded,
     Rejected,
+    /// Settled by the other delivery source (`sources.rs`): not loaded.
+    Superseded,
 }
 
 /// The archive directories under `storage_dir`.
@@ -189,6 +192,7 @@ impl Dirs {
         match dest {
             Dest::Loaded => &self.loaded,
             Dest::Rejected => &self.rejected,
+            Dest::Superseded => &self.superseded,
         }
     }
 }
@@ -608,7 +612,7 @@ fn read_and_parse(watch_dir: &Path, file: &Candidate, args: &CorpusArgs) -> Read
 
 /// Counts, logs and archives a file that can never be loaded.
 fn reject(
-    watch_dir: &Path,
+    lane: &Lane<'_>,
     dirs: &Dirs,
     keep: u32,
     file: &Candidate,
@@ -616,12 +620,19 @@ fn reject(
     rejected: &Rejected,
     state: &mut CorpusState,
 ) {
+    let watch_dir = lane.watch_dir;
     tracing::error!(file = %file.name, format = file.format.as_str(), reason = %rejected, "rejecting CORPUS file; it is not loaded and is moved to the rejected archive");
-    crate::audit::decision(
+    lane.ctx.audit(
         delivered,
         DateTime::<Utc>::from(file.mtime),
         crate::audit::Outcome::CorpusRejected,
         Some(&rejected.0),
+    );
+    lane.ctx.record(
+        crate::sources::Kind::of_corpus(file.format),
+        delivered,
+        DateTime::<Utc>::from(file.mtime),
+        crate::sources::Settled::Quarantined,
     );
     metrics::counter!(common::metrics::metric_name(REJECTED_METRIC), "format" => file.format.as_str())
         .increment(1);
@@ -727,17 +738,18 @@ fn compare_with_other(
 
 /// Archives every candidate but `except` unloaded, as superseded.
 fn supersede(
+    lane: &Lane<'_>,
     all: &[Candidate],
     except: Option<&str>,
     reason: &str,
-    watch_dir: &Path,
     dirs: &Dirs,
     keep: u32,
 ) {
+    let watch_dir = lane.watch_dir;
     for old in all.iter().filter(|c| Some(c.name.as_str()) != except) {
         tracing::info!(file = %old.name, reason = %reason, "archiving a CORPUS file without loading it");
         match crate::audit::DeliveredFile::hash_file(&old.name, &watch_dir.join(&old.name)) {
-            Ok(superseded) => crate::audit::decision(
+            Ok(superseded) => lane.ctx.audit(
                 &superseded,
                 DateTime::<Utc>::from(old.mtime),
                 crate::audit::Outcome::CorpusRejected,
@@ -767,15 +779,15 @@ fn supersede(
 )]
 pub(crate) async fn run_corpus_cycle(
     sink: &impl IngestSink,
-    watch_dir: &Path,
+    lane: &Lane<'_>,
     storage_dir: &Path,
     args: &CorpusArgs,
     routing: &Routing,
-    stability_cycles: u32,
     state: &mut CorpusState,
 ) -> anyhow::Result<()> {
+    let watch_dir = lane.watch_dir;
     let snapshot = scan_incoming(watch_dir).inspect_err(|_| count_failure("scan"))?;
-    let just_stabilized = state.tracker.observe(&snapshot, stability_cycles);
+    let just_stabilized = state.tracker.observe(&snapshot, lane.stability_cycles);
     state.known_stable.extend(just_stabilized);
     state
         .known_stable
@@ -820,7 +832,7 @@ pub(crate) async fn run_corpus_cycle(
             match read_and_parse(watch_dir, newest, args) {
                 ReadOutcome::Retry => return Ok(()),
                 ReadOutcome::Parsed(delivered, Err(rejected)) => {
-                    reject(watch_dir, &dirs, keep, newest, &delivered, &rejected, state);
+                    reject(lane, &dirs, keep, newest, &delivered, &rejected, state);
                     return Ok(());
                 }
                 ReadOutcome::Parsed(_, Ok(parsed)) => {
@@ -835,7 +847,7 @@ pub(crate) async fn run_corpus_cycle(
                 preferred.as_str(),
                 args.corpus_preferred_grace_days
             );
-            supersede(&all, None, &reason, watch_dir, &dirs, keep);
+            supersede(lane, &all, None, &reason, &dirs, keep);
             return Ok(());
         }
     };
@@ -844,15 +856,48 @@ pub(crate) async fn run_corpus_cycle(
     let (delivered, parsed) = match read_and_parse(watch_dir, &winner, args) {
         ReadOutcome::Retry => return Ok(()),
         ReadOutcome::Parsed(delivered, Err(rejected)) => {
-            reject(
-                watch_dir, &dirs, keep, &winner, &delivered, &rejected, state,
-            );
+            reject(lane, &dirs, keep, &winner, &delivered, &rejected, state);
             return Ok(());
         }
         ReadOutcome::Parsed(delivered, Ok(parsed)) => (delivered, parsed),
     };
     note_xml(&winner, &parsed, &dirs);
     let locations = parsed.locations;
+
+    // Several sources (`sources.rs`): the other source's copy of the same
+    // content is not loaded again, and a different one within the window
+    // is settled by SOURCE_PRECEDENCE. Either way this file (and every
+    // older candidate) is archived unloaded.
+    let kind = crate::sources::Kind::of_corpus(winner.format);
+    if let Some(multi) = lane.ctx.multi {
+        match multi.judge(&lane.ctx.arrival(kind, &delivered, delivered_at)) {
+            crate::sources::Verdict::Proceed { .. } => {}
+            verdict => {
+                tracing::info!(file = %winner.name, source = lane.ctx.source.as_str(), verdict = ?verdict, "CORPUS file not loaded: the other delivery source settled it");
+                lane.ctx
+                    .settle_unloaded(kind, &delivered, delivered_at, &verdict);
+                state.handled = Some((
+                    winner.name.clone(),
+                    winner.mtime,
+                    winner.len,
+                    Dest::Superseded,
+                ));
+                archive(
+                    watch_dir,
+                    &winner.name,
+                    (winner.mtime, winner.len),
+                    dirs.of(Dest::Superseded),
+                    keep,
+                );
+                let reason = format!(
+                    "superseded by {} (settled by the other delivery source); not loaded",
+                    winner.name
+                );
+                supersede(lane, &all, Some(&winner.name), &reason, &dirs, keep);
+                return Ok(());
+            }
+        }
+    }
 
     let request = CorpusLoadRequest {
         delivered_at,
@@ -876,11 +921,17 @@ pub(crate) async fn run_corpus_cycle(
         rows = locations.len(),
         "loaded CORPUS delivery"
     );
-    crate::audit::decision(
+    lane.ctx.audit(
         &delivered,
         delivered_at,
         crate::audit::Outcome::Accepted,
         None,
+    );
+    lane.ctx.record(
+        kind,
+        &delivered,
+        delivered_at,
+        crate::sources::Settled::Accepted,
     );
     metrics::gauge!(common::metrics::metric_name(LAST_LOAD_METRIC))
         .set(delivered_at.timestamp() as f64);
@@ -904,7 +955,7 @@ pub(crate) async fn run_corpus_cycle(
     // superseded by the one just loaded: archive them unloaded, so a later
     // cycle can never load older (or non-preferred) data over it.
     let reason = format!("superseded by {} (loaded); not loaded", winner.name);
-    supersede(&all, Some(&winner.name), &reason, watch_dir, &dirs, keep);
+    supersede(lane, &all, Some(&winner.name), &reason, &dirs, keep);
     Ok(())
 }
 
@@ -1095,6 +1146,15 @@ pub(crate) mod tests {
         }
     }
 
+    /// The SFTP watch directory alone, `stability_cycles` = 2.
+    pub(crate) fn sftp_lane(watch: &Path) -> Lane<'_> {
+        Lane {
+            ctx: crate::sources::LaneCtx::SFTP_ONLY,
+            watch_dir: watch,
+            stability_cycles: 2,
+        }
+    }
+
     /// Runs `cycles` CORPUS cycles (`stability_cycles` = 2).
     async fn run(
         watch: &Path,
@@ -1107,11 +1167,10 @@ pub(crate) mod tests {
         for _ in 0..cycles {
             run_corpus_cycle(
                 sink,
-                watch,
+                &sftp_lane(watch),
                 storage,
                 args,
                 &Routing::with_corpus(),
-                2,
                 state,
             )
             .await
@@ -1597,11 +1656,10 @@ pub(crate) mod tests {
         for _ in 0..3 {
             run_corpus_cycle(
                 &sink,
-                watch.path(),
+                &sftp_lane(watch.path()),
                 storage.path(),
                 &args(),
                 &routing,
-                2,
                 &mut state,
             )
             .await

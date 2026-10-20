@@ -1,7 +1,8 @@
 # Schedule feed: a cloud-bucket delivery source alongside SFTP
 
-Design, 2026-10-02. Status: **proposed**, with the user's decisions D1–D13
-recorded the same day (below). Nothing here is deployed.
+Design, 2026-10-02. Status: **built, not deployed** (2026-10-20, see
+"Implementation status" below), with the user's decisions D1–D13 recorded
+on 2026-10-02 and D14 on 2026-10-06. Nothing here is deployed.
 
 The bucket is **Google Cloud Storage** (D8). The first draft targeted AWS S3.
 
@@ -39,6 +40,47 @@ Cloud Monitoring alerts → Pub/Sub → a function that removes bucket
 bindings, never billing (§5, "Usage limits").
 
 Still open: §14.
+
+## Implementation status (2026-10-20, DS-22)
+
+The schedule-ingest reader is built, off by default, against the chart's
+env contract (the chart plan's "The interface contract") and the existing
+alerts' metric names. Nothing is provisioned. What differs from §9's
+sketch, and why:
+
+- **No `object_store`.** `crates/schedule-ingest/src/gcs.rs` is a small
+  GCS **JSON API** client over the workspace's `reqwest` (root listing with
+  `delimiter=/` and `nextPageToken`, `alt=media` pinned to a generation,
+  `DELETE ...?ifGenerationMatch`). The JSON API gives CRC32C, MD5,
+  generation and creation time in the listing, so no separate metadata
+  call. Key mode signs the same self-signed RS256 JWT `object_store` does
+  (`aws-lc-rs`, already locked), re-reading the key on each refresh;
+  keyless mode is `common::gcp_external_account` directly. No new crate
+  enters `Cargo.lock`.
+- **No `Source` trait.** The reader (`bucket.rs`) is its own task and
+  hands a verified object to the pipeline by hard-linking it into
+  `sources/bucket/incoming/`, which the scan and CORPUS cycles treat as a
+  second watch directory (a *lane*, `sources.rs`). Every pipeline step
+  (extraction caps, CIF checks, quarantine, CORPUS JSON and NLC XML) is the
+  SFTP path's own code, unchanged.
+- **One content ledger instead of `.delivery-ingested` v2 and
+  `.delivery-sources`.** `sources/ledger.jsonl` records every decision
+  (`accepted`, `quarantined`, `duplicate`, `superseded`) with source, name,
+  size, SHA-256 and `delivered_at`, and only exists with the bucket on.
+  Dedup is cross-source only: SFTP re-delivering identical bytes still
+  behaves as before.
+- **Precedence across poll order.** The lanes run in `SOURCE_PRECEDENCE`
+  order. When the winner of a disagreement is ingested after the loser and
+  the loser's delivery directory is newer (or the same second), the
+  loser's directory is retired (renamed to `.stale-superseded-*` and
+  removed) so schedule-reference publishes the winner. A quarantined
+  winner never promotes the loser.
+- **Not built:** the api's `delivery_source` column (§9 "Records", plan
+  3.3), the audit-log tailer (phase 5; `auditLogs.ship` logs a warning),
+  and Pub/Sub (phase 6). `expectedKeys` now includes `NLC*.xml.gz`.
+
+The remaining switch-on steps are in
+[docs/schedule-feed-bucket.md](../../schedule-feed-bucket.md#switching-it-on).
 
 ## Summary
 

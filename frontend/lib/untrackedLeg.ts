@@ -20,6 +20,7 @@ export const TRANSIT_MODES: readonly { value: TransitMode; label: string }[] = [
   { value: 'tube', label: 'Tube' },
   { value: 'bus', label: 'Bus' },
   { value: 'tram', label: 'Tram' },
+  { value: 'metro', label: 'Metro' },
   { value: 'rail', label: 'Train (not tracked)' },
   { value: 'walk', label: 'Walk' },
   { value: 'ferry', label: 'Ferry' },
