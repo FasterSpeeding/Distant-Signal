@@ -500,6 +500,49 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       expect(screen.getByText('Pending match')).toBeInTheDocument();
     });
 
+    // The reported mismatch: the owner's own row said "Planned" while the
+    // same train, shared from a group, said "Pending match". The shared
+    // row now carries the owner's `trackingPhase` and `serviceMode`.
+    it('a shared train reads the same tracking phase and mode words as an own row', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+        sharedTrain({
+          trainSubscriptionId: 801,
+          resolutionStatus: 'pending',
+          status: null,
+          delayMinutes: null,
+          trackingPhase: 'planned',
+        }),
+        sharedTrain({
+          trainSubscriptionId: 802,
+          resolutionStatus: 'pending',
+          trainUid: 'S99998',
+          status: null,
+          delayMinutes: null,
+          trackingPhase: 'noTimetable',
+        }),
+        sharedTrain({
+          trainSubscriptionId: 803,
+          resolutionStatus: 'schedule_matched',
+          trainUid: 'B99999',
+          status: null,
+          delayMinutes: null,
+          trackingPhase: 'timetableOnly',
+          serviceMode: 'bus',
+          liveTracking: false,
+        }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText('Planned')).toBeInTheDocument();
+      expect(screen.getByText('Not in the timetable')).toBeInTheDocument();
+      expect(screen.getByText('Bus service')).toBeInTheDocument();
+      expect(screen.getByText('Timetabled only')).toBeInTheDocument();
+      expect(screen.queryByText('Pending match')).not.toBeInTheDocument();
+    });
+
     it('renders the shared train’s live status and delay badges, same as an own row', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);

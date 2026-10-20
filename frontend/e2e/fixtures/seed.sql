@@ -364,6 +364,66 @@ FROM sub
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- What fixture-member shares into the group (trackingPhase on group and
+-- shared rows, 2026-10-20): their own tracking of the planned W77777, a
+-- timetabled bus (W88888) and a walk-and-Tube journey with no train, all
+-- in 2099. The owner sees the two trains as shared rows on /track/mine
+-- ("Planned", "Bus service" + "Timetabled only", as on their own rows)
+-- and everything on /groups/fixture-group-1, with the owner's
+-- door-to-door journey above shared in too. Inserted after every row
+-- whose id a spec reads (E2E_TRACKING_ID, E2E_PLANNED_TRACKING_ID,
+-- E2E_JOURNEY_ID), so those ids don't move.
+-- ---------------------------------------------------------------------
+INSERT INTO trains (train_uid, service_date, created_at)
+VALUES ('W88888', '2099-01-05', NOW())
+ON CONFLICT (train_uid, service_date) DO NOTHING;
+
+INSERT INTO schedule_destination_departures (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs)
+VALUES ('2099-01-05', 'EUS', '09:00', 'W88888', 'KGX', 'KGX')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO schedule_services (service_date, uid, mode, stp)
+VALUES ('2099-01-05', 'W88888', 'bus', 'P')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO train_subscriptions (user_id, service_date, pin_origin_crs, pin_destination_crs, resolution_status, tracked_at, trains_id, notifications_enabled)
+SELECT 'fixture-member', '2099-01-05', 'KGX', v.destination, v.resolution, NOW(), t.id, TRUE
+FROM (VALUES ('W77777', 'EDB', 'pending'), ('W88888', 'EUS', 'schedule_matched')) AS v(uid, destination, resolution)
+JOIN trains t ON t.train_uid = v.uid AND t.service_date = '2099-01-05'
+WHERE NOT EXISTS (
+  SELECT 1 FROM train_subscriptions ts WHERE ts.trains_id = t.id AND ts.user_id = 'fixture-member'
+)
+ORDER BY v.uid;
+
+INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at)
+SELECT 'fixture-group-1', ts.id, 'fixture-member', NOW()
+FROM train_subscriptions ts
+JOIN trains t ON t.id = ts.trains_id
+WHERE ts.user_id = 'fixture-member' AND t.train_uid IN ('W77777', 'W88888') AND t.service_date = '2099-01-05'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO journeys (user_id, custom_name, created_at, updated_at)
+SELECT 'fixture-member', 'Fixture walk and Tube', NOW(), NOW()
+WHERE NOT EXISTS (SELECT 1 FROM journeys WHERE custom_name = 'Fixture walk and Tube');
+
+WITH j AS (
+  SELECT id FROM journeys WHERE custom_name = 'Fixture walk and Tube'
+)
+INSERT INTO journey_legs (journey_id, leg_order, service_date, match_mode, kind, transit_mode, line_name, origin_place, destination_place, planned_departure, planned_arrival)
+SELECT j.id, v.leg_order, '2099-01-05', 'manual', 'untracked', v.mode, v.line, v.origin, v.destination, v.departure::timestamptz, v.arrival::timestamptz
+FROM j, (VALUES
+  (1, 'walk', NULL, 'Islington', 'Angel', '2099-01-05T08:00:00Z', '2099-01-05T08:10:00Z'),
+  (2, 'tube', 'Northern line', 'Angel', 'Bank', '2099-01-05T08:12:00Z', '2099-01-05T08:20:00Z')
+) AS v(leg_order, mode, line, origin, destination, departure, arrival)
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+INSERT INTO group_journeys (group_id, journey_id, added_by, added_at)
+SELECT 'fixture-group-1', j.id, j.user_id, NOW()
+FROM journeys j
+WHERE j.custom_name IN ('Fixture door to door', 'Fixture walk and Tube')
+ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- Transit: a small Manchester Metrolink network (transit networks spec;
 -- the pages under /transit, shown because ci.yml's frontend-e2e job sets
 -- API_TRANSIT_NETWORKS=metrolink). Two lines, three stations, a few trams
