@@ -361,6 +361,9 @@ used, rather than as a literal in a component.
   route falls back to `public/opengraph-image.png`, the template's no-title
   form. A route with its own image passes `OWN_PREVIEW_IMAGE` to
   `pageMetadata`: an explicit card image would otherwise win over it.
+  The bare arm is cropped to `signalMarkBounds` (the shape's own extent,
+  raised fishtail tip included), never a hand-picked box. Re-save
+  `public/opengraph-image.png` whenever the template or the mark changes.
 - **Preferences** (`app/account/preferences/page.tsx`): open to everyone,
   never a redirect. Each section is a `PreferencesSection` card.
   - Device-local, no account needed: Appearance (colour theme, pride
