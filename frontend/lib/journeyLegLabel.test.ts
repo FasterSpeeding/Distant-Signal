@@ -34,6 +34,14 @@ describe('legEndpointName', () => {
     expect(legEndpointName('YRK', stops, noPin, 'origin')).toBe('York');
   });
 
+  it('skips a passing point that shares the CRS', () => {
+    const stops = [
+      stop({ crs: 'WFJ', name: 'Watford Junction (passed)', passingPoint: true }),
+      stop({ crs: 'WFJ', name: 'Watford Junction' }),
+    ];
+    expect(legEndpointName('WFJ', stops, noPin, 'destination')).toBe('Watford Junction');
+  });
+
   it('matches CRS case-insensitively', () => {
     const stops = [stop({ crs: 'YRK', name: 'York' })];
     expect(legEndpointName('yrk', stops, noPin, 'origin')).toBe('York');
