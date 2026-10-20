@@ -921,6 +921,50 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       expect(screen.queryByText(byVisibleText(/WAT to WOK/))).not.toBeInTheDocument();
     });
 
+    // The reported bug: legs 2 onward came back as standalone tracked
+    // trains, because only the current leg's train was matched.
+    it("folds every leg's train into its journey, not just the current leg's", async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+        train({ id: 295, journeyIds: [169] }),
+        train({ id: 296, pinOriginCrs: 'YRK', pinDestinationCrs: 'NCL', journeyIds: [169] }),
+        train({ id: 297, pinOriginCrs: 'NCL', pinDestinationCrs: 'EDB', journeyIds: [169] }),
+        train({ id: 7, pinOriginCrs: 'PAD', pinDestinationCrs: 'RDG', journeyIds: [] }),
+      ]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([journey({ matchMode: 'manual', trainSubscriptionId: 295 })]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/169');
+      expect(screen.queryByText(byVisibleText(/WAT to WOK/))).not.toBeInTheDocument();
+      expect(screen.queryByText(byVisibleText(/YRK to NCL/))).not.toBeInTheDocument();
+      expect(screen.queryByText(byVisibleText(/NCL to EDB/))).not.toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
+    });
+
+    it("keeps a folded train's ticket on the page, under its journey", async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 296, journeyIds: [169] })]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([
+        ticket({ id: 41, trackedTrainId: 296, operator: 'Grand Central' }),
+      ]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.queryByText(byVisibleText(/WAT to WOK/))).not.toBeInTheDocument();
+      expect(screen.getByText(/Grand Central/)).toBeInTheDocument();
+    });
+
+    it('lists a train whose journey is not on the page as a standalone row, rather than hiding it', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 296, journeyIds: [12] })]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
+    });
+
     it('still lists tracked trains that belong to no journey', async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 7 })]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);

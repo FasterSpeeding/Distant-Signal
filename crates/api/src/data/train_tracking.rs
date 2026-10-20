@@ -1148,6 +1148,15 @@ pub struct TrackedTrainListItem {
     /// See `TrackedTrainState::first_report_expected_at`.
     #[sqlx(skip)]
     pub first_report_expected_at: Option<DateTime<Utc>>,
+    /// The caller's journeys this train belongs to, ascending; empty for a
+    /// train tracked on its own. A journey counts when ANY of its legs (not
+    /// just the current one) is bound to this subscription, or to another of
+    /// the caller's subscriptions on the same physical train (`trains_id`):
+    /// a pin tracked separately that later resolved to a journey leg's train
+    /// is the same service, shown once, under the journey. `/track/mine`
+    /// folds these rows into their journey instead of listing them as
+    /// standalone tracked trains. Additive (2026-10-20).
+    pub journey_ids: Vec<i64>,
 }
 
 impl crate::data::tracking_phase::PhaseRow for TrackedTrainListItem {
@@ -1246,7 +1255,16 @@ pub async fn list_tracked_trains_for_user(
                 (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
                     AS shared_group_count, \
                 (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) \
-                    AS timetable_on_row \
+                    AS timetable_on_row, \
+                (SELECT COALESCE(array_agg(DISTINCT jl.journey_id ORDER BY jl.journey_id), \
+                                 '{}'::bigint[]) \
+                 FROM journey_legs jl \
+                 JOIN journeys j ON j.id = jl.journey_id AND j.user_id = tt.user_id \
+                 WHERE jl.train_subscription_id = tt.id \
+                    OR jl.train_subscription_id IN ( \
+                        SELECT ts2.id FROM train_subscriptions ts2 \
+                        WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)) \
+                    AS journey_ids \
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
@@ -4238,5 +4256,291 @@ mod db_tests {
             .execute(&pool)
             .await
             .ok();
+    }
+}
+
+/// `TrackedTrainListItem::journey_ids`: every leg of every journey, however
+/// the leg got its train, folds into that journey -- not only the leg
+/// `GET /Journeys/mine` happens to call current.
+#[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
+mod journey_leg_list_tests {
+    use super::*;
+    use crate::data::journey_templates::{TemplateLegInput, create_template, materialize_template};
+    use crate::data::journeys::{
+        AddLegOutcome, ItineraryLeg, add_known_train_leg_to_journey, add_window_leg_to_journey,
+        create_journey_from_itinerary, create_journey_with_known_train_leg,
+        create_subscription_and_bind_leg, list_journeys_for_user,
+    };
+    use chrono::NaiveDate;
+    use common::TimeWindow;
+    use ds_store::test_support::{connect, seed_tracked_train, seed_user};
+
+    fn service_date() -> NaiveDate {
+        "2026-09-22".parse().unwrap()
+    }
+
+    /// A `trains` row the fixture cleanup removes (`TEST-TRAIN-%` on
+    /// 2026-09-22), with ends so a known-train leg reads its CRS back.
+    async fn seed_train(pool: &PgPool, uid: &str) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO trains (train_uid, service_date, origin_crs, destination_crs) \
+             VALUES ($1, $2, 'KGX', 'YRK') RETURNING id",
+        )
+        .bind(uid)
+        .bind(service_date())
+        .fetch_one(pool)
+        .await
+        .expect("seed fixture train")
+    }
+
+    async fn cleanup(pool: &PgPool, user_id: &str) {
+        for statement in [
+            "DELETE FROM journey_legs WHERE journey_id IN (SELECT id FROM journeys WHERE user_id = $1)",
+            "DELETE FROM journeys WHERE user_id = $1",
+            "DELETE FROM journey_templates WHERE user_id = $1",
+            "DELETE FROM tracked_train_tickets WHERE user_id = $1",
+            "DELETE FROM train_subscriptions WHERE user_id = $1",
+            "DELETE FROM users WHERE id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(user_id)
+                .execute(pool)
+                .await
+                .expect("cleanup fixture rows");
+        }
+    }
+
+    fn journey_ids_of(rows: &[TrackedTrainListItem], tracking_id: i64) -> Vec<i64> {
+        rows.iter()
+            .find(|row| row.id == tracking_id)
+            .unwrap_or_else(|| panic!("tracked train {tracking_id} missing from the list"))
+            .journey_ids
+            .clone()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                journey_leg_list_tests -- --ignored --test-threads=1`"]
+    async fn every_leg_of_a_multi_leg_journey_belongs_to_its_journey() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-TRACKED-LIST-JOURNEY-LEGS";
+        cleanup(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let date = service_date();
+
+        // Journey A: leg 1 at creation, leg 2 added later as a known train,
+        // leg 3 added as a window leg and then given its train
+        // (`POST /Journeys/{id}/legs/{legId}/train`).
+        let train_1 = seed_train(&pool, "TEST-TRAIN-LEGLIST-1").await;
+        let train_2 = seed_train(&pool, "TEST-TRAIN-LEGLIST-2").await;
+        let train_3 = seed_train(&pool, "TEST-TRAIN-LEGLIST-3").await;
+        let (journey_a, _, leg_1_tracking) =
+            create_journey_with_known_train_leg(&pool, user_id, None, train_1, date, None, None)
+                .await
+                .expect("create journey A");
+        let AddLegOutcome::Added((_, leg_2_tracking)) =
+            add_known_train_leg_to_journey(&pool, journey_a, user_id, train_2, date, None, None)
+                .await
+                .expect("add leg 2")
+        else {
+            panic!("leg 2 not added");
+        };
+        let window = TimeWindow {
+            after: Some("09:00:00".parse().unwrap()),
+            before: Some("11:00:00".parse().unwrap()),
+        };
+        let open = TimeWindow {
+            after: None,
+            before: None,
+        };
+        let AddLegOutcome::Added(leg_3_id) =
+            add_window_leg_to_journey(&pool, journey_a, user_id, "YRK", "NCL", date, window, open)
+                .await
+                .expect("add leg 3")
+        else {
+            panic!("leg 3 not added");
+        };
+        let leg_3_tracking =
+            create_subscription_and_bind_leg(&pool, journey_a, leg_3_id, user_id, train_3)
+                .await
+                .expect("pick leg 3's train")
+                .expect("leg 3 is the caller's");
+
+        // Journey B: a two-train itinerary (`POST /Journeys/itinerary`).
+        let train_4 = seed_train(&pool, "TEST-TRAIN-LEGLIST-4").await;
+        let train_5 = seed_train(&pool, "TEST-TRAIN-LEGLIST-5").await;
+        let itinerary_leg = |trains_id| ItineraryLeg::Train {
+            trains_id,
+            service_date: date,
+            origin_crs: None,
+            destination_crs: None,
+        };
+        let mut tx = pool.begin().await.expect("begin");
+        let (journey_b, created) = create_journey_from_itinerary(
+            &mut tx,
+            user_id,
+            None,
+            "web",
+            &[itinerary_leg(train_4), itinerary_leg(train_5)],
+        )
+        .await
+        .expect("save itinerary");
+        tx.commit().await.expect("commit itinerary");
+        let itinerary_tracking: Vec<i64> = created
+            .iter()
+            .map(|(_, tracking)| tracking.expect("train leg"))
+            .collect();
+
+        // Journey C: a two-leg template run, both legs then given trains.
+        let train_6 = seed_train(&pool, "TEST-TRAIN-LEGLIST-6").await;
+        let train_7 = seed_train(&pool, "TEST-TRAIN-LEGLIST-7").await;
+        let template_leg = |origin: &str, destination: &str| TemplateLegInput {
+            origin_crs: Some(origin.to_string()),
+            destination_crs: Some(destination.to_string()),
+            depart_after: Some("08:00:00".parse().unwrap()),
+            depart_before: None,
+            arrive_after: None,
+            arrive_before: None,
+        };
+        let template_id = create_template(
+            &pool,
+            user_id,
+            None,
+            &[template_leg("KGX", "YRK"), template_leg("YRK", "EDB")],
+        )
+        .await
+        .expect("create template");
+        let materialized = materialize_template(&pool, template_id, user_id, date)
+            .await
+            .expect("run template")
+            .expect("template is the caller's");
+        let journey_c = materialized.journey_id;
+        let mut template_tracking = Vec::new();
+        for (leg_id, trains_id) in materialized.leg_ids.iter().zip([train_6, train_7]) {
+            template_tracking.push(
+                create_subscription_and_bind_leg(&pool, journey_c, *leg_id, user_id, trains_id)
+                    .await
+                    .expect("pick template leg's train")
+                    .expect("template leg is the caller's"),
+            );
+        }
+
+        // Two trains tracked on their own: a known train and a bare pin.
+        let train_8 = seed_train(&pool, "TEST-TRAIN-LEGLIST-8").await;
+        let standalone_known = create_subscription_for_train(&pool, train_8, user_id)
+            .await
+            .expect("track a train on its own");
+        let standalone_pin = seed_tracked_train(&pool, user_id).await;
+
+        // The root cause, pinned: `GET /Journeys/mine` names one current leg
+        // per journey, so a filter built from it misses every later leg.
+        let journeys = list_journeys_for_user(&pool, user_id)
+            .await
+            .expect("list journeys");
+        let current_leg_ids: Vec<i64> = journeys
+            .iter()
+            .filter_map(|journey| journey.train_subscription_id)
+            .collect();
+        assert!(current_leg_ids.contains(&leg_1_tracking));
+        assert!(!current_leg_ids.contains(&leg_2_tracking));
+        assert!(!current_leg_ids.contains(&leg_3_tracking));
+
+        let rows = list_tracked_trains_for_user(&pool, user_id)
+            .await
+            .expect("list tracked trains");
+        for tracking in [leg_1_tracking, leg_2_tracking, leg_3_tracking] {
+            assert_eq!(journey_ids_of(&rows, tracking), vec![journey_a]);
+        }
+        for tracking in &itinerary_tracking {
+            assert_eq!(journey_ids_of(&rows, *tracking), vec![journey_b]);
+        }
+        for tracking in &template_tracking {
+            assert_eq!(journey_ids_of(&rows, *tracking), vec![journey_c]);
+        }
+        assert!(journey_ids_of(&rows, standalone_known).is_empty());
+        assert!(journey_ids_of(&rows, standalone_pin).is_empty());
+        let standalone: Vec<i64> = rows
+            .iter()
+            .filter(|row| row.journey_ids.is_empty())
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(
+            standalone.len(),
+            2,
+            "only the two standalone trains: {standalone:?}"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                journey_leg_list_tests -- --ignored --test-threads=1`"]
+    async fn a_train_also_tracked_on_its_own_is_listed_once_under_its_journey() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-TRACKED-LIST-JOURNEY-SHARED";
+        let other_user = "TEST-TRACKED-LIST-JOURNEY-OTHER";
+        cleanup(&pool, user_id).await;
+        cleanup(&pool, other_user).await;
+        seed_user(&pool, user_id).await;
+        seed_user(&pool, other_user).await;
+        let date = service_date();
+
+        // Tracked on its own first, then picked for a journey leg: one
+        // subscription, which the journey now owns.
+        let train_1 = seed_train(&pool, "TEST-TRAIN-LEGLIST-S1").await;
+        let standalone_first = create_subscription_for_train(&pool, train_1, user_id)
+            .await
+            .expect("track on its own");
+        let (journey, _, leg_tracking) =
+            create_journey_with_known_train_leg(&pool, user_id, None, train_1, date, None, None)
+                .await
+                .expect("create journey");
+        assert_eq!(leg_tracking, standalone_first, "one subscription per train");
+
+        // A separate pin that later resolved to a leg's train: a second
+        // subscription on the same physical train, folded into the journey.
+        let train_2 = seed_train(&pool, "TEST-TRAIN-LEGLIST-S2").await;
+        let AddLegOutcome::Added((_, leg_2_tracking)) =
+            add_known_train_leg_to_journey(&pool, journey, user_id, train_2, date, None, None)
+                .await
+                .expect("add leg 2")
+        else {
+            panic!("leg 2 not added");
+        };
+        let pin = seed_tracked_train(&pool, user_id).await;
+        sqlx::query("UPDATE train_subscriptions SET trains_id = $2 WHERE id = $1")
+            .bind(pin)
+            .bind(train_2)
+            .execute(&pool)
+            .await
+            .expect("resolve the pin to leg 2's train");
+
+        // Another user's journey on the same train never claims this
+        // caller's own tracking.
+        let train_3 = seed_train(&pool, "TEST-TRAIN-LEGLIST-S3").await;
+        let mine = create_subscription_for_train(&pool, train_3, user_id)
+            .await
+            .expect("track train 3");
+        create_journey_with_known_train_leg(&pool, other_user, None, train_3, date, None, None)
+            .await
+            .expect("other user's journey");
+
+        let rows = list_tracked_trains_for_user(&pool, user_id)
+            .await
+            .expect("list tracked trains");
+        assert_eq!(journey_ids_of(&rows, leg_tracking), vec![journey]);
+        assert_eq!(journey_ids_of(&rows, leg_2_tracking), vec![journey]);
+        assert_eq!(journey_ids_of(&rows, pin), vec![journey]);
+        assert!(journey_ids_of(&rows, mine).is_empty());
+
+        cleanup(&pool, user_id).await;
+        cleanup(&pool, other_user).await;
     }
 }

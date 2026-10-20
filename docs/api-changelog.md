@@ -3,6 +3,25 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: `journeyIds` on tracked trains
+
+Additive; no existing request or field changes meaning.
+
+- **`GET /Train/mine`** rows gain `journeyIds`: the caller's journeys the
+  train belongs to, ascending, `[]` for a train tracked on its own. Every
+  leg counts, not only the current one `GET /Journeys/mine` describes, and
+  so does another of the caller's subscriptions on the same physical train
+  (a pin tracked separately that resolved to a leg's train). The site lists
+  a train with a non-empty `journeyIds` under its journey only, never again
+  as a standalone tracked train.
+- **Push notifications.** A user with two live subscriptions on one train
+  gets one push per change, on the journey leg's subscription when there
+  is one.
+- **For ds-mcp.** To list standalone tracked trains next to journeys
+  without repeating journey legs, skip rows whose `journeyIds` is not
+  empty. Matching on `GET /Journeys/mine`'s `trainSubscriptionId` misses
+  every leg but the current one.
+
 ## 2026-10-20: `trackingPhase` on group and shared rows
 
 Additive; no existing field changes meaning. The group and shared lists
