@@ -15,6 +15,8 @@ vi.mock('next/navigation', () => ({
 // component's own `nowInLondon().format('YYYY-MM-DD')` produces, regardless
 // of what day this suite happens to run on.
 const today = nowInLondon().format('YYYY-MM-DD');
+// What the field shows for it: the site's "17 Sep 2026".
+const todayShown = nowInLondon().format('D MMM YYYY');
 
 describe('RunTemplateNowButton', () => {
   beforeEach(() => {
@@ -31,7 +33,7 @@ describe('RunTemplateNowButton', () => {
     renderWithMantine(<RunTemplateNowButton templateId={167} />);
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
 
-    expect(await screen.findByLabelText('Service date')).toHaveValue(today);
+    expect(await screen.findByLabelText('Service date')).toHaveValue(todayShown);
   });
 
   it("defaults to London's today, not the host zone's (FE-4)", async () => {
@@ -40,7 +42,7 @@ describe('RunTemplateNowButton', () => {
     vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
     renderWithMantine(<RunTemplateNowButton templateId={167} />);
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
-    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-07-16');
+    expect(await screen.findByLabelText('Service date')).toHaveValue('16 Jul 2026');
   });
 
   it('submits {serviceDate} to the materialize endpoint', async () => {
@@ -99,32 +101,27 @@ describe('RunTemplateNowButton', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  // Bug: the Service date field was free text with no client-side format
-  // check, so a malformed value used to sail straight through to
-  // `POST /JourneyTemplates/{id}/materialize` and come back as a raw
-  // backend 400 instead of a friendly inline message.
-  it('shows an inline error for a malformed service date and keeps the button disabled', async () => {
+  // The Service date is a `DateInput` now, not free text: text that isn't
+  // a date leaves the last good date in place (shown again on blur), so
+  // nothing malformed can reach `POST /JourneyTemplates/{id}/materialize`.
+  it('keeps the last good service date when the typed text is not a date', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ journeyId: 42, legIds: [1] }), { status: 200 }));
     renderWithMantine(<RunTemplateNowButton templateId={167} />);
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
 
     const serviceDate = await screen.findByLabelText('Service date');
-    fireEvent.change(serviceDate, { target: { value: '2026-02-30' } });
+    fireEvent.focus(serviceDate);
+    fireEvent.change(serviceDate, { target: { value: 'next tuesday' } });
+    fireEvent.blur(serviceDate);
+    expect(serviceDate).toHaveValue(todayShown);
 
-    expect(await screen.findByText('Must be a valid date (YYYY-MM-DD)')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create journey' })).toBeDisabled();
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
-  });
-
-  it('rejects a date-shaped but non-existent calendar date (not just a bare regex check)', async () => {
-    renderWithMantine(<RunTemplateNowButton templateId={167} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Run now' }));
-
-    const serviceDate = await screen.findByLabelText('Service date');
-    // Shaped exactly like a real date, but month 13 doesn't exist -- a bare
-    // `/^\d{4}-\d{2}-\d{2}$/` shape check alone would wrongly accept this.
-    fireEvent.change(serviceDate, { target: { value: '2026-13-01' } });
-
-    expect(await screen.findByText('Must be a valid date (YYYY-MM-DD)')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create journey' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Create journey' }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/JourneyTemplates/167/materialize',
+        expect.objectContaining({ body: JSON.stringify({ serviceDate: today }) }),
+      ),
+    );
   });
 });
