@@ -1077,6 +1077,18 @@ export interface JourneyListItem {
    * code. */
   originName: string | null;
   destinationName: string | null;
+  /** The whole journey's ends, which is what names it
+   * (`lib/journeyName.ts`): the FIRST leg's origin and the LAST leg's
+   * destination, whatever the current leg is. Optional: absent from an
+   * older backend, when `journeyListItemNameInput` falls back to the
+   * current leg's own ends. */
+  firstOriginCrs?: string | null;
+  firstOriginName?: string | null;
+  lastDestinationCrs?: string | null;
+  lastDestinationName?: string | null;
+  /** The first leg's service date: the day the journey starts. */
+  firstServiceDate?: string;
+  legCount?: number;
   matchMode: 'unmatched' | 'manual' | 'auto';
   trainSubscriptionId: number | null;
   resolutionStatus: string | null;
@@ -2079,6 +2091,15 @@ export interface GroupJourney {
   pinOriginName: string | null;
   pinDestinationName: string | null;
   pinScheduledDeparture: string | null; // RFC3339
+  /** The journey's own ends, from its legs rather than the first leg's
+   * train: the first leg's origin and the last leg's destination. What
+   * names the row (`lib/journeyName.ts`). Optional: absent from an older
+   * backend. */
+  firstOriginCrs?: string | null;
+  firstOriginName?: string | null;
+  lastDestinationCrs?: string | null;
+  lastDestinationName?: string | null;
+  /** The FIRST leg's service date. */
   serviceDate: string; // "YYYY-MM-DD"
   resolutionStatus: string | null;
   trainUid: string | null;

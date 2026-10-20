@@ -1330,6 +1330,22 @@ pub struct JourneyListItem {
     /// with one bare code.
     pub origin_name: Option<String>,
     pub destination_name: Option<String>,
+    /// The whole journey's ends, for naming it: the FIRST leg's origin and
+    /// the LAST leg's destination (by `leg_order`), whatever the current
+    /// leg is. `origin_crs`/`destination_crs` above are the current leg's
+    /// own ends, which for a journey not yet under way are the first
+    /// leg's -- naming a planned three-leg journey from them showed it
+    /// ending at its first change. Names resolve as above. Additive
+    /// (2026-10-20).
+    pub first_origin_crs: Option<String>,
+    pub first_origin_name: Option<String>,
+    pub last_destination_crs: Option<String>,
+    pub last_destination_name: Option<String>,
+    /// The first leg's `service_date`: the day the journey starts, which
+    /// is what names it. `service_date` above is the current leg's.
+    pub first_service_date: NaiveDate,
+    /// How many legs the journey has.
+    pub leg_count: i64,
     pub match_mode: String,
     pub train_subscription_id: Option<i64>,
     pub resolution_status: Option<String>,
@@ -1409,6 +1425,10 @@ pub async fn list_journeys_for_user(
                     jl.service_date, jl.match_mode, jl.train_subscription_id, \
                     ts.resolution_status, cs.status, cs.delay_minutes, \
                     ts.trains_id, tr.train_uid, \
+                    COUNT(*) OVER (PARTITION BY jl.journey_id) AS leg_count, \
+                    FIRST_VALUE(jl.origin_crs) OVER first_leg AS first_origin_crs, \
+                    FIRST_VALUE(jl.service_date) OVER first_leg AS first_service_date, \
+                    FIRST_VALUE(jl.destination_crs) OVER last_leg AS last_destination_crs, \
                     ROW_NUMBER() OVER ( \
                         PARTITION BY jl.journey_id \
                         ORDER BY (cs.status IS DISTINCT FROM 'completed') DESC, \
@@ -1420,16 +1440,23 @@ pub async fn list_journeys_for_user(
              LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
              LEFT JOIN trains tr ON tr.id = ts.trains_id \
              WHERE jl.journey_id IN (SELECT id FROM recent) \
+             WINDOW first_leg AS (PARTITION BY jl.journey_id ORDER BY jl.leg_order ASC), \
+                    last_leg AS (PARTITION BY jl.journey_id ORDER BY jl.leg_order DESC) \
          ) \
          SELECT r.id, r.custom_name, r.created_at, r.created_via, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
-                so.name AS origin_name, sd.name AS destination_name, rl.match_mode, \
+                so.name AS origin_name, sd.name AS destination_name, \
+                rl.first_origin_crs, sfo.name AS first_origin_name, \
+                rl.last_destination_crs, sld.name AS last_destination_name, \
+                rl.first_service_date, rl.leg_count, rl.match_mode, \
                 rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes, \
                 rl.delay_minutes AS working_delay_minutes, rl.trains_id, rl.train_uid \
          FROM recent r \
          JOIN ranked_legs rl ON rl.journey_id = r.id AND rl.rn = 1 \
          LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(rl.destination_crs)::bpchar \
+         LEFT JOIN stations sfo ON sfo.crs = UPPER(rl.first_origin_crs)::bpchar \
+         LEFT JOIN stations sld ON sld.crs = UPPER(rl.last_destination_crs)::bpchar \
          ORDER BY r.created_at DESC, r.id DESC",
     )
     .bind(user_id)
@@ -3221,6 +3248,68 @@ mod db_tests {
         );
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// A planned three-leg journey with no tracking data: the row's current
+    /// leg is the first, but the whole-journey fields name it from the first
+    /// leg's origin to the LAST leg's destination (the `/track/mine` bug
+    /// that showed it ending at its first change), with the first leg's
+    /// date and the leg count. `leg_order` gaps (a deleted leg) don't matter.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_journeys_for_user_names_the_whole_journey -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_names_the_whole_journey() {
+        let pool = connect().await;
+        let user_id = "TEST-LIST-JOURNEYS-WHOLE-NAME";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        sqlx::query(
+            "INSERT INTO stations (crs, name) VALUES ('ZZA', 'Test Origin'), ('ZZD', 'Test End') \
+             ON CONFLICT (crs) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stations");
+
+        let journey_id = insert_journey(&pool, user_id, None)
+            .await
+            .expect("insert journey");
+        sqlx::query(
+            "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             VALUES ($1, 1, 'zza', 'ZZB', DATE '2026-09-22', 'unmatched'), \
+                    ($1, 2, 'ZZB', 'ZZC', DATE '2026-09-22', 'unmatched'), \
+                    ($1, 5, 'ZZC', 'ZZD', DATE '2026-09-23', 'unmatched')",
+        )
+        .bind(journey_id)
+        .execute(&pool)
+        .await
+        .expect("seed legs");
+
+        let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let row = listed.iter().find(|j| j.id == journey_id).expect("listed");
+        // The current leg is still the first...
+        assert_eq!(row.destination_crs.as_deref(), Some("ZZB"));
+        // ...but the journey is named end to end.
+        assert_eq!(row.first_origin_crs.as_deref(), Some("zza"));
+        assert_eq!(row.first_origin_name.as_deref(), Some("Test Origin"));
+        assert_eq!(row.last_destination_crs.as_deref(), Some("ZZD"));
+        assert_eq!(row.last_destination_name.as_deref(), Some("Test End"));
+        assert_eq!(
+            row.first_service_date,
+            "2026-09-22".parse::<NaiveDate>().unwrap()
+        );
+        assert_eq!(row.leg_count, 3);
+
+        let json = serde_json::to_value(row).expect("serialize");
+        assert_eq!(json["lastDestinationCrs"], "ZZD");
+        assert_eq!(json["firstServiceDate"], "2026-09-22");
+        assert_eq!(json["legCount"], 3);
+
+        cleanup_user(&pool, user_id).await;
+        sqlx::query("DELETE FROM stations WHERE crs IN ('ZZA', 'ZZD')")
+            .execute(&pool)
+            .await
+            .expect("cleanup stations");
     }
 
     /// DB2-17: concurrent adds to one journey serialise on the journey row

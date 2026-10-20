@@ -3,6 +3,32 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: whole-journey names in journey lists
+
+Additive; no existing field changes meaning. A journey is named from its
+first leg's origin to its LAST leg's destination, on its first leg's date
+(`docs/style-guide.md`, "Journey names"). The list payloads only carried
+one leg's ends, so a planned multi-leg journey read as ending at its
+first change.
+
+- **`GET /Journeys/mine`.** Each row gains `firstOriginCrs`,
+  `firstOriginName`, `lastDestinationCrs`, `lastDestinationName` (names
+  `null` when no station row resolves), `firstServiceDate`
+  (`YYYY-MM-DD`) and `legCount`. `originCrs`, `destinationCrs`,
+  `serviceDate` and the rest still describe the current leg, as before.
+- **`GET /groups/{id}/journeys` and `GET /groups/shared-journeys`.**
+  Each row gains `firstOriginCrs`, `firstOriginName`,
+  `lastDestinationCrs` and `lastDestinationName`, from the journey's legs.
+  The `pin*` fields are still the first leg's train pin, empty until that
+  leg has a train.
+- **Push notifications** (no API change): a multi-leg delay or
+  cancellation names an unnamed journey "your journey to <last
+  destination>", numbers the leg by its position (no gaps after a deleted
+  leg), and uses station names instead of codes when both ends resolve.
+- **For ds-mcp.** Nothing breaks. To name a journey the way the site does,
+  use `customName`, else `firstOriginName` (or `firstOriginCrs`) to
+  `lastDestinationName` (or `lastDestinationCrs`) and `firstServiceDate`.
+
 ## 2026-10-20: `journeyStops[].passingPoint`
 
 Additive. Every `journeyStops` entry (train detail, tracked trains,
