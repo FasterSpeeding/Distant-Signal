@@ -597,7 +597,7 @@ export interface TrackingPhaseFields {
 }
 
 /** An untracked leg's mode (`data::journeys::TRANSIT_MODES`). */
-export type TransitMode = 'tube' | 'bus' | 'tram' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
+export type TransitMode = 'tube' | 'bus' | 'tram' | 'metro' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
 
 /** An untracked leg's state from the clock alone, computed by the api. */
 export type UntrackedStatus = 'planned' | 'inProgress' | 'done';

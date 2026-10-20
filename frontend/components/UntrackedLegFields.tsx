@@ -26,15 +26,47 @@ export interface UntrackedLegDraft {
 /** A fresh draft, seeded from the previous leg when there is one: its
  * arrival date and time (the same carry-over the train modes get) and its
  * destination as this leg's start. */
-export function newUntrackedLegDraft(seed: { date: string; leaves?: string; originName?: string }): UntrackedLegDraft {
+export function newUntrackedLegDraft(seed: {
+  date: string;
+  leaves?: string;
+  arrives?: string;
+  originName?: string;
+  destinationName?: string;
+}): UntrackedLegDraft {
   return {
     transitMode: 'tube',
     lineName: '',
     originName: seed.originName ?? '',
-    destinationName: '',
+    destinationName: seed.destinationName ?? '',
     date: seed.date,
     leaves: seed.leaves ?? '',
-    arrives: '',
+    arrives: seed.arrives ?? '',
+    incomplete: { leaves: false, arrives: false },
+  };
+}
+
+/** A draft holding an existing untracked leg, for editing it: its own
+ * mode, line, places, and its planned times as London date and times. */
+export function untrackedDraftFromLeg(leg: {
+  transitMode?: TransitMode | null;
+  lineName?: string | null;
+  originName: string | null;
+  destinationName: string | null;
+  plannedDeparture?: string | null;
+  plannedArrival?: string | null;
+  serviceDate: string;
+}): UntrackedLegDraft {
+  const london = (instant: string | null | undefined) => (instant ? dayjs(instant).tz(LONDON_TZ) : null);
+  const departure = london(leg.plannedDeparture);
+  const arrival = london(leg.plannedArrival);
+  return {
+    transitMode: leg.transitMode ?? 'other',
+    lineName: leg.lineName ?? '',
+    originName: leg.originName ?? '',
+    destinationName: leg.destinationName ?? '',
+    date: departure?.format('YYYY-MM-DD') ?? leg.serviceDate,
+    leaves: departure?.format('HH:mm') ?? '',
+    arrives: arrival?.format('HH:mm') ?? '',
     incomplete: { leaves: false, arrives: false },
   };
 }

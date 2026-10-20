@@ -1,4 +1,5 @@
 import { Card, Group, Stack, Text } from '@mantine/core';
+import { EditUntrackedLegButton } from './EditUntrackedLegButton';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
 import { StateBadge } from './StateBadge';
 import { formatDate } from '@/lib/dateFormat';
@@ -39,6 +40,7 @@ export function UntrackedLegCard({
           </Stack>
           <Group gap="xs">
             <StateBadge tone="neutral">{UNTRACKED_STATUS_LABEL[status]}</StateBadge>
+            {isOwner && <EditUntrackedLegButton journeyId={journeyId} leg={leg} />}
             {isOwner && <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />}
           </Group>
         </Group>

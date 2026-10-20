@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   connectionGapMinutes,
   journeyCanAddLeg,
+  journeyFirstLegStart,
   journeyPriorArrival,
   journeyPriorDestinationCrs,
   journeyPriorDestinationName,
@@ -254,5 +255,23 @@ describe('chaining across untracked legs', () => {
     expect(connectionGapMinutes(train, tube)).toBe(15);
     expect(connectionGapMinutes(tube, train)).toBe(-58);
     expect(connectionGapMinutes(tube, leg({ id: 4, trackedTrainState: null }))).toBeNull();
+  });
+});
+
+describe('journeyFirstLegStart', () => {
+  it('names where and when the first leg starts, for a leg inserted before it', () => {
+    const train = leg({
+      id: 4,
+      originCrs: 'WAT',
+      originName: 'London Waterloo',
+      trackedTrainState: trackedState({ journeyStops: [stop('WAT', { publicDeparture: '2026-09-22T08:00:00Z' })] }),
+    });
+    expect(journeyFirstLegStart(journey([train]))).toEqual({
+      legId: 4,
+      place: 'London Waterloo',
+      crs: 'WAT',
+      departure: { date: '2026-09-22', time: '09:00' },
+    });
+    expect(journeyFirstLegStart(journey([]))).toBeNull();
   });
 });
