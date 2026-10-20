@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useMemo, useState } from 'react';
+import { type Ref, useEffect, useId, useImperativeHandle, useMemo, useState } from 'react';
 import { londonToday, nowInLondon } from '@/lib/londonWallClock';
 import {
   Autocomplete,
@@ -70,6 +70,12 @@ function XIcon() {
       <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
+}
+
+/** What `PlanTripForm` lets its caller read. */
+export interface PlanTripFormHandle {
+  /** The search the fields describe now, or `null` when it can't run. */
+  currentQuery: () => TripPlanQuery | null;
 }
 
 /** One "Call at" stop: a station, bus stop or ferry terminal, or a station
@@ -153,6 +159,7 @@ export function PlanTripForm({
   initial = {},
   searchDates,
   timing,
+  handleRef,
 }: {
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
@@ -171,6 +178,8 @@ export function PlanTripForm({
    * in the date, mode and time fields. Applied once per `seq`, so the
    * visitor can edit the fields again afterwards. */
   timing?: { date: string; mode: TimingMode; time: string; seq: number } | undefined;
+  /** Reads the form's current search (`PlanTripFormHandle`). */
+  handleRef?: Ref<PlanTripFormHandle> | undefined;
 }) {
   const maxDate = searchDates === undefined ? undefined : searchDateBounds(searchDates, londonToday()).maxDate;
   const [originCrs, setOriginCrs] = useState(initial.originCrs ?? initialOriginCrs);
@@ -302,13 +311,11 @@ export function PlanTripForm({
     setWaypoints((current) => current.filter((_, i) => i !== index));
   }
 
-  function handleSubmit() {
-    if (!originCrs.trim() || !destinationCrs.trim() || !date) return;
-    if (firstError) {
-      setAdvancedOpened(true);
-      return;
-    }
-    onSubmit({
+  /** The search the fields describe now; `null` while From, To or Date
+   * is empty. */
+  function currentQuery(): TripPlanQuery | null {
+    if (!originCrs.trim() || !destinationCrs.trim() || !date) return null;
+    return {
       originCrs: originCrs.trim(),
       destinationCrs: destinationCrs.trim(),
       waypointCrs: waypoints,
@@ -322,7 +329,24 @@ export function PlanTripForm({
       ...(advanced.avoidStopCrs?.length ? { avoidStopCrs: advanced.avoidStopCrs } : {}),
       ...(advanced.avoidChangeCrs?.length ? { avoidChangeCrs: advanced.avoidChangeCrs } : {}),
       ...(advanced.maxChanges !== undefined ? { maxChanges: advanced.maxChanges } : {}),
-    });
+    };
+  }
+
+  // Earlier/later paging (`PlanTripFlow`) reads the fields as they are now,
+  // so a From or To changed since the last search is the one it pages.
+  // `null` also when an advanced option has a problem.
+  useImperativeHandle(handleRef, () => ({
+    currentQuery: () => (firstError ? null : currentQuery()),
+  }));
+
+  function handleSubmit() {
+    const query = currentQuery();
+    if (!query) return;
+    if (firstError) {
+      setAdvancedOpened(true);
+      return;
+    }
+    onSubmit(query);
   }
 
   const canSubmit =
@@ -396,8 +420,9 @@ export function PlanTripForm({
         minDate={londonToday()}
         {...(maxDate !== undefined && { maxDate })}
       />
-      {/* "Depart after", not "Depart at": the search offers trains leaving
-          at or after the time, and "at" would promise an exact one. */}
+      {/* "Depart at" (2026-10-20, was "Depart after"): the everyday
+          wording. The search still offers trains leaving at or after the
+          time (`departAfter`). */}
       <Group gap="sm" align="flex-end" wrap="wrap">
         {/* Labelled like the time field beside it, so the two labels line
             up as one row. */}
@@ -410,7 +435,7 @@ export function PlanTripForm({
             value={mode}
             onChange={setMode}
             data={[
-              { label: 'Depart after', value: 'departAfter' },
+              { label: 'Depart at', value: 'departAfter' },
               { label: 'Arrive by', value: 'arriveBy' },
             ]}
           />
