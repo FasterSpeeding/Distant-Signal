@@ -50,6 +50,7 @@ pub mod startup;
 pub mod station_resolver;
 pub mod test_paths;
 pub mod text_hash;
+pub mod tfl_stops;
 pub mod tiploc_parents;
 pub mod transit;
 pub mod trust_timestamp;

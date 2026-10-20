@@ -38,8 +38,8 @@ poller-tfl gains a second loop, off by default (`TFL_STOPS_ENABLED`, chart
    `GET /StopPoint/{ids}` in batches of 20 reads the hub's children. A
    child that is a National Rail station (`910G<TIPLOC>`) gives the hub its
    rail TIPLOCs.
-4. Publishes one `tfl-stops/1` entry on `ds:ingest:tfl` (the poller's own
-   stream, so no new ACL), one part, whose body is the array of
+4. Publishes one `tfl-stops/1` entry on a new stream,
+   `ds:ingest:tfl-stops`, one part, whose body is the array of
    `common::tfl_stops::TflStop`:
    - `id`: the NaPTAN id (`940GZZLUEUS`);
    - `name`: cleaned (`Euston Underground Station` -> `Euston`; suffixes
@@ -69,20 +69,27 @@ stays) when it has no stops or when its stop count fell by more than
 stops in the last snapshot), `distant_signal_tfl_stops_refused_total{reason}`
 (`empty`, `sharp_drop`) and `distant_signal_tfl_stops_last_success_timestamp_seconds`.
 
-The line-status loop's startup cursor becomes its own schema's newest
-entry, so a stops entry never delays a line-status poll.
-
-**Budget.** `ds:ingest:tfl` keeps MAXLEN 288 (a day of line status). Its
-declared worst-case entry grows from 2 KiB to 24 KiB for the stops entry
-(about 400 stops, gzip): about 19 MB worst case for the stream and its
-dead letters, under the 75% alert line.
+**Why a stream of its own.** `ds:ingest:tfl` is trimmed to a day of line
+status (MAXLEN 288), so a daily stops entry there would be trimmed about
+when the next run reads it back as its cursor and its feed guard's
+baseline; and the line-status entries are budgeted at 2 KiB, the stops
+entry at up to 32 KiB. `ds:ingest:tfl-stops` is declared at 4 entries a
+day of 32 KiB, covering a week (MAXLEN 28): about 8.5 MB worst case with
+its dead letters, under the 75% alert line. The `poller-tfl` Redis ACL
+user gains `~ds:ingest:tfl-stops` (XADD, XREVRANGE), the writer reads it
+under its existing `~ds:ingest:*`, and the backlog and stall alerts list
+it (stall after 3 days, as the other daily streams).
 
 ## 2. Writer
 
-`ingest-writer`'s `tfl` stream carries `tfl-stops` as well as
-`tfl-line-status`; the `tfl-stops/1` handler is always registered, so it
-needs no new switch. Deploy the writer before turning the poller's switch
-on: an older writer dead-letters `tfl-stops` as not carried by the stream.
+`ingest-writer` gains the stream `tfl-stops` (`INGEST_WRITER_STREAMS`,
+chart `ingestWriter.streams.tfl-stops`, `off` by default), carrying only
+`tfl-stops`. The chart refuses `pollers.tfl.stops.enabled` unless that
+stream is `apply`, and `apply` unless the writer connects as its own role
+(`postgresql.roles.perService.writer.connect`), as for `tfl`: the
+`ingest_freshness` row policy binds that role only. A split snapshot is
+poison (a part alone would delete the other parts' stops); the producer
+never splits it.
 
 The handler (in the writer's transaction, with its `ingest_dedup` row)
 calls `ds_store::tfl_stops::replace`:
@@ -185,9 +192,11 @@ Nothing changes until the switch is on. To turn it on:
 1. Deploy the images (the migrations run with the api's migrate job).
 2. Re-run the grants job (`postgres-grants.sql`) so the writer can write
    `tfl_stops`/`tfl_stop_crs` and record `tfl-stops` freshness.
-3. Set `pollers.tfl.stops.enabled: true`. No Redis ACL change: the stops
-   go on `ds:ingest:tfl`, which poller-tfl may already `XADD` to, and the
-   writer already applies (`ingestWriter.streams.tfl: apply`).
+3. Make sure the Redis ACL file is re-rendered (it is a ConfigMap of the
+   chart: `poller-tfl` gains `~ds:ingest:tfl-stops`); nothing to set.
+4. Set `ingestWriter.streams.tfl-stops: apply` and
+   `pollers.tfl.stops.enabled: true` in one release (the render refuses
+   the second without the first).
 
 The first run happens at start; afterwards daily. Check
 `distant_signal_tfl_stops_published` and `ingest_freshness` source
