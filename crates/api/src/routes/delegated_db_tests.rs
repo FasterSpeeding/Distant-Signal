@@ -1108,6 +1108,132 @@ async fn the_itinerary_save_is_atomic_and_idempotent() {
     cleanup(&pool, prefix).await;
 }
 
+/// Spec 2026-10-20 §2.4: a delegated save may include untracked legs
+/// (here a Tube hop before the train); they come back with `kind` and no
+/// tracking id, read back through the delegated `GET /Journeys/{id}`, and a
+/// delegated delete still follows the `created_via` rule and names them in
+/// its summary.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
+async fn a_delegated_save_may_include_untracked_legs() {
+    let pool = connect().await;
+    let prefix = "TEST-DLG-UNTRACKED-";
+    cleanup(&pool, prefix).await;
+    let h = harness(pool.clone()).await;
+    let user = format!("{prefix}user");
+    let cookie = seed_user(&pool, &user, &format!("{prefix}s1")).await;
+    grant(
+        &h,
+        &cookie,
+        &["journeys:read", "journeys:write", "journeys:delete"],
+    )
+    .await;
+    let all = token(&h, &user, "journeys:read journeys:write journeys:delete", 0);
+    let departure = chrono::Utc::now() + chrono::Duration::days(2);
+    let body = json!({
+        "customName": "Door to door",
+        "legs": [
+            {
+                "kind": "untracked",
+                "transitMode": "tube",
+                "lineName": "Victoria line",
+                "originName": "Brixton",
+                "destinationName": "Euston",
+                "plannedDeparture": departure.to_rfc3339(),
+                "plannedArrival": (departure + chrono::Duration::minutes(25)).to_rfc3339(),
+            },
+            { "trainUid": UIDS[0], "serviceDate": service_date() },
+        ],
+    });
+    let saved = send(
+        &h,
+        "POST",
+        "/Journeys/itinerary",
+        &Auth::Bearer(&all),
+        Some(body.clone()),
+        &[("idempotency-key", "u1")],
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    let saved = saved.json();
+    assert_eq!(saved["legs"][0]["kind"], "untracked");
+    assert!(saved["legs"][0]["trackingId"].is_null());
+    assert_eq!(saved["legs"][1]["kind"], "train");
+    assert_eq!(saved["trackingId"], saved["legs"][1]["trackingId"]);
+    assert_eq!(saved["legId"], saved["legs"][0]["legId"]);
+    let journey_id = saved["journeyId"].as_i64().unwrap();
+
+    // Replayed byte for byte.
+    let again = send(
+        &h,
+        "POST",
+        "/Journeys/itinerary",
+        &Auth::Bearer(&all),
+        Some(body),
+        &[("idempotency-key", "u1")],
+    )
+    .await;
+    assert_eq!(again.json(), saved);
+
+    let read = send(
+        &h,
+        "GET",
+        &format!("/Journeys/{journey_id}"),
+        &Auth::Bearer(&all),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    let legs = read.json()["legs"].clone();
+    assert_eq!(legs[0]["kind"], "untracked");
+    assert_eq!(legs[0]["transitMode"], "tube");
+    assert_eq!(legs[0]["originName"], "Brixton");
+    assert_eq!(legs[0]["untrackedStatus"], "planned");
+    assert_eq!(legs[1]["kind"], "train");
+
+    // An untracked leg alone is not an itinerary.
+    let alone = send(
+        &h,
+        "POST",
+        "/Journeys/itinerary",
+        &Auth::Bearer(&all),
+        Some(json!({ "legs": [{
+            "kind": "untracked", "transitMode": "walk",
+            "plannedDeparture": departure.to_rfc3339(),
+            "plannedArrival": departure.to_rfc3339(),
+        }] })),
+        &[("idempotency-key", "u2")],
+    )
+    .await;
+    assert_eq!(alone.status, StatusCode::BAD_REQUEST, "{}", alone.text);
+    assert_eq!(alone.error(), "invalid_itinerary");
+
+    let deleted = send(
+        &h,
+        "DELETE",
+        &format!("/Journeys/{journey_id}"),
+        &Auth::Bearer(&all),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    let summary: Value = sqlx::query_scalar(
+        "SELECT summary FROM delegated_deletions WHERE user_id = $1 AND journey_id = $2",
+    )
+    .bind(&user)
+    .bind(journey_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(summary["legs"][0]["kind"], "untracked");
+    assert_eq!(summary["legs"][0]["transitMode"], "tube");
+    assert_eq!(summary["legs"][0]["originName"], "Brixton");
+    assert_eq!(summary["legs"][1]["trainUid"], UIDS[0]);
+    cleanup(&pool, prefix).await;
+}
+
 #[tokio::test]
 #[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
 async fn the_sweep_expires_idle_grants_and_purges_old_rows() {

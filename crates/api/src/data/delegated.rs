@@ -415,7 +415,10 @@ pub async fn delete_journey_delegated(
     let legs: serde_json::Value = sqlx::query_scalar(
         "SELECT COALESCE(jsonb_agg(jsonb_build_object( \
              'serviceDate', jl.service_date, 'originCrs', jl.origin_crs, \
-             'destinationCrs', jl.destination_crs, 'trainUid', tr.train_uid) \
+             'destinationCrs', jl.destination_crs, 'trainUid', tr.train_uid, \
+             'kind', jl.kind, 'transitMode', jl.transit_mode, \
+             'originName', jl.origin_place, 'destinationName', jl.destination_place, \
+             'lineName', jl.line_name, 'plannedDeparture', jl.planned_departure) \
              ORDER BY jl.leg_order), '[]'::jsonb) \
          FROM journey_legs jl \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \

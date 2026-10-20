@@ -17,20 +17,28 @@
 //!   delete it later (§5.5a).
 //!
 //! Either caller may send 1 to [`MAX_ITINERARY_LEGS`] legs, the journey's
-//! own leg cap.
+//! own leg cap, at least one of them a train leg.
 //!
 //! Body (camelCase, unknown fields refused):
 //!
 //! ```json
 //! {"customName": "Optional", "legs": [
 //!   {"trainUid": "C12345", "serviceDate": "2026-10-20",
-//!    "originCrs": "CRE", "destinationCrs": "PRE"}]}
+//!    "originCrs": "CRE", "destinationCrs": "PRE"},
+//!   {"kind": "untracked", "transitMode": "tube", "lineName": "Victoria line",
+//!    "originName": "Euston", "destinationName": "Victoria",
+//!    "plannedDeparture": "2026-10-20T10:05:00+01:00",
+//!    "plannedArrival": "2026-10-20T10:20:00+01:00"}]}
 //! ```
 //!
 //! `originCrs`/`destinationCrs` are optional, as for `POST /Journeys`'s
-//! `knownTrain` leg. A repeat with the same key and the same body returns
-//! the first response (200); the same key with a different body is 409
-//! `idempotency_conflict`. Keys are remembered per user for 24 hours.
+//! `knownTrain` leg. A leg with no `kind` is a train leg, as before
+//! 2026-10-20; `"kind": "untracked"` is a leg we have no data for (spec
+//! 2026-10-20-untracked-legs-and-tracked-train-states-design.md §2.4),
+//! allowed for a delegated client too. A repeat with the same key and the
+//! same body returns the first response (200); the same key with a
+//! different body is 409 `idempotency_conflict`. Keys are remembered per
+//! user for 24 hours.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -61,27 +69,61 @@ struct ItineraryRequest {
     legs: Vec<ItineraryLegRequest>,
 }
 
+/// One leg, a train leg or (`kind: "untracked"`) an untracked one. Flat
+/// rather than a tagged enum so a body from before untracked legs existed
+/// (no `kind`) still parses, and errors stay sentences.
+///
+/// **Field order and `skip_serializing_if` are load-bearing.** The
+/// idempotency hash covers this struct's own serialisation, and keys are
+/// remembered across a deploy: a train leg must serialise byte for byte as
+/// it did when `trainUid`/`serviceDate` were required and these four were
+/// the only fields (`a_train_leg_hashes_as_it_did_before_untracked_legs`).
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ItineraryLegRequest {
-    train_uid: String,
-    service_date: NaiveDate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    train_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service_date: Option<NaiveDate>,
     #[serde(default)]
     origin_crs: Option<String>,
     #[serde(default)]
     destination_crs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transit_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    line_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planned_departure: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    planned_arrival: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ItineraryLegResponse {
     leg_id: i64,
-    tracking_id: i64,
+    /// `None` (`null`) for an untracked leg, which tracks no train.
+    tracking_id: Option<i64>,
+    /// `train` or `untracked`. Absent from a response stored before
+    /// 2026-10-20 and replayed (always a train leg then).
+    #[serde(default = "train_kind")]
+    kind: String,
+}
+
+fn train_kind() -> String {
+    journeys::LEG_KIND_TRAIN.to_string()
 }
 
 /// A superset of `POST /Journeys`' response, so the web planner's
-/// `onCreated` handler takes either: `legId`/`trackingId` are the first
-/// leg's.
+/// `onCreated` handler takes either: `legId` is the first leg's,
+/// `trackingId` the first TRAIN leg's (an itinerary always has one).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ItineraryResponse {
@@ -192,23 +234,30 @@ pub(crate) async fn post_itinerary(
     }
 }
 
-/// A validated leg, before its `trains` row is resolved.
-struct ValidLeg {
-    train_uid: String,
-    service_date: NaiveDate,
-    origin_crs: Option<String>,
-    destination_crs: Option<String>,
+/// A validated leg, before a train leg's `trains` row is resolved.
+#[derive(Debug)]
+enum ValidLeg {
+    Train {
+        train_uid: String,
+        service_date: NaiveDate,
+        origin_crs: Option<String>,
+        destination_crs: Option<String>,
+    },
+    Untracked(journeys::UntrackedLeg),
 }
 
 fn invalid(message: impl Into<String>) -> RouteError {
     RouteError::coded(StatusCode::BAD_REQUEST, "invalid_itinerary", message)
 }
 
-/// Parses and validates the body: the leg count for this caller, each
-/// leg's train UID, overrides and date horizon, and the custom name.
+/// Parses and validates the body: the leg count, each train leg's UID,
+/// overrides and date horizon, each untracked leg's fields
+/// (`journeys::validate_untracked_leg`), at least one train leg, and the
+/// custom name.
 fn validate(
     body: &[u8],
     max_legs: usize,
+    london_today: NaiveDate,
 ) -> Result<(ItineraryRequest, Option<String>, Vec<ValidLeg>), RouteError> {
     let request: ItineraryRequest = serde_json::from_slice(body).map_err(|err| {
         invalid(format!(
@@ -217,35 +266,89 @@ fn validate(
     })?;
     if request.legs.is_empty() || request.legs.len() > max_legs {
         return Err(invalid(format!(
-            "An itinerary needs between 1 and {max_legs} train legs."
+            "An itinerary needs between 1 and {max_legs} legs."
         )));
     }
     let custom_name =
         train_tracking::validate_custom_name(request.custom_name.as_deref()).map_err(invalid)?;
     let mut legs = Vec::with_capacity(request.legs.len());
     for leg in &request.legs {
-        journeys::validate_train_uid(&leg.train_uid).map_err(invalid)?;
-        journeys::validate_known_train_overrides(
-            leg.origin_crs.as_deref(),
-            leg.destination_crs.as_deref(),
-        )
-        .map_err(invalid)?;
-        crate::routes::train::enforce_tracking_horizon(leg.service_date)
-            .map_err(|(_, message)| invalid(message))?;
-        legs.push(ValidLeg {
-            train_uid: leg.train_uid.trim().to_ascii_uppercase(),
-            service_date: leg.service_date,
-            origin_crs: leg
-                .origin_crs
-                .as_deref()
-                .map(|crs| crs.trim().to_ascii_uppercase()),
-            destination_crs: leg
-                .destination_crs
-                .as_deref()
-                .map(|crs| crs.trim().to_ascii_uppercase()),
-        });
+        legs.push(validate_leg(leg, london_today)?);
+    }
+    if !legs.iter().any(|leg| matches!(leg, ValidLeg::Train { .. })) {
+        return Err(invalid("An itinerary needs at least one train leg."));
     }
     Ok((request, custom_name, legs))
+}
+
+fn validate_leg(
+    leg: &ItineraryLegRequest,
+    london_today: NaiveDate,
+) -> Result<ValidLeg, RouteError> {
+    match leg.kind.as_deref() {
+        None | Some(journeys::LEG_KIND_TRAIN) => {
+            if leg.transit_mode.is_some()
+                || leg.origin_name.is_some()
+                || leg.destination_name.is_some()
+                || leg.line_name.is_some()
+                || leg.planned_departure.is_some()
+                || leg.planned_arrival.is_some()
+            {
+                return Err(invalid(
+                    "A train leg takes no transitMode, originName, destinationName, lineName, \
+                     plannedDeparture or plannedArrival.",
+                ));
+            }
+            let (Some(train_uid), Some(service_date)) = (&leg.train_uid, leg.service_date) else {
+                return Err(invalid("A train leg needs a trainUid and a serviceDate."));
+            };
+            journeys::validate_train_uid(train_uid).map_err(invalid)?;
+            journeys::validate_known_train_overrides(
+                leg.origin_crs.as_deref(),
+                leg.destination_crs.as_deref(),
+            )
+            .map_err(invalid)?;
+            crate::routes::train::enforce_tracking_horizon(service_date)
+                .map_err(|(_, message)| invalid(message))?;
+            Ok(ValidLeg::Train {
+                train_uid: train_uid.trim().to_ascii_uppercase(),
+                service_date,
+                origin_crs: leg
+                    .origin_crs
+                    .as_deref()
+                    .map(|crs| crs.trim().to_ascii_uppercase()),
+                destination_crs: leg
+                    .destination_crs
+                    .as_deref()
+                    .map(|crs| crs.trim().to_ascii_uppercase()),
+            })
+        }
+        Some(journeys::LEG_KIND_UNTRACKED) => {
+            if leg.train_uid.is_some()
+                || leg.service_date.is_some()
+                || leg.origin_crs.is_some()
+                || leg.destination_crs.is_some()
+            {
+                return Err(invalid(
+                    "An untracked leg takes no trainUid, serviceDate, originCrs or destinationCrs.",
+                ));
+            }
+            let untracked = journeys::validate_untracked_leg(
+                journeys::UntrackedLegInput {
+                    transit_mode: leg.transit_mode.as_deref().unwrap_or_default(),
+                    origin_name: leg.origin_name.as_deref(),
+                    destination_name: leg.destination_name.as_deref(),
+                    line_name: leg.line_name.as_deref(),
+                    planned_departure: leg.planned_departure,
+                    planned_arrival: leg.planned_arrival,
+                },
+                london_today,
+            )
+            .map_err(invalid)?;
+            Ok(ValidLeg::Untracked(untracked))
+        }
+        Some(_) => Err(invalid("A leg's kind must be train or untracked.")),
+    }
 }
 
 /// The `Idempotency-Key` header: `Ok(None)` when absent, refused when
@@ -289,7 +392,8 @@ async fn save_itinerary(
             "A delegated save needs an Idempotency-Key header.",
         ));
     }
-    let (request, custom_name, legs) = validate(body, MAX_ITINERARY_LEGS)?;
+    let (request, custom_name, legs) =
+        validate(body, MAX_ITINERARY_LEGS, crate::routes::london_today())?;
     let request_hash = {
         let canonical =
             serde_json::to_vec(&request).map_err(|err| internal("hash request")(err.into()))?;
@@ -362,15 +466,23 @@ async fn save_itinerary(
     // track (an already-tracked train reuses its subscription).
     let mut new_trains: Vec<(&str, NaiveDate)> = Vec::new();
     for leg in &legs {
-        let pair = (leg.train_uid.as_str(), leg.service_date);
+        let ValidLeg::Train {
+            train_uid,
+            service_date,
+            ..
+        } = leg
+        else {
+            continue;
+        };
+        let pair = (train_uid.as_str(), *service_date);
         if new_trains.contains(&pair) {
             continue;
         }
         let tracked = train_tracking::user_tracks_train_uid(
             &app.database,
             &user.user_id,
-            &leg.train_uid,
-            leg.service_date,
+            train_uid,
+            *service_date,
         )
         .await
         .map_err(internal("check existing subscription"))?;
@@ -391,18 +503,27 @@ async fn save_itinerary(
 
     let mut resolved = Vec::with_capacity(legs.len());
     for leg in &legs {
-        let trains_id = crate::data::trains::find_or_create_train(
-            &app.database,
-            &leg.train_uid,
-            leg.service_date,
-        )
-        .await
-        .map_err(internal("find or create train"))?;
-        resolved.push(journeys::ItineraryLeg {
+        let ValidLeg::Train {
+            train_uid,
+            service_date,
+            origin_crs,
+            destination_crs,
+        } = leg
+        else {
+            if let ValidLeg::Untracked(untracked) = leg {
+                resolved.push(journeys::ItineraryLeg::Untracked(untracked.clone()));
+            }
+            continue;
+        };
+        let trains_id =
+            crate::data::trains::find_or_create_train(&app.database, train_uid, *service_date)
+                .await
+                .map_err(internal("find or create train"))?;
+        resolved.push(journeys::ItineraryLeg::Train {
             trains_id,
-            service_date: leg.service_date,
-            origin_crs: leg.origin_crs.clone(),
-            destination_crs: leg.destination_crs.clone(),
+            service_date: *service_date,
+            origin_crs: origin_crs.clone(),
+            destination_crs: destination_crs.clone(),
         });
     }
     let created_via = client
@@ -417,9 +538,12 @@ async fn save_itinerary(
     )
     .await
     .map_err(internal("create journey from itinerary"))?;
-    let Some(&(first_leg_id, first_tracking_id)) = created.first() else {
+    let (Some(&(first_leg_id, _)), Some(first_tracking_id)) = (
+        created.first(),
+        created.iter().find_map(|&(_, tracking_id)| tracking_id),
+    ) else {
         return Err(internal("create journey from itinerary")(anyhow::anyhow!(
-            "an itinerary with legs created none"
+            "an itinerary with a train leg created none"
         )));
     };
     let response = ItineraryResponse {
@@ -432,6 +556,12 @@ async fn save_itinerary(
             .map(|&(leg_id, tracking_id)| ItineraryLegResponse {
                 leg_id,
                 tracking_id,
+                kind: if tracking_id.is_some() {
+                    journeys::LEG_KIND_TRAIN
+                } else {
+                    journeys::LEG_KIND_UNTRACKED
+                }
+                .to_string(),
             })
             .collect(),
         created_via,
@@ -454,12 +584,24 @@ async fn save_itinerary(
 
     // Best effort, after the commit, as `POST /Journeys` does per leg.
     for ((leg, resolved), &(_, tracking_id)) in legs.iter().zip(&resolved).zip(&created) {
+        let (
+            ValidLeg::Train {
+                train_uid,
+                service_date,
+                ..
+            },
+            journeys::ItineraryLeg::Train { trains_id, .. },
+            Some(tracking_id),
+        ) = (leg, resolved, tracking_id)
+        else {
+            continue;
+        };
         crate::routes::train::enrich_shared_train(
             app,
             tracking_id,
-            resolved.trains_id,
-            &leg.train_uid,
-            leg.service_date,
+            *trains_id,
+            train_uid,
+            *service_date,
         )
         .await;
     }
@@ -471,6 +613,7 @@ async fn save_itinerary(
             user_id = %user.user_id,
             journey_id,
             legs = created.len(),
+            untracked_legs = created.iter().filter(|(_, tracking_id)| tracking_id.is_none()).count(),
             "a delegated client saved a journey"
         );
     }
@@ -494,6 +637,16 @@ mod tests {
             .is_err(),
             "unknown fields are refused"
         );
+        let response: ItineraryLegResponse =
+            serde_json::from_str(r#"{"legId":1,"trackingId":2}"#).unwrap();
+        assert_eq!(
+            response.kind, "train",
+            "a response stored before untracked legs reads as a train leg"
+        );
+    }
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, 20).unwrap()
     }
 
     #[test]
@@ -502,22 +655,106 @@ mod tests {
             i64::try_from(MAX_ITINERARY_LEGS).unwrap(),
             journeys::MAX_LEGS_PER_JOURNEY
         );
-        let leg = r#"{"trainUid":"C12345","serviceDate":"2099-01-01"}"#;
+        let leg = r#"{"trainUid":"C12345","serviceDate":"2026-10-21"}"#;
         let body = |n: usize| format!(r#"{{"legs":[{}]}}"#, vec![leg; n].join(","));
         assert!(matches!(
-            validate(body(0).as_bytes(), MAX_ITINERARY_LEGS),
+            validate(body(0).as_bytes(), MAX_ITINERARY_LEGS, today()),
             Err(RouteError::Coded {
                 code: "invalid_itinerary",
                 ..
             })
         ));
         assert!(matches!(
-            validate(body(21).as_bytes(), MAX_ITINERARY_LEGS),
+            validate(body(21).as_bytes(), MAX_ITINERARY_LEGS, today()),
             Err(RouteError::Coded {
                 code: "invalid_itinerary",
                 ..
             })
         ));
+    }
+
+    /// The idempotency hash is over this serialisation, and a key claimed
+    /// before untracked legs existed must replay after the deploy: a train
+    /// leg serialises exactly as the old four-field struct did.
+    #[test]
+    fn a_train_leg_hashes_as_it_did_before_untracked_legs() {
+        let body = br#"{"customName":"Trip","legs":[{"originCrs":"cre","serviceDate":"2026-10-20","trainUid":"c12345"}]}"#;
+        let request: ItineraryRequest = serde_json::from_slice(body).unwrap();
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"customName":"Trip","legs":[{"trainUid":"c12345","serviceDate":"2026-10-20","originCrs":"cre","destinationCrs":null}]}"#
+        );
+    }
+
+    fn untracked_leg(extra: &str) -> String {
+        format!(
+            r#"{{"kind":"untracked","transitMode":"tube","lineName":"Victoria line","originName":"Euston","destinationName":"Victoria","plannedDeparture":"2026-10-21T10:05:00+01:00","plannedArrival":"2026-10-21T10:20:00+01:00"{extra}}}"#
+        )
+    }
+
+    #[test]
+    fn an_untracked_leg_validates_beside_a_train_leg() {
+        let body = format!(
+            r#"{{"legs":[{},{{"trainUid":"c12345","serviceDate":"2026-10-21"}}]}}"#,
+            untracked_leg("")
+        );
+        let (_, _, legs) = validate(body.as_bytes(), MAX_ITINERARY_LEGS, today()).unwrap();
+        let ValidLeg::Untracked(untracked) = &legs[0] else {
+            panic!("the first leg is untracked");
+        };
+        assert_eq!(untracked.transit_mode, "tube");
+        assert_eq!(untracked.line_name.as_deref(), Some("Victoria line"));
+        assert_eq!(
+            untracked.planned_departure,
+            "2026-10-21T09:05:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+        assert!(matches!(legs[1], ValidLeg::Train { .. }));
+    }
+
+    #[test]
+    fn untracked_legs_are_refused_when_malformed_or_alone() {
+        let message = |body: String| match validate(body.as_bytes(), MAX_ITINERARY_LEGS, today()) {
+            Err(RouteError::Coded { message, .. }) => message,
+            other => panic!("expected a 400, got {other:?}"),
+        };
+        assert_eq!(
+            message(format!(r#"{{"legs":[{}]}}"#, untracked_leg(""))),
+            "An itinerary needs at least one train leg."
+        );
+        assert!(
+            message(format!(
+                r#"{{"legs":[{},{{"trainUid":"C12345","serviceDate":"2026-10-21"}}]}}"#,
+                untracked_leg(r#","trainUid":"C99999""#)
+            ))
+            .starts_with("An untracked leg takes no trainUid")
+        );
+        assert!(
+            message(
+                r#"{"legs":[{"trainUid":"C12345","serviceDate":"2026-10-21","transitMode":"bus"}]}"#
+                    .to_string()
+            )
+            .starts_with("A train leg takes no transitMode")
+        );
+        assert_eq!(
+            message(r#"{"legs":[{"originCrs":"WOK"}]}"#.to_string()),
+            "A train leg needs a trainUid and a serviceDate."
+        );
+        assert_eq!(
+            message(
+                r#"{"legs":[{"kind":"boat","trainUid":"C12345","serviceDate":"2026-10-21"}]}"#
+                    .to_string()
+            ),
+            "A leg's kind must be train or untracked."
+        );
+        assert!(
+            message(format!(
+                r#"{{"legs":[{},{{"trainUid":"C12345","serviceDate":"2026-10-21"}}]}}"#,
+                untracked_leg("").replace("tube", "hovercraft")
+            ))
+            .starts_with("transitMode must be one of")
+        );
     }
 
     #[test]

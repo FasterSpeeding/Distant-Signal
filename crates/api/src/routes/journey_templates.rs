@@ -300,9 +300,21 @@ async fn post_journey_template(
                 return Err((StatusCode::NOT_FOUND, "no journey with that id".to_string()));
             }
 
-            let source_legs = journeys::list_legs_for_journey(&app.database, journey_id)
+            // Train legs only (spec 2026-10-20 §2.4): a template is a
+            // repeating train search, and an untracked Tube or walk leg has
+            // nothing to search for.
+            let source_legs: Vec<_> = journeys::list_legs_for_journey(&app.database, journey_id)
                 .await
-                .map_err(internal_error("read journey legs"))?;
+                .map_err(internal_error("read journey legs"))?
+                .into_iter()
+                .filter(|leg| leg.kind == journeys::LEG_KIND_TRAIN)
+                .collect();
+            if source_legs.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "This journey has no train legs to save as a template.".to_string(),
+                ));
+            }
             // Defense in depth alongside `Manual` mode's own check above:
             // a source journey's leg count isn't itself capped anywhere
             // today (each leg is added one `POST /Journeys/{id}/legs` call
@@ -1058,6 +1070,91 @@ mod db_tests {
         assert_eq!(legs[0]["originCrs"], "WAT");
         assert_eq!(legs[0]["destinationCrs"], "RDG");
         assert_eq!(legs[0]["departAfter"], "08:00:00");
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Spec 2026-10-20 §2.4: a template keeps a journey's train legs and
+    /// skips its untracked ones; a journey of untracked legs only has
+    /// nothing to save.
+    #[tokio::test]
+    #[ignore = "requires a live database: DATABASE_URL=... cargo test -p api \
+                post_journey_template_from_journey_skips_untracked_legs -- --ignored --test-threads=1"]
+    async fn post_journey_template_from_journey_skips_untracked_legs() {
+        let pool = connect().await;
+        let user_id = "TEST-ROUTE-TEMPLATE-UNTRACKED";
+        let token = seed_session(&pool, user_id).await;
+        let now = chrono::Utc::now();
+        let tube = crate::data::journeys::validate_untracked_leg(
+            crate::data::journeys::UntrackedLegInput {
+                transit_mode: "tube",
+                origin_name: Some("Brixton"),
+                destination_name: Some("Waterloo"),
+                line_name: None,
+                planned_departure: Some(now),
+                planned_arrival: Some(now + chrono::Duration::minutes(20)),
+            },
+            crate::routes::london_today(),
+        )
+        .unwrap();
+        let (tube_only, _) =
+            crate::data::journeys::create_journey_with_untracked_leg(&pool, user_id, None, &tube)
+                .await
+                .unwrap();
+        let (mixed, _) =
+            crate::data::journeys::create_journey_with_untracked_leg(&pool, user_id, None, &tube)
+                .await
+                .unwrap();
+        crate::data::journeys::add_window_leg_to_journey(
+            &pool,
+            mixed,
+            user_id,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            common::TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            common::TimeWindow::default(),
+        )
+        .await
+        .unwrap();
+
+        let router = test_router(test_app(pool.clone()));
+        let (status, body) = post_json(
+            router.clone(),
+            "/JourneyTemplates".to_string(),
+            Some(&token),
+            serde_json::json!({ "mode": "fromJourney", "journeyId": tube_only }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            serde_json::Value::String(
+                "This journey has no train legs to save as a template.".to_string()
+            )
+        );
+
+        let (status, created) = post_json(
+            router.clone(),
+            "/JourneyTemplates".to_string(),
+            Some(&token),
+            serde_json::json!({ "mode": "fromJourney", "journeyId": mixed }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        let template_id = created["templateId"].as_i64().unwrap();
+        let (_, body) = request(
+            router,
+            format!("/JourneyTemplates/{template_id}"),
+            Some(&token),
+        )
+        .await;
+        let legs = body["legs"].as_array().unwrap();
+        assert_eq!(legs.len(), 1, "the Tube leg is skipped: {body:?}");
+        assert_eq!(legs[0]["originCrs"], "WAT");
 
         cleanup_user(&pool, user_id).await;
     }

@@ -216,6 +216,46 @@ enum CreateJourneyLegRequest {
         #[serde(default)]
         arrive_window: TimeWindow,
     },
+    /// A leg we have no data for: a Tube ride, a bus, a walk (spec
+    /// 2026-10-20-untracked-legs-and-tracked-train-states-design.md §2.4).
+    /// Places and line are optional free text; the two times are required.
+    /// Validated by `data::journeys::validate_untracked_leg`.
+    Untracked(UntrackedLegRequest),
+}
+
+/// The fields of an untracked leg, shared by `POST /Journeys` and `POST
+/// /Journeys/{id}/legs` (`mode: "untracked"`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UntrackedLegRequest {
+    transit_mode: String,
+    #[serde(default)]
+    origin_name: Option<String>,
+    #[serde(default)]
+    destination_name: Option<String>,
+    #[serde(default)]
+    line_name: Option<String>,
+    #[serde(default)]
+    planned_departure: Option<DateTime<Utc>>,
+    #[serde(default)]
+    planned_arrival: Option<DateTime<Utc>>,
+}
+
+impl UntrackedLegRequest {
+    fn validate(&self) -> Result<journeys::UntrackedLeg, (StatusCode, String)> {
+        journeys::validate_untracked_leg(
+            journeys::UntrackedLegInput {
+                transit_mode: &self.transit_mode,
+                origin_name: self.origin_name.as_deref(),
+                destination_name: self.destination_name.as_deref(),
+                line_name: self.line_name.as_deref(),
+                planned_departure: self.planned_departure,
+                planned_arrival: self.planned_arrival,
+            },
+            super::london_today(),
+        )
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,6 +318,11 @@ enum AddJourneyLegRequest {
         #[serde(default)]
         arrive_window: TimeWindow,
     },
+    /// A leg we have no data for: a Tube ride, a bus, a walk (spec
+    /// 2026-10-20-untracked-legs-and-tracked-train-states-design.md §2.4).
+    /// Places and line are optional free text; the two times are required.
+    /// Validated by `data::journeys::validate_untracked_leg`.
+    Untracked(UntrackedLegRequest),
 }
 
 #[derive(Debug, Serialize)]
@@ -857,6 +902,24 @@ async fn post_journey(
                 resolution_status: None,
             }))
         }
+        CreateJourneyLegRequest::Untracked(request) => {
+            // No tracked-train cap: an untracked leg tracks nothing.
+            let leg = request.validate()?;
+            let (journey_id, leg_id) = journeys::create_journey_with_untracked_leg(
+                &app.database,
+                &user.id,
+                custom_name.as_deref(),
+                &leg,
+            )
+            .await
+            .map_err(internal_error("create journey (untracked leg)"))?;
+            Ok(Json(CreateJourneyResponse {
+                journey_id,
+                leg_id,
+                tracking_id: None,
+                resolution_status: None,
+            }))
+        }
     }
 }
 
@@ -982,6 +1045,18 @@ async fn post_journey_leg(
             .map_err(internal_error("add leg to journey (window)"))?;
             let leg_id = added_leg_or_error(added)?;
 
+            Ok(Json(AddLegResponse {
+                leg_id,
+                tracking_id: None,
+            }))
+        }
+        AddJourneyLegRequest::Untracked(request) => {
+            let leg = request.validate()?;
+            let added =
+                journeys::add_untracked_leg_to_journey(&app.database, journey_id, &user.id, &leg)
+                    .await
+                    .map_err(internal_error("add leg to journey (untracked)"))?;
+            let leg_id = added_leg_or_error(added)?;
             Ok(Json(AddLegResponse {
                 leg_id,
                 tracking_id: None,
@@ -1123,6 +1198,18 @@ struct JourneyLegDetailResponse {
     /// origin/destination to check against (nothing to report -- not
     /// "checked and clean"). See `station_skip.rs` and this plan's §5.2.
     leg_skip: Option<LegSkipResponse>,
+    /// `train` or `untracked` (spec 2026-10-20 §2.4). Read this before
+    /// treating `trackedTrainState: null` as "needs a train": an untracked
+    /// leg never has one. For an untracked leg, `originName`/
+    /// `destinationName` are its place names and the fields below are set;
+    /// for a train leg they are `null`.
+    kind: String,
+    transit_mode: Option<String>,
+    line_name: Option<String>,
+    planned_departure: Option<DateTime<Utc>>,
+    planned_arrival: Option<DateTime<Utc>>,
+    /// The untracked leg's clock-only state at read time.
+    untracked_status: Option<journeys::UntrackedStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1475,6 +1562,10 @@ async fn build_journey_detail_response(
     crate::data::train_operator::attach_to_tracked_states(&app.database, &mut stop_states).await;
     crate::data::schedule_services::attach(&app.database, &mut stop_states).await;
     crate::data::train_reasons::attach_to_tracked_states(&app.database, &mut stop_states).await;
+    // Planned / awaiting / not in the timetable (spec 2026-10-20 §4.3),
+    // after the stop build: a built stop list is timetable evidence.
+    let now = Utc::now();
+    crate::data::tracking_phase::attach(&app.database, &mut stop_states, now).await;
     for (index, state) in stop_leg_indexes.into_iter().zip(stop_states) {
         leg_states[index] = Some(state);
     }
@@ -1530,12 +1621,16 @@ async fn build_journey_detail_response(
             _ => None,
         };
 
+        let untracked_status = leg
+            .planned_departure
+            .zip(leg.planned_arrival)
+            .map(|(departure, arrival)| journeys::untracked_status(departure, arrival, now));
         legs.push(JourneyLegDetailResponse {
             id: leg.id,
             origin_crs: leg.origin_crs,
-            origin_name: leg.origin_name,
+            origin_name: leg.origin_name.or(leg.origin_place),
             destination_crs: leg.destination_crs,
-            destination_name: leg.destination_name,
+            destination_name: leg.destination_name.or(leg.destination_place),
             service_date: leg.service_date,
             depart_after: leg.depart_after,
             depart_before: leg.depart_before,
@@ -1545,6 +1640,12 @@ async fn build_journey_detail_response(
             window_searched: leg.window_searched,
             tracked_train_state,
             leg_skip,
+            kind: leg.kind,
+            transit_mode: leg.transit_mode,
+            line_name: leg.line_name,
+            planned_departure: leg.planned_departure,
+            planned_arrival: leg.planned_arrival,
+            untracked_status,
         });
     }
 
@@ -1626,6 +1727,7 @@ async fn get_leg_candidates(
             StatusCode::NOT_FOUND,
             "no journey leg with that id".to_string(),
         ))?;
+    refuse_untracked_leg(&leg)?;
 
     let (Some(origin_crs), Some(destination_crs)) =
         (leg.origin_crs.as_deref(), leg.destination_crs.as_deref())
@@ -1800,6 +1902,20 @@ fn leg_candidate_json(
     json
 }
 
+/// 400 for an untracked leg on the two routes that only make sense for a
+/// train leg (candidates, pick a train). The database refuses a
+/// subscription on an untracked row too
+/// (`journey_legs_untracked_shape_check`); this gives the sentence.
+fn refuse_untracked_leg(leg: &journeys::JourneyLegRow) -> Result<(), (StatusCode, String)> {
+    if leg.kind == journeys::LEG_KIND_UNTRACKED {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This leg isn't a train leg, so it has no train to pick.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MatchLegRequest {
@@ -1841,13 +1957,14 @@ async fn post_leg_train(
     // Ownership-checked read first -- same 404-never-403 posture as every
     // other route in this crate. Also confirms the leg exists before this
     // conjures a `trains`/`train_subscriptions` row for it.
-    journeys::get_owned_leg(&app.database, journey_id, leg_id, &user.id)
+    let leg = journeys::get_owned_leg(&app.database, journey_id, leg_id, &user.id)
         .await
         .map_err(internal_error("read journey leg"))?
         .ok_or((
             StatusCode::NOT_FOUND,
             "no journey leg with that id".to_string(),
         ))?;
+    refuse_untracked_leg(&leg)?;
 
     journeys::validate_train_uid(&body.train_uid).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     // 2026-09-26 review, Low finding 11 -- see `post_journey`'s `KnownTrain`
@@ -3418,6 +3535,368 @@ mod db_tests {
 
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-OWNER").await;
         cleanup_user(&pool, "TEST-ROUTE-ADD-LEG-BYSTANDER").await;
+    }
+
+    /// `plannedDeparture`/`plannedArrival` `minutes` from now, RFC3339.
+    fn from_now(minutes: i64) -> String {
+        (chrono::Utc::now() + chrono::Duration::minutes(minutes)).to_rfc3339()
+    }
+
+    fn untracked_leg(mode: &str, depart_in: i64, arrive_in: i64) -> Value {
+        serde_json::json!({
+            "mode": "untracked",
+            "transitMode": mode,
+            "lineName": "Victoria line",
+            "originName": "  King's Cross St Pancras ",
+            "destinationName": "Victoria",
+            "plannedDeparture": from_now(depart_in),
+            "plannedArrival": from_now(arrive_in),
+        })
+    }
+
+    /// Part A end to end (spec 2026-10-20 §2): an untracked leg can start
+    /// a journey and be added to one, reads back with its kind, places,
+    /// line, times and clock-only status, never has a train, and a
+    /// finished one is skipped when `/Journeys/mine` picks the current leg.
+    #[tokio::test]
+    #[ignore = "requires a live database: DATABASE_URL=... cargo test -p api \
+                untracked_legs_ -- --ignored --test-threads=1"]
+    async fn untracked_legs_round_trip_through_create_add_detail_and_list() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-UNTRACKED-LEGS";
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+
+        // A walk that finished two hours ago starts the journey.
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": untracked_leg("walk", -180, -120) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        assert!(created["trackingId"].is_null());
+        let journey_id = created["journeyId"].as_i64().unwrap();
+        // A Tube leg under way now, then one later on.
+        for (depart_in, arrive_in) in [(-10, 10), (60, 80)] {
+            let (status, added) = post_json(
+                router.clone(),
+                format!("/Journeys/{journey_id}/legs"),
+                Some(&token),
+                untracked_leg("TUBE", depart_in, arrive_in),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{added:?}");
+            assert!(added["trackingId"].is_null());
+        }
+
+        let (status, detail) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{detail:?}");
+        let legs = detail["legs"].as_array().unwrap();
+        assert_eq!(legs.len(), 3);
+        let statuses: Vec<&str> = legs
+            .iter()
+            .map(|leg| leg["untrackedStatus"].as_str().unwrap())
+            .collect();
+        assert_eq!(statuses, ["done", "inProgress", "planned"]);
+        for leg in legs {
+            assert_eq!(leg["kind"], "untracked");
+            assert!(leg["trackedTrainState"].is_null());
+            assert!(leg["legSkip"].is_null());
+            assert!(leg["originCrs"].is_null());
+            assert_eq!(leg["originName"], "King's Cross St Pancras", "trimmed");
+            assert_eq!(leg["destinationName"], "Victoria");
+            assert_eq!(leg["lineName"], "Victoria line");
+            assert!(leg["plannedDeparture"].is_string());
+        }
+        assert_eq!(legs[0]["transitMode"], "walk");
+        assert_eq!(legs[1]["transitMode"], "tube", "lower-cased");
+
+        let (status, mine) =
+            request(router.clone(), "/Journeys/mine".to_string(), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK, "{mine:?}");
+        let row = &mine[0];
+        assert_eq!(row["id"], journey_id);
+        assert_eq!(
+            row["legId"], legs[1]["id"],
+            "the finished walk is not the current leg"
+        );
+        assert_eq!(row["kind"], "untracked");
+        assert_eq!(row["untrackedStatus"], "inProgress");
+        assert_eq!(row["originName"], "King's Cross St Pancras");
+        assert!(row["trackingPhase"].is_null());
+
+        // The train routes refuse an untracked leg.
+        let leg_id = legs[1]["id"].as_i64().unwrap();
+        let (status, body) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/candidates"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+        assert_eq!(
+            body,
+            Value::String("This leg isn't a train leg, so it has no train to pick.".to_string())
+        );
+        let (status, _) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({ "trainUid": "A12345", "serviceDate": "2026-10-21" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // And so does the database: an untracked row can't hold a train.
+        let subscription: i64 = sqlx::query_scalar(
+            "INSERT INTO train_subscriptions (user_id, service_date) \
+             VALUES ($1, CURRENT_DATE) RETURNING id",
+        )
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let refused =
+            sqlx::query("UPDATE journey_legs SET train_subscription_id = $1 WHERE id = $2")
+                .bind(subscription)
+                .bind(leg_id)
+                .execute(&pool)
+                .await;
+        assert!(
+            refused
+                .unwrap_err()
+                .to_string()
+                .contains("journey_legs_untracked_shape_check")
+        );
+
+        cleanup_user(&pool, user).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database: DATABASE_URL=... cargo test -p api \
+                untracked_legs_ -- --ignored --test-threads=1"]
+    async fn untracked_legs_are_validated_with_sentences() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-UNTRACKED-INVALID";
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let post = |leg: Value| {
+            let (router, token) = (router.clone(), token.clone());
+            async move {
+                post_json(
+                    router,
+                    "/Journeys".to_string(),
+                    Some(&token),
+                    serde_json::json!({ "leg": leg }),
+                )
+                .await
+            }
+        };
+        let cases = [
+            (
+                untracked_leg("tube", 30, 10),
+                "The planned arrival must be at or after the planned departure.",
+            ),
+            (
+                untracked_leg("tube", 30, 30 + 25 * 60),
+                "An untracked leg can last at most 24 hours.",
+            ),
+            (
+                untracked_leg("hovercraft", 30, 40),
+                "transitMode must be one of: tube, bus, tram, rail, walk, ferry, taxi, cycle, other.",
+            ),
+            (
+                serde_json::json!({ "mode": "untracked", "transitMode": "bus" }),
+                "An untracked leg needs a planned departure and arrival.",
+            ),
+        ];
+        for (leg, message) in cases {
+            let (status, body) = post(leg).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+            assert_eq!(body, Value::String(message.to_string()));
+        }
+        let mut long_place = untracked_leg("bus", 30, 40);
+        long_place["originName"] = Value::String("x".repeat(101));
+        let (status, _) = post(long_place).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = post(untracked_leg("bus", 60 * 24 * 40, 60 * 24 * 40 + 10)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "beyond the 28-day horizon");
+        let (status, _) = post(untracked_leg("bus", -60 * 24 * 9, -60 * 24 * 9 + 10)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "more than 7 days ago");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM journeys WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "nothing was written");
+        cleanup_user(&pool, user).await;
+    }
+
+    /// Parts B and C (spec 2026-10-20 §3, §4): a train tracked by UID with
+    /// a timetable is `planned` until 45 minutes before its origin
+    /// departure, one with no timetable is `noTimetable`, on the journey
+    /// detail, `/Journeys/mine` and `/Train/mine` alike.
+    #[tokio::test]
+    #[ignore = "requires a live database: DATABASE_URL=... cargo test -p api \
+                tracking_phase_ -- --ignored --test-threads=1"]
+    async fn tracking_phase_reads_planned_and_no_timetable_on_every_surface() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-TRACKING-PHASE";
+        let uids = ["ZPHS01", "ZPHS02"];
+        let date = crate::routes::london_today() + chrono::Duration::days(3);
+        let clear = || async {
+            sqlx::query("DELETE FROM schedule_destination_departures WHERE train_uid = ANY($1)")
+                .bind(uids.to_vec())
+                .execute(&pool)
+                .await
+                .unwrap();
+            cleanup_user(&pool, user).await;
+            sqlx::query("DELETE FROM trains WHERE train_uid = ANY($1)")
+                .bind(uids.to_vec())
+                .execute(&pool)
+                .await
+                .unwrap();
+        };
+        clear().await;
+        // ZPHS01 leaves its origin, Woking, at 07:10 London time.
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs) \
+             VALUES ($1, 'WAT', '07:10', 'ZPHS01', 'WOK', 'WOK'), \
+                    ($1, 'WAT', '07:40', 'ZPHS01', 'CLJ', 'WOK')",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let (status, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": {
+                "mode": "knownTrain", "trainUid": "ZPHS01", "serviceDate": date.to_string(),
+                "originCrs": "CLJ", "destinationCrs": "WAT",
+            } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created:?}");
+        let journey_id = created["journeyId"].as_i64().unwrap();
+        let (status, added) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "knownTrain", "trainUid": "ZPHS02", "serviceDate": date.to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{added:?}");
+
+        let expected = chrono::TimeZone::from_local_datetime(
+            &chrono_tz::Europe::London,
+            &date.and_hms_opt(6, 25, 0).unwrap(),
+        )
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+        let (_, detail) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        let first = &detail["legs"][0]["trackedTrainState"];
+        assert_eq!(first["trackingPhase"], "planned", "{first:?}");
+        assert_eq!(
+            first["firstReportExpectedAt"]
+                .as_str()
+                .unwrap()
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap(),
+            expected,
+            "45 minutes before the train's own origin departure, not the passenger's stop"
+        );
+        let second = &detail["legs"][1]["trackedTrainState"];
+        assert_eq!(second["trackingPhase"], "noTimetable", "{second:?}");
+        assert!(second["firstReportExpectedAt"].is_null());
+
+        let (_, mine) = request(router, "/Journeys/mine".to_string(), Some(&token)).await;
+        assert_eq!(mine[0]["kind"], "train");
+        assert_eq!(mine[0]["trackingPhase"], "planned");
+
+        let trains = crate::data::train_tracking::list_tracked_trains_for_user(&pool, user)
+            .await
+            .unwrap();
+        let phase = |uid: &str| {
+            trains
+                .iter()
+                .find(|t| t.train_uid.as_deref() == Some(uid))
+                .and_then(|t| t.tracking_phase)
+        };
+        assert_eq!(
+            phase("ZPHS01"),
+            Some(crate::data::tracking_phase::TrackingPhase::Planned)
+        );
+        assert_eq!(
+            phase("ZPHS02"),
+            Some(crate::data::tracking_phase::TrackingPhase::NoTimetable)
+        );
+        clear().await;
+    }
+
+    /// The account export carries the new columns with no code change
+    /// (`to_jsonb(journey_legs)`), and deleting the journey takes the
+    /// untracked legs with it.
+    #[tokio::test]
+    #[ignore = "requires a live database: DATABASE_URL=... cargo test -p api \
+                untracked_legs_ -- --ignored --test-threads=1"]
+    async fn untracked_legs_are_exported_and_deleted_with_their_journey() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-UNTRACKED-EXPORT";
+        cleanup_user(&pool, user).await;
+        let token = seed_session(&pool, user).await;
+        let router = test_router(test_app(pool.clone()));
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": untracked_leg("ferry", 30, 90) }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().unwrap();
+
+        let export = crate::data::account::export_account(&pool, user)
+            .await
+            .expect("export")
+            .expect("the user exists");
+        let exported = serde_json::to_value(&export).unwrap();
+        let leg = &exported["journeys"][0]["legs"][0];
+        assert_eq!(leg["kind"], "untracked");
+        assert_eq!(leg["transit_mode"], "ferry");
+        assert_eq!(leg["origin_place"], "King's Cross St Pancras");
+        assert_eq!(leg["line_name"], "Victoria line");
+        assert!(leg["planned_arrival"].is_string());
+
+        let (status, _) =
+            delete_request(router, format!("/Journeys/{journey_id}"), Some(&token)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let legs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM journey_legs WHERE journey_id = $1")
+                .bind(journey_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(legs, 0);
+        cleanup_user(&pool, user).await;
     }
 
     #[tokio::test]

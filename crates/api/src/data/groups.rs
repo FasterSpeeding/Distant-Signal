@@ -1358,7 +1358,11 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
 /// real divergence from `list_group_trains` -- see `GroupJourney`'s own
 /// doc comment (Judgment Call 2 in this feature's plan) for why.
 ///
-/// The first-leg join is `jl.leg_order = (SELECT MIN(...))`, NOT
+/// The row's leg is the first TRAIN leg, else the first leg (2026-10-20:
+/// an untracked Tube or walk leg has no train status for the group row to
+/// show, so a journey starting with one is summarised by its first train).
+///
+/// The first-leg join used to be `jl.leg_order = (SELECT MIN(...))`, NOT
 /// `jl.leg_order = 1` -- 2026-09 review finding (Medium): `leg_order`
 /// values are assigned once at leg-creation time and never renumbered
 /// (`journeys::delete_leg` deletes a leg outright, with no compensating
@@ -1387,7 +1391,8 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
          FROM group_journeys gj \
          JOIN journeys j ON j.id = gj.journey_id \
          JOIN journey_legs jl ON jl.journey_id = j.id \
-             AND jl.leg_order = (SELECT MIN(jl3.leg_order) FROM journey_legs jl3 WHERE jl3.journey_id = j.id) \
+             AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
+                          ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
          JOIN users u ON u.id = gj.added_by \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
@@ -1746,7 +1751,8 @@ pub async fn list_shared_journeys_for_user(
          JOIN group_journeys gj ON gj.group_id = g.id \
          JOIN journeys j ON j.id = gj.journey_id \
          JOIN journey_legs jl ON jl.journey_id = j.id \
-             AND jl.leg_order = (SELECT MIN(jl3.leg_order) FROM journey_legs jl3 WHERE jl3.journey_id = j.id) \
+             AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
+                          ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
          JOIN users u ON u.id = gj.added_by \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
