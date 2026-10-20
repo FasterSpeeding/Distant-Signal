@@ -34,17 +34,33 @@
 //! succeeded, or the directory predates the record) skips the wait and is
 //! posted once; the insert is `ON CONFLICT (delivered_at) DO NOTHING`, so
 //! that is at worst a harmless redundant write.
+//!
+//! ## A second source: the GCS bucket
+//!
+//! With `BUCKET_SOURCE_ENABLED` (off by default), `bucket.rs` polls a Google
+//! Cloud Storage bucket in its own task and lands each verified object in
+//! `storage_dir/sources/bucket/incoming`. That folder is a second *lane*:
+//! every poll interval runs the same scan and CORPUS cycles over each lane
+//! in `SOURCE_PRECEDENCE` order, and `sources.rs` deduplicates content that
+//! arrives through both and settles disagreements. With SFTP alone nothing
+//! of this runs and every path behaves as before. See
+//! docs/schedule-feed-bucket.md.
 
 mod audit;
+mod bucket;
 mod cif_check;
 mod config;
 mod corpus;
 mod corpus_formats;
 mod corpus_xml;
 mod delivery;
+mod gcs;
 mod pattern;
 mod scan;
 mod sink;
+mod sources;
+#[cfg(test)]
+mod sources_pipeline_tests;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -59,6 +75,7 @@ use pattern::{FilePattern, Routing};
 use scan::{StabilityTracker, scan_incoming};
 use serde::Serialize;
 use sink::{IngestSink, SinkError};
+use sources::Lane;
 
 /// Builds the scan-cycle `tokio::time::Interval`, ticking every
 /// `poll_interval_secs` -- with `MissedTickBehavior::Delay` rather than the
@@ -102,6 +119,7 @@ async fn run() -> anyhow::Result<()> {
     common::logging::init("schedule-ingest");
 
     let config = Config::parse();
+    config.sources.validate()?;
     common::metrics::ingest_sink_info(&config.ingest_sink);
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
@@ -160,13 +178,34 @@ async fn run() -> anyhow::Result<()> {
         }
     }
 
-    let mut tracker = StabilityTracker::new();
-    let mut known_stable: HashSet<String> = HashSet::new();
-    let mut known_stray_files: HashSet<String> = HashSet::new();
-    let mut last_ingested_mtime: Option<SystemTime> = None;
-    let mut pending_post: Option<ScheduleFeedIngestRequest> = None;
-    let mut rejected_mtime: Option<SystemTime> = None;
-    let mut corpus_state = corpus::CorpusState::new();
+    // The delivery sources (`sources.rs`). With the bucket on, its own task
+    // downloads into a landing folder that is the bucket lane's watch
+    // directory; the lanes then run through the same cycles, in
+    // SOURCE_PRECEDENCE order, so a delivery both sources carry in one
+    // cycle is accepted from the preferred one.
+    let sources_args = &config.sources;
+    let multi = sources_args.bucket_source_enabled.then(|| {
+        sources::MultiSource::register_metrics();
+        sources::MultiSource::new(
+            &config.storage_dir,
+            sources_args.source_precedence,
+            sources_args.disagreement_window_minutes,
+        )
+    });
+    let mut lanes: Vec<LaneState> = Vec::new();
+    if sources_args.sftp_source_enabled {
+        lanes.push(LaneState::new(
+            sources::SourceId::Sftp,
+            config.watch_dir.clone(),
+            config.stability_cycles,
+        ));
+    }
+    if sources_args.bucket_source_enabled {
+        let incoming = spawn_bucket_source(&config, &routing)?;
+        // Objects land complete (renamed into place), so no stability wait.
+        lanes.push(LaneState::new(sources::SourceId::Bucket, incoming, 1));
+        lanes.sort_by_key(|lane| sources_args.source_precedence.rank(lane.source));
+    }
 
     // `tokio::time::interval`'s first `tick()` fires immediately regardless
     // of missed-tick behavior, so every run -- including the very first --
@@ -191,36 +230,15 @@ async fn run() -> anyhow::Result<()> {
             is_final_check_of_day(now_london.time(), final_check_time, window_start_time);
         let cycle_start = Instant::now();
 
-        if let Err(err) = run_scan_cycle(
+        run_lanes_once(
             &sink,
             &config,
             &routing,
-            &mut tracker,
-            &mut known_stable,
-            &mut known_stray_files,
-            &mut last_ingested_mtime,
-            &mut pending_post,
-            &mut rejected_mtime,
+            multi.as_ref(),
+            &mut lanes,
             is_final_check_of_day,
         )
-        .await
-        {
-            tracing::error!(error = ?err, "scan cycle failed unexpectedly; will retry next poll interval");
-        }
-        if config.corpus.corpus_ingest_enabled
-            && let Err(err) = corpus::run_corpus_cycle(
-                &sink,
-                &config.watch_dir,
-                &config.storage_dir,
-                &config.corpus,
-                &routing,
-                config.stability_cycles,
-                &mut corpus_state,
-            )
-            .await
-        {
-            tracing::error!(error = ?err, "CORPUS cycle failed unexpectedly; will retry next poll interval");
-        }
+        .await;
         progress.beat();
 
         metrics::histogram!(common::metrics::metric_name(
@@ -228,6 +246,134 @@ async fn run() -> anyhow::Result<()> {
         ))
         .record(cycle_start.elapsed().as_secs_f64());
     }
+}
+
+/// One delivery source's process-lifetime pipeline state (what was a set
+/// of locals when SFTP was the only source).
+struct LaneState {
+    source: sources::SourceId,
+    watch_dir: PathBuf,
+    stability_cycles: u32,
+    tracker: StabilityTracker,
+    known_stable: HashSet<String>,
+    known_stray_files: HashSet<String>,
+    last_ingested_mtime: Option<SystemTime>,
+    pending_post: Option<ScheduleFeedIngestRequest>,
+    rejected_mtime: Option<SystemTime>,
+    corpus_state: corpus::CorpusState,
+}
+
+impl LaneState {
+    fn new(source: sources::SourceId, watch_dir: PathBuf, stability_cycles: u32) -> Self {
+        Self {
+            source,
+            watch_dir,
+            stability_cycles,
+            tracker: StabilityTracker::new(),
+            known_stable: HashSet::new(),
+            known_stray_files: HashSet::new(),
+            last_ingested_mtime: None,
+            pending_post: None,
+            rejected_mtime: None,
+            corpus_state: corpus::CorpusState::new(),
+        }
+    }
+}
+
+/// One poll interval over every lane, in order: the CIF scan cycle, then
+/// (with CORPUS on) the CORPUS cycle. A lane's failure is logged and never
+/// stops the next lane.
+async fn run_lanes_once(
+    sink: &impl IngestSink,
+    config: &Config,
+    routing: &Routing,
+    multi: Option<&sources::MultiSource>,
+    lanes: &mut [LaneState],
+    is_final_check_of_day: bool,
+) {
+    let only_lane = lanes.len() == 1;
+    for state in lanes {
+        let lane = Lane {
+            ctx: sources::LaneCtx {
+                source: state.source,
+                multi,
+            },
+            watch_dir: &state.watch_dir,
+            stability_cycles: state.stability_cycles,
+        };
+        // "Nothing delivered by the final check" is an error only for SFTP,
+        // or the bucket when it is the only source: while the bucket is
+        // being adopted alongside SFTP it may stay empty.
+        let final_check =
+            is_final_check_of_day && (only_lane || state.source == sources::SourceId::Sftp);
+        if let Err(err) = run_scan_cycle(
+            sink,
+            config,
+            routing,
+            &lane,
+            &mut state.tracker,
+            &mut state.known_stable,
+            &mut state.known_stray_files,
+            &mut state.last_ingested_mtime,
+            &mut state.pending_post,
+            &mut state.rejected_mtime,
+            final_check,
+        )
+        .await
+        {
+            tracing::error!(error = ?err, source = state.source.as_str(), "scan cycle failed unexpectedly; will retry next poll interval");
+        }
+        if config.corpus.corpus_ingest_enabled
+            && let Err(err) = corpus::run_corpus_cycle(
+                sink,
+                &lane,
+                &config.storage_dir,
+                &config.corpus,
+                routing,
+                &mut state.corpus_state,
+            )
+            .await
+        {
+            tracing::error!(error = ?err, source = state.source.as_str(), "CORPUS cycle failed unexpectedly; will retry next poll interval");
+        }
+    }
+}
+
+/// Starts the bucket source's own task (`bucket.rs`) and returns its
+/// landing folder, the bucket lane's watch directory.
+fn spawn_bucket_source(config: &Config, routing: &Routing) -> anyhow::Result<PathBuf> {
+    let args = &config.sources.bucket;
+    if args.bucket_audit_logs_ship {
+        tracing::warn!(
+            "BUCKET_AUDIT_LOGS_SHIP is set, but shipping the bucket's audit log is not implemented yet (GCS spec phase 5); nothing is shipped"
+        );
+    }
+    let credentials = match args.credential()? {
+        config::BucketCredential::Key(path) => gcs::Credentials::key(path),
+        config::BucketCredential::ExternalAccount(path) => gcs::Credentials::external_account(path),
+    };
+    let client = gcs::GcsClient::new(
+        args.bucket_base_url.as_deref(),
+        args.bucket_name.as_deref().unwrap_or_default(),
+        credentials,
+    )?;
+    let settings = bucket::BucketSettings {
+        expected: FilePattern::parse(args.bucket_expected_keys.as_deref().unwrap_or_default())
+            .map_err(|err| anyhow::anyhow!("BUCKET_EXPECTED_KEYS: {err}"))?,
+        routing: routing.clone(),
+        poll_interval: Duration::from_secs(args.bucket_poll_interval_secs),
+        delete_min_age: Duration::from_secs(args.bucket_delete_min_age_secs),
+        archive_keep: args.bucket_archive_keep,
+        max_object_bytes: args.bucket_max_object_bytes,
+        max_downloads_per_poll: args.bucket_max_downloads_per_poll,
+        max_bytes_per_hour: args.bucket_max_download_bytes_per_hour,
+        max_bytes_per_day: args.bucket_max_download_bytes_per_day,
+        max_backoff: Duration::from_secs(args.bucket_max_backoff_secs),
+    };
+    let dirs = bucket::BucketDirs::new(&config.storage_dir);
+    let incoming = dirs.incoming.clone();
+    tokio::spawn(bucket::BucketSource::new(client, settings, dirs).run());
+    Ok(incoming)
 }
 
 /// The CORPUS formats to route (`None` while CORPUS ingest is off), with
@@ -283,6 +429,7 @@ async fn run_scan_cycle(
     sink: &impl IngestSink,
     config: &Config,
     routing: &Routing,
+    lane: &Lane<'_>,
     tracker: &mut StabilityTracker,
     known_stable: &mut HashSet<String>,
     known_stray_files: &mut HashSet<String>,
@@ -306,11 +453,17 @@ async fn run_scan_cycle(
                     delivered_at = %pending.delivered_at,
                     "retried and succeeded posting a previously-failed ingest record"
                 );
-                audit::decision(
+                lane.ctx.audit(
                     &pending.delivered_file(),
                     pending.delivered_at,
                     audit::Outcome::Accepted,
                     None,
+                );
+                lane.ctx.record(
+                    sources::Kind::Cif,
+                    &pending.delivered_file(),
+                    pending.delivered_at,
+                    sources::Settled::Accepted,
                 );
                 record_ingested(&config.storage_dir, &pending);
                 *last_ingested_mtime = Some(SystemTime::from(pending.delivered_at));
@@ -320,14 +473,14 @@ async fn run_scan_cycle(
                 .set(pending.delivered_at.timestamp() as f64);
             }
             Err(err) => {
-                queue_or_quarantine_failed_post(err, pending, pending_post, rejected_mtime);
+                queue_or_quarantine_failed_post(err, pending, pending_post, rejected_mtime, lane);
             }
         }
     }
 
-    let snapshot = scan_incoming(&config.watch_dir)?;
+    let snapshot = scan_incoming(lane.watch_dir)?;
 
-    let just_stabilized = tracker.observe(&snapshot, config.stability_cycles);
+    let just_stabilized = tracker.observe(&snapshot, lane.stability_cycles);
     known_stable.extend(just_stabilized);
     // Anything that vanished from the directory since the last snapshot is
     // no longer "known stable" -- mirrors `StabilityTracker::observe`'s own
@@ -386,7 +539,7 @@ async fn run_scan_cycle(
     // it here, before the stability gate, means a restart neither waits
     // `stability_cycles` on a zip that finished uploading long ago (logging
     // it as a stalled upload past the final check time) nor posts it again.
-    let zip_path = config.watch_dir.join(&zip_filename);
+    let zip_path = lane.watch_dir.join(&zip_filename);
     let mut extracted_before_restart = false;
     if *last_ingested_mtime != Some(zip_mtime)
         && *rejected_mtime != Some(zip_mtime)
@@ -483,6 +636,47 @@ async fn run_scan_cycle(
         return Ok(());
     }
 
+    // Several sources (`sources.rs`): content the other source already
+    // delivered is a duplicate, and different content within the window
+    // is settled by SOURCE_PRECEDENCE. With SFTP alone this is skipped.
+    let mut retire: Option<sources::Entry> = None;
+    if let Some(multi) = lane.ctx.multi {
+        match multi.judge(
+            &lane
+                .ctx
+                .arrival(sources::Kind::Cif, &delivered, delivered_at),
+        ) {
+            sources::Verdict::Handled(entry) => {
+                tracing::info!(zip = %zip_filename, outcome = ?entry.outcome, "zip delivery was already decided (delivery source ledger); nothing to do");
+                *last_ingested_mtime = Some(zip_mtime);
+                return Ok(());
+            }
+            verdict
+            @ (sources::Verdict::Duplicate { .. } | sources::Verdict::Superseded { .. }) => {
+                tracing::info!(zip = %zip_filename, source = lane.ctx.source.as_str(), verdict = ?verdict, "zip delivery not ingested: the other delivery source settled it");
+                lane.ctx
+                    .settle_unloaded(sources::Kind::Cif, &delivered, delivered_at, &verdict);
+                *last_ingested_mtime = Some(zip_mtime);
+                return Ok(());
+            }
+            sources::Verdict::Proceed { disagrees_with } => {
+                // The lower-ranked copy, if it was accepted and would
+                // otherwise stay the newest delivery directory.
+                retire = disagrees_with.filter(|loser| {
+                    loser.outcome == sources::Settled::Accepted
+                        && loser.arrival.delivered_at.timestamp() >= delivered_at.timestamp()
+                });
+            }
+        }
+    }
+    // A loser in this very second's directory must go before extraction,
+    // or the winner would find the loser's directory already complete.
+    if let Some(loser) =
+        retire.take_if(|loser| loser.arrival.delivered_at.timestamp() == delivered_at.timestamp())
+    {
+        delivery::retire_delivery(&config.storage_dir, &loser.arrival);
+    }
+
     // PL-6/PL-13: atomic (temp dir, fsync, marker, rename), and a no-op for
     // a delivery that is already complete on disk.
     let limits = delivery::ExtractLimits {
@@ -517,15 +711,27 @@ async fn run_scan_cycle(
     ) {
         Ok((extracted, how)) => {
             tracing::info!(zip = %zip_filename, dir = %dir_name, outcome = ?how, sha256 = %delivered.sha256, "delivery directory complete");
+            // The winner of a disagreement is now visible: retire the
+            // loser's newer directory, so schedule-reference publishes the
+            // winner.
+            if let Some(loser) = &retire {
+                delivery::retire_delivery(&config.storage_dir, &loser.arrival);
+            }
             extracted
         }
         Err(err) if delivery::is_rejected(&err) => {
             tracing::error!(error = %err, zip = %zip_filename, "quarantining a zip delivery that can never be extracted; waiting for a new upload");
-            audit::decision(
+            lane.ctx.audit(
                 &delivered,
                 delivered_at,
                 audit::Outcome::Quarantined,
                 Some(&err.to_string()),
+            );
+            lane.ctx.record(
+                sources::Kind::Cif,
+                &delivered,
+                delivered_at,
+                sources::Settled::Quarantined,
             );
             metrics::counter!(common::metrics::metric_name(
                 "schedule_feed_zip_rejected_total"
@@ -565,7 +771,14 @@ async fn run_scan_cycle(
                 dir = %dir_name,
                 "schedule feed delivery extracted to storage and posted to api"
             );
-            audit::decision(&delivered, delivered_at, audit::Outcome::Accepted, None);
+            lane.ctx
+                .audit(&delivered, delivered_at, audit::Outcome::Accepted, None);
+            lane.ctx.record(
+                sources::Kind::Cif,
+                &delivered,
+                delivered_at,
+                sources::Settled::Accepted,
+            );
             record_ingested(&config.storage_dir, &request);
             *last_ingested_mtime = Some(zip_mtime);
             metrics::gauge!(common::metrics::metric_name(
@@ -579,7 +792,7 @@ async fn run_scan_cycle(
             // record-keeping problem to retry, not a reason to remove the
             // extracted files. See `pending_post` handling at the top of
             // this function.
-            queue_or_quarantine_failed_post(err, request, pending_post, rejected_mtime);
+            queue_or_quarantine_failed_post(err, request, pending_post, rejected_mtime, lane);
         }
     }
 
@@ -628,6 +841,7 @@ fn queue_or_quarantine_failed_post(
     request: ScheduleFeedIngestRequest,
     pending_post: &mut Option<ScheduleFeedIngestRequest>,
     rejected_mtime: &mut Option<SystemTime>,
+    lane: &Lane<'_>,
 ) {
     match err {
         SinkError::Rejected(err) => {
@@ -637,11 +851,17 @@ fn queue_or_quarantine_failed_post(
                 "this delivery's ingest record was refused; NOT retrying it, \
                  waiting for a new upload"
             );
-            audit::decision(
+            lane.ctx.audit(
                 &request.delivered_file(),
                 request.delivered_at,
                 audit::Outcome::RejectedByApi,
                 Some(&format!("{err:#}")),
+            );
+            lane.ctx.record(
+                sources::Kind::Cif,
+                &request.delivered_file(),
+                request.delivered_at,
+                sources::Settled::Quarantined,
             );
             metrics::counter!(common::metrics::metric_name(INGEST_REJECTED_METRIC)).increment(1);
             *rejected_mtime = Some(SystemTime::from(request.delivered_at));
@@ -1027,6 +1247,7 @@ mod tests {
                 &sink,
                 &config,
                 &Routing::defaults(),
+                &Lane::sftp_only(&config),
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1091,6 +1312,7 @@ mod tests {
                 &sink,
                 &config,
                 &Routing::defaults(),
+                &Lane::sftp_only(&config),
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1151,6 +1373,7 @@ mod tests {
                 &sink,
                 &config,
                 &Routing::defaults(),
+                &Lane::sftp_only(&config),
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1197,6 +1420,7 @@ mod tests {
                 &sink,
                 &config,
                 &Routing::defaults(),
+                &Lane::sftp_only(&config),
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,
@@ -1246,7 +1470,10 @@ mod tests {
         );
     }
 
-    fn test_config(watch_dir: &std::path::Path, storage_dir: &std::path::Path) -> Config {
+    pub(crate) fn test_config(
+        watch_dir: &std::path::Path,
+        storage_dir: &std::path::Path,
+    ) -> Config {
         Config {
             watch_dir: watch_dir.to_path_buf(),
             storage_dir: storage_dir.to_path_buf(),
@@ -1289,6 +1516,7 @@ mod tests {
                 health_bind_url: "127.0.0.1:0".to_string(),
                 progress_stall_secs: 1800,
             },
+            sources: config::SourceArgs::sftp_only(),
         }
     }
 
@@ -1317,6 +1545,7 @@ mod tests {
                     &sink,
                     &config,
                     &Routing::defaults(),
+                    &Lane::sftp_only(&config),
                     &mut tracker,
                     &mut known_stable,
                     &mut known_stray_files,
@@ -1376,6 +1605,7 @@ mod tests {
                     &sink,
                     &config,
                     &Routing::defaults(),
+                    &Lane::sftp_only(&config),
                     &mut tracker,
                     &mut known_stable,
                     &mut known_stray_files,
@@ -1462,6 +1692,7 @@ mod tests {
                 &*self.sink,
                 &self.config,
                 &Routing::defaults(),
+                &Lane::sftp_only(&self.config),
                 &mut self.tracker,
                 &mut self.known_stable,
                 &mut self.known_stray_files,
@@ -1615,7 +1846,7 @@ mod tests {
 
     /// The real-shaped CIF delivery (`tests/fixtures/cif_delivery_excerpt`),
     /// generated today.
-    fn real_zip() -> Vec<u8> {
+    pub(crate) fn real_zip() -> Vec<u8> {
         cif_check::tests::delivery_zip(&today())
     }
 
@@ -1640,6 +1871,7 @@ mod tests {
                 &sink,
                 &config,
                 &Routing::defaults(),
+                &Lane::sftp_only(&config),
                 &mut tracker,
                 &mut known_stable,
                 &mut known_stray_files,

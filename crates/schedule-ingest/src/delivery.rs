@@ -414,6 +414,36 @@ pub(crate) fn ensure_extracted(
 /// about to replace. Hidden, so neither discovery nor pruning ever sees it.
 const STALE_DIR_PREFIX: &str = ".stale-";
 
+/// Takes the delivery directory `loser` was accepted into out of service:
+/// the other source's different copy won a disagreement
+/// (`sources.rs`), and this directory would otherwise stay the newest one
+/// schedule-reference publishes. Only a directory whose
+/// [`INGESTED_RECORD`] names exactly `loser`'s content is touched. It is
+/// renamed aside (atomically invisible) and removed; a failed removal is
+/// cleaned up at the next start, like any `.stale-` directory.
+pub(crate) fn retire_delivery(storage_dir: &Path, loser: &crate::sources::Arrival) {
+    let name = delivery_dir_name(SystemTime::from(loser.delivered_at));
+    let dir = storage_dir.join(&name);
+    match read_ingested_record(&dir) {
+        Ok(Some(record)) if record.zip_sha256 == loser.sha256 => {}
+        _ => return,
+    }
+    let aside = storage_dir.join(format!("{STALE_DIR_PREFIX}superseded-{name}"));
+    if let Err(err) = std::fs::rename(&dir, &aside).and_then(|()| fsync_dir(storage_dir)) {
+        tracing::error!(error = %err, dir = %name, "failed to retire the losing source's delivery directory; it stays in service");
+        return;
+    }
+    tracing::warn!(
+        dir = %name,
+        source = loser.source.as_str(),
+        sha256 = %loser.sha256,
+        "retired the losing source's delivery directory: the other source's different copy wins (SOURCE_PRECEDENCE)"
+    );
+    if let Err(err) = std::fs::remove_dir_all(&aside) {
+        tracing::warn!(error = %err, path = ?aside, "failed to remove a retired delivery directory; removed at the next start");
+    }
+}
+
 /// The file list the completion marker in `dir` records, or `None` when
 /// `dir` has no marker (or an unreadable one, which is treated the same:
 /// the delivery is simply extracted again).
