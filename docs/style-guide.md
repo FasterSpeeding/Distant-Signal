@@ -731,9 +731,10 @@ Stations, a station, Trains (empty and searched), a train, Incidents, the
 plan form (Depart at and Arrive by), Account (logged in),
 Preferences (logged out, logged in and with a pride flag), a tracked train
 not in the timetable, a planned tracked train, a journey with an untracked
-walk (all logged in) and the tram pages at 390 and 1366px, light and dark,
+walk, the Track page and a group with shared trains and journeys (all
+logged in) and the tram pages at 390 and 1366px, light and dark,
 plus the /lines filter bar's stuck and open states and the /incidents
-filters open: 108 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+filters open: 116 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
 stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 

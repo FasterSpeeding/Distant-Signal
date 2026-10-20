@@ -26,6 +26,7 @@ import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantB
 import { AddJourneyToGroupButton } from '@/components/AddJourneyToGroupButton';
 import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton';
 import { StatusBadge } from '@/components/StatusBadge';
+import { SharedJourneyStatusBadge } from '@/components/SharedJourneyStatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { LoginControl } from '@/components/LoginControl';
@@ -436,19 +437,21 @@ function SharedTrainRow({
             Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
           </Text>
         }
-        trailing={
-          <Group gap="xs" wrap="nowrap">
-            {/* Was a raw `train.status` string literal (e.g. "en_route")
-                appended to the subtitle text -- the one place on this page
-                that disagreed with every other status badge in the app.
-                Same shared component `/` and `/track/mine` render off, so
-                this card and those two pages can never drift on wording
-                again (review §2.9). */}
-            <TrackedTrainStatusBadge train={train} />
-            {canRemove && <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />}
-          </Group>
-        }
       />
+      {/* The status and the remove control on their own line under the
+          title, not beside it: a phone row has no room for a title, a bus's
+          two badges and this button on one line, and the title was the one
+          squeezed to nothing. */}
+      <Group justify="space-between" gap="xs" mt="xs">
+        {/* Was a raw `train.status` string literal (e.g. "en_route")
+            appended to the subtitle text -- the one place on this page
+            that disagreed with every other status badge in the app.
+            Same shared component `/` and `/track/mine` render off, so
+            this card and those two pages can never drift on wording
+            again (review §2.9). */}
+        <TrackedTrainStatusBadge train={train} />
+        {canRemove && <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />}
+      </Group>
     </Card>
   );
 }
@@ -502,28 +505,14 @@ function SharedJourneyRow({
             </Text>
           </>
         }
-        trailing={
-          <Group gap="xs" wrap="nowrap">
-            {/* `TrackedTrainStatusBadge`'s prop type requires a non-nullable
-                `resolutionStatus`, but `GroupJourney.resolutionStatus` is
-                nullable (a journey's first leg may have no bound train yet)
-                -- coalesce to 'unresolved' here rather than widening that
-                component's prop type, which `SharedTrainRow` above also
-                relies on staying non-nullable. 'unresolved' already renders
-                as the red "Unmatched" badge via that component's own
-                `STATUS_LABELS` map, the accurate reading for a leg with no
-                train bound yet. */}
-            <TrackedTrainStatusBadge
-              train={{
-                resolutionStatus: journey.resolutionStatus ?? 'unresolved',
-                status: journey.status,
-                delayMinutes: journey.delayMinutes,
-              }}
-            />
-            {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
-          </Group>
-        }
       />
+      {/* Under the title, as on `SharedTrainRow`. An untracked-only
+          journey, one still needing its train, or a picked train with its
+          phase and mode: the owner's words. */}
+      <Group justify="space-between" gap="xs" mt="xs">
+        <SharedJourneyStatusBadge journey={journey} />
+        {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
+      </Group>
     </Card>
   );
 }

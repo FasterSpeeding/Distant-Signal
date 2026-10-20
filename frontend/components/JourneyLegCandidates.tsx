@@ -16,6 +16,7 @@ import { serviceNoun } from '@/lib/serviceMode';
 import { dayOffsetMarker } from '@/lib/serviceStatus';
 import type { TrainSearchResult } from '@/lib/types';
 import { LoadingText } from '@/components/LoadingText';
+import { describeFailure, failureFromResponse } from '@/lib/failure';
 
 // Mirrors `lib/useSuggestions.ts`'s own (non-exported) `DEBOUNCE_MS = 250`
 // constant -- this is a SEPARATE debounce, for the committed filter value
@@ -247,12 +248,16 @@ export function JourneyLegCandidates({
         body: JSON.stringify({ trainUid: uid, serviceDate }),
       });
       if (!response.ok) {
-        setPickError("Couldn't track that train. Try again.");
+        // The API's own sentence when it refused the pick for a reason the
+        // traveller can act on: the tracked-train cap, or a 422 when the
+        // train doesn't stop at this leg's stations, or doesn't let people
+        // on or off there, on that date (`leg_validation.rs`).
+        setPickError(await failureFromResponse('track', 'that train', response));
         return;
       }
       onPicked();
     } catch {
-      setPickError("Couldn't track that train. Try again.");
+      setPickError(describeFailure('track', 'that train'));
     } finally {
       setPicking(null);
     }

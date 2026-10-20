@@ -2078,8 +2078,12 @@ export interface GroupMember {
 
 /** A train shared into a group -- deliberately carries no ticket field and
  * no `notificationsEnabled`/exact-`trackedAt` field (spec §4's "Never
- * shown" list is a hard constraint on the backend response this mirrors). */
-export interface GroupTrain {
+ * shown" list is a hard constraint on the backend response this mirrors).
+ * `serviceMode`/`liveTracking` and `trackingPhase`/`firstReportExpectedAt`
+ * are the same as on the owner's own `TrackedTrainListItem` (2026-10-20),
+ * so the badge reads the same on every page. Optional: absent from an
+ * older backend. */
+export interface GroupTrain extends ServiceModeFields, TrackingPhaseFields {
   trainSubscriptionId: number;
   pinOriginCrs: string | null;
   pinDestinationCrs: string | null;
@@ -2167,8 +2171,14 @@ export interface SharedGroupCustomLine extends GroupCustomLine {
  * feature's plan, Judgment Call 2) and a `legCount` so a multi-leg journey
  * at least signals "there's more". Same "never shown" privacy constraint
  * `GroupTrain` documents: no ticket field, no notification state, no
- * exact `addedAt`. */
-export interface GroupJourney {
+ * exact `addedAt`.
+ *
+ * The row summarises the journey's first TRAIN leg, else its first leg.
+ * `kind` and the untracked fields say which (`kind: 'untracked'` means the
+ * journey has no train legs); `trackingPhase` and `serviceMode` describe
+ * that leg's train, and are absent when it has none picked yet. All
+ * optional: absent from an older backend (2026-10-20). */
+export interface GroupJourney extends ServiceModeFields, TrackingPhaseFields, Omit<UntrackedLegFields, 'lineName'> {
   journeyId: number;
   customName: string | null;
   legCount: number;

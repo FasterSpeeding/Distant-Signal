@@ -1409,3 +1409,158 @@ async fn the_sweep_expires_idle_grants_and_purges_old_rows() {
     assert_eq!(again.inactive_grants, 0, "{again:?}");
     cleanup(&pool, prefix).await;
 }
+
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api -- --ignored --test-threads=1`"]
+async fn a_delegated_itinerary_leg_must_call_at_its_overrides() {
+    use super::leg_validation_db_tests::{ORDINARY, SLEEPER, UNMATCHED, seed_schedules};
+
+    let pool = connect().await;
+    let prefix = "TEST-DLG-LEGVAL-";
+    cleanup(&pool, prefix).await;
+    let _schedules = seed_schedules(&pool).await;
+    let h = harness(pool.clone()).await;
+    let user = format!("{prefix}user");
+    let cookie = seed_user(&pool, &user, &format!("{prefix}s1")).await;
+    grant(&h, &cookie, &["journeys:write"]).await;
+    let write = token(&h, &user, "journeys:write", 0);
+    let date = super::leg_validation_db_tests::service_date().to_string();
+    let leg = |uid: &str, origin: &str, destination: &str| {
+        json!({ "trainUid": uid, "serviceDate": date,
+                "originCrs": origin, "destinationCrs": destination })
+    };
+    let post = |legs: Vec<Value>, key: &'static str| {
+        let (h, write) = (&h, write.clone());
+        async move {
+            send(
+                h,
+                "POST",
+                "/Journeys/itinerary",
+                &Auth::Bearer(&write),
+                Some(json!({ "legs": legs })),
+                &[("idempotency-key", key)],
+            )
+            .await
+        }
+    };
+
+    // Every code, as `422 {error, message}`; nothing is saved.
+    let cases = [
+        (
+            leg(ORDINARY, "ZQX", "ZQG"),
+            "train_does_not_call_at_origin",
+            "k1",
+        ),
+        (
+            leg(ORDINARY, "ZQA", "ZQC"),
+            "train_does_not_call_at_destination",
+            "k2",
+        ),
+        (
+            leg(ORDINARY, "ZQE", "ZQB"),
+            "destination_before_origin",
+            "k3",
+        ),
+        (leg(ORDINARY, "ZQD", "ZQG"), "boarding_not_allowed", "k4"),
+        (leg(ORDINARY, "ZQA", "ZQF"), "alighting_not_allowed", "k5"),
+        // The sleeper's pick-up-only Preston as a destination.
+        (leg(SLEEPER, "ZSE", "ZSP"), "alighting_not_allowed", "k6"),
+    ];
+    for (body, code, key) in cases {
+        let reply = post(vec![body], key).await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            reply.text
+        );
+        assert_eq!(reply.error(), code, "{}", reply.text);
+        let message = reply.json()["message"].as_str().unwrap().to_string();
+        assert!(
+            message.starts_with("Train ") || message.starts_with("You can't"),
+            "{message}"
+        );
+    }
+    // A bad second leg names its position and saves neither leg.
+    let reply = post(
+        vec![leg(ORDINARY, "ZQA", "ZQB"), leg(SLEEPER, "ZSS", "ZSI")],
+        "k7",
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.text
+    );
+    assert_eq!(reply.error(), "boarding_not_allowed");
+    assert!(
+        reply.json()["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Leg 2: "),
+        "{}",
+        reply.text
+    );
+    let saved: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM journeys WHERE user_id = $1")
+        .bind(&user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(saved, 0);
+
+    // A mixed itinerary: the untracked leg is never checked, but it counts
+    // towards the leg number of the bad train leg after it.
+    let departure = chrono::Utc::now() + chrono::Duration::days(2);
+    let untracked = json!({
+        "kind": "untracked",
+        "transitMode": "tube",
+        "lineName": "Victoria line",
+        "originName": "Brixton",
+        "destinationName": "Euston",
+        "plannedDeparture": departure.to_rfc3339(),
+        "plannedArrival": (departure + chrono::Duration::minutes(25)).to_rfc3339(),
+    });
+    let reply = post(vec![untracked.clone(), leg(SLEEPER, "ZSE", "ZSP")], "m1").await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.text
+    );
+    assert_eq!(reply.error(), "alighting_not_allowed");
+    assert!(
+        reply.json()["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Leg 2: "),
+        "{}",
+        reply.text
+    );
+    let saved: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM journeys WHERE user_id = $1")
+        .bind(&user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(saved, 0);
+    let reply = post(vec![untracked, leg(SLEEPER, "ZSE", "ZSS")], "m2").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json()["legs"][0]["kind"], "untracked");
+
+    // The happy path: a request stop at either end, the sleeper to
+    // Stirling, and a train not matched yet (accepted, as before).
+    let reply = post(
+        vec![
+            leg(ORDINARY, "ZQA", "ZQE"),
+            leg(ORDINARY, "ZQE", "ZQG"),
+            leg(SLEEPER, "ZSW", "ZSS"),
+            leg(UNMATCHED, "ZQX", "ZQY"),
+        ],
+        "k8",
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.json()["legs"].as_array().unwrap().len(), 4);
+
+    cleanup(&pool, prefix).await;
+}

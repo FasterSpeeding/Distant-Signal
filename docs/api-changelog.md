@@ -39,6 +39,65 @@ list is empty until the operator turns on poller-tfl's stops job.
   as an untracked leg, send `originName: originStop.name` and
   `originStopId: originStop.id` (and the same for the destination).
 
+## 2026-10-20: `trackingPhase` on group and shared rows
+
+Additive; no existing field changes meaning. The group and shared lists
+now carry what the owner's own lists already did, so a shared train reads
+the same on every page (it used to say "Pending match" in a group while
+its owner saw "Planned").
+
+- **`GET /groups/{id}/trains` and `GET /groups/shared-trains`.** Each row
+  gains `serviceMode`, `liveTracking`, `trackingPhase` and
+  `firstReportExpectedAt`, exactly as on `GET /Train/mine` rows.
+- **`GET /groups/{id}/journeys` and `GET /groups/shared-journeys`.** Each
+  row gains `trackingPhase` and `firstReportExpectedAt` for the leg it
+  summarises (the journey's first train leg, else its first leg), plus
+  `kind` (`train` or `untracked`), `transitMode`, `plannedDeparture`,
+  `plannedArrival` and `untrackedStatus` (`planned`, `inProgress`,
+  `done`). `kind: "untracked"` means the journey has no train legs; the
+  four untracked fields are `null` on a train leg. `serviceMode` and
+  `liveTracking` are present only when that leg has a train picked; read
+  `kind` and `resolutionStatus: null` (no train picked yet) before
+  treating a row as unmatched.
+- **Privacy.** Nothing new is exposed: the phase comes from the
+  subscription's `resolutionStatus`, live `status`, `trainUid`,
+  `serviceDate` and public timetable data, all already on these rows. The
+  rows still carry no `trackedAt`, `addedAt`, tickets or notification
+  setting.
+- **For ds-mcp.** Nothing has to change. The delegated Phase 3 group reads,
+  when they ship, get these fields too: read `trackingPhase` and, for a
+  journey, `kind`/`untrackedStatus`, the same way as on the owner's lists.
+
+## 2026-10-20: hand-entered train legs are checked against the timetable
+
+A train leg typed by hand is refused with `422` when its train can't
+serve it. Checked: each `POST /Journeys/itinerary` train leg with `originCrs` or
+`destinationCrs`; a `knownTrain` leg's `originCrs`/`destinationCrs` on
+`POST /Journeys` and `POST /Journeys/{id}/legs`; and the leg's own origin
+and destination on `POST /Journeys/{id}/legs/{legId}/train`.
+
+- **Rules.** The train must stop at the origin and later at the
+  destination on `serviceDate`. A passing point is not a stop. Boarding
+  must be allowed at the origin and getting off at the destination. A
+  request stop allows both. An absent `originCrs` or `destinationCrs`
+  means the train's own end, which always passes.
+- **Codes** (`error` for a delegated client; the web app gets the
+  `message` as plain text): `train_does_not_call_at_origin`,
+  `train_does_not_call_at_destination`, `destination_before_origin`,
+  `boarding_not_allowed` (set-down-only stop or terminus) and
+  `alighting_not_allowed` (pick-up-only stop, such as a sleeper's
+  northbound Watford, Crewe and Preston). `message` names the train, the
+  station and the date. On an itinerary with more than one leg it starts
+  `Leg N: ` (1-based, untracked legs counted). Nothing is saved, and the `Idempotency-Key` stays
+  unused.
+- **Not in the timetable yet.** A UID with no schedule for that date (a
+  late STP or VSTP service, a date not published yet) is accepted
+  unchecked, as before. Saved legs are never re-checked.
+- **For ds-mcp.** Handle `422` on `POST /Journeys/itinerary`: show
+  `message` and don't retry the same legs. Legs taken as-is from
+  `/Trips/plan` always pass. Full table:
+  [connected-apps.md](connected-apps.md#itinerary-errors).
+
 ## 2026-10-20: untracked journey legs, `trackingPhase`
 
 Additive; no existing request or field changes meaning. Spec:
