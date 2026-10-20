@@ -1172,7 +1172,7 @@ mod untracked_tests {
                 transit_mode: "zeppelin",
                 ..input("2026-10-21T09:00:00Z", "2026-10-21T09:10:00Z")
             })
-            .starts_with("transitMode must be one of: tube, bus")
+            .starts_with("transitMode must be one of: tube, dlr, bus")
         );
         let long = "x".repeat(UNTRACKED_LINE_MAX_CHARS + 1);
         assert_eq!(
