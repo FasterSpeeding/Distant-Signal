@@ -12,8 +12,10 @@ East and Charing Cross because only Euston to Vauxhall by Tube was listed.
 Each link now runs both ways, with the same minutes and hours. Plans can
 change: a `transfer` leg (`mode` `TUBE`, `WALK`, and so on) may now appear
 where trains were offered before, e.g. Vauxhall to Euston is one 22-minute
-`TUBE` leg (27 minutes evenings and Sundays). Transfer legs still carry no
-line name: the feed gives only the mode.
+`TUBE` leg (27 minutes evenings and Sundays). A small curated set adds
+links the feed lacks, so far Vauxhall to Victoria (`TUBE`, 11 minutes;
+`reference-data/supplementary-fixed-links.csv`). Transfer legs still carry
+no line name.
 
 ## 2026-10-20: hand-entered train legs are checked against the timetable
 
