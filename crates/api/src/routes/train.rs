@@ -826,9 +826,12 @@ async fn get_by_tracking_id(
                 crate::data::train_operator::attach_to_tracked_state(&app.database, state).await;
             let state = crate::data::schedule_services::attach_one(&app.database, state).await;
             let state = attach_journey_stops(&app, blend_darwin_eta(&app, state).await).await;
-            Ok(Json(
-                crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await,
-            ))
+            let mut states =
+                [crate::data::train_reasons::attach_to_tracked_state(&app.database, state).await];
+            // After the stop list: a built stop list is timetable evidence.
+            crate::data::tracking_phase::attach(&app.database, &mut states, Utc::now()).await;
+            let [state] = states;
+            Ok(Json(state))
         }
         None => Err((
             StatusCode::NOT_FOUND,
@@ -1038,13 +1041,21 @@ async fn get_by_uid_and_date(
             let state =
                 crate::data::train_operator::attach_to_public_state(&app.database, state).await;
             let state = attach_journey_stops_public(&app, state).await;
+            let state =
+                crate::data::train_reasons::attach_to_public_state(&app.database, state).await;
+            let mut phase_rows = [PublicPhaseRow {
+                state: &state,
+                phase: PublicPhaseFields::default(),
+            }];
+            crate::data::tracking_phase::attach(&app.database, &mut phase_rows, Utc::now()).await;
+            let [PublicPhaseRow { phase, .. }] = phase_rows;
             Ok(Json(PublicTrainResponse {
-                state: crate::data::train_reasons::attach_to_public_state(&app.database, state)
-                    .await,
+                state,
                 certainty: crate::routes::provisional::TimetableCertainty::for_date(
                     date,
                     super::london_today(),
                 ),
+                phase,
             }))
         }
         None => Err((
@@ -1066,6 +1077,61 @@ struct PublicTrainResponse {
     state: crate::data::trains::PublicTrainState,
     #[serde(flatten)]
     certainty: crate::routes::provisional::TimetableCertainty,
+    /// `trackingPhase`/`firstReportExpectedAt` (2026-10-20, spec
+    /// 2026-10-20-untracked-legs-and-tracked-train-states-design.md §4.3).
+    #[serde(flatten)]
+    phase: PublicPhaseFields,
+}
+
+/// The public train's `trackingPhase` and `firstReportExpectedAt`, the
+/// same pair `TrackedTrainState` carries. Kept beside the response rather
+/// than on `PublicTrainState`, which is built in many places that have no
+/// use for it.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicPhaseFields {
+    tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    first_report_expected_at: Option<chrono::DateTime<Utc>>,
+}
+
+/// A public train as a `tracking_phase::PhaseRow`. The shared row has no
+/// per-subscriber `resolution_status`: a TRUST train id (set on
+/// Activation) is what says Network Rail has reported it.
+struct PublicPhaseRow<'a> {
+    state: &'a crate::data::trains::PublicTrainState,
+    phase: PublicPhaseFields,
+}
+
+impl crate::data::tracking_phase::PhaseRow for PublicPhaseRow<'_> {
+    fn phase_key(&self) -> Option<(&str, NaiveDate)> {
+        Some((self.state.train_uid.as_str(), self.state.service_date))
+    }
+
+    fn phase_signals(&self) -> crate::data::tracking_phase::PhaseSignals<'_> {
+        crate::data::tracking_phase::PhaseSignals {
+            applies: true,
+            activated: self.state.train_id.is_some(),
+            status: self.state.status.as_deref(),
+            timetable_on_row: self.state.calling_points.is_some()
+                || self.state.origin_crs.is_some()
+                || self
+                    .state
+                    .journey_stops
+                    .as_ref()
+                    .is_some_and(|stops| !stops.is_empty()),
+        }
+    }
+
+    fn set_phase(
+        &mut self,
+        phase: crate::data::tracking_phase::TrackingPhase,
+        expected: Option<chrono::DateTime<Utc>>,
+    ) {
+        self.phase = PublicPhaseFields {
+            tracking_phase: Some(phase),
+            first_report_expected_at: expected,
+        };
+    }
 }
 
 /// `trainsId` of a [`schedule_only_public_state`]: no `trains` row exists
@@ -2280,6 +2346,8 @@ mod tests {
             cancel_reason: None,
             change_of_origin_reason_code: None,
             change_of_origin_reason: None,
+            tracking_phase: None,
+            first_report_expected_at: None,
         }
     }
 

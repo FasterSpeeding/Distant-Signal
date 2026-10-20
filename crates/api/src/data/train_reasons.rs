@@ -361,6 +361,8 @@ mod tests {
             cancel_reason: None,
             change_of_origin_reason_code: None,
             change_of_origin_reason: None,
+            tracking_phase: None,
+            first_report_expected_at: None,
         }
     }
 
