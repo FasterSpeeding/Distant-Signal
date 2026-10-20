@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import dayjs from 'dayjs';
+import { DateInput } from '@mantine/dates';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
 import type { LondonDateTime } from '@/lib/journeyLegChaining';
 import { useNeedsLogin } from './useNeedsLogin';
@@ -17,29 +18,6 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 
 type LegMode = NewJourneyLegRequest['mode'];
-
-/** Bug: this form's Service date field is free text (`placeholder`
- * "YYYY-MM-DD" is only a hint, not enforced) with no client-side format
- * check at all -- unlike this codebase's date-PICKER fields
- * (`TrackTrainForm.tsx`'s `DateInput`), which can't produce a malformed
- * value by construction. A garbled date used to sail straight through to
- * `POST /Journeys/{id}/legs` and come back as a raw backend 400
- * (`validate_window_leg`/`validate_known_train_leg`,
- * `crates/api/src/data/journeys.rs`) shown verbatim in the `error` Alert.
- *
- * Checks BOTH shape and real calendar validity: `dayjs` (no
- * `customParseFormat` plugin is installed in this app) parses an
- * out-of-range date like "2026-02-30" by rolling it forward to March 2nd
- * rather than rejecting it, so `DATE_PATTERN` alone would pass a value the
- * backend would reject. Re-formatting the parsed result and comparing it
- * back to the original string catches that roll-over without adding a new
- * dependency. */
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-function isValidServiceDate(value: string): boolean {
-  if (!DATE_PATTERN.test(value)) return false;
-  const parsed = dayjs(value);
-  return parsed.isValid() && parsed.format('YYYY-MM-DD') === value;
-}
 
 /** Chains a new leg onto an existing journey (spec §3, multi-leg
  * chaining) -- modeled directly on `AddTrainToGroupButton.tsx`'s
@@ -199,7 +177,9 @@ export function AddJourneyLegButton({
   const windowOrderValid =
     (!departFrom || !departTo || departFrom <= departTo) && (!arriveFrom || !arriveTo || arriveFrom <= arriveTo);
 
-  const serviceDateValid = isValidServiceDate(serviceDate);
+  // A `DateInput` only ever emits a real calendar date ("YYYY-MM-DD"), and
+  // isn't clearable, so the one way to be invalid is never having had one.
+  const serviceDateValid = serviceDate !== '';
   const originCrsValid = resolvedOrigin !== null;
   const destinationCrsValid = resolvedDestination !== null;
   const originError =
@@ -281,12 +261,14 @@ export function AddJourneyLegButton({
               { label: 'I know the train', value: 'knownTrain' },
             ]}
           />
-          <TextInput
+          {/* Was free text with a "YYYY-MM-DD" placeholder, which showed
+              visitors an ISO date and let a garbled one reach the API. The
+              request still carries "YYYY-MM-DD". */}
+          <DateInput
             label="Service date"
-            placeholder="YYYY-MM-DD"
-            value={serviceDate}
-            onChange={(event) => setServiceDate(event.currentTarget.value)}
-            error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
+            valueFormat={PICKER_DATE_FORMAT}
+            value={serviceDate || null}
+            onChange={(value) => setServiceDate(value ?? '')}
           />
           {mode === 'window' && (
             <>
