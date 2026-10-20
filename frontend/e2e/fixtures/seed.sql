@@ -398,6 +398,9 @@ ON CONFLICT DO NOTHING;
 --   E2EPL3  ZEA 07:30 -> ZEC 08:20
 --   E2EPL1  ZEA 08:00 -> ZEC 08:50
 --   E2EPL2  ZEA 08:30 -> ZEC 09:20
+-- and one on the next service date, 2026-09-18, for the overnight search
+-- (both dates' trains: `acrossMidnight`):
+--   E2EPL4  ZEA 00:10 -> ZEC 00:40
 -- ---------------------------------------------------------------------
 INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
 VALUES
@@ -413,7 +416,9 @@ VALUES
   ('2026-09-17', 'E2EPL1', 0, 'E2EPLA', 'origin', NULL, '08:00:00', 0),
   ('2026-09-17', 'E2EPL1', 1, 'E2EPLC', 'terminate', '08:50:00', NULL, 0),
   ('2026-09-17', 'E2EPL2', 0, 'E2EPLA', 'origin', NULL, '08:30:00', 0),
-  ('2026-09-17', 'E2EPL2', 1, 'E2EPLC', 'terminate', '09:20:00', NULL, 0)
+  ('2026-09-17', 'E2EPL2', 1, 'E2EPLC', 'terminate', '09:20:00', NULL, 0),
+  ('2026-09-18', 'E2EPL4', 0, 'E2EPLA', 'origin', NULL, '00:10:00', 0),
+  ('2026-09-18', 'E2EPL4', 1, 'E2EPLC', 'terminate', '00:40:00', NULL, 0)
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------

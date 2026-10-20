@@ -169,7 +169,7 @@ export function TrackTrainForm({
   // computation directly, so it must be pinned to the London wall clock this
   // whole app treats train times as being in, not whatever zone the
   // visitor's own browser happens to be in (2026-09-26 review, finding M8;
-  // contrast the trip planner's "Depart after" field, an ordinary filter
+  // contrast the trip planner's "Depart at" field, an ordinary filter
   // input correctly left in plain browser-local time).
   const [scheduledDeparture, setScheduledDeparture] = useState<string | null>(() =>
     nowInLondon().format('YYYY-MM-DD HH:mm:ss'),

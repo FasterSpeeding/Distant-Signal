@@ -8,7 +8,7 @@ import { SaveAsTemplateButton } from './SaveAsTemplateButton';
 import { ShareJourneyButton } from './ShareJourneyButton';
 import { ShareJourneyLinkButton } from './ShareJourneyLinkButton';
 import { TrackJourneyAgainButton } from './TrackJourneyAgainButton';
-import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
+import { journeyCanAddLeg, journeyPriorArrival, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
 import {
   journeyDefaultName,
@@ -123,6 +123,7 @@ export function JourneyDetailView({
   // own inline "Add a leg" during initial creation -- see that module's own
   // doc comment for why this moved out of being private to this page.
   const priorDestinationCrs = journeyPriorDestinationCrs(journey);
+  const priorArrival = journeyPriorArrival(journey);
   const canAddLeg = journeyCanAddLeg(journey);
   const multiLeg = journey.legs.length > 1;
   const name = journeyNameInput(journey);
@@ -142,7 +143,11 @@ export function JourneyDetailView({
               so offering the button to a shared-group viewer would only
               produce a dead end. Also gated on `canAddLeg` (M16, above). */}
           {journey.isOwner && canAddLeg && (
-            <AddJourneyLegButton journeyId={journey.id} priorDestinationCrs={priorDestinationCrs} />
+            <AddJourneyLegButton
+              journeyId={journey.id}
+              priorDestinationCrs={priorDestinationCrs}
+              priorArrival={priorArrival}
+            />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
           {journey.isOwner && (

@@ -21,13 +21,16 @@ export function timingMode(query: Pick<TripPlanQuery, 'arriveBy'>): TimingMode {
 }
 
 /** The `GET /Trips/plan` request for a search as the visitor sees it
- * (calendar date and time): an arrive-by time before [`OVERNIGHT_CUTOFF`]
- * moves to the previous service date with `dayOffset: 1`. Everything else
- * is sent as is. */
+ * (calendar date and time). A time before [`OVERNIGHT_CUTOFF`], in either
+ * mode, moves to the previous service date with `dayOffset: 1` and
+ * `acrossMidnight: true`: the API then searches both dates' trains, the
+ * previous evening's late ones and this morning's first ones, and merges
+ * them (2026-10-20). Everything else is sent as is. */
 export function apiQuery(query: TripPlanQuery): TripPlanQuery {
-  const { dayOffset: _ignored, ...rest } = query;
-  if (query.arriveBy && query.arriveBy < OVERNIGHT_CUTOFF) {
-    return { ...rest, date: addCalendarDays(query.date, -1), dayOffset: 1 };
+  const { dayOffset: _offset, acrossMidnight: _across, ...rest } = query;
+  const time = query.arriveBy ?? query.departAfter;
+  if (time && time < OVERNIGHT_CUTOFF) {
+    return { ...rest, date: addCalendarDays(query.date, -1), dayOffset: 1, acrossMidnight: true };
   }
   return rest;
 }
@@ -55,7 +58,7 @@ function calendarAt(serviceDate: string, minutes: number): { date: string; time:
 
 /** `query` with its timing replaced: the other time field dropped. */
 function withTiming(query: TripPlanQuery, mode: TimingMode, at: { date: string; time: string }): TripPlanQuery {
-  const { departAfter: _depart, arriveBy: _arrive, dayOffset: _offset, ...rest } = query;
+  const { departAfter: _depart, arriveBy: _arrive, dayOffset: _offset, acrossMidnight: _across, ...rest } = query;
   return { ...rest, date: at.date, [mode]: at.time };
 }
 
@@ -79,10 +82,10 @@ export function earlierQuery(query: TripPlanQuery, serviceDate: string, plan: Tr
 }
 
 /** What was searched for, above the results: "Arrive by 09:00, 23 Oct
- * 2026" or "Depart after 08:30, 23 Oct 2026". The visitor's calendar date,
+ * 2026" or "Depart at 08:30, 23 Oct 2026". The visitor's calendar date,
  * not an overnight search's service date. */
 export function timingSummary(query: Pick<TripPlanQuery, 'date' | 'departAfter' | 'arriveBy'>): string {
   const date = formatDate(`${query.date}T12:00:00Z`);
   if (query.arriveBy) return `Arrive by ${query.arriveBy}, ${date}`;
-  return `Depart after ${query.departAfter || '00:00'}, ${date}`;
+  return `Depart at ${query.departAfter || '00:00'}, ${date}`;
 }

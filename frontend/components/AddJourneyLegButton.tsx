@@ -6,6 +6,7 @@ import { Alert, Autocomplete, Button, Group, Modal, SegmentedControl, Stack, Tex
 import { useDisclosure } from '@mantine/hooks';
 import dayjs from 'dayjs';
 import { nowInLondon } from '@/lib/londonWallClock';
+import type { LondonDateTime } from '@/lib/journeyLegChaining';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
@@ -69,14 +70,30 @@ function isValidServiceDate(value: string): boolean {
  * They used to be bare code-only text inputs. The leg API takes CRS codes,
  * so each field's text goes through `resolveStationCode`: a picked
  * suggestion (which writes its code) or a typed code is used as is, and a
- * typed full name resolves to its station's code. */
+ * typed full name resolves to its station's code.
+ *
+ * The service date and earliest departure are pre-filled the same way from
+ * `priorArrival` (the previous leg's timetabled arrival at its destination,
+ * `journeyPriorArrival`), so the window starts at the moment the traveller
+ * gets off the last train. Exactly that time, with no interchange margin
+ * added: the journey payload carries no minimum connection time, and an
+ * "at or after" bound that is a few minutes early only offers a train or
+ * two more, where a guessed margin could hide the one the traveller wants.
+ * Like the origin, both are seeded only in `handleOpen`, never from a
+ * render, so a re-render (the journey refreshing under an open dialog)
+ * never overwrites what the traveller has typed. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
+  priorArrival = null,
   onAdded,
 }: {
   journeyId: number;
   priorDestinationCrs: string | null;
+  /** The previous leg's arrival in London time, or `null` when no leg is
+   * there to chain from or its arrival isn't known: the service date then
+   * defaults to London's today and the earliest departure stays empty. */
+  priorArrival?: LondonDateTime | null;
   /** `JourneyCreationFlow.tsx`'s (the `/journeys/new` continuous
    * multi-leg creation page) only caller of this prop: that page keeps
    * the journey it's building as local client state (`fetch`ed from
@@ -143,10 +160,12 @@ export function AddJourneyLegButton({
     setDestinationCrs('');
     setOriginTouched(false);
     setDestinationTouched(false);
-    // London's today, not the browser's (FE-4): a rail service date.
-    setServiceDate(nowInLondon().format('YYYY-MM-DD'));
+    // The previous leg's arrival when known (already London time, and on
+    // the next day for an arrival after midnight); otherwise London's
+    // today, not the browser's (FE-4): a rail service date.
+    setServiceDate(priorArrival?.date ?? nowInLondon().format('YYYY-MM-DD'));
     setTrainUid('');
-    setDepartFrom('');
+    setDepartFrom(priorArrival?.time ?? '');
     setDepartTo('');
     setArriveFrom('');
     setArriveTo('');
@@ -312,7 +331,10 @@ export function AddJourneyLegButton({
                   clockHint
                   label="Earliest departure (optional)"
                   name="earliest departure"
-                  description={`Only trains leaving ${resolvedOrigin ?? 'the origin'} at or after this time.`}
+                  description={
+                    `Only trains leaving ${resolvedOrigin ?? 'the origin'} at or after this time.` +
+                    (priorArrival ? ` Your last leg arrives at ${priorArrival.time}.` : '')
+                  }
                   value={departFrom}
                   onChange={setDepartFrom}
                   onIncompleteChange={(v) => setIncompleteTimes((c) => ({ ...c, departFrom: v }))}

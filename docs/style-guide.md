@@ -710,7 +710,7 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains (empty and searched), a train, Incidents, the
-plan form (Depart after and Arrive by), Account (logged in),
+plan form (Depart at and Arrive by), Account (logged in),
 Preferences (logged out, logged in and with a pride flag) and the tram
 pages at 390 and 1366px, light and dark, plus the /lines filter bar's
 stuck and open states and the /incidents filters open: 96 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e

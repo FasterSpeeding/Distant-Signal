@@ -6,7 +6,7 @@ import { Alert, Button, Card, Group, SegmentedControl, Stack, Text, VisuallyHidd
 import { AddJourneyLegButton } from './AddJourneyLegButton';
 import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
-import { journeyCanAddLeg, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
+import { journeyCanAddLeg, journeyPriorArrival, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
 import { routeLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
@@ -154,6 +154,7 @@ export function JourneyCreationFlow({
   }
 
   const priorDestinationCrs = journey ? journeyPriorDestinationCrs(journey) : null;
+  const priorArrival = journey ? journeyPriorArrival(journey) : null;
   const canAddLeg = journey !== null && journeyCanAddLeg(journey);
 
   return (
@@ -194,6 +195,7 @@ export function JourneyCreationFlow({
           <AddJourneyLegButton
             journeyId={journeyId}
             priorDestinationCrs={priorDestinationCrs}
+            priorArrival={priorArrival}
             onAdded={handleLegAdded}
           />
         )}

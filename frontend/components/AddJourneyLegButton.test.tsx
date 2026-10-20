@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
 import { renderWithMantine } from '@/test/render';
+import { theme } from '@/lib/theme';
 import { AddJourneyLegButton } from './AddJourneyLegButton';
 
 const refreshMock = vi.fn();
@@ -61,6 +63,100 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
     expect(await screen.findByLabelText('Service date')).toHaveValue('2026-07-16');
+  });
+
+  it("pre-fills the service date and earliest departure from the previous leg's arrival", async () => {
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs="WAT"
+        priorArrival={{ date: '2026-09-22', time: '10:07' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-22');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('10:07');
+    expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('');
+    expect(screen.getByText(/Your last leg arrives at 10:07\./)).toBeInTheDocument();
+  });
+
+  it('pre-fills the next day for a previous leg that arrives after midnight', async () => {
+    // The day is the arrival's own London date (`journeyPriorArrival`),
+    // not today, even when today is the day the previous leg left.
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-09-22T21:00:00Z'));
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs="WAT"
+        priorArrival={{ date: '2026-09-23', time: '00:15' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-23');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('00:15');
+  });
+
+  it('leaves the earliest departure empty when there is no previous leg', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-09-22T09:00:00Z'));
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-22');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
+    expect(screen.queryByText(/Your last leg arrives/)).not.toBeInTheDocument();
+  });
+
+  it("leaves the earliest departure empty when the previous leg's arrival isn't known", async () => {
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-09-22T09:00:00Z'));
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" priorArrival={null} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-22');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
+    expect(screen.queryByText(/Your last leg arrives/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the traveller's own date and time when the dialog re-renders", async () => {
+    const view = renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs="WAT"
+        priorArrival={{ date: '2026-09-22', time: '10:07' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const serviceDate = await screen.findByLabelText('Service date');
+    fireEvent.change(serviceDate, { target: { value: '2026-09-24' } });
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '12:30' } });
+
+    // The journey refreshes under the open dialog with a later arrival.
+    // (`rerender` replaces the whole tree, so the provider goes back in.)
+    view.rerender(
+      <MantineProvider theme={theme} env="test">
+        <AddJourneyLegButton
+          journeyId={1}
+          priorDestinationCrs="WAT"
+          priorArrival={{ date: '2026-09-22', time: '10:20' }}
+        />
+      </MantineProvider>,
+    );
+
+    expect(screen.getByLabelText('Service date')).toHaveValue('2026-09-24');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('12:30');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'CLJ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+    await waitFor(() => expect(legPosts()).toHaveLength(1));
+    expect(JSON.parse(String(legPosts()[0]?.[1]?.body))).toMatchObject({
+      serviceDate: '2026-09-24',
+      departWindow: { after: '12:30', before: null },
+    });
   });
 
   it('pre-fills the origin field from priorDestinationCrs on open', async () => {

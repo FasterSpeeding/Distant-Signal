@@ -25,9 +25,13 @@ function hasPublicTimes(stop: JourneyStop): boolean {
 }
 
 /** A passing point: the train runs through without stopping. Shown only in
- * the detailed working-timetable view, never as a stop. */
+ * the detailed working-timetable view, never as a stop -- including once the
+ * train has passed it and it carries actual times. A response without
+ * `passingPoint` falls back to "a pass time and no working stop time": not
+ * `scheduled*`, which an older API filled in from the live movement. */
 export function isPassingPoint(stop: JourneyStop): boolean {
-  return stop.workingPass != null && stop.scheduledArrival === null && stop.scheduledDeparture === null;
+  if (stop.passingPoint !== undefined) return stop.passingPoint;
+  return stop.workingPass != null && stop.workingArrival == null && stop.workingDeparture == null;
 }
 
 /** A call only staff timetables show: the train stops (it has a working
