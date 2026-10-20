@@ -32,6 +32,18 @@ export function delayLabel(delayMinutes: number, provisional = false): { text: s
   return { text: ON_TIME_LABEL, tone: 'onTime' };
 }
 
+/** `delayLabel`'s phone form, for a delay pill in a narrow table column:
+ * "+12 min", "−3 min" (a true minus sign) or "On time", with the same
+ * "Exp. " prefix for a provisional delay. Only ever the visible text: the
+ * pill keeps `delayLabel`'s full words for screen readers, so "+12 min" is
+ * still announced as "12 min late". */
+export function compactDelayLabel(delayMinutes: number, provisional = false): string {
+  const prefix = provisional ? 'Exp. ' : '';
+  if (delayMinutes > 0) return `${prefix}+${delayMinutes} min`;
+  if (delayMinutes < 0) return `${prefix}−${-delayMinutes} min`;
+  return ON_TIME_LABEL;
+}
+
 /** The compact live state a service row carries: the line summary's
  * `live`, and the same object on `/public/trains/search` and
  * `/schedule-departures` rows. */
