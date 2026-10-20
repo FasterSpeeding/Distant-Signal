@@ -3,6 +3,18 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: `/Trips/plan` uses fixed links in both directions
+
+No shape change. The timetable's fixed links (Tube, walk, transfer, bus,
+ferry) were used only in the direction the feed happens to list them, so
+half of them were missing: Vauxhall to Euston went by train via Waterloo
+East and Charing Cross because only Euston to Vauxhall by Tube was listed.
+Each link now runs both ways, with the same minutes and hours. Plans can
+change: a `transfer` leg (`mode` `TUBE`, `WALK`, and so on) may now appear
+where trains were offered before, e.g. Vauxhall to Euston is one 22-minute
+`TUBE` leg (27 minutes evenings and Sundays). Transfer legs still carry no
+line name: the feed gives only the mode.
+
 ## 2026-10-20: hand-entered train legs are checked against the timetable
 
 A train leg typed by hand is refused with `422` when its train can't
