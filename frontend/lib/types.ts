@@ -58,6 +58,11 @@ export interface IncidentDetail {
    * `incidentState` (`lib/incidents.ts`). Optional only for a bundle served
    * against an api that predates it. */
   sourceRemovedAt?: string | null;
+  /** The api's `state`, `startsAt` and `validityEndedAt` (2026-10-20):
+   * see `IncidentTiming`. */
+  state?: IncidentTiming['state'];
+  startsAt?: IncidentTiming['startsAt'];
+  validityEndedAt?: IncidentTiming['validityEndedAt'];
   currentlyAffectsLines: IncidentLineRef[];
   history: IncidentHistoryEntry[];
 }
@@ -88,6 +93,27 @@ export interface IncidentSummary {
   fetchedAt: string; // RFC3339
   /** See `IncidentDetail.sourceRemovedAt`. */
   sourceRemovedAt?: string | null;
+  /** See `IncidentTiming`. */
+  state?: IncidentTiming['state'];
+  startsAt?: IncidentTiming['startsAt'];
+  validityEndedAt?: IncidentTiming['validityEndedAt'];
+}
+
+/** Where an incident stands, as the api derives it from RDM's clear flag,
+ * the feed's listing and the incident's validity windows (2026-10-20,
+ * `queries::IncidentState`; docs/api-changelog.md). Every field is
+ * optional on the wire only for a bundle served against an older api,
+ * which `incidentState` (`lib/incidents.ts`) falls back from. */
+export interface IncidentTiming {
+  /** `active`: a validity window covers now; `upcoming`: none has started
+   * yet (or now is between two); `ended`: no longer listed by the feed, or
+   * every window has finished; `cleared`: RDM cleared it. */
+  state: 'active' | 'upcoming' | 'ended' | 'cleared';
+  /** RFC3339: when the next window starts, for `upcoming`; else `null`. */
+  startsAt: string | null;
+  /** RFC3339: when the last window finished, once every window has; else
+   * `null`. */
+  validityEndedAt: string | null;
 }
 
 /** One item of `GET /public/incidents/recently-cleared` (docs/api-changelog.md,

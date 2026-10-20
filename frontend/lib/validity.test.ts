@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { bucketFor, governingPeriod, periodIsActive, periodIsUpcoming } from './validity';
+import { bucketFor, governingPeriod, periodIsActive, periodIsUpcoming, validityPhase } from './validity';
 import type { LineStatus, ValidityPeriod } from './types';
 
 const NOW = Date.parse('2026-08-21T12:00:00Z');
@@ -149,5 +149,48 @@ describe('governingPeriod', () => {
 
   it('returns undefined when there is nothing to describe', () => {
     expect(governingPeriod(status([]), NOW)).toBeUndefined();
+  });
+});
+
+describe('validityPhase', () => {
+  const at = (hours: number) => new Date(NOW + hours * HOUR).toISOString();
+
+  it('is upcoming when every window starts later', () => {
+    expect(validityPhase([period({ fromDate: at(100), toDate: at(124) })], NOW)).toBe('upcoming');
+  });
+
+  it('is active while a window covers now, its end exclusive', () => {
+    expect(validityPhase([period({ fromDate: at(-1), toDate: at(1) })], NOW)).toBe('active');
+    expect(validityPhase([period({ fromDate: at(0), toDate: at(1) })], NOW)).toBe('active');
+    expect(validityPhase([period({ fromDate: at(-1), toDate: at(0) })], NOW)).toBe('ended');
+  });
+
+  it('is ended when every window has finished', () => {
+    expect(validityPhase([period({ fromDate: at(-48), toDate: at(-24) })], NOW)).toBe('ended');
+  });
+
+  it('reads several windows straddling now', () => {
+    const past = period({ fromDate: at(-48), toDate: at(-24) });
+    const current = period({ fromDate: at(-1), toDate: at(1) });
+    const future = period({ fromDate: at(24), toDate: at(48) });
+    expect(validityPhase([past, current, future], NOW)).toBe('active');
+    expect(validityPhase([past, future], NOW)).toBe('upcoming');
+  });
+
+  it('treats an open end as never finishing, and isNow as "open-ended", not "now"', () => {
+    expect(validityPhase([period({ fromDate: at(-24), toDate: null, isNow: true })], NOW)).toBe('active');
+    expect(validityPhase([period({ fromDate: at(24), toDate: null, isNow: true })], NOW)).toBe('upcoming');
+  });
+
+  it('is active with no windows at all', () => {
+    expect(validityPhase([], NOW)).toBe('active');
+  });
+
+  it('compares instants across the October clock change', () => {
+    // 00:00 BST to 01:45 BST on Sunday 25 October 2026; 01:30 GMT (the
+    // second 01:30 that night, 01:30Z) is after it although it reads earlier.
+    const short = [period({ fromDate: '2026-10-24T23:00:00Z', toDate: '2026-10-25T00:45:00Z' })];
+    expect(validityPhase(short, Date.parse('2026-10-25T00:30:00Z'))).toBe('active');
+    expect(validityPhase(short, Date.parse('2026-10-25T01:30:00Z'))).toBe('ended');
   });
 });
