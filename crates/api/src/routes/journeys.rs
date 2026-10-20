@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
 use crate::auth::delegated::{DelegatedOrSessionUser, DeleteScope, ReadScope};
-use crate::data::{journeys, schedule_matching, train_tracking, unlisted_links};
+use crate::data::{journeys, leg_validation, schedule_matching, train_tracking, unlisted_links};
 use crate::routes::journey_itinerary::RouteError;
 
 /// The `resource_type` discriminator this file passes to every
@@ -773,6 +773,17 @@ async fn post_journey(
             )
             .await?;
 
+            // A hand-entered origin/destination must be one the train
+            // really calls at, in order, with boarding and alighting
+            // allowed (checked before the `trains` row is minted).
+            reject_uncallable_train_leg(
+                &app,
+                &train_uid,
+                service_date,
+                origin_crs.as_deref(),
+                destination_crs.as_deref(),
+            )
+            .await?;
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
                     .await
@@ -867,6 +878,10 @@ async fn post_journey(
 /// Same 404-never-403 ownership convention as every other route in this
 /// app: "journey doesn't exist" and "journey exists but isn't yours" are
 /// indistinguishable to the caller.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear, one arm per leg mode; the shared checks are already helpers"
+)]
 async fn post_journey_leg(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -905,6 +920,17 @@ async fn post_journey_leg(
             )
             .await?;
 
+            // A hand-entered origin/destination must be one the train
+            // really calls at, in order, with boarding and alighting
+            // allowed (checked before the `trains` row is minted).
+            reject_uncallable_train_leg(
+                &app,
+                &train_uid,
+                service_date,
+                origin_crs.as_deref(),
+                destination_crs.as_deref(),
+            )
+            .await?;
             let trains_id =
                 crate::data::trains::find_or_create_train(&app.database, &train_uid, service_date)
                     .await
@@ -1007,6 +1033,37 @@ fn added_leg_or_error<T>(outcome: journeys::AddLegOutcome<T>) -> Result<T, (Stat
                 journeys::MAX_LEGS_PER_JOURNEY
             ),
         )),
+    }
+}
+
+/// `422` with the sentence from [`leg_validation::validate_train_leg`] when
+/// `train_uid` doesn't call at `origin_crs` then `destination_crs` on
+/// `service_date`, or doesn't let passengers on or off there. The web app's
+/// journey routes answer in plain text, like every other refusal here; the
+/// stable code (`leg_validation::LegCallError::code`) is what the delegated
+/// itinerary route sends. A train with no published schedule passes (see
+/// that module's doc). The CRS codes are trimmed and uppercased here.
+async fn reject_uncallable_train_leg(
+    app: &App,
+    train_uid: &str,
+    service_date: NaiveDate,
+    origin_crs: Option<&str>,
+    destination_crs: Option<&str>,
+) -> Result<(), (StatusCode, String)> {
+    let origin = origin_crs.map(|crs| crs.trim().to_ascii_uppercase());
+    let destination = destination_crs.map(|crs| crs.trim().to_ascii_uppercase());
+    match leg_validation::validate_train_leg(
+        &app.database,
+        train_uid,
+        service_date,
+        origin.as_deref(),
+        destination.as_deref(),
+    )
+    .await
+    .map_err(internal_error("check the train's calling points"))?
+    {
+        Some(rejection) => Err((StatusCode::UNPROCESSABLE_ENTITY, rejection.message)),
+        None => Ok(()),
     }
 }
 
@@ -1841,7 +1898,7 @@ async fn post_leg_train(
     // Ownership-checked read first -- same 404-never-403 posture as every
     // other route in this crate. Also confirms the leg exists before this
     // conjures a `trains`/`train_subscriptions` row for it.
-    journeys::get_owned_leg(&app.database, journey_id, leg_id, &user.id)
+    let leg = journeys::get_owned_leg(&app.database, journey_id, leg_id, &user.id)
         .await
         .map_err(internal_error("read journey leg"))?
         .ok_or((
@@ -1862,6 +1919,18 @@ async fn post_leg_train(
     crate::routes::train::enforce_pin_cap_for_train(&app, &user.id, &train_uid, body.service_date)
         .await?;
 
+    // The leg's own origin and destination (a window leg's, or a
+    // known-train leg's overrides) must be ones this train calls at, in
+    // order, with boarding and alighting allowed. The candidates list never
+    // offers anything else; a hand-typed UID might be.
+    reject_uncallable_train_leg(
+        &app,
+        &train_uid,
+        body.service_date,
+        leg.origin_crs.as_deref(),
+        leg.destination_crs.as_deref(),
+    )
+    .await?;
     let trains_id =
         crate::data::trains::find_or_create_train(&app.database, &train_uid, body.service_date)
             .await

@@ -43,7 +43,7 @@ use sha2::{Digest, Sha256};
 use crate::app::App;
 use crate::auth::delegated::{DelegatedOrSessionUser, WriteScope, error_response};
 use crate::data::delegated::IdempotencyClaim;
-use crate::data::{journeys, train_tracking};
+use crate::data::{journeys, leg_validation, train_tracking};
 
 /// Legs one itinerary may have, for every caller: the journey's own cap,
 /// [`journeys::MAX_LEGS_PER_JOURNEY`] (a test keeps the two equal).
@@ -248,6 +248,41 @@ fn validate(
     Ok((request, custom_name, legs))
 }
 
+/// `422` for the first leg whose train doesn't call at its `originCrs` then
+/// its `destinationCrs` on its service date, or doesn't let passengers on
+/// or off there ([`leg_validation::validate_train_leg`]; a leg without
+/// overrides, or a train with no published schedule, passes). The code is
+/// [`leg_validation::LegCallError::code`]; with more than one leg the
+/// message starts "Leg N: " (1-based). Runs after the idempotency claim, like
+/// the caps, so a replay still gets its first answer.
+async fn check_legs_call(app: &App, legs: &[ValidLeg]) -> Result<(), RouteError> {
+    for (index, leg) in legs.iter().enumerate() {
+        let rejection = leg_validation::validate_train_leg(
+            &app.database,
+            &leg.train_uid,
+            leg.service_date,
+            leg.origin_crs.as_deref(),
+            leg.destination_crs.as_deref(),
+        )
+        .await
+        .map_err(internal("check the train's calling points"))?;
+        if let Some(rejection) = rejection {
+            let code = rejection.code();
+            let message = if legs.len() > 1 {
+                format!("Leg {}: {}", index + 1, rejection.message)
+            } else {
+                rejection.message
+            };
+            return Err(RouteError::coded(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                code,
+                message,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The `Idempotency-Key` header: `Ok(None)` when absent, refused when
 /// present but empty, too long or not visible ASCII.
 fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, RouteError> {
@@ -388,6 +423,8 @@ async fn save_itinerary(
             return Err(invalid(train_tracking::pin_cap_message()));
         }
     }
+
+    check_legs_call(app, &legs).await?;
 
     let mut resolved = Vec::with_capacity(legs.len());
     for leg in &legs {
