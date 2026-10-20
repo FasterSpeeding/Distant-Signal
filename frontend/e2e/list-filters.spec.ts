@@ -66,6 +66,26 @@ test.describe('/incidents', () => {
     await expect(page.getByRole('link', { name: /Planned engineering work/ })).toBeVisible();
   });
 
+  // 2026-10-20: planned work whose only validity window is next week is
+  // Upcoming, not Active, in the list, its Status filter and its page.
+  test('places planned work that has not started under Upcoming, not Active', async ({ page }) => {
+    const row = page.getByRole('link', { name: /Buses replace trains between Middlesbrough and Saltburn/ });
+    await page.goto('/incidents?period=all&state=active');
+    await expect(page.getByRole('link', { name: /Signalling problems between London Kings Cross/ })).toBeVisible();
+    await expect(row).toHaveCount(0);
+
+    await page.goto('/incidents?period=all&state=upcoming');
+    await expect(row).toBeVisible();
+    await expect(page.locator('[data-incident-state="upcoming"]')).toHaveCount(1);
+    await expect(page.locator('[data-incident-state="active"]')).toHaveCount(0);
+
+    await row.click();
+    await expect(page).toHaveURL(/\/incidents\/FIXTURE-INCIDENT-UPCOMING/);
+    await expect(page.locator('[data-incident-state="upcoming"]')).toBeVisible();
+    await expect(page.getByText(/^Not in effect yet: starts /)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Currently affects' })).toHaveCount(0);
+  });
+
   test('on a phone the filters are a bottom sheet', async ({ page }) => {
     await page.setViewportSize(PHONE);
     await page.goto('/incidents');
