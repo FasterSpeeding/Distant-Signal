@@ -182,8 +182,11 @@ TfL's terms ask for "Powered by TfL Open Data" (already in the footer and
 on `/attribution`) and, for data derived from Ordnance Survey and Geomni
 (StopPoint coordinates are), "Contains OS data © Crown copyright and
 database rights 2016" and "Geomni UK Map data © and database rights
-[2019]". Both join the TfL entry on `/attribution` and the footer's TfL
-line. No TfL roundel, logo or name styling is used.
+[2019]". Both join the TfL entry on `/attribution`, and the credit and
+both statements show under the untracked-leg form's stop fields (Tube,
+DLR, tram), where the stop data is offered. The footer keeps its short
+TfL credit only, as it does for every source, and is unchanged (so no
+visual baseline moves). No TfL roundel, logo or name styling is used.
 
 ## 8. Operator notes
 
