@@ -7,6 +7,8 @@ import { TrainJourney } from './TrainJourney';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
 import { TextLink } from './TextLink';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
+import { UntrackedLegCard } from './UntrackedLegCard';
+import { isUntrackedLeg } from '@/lib/untrackedLeg';
 import { legRouteAndTime } from '@/lib/journeyLegLabel';
 import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
@@ -164,6 +166,12 @@ export function JourneyLegCard({
   // recorded server-side, at leg-creation time, precisely to make that
   // distinction -- see `JourneyLegDetail.windowSearched`'s own doc comment.
   const hasWindow = leg.windowSearched;
+
+  // A Tube ride, bus or walk: no train to pick or show (spec 2026-10-20
+  // §2.3). Checked before `trackedTrainState === null`, which it also is.
+  if (isUntrackedLeg(leg)) {
+    return <UntrackedLegCard journeyId={journeyId} leg={leg} isOwner={isOwner} isOnlyLeg={isOnlyLeg} />;
+  }
 
   if (leg.trackedTrainState === null) {
     // Review §2.5/I27 + review finding 2.9 (the two branches reached the

@@ -433,3 +433,88 @@ describe('JourneyDetailPage "Track this journey again" button', () => {
     expect(screen.getByRole('button', { name: 'Track this journey again' })).toBeInTheDocument();
   });
 });
+
+/** Spec 2026-10-20 §2.3: an untracked leg sits in the journey like any
+ * other, with connections worked out across mixed legs. */
+describe('JourneyDetailPage: untracked legs', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function tubeLeg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
+    return {
+      id: 2,
+      kind: 'untracked',
+      originCrs: null,
+      originName: 'York',
+      destinationCrs: null,
+      destinationName: 'York Minster',
+      serviceDate: '2026-09-22',
+      departAfter: null,
+      departBefore: null,
+      arriveAfter: null,
+      arriveBefore: null,
+      windowSearched: false,
+      matchMode: 'manual',
+      trackedTrainState: null,
+      legSkip: null,
+      transitMode: 'walk',
+      lineName: null,
+      plannedDeparture: '2026-09-22T17:15:00Z',
+      plannedArrival: '2026-09-22T17:35:00Z',
+      untrackedStatus: 'planned',
+      ...overrides,
+    };
+  }
+
+  it('shows an untracked leg as its own card, not as a leg that needs a train', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: true, legs: [matchedLeg(), tubeLeg()] }));
+    await renderPage();
+    expect(screen.getByText('Walk')).toBeInTheDocument();
+    expect(screen.getByText('York to York Minster')).toBeInTheDocument();
+    expect(screen.getByText('22 Sep 2026, 18:15 to 18:35')).toBeInTheDocument();
+    expect(screen.getByText('Times are planned. We have no live data for this leg.')).toBeInTheDocument();
+    expect(screen.queryByText(/needs a train/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pick a train/i)).not.toBeInTheDocument();
+    // "Add a leg" follows an untracked last leg.
+    expect(screen.getByRole('button', { name: 'Add a leg' })).toBeInTheDocument();
+  });
+
+  it("works out the change from a late train's estimated arrival to the next leg", async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ legs: [matchedLeg(), tubeLeg()] }));
+    await renderPage();
+    // The train is estimated at York at 18:22 (BST), the walk leaves 18:15.
+    expect(
+      screen.getByText(/Change at York, arrive est\. 18:22\. The next leg leaves before this one arrives\./),
+    ).toBeInTheDocument();
+  });
+
+  it('says how long the change is when the connection works', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(
+      baseJourney({
+        legs: [
+          tubeLeg({ id: 1, plannedDeparture: '2026-09-22T14:20:00Z', plannedArrival: '2026-09-22T14:48:00Z' }),
+          matchedLeg({ id: 2 }),
+        ],
+      }),
+    );
+    await renderPage();
+    // Walk arrives 15:48 BST, the train leaves King's Cross at 16:00.
+    expect(screen.getByText(/Change at York Minster, arrive 15:48\. 12 min to change\./)).toBeInTheDocument();
+  });
+
+  it('summarises a multi-leg journey with each untracked state', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(
+      baseJourney({
+        legs: [tubeLeg({ id: 1, untrackedStatus: 'done' }), tubeLeg({ id: 2, untrackedStatus: 'inProgress' })],
+      }),
+    );
+    await renderPage();
+    expect(screen.getByText('Leg 1 done · Leg 2 in progress (not live tracked)')).toBeInTheDocument();
+    // The header badge of a journey with no train legs is its own worst.
+    expect(screen.getAllByText('In progress (not live tracked)').length).toBeGreaterThanOrEqual(2);
+  });
+});

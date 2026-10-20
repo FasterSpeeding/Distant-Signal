@@ -433,4 +433,50 @@ describe('AddJourneyLegButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
     await waitFor(() => expect(legPosts()).toHaveLength(1));
   });
+
+  /** Spec 2026-10-20 §2: the "Tube, bus or walk" mode adds an untracked
+   * leg, seeded from the previous leg's arrival and destination. */
+  it('POSTs an untracked Tube leg seeded from the previous leg', async () => {
+    const fetchMock = mockFetch(legResponse);
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs="EUS"
+        priorArrival={{ date: '2026-10-21', time: '10:07' }}
+        priorPlaceName="London Euston"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    fireEvent.click(await screen.findByText('Tube, bus or walk'));
+
+    expect(await screen.findByLabelText('From (optional)')).toHaveValue('London Euston');
+    expect(screen.getByLabelText('Date')).toHaveValue('2026-10-21');
+    expect(screen.getByLabelText('Leaves')).toHaveValue('10:07');
+    expect(screen.queryByLabelText('Service date')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Line (optional)'), { target: { value: 'Victoria line' } });
+    fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: 'Victoria' } });
+    fireEvent.change(screen.getByLabelText('Arrives'), { target: { value: '10:25' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Journeys/1/legs',
+        expect.objectContaining({
+          method: 'POST',
+          // BST: 10:07 and 10:25 London are 09:07 and 09:25 UTC.
+          body: JSON.stringify({
+            mode: 'untracked',
+            transitMode: 'tube',
+            lineName: 'Victoria line',
+            originName: 'London Euston',
+            destinationName: 'Victoria',
+            plannedDeparture: '2026-10-21T09:07:00.000Z',
+            plannedArrival: '2026-10-21T09:25:00.000Z',
+          }),
+        }),
+      );
+    });
+  });
 });

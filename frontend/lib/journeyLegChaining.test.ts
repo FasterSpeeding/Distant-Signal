@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { journeyCanAddLeg, journeyPriorArrival, journeyPriorDestinationCrs } from './journeyLegChaining';
+import {
+  connectionGapMinutes,
+  journeyCanAddLeg,
+  journeyPriorArrival,
+  journeyPriorDestinationCrs,
+  journeyPriorDestinationName,
+  legDepartureInstant,
+} from './journeyLegChaining';
 import type { JourneyDetail, JourneyLegDetail, JourneyStop, TrackedTrainState } from './types';
 
 function leg(overrides: Partial<JourneyLegDetail> = {}): JourneyLegDetail {
@@ -197,5 +204,55 @@ describe('journeyPriorArrival', () => {
   it('is null when no stop is the destination', () => {
     const j = matchedJourney([stop('WAT'), stop('WOK', { publicArrival: '2026-09-22T09:30:00Z' })]);
     expect(journeyPriorArrival(j)).toBeNull();
+  });
+});
+
+/** Spec 2026-10-20 §2.3: untracked legs chain like train legs, from their
+ * planned times. */
+describe('chaining across untracked legs', () => {
+  const tube = leg({
+    id: 2,
+    kind: 'untracked',
+    originCrs: null,
+    destinationCrs: null,
+    originName: 'Brixton',
+    destinationName: 'Euston',
+    matchMode: 'manual',
+    transitMode: 'tube',
+    // 23:35 to 23:58 UTC on 22 Sep is 00:35 to 00:58 BST on the 23rd.
+    plannedDeparture: '2026-09-22T23:35:00Z',
+    plannedArrival: '2026-09-22T23:58:00Z',
+    untrackedStatus: 'planned',
+  });
+
+  it('a next leg can follow an untracked leg, starting from its planned arrival and place', () => {
+    const j = journey([tube]);
+    expect(journeyCanAddLeg(j)).toBe(true);
+    expect(journeyPriorArrival(j)).toEqual({ date: '2026-09-23', time: '00:58' });
+    expect(journeyPriorDestinationCrs(j)).toBeNull();
+    expect(journeyPriorDestinationName(j)).toBe('Euston');
+  });
+
+  it('an open train leg still cannot be chained onto', () => {
+    expect(journeyCanAddLeg(journey([tube, leg({ id: 3, trackedTrainState: null })]))).toBe(false);
+  });
+
+  it('works out the gap between a train arrival and a Tube departure, and back', () => {
+    const train = leg({
+      id: 1,
+      originCrs: 'WAT',
+      destinationCrs: 'CLJ',
+      trackedTrainState: trackedState({
+        journeyStops: [
+          stop('WAT', { publicDeparture: '2026-09-22T23:00:00Z' }),
+          stop('CLJ', { publicArrival: '2026-09-22T23:20:00Z' }),
+        ],
+      }),
+    });
+    expect(legDepartureInstant(train)).toBe('2026-09-22T23:00:00Z');
+    expect(legDepartureInstant(tube)).toBe('2026-09-22T23:35:00Z');
+    expect(connectionGapMinutes(train, tube)).toBe(15);
+    expect(connectionGapMinutes(tube, train)).toBe(-58);
+    expect(connectionGapMinutes(tube, leg({ id: 4, trackedTrainState: null }))).toBeNull();
   });
 });

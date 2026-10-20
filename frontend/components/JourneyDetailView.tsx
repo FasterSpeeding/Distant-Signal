@@ -9,11 +9,19 @@ import { ShareJourneyButton } from './ShareJourneyButton';
 import { ShareJourneyLinkButton } from './ShareJourneyLinkButton';
 import { TrackJourneyAgainButton } from './TrackJourneyAgainButton';
 import { formatDate } from '@/lib/dateFormat';
-import { journeyCanAddLeg, journeyPriorArrival, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
+import {
+  connectionGapMinutes,
+  journeyCanAddLeg,
+  journeyPriorArrival,
+  journeyPriorDestinationCrs,
+  journeyPriorDestinationName,
+} from '@/lib/journeyLegChaining';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
 import { routeLabel } from '@/lib/stationLabel';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
 import { delayLabel } from '@/lib/serviceStatus';
+import { formatTime } from '@/lib/dateFormat';
+import { isUntrackedLeg, UNTRACKED_STATUS_LABEL } from '@/lib/untrackedLeg';
 
 /** 2026-09-22 UX review finding M18: the fallback `<h1>` for a journey
  * with no `customName` used to be the flat, generic "Tracked journey" --
@@ -67,9 +75,12 @@ function defaultJourneyTitle(journey: JourneyDetail): string {
  * same M22/2.11 terminology fix `JourneyStatusBadge.tsx`'s own label map
  * makes. */
 function legSummaryPhrase(leg: JourneyLegDetail): string {
+  if (isUntrackedLeg(leg)) return UNTRACKED_STATUS_LABEL[leg.untrackedStatus ?? 'planned'].toLowerCase();
   if (leg.trackedTrainState === null) return 'needs a train picked';
   const state = leg.trackedTrainState;
   if (state.status === 'cancelled') return 'cancelled';
+  if (state.trackingPhase === 'noTimetable') return 'not in the timetable';
+  if (state.trackingPhase === 'planned') return 'planned';
   if (state.status === 'awaiting_activation' || state.status === null) return 'awaiting first report';
   if (state.delayMinutes !== null && state.delayMinutes !== 0) return delayLabel(state.delayMinutes).text;
   return 'on time';
@@ -85,16 +96,29 @@ function legSummaryPhrase(leg: JourneyLegDetail): string {
  * outright: even without a live buffer computation (explicitly deferred
  * to Phase 3 by the design doc), naming the change point at all is what
  * turns two stacked cards into one journey. */
-function LegConnector({ leg }: { leg: JourneyLegDetail }) {
+function LegConnector({ leg, next }: { leg: JourneyLegDetail; next: JourneyLegDetail | null }) {
   const stops = leg.trackedTrainState?.journeyStops;
+  // An untracked leg's end is its free-text place, its arrival the planned
+  // one (spec 2026-10-20 §2.3).
   const stationName =
-    legEndpointName(leg.destinationCrs, stops, leg.trackedTrainState, 'destination') ?? leg.destinationCrs;
-  if (!stationName) return null;
-  const arrival = legDestinationArrivalLabel(leg.destinationCrs, stops);
+    legEndpointName(leg.destinationCrs, stops, leg.trackedTrainState, 'destination') ??
+    leg.destinationName ??
+    leg.destinationCrs;
+  const arrival =
+    isUntrackedLeg(leg) && leg.plannedArrival
+      ? `arrive ${formatTime(leg.plannedArrival)}`
+      : legDestinationArrivalLabel(leg.destinationCrs, stops);
+  // The gap to the next leg, whatever kind each is, when both times are
+  // known: no minimum interchange time is assumed.
+  const gap = next === null ? null : connectionGapMinutes(leg, next);
+  const gapText =
+    gap === null ? null : gap < 0 ? 'The next leg leaves before this one arrives' : `${gap} min to change`;
+  if (!stationName && !gapText) return null;
   return (
-    <Text size="xs" c="dimmed" pl="sm">
-      <span aria-hidden="true">↓</span> Change at {stationName}
+    <Text size="xs" c="dimmed" pl="sm" data-leg-connector>
+      <span aria-hidden="true">↓</span> {stationName ? `Change at ${stationName}` : 'Change'}
       {arrival ? `, ${arrival}` : ''}
+      {gapText ? `. ${gapText}.` : ''}
     </Text>
   );
 }
@@ -136,6 +160,7 @@ export function JourneyDetailView({
   // doc comment for why this moved out of being private to this page.
   const priorDestinationCrs = journeyPriorDestinationCrs(journey);
   const priorArrival = journeyPriorArrival(journey);
+  const priorPlaceName = journeyPriorDestinationName(journey);
   const canAddLeg = journeyCanAddLeg(journey);
   const multiLeg = journey.legs.length > 1;
 
@@ -158,6 +183,7 @@ export function JourneyDetailView({
               journeyId={journey.id}
               priorDestinationCrs={priorDestinationCrs}
               priorArrival={priorArrival}
+              priorPlaceName={priorPlaceName}
             />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}
@@ -222,7 +248,7 @@ export function JourneyDetailView({
             isOwner={journey.isOwner}
             isOnlyLeg={journey.legs.length === 1}
           />
-          {index < journey.legs.length - 1 && <LegConnector leg={leg} />}
+          {index < journey.legs.length - 1 && <LegConnector leg={leg} next={journey.legs[index + 1] ?? null} />}
         </Stack>
       ))}
     </>

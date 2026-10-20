@@ -71,8 +71,14 @@ function journeyStatusPhrase(legs: JourneyLegDetail[]): string {
   const worst = worstLegStatus(legs);
   if (worst === null) return 'has no legs yet';
   const PHRASE: Record<LegStatusGroup, string> = {
+    // A journey of untracked legs only (spec 2026-10-20 §2.3).
+    untrackedDone: 'done',
+    untrackedPlanned: 'planned',
+    untrackedInProgress: 'in progress',
     good: 'on time',
+    planned: 'planned',
     awaiting: 'awaiting its first movement report',
+    noTimetable: 'not matched to a timetable',
     unmatched: 'still needs a train picked',
     delayed: 'running delayed',
     skipped: 'not stopping at one of its own stations',

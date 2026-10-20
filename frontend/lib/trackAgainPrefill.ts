@@ -1,3 +1,4 @@
+import { isUntrackedLeg } from './untrackedLeg';
 import type { JourneyDetail, JourneyLegDetail } from './types';
 
 /** What a fresh `/track` visit would need to reproduce one leg's own
@@ -55,7 +56,9 @@ function toHHMM(value: string | null): string | null {
  * `legEndpointName` already uses for the analogous name-resolution
  * problem. `destination` follows the identical pattern. */
 export function trackAgainPrefill(journey: JourneyDetail): TrackAgainPrefill | null {
-  const firstLeg: JourneyLegDetail | undefined = journey.legs[0];
+  // The first TRAIN leg (spec 2026-10-20 §2.4): an untracked Tube or walk
+  // leg has no station or search to start again from.
+  const firstLeg: JourneyLegDetail | undefined = journey.legs.find((leg) => !isUntrackedLeg(leg)) ?? journey.legs[0];
   if (!firstLeg) return null;
 
   const hasWindow =

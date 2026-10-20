@@ -1,4 +1,5 @@
 import { formatDate } from './dateFormat';
+import { untrackedLegTitle } from './untrackedLeg';
 import type { ConnectedAppDeletion, ConnectedAppScope } from './types';
 
 /** Every scope, in the order the pages list them. */
@@ -40,6 +41,17 @@ export function preselectedScopes(requested: string | undefined, allowed: readon
 export function deletionSummary(deletion: ConnectedAppDeletion): { title: string; legs: string[] } {
   const title = deletion.summary.customName?.trim() || `Journey ${deletion.journeyId}`;
   const legs = (deletion.summary.legs ?? []).map((leg) => {
+    if (leg.kind === 'untracked') {
+      // A Tube ride, bus or walk: its mode and line, then its places.
+      const route = [leg.originName, leg.destinationName].filter(Boolean).join(' to ');
+      return [
+        untrackedLegTitle({ transitMode: leg.transitMode ?? null, lineName: leg.lineName ?? null }),
+        route || null,
+        leg.plannedDeparture ? `on ${formatDate(leg.plannedDeparture)}` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+    }
     const route = [leg.originCrs, leg.destinationCrs].filter(Boolean).join(' to ');
     const parts = [
       route || 'Unknown route',

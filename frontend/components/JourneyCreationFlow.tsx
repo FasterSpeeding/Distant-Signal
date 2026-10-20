@@ -6,7 +6,14 @@ import { Alert, Button, Card, Group, SegmentedControl, Stack, Text, VisuallyHidd
 import { AddJourneyLegButton } from './AddJourneyLegButton';
 import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
-import { journeyCanAddLeg, journeyPriorArrival, journeyPriorDestinationCrs } from '@/lib/journeyLegChaining';
+import { UntrackedLegStartForm } from './UntrackedLegStartForm';
+import {
+  journeyCanAddLeg,
+  journeyPriorArrival,
+  journeyPriorDestinationCrs,
+  journeyPriorDestinationName,
+} from '@/lib/journeyLegChaining';
+import { isUntrackedLeg } from '@/lib/untrackedLeg';
 import { routeLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
@@ -73,7 +80,7 @@ export function JourneyCreationFlow({
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
-  const [entryMode, setEntryMode] = useState<'known' | 'plan'>(planOnly ? 'plan' : 'known');
+  const [entryMode, setEntryMode] = useState<'known' | 'plan' | 'untracked'>(planOnly ? 'plan' : 'known');
   const entryModeLabelId = useId();
 
   async function refreshJourney(id: number) {
@@ -135,6 +142,9 @@ export function JourneyCreationFlow({
           data={[
             { label: 'I know my route', value: 'known' },
             { label: 'Plan a route for me', value: 'plan' },
+            // Spec 2026-10-20 §2.3: a trip that starts away from the
+            // railway (a Tube ride or a walk to the station).
+            { label: 'Tube, bus or walk', value: 'untracked' },
           ]}
         />
         {/* Same `VisuallyHidden`/`aria-live="polite"` swap announcement as
@@ -142,19 +152,22 @@ export function JourneyCreationFlow({
             whole form change, screen-reader users otherwise get nothing
             until they tab forward into different fields. */}
         <VisuallyHidden role="status" aria-live="polite">
-          {entryMode === 'plan' ? 'Showing the plan-a-route-for-me form.' : 'Showing the I-know-my-route form.'}
+          {entryMode === 'plan'
+            ? 'Showing the plan-a-route-for-me form.'
+            : entryMode === 'untracked'
+              ? 'Showing the Tube, bus or walk form.'
+              : 'Showing the I-know-my-route form.'}
         </VisuallyHidden>
-        {entryMode === 'known' ? (
-          <TrackTrainForm onCreated={handleLegOneCreated} />
-        ) : (
-          <PlanTripFlow onCreated={handleLegOneCreated} searchDates={planSearchDates} />
-        )}
+        {entryMode === 'known' && <TrackTrainForm onCreated={handleLegOneCreated} />}
+        {entryMode === 'plan' && <PlanTripFlow onCreated={handleLegOneCreated} searchDates={planSearchDates} />}
+        {entryMode === 'untracked' && <UntrackedLegStartForm onCreated={handleLegOneCreated} />}
       </Stack>
     );
   }
 
   const priorDestinationCrs = journey ? journeyPriorDestinationCrs(journey) : null;
   const priorArrival = journey ? journeyPriorArrival(journey) : null;
+  const priorPlaceName = journey ? journeyPriorDestinationName(journey) : null;
   const canAddLeg = journey !== null && journeyCanAddLeg(journey);
 
   return (
@@ -183,7 +196,11 @@ export function JourneyCreationFlow({
                   Leg {index + 1}: {routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
                 </Text>
                 <Text size="sm" c="dimmed">
-                  {leg.trackedTrainState ? 'Train matched' : 'Not yet matched'}
+                  {isUntrackedLeg(leg)
+                    ? 'Not live tracked'
+                    : leg.trackedTrainState
+                      ? 'Train matched'
+                      : 'Not yet matched'}
                 </Text>
               </Group>
             </Card>
@@ -196,6 +213,7 @@ export function JourneyCreationFlow({
             journeyId={journeyId}
             priorDestinationCrs={priorDestinationCrs}
             priorArrival={priorArrival}
+            priorPlaceName={priorPlaceName}
             onAdded={handleLegAdded}
           />
         )}

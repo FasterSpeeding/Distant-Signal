@@ -1,7 +1,8 @@
 import dayjs from 'dayjs';
 import { LONDON_TZ } from './londonWallClock';
-import { stopDisplayArrival } from './stopTimes';
-import type { JourneyDetail, JourneyLegDetail } from './types';
+import { stopDisplayArrival, stopDisplayTime } from './stopTimes';
+import { isUntrackedLeg } from './untrackedLeg';
+import type { JourneyDetail, JourneyLegDetail, JourneyStop } from './types';
 
 /** A London calendar date (`'YYYY-MM-DD'`) and wall-clock time (`'HH:MM'`). */
 export interface LondonDateTime {
@@ -34,13 +35,26 @@ export function journeyPriorDestinationCrs(journey: JourneyDetail): string | nul
  * matched train (`trackedTrainState !== null`) -- an unmatched leg has no
  * settled destination/arrival time yet for a following leg's origin to key
  * off, and `POST /Journeys/{id}/legs` has no way to validate a chain onto a
- * leg that might still resolve to nothing. `false` for a journey with no
+ * leg that might still resolve to nothing. An untracked leg (a Tube ride, a
+ * walk) is complete as entered: its planned arrival is what the next leg
+ * starts from (spec 2026-10-20 §2.3). `false` for a journey with no
  * legs at all (shouldn't occur in practice, but this mirrors the same
  * defensive posture `defaultJourneyTitle`/`trackAgainPrefill` already take
  * for the identical edge case rather than assuming the invariant holds). */
 export function journeyCanAddLeg(journey: JourneyDetail): boolean {
   const lastLeg = journey.legs.at(-1) ?? null;
-  return lastLeg !== null && lastLeg.trackedTrainState !== null;
+  return lastLeg !== null && (isUntrackedLeg(lastLeg) || lastLeg.trackedTrainState !== null);
+}
+
+/** The CURRENT last leg's destination as words, for a next untracked leg's
+ * "from" field: the station or place name the API resolved, else its
+ * station code. `null` with no last leg or no known destination. */
+export function journeyPriorDestinationName(journey: JourneyDetail): string | null {
+  const lastLeg = journey.legs.at(-1) ?? null;
+  if (lastLeg === null) return null;
+  return (
+    lastLeg.destinationName ?? lastLeg.trackedTrainState?.scheduleDestinationName ?? journeyPriorDestinationCrs(journey)
+  );
 }
 
 /** When the CURRENT last leg's train is timetabled to reach that leg's
@@ -65,12 +79,32 @@ export function journeyPriorArrival(journey: JourneyDetail): LondonDateTime | nu
 }
 
 /** When one leg is timetabled to reach its own destination, as an
- * RFC3339 instant, whatever kind of leg it is. Today every leg is a train
- * leg, read from its matched train's stop list: `null` while it has no
- * matched train, no stop list, no stop for the destination, or no arrival
- * time at it. A leg kind with its own planned arrival adds its branch here,
- * and `journeyPriorArrival` picks it up unchanged. */
+ * RFC3339 instant, whatever kind of leg it is. An untracked leg (spec
+ * 2026-10-20 §2.3) gives its planned arrival. A train leg is read from its
+ * matched train's stop list: `null` while it has no matched train, no stop
+ * list, no stop for the destination, or no arrival time at it.
+ * `journeyPriorArrival` and the connectors between legs read this, so a
+ * rail leg added after a Tube leg starts from the Tube leg's arrival. */
 export function legArrivalInstant(leg: JourneyLegDetail): string | null {
+  if (isUntrackedLeg(leg)) return leg.plannedArrival ?? null;
+  const stop = legDestinationStop(leg);
+  return stop ? stopDisplayArrival(stop) : null;
+}
+
+/** When one leg is now expected to reach its own destination: a train's
+ * reported arrival there, else its estimate, else the timetable
+ * (`legArrivalInstant`); an untracked leg's planned arrival. What the
+ * connector between two legs measures the change from, so a late-running
+ * train shows a tight or missed connection. */
+export function legExpectedArrivalInstant(leg: JourneyLegDetail): string | null {
+  if (isUntrackedLeg(leg)) return leg.plannedArrival ?? null;
+  const stop = legDestinationStop(leg);
+  return stop ? (stop.actualArrival ?? stop.estimatedArrival ?? stopDisplayArrival(stop)) : null;
+}
+
+/** The stop a train leg gets off at, looked for after the leg's own origin
+ * so a route that calls at the same station twice picks the right call. */
+function legDestinationStop(leg: JourneyLegDetail): JourneyStop | null {
   const state = leg.trackedTrainState;
   const stops = state?.journeyStops ?? null;
   const destination = leg.destinationCrs ?? state?.scheduleDestinationCrs ?? null;
@@ -78,8 +112,34 @@ export function legArrivalInstant(leg: JourneyLegDetail): string | null {
 
   const origin = leg.originCrs ?? state.pinOriginCrs;
   const originIndex = origin === null ? -1 : stops.findIndex((stop) => sameCrs(stop.crs, origin));
-  const stop = stops.slice(originIndex + 1).find((candidate) => sameCrs(candidate.crs, destination));
-  return stop ? stopDisplayArrival(stop) : null;
+  return stops.slice(originIndex + 1).find((candidate) => sameCrs(candidate.crs, destination)) ?? null;
+}
+
+/** When one leg is timetabled to leave its own origin, as an RFC3339
+ * instant: an untracked leg's planned departure, or a matched train's
+ * timetabled (public, else working) departure from the leg's own origin.
+ * `null` when not known. */
+export function legDepartureInstant(leg: JourneyLegDetail): string | null {
+  if (isUntrackedLeg(leg)) return leg.plannedDeparture ?? null;
+  const state = leg.trackedTrainState;
+  const stops = state?.journeyStops ?? null;
+  const origin = leg.originCrs ?? state?.pinOriginCrs ?? null;
+  if (stops === null || origin === null) return null;
+  const stop = stops.find((candidate) => sameCrs(candidate.crs, origin));
+  return stop ? stopDisplayTime(stop) : null;
+}
+
+/** Whole minutes between one leg's expected arrival
+ * (`legExpectedArrivalInstant`, so a live delay counts) and the next leg's
+ * timetabled departure, whatever kind each is (spec 2026-10-20 §2.3):
+ * negative when the next leg leaves before this one arrives, `null` when
+ * either time isn't known. No minimum interchange time is assumed. */
+export function connectionGapMinutes(leg: JourneyLegDetail, next: JourneyLegDetail): number | null {
+  const arrival = legExpectedArrivalInstant(leg);
+  const departure = legDepartureInstant(next);
+  if (arrival === null || departure === null) return null;
+  const minutes = dayjs(departure).diff(dayjs(arrival), 'minute', true);
+  return Number.isFinite(minutes) ? Math.round(minutes) : null;
 }
 
 function londonDateTime(instant: string): LondonDateTime | null {

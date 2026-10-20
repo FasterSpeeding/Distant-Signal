@@ -10,6 +10,12 @@ import type { LondonDateTime } from '@/lib/journeyLegChaining';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
+import {
+  newUntrackedLegDraft,
+  UntrackedLegFields,
+  untrackedDraftRequest,
+  type UntrackedLegDraft,
+} from './UntrackedLegFields';
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { searchStations } from '@/lib/suggestions';
@@ -81,15 +87,25 @@ function isValidServiceDate(value: string): boolean {
  * two more, where a guessed margin could hide the one the traveller wants.
  * Like the origin, both are seeded only in `handleOpen`, never from a
  * render, so a re-render (the journey refreshing under an open dialog)
- * never overwrites what the traveller has typed. */
+ * never overwrites what the traveller has typed.
+ *
+ * A third mode, "Tube, bus or walk" (spec
+ * docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
+ * §2), adds an untracked leg: a mode, optional line and places, and planned
+ * times (`UntrackedLegFields`). It is seeded the same way: its date and
+ * "leaves" from `priorArrival`, its "from" from `priorPlaceName`. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
   priorArrival = null,
+  priorPlaceName = null,
   onAdded,
 }: {
   journeyId: number;
   priorDestinationCrs: string | null;
+  /** The previous leg's destination in words (`journeyPriorDestinationName`),
+   * the default "from" of a new untracked leg. */
+  priorPlaceName?: string | null;
   /** The previous leg's arrival in London time, or `null` when no leg is
    * there to chain from or its arrival isn't known: the service date then
    * defaults to London's today and the earliest departure stays empty. */
@@ -146,6 +162,7 @@ export function AddJourneyLegButton({
     arriveFrom: false,
     arriveTo: false,
   });
+  const [untrackedDraft, setUntrackedDraft] = useState<UntrackedLegDraft>(() => newUntrackedLegDraft({ date: '' }));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
@@ -170,13 +187,21 @@ export function AddJourneyLegButton({
     setArriveFrom('');
     setArriveTo('');
     setIncompleteTimes({ departFrom: false, departTo: false, arriveFrom: false, arriveTo: false });
+    setUntrackedDraft(
+      newUntrackedLegDraft({
+        date: priorArrival?.date ?? nowInLondon().format('YYYY-MM-DD'),
+        leaves: priorArrival?.time ?? '',
+        originName: priorPlaceName ?? '',
+      }),
+    );
     open();
   }
 
   const resolvedOrigin = resolveStationCode(originCrs, originSuggestions);
   const resolvedDestination = resolveStationCode(destinationCrs, destinationSuggestions);
 
-  function currentRequest(): NewJourneyLegRequest {
+  function currentRequest(): NewJourneyLegRequest | null {
+    if (mode === 'untracked') return untrackedDraftRequest(untrackedDraft);
     return mode === 'knownTrain'
       ? { mode: 'knownTrain', trainUid, serviceDate }
       : {
@@ -212,17 +237,20 @@ export function AddJourneyLegButton({
       : null;
 
   const isValid =
-    mode === 'knownTrain'
-      ? trainUid.trim() !== '' && serviceDateValid
-      : originCrsValid &&
-        destinationCrsValid &&
-        serviceDateValid &&
-        windowTimesComplete &&
-        windowHasABound &&
-        windowOrderValid;
+    mode === 'untracked'
+      ? untrackedDraftRequest(untrackedDraft) !== null
+      : mode === 'knownTrain'
+        ? trainUid.trim() !== '' && serviceDateValid
+        : originCrsValid &&
+          destinationCrsValid &&
+          serviceDateValid &&
+          windowTimesComplete &&
+          windowHasABound &&
+          windowOrderValid;
 
   async function handleSubmit() {
-    if (!isValid) return;
+    const body = currentRequest();
+    if (!isValid || body === null) return;
     setSubmitting(true);
     setError(null);
     needsLoginState.reset();
@@ -230,7 +258,7 @@ export function AddJourneyLegButton({
       const response = await fetch(`/api/Journeys/${journeyId}/legs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentRequest()),
+        body: JSON.stringify(body),
       });
       if (!response.ok) {
         if (response.status === 401) {
@@ -279,15 +307,24 @@ export function AddJourneyLegButton({
             data={[
               { label: 'Search a time window', value: 'window' },
               { label: 'I know the train', value: 'knownTrain' },
+              { label: 'Tube, bus or walk', value: 'untracked' },
             ]}
           />
-          <TextInput
-            label="Service date"
-            placeholder="YYYY-MM-DD"
-            value={serviceDate}
-            onChange={(event) => setServiceDate(event.currentTarget.value)}
-            error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
-          />
+          {mode === 'untracked' ? (
+            <UntrackedLegFields
+              draft={untrackedDraft}
+              onChange={setUntrackedDraft}
+              priorArrivalTime={priorArrival?.time ?? null}
+            />
+          ) : (
+            <TextInput
+              label="Service date"
+              placeholder="YYYY-MM-DD"
+              value={serviceDate}
+              onChange={(event) => setServiceDate(event.currentTarget.value)}
+              error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
+            />
+          )}
           {mode === 'window' && (
             <>
               <Autocomplete

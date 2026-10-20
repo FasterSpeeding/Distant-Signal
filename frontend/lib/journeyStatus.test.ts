@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { legStatusGroup, legStatusRank, worstLegStatus } from './journeyStatus';
-import type { JourneyLegDetail, TrackedTrainState } from './types';
+import { journeyListItemStatusGroup, legStatusGroup, legStatusRank, worstLegStatus } from './journeyStatus';
+import type { JourneyLegDetail, JourneyListItem, TrackedTrainState } from './types';
 
 function baseTrackedTrainState(overrides: Partial<TrackedTrainState> = {}): TrackedTrainState {
   return {
@@ -228,5 +228,103 @@ describe('worstLegStatus', () => {
       baseLeg({ id: 2, trackedTrainState: baseTrackedTrainState({ status: 'en_route' }) }),
     ];
     expect(worstLegStatus(legs)).toBe('severe');
+  });
+});
+
+/** Spec 2026-10-20: untracked legs and the planned / not-in-the-timetable
+ * phases in the journey rollup. */
+describe('legStatusGroup: untracked legs and tracking phases', () => {
+  const untracked = (untrackedStatus: 'planned' | 'inProgress' | 'done', id = 9) =>
+    baseLeg({
+      id,
+      kind: 'untracked',
+      originCrs: null,
+      destinationCrs: null,
+      trackedTrainState: null,
+      transitMode: 'tube',
+      untrackedStatus,
+    });
+
+  it('an untracked leg is never "needs a train picked"', () => {
+    expect(legStatusGroup(untracked('planned'))).toBe('untrackedPlanned');
+    expect(legStatusGroup(untracked('inProgress'))).toBe('untrackedInProgress');
+    expect(legStatusGroup(untracked('done'))).toBe('untrackedDone');
+  });
+
+  it('a train leg reads its trackingPhase before the waiting arm', () => {
+    const phase = (trackingPhase: 'planned' | 'noTimetable', status: TrackedTrainState['status'] = null) =>
+      legStatusGroup(baseLeg({ trackedTrainState: baseTrackedTrainState({ status, trackingPhase }) }));
+    expect(phase('planned')).toBe('planned');
+    expect(phase('planned', 'awaiting_activation')).toBe('planned');
+    expect(phase('noTimetable')).toBe('noTimetable');
+    expect(
+      legStatusGroup(
+        baseLeg({ trackedTrainState: baseTrackedTrainState({ status: null, trackingPhase: 'awaitingReport' }) }),
+      ),
+    ).toBe('awaiting');
+    expect(
+      legStatusGroup(
+        baseLeg({ trackedTrainState: baseTrackedTrainState({ status: 'cancelled', trackingPhase: 'live' }) }),
+      ),
+    ).toBe('severe');
+  });
+
+  it('ranks untracked below every train state, then planned between good and awaiting', () => {
+    const train = (overrides: Partial<TrackedTrainState>) =>
+      baseLeg({ trackedTrainState: baseTrackedTrainState(overrides) });
+    const order = [
+      untracked('done'),
+      untracked('planned'),
+      untracked('inProgress'),
+      train({ status: 'en_route', delayMinutes: 0 }),
+      train({ status: null, trackingPhase: 'planned' }),
+      train({ status: null }),
+      train({ status: 'en_route', delayMinutes: 5 }),
+      train({ status: null, trackingPhase: 'noTimetable' }),
+      baseLeg({ trackedTrainState: null }),
+    ];
+    const ranks = order.map(legStatusRank);
+    expect([...ranks].sort((a, b) => a - b)).toEqual(ranks);
+    expect(new Set(ranks).size).toBe(ranks.length);
+  });
+
+  it('a journey with a train leg is summarised by its trains, one of untracked legs by those', () => {
+    const onTime = baseLeg({ trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 0 }) });
+    expect(worstLegStatus([untracked('inProgress'), onTime])).toBe('good');
+    expect(worstLegStatus([untracked('done'), untracked('inProgress', 10)])).toBe('untrackedInProgress');
+  });
+
+  it('a /Journeys/mine row adapts its kind and phase', () => {
+    const row = (overrides: Partial<JourneyListItem>): JourneyListItem => ({
+      id: 1,
+      customName: null,
+      createdAt: '2026-10-20T00:00:00Z',
+      legId: 1,
+      originCrs: null,
+      destinationCrs: null,
+      serviceDate: '2026-10-21',
+      originName: null,
+      destinationName: null,
+      matchMode: 'manual',
+      trainSubscriptionId: null,
+      resolutionStatus: null,
+      status: null,
+      delayMinutes: null,
+      ...overrides,
+    });
+    expect(journeyListItemStatusGroup(row({ kind: 'untracked', untrackedStatus: 'inProgress' }))).toBe(
+      'untrackedInProgress',
+    );
+    expect(
+      journeyListItemStatusGroup(
+        row({ kind: 'train', trainSubscriptionId: 4, resolutionStatus: 'pending', trackingPhase: 'planned' }),
+      ),
+    ).toBe('planned');
+    expect(
+      journeyListItemStatusGroup(
+        row({ kind: 'train', trainSubscriptionId: 4, resolutionStatus: 'pending', trackingPhase: 'noTimetable' }),
+      ),
+    ).toBe('noTimetable');
+    expect(journeyListItemStatusGroup(row({ kind: 'train' }))).toBe('unmatched');
   });
 });
