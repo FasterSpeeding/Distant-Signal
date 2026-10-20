@@ -3,7 +3,7 @@ import { Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import { ApiNotFoundError, getAllTocs, getIncident, getStationName } from '@/lib/api';
-import { endedDescription, incidentState } from '@/lib/incidents';
+import { endedDescription, incidentState, upcomingDescription, validityEndedDescription } from '@/lib/incidents';
 import { sanitizeDescription } from '@/lib/sanitizeHtml';
 import { IncidentStateBadge } from '@/components/IncidentStateBadge';
 import { ShareButton } from '@/components/ShareButton';
@@ -142,7 +142,13 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
           {/* Review §3.3's "at-a-glance strip": the archive rows' own
               Active/Ended/Cleared badge, the same component, so a reader
               who has seen the archive recognises it immediately here. */}
-          <IncidentStateBadge isCleared={incident.isCleared} sourceRemovedAt={incident.sourceRemovedAt} />
+          <IncidentStateBadge
+            isCleared={incident.isCleared}
+            sourceRemovedAt={incident.sourceRemovedAt}
+            state={state}
+            startsAt={incident.startsAt}
+            validityEndedAt={incident.validityEndedAt}
+          />
         </Group>
         <ShareButton />
       </Group>
@@ -215,6 +221,19 @@ export default async function IncidentDetailPage({ params }: { params: Promise<{
       ) : state === 'ended' && incident.sourceRemovedAt ? (
         <Text size="sm" c="dimmed">
           {endedDescription(incident.sourceRemovedAt)}.
+        </Text>
+      ) : /* Still listed, but every validity window has finished, or none has
+          started yet (2026-10-20): no line carries it now, so say why
+          rather than "Not currently reported on any tracked line". */
+      state === 'ended' ? (
+        <Text size="sm" c="dimmed">
+          {incident.validityEndedAt
+            ? `${validityEndedDescription(incident.validityEndedAt)}.`
+            : 'Its validity period has ended.'}
+        </Text>
+      ) : state === 'upcoming' ? (
+        <Text size="sm" c="dimmed">
+          {incident.startsAt ? `${upcomingDescription(incident.startsAt)}.` : 'Not in effect yet.'}
         </Text>
       ) : (
         <Stack gap={4}>
