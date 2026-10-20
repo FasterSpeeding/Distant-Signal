@@ -1,12 +1,17 @@
 'use client';
 
-import { Group, Select, Stack, Text, TextInput } from '@mantine/core';
+import { Autocomplete, Group, Select, Stack, Text, TextInput } from '@mantine/core';
 import { DateInput } from '@mantine/dates';
 import dayjs from 'dayjs';
+import { useCallback } from 'react';
 import { TimeFilterInput } from './TimeFilterInput';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { addCalendarDays, LONDON_TZ } from '@/lib/londonWallClock';
-import { TRANSIT_MODES } from '@/lib/untrackedLeg';
+import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
+import { searchTflStops } from '@/lib/suggestions';
+import { TFL_STOPS_ATTRIBUTION } from '@/lib/tflAttribution';
+import { hasTflStops, TRANSIT_MODES } from '@/lib/untrackedLeg';
+import { useSuggestions } from '@/lib/useSuggestions';
 import type { TransitMode, UntrackedLegRequest } from '@/lib/types';
 
 /** What the untracked-leg form holds: a mode, optional line and places,
@@ -16,6 +21,10 @@ export interface UntrackedLegDraft {
   lineName: string;
   originName: string;
   destinationName: string;
+  /** The TfL stop each place was picked from (Tube, DLR and tram), or
+   * `null` for typed text. Editing the text drops it. */
+  originStopId: string | null;
+  destinationStopId: string | null;
   date: string; // 'YYYY-MM-DD'
   leaves: string; // 'HH:MM' or ''
   arrives: string; // 'HH:MM' or ''
@@ -32,6 +41,8 @@ export function newUntrackedLegDraft(seed: { date: string; leaves?: string; orig
     lineName: '',
     originName: seed.originName ?? '',
     destinationName: '',
+    originStopId: null,
+    destinationStopId: null,
     date: seed.date,
     leaves: seed.leaves ?? '',
     arrives: '',
@@ -74,21 +85,75 @@ export function untrackedDraftRequest(draft: UntrackedLegDraft): UntrackedLegReq
   const lineName = text(draft.lineName);
   const originName = text(draft.originName);
   const destinationName = text(draft.destinationName);
+  // A stop id only with its place, and only for a mode with TfL stops.
+  const stops = hasTflStops(draft.transitMode);
+  const originStopId = stops && originName ? draft.originStopId : null;
+  const destinationStopId = stops && destinationName ? draft.destinationStopId : null;
   return {
     mode: 'untracked',
     transitMode: draft.transitMode,
     ...(lineName ? { lineName } : {}),
     ...(originName ? { originName } : {}),
+    ...(originStopId ? { originStopId } : {}),
     ...(destinationName ? { destinationName } : {}),
+    ...(destinationStopId ? { destinationStopId } : {}),
     plannedDeparture: departure.toISOString(),
     plannedArrival: arrival.toISOString(),
   };
 }
 
+/** One place of an untracked leg whose mode has TfL stops: an
+ * `Autocomplete` over that mode's stops (`GET /tfl/stops`, the site's
+ * `useSuggestions` + `suggestionAutocompleteProps` pattern). Picking a stop
+ * writes its name into the field and reports its id; typing reports the
+ * text with no id, so free text still works
+ * (docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md §6). */
+function StopPlaceField({
+  label,
+  placeholder,
+  mode,
+  value,
+  onType,
+  onPick,
+}: {
+  label: string;
+  placeholder: string;
+  mode: TransitMode;
+  value: string;
+  /** The field's text changed (typed, or written by a pick just after
+   * `onPick`). */
+  onType: (text: string) => void;
+  /** A stop was picked: its name and id. */
+  onPick: (name: string, stopId: string) => void;
+}) {
+  const search = useCallback((q: string, signal: AbortSignal) => searchTflStops(q, [mode], signal), [mode]);
+  const { suggestions, loading } = useSuggestions(value, search);
+  return (
+    <Autocomplete
+      label={label}
+      placeholder={placeholder}
+      value={value}
+      maxLength={100}
+      onChange={onType}
+      onOptionSubmit={(id) => {
+        const stop = suggestions.find((suggestion) => suggestion.code === id);
+        if (stop) onPick(stop.name, stop.code);
+      }}
+      {...suggestionAutocompleteProps(suggestions, {
+        query: value,
+        loading,
+        noMatchMessage: 'No matching stops. You can still type a place.',
+        fill: 'name',
+      })}
+    />
+  );
+}
+
 /** The fields of an untracked leg (a Tube ride, a bus, a walk; spec
  * docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
- * §2): how, line, from and to (free text: there is no TfL stop lookup),
- * date, leaves and arrives. Shared by "Add a leg" and the "Tube, bus or
+ * §2): how, line, from and to, date, leaves and arrives. For Tube, DLR and
+ * tram, from and to suggest TfL's stops (`StopPlaceField`) and keep the
+ * picked stop's id; otherwise they are free text. Shared by "Add a leg" and the "Tube, bus or
  * walk" start on `/journeys/new`, which own the draft and submit
  * `untrackedDraftRequest(draft)`. */
 export function UntrackedLegFields({
@@ -106,6 +171,23 @@ export function UntrackedLegFields({
   const set = (patch: Partial<UntrackedLegDraft>) => {
     onChange((current) => ({ ...current, ...patch }));
   };
+  // Mantine's `Autocomplete` writes a picked option's label into the field
+  // (`onChange`) right after `onOptionSubmit`, so a text change that leaves
+  // the name as it is keeps the stop; any real edit drops it.
+  const typeOrigin = (text: string) => {
+    onChange((current) => ({
+      ...current,
+      originName: text,
+      originStopId: text === current.originName ? current.originStopId : null,
+    }));
+  };
+  const typeDestination = (text: string) => {
+    onChange((current) => ({
+      ...current,
+      destinationName: text,
+      destinationStopId: text === current.destinationName ? current.destinationStopId : null,
+    }));
+  };
   const setIncomplete = (field: 'leaves' | 'arrives', incomplete: boolean) => {
     onChange((current) => ({ ...current, incomplete: { ...current.incomplete, [field]: incomplete } }));
   };
@@ -120,7 +202,8 @@ export function UntrackedLegFields({
         value={draft.transitMode}
         onChange={(value) => {
           const mode = TRANSIT_MODES.find((entry) => entry.value === value);
-          if (mode) set({ transitMode: mode.value });
+          // Stops are per mode: a new mode keeps the text, not the ids.
+          if (mode) set({ transitMode: mode.value, originStopId: null, destinationStopId: null });
         }}
         allowDeselect={false}
       />
@@ -132,21 +215,51 @@ export function UntrackedLegFields({
         onChange={(event) => set({ lineName: event.currentTarget.value })}
       />
       <Group grow align="flex-start">
-        <TextInput
-          label="From (optional)"
-          placeholder="e.g. King's Cross St Pancras"
-          value={draft.originName}
-          maxLength={100}
-          onChange={(event) => set({ originName: event.currentTarget.value })}
-        />
-        <TextInput
-          label="To (optional)"
-          placeholder="e.g. Victoria"
-          value={draft.destinationName}
-          maxLength={100}
-          onChange={(event) => set({ destinationName: event.currentTarget.value })}
-        />
+        {hasTflStops(draft.transitMode) ? (
+          <>
+            <StopPlaceField
+              label="From (optional)"
+              placeholder="e.g. King's Cross St Pancras"
+              mode={draft.transitMode}
+              value={draft.originName}
+              onType={typeOrigin}
+              onPick={(originName, originStopId) => set({ originName, originStopId })}
+            />
+            <StopPlaceField
+              label="To (optional)"
+              placeholder="e.g. Victoria"
+              mode={draft.transitMode}
+              value={draft.destinationName}
+              onType={typeDestination}
+              onPick={(destinationName, destinationStopId) => set({ destinationName, destinationStopId })}
+            />
+          </>
+        ) : (
+          <>
+            <TextInput
+              label="From (optional)"
+              placeholder="e.g. King's Cross St Pancras"
+              value={draft.originName}
+              maxLength={100}
+              onChange={(event) => set({ originName: event.currentTarget.value, originStopId: null })}
+            />
+            <TextInput
+              label="To (optional)"
+              placeholder="e.g. Victoria"
+              value={draft.destinationName}
+              maxLength={100}
+              onChange={(event) => set({ destinationName: event.currentTarget.value, destinationStopId: null })}
+            />
+          </>
+        )}
       </Group>
+      {/* TfL's terms, where its stop data is offered (see
+          `OpenDataAttribution.tsx`). */}
+      {hasTflStops(draft.transitMode) && (
+        <Text size="xs" c="dimmed">
+          Stop names: {TFL_STOPS_ATTRIBUTION}
+        </Text>
+      )}
       <DateInput
         label="Date"
         valueFormat={PICKER_DATE_FORMAT}

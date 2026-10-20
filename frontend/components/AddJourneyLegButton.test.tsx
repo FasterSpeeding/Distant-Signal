@@ -22,6 +22,12 @@ const STATIONS = [
   { code: 'WOK', name: 'Woking' },
 ];
 
+/** `GET /tfl/stops`'s rows, with invented ids. */
+const TFL_STOPS = [
+  { id: '940GZZTESTV', name: 'Victoria', modes: ['tube'], lines: [{ id: 'victoria', name: 'Victoria' }] },
+  { id: '940GZZTESTE', name: 'Euston', modes: ['tube'], lines: [{ id: 'northern', name: 'Northern' }] },
+];
+
 /** Routes the mocked `fetch` by URL: the station fields' own type-ahead
  * search (`/api/stations?q=`, matched on code or name like the real API)
  * gets the `STATIONS` fixture, and the add-leg POST gets `legs()`. */
@@ -34,6 +40,15 @@ function mockFetch(legs: () => Response = legResponse) {
       const matches = STATIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
       return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
     }
+    if (url.startsWith('/api/tfl/stops?')) {
+      const params = new URLSearchParams(url.split('?')[1]);
+      const q = (params.get('q') ?? '').toLowerCase();
+      const modes = (params.get('modes') ?? '').split(',');
+      const matches = TFL_STOPS.filter(
+        (s) => s.name.toLowerCase().includes(q) && s.modes.some((mode) => modes.includes(mode)),
+      );
+      return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
+    }
     return Promise.resolve(legs());
   });
   return fetchMock;
@@ -42,6 +57,12 @@ function mockFetch(legs: () => Response = legResponse) {
 /** The add-leg POSTs made so far (station searches left out). */
 function legPosts() {
   return vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes('/legs'));
+}
+
+/** A Tube place field: an `Autocomplete`, so its input is the combobox
+ * (its listbox carries the same label). */
+function placeField(name: string) {
+  return screen.getByRole('combobox', { name });
 }
 
 describe('AddJourneyLegButton', () => {
@@ -461,14 +482,14 @@ describe('AddJourneyLegButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
     fireEvent.click(await screen.findByText('Tube, bus or walk'));
 
-    expect(await screen.findByLabelText('From (optional)')).toHaveValue('London Euston');
+    expect(await screen.findByRole('combobox', { name: 'From (optional)' })).toHaveValue('London Euston');
     expect(screen.getByLabelText('Date')).toHaveValue('21 Oct 2026');
     expect(screen.getByLabelText('Leaves')).toHaveValue('10:07');
     expect(screen.queryByLabelText('Service date')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('Line (optional)'), { target: { value: 'Victoria line' } });
-    fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: 'Victoria' } });
+    fireEvent.change(placeField('To (optional)'), { target: { value: 'Victoria' } });
     fireEvent.change(screen.getByLabelText('Arrives'), { target: { value: '10:25' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
 
@@ -489,6 +510,54 @@ describe('AddJourneyLegButton', () => {
           }),
         }),
       );
+    });
+  });
+
+  it('fills a Tube place and its stop id from the TfL stop lookup, and an edit drops the id', async () => {
+    const fetchMock = mockFetch(legResponse);
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        priorArrival={{ date: '2026-10-21', time: '10:07' }}
+        priorPlaceName={null}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    fireEvent.click(await screen.findByText('Tube, bus or walk'));
+
+    // TfL's terms, beside the stop data.
+    expect(
+      screen.getByText(
+        'Stop names: Powered by TfL Open Data. Contains OS data © Crown copyright and database rights 2016. Geomni UK Map data © and database rights 2019.',
+      ),
+    ).toBeInTheDocument();
+    const to = placeField('To (optional)');
+    fireEvent.change(to, { target: { value: 'vic' } });
+    // `Victoria · Tube: Victoria`: its modes and lines after the name.
+    fireEvent.click(await screen.findByRole('option', { name: 'Victoria · Tube: Victoria' }));
+    expect(to).toHaveValue('Victoria');
+    expect(fetchMock).toHaveBeenCalledWith('/api/tfl/stops?q=vic&modes=tube', expect.anything());
+
+    const from = placeField('From (optional)');
+    fireEvent.change(from, { target: { value: 'eus' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Euston · Tube: Northern' }));
+    expect(from).toHaveValue('Euston');
+    // Edited after the pick: free text again, so no stop id.
+    fireEvent.change(from, { target: { value: 'Euston (north entrance)' } });
+
+    fireEvent.change(screen.getByLabelText('Arrives'), { target: { value: '10:25' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+    await waitFor(() => expect(legPosts()).toHaveLength(1));
+    const [, init] = legPosts()[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      mode: 'untracked',
+      transitMode: 'tube',
+      originName: 'Euston (north entrance)',
+      destinationName: 'Victoria',
+      destinationStopId: '940GZZTESTV',
+      plannedDeparture: '2026-10-21T09:07:00.000Z',
+      plannedArrival: '2026-10-21T09:25:00.000Z',
     });
   });
 });

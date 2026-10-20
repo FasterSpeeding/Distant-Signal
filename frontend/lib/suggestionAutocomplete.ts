@@ -52,6 +52,7 @@ export function suggestionAutocompleteProps(
     query,
     loading,
     noMatchMessage,
+    fill = 'code',
   }: {
     /** The field's own current (typed) value -- gates the "no matches"
      * placeholder the same way `withNoMatchPlaceholder`'s `active` already
@@ -63,11 +64,16 @@ export function suggestionAutocompleteProps(
      * both as the inert placeholder row and, via `renderOption`, as that
      * placeholder's own rendered content. */
     noMatchMessage: string;
+    /** What picking a suggestion writes into the field: its bare `code`
+     * (every station and operator picker), or its `name` (a place field,
+     * such as an untracked leg's TfL stop, whose code is kept beside it
+     * via `onOptionSubmit`). */
+    fill?: 'code' | 'name';
   },
 ): Pick<AutocompleteProps, 'data' | 'filter' | 'renderOption'> {
   return {
     data: withNoMatchPlaceholder(
-      suggestions.map((s) => ({ value: s.code, label: s.code })),
+      suggestions.map((s) => ({ value: s.code, label: fill === 'name' ? s.name : s.code })),
       noMatchMessage,
       { active: query.trim().length > 0 && !loading },
     ),
@@ -82,7 +88,9 @@ export function suggestionAutocompleteProps(
       const placeholder = noMatchOptionContent(option.value, noMatchMessage);
       if (placeholder) return placeholder;
       const match = suggestions.find((s) => s.code === option.value);
-      return match ? suggestionOptionLabel(match) : option.value;
+      if (!match) return option.value;
+      if (fill === 'name') return match.detail ? `${match.name} · ${match.detail}` : match.name;
+      return suggestionOptionLabel(match);
     },
   };
 }

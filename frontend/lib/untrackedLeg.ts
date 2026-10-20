@@ -18,6 +18,7 @@ export function isOpenTrainLeg(leg: Pick<JourneyLegDetail, 'kind' | 'trackedTrai
 /** Every mode, in the order the form offers them, with its label. */
 export const TRANSIT_MODES: readonly { value: TransitMode; label: string }[] = [
   { value: 'tube', label: 'Tube' },
+  { value: 'dlr', label: 'DLR' },
   { value: 'bus', label: 'Bus' },
   { value: 'tram', label: 'Tram' },
   { value: 'rail', label: 'Train (not tracked)' },
@@ -27,6 +28,15 @@ export const TRANSIT_MODES: readonly { value: TransitMode; label: string }[] = [
   { value: 'cycle', label: 'Cycle' },
   { value: 'other', label: 'Other' },
 ];
+
+/** The modes whose places can be picked from TfL's stops
+ * (`GET /tfl/stops`), each searching its own mode's stops. */
+export const TFL_STOP_MODES: readonly TransitMode[] = ['tube', 'dlr', 'tram'];
+
+/** Whether `mode`'s places come from the TfL stop lookup. */
+export function hasTflStops(mode: TransitMode): boolean {
+  return TFL_STOP_MODES.includes(mode);
+}
 
 /** A mode's label; an unknown mode from a newer backend reads "Other". */
 export function transitModeLabel(mode: TransitMode | null | undefined): string {

@@ -1,5 +1,5 @@
 import { isTiplocCode } from './stationLabel';
-import type { NearbyStation, Suggestion } from './types';
+import type { NearbyStation, Suggestion, TflStop } from './types';
 
 /** Client-side fetch through the same-origin `/api/*` proxy
  * (`app/api/[...path]/route.ts`) — Client Components can't read the
@@ -24,6 +24,32 @@ export async function searchPlannerLocations(q: string, signal?: AbortSignal): P
   const response = await fetch(`/api/stations?q=${encodeURIComponent(q)}&stops=true`, signal ? { signal } : {});
   if (!response.ok) return [];
   return response.json() as Promise<Suggestion[]>;
+}
+
+const TFL_MODE_LABELS: Record<string, string> = { tube: 'Tube', dlr: 'DLR', tram: 'Tram' };
+
+/** A TfL stop's dropdown detail: its modes, then its lines when they say
+ * more than the mode does (`Tube: Northern, Victoria`; `DLR`; `Tram`). */
+export function tflStopDetail(stop: TflStop): string {
+  const modes = stop.modes.map((mode) => TFL_MODE_LABELS[mode] ?? mode).join(', ');
+  const lines = stop.lines
+    .map((line) => line.name)
+    .filter((name) => !Object.values(TFL_MODE_LABELS).includes(name) && name.toLowerCase() !== 'tram');
+  return lines.length > 0 ? `${modes}: ${lines.join(', ')}` : modes;
+}
+
+/** TfL's Tube, DLR and tram stops matching `q` (`GET /public/tfl/stops`),
+ * of `modes`, as suggestions: `code` is the stop id, `name` its name and
+ * `detail` its modes and lines. Same proxy and empty-query rule as
+ * `searchStations`; a failed request is no suggestions, so the field stays
+ * free text. */
+export async function searchTflStops(q: string, modes: readonly string[], signal?: AbortSignal): Promise<Suggestion[]> {
+  if (!q.trim()) return [];
+  const params = new URLSearchParams({ q, modes: modes.join(',') });
+  const response = await fetch(`/api/tfl/stops?${params.toString()}`, signal ? { signal } : {});
+  if (!response.ok) return [];
+  const stops = (await response.json()) as TflStop[];
+  return stops.map((stop) => ({ code: stop.id, name: stop.name, detail: tflStopDetail(stop) }));
 }
 
 export async function searchTocs(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
