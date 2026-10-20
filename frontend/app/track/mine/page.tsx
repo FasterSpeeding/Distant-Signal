@@ -25,6 +25,7 @@ import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
 import { journeyListItemStatusGroup } from '@/lib/journeyStatus';
+import { journeyDisplayName, journeyListItemNameInput, journeyPreviewLine } from '@/lib/journeyName';
 import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
 import type { Metadata } from 'next';
 
@@ -284,22 +285,20 @@ function TrackHeader({ authenticated = false }: { authenticated?: boolean }) {
  * page the user was pushed to when they created it, and until this row
  * existed the only way back to it (2026-09-22 UX review, C1).
  *
- * Route and date go through `routeLabel`/`formatDate`, the same two
- * helpers the tracked-train rows below already use: a journey row printing
- * "KGX → YRK, 2026-09-22" directly above a train row printing "London
- * Kings Cross (KGX) → York (YRK), 22 Sep 2026" would be a fresh instance
- * of the review's own P5 in the one list where both formats are visible at
- * once. `GET /Journeys/mine` grew `serviceDate`/`originName`/
- * `destinationName` for exactly this.
+ * Named by `lib/journeyName.ts`, the one journey-naming rule: the custom
+ * name, else the whole journey's route (first leg's origin to LAST leg's
+ * destination) and its first day. It used to build the route from the
+ * row's current-leg fields, so a planned multi-leg journey read as ending
+ * at its first change. The secondary line brings back the route and date a
+ * custom name hides, and a multi-leg journey's leg count.
  *
  * Built on `StatusRow` rather than a hand-rolled
  * `Group justify="space-between"`, for the shrink-safe title/trailing
  * behaviour the primitive encodes (review P2) -- the same reason
  * `ScheduleRow` is built on it. */
 function JourneyListRow({ journey }: { journey: JourneyListItem }) {
-  const route = routeLabel(journey.originCrs, journey.originName, journey.destinationCrs, journey.destinationName);
-  const when = formatDate(journey.serviceDate);
-  const title = journey.customName ?? `${route}, ${when}`;
+  const name = journeyListItemNameInput(journey);
+  const preview = journeyPreviewLine(name);
 
   return (
     <Card withBorder>
@@ -309,18 +308,15 @@ function JourneyListRow({ journey }: { journey: JourneyListItem }) {
           title={
             <Link href={`/journeys/${journey.id}`} data-card-link>
               <Text fw={500} lineClamp={2} miw={0}>
-                {title}
+                {journeyDisplayName(name)}
               </Text>
             </Link>
           }
           trailing={<JourneyStatusGroupBadge group={journeyListItemStatusGroup(journey)} />}
         />
-        {/* Only when a custom name has replaced the default title -- the
-            same rule the tracked-train rows below follow, so the route and
-            date are never printed twice on one row. */}
-        {journey.customName && (
+        {preview && (
           <Text size="sm" c="dimmed">
-            {route}, {when}
+            {preview}
           </Text>
         )}
       </Stack>

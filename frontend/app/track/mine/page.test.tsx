@@ -767,6 +767,90 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       expect(screen.queryByText(/2026-09-22/)).not.toBeInTheDocument();
     });
 
+    // The reported bug: a planned journey with no tracking data yet read as
+    // running from its origin to its FIRST leg's destination. The row's
+    // `originCrs`/`destinationCrs` are the current leg's; the name comes
+    // from the whole-journey fields.
+    it('names a planned three-leg journey by its real final destination, with a leg count', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({
+          originCrs: 'KGX',
+          originName: 'London Kings Cross',
+          destinationCrs: 'YRK',
+          destinationName: 'York',
+          firstOriginCrs: 'KGX',
+          firstOriginName: 'London Kings Cross',
+          lastDestinationCrs: 'EDB',
+          lastDestinationName: 'Edinburgh',
+          firstServiceDate: '2026-09-22',
+          legCount: 3,
+        }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      const link = screen.getByRole('link', { name: 'London Kings Cross (KGX) to Edinburgh (EDB), 22 Sep 2026' });
+      expect(link).toHaveAttribute('href', '/journeys/169');
+      expect(screen.getByText('3 legs')).toBeInTheDocument();
+      expect(screen.queryByText(/to York/)).not.toBeInTheDocument();
+    });
+
+    it('names a journey part-way through by its whole route and first day, not the current leg', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({
+          originCrs: 'YRK',
+          destinationCrs: 'EDB',
+          serviceDate: '2026-09-23',
+          firstOriginCrs: 'KGX',
+          lastDestinationCrs: 'EDB',
+          firstServiceDate: '2026-09-22',
+          legCount: 2,
+          matchMode: 'auto',
+          trainSubscriptionId: 295,
+          status: 'en_route',
+          delayMinutes: 0,
+        }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByRole('link', { name: 'KGX to EDB, 22 Sep 2026' })).toBeInTheDocument();
+      expect(screen.getByText('2 legs')).toBeInTheDocument();
+    });
+
+    it('shows a custom name, with the whole route and date beneath it', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({
+          customName: 'Trip north',
+          firstOriginCrs: 'KGX',
+          lastDestinationCrs: 'EDB',
+          firstServiceDate: '2026-09-22',
+          legCount: 1,
+        }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByRole('link', { name: 'Trip north' })).toHaveAttribute('href', '/journeys/169');
+      expect(screen.getByText('KGX to EDB, 22 Sep 2026')).toBeInTheDocument();
+    });
+
+    it('falls back to the current leg for an older backend without the whole-journey fields', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      expect(screen.getByRole('link', { name: 'KGX to EDB, 22 Sep 2026' })).toBeInTheDocument();
+    });
+
     it("reflects a matched leg's delay in the journey row's badge", async () => {
       vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
