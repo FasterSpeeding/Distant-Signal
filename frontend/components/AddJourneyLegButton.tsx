@@ -4,12 +4,19 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import dayjs from 'dayjs';
+import { DateInput } from '@mantine/dates';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
 import type { LondonDateTime } from '@/lib/journeyLegChaining';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
+import {
+  newUntrackedLegDraft,
+  UntrackedLegFields,
+  untrackedDraftRequest,
+  type UntrackedLegDraft,
+} from './UntrackedLegFields';
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { searchStations } from '@/lib/suggestions';
@@ -17,29 +24,6 @@ import { useSuggestions } from '@/lib/useSuggestions';
 import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 
 type LegMode = NewJourneyLegRequest['mode'];
-
-/** Bug: this form's Service date field is free text (`placeholder`
- * "YYYY-MM-DD" is only a hint, not enforced) with no client-side format
- * check at all -- unlike this codebase's date-PICKER fields
- * (`TrackTrainForm.tsx`'s `DateInput`), which can't produce a malformed
- * value by construction. A garbled date used to sail straight through to
- * `POST /Journeys/{id}/legs` and come back as a raw backend 400
- * (`validate_window_leg`/`validate_known_train_leg`,
- * `crates/api/src/data/journeys.rs`) shown verbatim in the `error` Alert.
- *
- * Checks BOTH shape and real calendar validity: `dayjs` (no
- * `customParseFormat` plugin is installed in this app) parses an
- * out-of-range date like "2026-02-30" by rolling it forward to March 2nd
- * rather than rejecting it, so `DATE_PATTERN` alone would pass a value the
- * backend would reject. Re-formatting the parsed result and comparing it
- * back to the original string catches that roll-over without adding a new
- * dependency. */
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-function isValidServiceDate(value: string): boolean {
-  if (!DATE_PATTERN.test(value)) return false;
-  const parsed = dayjs(value);
-  return parsed.isValid() && parsed.format('YYYY-MM-DD') === value;
-}
 
 /** Chains a new leg onto an existing journey (spec §3, multi-leg
  * chaining) -- modeled directly on `AddTrainToGroupButton.tsx`'s
@@ -81,15 +65,25 @@ function isValidServiceDate(value: string): boolean {
  * two more, where a guessed margin could hide the one the traveller wants.
  * Like the origin, both are seeded only in `handleOpen`, never from a
  * render, so a re-render (the journey refreshing under an open dialog)
- * never overwrites what the traveller has typed. */
+ * never overwrites what the traveller has typed.
+ *
+ * A third mode, "Tube, bus or walk" (spec
+ * docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
+ * §2), adds an untracked leg: a mode, optional line and places, and planned
+ * times (`UntrackedLegFields`). It is seeded the same way: its date and
+ * "leaves" from `priorArrival`, its "from" from `priorPlaceName`. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
   priorArrival = null,
+  priorPlaceName = null,
   onAdded,
 }: {
   journeyId: number;
   priorDestinationCrs: string | null;
+  /** The previous leg's destination in words (`journeyPriorDestinationName`),
+   * the default "from" of a new untracked leg. */
+  priorPlaceName?: string | null;
   /** The previous leg's arrival in London time, or `null` when no leg is
    * there to chain from or its arrival isn't known: the service date then
    * defaults to London's today and the earliest departure stays empty. */
@@ -146,6 +140,7 @@ export function AddJourneyLegButton({
     arriveFrom: false,
     arriveTo: false,
   });
+  const [untrackedDraft, setUntrackedDraft] = useState<UntrackedLegDraft>(() => newUntrackedLegDraft({ date: '' }));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
@@ -170,13 +165,21 @@ export function AddJourneyLegButton({
     setArriveFrom('');
     setArriveTo('');
     setIncompleteTimes({ departFrom: false, departTo: false, arriveFrom: false, arriveTo: false });
+    setUntrackedDraft(
+      newUntrackedLegDraft({
+        date: priorArrival?.date ?? nowInLondon().format('YYYY-MM-DD'),
+        leaves: priorArrival?.time ?? '',
+        originName: priorPlaceName ?? '',
+      }),
+    );
     open();
   }
 
   const resolvedOrigin = resolveStationCode(originCrs, originSuggestions);
   const resolvedDestination = resolveStationCode(destinationCrs, destinationSuggestions);
 
-  function currentRequest(): NewJourneyLegRequest {
+  function currentRequest(): NewJourneyLegRequest | null {
+    if (mode === 'untracked') return untrackedDraftRequest(untrackedDraft);
     return mode === 'knownTrain'
       ? { mode: 'knownTrain', trainUid, serviceDate }
       : {
@@ -199,7 +202,9 @@ export function AddJourneyLegButton({
   const windowOrderValid =
     (!departFrom || !departTo || departFrom <= departTo) && (!arriveFrom || !arriveTo || arriveFrom <= arriveTo);
 
-  const serviceDateValid = isValidServiceDate(serviceDate);
+  // A `DateInput` only ever emits a real calendar date ("YYYY-MM-DD"), and
+  // isn't clearable, so the one way to be invalid is never having had one.
+  const serviceDateValid = serviceDate !== '';
   const originCrsValid = resolvedOrigin !== null;
   const destinationCrsValid = resolvedDestination !== null;
   const originError =
@@ -212,17 +217,20 @@ export function AddJourneyLegButton({
       : null;
 
   const isValid =
-    mode === 'knownTrain'
-      ? trainUid.trim() !== '' && serviceDateValid
-      : originCrsValid &&
-        destinationCrsValid &&
-        serviceDateValid &&
-        windowTimesComplete &&
-        windowHasABound &&
-        windowOrderValid;
+    mode === 'untracked'
+      ? untrackedDraftRequest(untrackedDraft) !== null
+      : mode === 'knownTrain'
+        ? trainUid.trim() !== '' && serviceDateValid
+        : originCrsValid &&
+          destinationCrsValid &&
+          serviceDateValid &&
+          windowTimesComplete &&
+          windowHasABound &&
+          windowOrderValid;
 
   async function handleSubmit() {
-    if (!isValid) return;
+    const body = currentRequest();
+    if (!isValid || body === null) return;
     setSubmitting(true);
     setError(null);
     needsLoginState.reset();
@@ -230,7 +238,7 @@ export function AddJourneyLegButton({
       const response = await fetch(`/api/Journeys/${journeyId}/legs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(currentRequest()),
+        body: JSON.stringify(body),
       });
       if (!response.ok) {
         if (response.status === 401) {
@@ -273,21 +281,36 @@ export function AddJourneyLegButton({
               here and is the better of the two labels the codebase had for
               the OTHER option, so `TrackTrainForm` adopted it too rather
               than the reverse. */}
+          {/* Stacked: three options don't fit side by side in the dialog
+              without cutting "Search a time window" short. */}
           <SegmentedControl
+            orientation="vertical"
+            fullWidth
             value={mode}
             onChange={(value) => setMode(value)}
             data={[
               { label: 'Search a time window', value: 'window' },
               { label: 'I know the train', value: 'knownTrain' },
+              { label: 'Tube, bus or walk', value: 'untracked' },
             ]}
           />
-          <TextInput
-            label="Service date"
-            placeholder="YYYY-MM-DD"
-            value={serviceDate}
-            onChange={(event) => setServiceDate(event.currentTarget.value)}
-            error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
-          />
+          {mode === 'untracked' ? (
+            <UntrackedLegFields
+              draft={untrackedDraft}
+              onChange={setUntrackedDraft}
+              priorArrivalTime={priorArrival?.time ?? null}
+            />
+          ) : (
+            // Was free text with a "YYYY-MM-DD" placeholder, which showed
+            // visitors an ISO date and let a garbled one reach the API. The
+            // request still carries "YYYY-MM-DD".
+            <DateInput
+              label="Service date"
+              valueFormat={PICKER_DATE_FORMAT}
+              value={serviceDate || null}
+              onChange={(value) => setServiceDate(value ?? '')}
+            />
+          )}
           {mode === 'window' && (
             <>
               <Autocomplete

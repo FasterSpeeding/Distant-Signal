@@ -3,7 +3,7 @@ import { DelayBadge } from './DelayBadge';
 import { EtaBadge } from './EtaBadge';
 import { JourneyProgress } from './JourneyProgress';
 import { JourneyTimeline, isGenuineCallingPoint, type JourneyEndpointNames } from './JourneyTimeline';
-import { formatTime } from '@/lib/dateFormat';
+import { formatDate, formatDateTime, formatTime, londonDayKey } from '@/lib/dateFormat';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly, serviceNoun, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
@@ -105,10 +105,14 @@ export function TrainJourney({
   return (
     <Stack gap="sm">
       <StatusMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
-      {state.resolutionStatus === 'resolved' && <JourneyDetails state={state} />}
+      {/* A planned train (activated, not yet due to leave) has no movement
+          to summarise: "No movement data reported yet" would only restate
+          the waiting the planned copy deliberately holds back. */}
+      {state.resolutionStatus === 'resolved' && state.trackingPhase !== 'planned' && <JourneyDetails state={state} />}
       {visibleJourneyStops && (
         <JourneyProgress
           stops={visibleJourneyStops}
+          trackingPhase={state.trackingPhase ?? null}
           resolutionStatus={state.resolutionStatus}
           status={state.status}
           trainUid={state.trainUid}
@@ -184,6 +188,42 @@ function StatusMessage({
       {trackedTrainDisplayName(state)}
     </Text>
   );
+
+  // Spec 2026-10-20 §3: no timetable match and no Network Rail report.
+  // This used to fall through to "Waiting to hear from Network Rail" with a
+  // spinner, for a train that will never report. `unresolved` keeps its
+  // own copy below, which says the same for a pin the sweep gave up on.
+  if (state.trackingPhase === 'noTimetable' && state.resolutionStatus !== 'unresolved') {
+    return (
+      <Stack gap="sm" data-tracking-phase="noTimetable">
+        <Text fw={500} c="var(--ds-color-error-text)">
+          Not matched to a timetable
+        </Text>
+        {pinSummary}
+        <Text size="sm" c="dimmed">
+          {noTimetableExplanation(state)}
+        </Text>
+      </Stack>
+    );
+  }
+
+  // Spec 2026-10-20 §4: a timetabled train shows as planned, with its
+  // timetabled times below, until Network Rail's first report is due.
+  // After that the waiting copy below takes over, as before.
+  if (state.trackingPhase === 'planned') {
+    const expected = state.firstReportExpectedAt ?? null;
+    return (
+      <Stack gap="sm" data-tracking-phase="planned">
+        <Text fw={500}>Planned</Text>
+        {pinSummary}
+        <Text size="sm" c="dimmed">
+          {expected
+            ? `These are the timetabled times. We expect Network Rail's first report by ${expectedReportTime(expected, state.serviceDate)}.`
+            : 'These are the timetabled times. Live updates start when Network Rail first reports it.'}
+        </Text>
+      </Stack>
+    );
+  }
 
   if (state.resolutionStatus === 'pending') {
     return (
@@ -344,6 +384,26 @@ function StatusMessage({
       )}
     </Stack>
   );
+}
+
+/** Why a train with no timetable match and no report can't be tracked,
+ * and what to check: the UID and date for a train picked by UID, the
+ * station, time and date for a departure-board pick. */
+function noTimetableExplanation(state: TrainJourneyState): string {
+  const date = formatDate(`${state.serviceDate}T12:00:00Z`);
+  if (state.trainUid) {
+    return `We can't find train ${state.trainUid} in the timetable for ${date}, so we can't track it. Check the UID and date. If they're right, it may have been cancelled or not published yet.`;
+  }
+  const origin = state.pinOriginName ?? state.pinOriginCrs;
+  const from = origin ? ` from ${origin}` : '';
+  return `We can't find a timetabled train${from} on ${date}, so we can't track it. Check the station, time and date.`;
+}
+
+/** The expected first report as a clock time, with its date when that
+ * isn't the service date (the Activation for a train leaving just after
+ * midnight comes the evening before). */
+function expectedReportTime(expected: string, serviceDate: string): string {
+  return londonDayKey(expected) === serviceDate ? formatTime(expected) : formatDateTime(expected);
 }
 
 /** The existing live-summary content (ETA badge, last-reported location,

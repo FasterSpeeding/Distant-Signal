@@ -3,6 +3,7 @@
 import { useId, useMemo, useState, type SubmitEvent } from 'react';
 import { Autocomplete, Button, Group, Loader, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
 import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
@@ -400,7 +401,7 @@ export function TrainSearchForm({
           no accessible name, so axe's `button-name` fires (critical) as
           soon as a date is picked. */}
       <DatePickerInput
-        valueFormat="D MMM YYYY"
+        valueFormat={PICKER_DATE_FORMAT}
         label="Date (optional)"
         placeholder="Today"
         description={searchDateDescription(dateBounds, today)}

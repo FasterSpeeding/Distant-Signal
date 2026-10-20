@@ -8,7 +8,7 @@ import { PlatformBadge } from './PlatformBadge';
 import { DELAY_TONE_COLOR } from './DelayBadge';
 import { WarningIcon } from './WarningIcon';
 import { stopDisplayTime } from '@/lib/stopTimes';
-import type { JourneyStatus, JourneyStop, ResolutionStatus } from '@/lib/types';
+import type { JourneyStatus, JourneyStop, ResolutionStatus, TrackingPhase } from '@/lib/types';
 
 /** The one place an Origin/Terminate node's diameter is defined --
  * `nodeDiameter` and `NODE_CIRCLE_SLOT` both derive from this so the two
@@ -49,6 +49,9 @@ const NODE_CIRCLE_SLOT = ENDPOINT_DIAMETER;
  * with nothing confirmed at all. */
 interface JourneyProgressProps {
   stops: JourneyStop[];
+  /** `planned` (spec 2026-10-20 §4) captions an unreported train as
+   * planned rather than waiting. Optional: other callers pass nothing. */
+  trackingPhase?: TrackingPhase | null;
   resolutionStatus: ResolutionStatus;
   status: JourneyStatus | null;
   trainUid: string | null;
@@ -259,6 +262,7 @@ function progressCopy(
    * reported at X") rather than claiming the stronger "currently at X",
    * which this app reserves for a stop the overlay itself confirmed. */
   markerFromReportedLocation: boolean,
+  trackingPhase: TrackingPhase | null = null,
 ): ProgressCopy {
   const terminus = stops[stops.length - 1];
   if (terminus === undefined) {
@@ -292,6 +296,13 @@ function progressCopy(
   }
 
   if (lastIndex === -1) {
+    // Its first report isn't due yet: the timetable is the whole story.
+    if (trackingPhase === 'planned' && status !== 'en_route') {
+      return {
+        caption: 'Planned. The timetabled route is shown.',
+        ariaLabel: 'Journey progress: planned, timetabled route shown',
+      };
+    }
     if (resolutionStatus === 'schedule_matched') {
       return {
         caption: "Scheduled route shown. Live tracking hasn't started yet.",
@@ -353,6 +364,7 @@ function progressCopy(
  * the identical `{state.journeyStops && ...}` guard. */
 export function JourneyProgress({
   stops,
+  trackingPhase = null,
   resolutionStatus,
   status,
   trainUid,
@@ -400,6 +412,7 @@ export function JourneyProgress({
     lastReportedLocation,
     endpointNames,
     markerFromReportedLocation,
+    trackingPhase,
   );
 
   // Scrolls THIS diagram's own horizontal scroll box, and only it --

@@ -1,4 +1,5 @@
 import { formatDate } from './dateFormat';
+import { untrackedLegTitle } from './untrackedLeg';
 import { journeyDisplayName, journeyNameInputFromLegs } from './journeyName';
 import type { ConnectedAppDeletion, ConnectedAppScope } from './types';
 
@@ -51,15 +52,27 @@ export function deletionSummary(deletion: ConnectedAppDeletion): { title: string
             deletion.summary.customName,
             snapshotLegs.map((leg) => ({
               originCrs: leg.originCrs ?? null,
-              originName: null,
+              // An untracked leg's ends are its place names (no code).
+              originName: leg.originName ?? null,
               destinationCrs: leg.destinationCrs ?? null,
-              destinationName: null,
+              destinationName: leg.destinationName ?? null,
               serviceDate: leg.serviceDate ?? null,
             })),
           ),
         )
       : deletion.summary.customName?.trim() || `Journey ${deletion.journeyId}`;
   const legs = snapshotLegs.map((leg) => {
+    if (leg.kind === 'untracked') {
+      // A Tube ride, bus or walk: its mode and line, then its places.
+      const route = [leg.originName, leg.destinationName].filter(Boolean).join(' to ');
+      return [
+        untrackedLegTitle({ transitMode: leg.transitMode ?? null, lineName: leg.lineName ?? null }),
+        route || null,
+        leg.plannedDeparture ? `on ${formatDate(leg.plannedDeparture)}` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+    }
     const route = [leg.originCrs, leg.destinationCrs].filter(Boolean).join(' to ');
     const parts = [
       route || 'Unknown route',

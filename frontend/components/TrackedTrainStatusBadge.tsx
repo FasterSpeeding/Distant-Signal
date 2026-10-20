@@ -3,7 +3,7 @@ import { StateBadge } from './StateBadge';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly } from '@/lib/serviceMode';
 import { DelayBadge } from './DelayBadge';
-import type { ServiceModeFields } from '@/lib/types';
+import type { ServiceModeFields, TrackingPhaseFields } from '@/lib/types';
 
 // Short, human badge words -- the single copy every page that renders a
 // tracked train's status badge shares. Previously duplicated verbatim
@@ -34,7 +34,8 @@ const STATUS_LABELS: Record<string, string> = {
 export function TrackedTrainStatusBadge({
   train,
 }: {
-  train: { resolutionStatus: string; status: string | null; delayMinutes: number | null } & ServiceModeFields;
+  train: { resolutionStatus: string; status: string | null; delayMinutes: number | null } & ServiceModeFields &
+    TrackingPhaseFields;
 }) {
   // A tracked bus or ferry never moves past "matched to schedule": say what
   // it is and that it is timetabled only, instead of a status that reads
@@ -46,6 +47,17 @@ export function TrackedTrainStatusBadge({
         <StateBadge tone="neutral">Timetabled only</StateBadge>
       </Group>
     );
+  }
+  // Spec 2026-10-20 §3 and §4, from the api's `trackingPhase`: a train
+  // with no timetable match and no report can't be tracked (it used to
+  // read "Pending match", like one about to report), and a timetabled
+  // train whose first report isn't due yet is planned, not waiting.
+  // `unresolved` keeps its own badge.
+  if (train.trackingPhase === 'noTimetable' && train.resolutionStatus !== 'unresolved') {
+    return <StateBadge tone="action">Not in the timetable</StateBadge>;
+  }
+  if (train.trackingPhase === 'planned') {
+    return <StateBadge tone="neutral">Planned</StateBadge>;
   }
   // pending/unresolved show the resolution status itself -- no journey
   // status exists yet for either. Once resolved, the journey status plus a

@@ -152,3 +152,21 @@ describe('trackAgainHref', () => {
     expect(href).toBeNull();
   });
 });
+
+describe('trackAgainPrefill with an untracked first leg', () => {
+  it('starts again from the first train leg, not a Tube or walk leg before it', () => {
+    const walk = leg({
+      id: 1,
+      kind: 'untracked',
+      originCrs: null,
+      destinationCrs: null,
+      destinationName: "King's Cross",
+      trackedTrainState: null,
+      transitMode: 'walk',
+      plannedDeparture: '2026-09-22T07:30:00Z',
+      plannedArrival: '2026-09-22T07:45:00Z',
+    });
+    expect(trackAgainPrefill(journey([walk, leg({ id: 2 })]))?.origin).toBe('KGX');
+    expect(trackAgainHref(journey([walk]))).toBeNull();
+  });
+});

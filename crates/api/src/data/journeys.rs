@@ -65,6 +65,9 @@ pub struct JourneyLegRow {
     /// window-searched at all, both of which otherwise look identical
     /// (`depart_*`/`arrive_*` all `NULL`).
     pub window_searched: bool,
+    /// [`LEG_KIND_TRAIN`] or [`LEG_KIND_UNTRACKED`]: the train routes
+    /// (candidates, pick a train) refuse an untracked leg.
+    pub kind: String,
 }
 
 pub async fn get_owned_leg(
@@ -76,7 +79,7 @@ pub async fn get_owned_leg(
     let row = sqlx::query_as::<_, JourneyLegRow>(
         "SELECT jl.id, jl.journey_id, jl.origin_crs, jl.destination_crs, jl.service_date, \
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
-                jl.train_subscription_id, jl.match_mode, jl.window_searched \
+                jl.train_subscription_id, jl.match_mode, jl.window_searched, jl.kind \
          FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
          WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3",
@@ -118,6 +121,16 @@ pub struct JourneyLegWithNamesRow {
     /// See [`JourneyLegRow::window_searched`]'s own doc comment -- same
     /// field, same meaning.
     pub window_searched: bool,
+    /// See [`JourneyLegRow::kind`].
+    pub kind: String,
+    /// An untracked leg's own fields (spec 2026-10-20 §2.1), `None` on a
+    /// train leg.
+    pub transit_mode: Option<String>,
+    pub origin_place: Option<String>,
+    pub destination_place: Option<String>,
+    pub line_name: Option<String>,
+    pub planned_departure: Option<DateTime<Utc>>,
+    pub planned_arrival: Option<DateTime<Utc>>,
 }
 
 /// Generic over `E: PgExecutor` (rather than `&PgPool`) -- see
@@ -848,6 +861,351 @@ pub async fn add_window_leg_to_journey(
     Ok(AddLegOutcome::Added(leg_id))
 }
 
+/// `journey_legs.kind` for a leg on a train we track (every leg before
+/// 2026-10-20).
+pub const LEG_KIND_TRAIN: &str = "train";
+/// `journey_legs.kind` for a leg we have no data for: a Tube ride, a bus, a
+/// walk (spec 2026-10-20-untracked-legs-and-tracked-train-states-design.md
+/// §2).
+pub const LEG_KIND_UNTRACKED: &str = "untracked";
+
+/// Every `transit_mode` an untracked leg may have, in the order the form
+/// offers them. Checked here, not by the database (whose CHECK only bounds
+/// the shape), so adding a mode needs no migration.
+pub const TRANSIT_MODES: [&str; 9] = [
+    "tube", "bus", "tram", "rail", "walk", "ferry", "taxi", "cycle", "other",
+];
+/// The longest place name an untracked leg keeps (the migration's CHECK).
+pub const UNTRACKED_PLACE_MAX_CHARS: usize = 100;
+/// The longest line name an untracked leg keeps (the migration's CHECK).
+pub const UNTRACKED_LINE_MAX_CHARS: usize = 60;
+/// The longest an untracked leg may last (the migration's CHECK).
+pub const UNTRACKED_MAX_DURATION: chrono::Duration = chrono::Duration::hours(24);
+
+/// A validated untracked leg, ready to insert. Built only by
+/// [`validate_untracked_leg`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrackedLeg {
+    pub transit_mode: String,
+    pub origin_place: Option<String>,
+    pub destination_place: Option<String>,
+    pub line_name: Option<String>,
+    pub planned_departure: DateTime<Utc>,
+    pub planned_arrival: DateTime<Utc>,
+}
+
+impl UntrackedLeg {
+    /// The leg's `service_date`: the London calendar date of its planned
+    /// departure, so every reader keyed on a leg's date (the template
+    /// occurrence guard, the journey list, the export) treats it like any
+    /// other leg of that day.
+    pub fn service_date(&self) -> NaiveDate {
+        london_date(self.planned_departure)
+    }
+}
+
+fn london_date(instant: DateTime<Utc>) -> NaiveDate {
+    instant
+        .with_timezone(&chrono_tz::Europe::London)
+        .date_naive()
+}
+
+/// An untracked leg as the wire sends it, before [`validate_untracked_leg`].
+#[derive(Debug, Clone, Copy)]
+pub struct UntrackedLegInput<'a> {
+    pub transit_mode: &'a str,
+    pub origin_name: Option<&'a str>,
+    pub destination_name: Option<&'a str>,
+    pub line_name: Option<&'a str>,
+    pub planned_departure: Option<DateTime<Utc>>,
+    pub planned_arrival: Option<DateTime<Utc>>,
+}
+
+/// Validates an untracked leg (spec §2.4): a known mode, both planned
+/// times, arrival not before departure and at most
+/// [`UNTRACKED_MAX_DURATION`] later, a departure within the tracking
+/// horizon (at most `PIN_MAX_DAYS_AHEAD` days ahead, at most
+/// `TRACK_BY_UID_MAX_DAYS_BEHIND` days back, both in London dates), and
+/// text within its length. Text is trimmed; blank text is absent.
+pub fn validate_untracked_leg(
+    input: UntrackedLegInput<'_>,
+    london_today: NaiveDate,
+) -> Result<UntrackedLeg, String> {
+    let transit_mode = input.transit_mode.trim().to_ascii_lowercase();
+    if !TRANSIT_MODES.contains(&transit_mode.as_str()) {
+        return Err(format!(
+            "transitMode must be one of: {}.",
+            TRANSIT_MODES.join(", ")
+        ));
+    }
+    let (Some(planned_departure), Some(planned_arrival)) =
+        (input.planned_departure, input.planned_arrival)
+    else {
+        return Err("An untracked leg needs a planned departure and arrival.".to_string());
+    };
+    if planned_arrival < planned_departure {
+        return Err("The planned arrival must be at or after the planned departure.".to_string());
+    }
+    if planned_arrival - planned_departure > UNTRACKED_MAX_DURATION {
+        return Err("An untracked leg can last at most 24 hours.".to_string());
+    }
+    let departure_date = london_date(planned_departure);
+    if crate::data::train_tracking::beyond_tracking_horizon(departure_date, london_today) {
+        return Err(crate::data::train_tracking::too_far_ahead_message());
+    }
+    if departure_date
+        < london_today
+            - chrono::Duration::days(crate::data::train_tracking::TRACK_BY_UID_MAX_DAYS_BEHIND)
+    {
+        return Err(format!(
+            "That leg is too far in the past. An untracked leg can start at most {} days ago.",
+            crate::data::train_tracking::TRACK_BY_UID_MAX_DAYS_BEHIND
+        ));
+    }
+    let text = |value: Option<&str>, max: usize, what: &str| -> Result<Option<String>, String> {
+        let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+            return Ok(None);
+        };
+        if value.chars().count() > max {
+            return Err(format!("{what} can be at most {max} characters."));
+        }
+        if value.chars().any(char::is_control) {
+            return Err(format!(
+                "{what} can't contain line breaks or control characters."
+            ));
+        }
+        Ok(Some(value.to_string()))
+    };
+    Ok(UntrackedLeg {
+        transit_mode,
+        origin_place: text(input.origin_name, UNTRACKED_PLACE_MAX_CHARS, "A place name")?,
+        destination_place: text(
+            input.destination_name,
+            UNTRACKED_PLACE_MAX_CHARS,
+            "A place name",
+        )?,
+        line_name: text(input.line_name, UNTRACKED_LINE_MAX_CHARS, "The line")?,
+        planned_departure,
+        planned_arrival,
+    })
+}
+
+/// An untracked leg's state, from the clock alone (spec §2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UntrackedStatus {
+    /// Before its planned departure.
+    Planned,
+    /// Between its planned departure and arrival.
+    InProgress,
+    /// At or after its planned arrival.
+    Done,
+}
+
+/// [`UntrackedStatus`] at `now`. A zero-length leg goes straight from
+/// planned to done.
+pub fn untracked_status(
+    planned_departure: DateTime<Utc>,
+    planned_arrival: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> UntrackedStatus {
+    if now >= planned_arrival {
+        UntrackedStatus::Done
+    } else if now >= planned_departure {
+        UntrackedStatus::InProgress
+    } else {
+        UntrackedStatus::Planned
+    }
+}
+
+#[cfg(test)]
+mod untracked_tests {
+    use super::*;
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, 20).unwrap()
+    }
+
+    fn input<'a>(departure: &str, arrival: &str) -> UntrackedLegInput<'a> {
+        UntrackedLegInput {
+            transit_mode: "tube",
+            origin_name: Some(" Euston "),
+            destination_name: Some(""),
+            line_name: Some("Victoria line"),
+            planned_departure: Some(at(departure)),
+            planned_arrival: Some(at(arrival)),
+        }
+    }
+
+    #[test]
+    fn a_valid_leg_is_trimmed_and_dated_in_london() {
+        // 23:30 UTC on the 20th is 00:30 BST on the 21st: the leg's
+        // service date is London's.
+        let leg = validate_untracked_leg(
+            input("2026-10-20T23:30:00Z", "2026-10-20T23:50:00Z"),
+            today(),
+        )
+        .unwrap();
+        assert_eq!(leg.origin_place.as_deref(), Some("Euston"));
+        assert_eq!(leg.destination_place, None, "blank is absent");
+        assert_eq!(
+            leg.service_date(),
+            NaiveDate::from_ymd_opt(2026, 10, 21).unwrap()
+        );
+    }
+
+    #[test]
+    fn bad_legs_are_refused_with_sentences() {
+        let refuse =
+            |input: UntrackedLegInput<'_>| validate_untracked_leg(input, today()).unwrap_err();
+        assert_eq!(
+            refuse(input("2026-10-21T09:00:00Z", "2026-10-21T08:59:59Z")),
+            "The planned arrival must be at or after the planned departure."
+        );
+        assert_eq!(
+            refuse(input("2026-10-21T09:00:00Z", "2026-10-22T09:00:01Z")),
+            "An untracked leg can last at most 24 hours."
+        );
+        assert!(
+            validate_untracked_leg(
+                input("2026-10-21T09:00:00Z", "2026-10-22T09:00:00Z"),
+                today()
+            )
+            .is_ok(),
+            "exactly 24 hours is allowed"
+        );
+        assert!(refuse(input("2026-11-18T09:00:00Z", "2026-11-18T09:10:00Z")).contains("days"));
+        assert!(
+            refuse(input("2026-10-12T09:00:00Z", "2026-10-12T09:10:00Z")).contains("7 days ago")
+        );
+        assert_eq!(
+            refuse(UntrackedLegInput {
+                planned_arrival: None,
+                ..input("2026-10-21T09:00:00Z", "2026-10-21T09:10:00Z")
+            }),
+            "An untracked leg needs a planned departure and arrival."
+        );
+        assert!(
+            refuse(UntrackedLegInput {
+                transit_mode: "zeppelin",
+                ..input("2026-10-21T09:00:00Z", "2026-10-21T09:10:00Z")
+            })
+            .starts_with("transitMode must be one of: tube, bus")
+        );
+        let long = "x".repeat(UNTRACKED_LINE_MAX_CHARS + 1);
+        assert_eq!(
+            refuse(UntrackedLegInput {
+                line_name: Some(&long),
+                ..input("2026-10-21T09:00:00Z", "2026-10-21T09:10:00Z")
+            }),
+            "The line can be at most 60 characters."
+        );
+        assert!(
+            refuse(UntrackedLegInput {
+                origin_name: Some("Euston\nVictoria"),
+                ..input("2026-10-21T09:00:00Z", "2026-10-21T09:10:00Z")
+            })
+            .contains("line breaks")
+        );
+    }
+
+    #[test]
+    fn status_follows_the_clock_alone() {
+        let departure = at("2026-10-21T09:00:00Z");
+        let arrival = at("2026-10-21T09:20:00Z");
+        let status = |now: &str| untracked_status(departure, arrival, at(now));
+        assert_eq!(status("2026-10-21T08:59:59Z"), UntrackedStatus::Planned);
+        assert_eq!(status("2026-10-21T09:00:00Z"), UntrackedStatus::InProgress);
+        assert_eq!(status("2026-10-21T09:19:59Z"), UntrackedStatus::InProgress);
+        assert_eq!(status("2026-10-21T09:20:00Z"), UntrackedStatus::Done);
+        assert_eq!(
+            untracked_status(departure, departure, departure),
+            UntrackedStatus::Done,
+            "a zero-length leg goes straight from planned to done"
+        );
+        assert_eq!(
+            serde_json::to_value(UntrackedStatus::InProgress).unwrap(),
+            "inProgress"
+        );
+    }
+}
+
+/// Inserts one untracked leg (spec §2.1): `kind = 'untracked'`, no
+/// subscription, `match_mode = 'manual'` (nothing to search for or match,
+/// so the notifier's template sweep never reads it), no window, no CRS
+/// codes, `service_date` from the planned departure. Same generic-executor
+/// reasoning as [`insert_journey`].
+async fn insert_untracked_leg<'c, E>(
+    executor: E,
+    journey_id: i64,
+    leg_order: i32,
+    leg: &UntrackedLeg,
+) -> anyhow::Result<i64>
+where
+    E: sqlx::PgExecutor<'c>,
+{
+    let (id,): (i64,) = sqlx::query_as(
+        "INSERT INTO journey_legs \
+            (journey_id, leg_order, service_date, match_mode, window_searched, kind, \
+             transit_mode, origin_place, destination_place, line_name, \
+             planned_departure, planned_arrival) \
+         VALUES ($1, $2, $3, 'manual', FALSE, 'untracked', $4, $5, $6, $7, $8, $9) \
+         RETURNING id",
+    )
+    .bind(journey_id)
+    .bind(leg_order)
+    .bind(leg.service_date())
+    .bind(&leg.transit_mode)
+    .bind(&leg.origin_place)
+    .bind(&leg.destination_place)
+    .bind(&leg.line_name)
+    .bind(leg.planned_departure)
+    .bind(leg.planned_arrival)
+    .fetch_one(executor)
+    .await?;
+    Ok(id)
+}
+
+/// Creates a one-leg journey whose leg is untracked (`POST /Journeys`,
+/// `mode: "untracked"`), in one transaction like every other
+/// `create_journey_with_*`. Returns `(journey_id, leg_id)`.
+pub async fn create_journey_with_untracked_leg(
+    pool: &PgPool,
+    user_id: &str,
+    custom_name: Option<&str>,
+    leg: &UntrackedLeg,
+) -> anyhow::Result<(i64, i64)> {
+    let mut tx = pool.begin().await?;
+    let journey_id = insert_journey(&mut *tx, user_id, custom_name).await?;
+    let leg_id = insert_untracked_leg(&mut *tx, journey_id, 1, leg).await?;
+    tx.commit().await?;
+    Ok((journey_id, leg_id))
+}
+
+/// Adds an untracked leg to an EXISTING journey the caller owns (`POST
+/// /Journeys/{id}/legs`, `mode: "untracked"`), under the journey row lock
+/// and leg cap of [`owned_next_leg_order`], like every other add.
+pub async fn add_untracked_leg_to_journey(
+    pool: &PgPool,
+    journey_id: i64,
+    user_id: &str,
+    leg: &UntrackedLeg,
+) -> anyhow::Result<AddLegOutcome<i64>> {
+    let mut tx = pool.begin().await?;
+    let next_leg_order = match owned_next_leg_order(&mut tx, journey_id, user_id).await? {
+        AddLegOutcome::Added(next) => next,
+        AddLegOutcome::NotFound => return Ok(AddLegOutcome::NotFound),
+        AddLegOutcome::AtCap => return Ok(AddLegOutcome::AtCap),
+    };
+    let leg_id = insert_untracked_leg(&mut *tx, journey_id, next_leg_order, leg).await?;
+    tx.commit().await?;
+    Ok(AddLegOutcome::Added(leg_id))
+}
+
 /// Binds (or re-binds) a leg to a real train working -- the `manual`-mode
 /// commit route's data function (design doc §2.3), reused for both a leg's
 /// first pick and any later "Change train" re-pick: this is always a plain
@@ -1374,6 +1732,54 @@ pub struct JourneyListItem {
     pub trains_id: Option<i64>,
     #[serde(skip_serializing)]
     pub train_uid: Option<String>,
+    /// The current leg's kind: `train` or `untracked` (spec 2026-10-20
+    /// §2.4). For an untracked leg `originName`/`destinationName` carry its
+    /// place names, and the five fields below are set.
+    pub kind: String,
+    pub transit_mode: Option<String>,
+    pub line_name: Option<String>,
+    pub planned_departure: Option<DateTime<Utc>>,
+    pub planned_arrival: Option<DateTime<Utc>>,
+    /// The untracked leg's clock-only state; `None` for a train leg.
+    #[sqlx(skip)]
+    pub untracked_status: Option<UntrackedStatus>,
+    /// Whether the leg's `trains` row carries timetable data, internal: an
+    /// input to `tracking_phase`.
+    #[serde(skip_serializing)]
+    pub timetable_on_row: bool,
+    /// The current train leg's `trackingPhase` (see
+    /// `train_tracking::TrackedTrainState::tracking_phase`); `None` for an
+    /// open or untracked leg.
+    #[sqlx(skip)]
+    pub tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    #[sqlx(skip)]
+    pub first_report_expected_at: Option<DateTime<Utc>>,
+}
+
+impl crate::data::tracking_phase::PhaseRow for JourneyListItem {
+    fn phase_key(&self) -> Option<(&str, NaiveDate)> {
+        self.train_uid
+            .as_deref()
+            .map(|uid| (uid, self.service_date))
+    }
+
+    fn phase_signals(&self) -> crate::data::tracking_phase::PhaseSignals<'_> {
+        crate::data::tracking_phase::PhaseSignals {
+            applies: self.kind == LEG_KIND_TRAIN && self.train_subscription_id.is_some(),
+            activated: self.resolution_status.as_deref() == Some("resolved"),
+            status: self.status.as_deref(),
+            timetable_on_row: self.timetable_on_row,
+        }
+    }
+
+    fn set_phase(
+        &mut self,
+        phase: crate::data::tracking_phase::TrackingPhase,
+        expected: Option<DateTime<Utc>>,
+    ) {
+        self.tracking_phase = Some(phase);
+        self.first_report_expected_at = expected;
+    }
 }
 
 impl crate::data::stop_delay::PublicDelayFields for JourneyListItem {
@@ -1425,14 +1831,24 @@ pub async fn list_journeys_for_user(
                     jl.service_date, jl.match_mode, jl.train_subscription_id, \
                     ts.resolution_status, cs.status, cs.delay_minutes, \
                     ts.trains_id, tr.train_uid, \
+                    jl.kind, jl.transit_mode, jl.line_name, jl.origin_place, \
+                    jl.destination_place, jl.planned_departure, jl.planned_arrival, \
+                    (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) \
+                        AS timetable_on_row, \
                     COUNT(*) OVER (PARTITION BY jl.journey_id) AS leg_count, \
                     FIRST_VALUE(jl.origin_crs) OVER first_leg AS first_origin_crs, \
+                    FIRST_VALUE(jl.origin_place) OVER first_leg AS first_origin_place, \
                     FIRST_VALUE(jl.service_date) OVER first_leg AS first_service_date, \
                     FIRST_VALUE(jl.destination_crs) OVER last_leg AS last_destination_crs, \
+                    FIRST_VALUE(jl.destination_place) OVER last_leg AS last_destination_place, \
                     ROW_NUMBER() OVER ( \
                         PARTITION BY jl.journey_id \
-                        ORDER BY (cs.status IS DISTINCT FROM 'completed') DESC, \
+                        ORDER BY (cs.status IS DISTINCT FROM 'completed' \
+                                  AND NOT (jl.kind = 'untracked' \
+                                           AND jl.planned_arrival <= now())) DESC, \
                                  CASE WHEN cs.status = 'completed' \
+                                        OR (jl.kind = 'untracked' \
+                                            AND jl.planned_arrival <= now()) \
                                       THEN -jl.leg_order ELSE jl.leg_order END ASC \
                     ) AS rn \
              FROM journey_legs jl \
@@ -1445,12 +1861,16 @@ pub async fn list_journeys_for_user(
          ) \
          SELECT r.id, r.custom_name, r.created_at, r.created_via, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
-                so.name AS origin_name, sd.name AS destination_name, \
-                rl.first_origin_crs, sfo.name AS first_origin_name, \
-                rl.last_destination_crs, sld.name AS last_destination_name, \
+                COALESCE(so.name, rl.origin_place) AS origin_name, \
+                COALESCE(sd.name, rl.destination_place) AS destination_name, \
+                rl.first_origin_crs, COALESCE(sfo.name, rl.first_origin_place) AS first_origin_name, \
+                rl.last_destination_crs, \
+                COALESCE(sld.name, rl.last_destination_place) AS last_destination_name, \
                 rl.first_service_date, rl.leg_count, rl.match_mode, \
                 rl.train_subscription_id, rl.resolution_status, rl.status, rl.delay_minutes, \
-                rl.delay_minutes AS working_delay_minutes, rl.trains_id, rl.train_uid \
+                rl.delay_minutes AS working_delay_minutes, rl.trains_id, rl.train_uid, \
+                rl.kind, rl.transit_mode, rl.line_name, rl.planned_departure, \
+                rl.planned_arrival, rl.timetable_on_row \
          FROM recent r \
          JOIN ranked_legs rl ON rl.journey_id = r.id AND rl.rn = 1 \
          LEFT JOIN stations so ON so.crs = UPPER(rl.origin_crs)::bpchar \
@@ -1465,6 +1885,13 @@ pub async fn list_journeys_for_user(
     .await?;
     let mut rows = rows;
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
+    let now = Utc::now();
+    for row in &mut rows {
+        if let (Some(departure), Some(arrival)) = (row.planned_departure, row.planned_arrival) {
+            row.untracked_status = Some(untracked_status(departure, arrival, now));
+        }
+    }
+    crate::data::tracking_phase::attach(pool, &mut rows, now).await;
     Ok(rows)
 }
 
@@ -1569,7 +1996,9 @@ pub async fn list_legs_for_journey(
         "SELECT jl.id, jl.journey_id, jl.origin_crs, so.name AS origin_name, \
                 jl.destination_crs, sd.name AS destination_name, jl.service_date, \
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
-                jl.train_subscription_id, jl.match_mode, jl.window_searched \
+                jl.train_subscription_id, jl.match_mode, jl.window_searched, jl.kind, \
+                jl.transit_mode, jl.origin_place, jl.destination_place, jl.line_name, \
+                jl.planned_departure, jl.planned_arrival \
          FROM journey_legs jl \
          LEFT JOIN stations so ON so.crs = UPPER(jl.origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(jl.destination_crs)::bpchar \
@@ -1582,31 +2011,36 @@ pub async fn list_legs_for_journey(
 }
 
 /// One leg of `POST /Journeys/itinerary`, validated and resolved to its
-/// shared `trains` row by the route.
+/// shared `trains` row by the route (a train leg), or an untracked leg
+/// (spec 2026-10-20 §2.4).
 #[derive(Debug, Clone)]
-pub struct ItineraryLeg {
-    pub trains_id: i64,
-    pub service_date: NaiveDate,
-    /// The leg's own boarding and alighting points, as for
-    /// [`create_journey_with_known_train_leg`]'s overrides.
-    pub origin_crs: Option<String>,
-    pub destination_crs: Option<String>,
+pub enum ItineraryLeg {
+    Train {
+        trains_id: i64,
+        service_date: NaiveDate,
+        /// The leg's own boarding and alighting points, as for
+        /// [`create_journey_with_known_train_leg`]'s overrides.
+        origin_crs: Option<String>,
+        destination_crs: Option<String>,
+    },
+    Untracked(UntrackedLeg),
 }
 
-/// Creates a journey and every one of its `knownTrain` legs on `tx`, the
-/// caller's transaction, so `POST /Journeys/itinerary` is all or nothing
-/// (spec 2026-10-14 §5.8, replacing `PlanTripFlow`'s one-request-per-leg
-/// loop). Each leg is built exactly as [`create_journey_with_known_train_leg`]
-/// builds its one leg. `created_via` is `'web'` or the delegated client's
-/// name. Returns the journey id and `(leg_id, tracking_id)` per leg, in
-/// order.
+/// Creates a journey and every one of its legs on `tx`, the caller's
+/// transaction, so `POST /Journeys/itinerary` is all or nothing (spec
+/// 2026-10-14 §5.8, replacing `PlanTripFlow`'s one-request-per-leg loop).
+/// Each train leg is built exactly as [`create_journey_with_known_train_leg`]
+/// builds its one leg; an untracked leg as [`add_untracked_leg_to_journey`]
+/// builds one. `created_via` is `'web'` or the delegated client's name.
+/// Returns the journey id and `(leg_id, tracking_id)` per leg, in order,
+/// `tracking_id` `None` for an untracked leg.
 pub async fn create_journey_from_itinerary(
     tx: &mut sqlx::PgConnection,
     user_id: &str,
     custom_name: Option<&str>,
     created_via: &str,
     legs: &[ItineraryLeg],
-) -> anyhow::Result<(i64, Vec<(i64, i64)>)> {
+) -> anyhow::Result<(i64, Vec<(i64, Option<i64>)>)> {
     let (journey_id,): (i64,) = sqlx::query_as(
         "INSERT INTO journeys (user_id, custom_name, created_via) VALUES ($1, $2, $3) RETURNING id",
     )
@@ -1617,10 +2051,23 @@ pub async fn create_journey_from_itinerary(
     .await?;
     let mut created = Vec::with_capacity(legs.len());
     for (index, leg) in legs.iter().enumerate() {
+        let leg_order = i32::try_from(index + 1)?;
+        let (trains_id, service_date, origin_override, destination_override) = match leg {
+            ItineraryLeg::Untracked(untracked) => {
+                let leg_id =
+                    insert_untracked_leg(&mut *tx, journey_id, leg_order, untracked).await?;
+                created.push((leg_id, None));
+                continue;
+            }
+            ItineraryLeg::Train {
+                trains_id,
+                service_date,
+                origin_crs,
+                destination_crs,
+            } => (*trains_id, *service_date, origin_crs, destination_crs),
+        };
         let tracking_id = crate::data::train_tracking::create_subscription_for_train(
-            &mut *tx,
-            leg.trains_id,
-            user_id,
+            &mut *tx, trains_id, user_id,
         )
         .await?;
         let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
@@ -1630,15 +2077,15 @@ pub async fn create_journey_from_itinerary(
         .fetch_optional(&mut *tx)
         .await?;
         let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
-        let origin_crs = leg.origin_crs.clone().or(pin_origin_crs);
-        let destination_crs = leg.destination_crs.clone().or(pin_destination_crs);
+        let origin_crs = origin_override.clone().or(pin_origin_crs);
+        let destination_crs = destination_override.clone().or(pin_destination_crs);
         let leg_id = insert_leg(
             &mut *tx,
             journey_id,
-            i32::try_from(index + 1)?,
+            leg_order,
             origin_crs.as_deref(),
             destination_crs.as_deref(),
-            leg.service_date,
+            service_date,
             Some(tracking_id),
             "manual",
             None,
@@ -1648,7 +2095,7 @@ pub async fn create_journey_from_itinerary(
             false,
         )
         .await?;
-        created.push((leg_id, tracking_id));
+        created.push((leg_id, Some(tracking_id)));
     }
     Ok((journey_id, created))
 }

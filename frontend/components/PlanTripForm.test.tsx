@@ -123,6 +123,18 @@ describe('PlanTripForm', () => {
       expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ date: '2026-07-16', departAfter: '00:30' }));
     });
 
+    // The site's date format, not Mantine's default "September 5, 2026";
+    // the query still carries the ISO date.
+    it('shows the date as "5 Sep 2026" and submits it as ISO', () => {
+      const onSubmit = vi.fn();
+      renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+      expect(screen.getByLabelText('Date')).toHaveValue('5 Sep 2026');
+      fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'EDB' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ date: '2026-09-05' }));
+    });
+
     it('still lets a visitor clear the field back to no lower bound at all', () => {
       const onSubmit = vi.fn();
       renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);

@@ -1,3 +1,4 @@
+import { isUntrackedLeg } from './untrackedLeg';
 import type { JourneyLegDetail, JourneyListItem } from './types';
 
 /** A journey leg's own status classification, independent of
@@ -8,7 +9,18 @@ import type { JourneyLegDetail, JourneyListItem } from './types';
  * reuse. This is the same rank-and-reduce IDIOM `severity.ts`'s
  * `worstStatus`/`GROUP_RANK` already establishes, ported to a new domain
  * rather than importing that file's (module-private) machinery directly. */
-export type LegStatusGroup = 'good' | 'awaiting' | 'unmatched' | 'delayed' | 'skipped' | 'severe';
+export type LegStatusGroup =
+  | 'untrackedDone'
+  | 'untrackedPlanned'
+  | 'untrackedInProgress'
+  | 'good'
+  | 'planned'
+  | 'awaiting'
+  | 'unmatched'
+  | 'noTimetable'
+  | 'delayed'
+  | 'skipped'
+  | 'severe';
 
 /** Higher rank = worse. Mirrors `severity.ts`'s `GROUP_RANK` shape and
  * ordering convention exactly (good=0 ... worst last), but over this
@@ -19,12 +31,24 @@ export type LegStatusGroup = 'good' | 'awaiting' | 'unmatched' | 'delayed' | 'sk
  * nothing on screen is even asking them to act), and a cancelled leg
  * outranks everything. */
 const LEG_STATUS_RANK: Record<LegStatusGroup, number> = {
+  // Spec 2026-10-20 §2.3: an untracked leg (Tube, bus, walk) ranks below
+  // every train state, so a journey with any train leg is summarised by
+  // its trains; one of untracked legs only, by the worst of those.
+  untrackedDone: -3,
+  untrackedPlanned: -2,
+  untrackedInProgress: -1,
   good: 0,
-  awaiting: 1,
-  delayed: 2,
-  unmatched: 3,
-  skipped: 4,
-  severe: 5,
+  // A timetabled train whose first Network Rail report isn't due yet
+  // (spec §4): nothing is wrong, but it isn't confirmed running either.
+  planned: 1,
+  awaiting: 2,
+  delayed: 3,
+  // Not in the timetable (spec §3): the traveller should check the UID or
+  // date, a step short of a leg that still needs a train picked.
+  noTimetable: 4,
+  unmatched: 5,
+  skipped: 6,
+  severe: 7,
 };
 
 /** Whether this leg's matched train has stopped calling at one of the two
@@ -50,12 +74,22 @@ function legIsSkipped(leg: JourneyLegDetail): boolean {
  * track" (2026-09-22 UX review, I13). A CANCELLED train still wins --
  * "this train isn't running" subsumes "this train isn't stopping". */
 export function legStatusGroup(leg: JourneyLegDetail): LegStatusGroup {
+  if (isUntrackedLeg(leg)) {
+    if (leg.untrackedStatus === 'inProgress') return 'untrackedInProgress';
+    if (leg.untrackedStatus === 'done') return 'untrackedDone';
+    return 'untrackedPlanned';
+  }
   if (!leg.trackedTrainState) {
     return 'unmatched';
   }
   const state = leg.trackedTrainState;
   if (state.status === 'cancelled') return 'severe';
   if (legIsSkipped(leg)) return 'skipped';
+  // `trackingPhase` (spec 2026-10-20 §3, §4) before the waiting arm: a
+  // train with no timetable and no report, or one whose first report
+  // isn't due yet, used to read "Awaiting first report" too.
+  if (state.trackingPhase === 'noTimetable') return 'noTimetable';
+  if (state.trackingPhase === 'planned') return 'planned';
   if (state.status === 'awaiting_activation' || state.status === null) return 'awaiting';
   if (state.delayMinutes !== null && state.delayMinutes > 0) return 'delayed';
   return 'good'; // 'en_route' with no reported delay, or 'completed'.
@@ -99,12 +133,16 @@ export function journeyListItemStatusGroup(item: JourneyListItem): LegStatusGrou
     // gap as `legSkip` below) -- legStatusGroup never reads it, so the
     // adapter just needs a valid placeholder, not the real value.
     windowSearched: false,
+    kind: item.kind ?? 'train',
+    untrackedStatus: item.untrackedStatus ?? null,
     trackedTrainState:
       item.trainSubscriptionId === null
         ? null
         : ({
             status: item.status,
             delayMinutes: item.delayMinutes,
+            resolutionStatus: item.resolutionStatus,
+            trackingPhase: item.trackingPhase ?? null,
           } as JourneyLegDetail['trackedTrainState']),
     legSkip: null,
   });

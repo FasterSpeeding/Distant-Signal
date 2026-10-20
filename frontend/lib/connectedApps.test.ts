@@ -49,4 +49,27 @@ describe('connected apps helpers', () => {
       }).title,
     ).toBe('EUS to BHM, 20 Oct 2026');
   });
+
+  it('names an untracked leg by its mode, line and places', () => {
+    expect(
+      deletionSummary({
+        id: 3,
+        client: 'ds-mcp',
+        journeyId: 8,
+        deletedAt: '2026-10-20T10:00:00Z',
+        summary: {
+          legs: [
+            {
+              kind: 'untracked',
+              transitMode: 'tube',
+              lineName: 'Victoria line',
+              originName: 'Brixton',
+              destinationName: 'Euston',
+              plannedDeparture: '2026-10-21T07:05:00Z',
+            },
+          ],
+        },
+      }).legs,
+    ).toEqual(['Tube: Victoria line, Brixton to Euston, on 21 Oct 2026']);
+  });
 });

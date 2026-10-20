@@ -1375,7 +1375,11 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
 /// real divergence from `list_group_trains` -- see `GroupJourney`'s own
 /// doc comment (Judgment Call 2 in this feature's plan) for why.
 ///
-/// The first-leg join is `jl.leg_order = (SELECT MIN(...))`, NOT
+/// The row's leg is the first TRAIN leg, else the first leg (2026-10-20:
+/// an untracked Tube or walk leg has no train status for the group row to
+/// show, so a journey starting with one is summarised by its first train).
+///
+/// The first-leg join used to be `jl.leg_order = (SELECT MIN(...))`, NOT
 /// `jl.leg_order = 1` -- 2026-09 review finding (Medium): `leg_order`
 /// values are assigned once at leg-creation time and never renumbered
 /// (`journeys::delete_leg` deletes a leg outright, with no compensating
@@ -1399,17 +1403,26 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, \
-                jl.origin_crs AS first_origin_crs, sfo.name AS first_origin_name, \
-                ll.destination_crs AS last_destination_crs, sld.name AS last_destination_name, \
-                jl.service_date, ts.resolution_status, \
+                fl.origin_crs AS first_origin_crs, \
+                COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
+                ll.destination_crs AS last_destination_crs, \
+                COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
+                fl.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_journeys gj \
          JOIN journeys j ON j.id = gj.journey_id \
          JOIN journey_legs jl ON jl.journey_id = j.id \
-             AND jl.leg_order = (SELECT MIN(jl3.leg_order) FROM journey_legs jl3 WHERE jl3.journey_id = j.id) \
+             AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
+                          ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
          CROSS JOIN LATERAL ( \
-             SELECT jl4.destination_crs FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
+             SELECT jl5.origin_crs, jl5.origin_place, jl5.service_date \
+             FROM journey_legs jl5 WHERE jl5.journey_id = j.id \
+             ORDER BY jl5.leg_order LIMIT 1 \
+         ) fl \
+         CROSS JOIN LATERAL ( \
+             SELECT jl4.destination_crs, jl4.destination_place \
+             FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
              ORDER BY jl4.leg_order DESC LIMIT 1 \
          ) ll \
          JOIN users u ON u.id = gj.added_by \
@@ -1418,7 +1431,7 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
-         LEFT JOIN stations sfo ON sfo.crs = UPPER(jl.origin_crs)::bpchar \
+         LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
          WHERE gj.group_id = $1 \
          ORDER BY gj.added_at DESC, gj.journey_id DESC \
@@ -1782,9 +1795,11 @@ pub async fn list_shared_journeys_for_user(
                 ts.pin_origin_crs, ts.pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
                 ts.pin_scheduled_departure, \
-                jl.origin_crs AS first_origin_crs, sfo.name AS first_origin_name, \
-                ll.destination_crs AS last_destination_crs, sld.name AS last_destination_name, \
-                jl.service_date, ts.resolution_status, \
+                fl.origin_crs AS first_origin_crs, \
+                COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
+                ll.destination_crs AS last_destination_crs, \
+                COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
+                fl.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
                 gj.added_by, u.name AS added_by_name, u.username AS added_by_username \
          FROM group_members me \
@@ -1792,9 +1807,16 @@ pub async fn list_shared_journeys_for_user(
          JOIN group_journeys gj ON gj.group_id = g.id \
          JOIN journeys j ON j.id = gj.journey_id \
          JOIN journey_legs jl ON jl.journey_id = j.id \
-             AND jl.leg_order = (SELECT MIN(jl3.leg_order) FROM journey_legs jl3 WHERE jl3.journey_id = j.id) \
+             AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
+                          ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
          CROSS JOIN LATERAL ( \
-             SELECT jl4.destination_crs FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
+             SELECT jl5.origin_crs, jl5.origin_place, jl5.service_date \
+             FROM journey_legs jl5 WHERE jl5.journey_id = j.id \
+             ORDER BY jl5.leg_order LIMIT 1 \
+         ) fl \
+         CROSS JOIN LATERAL ( \
+             SELECT jl4.destination_crs, jl4.destination_place \
+             FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
              ORDER BY jl4.leg_order DESC LIMIT 1 \
          ) ll \
          JOIN users u ON u.id = gj.added_by \
@@ -1803,7 +1825,7 @@ pub async fn list_shared_journeys_for_user(
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
          LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
-         LEFT JOIN stations sfo ON sfo.crs = UPPER(jl.origin_crs)::bpchar \
+         LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
          WHERE me.user_id = $1 AND j.user_id <> $1 \
          ORDER BY gj.added_at DESC, gj.journey_id DESC \

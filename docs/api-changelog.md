@@ -6,7 +6,7 @@ needs to know about. Newest first. Field names are as served (camelCase).
 ## 2026-10-20: hand-entered train legs are checked against the timetable
 
 A train leg typed by hand is refused with `422` when its train can't
-serve it. Checked: each `POST /Journeys/itinerary` leg with `originCrs` or
+serve it. Checked: each `POST /Journeys/itinerary` train leg with `originCrs` or
 `destinationCrs`; a `knownTrain` leg's `originCrs`/`destinationCrs` on
 `POST /Journeys` and `POST /Journeys/{id}/legs`; and the leg's own origin
 and destination on `POST /Journeys/{id}/legs/{legId}/train`.
@@ -23,7 +23,7 @@ and destination on `POST /Journeys/{id}/legs/{legId}/train`.
   `alighting_not_allowed` (pick-up-only stop, such as a sleeper's
   northbound Watford, Crewe and Preston). `message` names the train, the
   station and the date. On an itinerary with more than one leg it starts
-  `Leg N: ` (1-based). Nothing is saved, and the `Idempotency-Key` stays
+  `Leg N: ` (1-based, untracked legs counted). Nothing is saved, and the `Idempotency-Key` stays
   unused.
 - **Not in the timetable yet.** A UID with no schedule for that date (a
   late STP or VSTP service, a date not published yet) is accepted
@@ -32,6 +32,61 @@ and destination on `POST /Journeys/{id}/legs/{legId}/train`.
   `message` and don't retry the same legs. Legs taken as-is from
   `/Trips/plan` always pass. Full table:
   [connected-apps.md](connected-apps.md#itinerary-errors).
+
+## 2026-10-20: untracked journey legs, `trackingPhase`
+
+Additive; no existing request or field changes meaning. Spec:
+`docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md`.
+
+- **Untracked legs.** A journey leg for transport we have no data for
+  (Tube, bus, walk, ferry). `POST /Journeys` (`leg`) and `POST
+  /Journeys/{id}/legs` take `"mode": "untracked"` with `transitMode`
+  (`tube`, `bus`, `tram`, `rail`, `walk`, `ferry`, `taxi`, `cycle`,
+  `other`), optional `lineName` (60 characters), `originName` and
+  `destinationName` (100 each, free text), and required
+  `plannedDeparture`/`plannedArrival` (RFC3339; arrival not before
+  departure, at most 24 hours later; departure at most 28 days ahead and 7
+  days back). `trackingId` is `null`. No tracked-train cap applies.
+- **`POST /Journeys/itinerary`.** A leg may be `{"kind": "untracked",
+  "transitMode": ..., "plannedDeparture": ..., "plannedArrival": ...}`
+  (the same optional fields), with no `trainUid`/`serviceDate`/CRS codes.
+  A leg with no `kind` is a train leg, as before. An itinerary still needs
+  at least one train leg (400 `invalid_itinerary` otherwise), so the
+  top-level `trackingId` stays a number: it is now the first TRAIN leg's.
+  Each `legs[]` entry gains `kind`; its `trackingId` is `null` for an
+  untracked leg. A train-only body hashes for `Idempotency-Key` exactly as
+  before. Delegated clients may send untracked legs; they count toward the
+  20-leg cap and the daily save limit like any leg.
+- **Reading legs.** Every leg of `GET /Journeys/{id}` (and the share-link
+  route) gains `kind` (`train` or `untracked`), `transitMode`, `lineName`,
+  `plannedDeparture`, `plannedArrival` and `untrackedStatus` (`planned`,
+  `inProgress`, `done`, from the clock alone), all `null` on a train leg.
+  An untracked leg's `originName`/`destinationName` are its place names,
+  its `originCrs`/`destinationCrs`, `trackedTrainState` and `legSkip`
+  always `null`. **Read `kind` before treating `trackedTrainState: null` as
+  "needs a train picked".** `GET /Journeys/mine` rows gain the same fields
+  for their current leg; a finished untracked leg is never the current
+  leg.
+- **Refused on an untracked leg.** `GET .../legs/{legId}/candidates` and
+  `POST .../legs/{legId}/train`: 400 "This leg isn't a train leg, so it has
+  no train to pick."
+- **Templates.** Saving a journey as a template copies its train legs only;
+  one with no train legs is a 400.
+- **`trackingPhase`, `firstReportExpectedAt`.** On `GET /Train/{id}`, `GET
+  /Train/mine` rows, `GET /Train/by-uid/{uid}/{date}`, every
+  `trackedTrainState` of `GET /Journeys/{id}`, and `GET /Journeys/mine`
+  rows (`null` for an open or untracked current leg). Values:
+  `timetableOnly` (bus or ferry), `live` (Network Rail reported a
+  movement, cancellation or arrival), `noTimetable` (no timetable for the
+  train and no report: it can't be tracked), `planned` (timetabled, first
+  report not due yet), `awaitingReport` (due; the old waiting states).
+  `firstReportExpectedAt` is 45 minutes before the train's timetabled
+  departure from its own origin until TRUST activates it, then that
+  departure; `null` once live or when unknown. Both are `null` if the
+  lookup fails. `resolutionStatus` is unchanged.
+- **For ds-mcp.** Nothing has to change. To show a saved train as planned
+  rather than waiting, read `trackingPhase`. To save a door-to-door plan,
+  send its Tube or walk hops as untracked legs.
 
 ## 2026-10-20: whole-journey names in journey lists
 

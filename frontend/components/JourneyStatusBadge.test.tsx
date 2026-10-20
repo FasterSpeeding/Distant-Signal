@@ -131,3 +131,47 @@ describe('JourneyStatusBadge', () => {
     expect(badge?.parentElement).toBe(container);
   });
 });
+
+/** Spec 2026-10-20: planned and not-in-the-timetable trains, and
+ * untracked legs, in the journey's header badge. */
+describe('JourneyStatusBadge: tracking phases and untracked legs', () => {
+  const untracked = (id: number): JourneyLegDetail =>
+    baseLeg({
+      id,
+      kind: 'untracked',
+      originCrs: null,
+      destinationCrs: null,
+      trackedTrainState: null,
+      transitMode: 'walk',
+      untrackedStatus: 'inProgress',
+    });
+
+  it('shows "Planned" for a train whose first report is not due yet', () => {
+    renderWithMantine(
+      <JourneyStatusBadge
+        legs={[baseLeg({ trackedTrainState: baseTrackedTrainState({ status: null, trackingPhase: 'planned' }) })]}
+      />,
+    );
+    expect(screen.getByText('Planned')).toBeInTheDocument();
+    expect(screen.queryByText('Awaiting first report')).not.toBeInTheDocument();
+  });
+
+  it('shows "Not in the timetable" for a train with no timetable match', () => {
+    renderWithMantine(
+      <JourneyStatusBadge
+        legs={[baseLeg({ trackedTrainState: baseTrackedTrainState({ status: null, trackingPhase: 'noTimetable' }) })]}
+      />,
+    );
+    expect(screen.getByText('Not in the timetable')).toBeInTheDocument();
+  });
+
+  it('does not count an untracked leg as needing a train', () => {
+    renderWithMantine(<JourneyStatusBadge legs={[untracked(1), baseLeg({ id: 2, trackedTrainState: null })]} />);
+    expect(screen.getByText('1 leg needs a train')).toBeInTheDocument();
+  });
+
+  it('a journey of untracked legs only shows their state', () => {
+    renderWithMantine(<JourneyStatusBadge legs={[untracked(1)]} />);
+    expect(screen.getByText('In progress (not live tracked)')).toBeInTheDocument();
+  });
+});

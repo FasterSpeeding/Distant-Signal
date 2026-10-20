@@ -1,5 +1,6 @@
 import { StateBadge, type StateTone } from './StateBadge';
 import { worstLegStatus, type LegStatusGroup } from '@/lib/journeyStatus';
+import { isOpenTrainLeg, UNTRACKED_STATUS_LABEL } from '@/lib/untrackedLeg';
 import type { JourneyLegDetail } from '@/lib/types';
 
 // 2026-09-22 UX review finding M22/2.11: "On track" here and "On time" on
@@ -10,8 +11,17 @@ import type { JourneyLegDetail } from '@/lib/types';
 // pre-existing badges already say -- so this rollup badge aligns to it
 // rather than the other way round.
 const LABEL: Record<LegStatusGroup, string> = {
+  // An untracked leg's clock-only state (spec 2026-10-20 §2.2). It only
+  // heads a journey with no train legs (`LEG_STATUS_RANK`).
+  untrackedDone: UNTRACKED_STATUS_LABEL.done,
+  untrackedPlanned: UNTRACKED_STATUS_LABEL.planned,
+  untrackedInProgress: UNTRACKED_STATUS_LABEL.inProgress,
   good: 'On time',
+  // A timetabled train whose first report isn't due yet (spec §4).
+  planned: 'Planned',
   awaiting: 'Awaiting first report',
+  // A train with no timetable match and no report (spec §3).
+  noTimetable: 'Not in the timetable',
   unmatched: 'Needs a train picked',
   delayed: 'Delayed',
   // Deliberately NOT folded into `severe`/"Cancelled": the train IS
@@ -24,8 +34,16 @@ const LABEL: Record<LegStatusGroup, string> = {
 };
 
 const TONE: Record<LegStatusGroup, StateTone> = {
+  untrackedDone: 'neutral',
+  untrackedPlanned: 'neutral',
+  untrackedInProgress: 'neutral',
   good: 'good',
+  // Gray, like "Awaiting first report": nothing is wrong yet, and blue is
+  // kept for planned works.
+  planned: 'neutral',
   awaiting: 'neutral',
+  // Grape: the traveller should check the train's UID or date.
+  noTimetable: 'action',
   // Grape, not blue: this is the one state that asks the user to act
   // (pick a train), so it takes the app's action colour. Blue means a
   // planned or changed arrangement (planned closures, a changed platform)
@@ -80,7 +98,8 @@ export function JourneyStatusBadge({ legs }: { legs: JourneyLegDetail[] }) {
   if (worst === null) return null;
 
   if (worst === 'unmatched') {
-    const unmatchedLegs = legs.filter((leg) => leg.trackedTrainState === null);
+    // An untracked leg (Tube, bus, walk) never has a train to pick.
+    const unmatchedLegs = legs.filter(isOpenTrainLeg);
     const firstUnmatchedLegId = unmatchedLegs[0]?.id;
     const label = unmatchedLegs.length === 1 ? '1 leg needs a train' : `${unmatchedLegs.length} legs need a train`;
     if (firstUnmatchedLegId === undefined) {

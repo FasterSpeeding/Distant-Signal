@@ -499,8 +499,14 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   many cards states "Updated" once, not per card.
 - Delays: light badges, sentence case, "*n* min late" / "*n* min early" /
   "On time". A line that runs no trains says "No trains running", not
-  zero figures. Journey rollups rank good < awaiting < delayed < unmatched <
-  skipped < cancelled.
+  zero figures. Journey rollups rank untracked legs (done, planned, in
+  progress) < good < planned < awaiting < delayed < not in the timetable <
+  unmatched < skipped < cancelled.
+- A tracked train is "Planned" (gray) until Network Rail's first report is
+  due, and "Not in the timetable" (grape: check the UID or date) when it has
+  no timetable and no report. An untracked leg (Tube, bus, walk) says
+  "Planned", "In progress (not live tracked)" or "Done", and that we have
+  no live data for it.
 - Severity labels are TfL's own Title Case names; unknown codes read
   "Unknown" in gray (`lib/severity.ts`).
 
@@ -623,7 +629,7 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 | Relative time | `lib/relativeTime.ts` | "just now", "4 min ago", "3 hr ago", "2 days ago" |
 | Clock time | 24-hour, UK time | "08:42" |
 | Date | `lib/dateFormat.ts`, D MMM YYYY; three-letter months ("Sep", never en-GB Intl's "Sept") | "9 Oct 2026", "17 Sep 2026" |
-| Date pickers | `valueFormat="D MMM YYYY"` on every `DatePickerInput` | "9 Oct 2026" |
+| Date fields | `valueFormat={PICKER_DATE_FORMAT}` (`lib/dateFormat.ts`, D MMM YYYY) on every `DateInput` and `DatePickerInput`; `PICKER_DATE_TIME_FORMAT` on a `DateTimePicker`. Never a free-text "YYYY-MM-DD" field | "9 Oct 2026", "9 Oct 2026, 08:42" |
 | 24-hour hint | Once per form, on its first time field (`clockHint`) | "24-hour clock, e.g. 19:00." |
 
 ### Banned phrases
@@ -723,9 +729,11 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains (empty and searched), a train, Incidents, the
 plan form (Depart at and Arrive by), Account (logged in),
-Preferences (logged out, logged in and with a pride flag) and the tram
-pages at 390 and 1366px, light and dark, plus the /lines filter bar's
-stuck and open states and the /incidents filters open: 96 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+Preferences (logged out, logged in and with a pride flag), a tracked train
+not in the timetable, a planned tracked train, a journey with an untracked
+walk (all logged in) and the tram pages at 390 and 1366px, light and dark,
+plus the /lines filter bar's stuck and open states and the /incidents
+filters open: 108 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
 stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 

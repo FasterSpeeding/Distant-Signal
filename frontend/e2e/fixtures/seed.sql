@@ -276,6 +276,61 @@ FROM sub
 ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
+-- A train tracked by UID with a timetable and no Network Rail report
+-- yet, on a far-future date: the api shows it as planned (trackingPhase,
+-- docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
+-- §4) until 45 minutes before its 07:10 departure from King's Cross, so
+-- always. tracked-train-states.spec.ts finds it by its UID. The
+-- unresolved pin above (no timetable match, no report) is the spec's
+-- "not in the timetable" train.
+-- ---------------------------------------------------------------------
+INSERT INTO trains (train_uid, service_date, created_at)
+VALUES ('W77777', '2099-01-05', NOW())
+ON CONFLICT (train_uid, service_date) DO NOTHING;
+
+INSERT INTO schedule_destination_departures (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs)
+VALUES ('2099-01-05', 'EDB', '07:10', 'W77777', 'KGX', 'KGX')
+ON CONFLICT DO NOTHING;
+
+WITH t AS (
+  SELECT id FROM trains WHERE train_uid = 'W77777' AND service_date = '2099-01-05'
+)
+INSERT INTO train_subscriptions (user_id, service_date, resolution_status, tracked_at, trains_id, notifications_enabled)
+SELECT 'fixture-owner', '2099-01-05', 'pending', NOW(), t.id, TRUE
+FROM t
+WHERE NOT EXISTS (SELECT 1 FROM train_subscriptions ts WHERE ts.trains_id = t.id);
+
+-- A journey for that train with an untracked walk to the station before
+-- it (the same spec, §2): the first `journeys` row, so `id = 1` on a fresh
+-- database, like E2E_TRACKING_ID above (visual.spec.ts's `journey` shot).
+-- In 2099, so the walk is always "Planned". Named, so its title doesn't
+-- depend on how journeys are named by default; its preview line starts
+-- from the walk's place ("Islington"), which has no station code.
+INSERT INTO journeys (user_id, custom_name, created_at, updated_at)
+SELECT 'fixture-owner', 'Fixture door to door', NOW(), NOW()
+WHERE NOT EXISTS (SELECT 1 FROM journeys WHERE custom_name = 'Fixture door to door');
+
+WITH j AS (
+  SELECT id FROM journeys WHERE custom_name = 'Fixture door to door'
+)
+INSERT INTO journey_legs (journey_id, leg_order, service_date, match_mode, kind, transit_mode, origin_place, destination_place, planned_departure, planned_arrival)
+SELECT j.id, 1, '2099-01-05', 'manual', 'untracked', 'walk', 'Islington', 'London Kings Cross', '2099-01-05T06:30:00Z', '2099-01-05T06:50:00Z'
+FROM j
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+WITH j AS (
+  SELECT id FROM journeys WHERE custom_name = 'Fixture door to door'
+), sub AS (
+  SELECT ts.id FROM train_subscriptions ts
+  JOIN trains t ON t.id = ts.trains_id
+  WHERE t.train_uid = 'W77777' AND t.service_date = '2099-01-05' AND ts.user_id = 'fixture-owner'
+)
+INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, train_subscription_id, match_mode)
+SELECT j.id, 2, 'KGX', 'EDB', '2099-01-05', sub.id, 'manual'
+FROM j, sub
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+-- ---------------------------------------------------------------------
 -- Group with fixture-owner as owner and fixture-member as member, plus
 -- an active invite link and the tracked train shared into it.
 -- ---------------------------------------------------------------------

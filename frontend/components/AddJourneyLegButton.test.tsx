@@ -62,7 +62,7 @@ describe('AddJourneyLegButton', () => {
     vi.setSystemTime(new Date('2026-07-15T23:30:00Z'));
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
-    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-07-16');
+    expect(await screen.findByLabelText('Service date')).toHaveValue('16 Jul 2026');
   });
 
   it("pre-fills the service date and earliest departure from the previous leg's arrival", async () => {
@@ -75,7 +75,7 @@ describe('AddJourneyLegButton', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-22');
+    expect(await screen.findByLabelText('Service date')).toHaveValue('22 Sep 2026');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('10:07');
     expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('');
     expect(screen.getByText(/Your last leg arrives at 10:07\./)).toBeInTheDocument();
@@ -95,7 +95,7 @@ describe('AddJourneyLegButton', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-23');
+    expect(await screen.findByLabelText('Service date')).toHaveValue('23 Sep 2026');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('00:15');
   });
 
@@ -105,7 +105,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-22');
+    expect(await screen.findByLabelText('Service date')).toHaveValue('22 Sep 2026');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
     expect(screen.queryByText(/Your last leg arrives/)).not.toBeInTheDocument();
   });
@@ -116,7 +116,7 @@ describe('AddJourneyLegButton', () => {
     renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" priorArrival={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
-    expect(await screen.findByLabelText('Service date')).toHaveValue('2026-09-22');
+    expect(await screen.findByLabelText('Service date')).toHaveValue('22 Sep 2026');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('');
     expect(screen.queryByText(/Your last leg arrives/)).not.toBeInTheDocument();
   });
@@ -132,7 +132,7 @@ describe('AddJourneyLegButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
     const serviceDate = await screen.findByLabelText('Service date');
-    fireEvent.change(serviceDate, { target: { value: '2026-09-24' } });
+    fireEvent.change(serviceDate, { target: { value: '24 Sep 2026' } });
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '12:30' } });
 
     // The journey refreshes under the open dialog with a later arrival.
@@ -147,7 +147,7 @@ describe('AddJourneyLegButton', () => {
       </MantineProvider>,
     );
 
-    expect(screen.getByLabelText('Service date')).toHaveValue('2026-09-24');
+    expect(screen.getByLabelText('Service date')).toHaveValue('24 Sep 2026');
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('12:30');
 
     fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'CLJ' } });
@@ -346,8 +346,9 @@ describe('AddJourneyLegButton', () => {
     expect(screen.getByLabelText('Train UID')).toHaveValue('A12345');
   });
 
-  // Bug: the Origin/Destination CRS and Service date fields were free text
-  // with no client-side format check, so a malformed value used to sail
+  // Bug: the Origin/Destination CRS fields (and, before it became a
+  // `DateInput`, the Service date) were free text with no client-side
+  // format check, so a malformed value used to sail
   // straight through to the backend and come back as a raw 400 instead of
   // a friendly inline message. `Add leg` also stays disabled -- the
   // existing `isValid` gate already blocks submission on any malformed
@@ -421,18 +422,30 @@ describe('AddJourneyLegButton', () => {
     expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
   });
 
-  it('shows an inline error for a malformed Service date and keeps the button disabled', async () => {
-    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs="WAT" />);
+  // The Service date is a `DateInput` now, not free text: text that isn't
+  // a date leaves the last good date in place (shown again on blur), so
+  // nothing malformed can reach `POST /Journeys/{id}/legs`.
+  it('keeps the last good Service date when the typed text is not a date', async () => {
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs="WAT"
+        priorArrival={{ date: '2026-09-22', time: '10:07' }}
+      />,
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
 
     const destination = await screen.findByRole('combobox', { name: 'To station' });
     fireEvent.change(destination, { target: { value: 'CLJ' } });
-    fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-02-30' } });
-    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
+    const serviceDate = screen.getByLabelText('Service date');
+    fireEvent.focus(serviceDate);
+    fireEvent.change(serviceDate, { target: { value: 'next tuesday' } });
+    fireEvent.blur(serviceDate);
+    expect(serviceDate).toHaveValue('22 Sep 2026');
 
-    expect(await screen.findByText('Must be a valid date (YYYY-MM-DD)')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
-    expect(legPosts()).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+    await waitFor(() => expect(legPosts()).toHaveLength(1));
+    expect(JSON.parse(String(legPosts()[0]?.[1]?.body))).toMatchObject({ serviceDate: '2026-09-22' });
   });
 
   it('accepts a well-formed CRS and date and allows submission', async () => {
@@ -445,10 +458,55 @@ describe('AddJourneyLegButton', () => {
     fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '09:00' } });
 
     expect(screen.queryByText('Must be a 3-letter station code')).not.toBeInTheDocument();
-    expect(screen.queryByText('Must be a valid date (YYYY-MM-DD)')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add leg' })).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
     await waitFor(() => expect(legPosts()).toHaveLength(1));
+  });
+
+  /** Spec 2026-10-20 §2: the "Tube, bus or walk" mode adds an untracked
+   * leg, seeded from the previous leg's arrival and destination. */
+  it('POSTs an untracked Tube leg seeded from the previous leg', async () => {
+    const fetchMock = mockFetch(legResponse);
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs="EUS"
+        priorArrival={{ date: '2026-10-21', time: '10:07' }}
+        priorPlaceName="London Euston"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    fireEvent.click(await screen.findByText('Tube, bus or walk'));
+
+    expect(await screen.findByLabelText('From (optional)')).toHaveValue('London Euston');
+    expect(screen.getByLabelText('Date')).toHaveValue('21 Oct 2026');
+    expect(screen.getByLabelText('Leaves')).toHaveValue('10:07');
+    expect(screen.queryByLabelText('Service date')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add leg' })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('Line (optional)'), { target: { value: 'Victoria line' } });
+    fireEvent.change(screen.getByLabelText('To (optional)'), { target: { value: 'Victoria' } });
+    fireEvent.change(screen.getByLabelText('Arrives'), { target: { value: '10:25' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Journeys/1/legs',
+        expect.objectContaining({
+          method: 'POST',
+          // BST: 10:07 and 10:25 London are 09:07 and 09:25 UTC.
+          body: JSON.stringify({
+            mode: 'untracked',
+            transitMode: 'tube',
+            lineName: 'Victoria line',
+            originName: 'London Euston',
+            destinationName: 'Victoria',
+            plannedDeparture: '2026-10-21T09:07:00.000Z',
+            plannedArrival: '2026-10-21T09:25:00.000Z',
+          }),
+        }),
+      );
+    });
   });
 });

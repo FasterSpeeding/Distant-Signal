@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { DatePickerInput } from '@mantine/dates';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import type { RangePreset } from '@/lib/history';
 import { londonCalendarDay, londonDayEndIso, londonDayStartIso, londonToday } from '@/lib/londonWallClock';
@@ -181,7 +182,7 @@ export function HistoryRangePicker({
         <>
           <Group align="end">
             <DatePickerInput
-              valueFormat="D MMM YYYY"
+              valueFormat={PICKER_DATE_FORMAT}
               type="range"
               label="Pick a date range"
               placeholder="Pick dates range"

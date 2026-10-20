@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   journeyDefaultName,
   journeyDisplayName,
+  journeyListItemNameInput,
   journeyNameInputFromLegs,
   journeyPreviewLine,
   journeyRouteLabel,
@@ -98,5 +99,39 @@ describe('journey names', () => {
   it('falls back to "Unknown station" for an end with neither code nor name', () => {
     const input = journeyNameInputFromLegs(null, [leg(null, null, 'YRK', 'York')]);
     expect(journeyRouteLabel(input)).toBe('Unknown station to York (YRK)');
+  });
+
+  // Spec 2026-10-20 §2: a journey that starts with an untracked Tube leg
+  // is named from the Tube leg's place, never "Unknown station".
+  it('names a journey that starts with an untracked leg from its place', () => {
+    const tube = leg(null, 'Oxford Circus', null, "King's Cross St Pancras", '2026-09-17');
+    const train = leg('KGX', 'London Kings Cross', 'EDB', 'Edinburgh', '2026-09-17');
+    expect(journeyDisplayName(journeyNameInputFromLegs(null, [tube, train]))).toBe(
+      'Oxford Circus to Edinburgh (EDB), 17 Sep 2026',
+    );
+    const row = journeyListItemNameInput({
+      id: 1,
+      customName: null,
+      createdAt: '2026-09-16T00:00:00Z',
+      legId: 1,
+      originCrs: null,
+      destinationCrs: null,
+      serviceDate: '2026-09-17',
+      originName: 'Oxford Circus',
+      destinationName: "King's Cross St Pancras",
+      matchMode: 'manual',
+      trainSubscriptionId: null,
+      resolutionStatus: null,
+      status: null,
+      delayMinutes: null,
+      kind: 'untracked',
+      firstOriginCrs: null,
+      firstOriginName: 'Oxford Circus',
+      lastDestinationCrs: 'EDB',
+      lastDestinationName: 'Edinburgh',
+      firstServiceDate: '2026-09-17',
+      legCount: 2,
+    });
+    expect(journeyDisplayName(row)).toBe('Oxford Circus to Edinburgh (EDB), 17 Sep 2026');
   });
 });

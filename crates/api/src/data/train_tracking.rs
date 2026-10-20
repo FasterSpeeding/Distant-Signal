@@ -964,6 +964,48 @@ pub struct TrackedTrainState {
     /// Its glossary text, under the same rules as `cancel_reason`.
     #[sqlx(skip)]
     pub change_of_origin_reason: Option<String>,
+    /// Planned, waiting for its first report, live, not in the timetable
+    /// or timetable-only (`data::tracking_phase`, spec 2026-10-20 §4.3).
+    /// Filled after the read by `tracking_phase::attach`; `None` (`null`)
+    /// when that lookup did not run or failed, which reads as today's
+    /// display.
+    #[sqlx(skip)]
+    pub tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    /// When Network Rail's first report is (or was) expected: the
+    /// Activation before it is activated, the origin departure after.
+    /// `None` once live, or when the origin departure is unknown.
+    #[sqlx(skip)]
+    pub first_report_expected_at: Option<DateTime<Utc>>,
+}
+
+impl crate::data::tracking_phase::PhaseRow for TrackedTrainState {
+    fn phase_key(&self) -> Option<(&str, chrono::NaiveDate)> {
+        self.train_uid
+            .as_deref()
+            .map(|uid| (uid, self.service_date))
+    }
+
+    fn phase_signals(&self) -> crate::data::tracking_phase::PhaseSignals<'_> {
+        crate::data::tracking_phase::PhaseSignals {
+            applies: true,
+            activated: self.resolution_status == "resolved",
+            status: self.status.as_deref(),
+            timetable_on_row: self.schedule_calling_points.is_some()
+                || self
+                    .journey_stops
+                    .as_ref()
+                    .is_some_and(|stops| !stops.is_empty()),
+        }
+    }
+
+    fn set_phase(
+        &mut self,
+        phase: crate::data::tracking_phase::TrackingPhase,
+        expected: Option<DateTime<Utc>>,
+    ) {
+        self.tracking_phase = Some(phase);
+        self.first_report_expected_at = expected;
+    }
 }
 
 // `LEFT JOIN`, never `JOIN`: a CRS with no reference row (a code the
@@ -1095,6 +1137,43 @@ pub struct TrackedTrainListItem {
     #[sqlx(skip)]
     #[serde(flatten)]
     pub service: crate::data::schedule_services::ServiceModeFields,
+    /// Whether the shared `trains` row carries timetable data (calling
+    /// points or a schedule origin), internal: one of the inputs to
+    /// `tracking_phase`.
+    #[serde(skip_serializing)]
+    pub timetable_on_row: bool,
+    /// See `TrackedTrainState::tracking_phase`.
+    #[sqlx(skip)]
+    pub tracking_phase: Option<crate::data::tracking_phase::TrackingPhase>,
+    /// See `TrackedTrainState::first_report_expected_at`.
+    #[sqlx(skip)]
+    pub first_report_expected_at: Option<DateTime<Utc>>,
+}
+
+impl crate::data::tracking_phase::PhaseRow for TrackedTrainListItem {
+    fn phase_key(&self) -> Option<(&str, chrono::NaiveDate)> {
+        self.train_uid
+            .as_deref()
+            .map(|uid| (uid, self.service_date))
+    }
+
+    fn phase_signals(&self) -> crate::data::tracking_phase::PhaseSignals<'_> {
+        crate::data::tracking_phase::PhaseSignals {
+            applies: true,
+            activated: self.resolution_status == "resolved",
+            status: self.status.as_deref(),
+            timetable_on_row: self.timetable_on_row,
+        }
+    }
+
+    fn set_phase(
+        &mut self,
+        phase: crate::data::tracking_phase::TrackingPhase,
+        expected: Option<DateTime<Utc>>,
+    ) {
+        self.tracking_phase = Some(phase);
+        self.first_report_expected_at = expected;
+    }
 }
 
 impl crate::data::stop_delay::PublicDelayFields for TrackedTrainState {
@@ -1165,7 +1244,9 @@ pub async fn list_tracked_trains_for_user(
                 cs.status, cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
                 tr.id AS trains_id, tt.tracked_at, tt.custom_name, \
                 (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
-                    AS shared_group_count \
+                    AS shared_group_count, \
+                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) \
+                    AS timetable_on_row \
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
@@ -1182,6 +1263,7 @@ pub async fn list_tracked_trains_for_user(
     let mut rows = rows;
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     crate::data::schedule_services::attach(pool, &mut rows).await;
+    crate::data::tracking_phase::attach(pool, &mut rows, Utc::now()).await;
     Ok(rows)
 }
 

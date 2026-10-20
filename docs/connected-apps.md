@@ -137,11 +137,11 @@ app gets the same message as plain text.
 | 422 | `alighting_not_allowed` | `destinationCrs` is pick-up only for this train (a sleeper's `U` stops) |
 | 429 | `daily_limit`, `rate_limited` | With `Retry-After` |
 
-The 422 checks run only on legs with `originCrs` or `destinationCrs` and
+The 422 checks run only on train legs with `originCrs` or `destinationCrs` and
 only when the timetable has the train (`schedule_calling_points_full` for
 that UID and date). A train not in it yet is saved unchecked, as before,
 and resolves through tracking. The first failing leg wins; with more than
-one leg its message starts `Leg N: `. Nothing is saved on any error, and
+one leg its message starts `Leg N: `, N counting untracked legs too. Nothing is saved on any error, and
 the `Idempotency-Key` stays unused. Code: `crates/api/src/data/leg_validation.rs`.
 
 ## Retention
