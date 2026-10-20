@@ -203,6 +203,10 @@ pub fn fixed_links_between<'a>(
 
 /// The link [`fixed_links_from`] would take from `from_crs` to `to_crs` at
 /// `date`/`time_min`: the shortest one valid then, or `None`.
+#[expect(
+    clippy::similar_names,
+    reason = "the similar names are distinct domain terms"
+)]
 pub fn fixed_link_between<'a>(
     data: &'a InterchangeData,
     from_crs: &str,
@@ -213,7 +217,7 @@ pub fn fixed_link_between<'a>(
     let clock = hhmm_bytes(clock_minutes(time_min));
     let day = day_index(date);
     fixed_links_between(data, from_crs, to_crs)
-        .filter(|link| applies(link, day, &clock))
+        .filter(|link| applies(link, day, clock))
         .min_by(|a, b| lookup_key(a).cmp(&lookup_key(b)))
 }
 
@@ -333,7 +337,7 @@ fn hhmm_bytes(minutes: u32) -> [u8; 4] {
 /// Whether `link` runs on weekday `day` (0 = Monday) at `clock` (`HHMM`
 /// bytes): its day-mask flag is `'1'` and `clock` is inside its window,
 /// both ends inclusive.
-fn applies(link: &FixedLink, day: usize, clock: &[u8; 4]) -> bool {
+fn applies(link: &FixedLink, day: usize, clock: [u8; 4]) -> bool {
     link.days_mask.as_bytes().get(day) == Some(&b'1')
         && link.valid_from.as_bytes() <= clock.as_slice()
         && clock.as_slice() <= link.valid_to.as_bytes()
@@ -363,6 +367,10 @@ fn applies(link: &FixedLink, day: usize, clock: &[u8; 4]) -> bool {
 /// `fetch_interchange_data`). An index already in that order (see
 /// [`InterchangeData::sort_fixed_links`]) is read as it is; any other is
 /// sorted per call.
+#[expect(
+    clippy::similar_names,
+    reason = "the similar names are distinct domain terms"
+)]
 pub fn fixed_links_from<'a>(
     data: &'a InterchangeData,
     from_crs: &str,
@@ -382,7 +390,7 @@ pub fn fixed_links_from<'a>(
     // already in that order; anything else is sorted here first.
     let mut result: Vec<&FixedLink> = Vec::new();
     let mut take = |link: &'a FixedLink| {
-        if applies(link, day, &clock) && result.last().is_none_or(|last| last.to_crs != link.to_crs)
+        if applies(link, day, clock) && result.last().is_none_or(|last| last.to_crs != link.to_crs)
         {
             result.push(link);
         }

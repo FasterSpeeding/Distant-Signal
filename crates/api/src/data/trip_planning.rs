@@ -1319,16 +1319,18 @@ mod supplementary_link_tests {
             ..InterchangeData::default()
         };
         // Wednesday 21 October 2026, 10:00.
-        let date = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
-        let from_vxh: Vec<(&str, i32)> = schedule_query::fixed_links_from(&data, "VXH", date, 600)
-            .iter()
-            .map(|link| (link.to_crs.as_str(), link.minutes))
-            .collect();
+        let wednesday = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        let from_vxh: Vec<(&str, i32)> =
+            schedule_query::fixed_links_from(&data, "VXH", wednesday, 600)
+                .iter()
+                .map(|link| (link.to_crs.as_str(), link.minutes))
+                .collect();
         assert_eq!(from_vxh, [("EUS", 22), ("VIC", 11)]);
-        let to_vxh = schedule_query::fixed_link_between(&data, "VIC", "VXH", date, 600).unwrap();
+        let to_vxh =
+            schedule_query::fixed_link_between(&data, "VIC", "VXH", wednesday, 600).unwrap();
         assert_eq!((to_vxh.mode.as_str(), to_vxh.minutes), ("TUBE", 11));
         // Evenings, the ALF's +5 convention.
-        let evening = schedule_query::fixed_link_between(&data, "VXH", "VIC", date, 20 * 60);
+        let evening = schedule_query::fixed_link_between(&data, "VXH", "VIC", wednesday, 20 * 60);
         assert_eq!(evening.map(|link| link.minutes), Some(16));
     }
 }

@@ -732,6 +732,10 @@ fn bench_group_waypoints_against_single() {
 /// synthetic rows of the same size and shape (4,651 rows over 1,308 links in
 /// RJTTF995ALF, 2026-10-20; three to five time windows per link; half the
 /// links at a hub, each to a station near it in the numbering).
+#[expect(
+    clippy::unwrap_used,
+    reason = "bench code: an unreadable or malformed ALF file should stop the bench"
+)]
 fn bench_link_rows(rng: &mut Rng) -> Vec<(String, schedule_query::FixedLink)> {
     use schedule_query::FixedLink;
 
@@ -828,6 +832,10 @@ fn bench_link_rows(rng: &mut Rng) -> Vec<(String, schedule_query::FixedLink)> {
 /// ```
 #[test]
 #[ignore = "benchmark; see the module doc"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bench: building both indexes and timing four searches on each"
+)]
 fn bench_fixed_links_both_ways() {
     use schedule_query::index_fixed_links_both_ways;
 
