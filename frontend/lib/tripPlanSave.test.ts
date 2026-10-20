@@ -47,7 +47,7 @@ const itinerary = (legs: TripPlanLeg[], continuesPreviousTrain = false): TripPla
 /** Spec 2026-10-20 §2, follow-up: the planner's save keeps its transfers
  * as untracked legs instead of dropping them. */
 describe('itineraryLegsForSaving', () => {
-  it('saves a cross-London Tube transfer between two trains as an untracked leg', () => {
+  it('saves a cross-London Tube transfer between two trains as an untracked leg (working times, no public ones)', () => {
     const legs = itineraryLegsForSaving(
       [
         itinerary([
@@ -73,7 +73,7 @@ describe('itineraryLegsForSaving', () => {
     ]);
   });
 
-  it('times a transfer before the first train back from that train, and after midnight from its day offset', () => {
+  it('falls back to working times: back from the first train, and after midnight by its day offset', () => {
     const legs = itineraryLegsForSaving(
       [
         itinerary([
@@ -96,6 +96,54 @@ describe('itineraryLegsForSaving', () => {
       destinationName: 'XYZ',
       plannedDeparture: '2026-10-21T23:20:00.000Z',
       plannedArrival: '2026-10-21T23:30:00.000Z',
+    });
+  });
+
+  it('times transfers from public times when the legs have them, as the planner plans', () => {
+    const withPublic = (leg: TripPlanLeg, publicTimes: Record<string, string | number>): TripPlanLeg => ({
+      ...leg,
+      ...publicTimes,
+    });
+    const legs = itineraryLegsForSaving(
+      [
+        itinerary([
+          // A walk before the first train: ends at its PUBLIC departure
+          // 08:31 (BST, so 07:31Z), not the working 08:30.
+          transfer('WALK', 'KGX', 'EUS', 10),
+          withPublic(train('T1', 'EUS', 'MKC', '08:30:00', '09:20:30'), {
+            publicDeparture: '08:31:00',
+            publicDepartureDayOffset: 0,
+            // Public arrival 09:19 (rounded down), not the working 09:20:30.
+            publicArrival: '09:19:00',
+            publicArrivalDayOffset: 0,
+          }),
+          transfer('TUBE', 'MKC', 'KGX', 20),
+          // Public arrival just after midnight: its own day offset counts.
+          withPublic(train('T2', 'KGX', 'YRK', '23:30:00', '23:59:30'), {
+            publicDeparture: '23:30:00',
+            publicDepartureDayOffset: 0,
+            publicArrival: '00:01:00',
+            publicArrivalDayOffset: 1,
+          }),
+          transfer('BUS', 'YRK', 'XYZ', 5),
+        ]),
+      ],
+      nameFor,
+    );
+    expect(legs[0]).toMatchObject({
+      transitMode: 'walk',
+      plannedDeparture: '2026-10-21T07:21:00.000Z',
+      plannedArrival: '2026-10-21T07:31:00.000Z',
+    });
+    expect(legs[2]).toMatchObject({
+      transitMode: 'tube',
+      plannedDeparture: '2026-10-21T08:19:00.000Z',
+      plannedArrival: '2026-10-21T08:39:00.000Z',
+    });
+    expect(legs[4]).toMatchObject({
+      transitMode: 'bus',
+      plannedDeparture: '2026-10-21T23:01:00.000Z',
+      plannedArrival: '2026-10-21T23:06:00.000Z',
     });
   });
 
