@@ -50,6 +50,18 @@ describe('failureFromResponse', () => {
     );
   });
 
+  // `crates/api/src/data/leg_validation.rs`: the five 422s for a train leg
+  // the train can't serve. Each must pass `isUserFacingApiMessage` as is.
+  it.each([
+    "Train C12345 doesn't stop at Woking (WOK) on 20 Oct 2026.",
+    "Train C12345 reaches Reading (RDG) before Woking (WOK) on 20 Oct 2026, so it can't take you from Woking (WOK) to Reading (RDG).",
+    "You can't board train C12345 at Stirling (STG) on 20 Oct 2026: it only lets passengers off there.",
+    "Leg 2: You can't get off train C12345 at Preston (PRE) on 20 Oct 2026: it only picks passengers up there.",
+  ])('shows a 422 train-leg refusal as written: %s', async (sentence) => {
+    const response = new Response(sentence, { status: 422 });
+    expect(await failureFromResponse('add', 'this leg', response)).toBe(sentence);
+  });
+
   it('never shows a server error body', async () => {
     const response = new Response('thread panicked at src/main.rs', { status: 500 });
     expect(await failureFromResponse('save', 'this line', response)).toBe("Couldn't save this line. Try again.");
