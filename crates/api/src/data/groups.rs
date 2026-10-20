@@ -6080,6 +6080,10 @@ mod group_train_wire_shape_tests {
     /// time, a ticket, or the owner's notification setting, however its
     /// new fields are filled.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "all four row shapes, every field spelled out"
+    )]
     fn the_phase_fields_widen_nothing_past_the_never_shown_list() {
         let phase = Some(crate::data::tracking_phase::TrackingPhase::Planned);
         let expected = Some("2026-10-21T07:15:00Z".parse().unwrap());
