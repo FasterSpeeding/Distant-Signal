@@ -95,7 +95,7 @@ pub fn router() -> Router {
         )
         .route(
             "/Journeys/{journey_id}/legs/{leg_id}",
-            axum::routing::delete(delete_journey_leg),
+            axum::routing::delete(delete_journey_leg).put(put_journey_leg),
         )
         .route(
             "/Journeys/{journey_id}/share-link",
@@ -938,8 +938,10 @@ async fn post_journey_leg(
     State(app): State<App>,
     user: AuthenticatedUser,
     Path(journey_id): Path<i64>,
+    Query(query): Query<AddLegQuery>,
     Json(request): Json<AddJourneyLegRequest>,
 ) -> Result<Json<AddLegResponse>, (StatusCode, String)> {
+    let before = query.before;
     match request {
         AddJourneyLegRequest::KnownTrain {
             train_uid,
@@ -986,7 +988,7 @@ async fn post_journey_leg(
             let destination_override = destination_crs
                 .as_deref()
                 .map(|s| s.trim().to_ascii_uppercase());
-            let added = journeys::add_known_train_leg_to_journey(
+            let added = journeys::add_known_train_leg_to_journey_at(
                 &app.database,
                 journey_id,
                 &user.id,
@@ -994,6 +996,7 @@ async fn post_journey_leg(
                 service_date,
                 origin_override.as_deref(),
                 destination_override.as_deref(),
+                before,
             )
             .await
             .map_err(internal_error("add leg to journey (known-train)"))?;
@@ -1035,7 +1038,7 @@ async fn post_journey_leg(
             crate::routes::train::enforce_tracking_horizon(service_date)?;
             crate::routes::train::enforce_pin_cap(&app, &user.id).await?;
 
-            let added = journeys::add_window_leg_to_journey(
+            let added = journeys::add_window_leg_to_journey_at(
                 &app.database,
                 journey_id,
                 &user.id,
@@ -1044,6 +1047,7 @@ async fn post_journey_leg(
                 service_date,
                 depart_window,
                 arrive_window,
+                before,
             )
             .await
             .map_err(internal_error("add leg to journey (window)"))?;
@@ -1056,10 +1060,15 @@ async fn post_journey_leg(
         }
         AddJourneyLegRequest::Untracked(request) => {
             let leg = request.validate()?;
-            let added =
-                journeys::add_untracked_leg_to_journey(&app.database, journey_id, &user.id, &leg)
-                    .await
-                    .map_err(internal_error("add leg to journey (untracked)"))?;
+            let added = journeys::add_untracked_leg_to_journey_at(
+                &app.database,
+                journey_id,
+                &user.id,
+                &leg,
+                before,
+            )
+            .await
+            .map_err(internal_error("add leg to journey (untracked)"))?;
             let leg_id = added_leg_or_error(added)?;
             Ok(Json(AddLegResponse {
                 leg_id,
@@ -1085,6 +1094,50 @@ fn added_leg_or_error<T>(outcome: journeys::AddLegOutcome<T>) -> Result<T, (Stat
                 "This journey already has {} legs, which is the maximum.",
                 journeys::MAX_LEGS_PER_JOURNEY
             ),
+        )),
+        journeys::AddLegOutcome::NoSuchLeg => Err((
+            StatusCode::NOT_FOUND,
+            "no journey leg with that id to add before".to_string(),
+        )),
+    }
+}
+
+/// `POST /Journeys/{journeyId}/legs`'s query: `before={legId}` inserts the
+/// new leg in front of that leg (spec 2026-10-20 §2.3), moving it and the
+/// legs after it one place down; absent appends, as before. Unknown keys
+/// are refused, so a typo can't silently append.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddLegQuery {
+    #[serde(default)]
+    before: Option<i64>,
+}
+
+/// `PUT /Journeys/{journeyId}/legs/{legId}`: replaces an untracked leg's
+/// mode, places, line and times in place (spec 2026-10-20 §2.4), with the
+/// same body and rules as adding one, minus `mode`. 404 for no such leg or
+/// not the caller's; 400 for a train leg (pick another train with `.../train`
+/// instead) or invalid fields. 204 on success.
+async fn put_journey_leg(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path((journey_id, leg_id)): Path<(i64, i64)>,
+    Json(request): Json<UntrackedLegRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let leg = request.validate()?;
+    match journeys::update_untracked_leg(&app.database, journey_id, leg_id, &user.id, &leg)
+        .await
+        .map_err(internal_error("update journey leg"))?
+    {
+        journeys::UpdateUntrackedOutcome::Updated => Ok(StatusCode::NO_CONTENT),
+        journeys::UpdateUntrackedOutcome::NotFound => Err((
+            StatusCode::NOT_FOUND,
+            "no journey leg with that id".to_string(),
+        )),
+        journeys::UpdateUntrackedOutcome::NotUntracked => Err((
+            StatusCode::BAD_REQUEST,
+            "Only a Tube, bus or walk leg can be edited this way. Pick another train for a train leg instead."
+                .to_string(),
         )),
     }
 }
@@ -3722,7 +3775,7 @@ mod db_tests {
             ),
             (
                 untracked_leg("hovercraft", 30, 40),
-                "transitMode must be one of: tube, bus, tram, rail, walk, ferry, taxi, cycle, other.",
+                "transitMode must be one of: tube, bus, tram, metro, rail, walk, ferry, taxi, cycle, other.",
             ),
             (
                 serde_json::json!({ "mode": "untracked", "transitMode": "bus" }),
@@ -3862,6 +3915,210 @@ mod db_tests {
             Some(crate::data::tracking_phase::TrackingPhase::NoTimetable)
         );
         clear().await;
+    }
+
+    async fn put_json(
+        router: axum::Router,
+        uri: String,
+        raw_token: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .uri(uri)
+            .method("PUT")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = raw_token {
+            builder = builder.header(header::COOKIE, format!("distant_signal_session={token}"));
+        }
+        let req = builder
+            .body(Body::from(
+                serde_json::to_vec(&body).expect("serialize body"),
+            ))
+            .expect("build request");
+        let response = router.oneshot(req).await.expect("oneshot request");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                Value::String(String::from_utf8(bytes.to_vec()).expect("body is valid utf8"))
+            })
+        };
+        (status, value)
+    }
+
+    /// Spec 2026-10-20 §2.3/§2.4 follow-up: a leg can be inserted before an
+    /// existing one (later legs move down, gaps and all, and every reader's
+    /// position follows), and an untracked leg can be edited in place.
+    #[tokio::test]
+    #[ignore = "requires a live database: DATABASE_URL=... cargo test -p api \
+                untracked_legs_ -- --ignored --test-threads=1"]
+    async fn untracked_legs_can_be_inserted_before_and_edited_in_place() {
+        let pool = connect().await;
+        let user = "TEST-ROUTE-UNTRACKED-INSERT";
+        let stranger = "TEST-ROUTE-UNTRACKED-INSERT-OTHER";
+        cleanup_user(&pool, user).await;
+        cleanup_user(&pool, stranger).await;
+        let token = seed_session(&pool, user).await;
+        let stranger_token = seed_session(&pool, stranger).await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({ "leg": untracked_leg("walk", 60, 70) }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().unwrap();
+        let walk_id = created["legId"].as_i64().unwrap();
+        // A train search after it, then one more walk we delete to leave a
+        // gap in leg_order (1, 2, -, 4 after the next add).
+        let (_, window) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "window", "originCrs": "WAT", "destinationCrs": "RDG",
+                "serviceDate": crate::routes::london_today().to_string(),
+                "departWindow": { "after": "08:00:00" }
+            }),
+        )
+        .await;
+        let window_id = window["legId"].as_i64().unwrap();
+        let (_, spare) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            untracked_leg("bus", 200, 210),
+        )
+        .await;
+        let (status, _) = delete_request(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{}", spare["legId"]),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // Insert a Tube leg before the walk: it becomes the first leg.
+        let (status, inserted) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs?before={walk_id}"),
+            Some(&token),
+            untracked_leg("tube", 20, 50),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{inserted:?}");
+        let tube_id = inserted["legId"].as_i64().unwrap();
+        // And a train search before the window leg (the middle).
+        let (status, middle) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs?before={window_id}"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "window", "originCrs": "WAT", "destinationCrs": "WOK",
+                "serviceDate": crate::routes::london_today().to_string(),
+                "departWindow": { "after": "07:00:00" }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{middle:?}");
+        let middle_id = middle["legId"].as_i64().unwrap();
+
+        let (_, detail) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        let order: Vec<i64> = detail["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|leg| leg["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(order, [tube_id, walk_id, middle_id, window_id]);
+        // The notifier's "leg N of M" counts legs at or before each one.
+        let positions: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT jl.id, (SELECT COUNT(*) FROM journey_legs jl2 \
+                            WHERE jl2.journey_id = jl.journey_id AND jl2.leg_order <= jl.leg_order) \
+             FROM journey_legs jl WHERE jl.journey_id = $1 ORDER BY jl.leg_order",
+        )
+        .bind(journey_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            positions,
+            [(tube_id, 1), (walk_id, 2), (middle_id, 3), (window_id, 4)]
+        );
+
+        // Before a leg that isn't this journey's: 404, nothing added.
+        let (status, _) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs?before=999999999"),
+            Some(&token),
+            untracked_leg("tube", 20, 50),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Edit the Tube leg in place: mode, line, places and times.
+        let mut edited = untracked_leg("bus", 25, 55);
+        edited["lineName"] = Value::String("73".to_string());
+        edited["destinationName"] = Value::String("Euston".to_string());
+        let (status, body) = put_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{tube_id}"),
+            Some(&token),
+            edited.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body:?}");
+        let (_, detail) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        let first = &detail["legs"][0];
+        assert_eq!(first["id"], tube_id, "edited in place, same id and place");
+        assert_eq!(first["transitMode"], "bus");
+        assert_eq!(first["lineName"], "73");
+        assert_eq!(first["destinationName"], "Euston");
+
+        // A train leg, someone else's leg, and bad fields are refused.
+        let (status, _) = put_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{window_id}"),
+            Some(&token),
+            edited.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = put_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{tube_id}"),
+            Some(&stranger_token),
+            edited,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = put_json(
+            router,
+            format!("/Journeys/{journey_id}/legs/{tube_id}"),
+            Some(&token),
+            untracked_leg("bus", 30, 10),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        cleanup_user(&pool, user).await;
+        cleanup_user(&pool, stranger).await;
     }
 
     /// The account export carries the new columns with no code change
