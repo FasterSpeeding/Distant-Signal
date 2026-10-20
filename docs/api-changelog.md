@@ -22,6 +22,35 @@ Additive; no existing request or field changes meaning.
   empty. Matching on `GET /Journeys/mine`'s `trainSubscriptionId` misses
   every leg but the current one.
 
+## 2026-10-20: `trackingPhase` on group and shared rows
+
+Additive; no existing field changes meaning. The group and shared lists
+now carry what the owner's own lists already did, so a shared train reads
+the same on every page (it used to say "Pending match" in a group while
+its owner saw "Planned").
+
+- **`GET /groups/{id}/trains` and `GET /groups/shared-trains`.** Each row
+  gains `serviceMode`, `liveTracking`, `trackingPhase` and
+  `firstReportExpectedAt`, exactly as on `GET /Train/mine` rows.
+- **`GET /groups/{id}/journeys` and `GET /groups/shared-journeys`.** Each
+  row gains `trackingPhase` and `firstReportExpectedAt` for the leg it
+  summarises (the journey's first train leg, else its first leg), plus
+  `kind` (`train` or `untracked`), `transitMode`, `plannedDeparture`,
+  `plannedArrival` and `untrackedStatus` (`planned`, `inProgress`,
+  `done`). `kind: "untracked"` means the journey has no train legs; the
+  four untracked fields are `null` on a train leg. `serviceMode` and
+  `liveTracking` are present only when that leg has a train picked; read
+  `kind` and `resolutionStatus: null` (no train picked yet) before
+  treating a row as unmatched.
+- **Privacy.** Nothing new is exposed: the phase comes from the
+  subscription's `resolutionStatus`, live `status`, `trainUid`,
+  `serviceDate` and public timetable data, all already on these rows. The
+  rows still carry no `trackedAt`, `addedAt`, tickets or notification
+  setting.
+- **For ds-mcp.** Nothing has to change. The delegated Phase 3 group reads,
+  when they ship, get these fields too: read `trackingPhase` and, for a
+  journey, `kind`/`untrackedStatus`, the same way as on the owner's lists.
+
 ## 2026-10-20: hand-entered train legs are checked against the timetable
 
 A train leg typed by hand is refused with `422` when its train can't

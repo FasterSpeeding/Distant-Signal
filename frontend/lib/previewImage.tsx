@@ -1,6 +1,6 @@
 import { ImageResponse } from 'next/og';
 import type { Metadata } from 'next';
-import { signalMarkSvg } from './brand';
+import { type MarkBox, signalMarkBounds, signalMarkSvg } from './brand';
 import { SITE_NAME } from './pageMetadata';
 
 /** The link-preview (Open Graph) image template (round 2, item 9): the
@@ -46,8 +46,20 @@ export function previewTitleFromMetadata(metadata: Metadata): string | null {
 }
 
 /** The post and arm without their tile, which would vanish on the grape
- * background, cropped to their own bounds in the icon's 32x32 box. */
-const BARE_MARK_VIEWBOX = { x: 13, y: 5, width: 16, height: 22 };
+ * background, cropped to their own bounds in the icon's 32x32 box plus an
+ * even half-unit margin so no anti-aliased edge touches the box. The bounds
+ * come from the shape itself (`signalMarkBounds`): a hand-picked box
+ * (y from 5) once sliced the top off the raised arm's fishtail tip. */
+const MARK_MARGIN = 0.5;
+export const BARE_MARK_VIEWBOX: MarkBox = (() => {
+  const { x, y, width, height } = signalMarkBounds();
+  return {
+    x: x - MARK_MARGIN,
+    y: y - MARK_MARGIN,
+    width: width + 2 * MARK_MARGIN,
+    height: height + 2 * MARK_MARGIN,
+  };
+})();
 
 function bareSignalMarkDataUri(): string {
   const { x, y, width, height } = BARE_MARK_VIEWBOX;
