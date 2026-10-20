@@ -98,7 +98,7 @@ describe('PlanTripForm', () => {
       vi.useRealTimers();
     });
 
-    it('pre-fills the Depart after field with the current local time on mount', () => {
+    it('pre-fills the Depart at field with the current local time on mount', () => {
       renderWithMantine(<PlanTripForm onSubmit={vi.fn()} />);
       expect(screen.getByLabelText('Time (optional)')).toHaveValue('15:32'); // London BST wall clock (FE-4);
     });
@@ -224,7 +224,7 @@ describe('PlanTripForm', () => {
     });
   });
 
-  describe('Depart after / Arrive by (2026-10-19)', () => {
+  describe('Depart at / Arrive by (2026-10-19)', () => {
     function fillEnds() {
       fireEvent.change(screen.getByRole('combobox', { name: 'From' }), { target: { value: 'EUS' } });
       fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MKC' } });
@@ -234,7 +234,7 @@ describe('PlanTripForm', () => {
       const onSubmit = vi.fn();
       renderWithMantine(<PlanTripForm onSubmit={onSubmit} initial={{ departAfter: '08:15' }} />);
       fillEnds();
-      expect(screen.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+      expect(screen.getByRole('radio', { name: 'Depart at' })).toBeChecked();
       fireEvent.click(screen.getByRole('radio', { name: 'Arrive by' }));
       expect(screen.getByLabelText('Time')).toHaveValue('08:15');
       fireEvent.change(screen.getByLabelText('Time'), { target: { value: '09:00' } });
@@ -248,7 +248,7 @@ describe('PlanTripForm', () => {
       const onSubmit = vi.fn();
       renderWithMantine(<PlanTripForm onSubmit={onSubmit} initial={{ arriveBy: '09:00' }} />);
       fillEnds();
-      fireEvent.click(screen.getByRole('radio', { name: 'Depart after' }));
+      fireEvent.click(screen.getByRole('radio', { name: 'Depart at' }));
       fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
       const query = onSubmit.mock.calls[0]![0];
       expect(query).toMatchObject({ departAfter: '09:00' });
@@ -266,7 +266,7 @@ describe('PlanTripForm', () => {
       fillEnds();
       fireEvent.change(screen.getByLabelText('Time'), { target: { value: '' } });
       expect(screen.getByRole('button', { name: 'Find routes' })).toBeDisabled();
-      fireEvent.click(screen.getByRole('radio', { name: 'Depart after' }));
+      fireEvent.click(screen.getByRole('radio', { name: 'Depart at' }));
       expect(screen.getByRole('button', { name: 'Find routes' })).toBeEnabled();
     });
 

@@ -43,9 +43,9 @@ test('plans by arrival time, then pages later and earlier', async ({ page }) => 
 
   // Later: depart after 08:01, so the 08:30.
   await page.getByRole('button', { name: 'Later routes' }).click();
-  await expect(summary).toHaveText('Depart after 08:01, 17 Sep 2026');
+  await expect(summary).toHaveText('Depart at 08:01, 17 Sep 2026');
   await expect(page.getByText(/^08:30 .*09:20$/)).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Depart at' })).toBeChecked();
   await expect(page).toHaveURL(/departAfter=08%3A01/);
   await expect(page).not.toHaveURL(/arriveBy/);
 
@@ -58,7 +58,7 @@ test('plans by arrival time, then pages later and earlier', async ({ page }) => 
 
 test('the toggle switches a search from departure to arrival time', async ({ page }) => {
   await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:00');
-  await expect(page.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Depart at' })).toBeChecked();
 
   await page.getByText('Arrive by', { exact: true }).click();
   await page.getByLabel('Time', { exact: true }).fill('08:30');

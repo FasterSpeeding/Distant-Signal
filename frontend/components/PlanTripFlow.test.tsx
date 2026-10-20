@@ -1086,8 +1086,8 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     let sent = sentParams(fetchMock, 1);
     expect(sent.get('departAfter')).toBe('08:01:00');
     expect(sent.has('arriveBy')).toBe(false);
-    expect(await screen.findByText('Depart after 08:01, 24 Oct 2030')).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+    expect(await screen.findByText('Depart at 08:01, 24 Oct 2030')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Depart at' })).toBeChecked();
     expect(screen.getByLabelText('Time (optional)')).toHaveValue('08:01');
     expect(window.location.search).toContain('departAfter=08%3A01');
 

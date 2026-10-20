@@ -112,7 +112,7 @@ describe('laterQuery / earlierQuery', () => {
 describe('timingSummary', () => {
   it('reads as the search the visitor made', () => {
     expect(timingSummary({ date: '2026-10-24', arriveBy: '09:00' })).toBe('Arrive by 09:00, 24 Oct 2026');
-    expect(timingSummary({ date: '2026-10-24', departAfter: '08:30' })).toBe('Depart after 08:30, 24 Oct 2026');
-    expect(timingSummary({ date: '2026-10-24' })).toBe('Depart after 00:00, 24 Oct 2026');
+    expect(timingSummary({ date: '2026-10-24', departAfter: '08:30' })).toBe('Depart at 08:30, 24 Oct 2026');
+    expect(timingSummary({ date: '2026-10-24' })).toBe('Depart at 00:00, 24 Oct 2026');
   });
 });

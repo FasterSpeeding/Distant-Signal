@@ -104,14 +104,14 @@ extra `departAfter` echo, which is a new key.
 
 ### 4.1 The form
 
-- A `SegmentedControl` labelled "Search by", with "Depart after" and
+- A `SegmentedControl` labelled "Search by", with "Depart at" and
   "Arrive by", sits next to the time field. The field is labelled "Time".
   It is optional for depart-after, where an empty time searches from
   00:00 as before, and required for arrive-by, where Find routes stays
   disabled until there is a time.
-- The copy stays "Depart after", not "Depart at", because the search
-  returns trains leaving at or after the time, and "at" would promise an
-  exact match. The style guide asks us to say what is true.
+- The label is "Depart at" (2026-10-20; it was "Depart after"). The
+  behaviour is unchanged: trains leaving at or after the time count, as
+  `departAfter` says.
 - Switching modes keeps the time the visitor typed.
 - **URL state.** `/plan` writes `departAfter=HH:MM` or `arriveBy=HH:MM`
   into its query string, never both. That is the calendar date and the
@@ -170,7 +170,7 @@ afresh. The buttons are disabled while a search runs.
 ### 4.4 Results copy
 
 A summary line above the segments says what was asked for: "Arrive by
-09:00, 23 Oct 2026" or "Depart after 08:30, 23 Oct 2026". The date is
+09:00, 23 Oct 2026" or "Depart at 08:30, 23 Oct 2026". The date is
 the calendar date the visitor chose, not the service date of an overnight
 mapping. Each itinerary card is unchanged.
 
@@ -257,5 +257,4 @@ rounds. Both are below the same rows in the 2026-10-06 spec §4.2 (CSA
 - A deadline or start near midnight could search both service dates and
   merge. That would remove §5's paging gap and §4.2's rare miss, at the
   cost of two graph reads. Not done here.
-- "Depart at" was the suggested label. This spec keeps "Depart after" for
-  accuracy (§4.1).
+- Settled 2026-10-20: the label is "Depart at" (§4.1).

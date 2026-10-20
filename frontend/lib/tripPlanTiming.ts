@@ -79,10 +79,10 @@ export function earlierQuery(query: TripPlanQuery, serviceDate: string, plan: Tr
 }
 
 /** What was searched for, above the results: "Arrive by 09:00, 23 Oct
- * 2026" or "Depart after 08:30, 23 Oct 2026". The visitor's calendar date,
+ * 2026" or "Depart at 08:30, 23 Oct 2026". The visitor's calendar date,
  * not an overnight search's service date. */
 export function timingSummary(query: Pick<TripPlanQuery, 'date' | 'departAfter' | 'arriveBy'>): string {
   const date = formatDate(`${query.date}T12:00:00Z`);
   if (query.arriveBy) return `Arrive by ${query.arriveBy}, ${date}`;
-  return `Depart after ${query.departAfter || '00:00'}, ${date}`;
+  return `Depart at ${query.departAfter || '00:00'}, ${date}`;
 }

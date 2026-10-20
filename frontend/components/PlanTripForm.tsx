@@ -396,8 +396,9 @@ export function PlanTripForm({
         minDate={londonToday()}
         {...(maxDate !== undefined && { maxDate })}
       />
-      {/* "Depart after", not "Depart at": the search offers trains leaving
-          at or after the time, and "at" would promise an exact one. */}
+      {/* "Depart at" (2026-10-20, was "Depart after"): the everyday
+          wording. The search still offers trains leaving at or after the
+          time (`departAfter`). */}
       <Group gap="sm" align="flex-end" wrap="wrap">
         {/* Labelled like the time field beside it, so the two labels line
             up as one row. */}
@@ -410,7 +411,7 @@ export function PlanTripForm({
             value={mode}
             onChange={setMode}
             data={[
-              { label: 'Depart after', value: 'departAfter' },
+              { label: 'Depart at', value: 'departAfter' },
               { label: 'Arrive by', value: 'arriveBy' },
             ]}
           />
