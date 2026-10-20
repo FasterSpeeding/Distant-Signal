@@ -3972,6 +3972,141 @@ mod db_tests {
             .ok();
     }
 
+    /// Set-down-only and pick-up-only calls, as published (`can_board`,
+    /// `can_alight`), shaped like the Caledonian Sleeper Highlander C04568
+    /// (pick-up only at Crewe and Preston, set-down only from Stirling to
+    /// Newtonmore) folded into one day:
+    ///
+    /// ```text
+    /// TESTSLP1  ZUE 10:00 -> ZUC 11:00/11:02 (U) -> ZUP 12:00/12:02 (D)
+    ///           -> ZUA 13:00/13:04 -> ZUI 14:00
+    /// TESTSLP2  ZUP 12:30 -> ZUA 13:40
+    /// TESTSLP3  ZUE 10:30 -> ZUC 11:40
+    /// TESTSLP4  ZUE 09:00 -> ZUC 10:30
+    /// ```
+    ///
+    /// `/Trips/plan` never boards TESTSLP1 at ZUP nor alights it at ZUC,
+    /// depart-after or arrive-by, and offers the legal alternative instead.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                routes::trips -- --ignored --test-threads=1`"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test code: one seeded network and six requests against it"
+    )]
+    async fn the_planner_honours_set_down_only_and_pick_up_only_calls() {
+        let pool = connect().await;
+        let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+        let cleanup = || async {
+            sqlx::query("DELETE FROM schedule_calling_points_full WHERE uid LIKE 'TESTSLP%'")
+                .execute(&pool)
+                .await
+                .ok();
+            sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TESTSLP-%'")
+                .execute(&pool)
+                .await
+                .ok();
+        };
+        cleanup().await;
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset, \
+              public_arrival, public_departure, can_board, can_alight) \
+             VALUES \
+              ($1, 'TESTSLP1', 0, 'TESTSDE', 'origin', NULL, '10:00:00', 0, \
+               NULL, '10:00:00', true, false), \
+              ($1, 'TESTSLP1', 1, 'TESTSDC', 'intermediate', '11:00:00', '11:02:00', 0, \
+               NULL, '11:02:00', true, false), \
+              ($1, 'TESTSLP1', 2, 'TESTSDP', 'intermediate', '12:00:00', '12:02:00', 0, \
+               '12:00:00', NULL, false, true), \
+              ($1, 'TESTSLP1', 3, 'TESTSDA', 'intermediate', '13:00:00', '13:04:00', 0, \
+               '13:00:00', '13:04:00', true, true), \
+              ($1, 'TESTSLP1', 4, 'TESTSDI', 'terminate', '14:00:00', NULL, 0, \
+               '14:00:00', NULL, false, true), \
+              ($1, 'TESTSLP2', 0, 'TESTSDP', 'origin', NULL, '12:30:00', 0, \
+               NULL, '12:30:00', true, false), \
+              ($1, 'TESTSLP2', 1, 'TESTSDA', 'terminate', '13:40:00', NULL, 0, \
+               '13:40:00', NULL, false, true), \
+              ($1, 'TESTSLP3', 0, 'TESTSDE', 'origin', NULL, '10:30:00', 0, \
+               NULL, '10:30:00', true, false), \
+              ($1, 'TESTSLP3', 1, 'TESTSDC', 'terminate', '11:40:00', NULL, 0, \
+               '11:40:00', NULL, false, true), \
+              ($1, 'TESTSLP4', 0, 'TESTSDE', 'origin', NULL, '09:00:00', 0, \
+               NULL, '09:00:00', true, false), \
+              ($1, 'TESTSLP4', 1, 'TESTSDC', 'terminate', '10:30:00', NULL, 0, \
+               '10:30:00', NULL, false, true)",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed calling points");
+        sqlx::query(
+            "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+             VALUES ('TESTSLP-ZUE', 'ZUE', 'TESTSDE', 'TEST SLEEPER EUSTON', 1), \
+                    ('TESTSLP-ZUC', 'ZUC', 'TESTSDC', 'TEST SLEEPER CREWE', 1), \
+                    ('TESTSLP-ZUP', 'ZUP', 'TESTSDP', 'TEST SLEEPER PERTH', 1), \
+                    ('TESTSLP-ZUA', 'ZUA', 'TESTSDA', 'TEST SLEEPER AVIEMORE', 1), \
+                    ('TESTSLP-ZUI', 'ZUI', 'TESTSDI', 'TEST SLEEPER INVERNESS', 1) \
+             ON CONFLICT (stanox) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stanox_crs");
+        let plan = |query: &str| {
+            let pool = pool.clone();
+            let uri = format!("/Trips/plan?date={date}&live=false&{query}");
+            async move { get(test_router(test_app(pool)), uri).await }
+        };
+        let first_uids = |body: &Value| -> Vec<String> {
+            body["segments"][0]["itineraries"][0]["legs"]
+                .as_array()
+                .map(|legs| {
+                    legs.iter()
+                        .filter(|leg| leg["kind"] == "train")
+                        .map(|leg| leg["trainUid"].as_str().unwrap().to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // Set-down only at ZUP: never boarded there.
+        let (status, body) = plan("origin=ZUP&destination=ZUA&departAfter=11:50").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(first_uids(&body), ["TESTSLP2"], "{body:?}");
+        let (status, body) = plan("origin=ZUP&destination=ZUA&arriveBy=13:30").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert!(
+            body["segments"][0]["itineraries"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "only boarding the set-down-only call would make 13:30: {body:?}"
+        );
+
+        // Pick-up only at ZUC: never alighted there.
+        let (status, body) = plan("origin=ZUE&destination=ZUC&departAfter=09:55").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(first_uids(&body), ["TESTSLP3"], "{body:?}");
+        let (status, body) = plan("origin=ZUE&destination=ZUC&arriveBy=11:30").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(first_uids(&body), ["TESTSLP4"], "{body:?}");
+
+        // Riding through ZUC (U) and alighting at ZUP (D) is the legal use.
+        let (status, body) = plan("origin=ZUE&destination=ZUP&departAfter=09:55").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(first_uids(&body), ["TESTSLP1"], "{body:?}");
+        assert_eq!(
+            body["segments"][0]["itineraries"][0]["legs"][0]["publicArrival"], "12:00:00",
+            "{body:?}"
+        );
+        // And via ZUC: staying aboard through a pick-up-only call satisfies it.
+        let (status, body) = plan("origin=ZUE&destination=ZUA&via=ZUC&departAfter=09:55").await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(first_uids(&body), ["TESTSLP1"], "{body:?}");
+
+        cleanup().await;
+    }
+
     // ---------------------------------------------------------------------
     // Arrive-by, avoid lists and noResultReason (2026-09-29), live on and
     // off. Same live date and pinned "now" (09:30 BST) as above.
