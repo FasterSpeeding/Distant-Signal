@@ -14,6 +14,7 @@ import {
   VisuallyHidden,
 } from '@mantine/core';
 import { DateTimePicker, DatePickerInput } from '@mantine/dates';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import dayjs from 'dayjs';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
@@ -749,7 +750,7 @@ export function TrackTrainForm({
               // validation.
             />
             <DatePickerInput
-              valueFormat="D MMM YYYY"
+              valueFormat={PICKER_DATE_FORMAT}
               label="Date"
               // Review §2.2/M13: `windowServiceDate` is seeded with today's
               // real date above (not `null`), so this now shows an actual

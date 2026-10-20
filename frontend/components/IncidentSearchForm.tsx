@@ -3,6 +3,7 @@
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { Chip, ChipGroup, Group, InputWrapper, MultiSelect, NumberInput, Select, Stack, Text } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { londonCalendarDay, londonDayEndIso, londonDayStartIso } from '@/lib/londonWallClock';
 import { IncidentResults } from './IncidentResults';
 import { noOptionsFound } from './noOptionsFound';
@@ -354,7 +355,7 @@ export function IncidentSearchForm({
       {preset === null && (
         <Group grow align="flex-start">
           <DatePickerInput
-            valueFormat="D MMM YYYY"
+            valueFormat={PICKER_DATE_FORMAT}
             label="From"
             placeholder="Any"
             value={fromDate}
@@ -364,7 +365,7 @@ export function IncidentSearchForm({
             popoverProps={{ withinPortal: false }}
           />
           <DatePickerInput
-            valueFormat="D MMM YYYY"
+            valueFormat={PICKER_DATE_FORMAT}
             label="To"
             placeholder="Any"
             value={toDate}
