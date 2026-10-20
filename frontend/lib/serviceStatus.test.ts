@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dayOffsetMarker, delayLabel, liveStatusLabel } from './serviceStatus';
+import { compactDelayLabel, dayOffsetMarker, delayLabel, liveStatusLabel } from './serviceStatus';
 
 const live = { status: 'en_route', delayMinutes: 0, delayProvisional: false, cancelled: false };
 
@@ -14,6 +14,28 @@ describe('delayLabel', () => {
     expect(delayLabel(12, true).text).toBe('Exp. 12 min late');
     expect(delayLabel(-2, true).text).toBe('Exp. 2 min early');
     expect(delayLabel(0, true).text).toBe('On time');
+  });
+});
+
+describe('compactDelayLabel', () => {
+  it('signs the minutes and keeps the unit, so "+12 min" is still minutes', () => {
+    expect(compactDelayLabel(12)).toBe('+12 min');
+    expect(compactDelayLabel(1)).toBe('+1 min');
+    expect(compactDelayLabel(-3)).toBe('−3 min');
+    expect(compactDelayLabel(0)).toBe('On time');
+  });
+
+  it('is shorter than the full label it stands in for, except "On time"', () => {
+    for (const minutes of [1, 12, 125, -3, -45]) {
+      expect(compactDelayLabel(minutes).length).toBeLessThan(delayLabel(minutes).text.length);
+    }
+    expect(compactDelayLabel(0)).toBe(delayLabel(0).text);
+  });
+
+  it('keeps the "Exp." prefix on a provisional delay', () => {
+    expect(compactDelayLabel(12, true)).toBe('Exp. +12 min');
+    expect(compactDelayLabel(-2, true)).toBe('Exp. −2 min');
+    expect(compactDelayLabel(0, true)).toBe('On time');
   });
 });
 
