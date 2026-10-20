@@ -301,7 +301,11 @@ export function AddJourneyLegButton({
               here and is the better of the two labels the codebase had for
               the OTHER option, so `TrackTrainForm` adopted it too rather
               than the reverse. */}
+          {/* Stacked: three options don't fit side by side in the dialog
+              without cutting "Search a time window" short. */}
           <SegmentedControl
+            orientation="vertical"
+            fullWidth
             value={mode}
             onChange={(value) => setMode(value)}
             data={[

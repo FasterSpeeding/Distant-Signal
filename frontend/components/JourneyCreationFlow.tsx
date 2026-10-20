@@ -13,7 +13,7 @@ import {
   journeyPriorDestinationCrs,
   journeyPriorDestinationName,
 } from '@/lib/journeyLegChaining';
-import { isUntrackedLeg } from '@/lib/untrackedLeg';
+import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTitle } from '@/lib/untrackedLeg';
 import { routeLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
@@ -193,7 +193,10 @@ export function JourneyCreationFlow({
             <Card withBorder key={leg.id}>
               <Group justify="space-between" wrap="wrap">
                 <Text size="sm">
-                  Leg {index + 1}: {routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
+                  Leg {index + 1}:{' '}
+                  {isUntrackedLeg(leg)
+                    ? [untrackedLegTitle(leg), untrackedLegPlaces(leg)].filter(Boolean).join(', ')
+                    : routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}
                 </Text>
                 <Text size="sm" c="dimmed">
                   {isUntrackedLeg(leg)
