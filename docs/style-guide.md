@@ -269,6 +269,8 @@ used, rather than as a literal in a component.
   by `lib/serviceStatus.ts` ("12 min late" orange, "3 min early" teal, "On
   time" green). `DELAY_TONE_COLOR` is the one delay-to-colour table;
   `JourneyProgress`'s stop markers read it too.
+  In a narrow table column (`compact`) it reads "+12 min" or "−3 min"
+  below `sm`, with the full words kept for screen readers (`PhoneLabel`).
 - **Nearby stations** (`app/stations/NearbyStationList.tsx`): the "Use
   my location" results under a "Nearest stations" label, in
   `ServiceRowList`'s bordered, divided list. Each row is one link to the
@@ -290,6 +292,16 @@ used, rather than as a literal in a component.
 - **PlatformBadge**: light, sentence case. Unchanged gray; changed blue with
   the old platform in words; cancelled red, struck through, with a hidden
   "(cancelled)" and a `title` tooltip. A null platform renders nothing.
+  `compact` (under a Platform column header) reads "4" or "9 (was 6)"
+  below `sm`, the column header "Plat", both spoken in full.
+- **Badges are never cut short.** Mantine's Badge ellipsis is off for
+  `StatusBadge`, `DelayBadge` and `PlatformBadge` (`globals.css`): a
+  badge is as wide as its words, and a layout too narrow for them shortens
+  the words (`compact`) or moves the badge, never trims it.
+- **Calling-point table** (`JourneyTimeline`): below `sm` the delay sits
+  under the Actual time instead of in its own column, cells have 6px side
+  padding, and the table only scrolls sideways (inside its own box) when a
+  station name leaves no other way.
 - **StatusCard** (`components/StatusCard.tsx`): the one status card. A
   name (600, clamped to 2 lines) with its `StatusBadge` on a row that never
   wraps, the reason (sm dimmed, clamped to 3), detail lines, then a footer
@@ -693,7 +705,7 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains (empty and searched), a train, Incidents, the
-plan form (Depart after and Arrive by), Account (logged in),
+plan form (Depart at and Arrive by), Account (logged in),
 Preferences (logged out, logged in and with a pride flag), a tracked train
 not in the timetable, a planned tracked train, a journey with an untracked
 walk (all logged in) and the tram pages at 390 and 1366px, light and dark,

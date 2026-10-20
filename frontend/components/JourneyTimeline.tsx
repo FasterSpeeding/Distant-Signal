@@ -11,6 +11,7 @@ import {
 } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
 import { DelayBadge } from './DelayBadge';
+import { PhoneLabel } from './PhoneLabel';
 import { PlatformBadge } from './PlatformBadge';
 import { TextLink } from './TextLink';
 import {
@@ -134,8 +135,14 @@ export function JourneyTimeline({
     : -1;
 
   return (
-    <TableScrollContainer minWidth={showDelayColumn || showPlatformColumn ? 420 : 320}>
-      <Table verticalSpacing={6} horizontalSpacing="sm" aria-label="Journey timeline">
+    // The minimum width is for `sm` and up only; below it the table is as
+    // narrow as its content allows (`.journeyTimeline` in globals.css),
+    // with the delay under the Actual time and short badge labels.
+    <TableScrollContainer
+      minWidth={showDelayColumn || showPlatformColumn ? 420 : 320}
+      className="journeyTimelineScroll"
+    >
+      <Table verticalSpacing={6} horizontalSpacing="sm" aria-label="Journey timeline" className="journeyTimeline">
         <TableThead>
           <TableTr>
             <TableTh>Station</TableTh>
@@ -146,8 +153,14 @@ export function JourneyTimeline({
                 extra ~40px it was costing is exactly what pushed this
                 table past 390px on its own. */}
             <TableTh>Actual</TableTh>
-            {showDelayColumn && <TableTh>Delay</TableTh>}
-            {showPlatformColumn && <TableTh>Platform</TableTh>}
+            {showDelayColumn && <TableTh className="journeyTimeline__delayColumn">Delay</TableTh>}
+            {/* "Plat" below `sm`, where the column is only as wide as a
+                badge reading "4"; still "Platform" to a screen reader. */}
+            {showPlatformColumn && (
+              <TableTh>
+                <PhoneLabel full="Platform" compact="Plat" />
+              </TableTh>
+            )}
           </TableTr>
         </TableThead>
         <TableTbody>
@@ -294,7 +307,7 @@ function skipCaption(skipSource: JourneyStop['skipSource']): string | null {
 
 function delayBadge(delayMinutes: number | null) {
   if (delayMinutes === null) return null;
-  return <DelayBadge delayMinutes={delayMinutes} />;
+  return <DelayBadge delayMinutes={delayMinutes} compact />;
 }
 
 function JourneyStopRow({
@@ -427,6 +440,11 @@ function JourneyStopRow({
             </Text>
           )
         )}
+        {/* Below `sm` the delay sits here, under the time, and the Delay
+            column is hidden (`.journeyTimeline__stackedDelay`). */}
+        {showDelayColumn && stop.delayMinutes !== null && (
+          <div className="journeyTimeline__stackedDelay">{delayBadge(stop.delayMinutes)}</div>
+        )}
       </TableTd>
       {/* `stop.delayMinutes` is already `null` for a skipped stop
           (`apply_stop_status`'s own documented decision -- the PASS event's
@@ -436,7 +454,7 @@ function JourneyStopRow({
           omitted entirely (`showDelayColumn`) when no row in the whole
           list has a delay figure at all (2.10/M21) -- an always-empty
           column reads as broken, not as "nothing to report". */}
-      {showDelayColumn && <TableTd>{delayBadge(stop.delayMinutes)}</TableTd>}
+      {showDelayColumn && <TableTd className="journeyTimeline__delayColumn">{delayBadge(stop.delayMinutes)}</TableTd>}
       {/* `null` for every stop except (today) the ORIGIN -- see
           `JourneyStop.platform`'s own doc comment in `lib/types.ts` for
           why Darwin genuinely has no platform signal for the rest of the
@@ -453,6 +471,7 @@ function JourneyStopRow({
             plannedPlatform={stop.plannedPlatform}
             platformChanged={stop.platformChanged}
             platformStatus={stop.platformStatus}
+            compact
           />
         </TableTd>
       )}

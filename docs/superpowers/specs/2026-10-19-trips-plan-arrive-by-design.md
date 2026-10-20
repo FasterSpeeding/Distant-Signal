@@ -79,6 +79,43 @@ GET /Trips/plan?...&(departAfter|arriveBy)=HH:MM[&dayOffset=0|1]
   It is the effective start, so 00:00 when none was given, and `null` for
   arrive-by.
 
+### 3.3 `acrossMidnight` (2026-10-20)
+
+```
+GET /Trips/plan?...&date=D&(departAfter|arriveBy)=HH:MM&dayOffset=1&acrossMidnight=true
+```
+
+Between midnight and the early morning, two service dates' trains run at
+once: D's late trains, whose calls are stored past 1440, and D+1's first
+ones. `dayOffset=1` alone searches only D's. With `acrossMidnight=true`
+the route also plans D+1 from the same clock time, then merges the two
+plans.
+
+- **Where.** Each date is planned in full as before: searches, live
+  overlay, leg details (`plan_on_date` in `routes/trips.rs`). The merge is
+  `data::trip_plan_overnight::merge_across_midnight`, which works on the
+  finished segments. The engine (`crates/trip-planner`) is not touched.
+- **Clock.** D+1's times move a day on (+1440), so every time in the body
+  is on D's clock. A train leg keeps its own `serviceDate` and day
+  offsets, which already describe it.
+- **Dedupe.** Journeys with the same legs at the same times are kept once.
+- **Ordering, as for one date.**
+  - `fastest`: the latest departure, then the earliest arrival (arrive-by);
+    or the earliest arrival, then the latest departure (depart-after).
+  - `options`: per change count, fewest first, the best journey, kept only
+    when it beats every journey with fewer changes. That is the same
+    Pareto front a single date's RAPTOR rounds give.
+- **Segment metadata.** It comes from D, except:
+  - `cappedByMaxChanges` is set when either date's is;
+  - the waypoint deadlines are the widest of the two;
+  - `noResultReason` is cleared when the merge has a journey.
+- **Echoes.** A new top-level `serviceDates` lists the dates searched.
+  `live` sums both dates' counts. `provisional` follows D+1.
+- **400s.** `acrossMidnight=true` without `dayOffset=1`, or any value
+  other than `true` or `false`.
+- **No timetable for D+1.** That date adds nothing, and the plan is D's
+  alone.
+
 ### 3.2 Unchanged
 
 - The `departAfter` / `arriveBy` exclusivity 400 and every other
@@ -104,14 +141,14 @@ extra `departAfter` echo, which is a new key.
 
 ### 4.1 The form
 
-- A `SegmentedControl` labelled "Search by", with "Depart after" and
+- A `SegmentedControl` labelled "Search by", with "Depart at" and
   "Arrive by", sits next to the time field. The field is labelled "Time".
   It is optional for depart-after, where an empty time searches from
   00:00 as before, and required for arrive-by, where Find routes stays
   disabled until there is a time.
-- The copy stays "Depart after", not "Depart at", because the search
-  returns trains leaving at or after the time, and "at" would promise an
-  exact match. The style guide asks us to say what is true.
+- The label is "Depart at" (2026-10-20; it was "Depart after"). The
+  behaviour is unchanged: trains leaving at or after the time count, as
+  `departAfter` says.
 - Switching modes keeps the time the visitor typed.
 - **URL state.** `/plan` writes `departAfter=HH:MM` or `arriveBy=HH:MM`
   into its query string, never both. That is the calendar date and the
@@ -121,20 +158,20 @@ extra `departAfter` echo, which is a new key.
 
 ### 4.2 Overnight mapping
 
-The form's date is the calendar date the visitor means. When the mode is
-"Arrive by" and the time is before 03:00, the request goes to the
-**previous** service date with `dayOffset=1`. Saturday 00:30 becomes
-`date=Friday&arriveBy=00:30&dayOffset=1`. Those are the trains that can
-get someone there by then.
+The form's date is the calendar date the visitor means. When the time is
+before 03:00, in either mode, the request goes to the **previous** service
+date with `dayOffset=1&acrossMidnight=true` (§3.3). So "Arrive by 00:30"
+on Saturday becomes `date=Friday&arriveBy=00:30&dayOffset=1&
+acrossMidnight=true`. That searches Friday's late trains and Saturday's
+own first ones, and keeps the better.
 
-03:00 is `OVERNIGHT_CUTOFF` in `lib/tripPlan.ts`. It is after the last
-regular late-evening arrivals and before the first morning trains. It
-misses trains timetabled on Saturday itself that leave between 00:00 and
-the deadline. Those are rare.
+03:00 is `OVERNIGHT_CUTOFF` in `lib/tripPlanTiming.ts`. It is after the
+last regular late-evening arrivals and before the first morning trains.
 
-Depart-after keeps the calendar date as the service date. Moving it would
-lose the next morning's trains, because a search on Friday's service ends
-with Friday's last train.
+Until 2026-10-20 only arrive-by was mapped, and to Friday's trains alone.
+That missed Saturday's own trains between midnight and the deadline.
+Depart-after was left on Saturday, because a search of Friday alone would
+lose Saturday morning's trains. Searching both dates fixes both.
 
 ### 4.3 Earlier and later
 
@@ -167,10 +204,17 @@ nothing, both buttons page from the last plan that had a journey, so the
 visitor can step back the other way. A new search from the form starts
 afresh. The buttons are disabled while a search runs.
 
+Only the time comes from the results (2026-10-20). Everything else, From
+and To included, comes from the form as it is when the button is pressed.
+So a visitor who changes To and pages without pressing Find routes gets
+the new To, at the paged time. If the form can't run as it stands (From
+or To empty, or an advanced option with a problem), the page uses the
+search that produced the results.
+
 ### 4.4 Results copy
 
 A summary line above the segments says what was asked for: "Arrive by
-09:00, 23 Oct 2026" or "Depart after 08:30, 23 Oct 2026". The date is
+09:00, 23 Oct 2026" or "Depart at 08:30, 23 Oct 2026". The date is
 the calendar date the visitor chose, not the service date of an overnight
 mapping. Each itinerary card is unchanged.
 
@@ -187,9 +231,9 @@ ellipses or arrows.
 
 | Case | Behaviour |
 |---|---|
-| Arrive by 00:30, service on the previous evening | Previous service date with `dayOffset=1` (§4.2). Found. |
+| Arrive by 00:30 | Both service dates (§3.3, §4.2): Friday's late trains and Saturday's own first ones. The later departure wins. |
 | Arrive by 02:00, nothing that late | `noResultReason.arriveBy` with the earliest arrival. "Earlier routes" still works from the last plan that had a journey. |
-| Later from a 23:58 departure | Depart after 23:59. Then from 23:59 to the following calendar day's 00:00, which searches that calendar date. A train from the previous service date leaving after midnight is not offered on that page. Known limitation, see §8. |
+| Later from a 23:58 departure | Depart at 23:59, then 00:00 on the next calendar day. A time before 03:00 searches both service dates (§4.2), so the previous date's trains after midnight and the new date's first trains are both offered. |
 | Same origin and destination | The same answer as depart-after: a 200 with no journeys and `noResultReason.constraint: "noRoute"`. A DB test pins it (§7). |
 | Via, OR-group via, waypoints | Unchanged engine paths (`staged_arrive_by`). The summary's anchors come from `journeys`, so paging is whole-journey. |
 | Live overlay | Unchanged: a live arrival past the deadline makes the itinerary `liveFeasible: false` and triggers a re-plan within the budget. |
@@ -238,6 +282,42 @@ rounds. Both are below the same rows in the 2026-10-06 spec §4.2 (CSA
 0.80 s and 1.3 s), so nothing here moves an existing budget. A page of
 "Earlier routes" or "Later routes" is one of these searches.
 
+### 6.2 Both dates (`acrossMidnight`, 2026-10-20)
+
+The two dates are planned concurrently under the request's one plan slot
+(`tokio::try_join!` in `get_trip_plan`). The wait is therefore the slower
+date's, plus a merge measured in microseconds. A request still takes one
+rate-limit token. The graph cache keeps two dates, which is exactly the
+pair.
+
+Measured end to end through the route by `bench_across_midnight`
+(`routes/trips.rs`, release build, `live=false`, warm cache). The network
+is synthetic: 676 stations and 20,000 ten-stop trains a date, about 180k
+connections. Each figure is over 8 origin-destination pairs, the median of
+5 runs each.
+
+| Search | Median | Max | Pairs with a journey |
+|---|---|---|---|
+| `fastest` arrive by 12:00, one date | 18.3 ms | 32.1 ms | 8/8 |
+| `fastest` arrive by 00:30 +1, one date | 25.4 ms | 32.6 ms | 8/8 |
+| `fastest` arrive by 00:30 +1, both dates | 23.1 ms | 30.1 ms | 8/8 |
+| `fastest` depart 00:30 +1, one date | 16.3 ms | 24.5 ms | 3/8 |
+| `fastest` depart 00:30 +1, both dates | 22.6 ms | 31.8 ms | 8/8 |
+| `options` arrive by 12:00, one date | 102.7 ms | 192.8 ms | 8/8 |
+| `options` arrive by 00:30 +1, one date | 145.1 ms | 279.3 ms | 8/8 |
+| `options` arrive by 00:30 +1, both dates | 158.9 ms | 305.7 ms | 8/8 |
+| `options` depart 08:00, one date | 381.6 ms | 409.8 ms | 8/8 |
+| `options` depart 00:30 +1, one date | 32.6 ms | 59.7 ms | 3/8 |
+| `options` depart 00:30 +1, both dates | 480.3 ms | 577.9 ms | 8/8 |
+
+- `fastest` costs the same as one date.
+- Arrive-by `options` costs about 10% more.
+- Depart-after `options` just after midnight now costs about as much as a
+  daytime `options` search (480 ms against 382 ms). That is because the
+  next date's whole day is now searched. Before, the search covered only a
+  few late trains, and found a journey for 3 pairs in 8.
+- The first request for a date still builds its graph: 0.6 to 1.0 s here.
+
 ## 7. Tests
 
 - Engine (Rust unit tests): the latest-departing direct journey, with vias
@@ -254,8 +334,6 @@ rounds. Both are below the same rows in the 2026-10-06 spec §4.2 (CSA
 
 ## 8. Open questions
 
-- A deadline or start near midnight could search both service dates and
-  merge. That would remove §5's paging gap and §4.2's rare miss, at the
-  cost of two graph reads. Not done here.
-- "Depart at" was the suggested label. This spec keeps "Depart after" for
-  accuracy (§4.1).
+- Done 2026-10-20: a time before 03:00 searches both service dates
+  (§3.3). The cost is in §6.2.
+- Settled 2026-10-20: the label is "Depart at" (§4.1).

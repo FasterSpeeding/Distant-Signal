@@ -1058,7 +1058,7 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     expect(window.location.search).not.toContain('departAfter');
   });
 
-  it("sends an arrival just after midnight as the previous day with dayOffset 1, but shows the visitor's date", async () => {
+  it("sends an arrival just after midnight as the previous day across midnight, but shows the visitor's date", async () => {
     window.history.replaceState(null, '', '/plan');
     const fetchMock = vi.fn().mockResolvedValueOnce(ok(planWith(['23:30:00', 0], ['00:20:00', 1])));
     await searchArriveBy(fetchMock, '00:30');
@@ -1066,6 +1066,7 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     expect(sent.get('date')).toBe('2030-10-23');
     expect(sent.get('arriveBy')).toBe('00:30:00');
     expect(sent.get('dayOffset')).toBe('1');
+    expect(sent.get('acrossMidnight')).toBe('true');
     expect(await screen.findByText('Arrive by 00:30, 24 Oct 2030')).toBeInTheDocument();
     // The address bar keeps what the visitor asked for.
     expect(window.location.search).toContain(`date=${DATE}`);
@@ -1086,8 +1087,8 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     let sent = sentParams(fetchMock, 1);
     expect(sent.get('departAfter')).toBe('08:01:00');
     expect(sent.has('arriveBy')).toBe(false);
-    expect(await screen.findByText('Depart after 08:01, 24 Oct 2030')).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+    expect(await screen.findByText('Depart at 08:01, 24 Oct 2030')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Depart at' })).toBeChecked();
     expect(screen.getByLabelText('Time (optional)')).toHaveValue('08:01');
     expect(window.location.search).toContain('departAfter=08%3A01');
 
@@ -1123,6 +1124,23 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Earlier routes' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(sentParams(fetchMock, 2).get('arriveBy')).toBe('08:49:00');
+  });
+
+  it('pages with the stations in the form now, not the stale search', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])))
+      .mockResolvedValueOnce(ok(planWith(['08:30:00', 0], ['09:20:00', 0])));
+    await searchArriveBy(fetchMock, '09:00');
+    await screen.findByRole('button', { name: 'Later routes' });
+    // The visitor changes To but pages instead of pressing Find routes.
+    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'PRE' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Later routes' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const sent = sentParams(fetchMock, 1);
+    expect(sent.get('origin')).toBe('EUS');
+    expect(sent.get('destination')).toBe('PRE');
+    expect(sent.get('departAfter')).toBe('08:01:00');
   });
 
   it('offers no paging before a search', () => {

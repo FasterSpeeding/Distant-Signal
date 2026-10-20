@@ -776,6 +776,12 @@ export interface JourneyStop {
   canBoard?: boolean;
   canAlight?: boolean;
   requestStop?: boolean;
+  // The schedule books no stop here: the train runs through (a pass time
+  // only, or no time at all). Fixed by the schedule; a live movement at a
+  // passing point sets its `actual*` times and `delayMinutes` (the train's
+  // progress) but never makes it a stop. Use `isPassingPoint`, which also
+  // reads an older response without this field.
+  passingPoint?: boolean;
   // What kind of place this stop is (`crates/api/src/data/journey.rs`'s
   // `apply_locations`): `station` whenever `crs` is set; for a TIPLOC with no
   // CRS, from `tiploc_locations` -- a bus stop, ferry terminal, junction...

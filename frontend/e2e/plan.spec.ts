@@ -9,7 +9,7 @@ import { test, expect, type Page } from '@playwright/test';
 // (whose first day is today) keeps the date the URL restores.
 //
 // `/Trips/plan` is rate limited per client (20 a minute, burst 10), so the
-// whole file makes six plan requests.
+// whole file makes seven plan requests.
 
 const FIXED_NOW = new Date('2026-09-17T06:00:00Z'); // 07:00 in London
 
@@ -43,9 +43,9 @@ test('plans by arrival time, then pages later and earlier', async ({ page }) => 
 
   // Later: depart after 08:01, so the 08:30.
   await page.getByRole('button', { name: 'Later routes' }).click();
-  await expect(summary).toHaveText('Depart after 08:01, 17 Sep 2026');
+  await expect(summary).toHaveText('Depart at 08:01, 17 Sep 2026');
   await expect(page.getByText(/^08:30 .*09:20$/)).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Depart at' })).toBeChecked();
   await expect(page).toHaveURL(/departAfter=08%3A01/);
   await expect(page).not.toHaveURL(/arriveBy/);
 
@@ -58,7 +58,7 @@ test('plans by arrival time, then pages later and earlier', async ({ page }) => 
 
 test('the toggle switches a search from departure to arrival time', async ({ page }) => {
   await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=07:00');
-  await expect(page.getByRole('radio', { name: 'Depart after' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Depart at' })).toBeChecked();
 
   await page.getByText('Arrive by', { exact: true }).click();
   await page.getByLabel('Time', { exact: true }).fill('08:30');
@@ -74,4 +74,18 @@ test('says when nothing arrives in time, with what to try', async ({ page }) => 
   await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&arriveBy=08:00');
   await findRoutes(page);
   await expect(page.getByText('Try a later arrival time, or search by departure time.')).toBeVisible();
+});
+
+test('an arrival just after midnight searches both dates', async ({ page }) => {
+  // By 00:50 on the 18th: the 17th's timetable has nothing after
+  // midnight, the 18th's 00:10 gets there. The request is the 17th's
+  // trains with dayOffset=1, plus the 18th's (acrossMidnight).
+  await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-18&arriveBy=00:50');
+  const response = await findRoutes(page);
+  const sent = new URL(response.url()).searchParams;
+  expect(sent.get('date')).toBe('2026-09-17');
+  expect(sent.get('dayOffset')).toBe('1');
+  expect(sent.get('acrossMidnight')).toBe('true');
+  await expect(page.getByTestId('plan-timing-summary')).toHaveText('Arrive by 00:50, 18 Sep 2026');
+  await expect(page.getByText(/^00:10 .*00:40$/)).toBeVisible();
 });

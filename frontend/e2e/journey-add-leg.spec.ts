@@ -67,8 +67,45 @@ function json(route: Route, body: unknown) {
   return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
+function stop(crs: string, kind: string, times: { publicArrival?: string; publicDeparture?: string }) {
+  return {
+    crs,
+    name: null,
+    tiploc: null,
+    kind,
+    scheduledArrival: null,
+    scheduledDeparture: null,
+    actualArrival: null,
+    actualDeparture: null,
+    estimatedArrival: null,
+    estimatedDeparture: null,
+    lastEventType: null,
+    variationStatus: null,
+    delayMinutes: null,
+    stopStatus: 'Unknown',
+    skipSource: null,
+    platform: null,
+    plannedPlatform: null,
+    platformChanged: false,
+    ...times,
+  };
+}
+
+/** Leg 1 with its train's stops, timetabled into EUS at 23:12 UTC on
+ * 22 September: 00:12 on 23 September in London (BST). */
+const MATCHED_LEG_WITH_ARRIVAL = {
+  ...MATCHED_LEG,
+  trackedTrainState: {
+    ...MATCHED_LEG.trackedTrainState,
+    journeyStops: [
+      stop('MKC', 'Origin', { publicDeparture: '2026-09-22T22:30:00Z' }),
+      stop('EUS', 'Terminate', { publicArrival: '2026-09-22T23:12:00Z' }),
+    ],
+  },
+};
+
 /** Answers the page's /api calls; resolves with each add-leg POST body. */
-async function mockApi(page: Page): Promise<unknown[]> {
+async function mockApi(page: Page, firstLeg: object = MATCHED_LEG): Promise<unknown[]> {
   const legBodies: unknown[] = [];
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -91,7 +128,7 @@ async function mockApi(page: Page): Promise<unknown[]> {
         customName: null,
         createdAt: '2026-09-22T00:00:00Z',
         isOwner: true,
-        legs: [MATCHED_LEG],
+        legs: [firstLeg],
       });
     }
     if (path === `/api/Journeys/${JOURNEY_ID}/legs` && request.method() === 'POST') {
@@ -103,8 +140,9 @@ async function mockApi(page: Page): Promise<unknown[]> {
   return legBodies;
 }
 
-/** Tracks leg 1 (a time-window search) and opens the "Add a leg" modal. */
-async function openAddLeg(page: Page) {
+/** Tracks leg 1 (a time-window search) and opens the "Add a leg" modal,
+ * as the API left it. */
+async function openPrefilledAddLeg(page: Page) {
   await page.goto('/journeys/new');
   await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
   await page.getByText('Search a time window', { exact: true }).click();
@@ -116,11 +154,47 @@ async function openAddLeg(page: Page) {
   const dialog = page.getByRole('dialog', { name: 'Add a leg to this journey' });
   // Pre-filled from leg 1's destination.
   await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveValue('EUS');
+  return dialog;
+}
+
+/** The same, with an earliest departure entered. */
+async function openAddLeg(page: Page) {
+  const dialog = await openPrefilledAddLeg(page);
   await dialog.getByLabel('Earliest departure (optional)').fill('09:00');
   return dialog;
 }
 
 test.describe('add a leg', () => {
+  test("starts from the previous leg's arrival, the next day after midnight", async ({ page }) => {
+    const legBodies = await mockApi(page, MATCHED_LEG_WITH_ARRIVAL);
+    const dialog = await openPrefilledAddLeg(page);
+
+    await expect(dialog.getByLabel('Service date')).toHaveValue('2026-09-23');
+    const departFrom = dialog.getByLabel('Earliest departure (optional)');
+    await expect(departFrom).toHaveValue('00:12');
+    await expect(dialog.getByText(/Your last leg arrives at 00:12\./)).toBeVisible();
+
+    const to = dialog.getByRole('combobox', { name: 'To station' });
+    await to.fill('kgx');
+    await to.press('Tab');
+    await dialog.getByRole('button', { name: 'Add leg' }).click();
+    await expect.poll(() => legBodies.length).toBe(1);
+    expect(legBodies[0]).toMatchObject({
+      originCrs: 'EUS',
+      destinationCrs: 'KGX',
+      serviceDate: '2026-09-23',
+      departWindow: { after: '00:12', before: null },
+    });
+  });
+
+  test('leaves the time empty when the previous arrival is not known', async ({ page }) => {
+    await mockApi(page);
+    const dialog = await openPrefilledAddLeg(page);
+
+    await expect(dialog.getByLabel('Earliest departure (optional)')).toHaveValue('');
+    await expect(dialog.getByText(/Your last leg arrives/)).toHaveCount(0);
+  });
+
   test('finds the station by its full name', async ({ page }) => {
     const legBodies = await mockApi(page);
     const dialog = await openAddLeg(page);

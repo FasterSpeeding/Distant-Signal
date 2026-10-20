@@ -5,6 +5,18 @@ import { badgeTextTransform } from '@/test/badge';
 import { JourneyTimeline, isGenuineCallingPoint } from './JourneyTimeline';
 import type { JourneyStop } from '@/lib/types';
 
+/** An element's text as a screen reader gets it: `aria-hidden` subtrees
+ * (a `PhoneLabel`'s short form) left out. */
+function spokenText(el: Element | null): string {
+  if (el === null) return '';
+  let text = '';
+  for (const node of el.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) text += node.textContent ?? '';
+    else if (node instanceof Element && node.getAttribute('aria-hidden') !== 'true') text += spokenText(node);
+  }
+  return text;
+}
+
 function stop(overrides: Partial<JourneyStop>): JourneyStop {
   return {
     crs: 'RDG',
@@ -104,7 +116,11 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(badgeTextTransform(screen.getByText('4 min late'))).toBe('none');
+    // Twice: in the Delay column and under the Actual time, only one of
+    // which is ever displayed (globals.css, `.journeyTimeline__*`).
+    const badges = screen.getAllByText('4 min late');
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) expect(badgeTextTransform(badge)).toBe('none');
   });
 
   it('shows an early badge for a negative delayMinutes', () => {
@@ -119,7 +135,11 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(badgeTextTransform(screen.getByText('1 min early'))).toBe('none');
+    // Twice: in the Delay column and under the Actual time, only one of
+    // which is ever displayed (globals.css, `.journeyTimeline__*`).
+    const badges = screen.getAllByText('1 min early');
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) expect(badgeTextTransform(badge)).toBe('none');
   });
 
   it('shows an on-time badge for a zero delayMinutes', () => {
@@ -134,7 +154,9 @@ describe('JourneyTimeline', () => {
         ]}
       />,
     );
-    expect(badgeTextTransform(screen.getByText('On time'))).toBe('none');
+    const badges = screen.getAllByText('On time');
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) expect(badgeTextTransform(badge)).toBe('none');
   });
 
   it('has a Platform column header when a stop has a known platform', () => {
@@ -216,10 +238,59 @@ describe('JourneyTimeline', () => {
       />,
     );
     const cancelled = screen.getByText('Platform 4');
-    expect(cancelled.tagName).toBe('S');
-    expect(cancelled.closest('.mantine-Badge-root')).toHaveTextContent('Platform 4 (cancelled)');
+    expect(cancelled.closest('s')).not.toBeNull();
+    expect(spokenText(cancelled.closest('.mantine-Badge-root'))).toBe('Platform 4 (cancelled)');
     const active = screen.getByText('Platform 2');
     expect(active.closest('[data-platform-cancelled]')).toBeNull();
+  });
+
+  // Phone width (below `sm`, globals.css): short badge labels and a "Plat"
+  // header on screen, the full words for a screen reader.
+  it('gives the delay and platform badges a short phone form, keeping the full words spoken', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ kind: 'Origin', platform: '9', plannedPlatform: '6', platformChanged: true }),
+          stop({
+            crs: 'WOK',
+            scheduledDeparture: '2026-09-08T08:00:00Z',
+            actualDeparture: '2026-09-08T08:12:00Z',
+            delayMinutes: 12,
+          }),
+        ]}
+      />,
+    );
+    const platform = screen.getByText('9 (was 6)');
+    expect(platform).toHaveAttribute('aria-hidden', 'true');
+    expect(spokenText(platform.closest('.mantine-Badge-root'))).toBe('Platform 9 (changed from 6)');
+
+    const delays = screen.getAllByText('+12 min');
+    expect(delays).toHaveLength(2);
+    for (const delay of delays) {
+      expect(delay).toHaveAttribute('aria-hidden', 'true');
+      expect(spokenText(delay.closest('.mantine-Badge-root'))).toBe('12 min late');
+    }
+
+    expect(screen.getByRole('columnheader', { name: 'Platform' })).toHaveTextContent('Plat');
+  });
+
+  it('puts a copy of the delay under the Actual time for phones, and marks the Delay column to hide there', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({
+            scheduledDeparture: '2026-09-08T08:00:00Z',
+            actualDeparture: '2026-09-08T08:04:00Z',
+            delayMinutes: 4,
+          }),
+        ]}
+      />,
+    );
+    const [stacked, inColumn] = screen.getAllByText('4 min late');
+    expect(inColumn?.closest('td')).toHaveClass('journeyTimeline__delayColumn');
+    expect(stacked?.closest('.journeyTimeline__stackedDelay')).not.toBeNull();
+    expect(stacked?.closest('td')).toHaveTextContent('09:04');
+    expect(screen.getByRole('columnheader', { name: 'Delay' })).toHaveClass('journeyTimeline__delayColumn');
   });
 
   it('renders as a table with a column for each fact shown, and hides the ones with no data', () => {

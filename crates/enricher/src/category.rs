@@ -55,7 +55,8 @@ pub(crate) struct Normalised {
     /// One of [`CATEGORIES`].
     pub category: &'static str,
     /// Whether the raw value was recognised: `false` means it fell back to
-    /// [`FALLBACK`] (a raw `other`/`unknown` counts as recognised).
+    /// [`FALLBACK`] (a raw `other`/`unknown`, or a [`GENERIC`] value, counts
+    /// as recognised).
     pub recognised: bool,
 }
 
@@ -79,7 +80,9 @@ fn fold(raw: &str) -> String {
 /// of alternatives. Order matters where a token is shared (`bridge_strike`
 /// before `industrial_action`; `signal_failure` and `points_failure` before
 /// `train_fault`; `engineering_works` before `emergency_services_incident`,
-/// for "emergency engineering works").
+/// for "emergency engineering works"; the emergency speed restriction rule
+/// before `emergency_services_incident`; the generic infrastructure and
+/// speed restriction rules after every specific cause).
 const RULES: &[(&str, &[&[&str]])] = &[
     (
         "other",
@@ -227,6 +230,13 @@ const RULES: &[(&str, &[&[&str]])] = &[
         ]],
     ),
     ("fire", &[&["fire", "fires", "smoke"]]),
+    // An emergency speed restriction is a track fault, not an emergency
+    // services incident; a more specific cause above (flooding, a fallen
+    // tree, fire, ...) still wins.
+    (
+        "track_fault",
+        &[&["emergency"], &["speed"], &["restriction", "restrictions"]],
+    ),
     (
         "emergency_services_incident",
         &[&[
@@ -290,6 +300,34 @@ const RULES: &[(&str, &[&[&str]])] = &[
         ],
     ),
     ("train_fault", &[&["breakdown", "brokendown"]]),
+    // Lineside telecoms are part of signalling. Needs a failure word, and
+    // comes after the train and vandalism rules, so a train's own
+    // communications fault is `train_fault` and telecoms cable theft is
+    // `vandalism`.
+    (
+        "signal_failure",
+        &[
+            &[
+                "communications",
+                "communication",
+                "comms",
+                "telecoms",
+                "telecom",
+                "telecommunications",
+            ],
+            &[
+                "fault",
+                "faults",
+                "failure",
+                "failures",
+                "failed",
+                "defect",
+                "defective",
+                "equipment",
+                "outage",
+            ],
+        ],
+    ),
     (
         "track_fault",
         &[
@@ -304,6 +342,22 @@ const RULES: &[(&str, &[&[&str]])] = &[
             ],
         ],
     ),
+    // Infrastructure faults with no more specific cause. These come after
+    // every cause rule, so "speed restriction due to flooding" is still
+    // `flooding` and "power infrastructure failure" is still
+    // `power_supply_failure`.
+    ("track_fault", &[&["infrastructure"]]),
+    (
+        "track_fault",
+        &[&["speed"], &["restriction", "restrictions"]],
+    ),
+    (
+        "track_fault",
+        &[
+            &["track", "line", "infrastructure"],
+            &["inspection", "inspections"],
+        ],
+    ),
     (
         "operational_incident",
         &[&[
@@ -315,6 +369,39 @@ const RULES: &[(&str, &[&[&str]])] = &[
             "earlier",
         ]],
     ),
+    // A station closure or station facilities fault, with no cause named
+    // (e.g. "Station closure: trains not calling at Worthing"). Last, so
+    // any named cause ("station closed due to fire") wins.
+    (
+        "other",
+        &[
+            &["station"],
+            &["closure", "closures", "closed", "facilities", "lighting"],
+        ],
+    ),
+];
+
+/// Folded values that name no cause (a generic word, or the effect rather
+/// than the cause): deliberately [`FALLBACK`], so recognised. Matched only
+/// as the whole value, so "fault" or "incident" never overrides a specific
+/// cause such as "signal fault".
+const GENERIC: &[&str] = &[
+    "incident",
+    "incidents",
+    "incident_resolved",
+    "fault",
+    "faults",
+    "disturbance",
+    "residual",
+    "resolved",
+    "service_alteration",
+    "service_alterations",
+    "no_service",
+    "cancellation",
+    "cancellations",
+    "station_facilities",
+    "station_closure",
+    "station_lighting_fault",
 ];
 
 /// Maps a raw model `category` to one of [`CATEGORIES`].
@@ -323,6 +410,12 @@ pub(crate) fn normalise(raw: &str) -> Normalised {
     if let Some(&category) = CATEGORIES.iter().find(|&&c| c == folded) {
         return Normalised {
             category,
+            recognised: true,
+        };
+    }
+    if GENERIC.contains(&folded.as_str()) {
+        return Normalised {
+            category: FALLBACK,
             recognised: true,
         };
     }
@@ -475,6 +568,122 @@ mod tests {
         assert_maps("lineside fire", "fire");
         assert_maps("animals on the line", "animal_on_line");
         assert_maps("unknown", "other");
+    }
+
+    /// Infrastructure causes the production dry-run left unrecognised.
+    #[test]
+    fn infrastructure_faults_map_to_track_fault() {
+        for raw in [
+            "infrastructure failure",
+            "Infrastructure failure",
+            "infrastructure",
+            "Infrastructure",
+            "Track safety inspection",
+            "track safety inspection",
+            "speed restriction",
+            "Speed Restriction",
+            "speed restriction following track safety inspection",
+            "infrastructure_safety_inspection",
+            "emergency speed restriction",
+            "Emergency speed restrictions",
+        ] {
+            assert_maps(raw, "track_fault");
+        }
+    }
+
+    /// The generic infrastructure and speed restriction rules come after
+    /// every specific cause, so a named cause still wins.
+    #[test]
+    fn a_specific_cause_beats_a_speed_restriction() {
+        assert_maps("speed restriction due to flooding", "flooding");
+        assert_maps("emergency speed restriction due to flooding", "flooding");
+        assert_maps("speed restriction due to signal fault", "signal_failure");
+        assert_maps("speed restriction due to landslip", "landslip");
+        assert_maps(
+            "speed restriction due to high temperatures",
+            "severe_weather",
+        );
+        assert_maps(
+            "speed restriction after a fallen tree",
+            "obstruction_on_line",
+        );
+        assert_maps("power infrastructure failure", "power_supply_failure");
+        assert_maps("emergency engineering works", "engineering_works");
+        assert_maps("police incident", "emergency_services_incident");
+        assert_maps("emergency services", "emergency_services_incident");
+        assert_maps("signal fault", "signal_failure");
+        assert_maps("points failure", "points_failure");
+        assert_maps("broken rail", "track_fault");
+    }
+
+    #[test]
+    fn telecoms_faults_map_to_signal_failure() {
+        for raw in [
+            "communications equipment fault",
+            "Communications Equipment Fault",
+            "telecoms failure",
+            "comms fault",
+            "telecommunications equipment",
+        ] {
+            assert_maps(raw, "signal_failure");
+        }
+        // A train's own communications, or telecoms cable theft, keep
+        // their more specific cause.
+        assert_maps("train communications fault", "train_fault");
+        assert_maps("telecoms cable theft", "vandalism");
+        // Without a failure word it isn't a cause.
+        assert!(!normalise("customer communications").recognised);
+    }
+
+    /// Generic or effect-only values from the production dry-run are a
+    /// deliberate `other`, not a miss.
+    #[test]
+    fn generic_and_effect_only_values_are_a_recognised_other() {
+        for raw in [
+            "incident",
+            "Incident",
+            "fault",
+            "disturbance",
+            "station_facilities",
+            "service_alteration",
+            "no_service",
+            "residual",
+            "resolved",
+            "Incident resolved",
+            "cancellation",
+            "Cancellations",
+            "Station closure: trains not calling at Worthing",
+            "Station lighting fault causing reduced Thameslink service at Herne Hill",
+            "station closure",
+            "station lighting fault",
+        ] {
+            assert_maps(raw, "other");
+        }
+    }
+
+    /// "fault" and "incident" only count as generic on their own, and a
+    /// station closure with a named cause keeps that cause.
+    #[test]
+    fn a_generic_word_never_overrides_a_specific_cause() {
+        assert_maps("signal fault", "signal_failure");
+        assert_maps("points fault", "points_failure");
+        assert_maps("train fault", "train_fault");
+        assert_maps("trespass incident", "trespass");
+        assert_maps("police incident", "emergency_services_incident");
+        assert_maps("station closed due to fire", "fire");
+        assert_maps("station closure due to flooding", "flooding");
+        // Titles stored as the category stay unrecognised.
+        for raw in [
+            "Amended 22:51 Leicester to Nottingham service",
+            "No trains between Leeds and York",
+            "Reduced service",
+            "Lines reopened",
+            "Timetable change",
+        ] {
+            let got = normalise(raw);
+            assert_eq!(got.category, FALLBACK, "{raw:?}");
+            assert!(!got.recognised, "{raw:?}");
+        }
     }
 
     fn primary_response(category: &str) -> String {

@@ -1,4 +1,4 @@
-import { stopDisplayArrival, stopDisplayTime } from './stopTimes';
+import { isPassingPoint, stopDisplayArrival, stopDisplayTime } from './stopTimes';
 import { formatTime } from './dateFormat';
 import { routeLabel } from './stationLabel';
 import type { JourneyStop } from './types';
@@ -19,7 +19,9 @@ function crsMatch(a: string | null | undefined, b: string | null | undefined): b
 
 function findStop(stops: JourneyStop[] | null | undefined, crs: string | null): JourneyStop | null {
   if (!stops || !crs) return null;
-  return stops.find((stop) => crsMatch(stop.crs, crs)) ?? null;
+  // A leg starts and ends at calls; a station the train only runs through
+  // is never one, even when it shares the CRS.
+  return stops.find((stop) => !isPassingPoint(stop) && crsMatch(stop.crs, crs)) ?? null;
 }
 
 /** Resolves a display name for one leg endpoint's CRS -- prefers the name
