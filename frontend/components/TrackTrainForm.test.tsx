@@ -133,18 +133,21 @@ vi.mock('@mantine/dates', async (importOriginal) => {
       onChange,
       description,
       maxDate,
+      valueFormat,
     }: {
       label: string;
       value: string | null;
       onChange: (value: string | null) => void;
       description?: string;
       maxDate?: string;
+      valueFormat?: string;
     }) => (
       <div>
         <label htmlFor="test-scheduled-departure">{label}</label>
         <input
           id="test-scheduled-departure"
           data-max-date={maxDate}
+          data-value-format={valueFormat}
           value={value ?? ''}
           onChange={(event) => onChange(event.target.value || null)}
         />
@@ -378,6 +381,14 @@ describe('TrackTrainForm', () => {
     renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
     expect(screen.getByLabelText(/Scheduled departure/)).toHaveAttribute('data-max-date', '2026-10-03 23:59:59');
     expect(screen.getByText('Must be within the last 6 hours, or up to 28 days ahead')).toBeInTheDocument();
+  });
+
+  // The site's "5 Sep 2026, 01:01", not Mantine's default "05/09/2026 01:01"
+  // (the real picker's rendering of this format is pinned in
+  // `datePickerFormat.test.tsx`).
+  it('shows the departure in the site date-time format', () => {
+    renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
+    expect(screen.getByLabelText(/Scheduled departure/)).toHaveAttribute('data-value-format', 'D MMM YYYY, HH:mm');
   });
 
   it('submits a pin 20 days ahead', async () => {

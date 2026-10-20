@@ -14,6 +14,7 @@ import {
   VisuallyHidden,
 } from '@mantine/core';
 import { DateInput, TimeInput } from '@mantine/dates';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { getStationNames, searchPlannerLocations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
@@ -415,6 +416,7 @@ export function PlanTripForm({
           the very day `date` defaults to. */}
       <DateInput
         label="Date"
+        valueFormat={PICKER_DATE_FORMAT}
         value={date}
         onChange={setDate}
         minDate={londonToday()}

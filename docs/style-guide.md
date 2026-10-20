@@ -623,7 +623,7 @@ exception: a 400/403/409/422 whose body is one of the API's own sentences
 | Relative time | `lib/relativeTime.ts` | "just now", "4 min ago", "3 hr ago", "2 days ago" |
 | Clock time | 24-hour, UK time | "08:42" |
 | Date | `lib/dateFormat.ts`, D MMM YYYY; three-letter months ("Sep", never en-GB Intl's "Sept") | "9 Oct 2026", "17 Sep 2026" |
-| Date pickers | `valueFormat="D MMM YYYY"` on every `DatePickerInput` | "9 Oct 2026" |
+| Date fields | `valueFormat={PICKER_DATE_FORMAT}` (`lib/dateFormat.ts`, D MMM YYYY) on every `DateInput` and `DatePickerInput`; `PICKER_DATE_TIME_FORMAT` on a `DateTimePicker`. Never a free-text "YYYY-MM-DD" field | "9 Oct 2026", "9 Oct 2026, 08:42" |
 | 24-hour hint | Once per form, on its first time field (`clockHint`) | "24-hour clock, e.g. 19:00." |
 
 ### Banned phrases

@@ -2,31 +2,15 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Modal, Stack, TextInput } from '@mantine/core';
+import { Alert, Button, Modal, Stack } from '@mantine/core';
+import { DateInput } from '@mantine/dates';
 import { useDisclosure } from '@mantine/hooks';
-import dayjs from 'dayjs';
 import { nowInLondon } from '@/lib/londonWallClock';
+import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import type { MaterializeTemplateRequest, MaterializeTemplateResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
-
-/** Bug: the Service date field here is free text with no client-side
- * format check -- a garbled date used to sail straight through to
- * `POST /JourneyTemplates/{id}/materialize` and come back as a raw backend
- * 400 shown verbatim in the `error` Alert. Same fix, and same rationale for
- * the round-trip-through-`dayjs`-and-compare check (rather than a bare
- * regex), as `AddJourneyLegButton.tsx`'s identical helper: `dayjs` has no
- * `customParseFormat` plugin installed in this app, so it silently rolls
- * an out-of-range date like "2026-02-30" forward to a real one instead of
- * rejecting it, and a bare `DATE_PATTERN` shape check alone would miss
- * that. */
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-function isValidServiceDate(value: string): boolean {
-  if (!DATE_PATTERN.test(value)) return false;
-  const parsed = dayjs(value);
-  return parsed.isValid() && parsed.format('YYYY-MM-DD') === value;
-}
 
 /** "Run now" — the manual, on-demand materialization trigger
  * (`POST /JourneyTemplates/{id}/materialize`), §6 item 3. Defaults its
@@ -56,7 +40,9 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
     open();
   }
 
-  const serviceDateValid = isValidServiceDate(serviceDate);
+  // A `DateInput` only ever emits a real calendar date ("YYYY-MM-DD"), and
+  // isn't clearable, so the one way to be invalid is never having had one.
+  const serviceDateValid = serviceDate !== '';
 
   async function handleSubmit() {
     if (!serviceDateValid) return;
@@ -94,12 +80,14 @@ export function RunTemplateNowButton({ templateId }: { templateId: number }) {
       <Button onClick={handleOpen}>Run now</Button>
       <Modal opened={opened} onClose={close} title="Run this template">
         <Stack>
-          <TextInput
+          {/* Was free text with a "YYYY-MM-DD" placeholder, which showed
+              visitors an ISO date and let a garbled one reach the API. The
+              request still carries "YYYY-MM-DD". */}
+          <DateInput
             label="Service date"
-            placeholder="YYYY-MM-DD"
-            value={serviceDate}
-            onChange={(event) => setServiceDate(event.currentTarget.value)}
-            error={serviceDate.length > 0 && !serviceDateValid ? 'Must be a valid date (YYYY-MM-DD)' : null}
+            valueFormat={PICKER_DATE_FORMAT}
+            value={serviceDate || null}
+            onChange={(value) => setServiceDate(value ?? '')}
           />
           {error && <Alert color="red">{error}</Alert>}
           {needsLoginState.needsLogin && <LoginControl underline="always">Log in to run this template</LoginControl>}
