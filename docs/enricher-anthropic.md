@@ -233,7 +233,7 @@ before choosing between tuned Haiku and Sonnet.
 ### Tuned Haiku prompts
 
 `crates/enricher/prompts/` holds a prompt set for the `claude-haiku-5`
-profile (version `42e7efea092c`): `claude-haiku-5.primary.txt` and
+profile (version `0f5df4652b2c`): `claude-haiku-5.primary.txt` and
 `claude-haiku-5.severity_adversarial.txt`; the resolution check stays the
 shared built-in prompt. The primary prompt is the shared one with its
 severity sentence replaced, plus rules aimed at Haiku's errors in the
@@ -272,7 +272,7 @@ kubectl create configmap enricher-prompts \
 # then enricher.llm.prompts.configMap: enricher-prompts
 ```
 
-`model_version` becomes `claude-haiku-5-5@periods-v2+prompts-42e7efea092c`,
+`model_version` becomes `claude-haiku-5-5@periods-v2+prompts-0f5df4652b2c`,
 so the sweep re-extracts every live incident once (a few hundred Haiku
 calls). For the re-run, an eval target names `profile = "claude-haiku-5"`
 and `prompts_dir` pointing at these files.
