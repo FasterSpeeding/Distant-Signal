@@ -28,6 +28,12 @@ const REAL_STATION_CRS = process.env.E2E_REAL_STATION_CRS ?? 'KGX';
 const TRAIN_UID = process.env.E2E_TRAIN_UID ?? 'W12345';
 const TRAIN_DATE = process.env.E2E_TRAIN_DATE ?? '2026-09-17';
 const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE;
+// The seed's unresolved pin (no timetable, no report), its planned train
+// (W77777 in 2099) and its journey with an untracked walk before that train
+// (frontend/e2e/fixtures/seed.sql). Ids by insert order on a fresh database.
+const TRACKING_ID = process.env.E2E_TRACKING_ID ?? '1';
+const PLANNED_TRACKING_ID = process.env.E2E_PLANNED_TRACKING_ID ?? '3';
+const JOURNEY_ID = process.env.E2E_JOURNEY_ID ?? '1';
 
 /** The browser's "now": midday on the seed's service date, in UK summer
  * time. Only the client's clock is fixed; the server's isn't (see VOLATILE). */
@@ -50,6 +56,12 @@ const PAGES: [name: string, path: string][] = [
   ['plan', '/plan?origin=ZEA&destination=ZEC&date=2026-09-17&departAfter=08:00'],
   ['plan-arrive-by', '/plan?origin=ZEA&destination=ZEC&date=2026-09-17&arriveBy=09:00'],
   ['account', '/account'],
+  // Tracked-train states and an untracked leg (spec
+  // 2026-10-20-untracked-legs-and-tracked-train-states-design.md): a train
+  // not in the timetable, a planned train, and a journey with a walk.
+  ['train-no-timetable', `/train/by-id/${TRACKING_ID}`],
+  ['train-planned', `/train/by-id/${PLANNED_TRACKING_ID}`],
+  ['journey', `/journeys/${JOURNEY_ID}`],
   // Open to everyone: logged out it is the appearance settings and one log
   // in prompt, logged in the account sections too.
   ['preferences', '/account/preferences'],
@@ -64,7 +76,13 @@ const PAGES: [name: string, path: string][] = [
 ];
 
 /** The pages shot with the seed's session cookie (E2E_SESSION_COOKIE). */
-const LOGGED_IN_PAGES: ReadonlySet<string> = new Set(['account', 'preferences-logged-in']);
+const LOGGED_IN_PAGES: ReadonlySet<string> = new Set([
+  'account',
+  'preferences-logged-in',
+  'train-no-timetable',
+  'train-planned',
+  'journey',
+]);
 
 const WIDTHS = [390, 1366] as const;
 const SCHEMES = ['light', 'dark'] as const;
