@@ -415,3 +415,25 @@ VALUES
   ('2026-09-17', 'E2EPL2', 0, 'E2EPLA', 'origin', NULL, '08:30:00', 0),
   ('2026-09-17', 'E2EPL2', 1, 'E2EPLC', 'terminate', '09:20:00', NULL, 0)
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- A PLANNED three-leg journey for fixture-owner (journey-names.spec.ts and
+-- the logged-in /track/mine screenshot in visual.spec.ts): no leg has a
+-- train yet, so there is no tracking data at all. Its row on /track/mine
+-- must name it from the first leg's origin (EUS) to the LAST leg's
+-- destination (KGX), not the first leg's (MKC). EUS and KGX are the two
+-- seeded `stations` rows, so both ends have names; MKC and PBO are not.
+-- A fixed id far above the sequence so a spec's own POST /Journeys never
+-- meets it (E2E_PLANNED_JOURNEY_ID, default 900001).
+-- ---------------------------------------------------------------------
+INSERT INTO journeys (id, user_id, custom_name, created_at, updated_at)
+VALUES (900001, 'fixture-owner', NULL, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO journey_legs
+  (journey_id, leg_order, origin_crs, destination_crs, service_date, depart_after, match_mode)
+VALUES
+  (900001, 1, 'EUS', 'MKC', '2026-09-17', '08:00', 'unmatched'),
+  (900001, 2, 'MKC', 'PBO', '2026-09-17', '10:00', 'unmatched'),
+  (900001, 3, 'PBO', 'KGX', '2026-09-17', '12:00', 'unmatched')
+ON CONFLICT (journey_id, leg_order) DO NOTHING;
