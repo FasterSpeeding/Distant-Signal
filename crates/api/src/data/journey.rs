@@ -471,7 +471,7 @@ pub async fn build_journey_stops_batch(
         .flatten()
         .flatten()
         .flatten()
-        .filter(|stop| stop.scheduled_departure.is_some())
+        .filter(|stop| stop.timetable.working_minute_departure.is_some())
         .filter_map(|stop| stop.tiploc.clone())
         .collect();
     departing_tiplocs.sort();
@@ -597,11 +597,13 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
         match event.event_type.as_deref() {
             Some("ARRIVAL") => {
                 stop.actual_arrival = event.actual_timestamp;
-                stop.scheduled_arrival = backfill(stop.scheduled_arrival);
+                stop.timetable.working_minute_arrival =
+                    backfill(stop.timetable.working_minute_arrival);
             }
             Some("DEPARTURE") => {
                 stop.actual_departure = event.actual_timestamp;
-                stop.scheduled_departure = backfill(stop.scheduled_departure);
+                stop.timetable.working_minute_departure =
+                    backfill(stop.timetable.working_minute_departure);
             }
             Some("PASS") => {
                 // A PASS at a genuine BOOKED calling point (`Intermediate`,
@@ -630,14 +632,16 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
                 // "booked but skipped" stop being misrepresented there.
                 let booked_calling_point = stop.kind
                     == Some(schedule_query::CallingPointKind::Intermediate)
-                    && stop.scheduled_arrival.is_some()
-                    && stop.scheduled_departure.is_some();
+                    && stop.timetable.working_minute_arrival.is_some()
+                    && stop.timetable.working_minute_departure.is_some();
                 if !booked_calling_point {
                     stop.actual_arrival = event.actual_timestamp;
                     stop.actual_departure = event.actual_timestamp;
                 }
-                stop.scheduled_arrival = backfill(stop.scheduled_arrival);
-                stop.scheduled_departure = backfill(stop.scheduled_departure);
+                stop.timetable.working_minute_arrival =
+                    backfill(stop.timetable.working_minute_arrival);
+                stop.timetable.working_minute_departure =
+                    backfill(stop.timetable.working_minute_departure);
             }
             _ => {}
         }
@@ -646,7 +650,7 @@ fn overlay_movement_events(stops: &mut [JourneyStop], events: &[queries::Movemen
         // `actual_timestamp` against its own `gbtt_timestamp` (the public
         // time) or `planned_timestamp` (the working time), all off the SAME
         // `train_movement_events` row -- never against
-        // `stop.scheduled_arrival`/`scheduled_departure` or the
+        // `stop.timetable.working_minute_*` or the
         // `timetable.public_*` instants, which come from a completely
         // different pipeline: the CIF timetable, correctly BST-converted via
         // `chrono_tz`/`london_to_utc`. The real TRUST `TRAIN_MVT_ALL_TOC`
@@ -737,8 +741,8 @@ fn apply_stop_status(stops: &mut [JourneyStop], skipped_stations: &[String]) {
 
         let booked_calling_point = stop.kind
             == Some(schedule_query::CallingPointKind::Intermediate)
-            && stop.scheduled_arrival.is_some()
-            && stop.scheduled_departure.is_some();
+            && stop.timetable.working_minute_arrival.is_some()
+            && stop.timetable.working_minute_departure.is_some();
         if !booked_calling_point {
             stop.stop_status = StopStatus::Unknown;
             continue;
@@ -1048,8 +1052,9 @@ fn assign_events_to_stops(
 fn revisit_gap(stops: &[JourneyStop], crs_calls: &[usize]) -> Duration {
     let scheduled = |index: usize| -> Option<DateTime<Utc>> {
         stops[index]
-            .scheduled_arrival
-            .or(stops[index].scheduled_departure)
+            .timetable
+            .working_minute_arrival
+            .or(stops[index].timetable.working_minute_departure)
     };
     let shortest = crs_calls
         .windows(2)
@@ -1225,10 +1230,10 @@ pub fn apply_delay_estimates(stops: &mut [JourneyStop], current_delay_minutes: O
     let delay = Duration::minutes(i64::from(delay_minutes));
     for stop in stops.iter_mut() {
         if stop.actual_arrival.is_none() {
-            stop.estimated_arrival = stop.scheduled_arrival.map(|t| t + delay);
+            stop.estimated_arrival = stop.timetable.working_minute_arrival.map(|t| t + delay);
         }
         if stop.actual_departure.is_none() {
-            stop.estimated_departure = stop.scheduled_departure.map(|t| t + delay);
+            stop.estimated_departure = stop.timetable.working_minute_departure.map(|t| t + delay);
         }
     }
 }
@@ -1352,8 +1357,6 @@ pub(crate) mod test_support {
             parent_crs: None,
             tiploc: Some(tiploc.to_string()),
             kind: Some(kind),
-            scheduled_arrival: None,
-            scheduled_departure: departs.map(|at| at.parse().unwrap()),
             actual_arrival: None,
             actual_departure: None,
             estimated_arrival: None,
@@ -1372,7 +1375,11 @@ pub(crate) mod test_support {
             live_status: None,
             late_minutes: None,
             board: None,
-            timetable: StopTimetable::default(),
+            timetable: StopTimetable {
+                working_minute_arrival: None,
+                working_minute_departure: departs.map(|at| at.parse().unwrap()),
+                ..StopTimetable::default()
+            },
         }
     }
 }
@@ -1389,8 +1396,6 @@ mod tests {
             parent_crs: None,
             tiploc: None,
             kind: None,
-            scheduled_arrival: None,
-            scheduled_departure: None,
             actual_arrival: None,
             actual_departure: None,
             estimated_arrival: None,
@@ -1409,7 +1414,11 @@ mod tests {
             live_status: None,
             late_minutes: None,
             board: None,
-            timetable: StopTimetable::default(),
+            timetable: StopTimetable {
+                working_minute_arrival: None,
+                working_minute_departure: None,
+                ..StopTimetable::default()
+            },
         }
     }
 
@@ -1491,8 +1500,14 @@ mod tests {
         }]))
         .unwrap();
         let dwell = &stops_from_calling_points(&dwell, &HashMap::new(), service_date)[0];
-        assert_eq!(dwell.scheduled_arrival, at("2026-10-01T22:55:00Z"));
-        assert_eq!(dwell.scheduled_departure, at("2026-10-01T23:02:00Z"));
+        assert_eq!(
+            dwell.timetable.working_minute_arrival,
+            at("2026-10-01T22:55:00Z")
+        );
+        assert_eq!(
+            dwell.timetable.working_minute_departure,
+            at("2026-10-01T23:02:00Z")
+        );
         assert_eq!(dwell.timetable.public_departure, at("2026-10-01T23:02:00Z"));
         assert_eq!(
             dwell.timetable.working_departure,
@@ -1505,6 +1520,65 @@ mod tests {
         assert_eq!(json["canBoard"], false);
         assert_eq!(json["requestStop"], true);
         assert!(json.get("timetable").is_none(), "flattened onto the stop");
+        assert!(json.get("workingMinuteArrival").is_none(), "internal only");
+    }
+
+    /// Design doc §9 decision 1, switched 2026-10-20: `scheduled*` serve the
+    /// PUBLIC time where it differs from the working one (Milton Keynes on
+    /// Avanti 9G44: WTT 20:50H, public 20:51), and the working time only on
+    /// a side with no public time (the departure of a set-down-only stop, a
+    /// schedule stored before public times). `working*` keep the WTT, and
+    /// the internal WTT minute that TRUST and Darwin facts and estimates key
+    /// on is unchanged.
+    #[test]
+    fn scheduled_times_are_public_and_working_times_stay_wtt() {
+        let service_date: NaiveDate = "2026-10-01".parse().unwrap();
+        let raw: Vec<RawCallingPoint> = serde_json::from_value(serde_json::json!([
+            {
+                "tiploc": "MKNSCEN", "kind": "Intermediate",
+                "bookedArrival": "20:50:00", "bookedDeparture": "20:52:00",
+                "isHalfMinuteArrival": true, "isHalfMinuteDeparture": true,
+                "publicArrival": "20:51:00", "publicDeparture": "20:52:00",
+                "workingArrival": "20:50:30", "workingDeparture": "20:52:30"
+            },
+            {
+                "tiploc": "MOTHRWL", "kind": "Intermediate",
+                "bookedArrival": "17:00:00", "bookedDeparture": "17:02:00",
+                "publicArrival": "17:01:00",
+                "canBoard": false, "canAlight": true
+            },
+            {
+                "tiploc": "EUSTON", "kind": "Origin", "bookedDeparture": "20:16:00"
+            }
+        ]))
+        .unwrap();
+        let stops = stops_from_calling_points(&raw, &HashMap::new(), service_date);
+        let wire = serde_json::to_value(&stops).unwrap();
+
+        let milton = &wire[0];
+        assert_eq!(milton["scheduledArrival"], "2026-10-01T19:51:00Z", "public");
+        assert_eq!(milton["publicArrival"], "2026-10-01T19:51:00Z");
+        assert_eq!(milton["workingArrival"], "2026-10-01T19:50:30Z", "WTT");
+        assert_eq!(milton["scheduledDeparture"], "2026-10-01T19:52:00Z");
+        assert_eq!(milton["workingDeparture"], "2026-10-01T19:52:30Z");
+        assert_eq!(
+            stops[0].timetable.working_minute_arrival,
+            Some("2026-10-01T19:50:00Z".parse().unwrap()),
+            "the internal WTT minute is unchanged"
+        );
+
+        // Set down only: a public arrival, no public departure.
+        let motherwell = &wire[1];
+        assert_eq!(motherwell["scheduledArrival"], "2026-10-01T16:01:00Z");
+        assert_eq!(motherwell["publicDeparture"], serde_json::Value::Null);
+        assert_eq!(
+            motherwell["scheduledDeparture"], "2026-10-01T16:02:00Z",
+            "no public departure: the working one"
+        );
+
+        // A schedule stored before public times: the working time.
+        assert_eq!(wire[2]["scheduledDeparture"], "2026-10-01T19:16:00Z");
+        assert_eq!(wire[2]["scheduledArrival"], serde_json::Value::Null);
     }
 
     /// Design doc §10's known gap: a pass just after midnight, stored with
@@ -1659,7 +1733,7 @@ mod tests {
         assert_eq!(stops.len(), 2);
         assert_eq!(stops[0].crs.as_deref(), Some("KGX"));
         assert_eq!(
-            stops[0].scheduled_departure,
+            stops[0].timetable.working_minute_departure,
             Some("2026-09-17T08:00:00Z".parse().unwrap()),
             "09:00 London wall-clock on a BST date (UTC+1) must convert to 08:00 UTC, not be \
              reinterpreted as already-UTC 09:00 -- the exact regression a zoned-instant \
@@ -1667,7 +1741,7 @@ mod tests {
         );
         assert_eq!(stops[1].crs.as_deref(), Some("EDB"));
         assert_eq!(
-            stops[1].scheduled_arrival,
+            stops[1].timetable.working_minute_arrival,
             Some("2026-09-17T12:30:00Z".parse().unwrap()),
             "13:30 London wall-clock on a BST date (UTC+1) must convert to 12:30 UTC"
         );
@@ -1828,8 +1902,9 @@ mod tests {
     ///   binds verbatim from the caller's `pin_scheduled_departure` -- an
     ///   already-zoned `DateTime<Utc>`, never re-converted.
     /// - The timetable row (`frontend/components/JourneyTimeline.tsx`)
-    ///   renders `stops[i].scheduled_departure`, which
-    ///   [`JourneyStop::from_calling_point`] derives by pushing the
+    ///   used to render the working departure; the internal
+    ///   `stops[i].timetable.working_minute_departure` still holds it, and
+    ///   [`JourneyStop::from_calling_point`] derives it by pushing the
     ///   calling point's **naive London wall-clock** `bookedDeparture`
     ///   through [`london_to_utc`].
     ///
@@ -1891,7 +1966,7 @@ mod tests {
         let stops = stops_from_calling_points(&raw, &HashMap::new(), service_date);
 
         assert_eq!(
-            stops[0].scheduled_departure,
+            stops[0].timetable.working_minute_departure,
             Some(pin_scheduled_departure),
             "the origin stop's scheduled_departure (rendered in the timetable) and the pin \
              instant mirrored onto trains.scheduled_departure (rendered in the page header) \
@@ -1902,7 +1977,8 @@ mod tests {
         // The production invariant itself, stated as an assertion:
         // `match_pin` would only ever have produced this pairing if the
         // two were within `MATCH_TOLERANCE` of each other.
-        let delta = (pin_scheduled_departure - stops[0].scheduled_departure.unwrap()).abs();
+        let delta =
+            (pin_scheduled_departure - stops[0].timetable.working_minute_departure.unwrap()).abs();
         assert!(
             delta <= common::MATCH_TOLERANCE,
             "schedule_query::match_pin would never have matched this pin to this schedule: \
@@ -1915,12 +1991,13 @@ mod tests {
         // i.e. unreachable through the real write path.
         let naively_zoned: DateTime<Utc> = "2026-09-17T09:00:00Z".parse().unwrap();
         assert_ne!(
-            stops[0].scheduled_departure,
+            stops[0].timetable.working_minute_departure,
             Some(naively_zoned),
             "09:00 London on a BST date is 08:00Z, not 09:00Z"
         );
         assert!(
-            (naively_zoned - stops[0].scheduled_departure.unwrap()).abs() > common::MATCH_TOLERANCE,
+            (naively_zoned - stops[0].timetable.working_minute_departure.unwrap()).abs()
+                > common::MATCH_TOLERANCE,
             "an hour of BST error must be outside MATCH_TOLERANCE -- that is why the real \
              schedule-matching path cannot produce this mismatch"
         );
@@ -2278,8 +2355,11 @@ mod tests {
     #[test]
     fn apply_delay_estimates_propagates_the_current_delay_onto_an_unreported_stop() {
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..blank_stop()
         }];
 
@@ -2298,8 +2378,11 @@ mod tests {
     #[test]
     fn apply_delay_estimates_never_overwrites_a_stop_with_a_confirmed_actual_time() {
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             actual_arrival: Some("2026-09-09T10:03:00Z".parse().unwrap()),
             actual_departure: Some("2026-09-09T10:04:00Z".parse().unwrap()),
             ..blank_stop()
@@ -2324,8 +2407,11 @@ mod tests {
         // simply missing data) still gets an arrival estimate -- the two
         // fields are gated independently, not as a pair.
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             actual_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
             ..blank_stop()
         }];
@@ -2345,8 +2431,11 @@ mod tests {
     #[test]
     fn apply_delay_estimates_leaves_every_estimate_none_when_the_current_delay_is_unknown() {
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-09T10:00:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-09T10:02:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..blank_stop()
         }];
 
@@ -2532,8 +2621,11 @@ mod tests {
     fn overlay_movement_events_does_not_set_actual_times_for_a_pass_at_a_booked_stop() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..stop_at("SLO", Intermediate)
         }];
         let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
@@ -2554,12 +2646,12 @@ mod tests {
             "the PASS itself must still be recorded, for a follow-up 'Skipped' UI to key off"
         );
         assert_eq!(
-            stops[0].scheduled_arrival,
+            stops[0].timetable.working_minute_arrival,
             Some("2026-09-14T09:10:00Z".parse().unwrap()),
             "the real timetabled time is untouched"
         );
         assert_eq!(
-            stops[0].scheduled_departure,
+            stops[0].timetable.working_minute_departure,
             Some("2026-09-14T09:11:00Z".parse().unwrap())
         );
     }
@@ -2574,8 +2666,6 @@ mod tests {
     fn overlay_movement_events_still_sets_actual_times_for_a_pass_at_a_non_booked_point() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: None,
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
             ..stop_at("SLO", Intermediate)
         }];
         let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
@@ -2646,7 +2736,10 @@ mod tests {
         let watford = &stops[1];
         assert!(watford.timetable.passing_point);
         assert_eq!(
-            (watford.scheduled_arrival, watford.scheduled_departure),
+            (
+                watford.timetable.working_minute_arrival,
+                watford.timetable.working_minute_departure
+            ),
             (None, None),
             "TRUST's planned pass time must not become a booked call"
         );
@@ -2683,6 +2776,8 @@ mod tests {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
             timetable: StopTimetable {
+                working_minute_arrival: None,
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
                 passing_point: true,
                 ..StopTimetable::default()
             },
@@ -2692,7 +2787,7 @@ mod tests {
 
         overlay_movement_events(&mut stops, &events);
 
-        assert_eq!(stops[0].scheduled_arrival, None);
+        assert_eq!(stops[0].timetable.working_minute_arrival, None);
         assert!(stops[0].actual_arrival.is_some());
     }
 
@@ -2709,8 +2804,11 @@ mod tests {
     fn apply_stop_status_marks_a_trust_pass_only_booked_stop_skipped_with_trust_source() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..stop_at("SLO", Intermediate)
         }];
         let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
@@ -2737,8 +2835,11 @@ mod tests {
     fn apply_stop_status_marks_a_darwin_only_skip_skipped_with_darwin_source() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..stop_at("SLO", Intermediate)
         }];
 
@@ -2761,8 +2862,11 @@ mod tests {
     fn apply_stop_status_prefers_a_confirmed_trust_arrival_over_a_stale_darwin_skip() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..stop_at("SLO", Intermediate)
         }];
         let events = vec![event("SLO", "ARRIVAL", "2026-09-14T09:10:30Z")];
@@ -2781,8 +2885,11 @@ mod tests {
     fn apply_stop_status_marks_agreeing_signals_skipped_with_both_source() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..stop_at("SLO", Intermediate)
         }];
         let events = vec![event("SLO", "PASS", "2026-09-14T09:12:00Z")];
@@ -2802,8 +2909,11 @@ mod tests {
     fn apply_stop_status_marks_a_normal_called_stop_called_with_no_skip_source() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..stop_at("SLO", Intermediate)
         }];
         let events = vec![event("SLO", "ARRIVAL", "2026-09-14T09:10:30Z")];
@@ -2829,8 +2939,11 @@ mod tests {
     fn apply_stop_status_leaves_a_not_yet_reached_booked_stop_as_scheduled_not_skipped() {
         use schedule_query::CallingPointKind::Intermediate;
         let mut stops = vec![JourneyStop {
-            scheduled_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
-            scheduled_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+            timetable: StopTimetable {
+                working_minute_arrival: Some("2026-09-14T09:10:00Z".parse().unwrap()),
+                working_minute_departure: Some("2026-09-14T09:11:00Z".parse().unwrap()),
+                ..StopTimetable::default()
+            },
             ..stop_at("SLO", Intermediate)
         }];
 
@@ -3162,7 +3275,7 @@ mod tests {
     fn assign_events_to_stops_derives_the_revisit_gap_from_the_schedule() {
         use schedule_query::CallingPointKind::{Intermediate, Origin, Terminate};
         let scheduled = |mut stop: JourneyStop, at: &str| {
-            stop.scheduled_arrival = Some(at.parse().unwrap());
+            stop.timetable.working_minute_arrival = Some(at.parse().unwrap());
             stop
         };
         let stops = vec![
@@ -3294,7 +3407,7 @@ mod tests {
     fn assign_events_to_stops_does_not_let_a_long_dwell_cascade_onto_the_terminus() {
         use schedule_query::CallingPointKind::{Intermediate, Origin, Terminate};
         let scheduled = |mut stop: JourneyStop, at: &str| {
-            stop.scheduled_arrival = Some(at.parse().unwrap());
+            stop.timetable.working_minute_arrival = Some(at.parse().unwrap());
             stop
         };
         let stops = vec![
@@ -3737,13 +3850,13 @@ mod db_tests {
             stops[0].kind,
             Some(schedule_query::CallingPointKind::Origin)
         );
-        assert!(stops[0].scheduled_departure.is_some());
+        assert!(stops[0].timetable.working_minute_departure.is_some());
         assert_eq!(stops[1].crs.as_deref(), Some("CRE"));
         assert_eq!(
             stops[1].kind,
             Some(schedule_query::CallingPointKind::Terminate)
         );
-        assert!(stops[1].scheduled_arrival.is_some());
+        assert!(stops[1].timetable.working_minute_arrival.is_some());
 
         sqlx::query("DELETE FROM stanox_crs WHERE tiploc LIKE 'TEST-JRN-%'")
             .execute(&pool)
@@ -4472,7 +4585,7 @@ mod db_tests {
             Some(schedule_query::CallingPointKind::Terminate)
         );
         assert!(
-            stops[2].scheduled_arrival.is_none(),
+            stops[2].timetable.working_minute_arrival.is_none(),
             "no arrival time known from this source yet"
         );
         // CIF booked platform, straight off `schedule_calling_points_full.platform`
@@ -4591,7 +4704,7 @@ mod db_tests {
             Some(schedule_query::CallingPointKind::Terminate)
         );
         assert_eq!(
-            stops[2].scheduled_arrival,
+            stops[2].timetable.working_minute_arrival,
             london_to_utc(service_date.and_time("09:15:00".parse().unwrap())),
             "the terminus row's own booked arrival, not a blank cell"
         );
@@ -4775,7 +4888,7 @@ mod db_tests {
     /// departure (10:02 London) -- a real Intermediate calling point with
     /// a dwell time -- gets an `ARRIVAL`-only movement event one minute
     /// LATE. Under the old, buggy code (`scheduled_reference =
-    /// stop.scheduled_departure.or(stop.scheduled_arrival)`, unconditional
+    /// stop.timetable.working_minute_departure.or(stop.timetable.working_minute_arrival)`, unconditional
     /// "prefer departure"), this would have paired the actual ARRIVAL
     /// (09:01 UTC) against the booked DEPARTURE (09:02 UTC), computing
     /// `09:01 - 09:02 = -1 minute` (`Some(-1)`, rendering as "1m early"
@@ -5260,7 +5373,7 @@ mod db_tests {
         assert_eq!(stops.len(), 2);
         assert_eq!(stops[1].crs.as_deref(), Some("TSB"));
         assert_eq!(
-            stops[1].scheduled_arrival,
+            stops[1].timetable.working_minute_arrival,
             "2026-09-08T10:23:00Z".parse().ok(),
             "the DISPLAYED scheduled time is still the correctly-BST-converted CIF value \
              -- this fix only changes the delay-minutes arithmetic, not what's shown as \
@@ -5649,7 +5762,7 @@ mod db_tests {
         );
         assert_eq!(
             stops[1].estimated_arrival,
-            Some(stops[1].scheduled_arrival.unwrap() + Duration::minutes(6)),
+            Some(stops[1].timetable.working_minute_arrival.unwrap() + Duration::minutes(6)),
             "an unreported stop's estimate is its scheduled time + the current delay"
         );
         // `scheduled_arrival` is 10:30 LONDON time on this (BST) service

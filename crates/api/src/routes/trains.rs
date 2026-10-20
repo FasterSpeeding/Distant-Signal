@@ -798,11 +798,20 @@ async fn get_trains_search(
             // `/schedule-departures`' own `dayOffset` -- it moves the
             // departure's calendar day, never the service date, so the
             // row's `GET /Train/by-uid/{uid}/{date}` stays the searched
-            // date.
+            // date. It is `scheduled`'s (the public departure, else the
+            // working one); `workingDayOffset` is `workingDeparture`'s.
             if let Some(object) = rendered.as_object_mut() {
+                let working_day_offset = row.get("day_offset").and_then(Value::as_u64).unwrap_or(0);
+                let (_, day_offset) = crate::render::public_else_working(
+                    row,
+                    "public_departure",
+                    "scheduled",
+                    working_day_offset,
+                );
+                object.insert("dayOffset".to_string(), Value::from(day_offset));
                 object.insert(
-                    "dayOffset".to_string(),
-                    Value::from(row.get("day_offset").and_then(Value::as_u64).unwrap_or(0)),
+                    "workingDayOffset".to_string(),
+                    Value::from(working_day_offset),
                 );
                 if stops_at.is_some() {
                     insert_stops_at_arrival(object, row);
@@ -2590,7 +2599,10 @@ mod db_tests {
         assert_eq!(uids, ["T54004", "T54001", "T54002"]);
         let t54001 = row(&rows, "T54001");
         assert_eq!(stops_at_fields(t54001), arrival("10:11", 0, "10:10", 0));
-        assert_eq!(t54001["destinationArrival"], "10:30");
+        // The destination's public arrival (2026-10-20), its working one
+        // alongside.
+        assert_eq!(t54001["destinationArrival"], "10:31");
+        assert_eq!(t54001["workingDestinationArrival"], "10:30");
 
         // After midnight: the next day.
         assert_eq!(

@@ -714,11 +714,15 @@ export interface JourneyStop {
   name: string | null;
   tiploc: string | null;
   kind: JourneyStopKind | null;
+  // The time a passenger timetable shows: the public time, else the working
+  // time (to the minute) on a side with no public time (the departure of a
+  // set-down-only stop, a schedule stored before public times). Working
+  // (WTT) until 2026-10-20 (docs/api-changelog.md).
   scheduledArrival: string | null; // RFC3339
   scheduledDeparture: string | null; // RFC3339
   actualArrival: string | null; // RFC3339
   actualDeparture: string | null; // RFC3339
-  // Scheduled time + the train's current overall delay, populated ONLY
+  // The WORKING time + the train's current overall delay, populated ONLY
   // while the matching `actual*` field above is still `null` -- i.e. only
   // for a stop live movement data hasn't actually reported yet. Never
   // overwrites/coexists meaningfully with a confirmed actual time; see
@@ -785,9 +789,10 @@ export interface JourneyStop {
   // show, and what the UI displays first (`lib/stopTimes.ts`). `null` in a
   // direction with no public call (the departure of a set-down-only stop),
   // and until the next schedule publish for a schedule stored before these
-  // existed. `scheduledArrival`/`scheduledDeparture` above are the WORKING
-  // (WTT) times truncated to the minute; they stay WTT for one release.
-  // Optional so older fixtures and backends stay valid.
+  // existed. `scheduledArrival`/`scheduledDeparture` above fill those gaps
+  // with the working time; an older backend sent WTT there, which is why
+  // `lib/stopTimes.ts` still reads these first. Optional so older fixtures
+  // and backends stay valid.
   publicArrival?: string | null; // RFC3339
   publicDeparture?: string | null; // RFC3339
   // Exact working-timetable (WTT) times, `:30` seconds for a half-minute.
@@ -1231,10 +1236,17 @@ export type TripPlanLeg =
       serviceDate: string; // "YYYY-MM-DD"
       originCrs: string | null;
       destinationCrs: string | null;
-      // WORKING-timetable (WTT) times the planner searched on; kept as WTT
-      // for one release. Display `publicDeparture`/`publicArrival` first.
+      // The times the planner searched on: public, else working where the
+      // call has no public time. Working (WTT) from an older backend, so
+      // `publicDeparture`/`publicArrival` are still displayed first.
       scheduledDeparture: string; // "HH:MM:SS"
       scheduledArrival: string;
+      // The working-timetable (WTT) times, to the minute, with their own day
+      // offsets. Absent from older responses.
+      workingDeparture?: string; // "HH:MM:SS"
+      workingArrival?: string;
+      workingDepartureDayOffset?: number;
+      workingArrivalDayOffset?: number;
       // Public (GBTT) departure at the boarding call and arrival at the
       // alighting call, with their own day offsets (rounding can cross
       // midnight). `null` when the CIF has none there or the schedule
@@ -2433,12 +2445,16 @@ export interface LineTimetablePage {
  * line page's station-pair search all read it). */
 export interface TrainSearchResult extends ServiceModeFields {
   uid: string;
-  /** The working-timetable departure at `stationCrs`, `HH:MM`. */
+  /** The departure at `stationCrs`, `HH:MM`: the public time, else the
+   * working one. Working (WTT) from an older backend. */
   scheduled: string | null;
-  /** The public (timetable) departure, shown in place of `scheduled`
-   * (kept as WTT for one release). `null`/absent until the next schedule
-   * publish. */
+  /** The public (timetable) departure, shown in place of `scheduled` (for
+   * an older backend). `null`/absent until the next schedule publish. */
   publicDeparture?: string | null;
+  /** The working-timetable departure and its `dayOffset`; absent from an
+   * older backend. */
+  workingDeparture?: string | null;
+  workingDayOffset?: number;
   /** The searched calling point, echoed back on every row. */
   stationCrs: string;
   /** The schedule's TRUE origin and destination; either can be
@@ -2449,10 +2465,12 @@ export interface TrainSearchResult extends ServiceModeFields {
    * backend that predates the field. */
   originName?: string | null;
   destinationName?: string | null;
+  /** Public arrival at the destination, else the working one. */
   destinationArrival: string | null;
   /** Calendar days past the service date `destinationArrival` falls on. */
   destinationArrivalDayOffset: number;
   publicDestinationArrival?: string | null;
+  workingDestinationArrival?: string | null;
   /** Days after the searched date (the service date) the departure from
    * `stationCrs` falls on. Moves the calendar day only, never the service
    * date, so a row's link keeps the searched date. Absent from an older

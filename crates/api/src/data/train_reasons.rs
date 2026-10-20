@@ -177,8 +177,6 @@ mod tests {
             parent_crs: None,
             tiploc: None,
             kind: None,
-            scheduled_arrival: at,
-            scheduled_departure: at,
             actual_arrival: None,
             actual_departure: None,
             estimated_arrival: None,
@@ -197,7 +195,11 @@ mod tests {
             live_status: None,
             late_minutes: None,
             board: None,
-            timetable: StopTimetable::default(),
+            timetable: StopTimetable {
+                working_minute_arrival: at,
+                working_minute_departure: at,
+                ..StopTimetable::default()
+            },
         }
     }
 
@@ -229,7 +231,7 @@ mod tests {
             .unwrap();
 
         let mut stops = vec![stop("08:00"), stop("08:10"), stop("08:20")];
-        stops[0].actual_departure = stops[0].scheduled_departure;
+        stops[0].actual_departure = stops[0].timetable.working_minute_departure;
         let state = |status: &str, stops: Vec<crate::data::journey::JourneyStop>| {
             crate::data::trains::PublicTrainState {
                 service: crate::data::schedule_services::ServiceModeFields::default(),
@@ -298,7 +300,7 @@ mod tests {
 
         let mut running_stops = stops;
         running_stops[1].estimated_departure = Some("2031-05-06T08:14:00Z".parse().unwrap());
-        running_stops[2].estimated_departure = running_stops[2].scheduled_departure;
+        running_stops[2].estimated_departure = running_stops[2].timetable.working_minute_departure;
         let running = attach_to_public_state(&pool, state("en_route", running_stops)).await;
         assert!(!running.cancelled);
         assert_eq!(running.cancel_reason_code, None);
@@ -440,7 +442,7 @@ mod tests {
             .unwrap();
 
         let mut stops = vec![stop("08:00"), stop("08:10")];
-        stops[0].actual_departure = stops[0].scheduled_departure;
+        stops[0].actual_departure = stops[0].timetable.working_minute_departure;
         let legs = vec![
             tracked(
                 1,

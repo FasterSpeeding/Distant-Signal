@@ -255,11 +255,19 @@ export interface DepartureRow {
  * (rolled independently of `frontend`) omits it; absent means `0`. */
 export interface ScheduleDepartureRow {
   uid: string;
+  /** The public departure, else the working one where the call has no
+   * public departure; `dayOffset` is its day. Working (WTT) from an older
+   * backend. */
   scheduled: string;
-  /** The public (timetable) departure, shown in place of `scheduled` (the
-   * working-timetable time, kept as WTT for one release). `null`/absent
-   * until the next schedule publish. */
+  /** The public (timetable) departure, shown in place of `scheduled` (for
+   * an older backend). `null`/absent until the next schedule publish. */
   publicDeparture?: string | null;
+  /** The working-timetable departure and its own day offset: what a pin is
+   * made from (`cifDepartureDateTime`), since schedule matching keys on the
+   * working time. Absent from an older backend, whose `scheduled`/
+   * `dayOffset` are the working ones. */
+  workingDeparture?: string | null;
+  workingDayOffset?: number;
   /** Absent from an older api pod mid-rollout; see `pickCifDeparture`. */
   dayOffset?: number;
   destinationCrs: string | null;
@@ -304,10 +312,14 @@ export type CifPickerRow = ScheduleDepartureRow & { serviceDate: string };
 const RAIL_DAY_ROLLOVER_HOUR = 2;
 
 /** The departure's own London wall-clock reading, `'YYYY-MM-DD HH:mm:00'`
- * -- the same string shape `scheduledDeparture` holds. */
+ * -- the same string shape `scheduledDeparture` holds. The working time when
+ * the row has one, so the pin matches on what schedule matching keys on
+ * (2026-10-20: `scheduled` became the public time). */
 export function cifDepartureDateTime(row: CifPickerRow): string {
-  const [hh, mm] = row.scheduled.split(':');
-  return `${addCalendarDays(row.serviceDate, row.dayOffset ?? 0)} ${hh}:${mm}:00`;
+  const time = row.workingDeparture ?? row.scheduled;
+  const dayOffset = (row.workingDeparture != null ? row.workingDayOffset : row.dayOffset) ?? 0;
+  const [hh, mm] = time.split(':');
+  return `${addCalendarDays(row.serviceDate, dayOffset)} ${hh}:${mm}:00`;
 }
 
 /** The `schedule-departures` rows for `crs`, each tagged with its service

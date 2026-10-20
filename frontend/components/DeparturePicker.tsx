@@ -298,8 +298,8 @@ export function DeparturePicker({
               className="ds-clickable"
             >
               <Text size="sm">
-                {/* Public time shown; `row.scheduled` (WTT) stays the
-                    value `pickCifDeparture` matches on. */}
+                {/* Public time shown; `pickCifDeparture` pins the
+                    working time (`cifDepartureDateTime`). */}
                 {row.publicDeparture ?? row.scheduled}
                 {/* `stationLabel` -- same "Name (CODE)", bare-code-fallback
                     convention as everywhere else in this app (item 5,

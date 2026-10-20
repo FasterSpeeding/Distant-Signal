@@ -83,9 +83,14 @@ fn row_day_offset(row: &LegCallingPointRow) -> u8 {
 /// lands on exactly the leg's own minute. If more than one row shares that
 /// `(uid, minute)` -- two TIPLOCs of one schedule at the same minute --
 /// their platforms must agree, otherwise the answer is `None`.
+///
+/// The calls are found by the leg's `working_*` times. Its `scheduled_*`
+/// (and their day offsets) are then set to the public times, else the
+/// working ones where the call has no public time in that direction.
 #[expect(
     clippy::implicit_hasher,
-    reason = "callers always use the default hasher"
+    clippy::too_many_lines,
+    reason = "callers always use the default hasher; one linear pass over the rows, then the legs, sharing the lookups"
 )]
 pub fn apply_leg_details(
     segments: &mut [SegmentResult],
@@ -154,6 +159,10 @@ pub fn apply_leg_details(
                     scheduled_arrival,
                     departure_day_offset,
                     arrival_day_offset,
+                    working_departure,
+                    working_arrival,
+                    working_departure_day_offset,
+                    working_arrival_day_offset,
                     booked_departure_platform,
                     booked_arrival_platform,
                     public_departure,
@@ -167,32 +176,47 @@ pub fn apply_leg_details(
                 else {
                     continue;
                 };
-                // The planner's own departure day offset first; the
-                // arrival's offset and the same-day reading remain as
-                // fallbacks for legs built without one.
-                let departure_minutes = [*departure_day_offset, *arrival_day_offset, 0]
-                    .into_iter()
-                    .map(|offset| minutes(*scheduled_departure, offset))
-                    .find(|at| departures.contains_key(&(train_uid.clone(), *at)));
+                // The calls are found by their working times. The planner's
+                // own departure day offset first; the arrival's offset and the
+                // same-day reading remain as fallbacks for legs built without
+                // one.
+                let departure_minutes = [
+                    *working_departure_day_offset,
+                    *working_arrival_day_offset,
+                    0,
+                ]
+                .into_iter()
+                .map(|offset| minutes(*working_departure, offset))
+                .find(|at| departures.contains_key(&(train_uid.clone(), *at)));
                 *booked_departure_platform = departure_minutes
                     .and_then(|at| departures.get(&(train_uid.clone(), at)).cloned())
                     .flatten();
                 let arrival_key = (
                     train_uid.clone(),
-                    minutes(*scheduled_arrival, *arrival_day_offset),
+                    minutes(*working_arrival, *working_arrival_day_offset),
                 );
                 *booked_arrival_platform = arrivals.get(&arrival_key).cloned().flatten();
                 *public_departure = departure_minutes
                     .and_then(|at| public_departures.get(&(train_uid.clone(), at)).copied())
                     .flatten();
                 *public_departure_day_offset = public_departure.map(|public| {
-                    let offset = departure_minutes.map_or(*departure_day_offset, day_offset_of);
-                    public_day_offset(*scheduled_departure, offset, public)
+                    let offset =
+                        departure_minutes.map_or(*working_departure_day_offset, day_offset_of);
+                    public_day_offset(*working_departure, offset, public)
                 });
                 *public_arrival = public_arrivals.get(&arrival_key).copied().flatten();
                 *public_arrival_day_offset = public_arrival.map(|public| {
-                    public_day_offset(*scheduled_arrival, *arrival_day_offset, public)
+                    public_day_offset(*working_arrival, *working_arrival_day_offset, public)
                 });
+                // `scheduled*` serve the public time, keeping the working one
+                // where the call has none in that direction (design doc §9
+                // decision 1, switched 2026-10-20).
+                (*scheduled_departure, *departure_day_offset) = public_departure
+                    .zip(*public_departure_day_offset)
+                    .unwrap_or((*working_departure, *working_departure_day_offset));
+                (*scheduled_arrival, *arrival_day_offset) = public_arrival
+                    .zip(*public_arrival_day_offset)
+                    .unwrap_or((*working_arrival, *working_arrival_day_offset));
                 *operator = operators.get(train_uid.as_str()).cloned();
                 *headcode = headcodes.get(train_uid.as_str()).cloned();
             }
@@ -331,6 +355,10 @@ mod tests {
             scheduled_arrival: arrives.parse().unwrap(),
             departure_day_offset: 0,
             arrival_day_offset,
+            working_departure: departs.parse().unwrap(),
+            working_arrival: arrives.parse().unwrap(),
+            working_departure_day_offset: 0,
+            working_arrival_day_offset: arrival_day_offset,
             booked_departure_platform: None,
             booked_arrival_platform: None,
             public_departure: None,
@@ -421,6 +449,42 @@ mod tests {
                 Some(1)
             )
         );
+    }
+
+    /// Design doc §9 decision 1, switched 2026-10-20: a leg's `scheduled*`
+    /// serve the public times where they differ from the working ones
+    /// (Watford Jn -> Milton Keynes on Avanti 9G44: WTT arrival 20:50H,
+    /// public 20:51), found by the working times, which stay on the leg as
+    /// `working*`. A call with no public time keeps the working time.
+    /// Running it twice changes nothing.
+    #[test]
+    fn scheduled_times_are_public_and_working_times_stay_wtt() {
+        let mut segments = segments(vec![
+            train_leg("C01355", "20:31:00", "20:50:00", 0),
+            train_leg("C01372", "16:02:00", "17:00:00", 0),
+        ]);
+        let mut watford = row("C01355", None, Some("20:31:00"), 0, Some("8"));
+        watford.public_departure = "20:31:00".parse().ok();
+        let mut milton = row("C01355", Some("20:50:00"), None, 0, Some("4"));
+        milton.public_arrival = "20:51:00".parse().ok();
+        // A schedule stored before public times were.
+        let carlisle = row("C01372", None, Some("16:02:00"), 0, None);
+        let motherwell = row("C01372", Some("17:00:00"), None, 0, None);
+        let rows = [watford, milton, carlisle, motherwell];
+        for _ in 0..2 {
+            apply_leg_details(&mut segments, &rows, &HashMap::new(), &HashMap::new());
+        }
+        let json = serde_json::to_value(&segments[0].itineraries[0].legs).unwrap();
+        assert_eq!(json[0]["scheduledDeparture"], "20:31:00");
+        assert_eq!(json[0]["scheduledArrival"], "20:51:00", "public");
+        assert_eq!(json[0]["arrivalDayOffset"], 0);
+        assert_eq!(json[0]["publicArrival"], "20:51:00");
+        assert_eq!(json[0]["workingArrival"], "20:50:00", "WTT");
+        assert_eq!(json[0]["workingArrivalDayOffset"], 0);
+        assert_eq!(json[0]["bookedArrivalPlatform"], "4");
+        assert_eq!(json[1]["scheduledDeparture"], "16:02:00");
+        assert_eq!(json[1]["scheduledArrival"], "17:00:00", "no public time");
+        assert_eq!(json[1]["publicArrival"], serde_json::Value::Null);
     }
 
     /// A bus or ferry leg keeps `kind: "train"` (clients branch on it) and
