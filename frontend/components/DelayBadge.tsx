@@ -1,5 +1,6 @@
 import { Badge } from '@mantine/core';
-import { delayLabel, type DelayTone } from '@/lib/serviceStatus';
+import { compactDelayLabel, delayLabel, type DelayTone } from '@/lib/serviceStatus';
+import { PhoneLabel } from './PhoneLabel';
 
 /** Each delay tone's colour: the app's one delay-to-colour table. The
  * badge below is its main user; `JourneyProgress`'s stop markers read it
@@ -16,12 +17,26 @@ export const DELAY_TONE_COLOR: Record<DelayTone, 'orange' | 'teal' | 'green'> = 
  * the train page), worded by `lib/serviceStatus.ts`: "12 min late"
  * orange, "3 min early" teal, "On time" green -- a different word for each
  * state, never colour alone. `tt="none"`: Mantine's default 11px uppercase
- * measured borderline for contrast, and these are phrases with units. */
-export function DelayBadge({ delayMinutes, provisional = false }: { delayMinutes: number; provisional?: boolean }) {
+ * measured borderline for contrast, and these are phrases with units.
+ *
+ * `compact` (a narrow table column, `JourneyTimeline`) shows the short form
+ * below `sm`, "+12 min" or "−3 min", with the full words kept for screen
+ * readers (`PhoneLabel`). `data-delay-badge` opts the badge out of Mantine's
+ * ellipsis (`app/globals.css`): it is never cut short, whatever its width. */
+export function DelayBadge({
+  delayMinutes,
+  provisional = false,
+  compact = false,
+}: {
+  delayMinutes: number;
+  provisional?: boolean;
+  compact?: boolean;
+}) {
   const delay = delayLabel(delayMinutes, provisional);
+  const short = compact ? compactDelayLabel(delayMinutes, provisional) : delay.text;
   return (
-    <Badge color={DELAY_TONE_COLOR[delay.tone]} variant="light" tt="none">
-      {delay.text}
+    <Badge color={DELAY_TONE_COLOR[delay.tone]} variant="light" tt="none" data-delay-badge={delay.tone}>
+      {short === delay.text ? delay.text : <PhoneLabel full={delay.text} compact={short} />}
     </Badge>
   );
 }

@@ -1,5 +1,7 @@
 import { Badge, VisuallyHidden } from '@mantine/core';
+import { compactPlatformLabel, isPlatformChange, platformLabel } from '@/lib/platformLabel';
 import type { PlatformStatus } from '@/lib/types';
+import { PhoneLabel } from './PhoneLabel';
 
 /** A small colour+text badge naming a calling point's Darwin/LDBWS
  * platform, shared between `ScheduleRow.tsx` (list-view rows) and
@@ -39,22 +41,33 @@ import type { PlatformStatus } from '@/lib/types';
  * through. Neither cue is announced by a screen reader, so a visually
  * hidden " (cancelled)" completes the text: "Platform 4 (cancelled)".
  * Any other status (including one this client doesn't know yet) renders
- * as a normal platform. */
+ * as a normal platform.
+ *
+ * `compact` (under a "Platform" column header, `JourneyTimeline`) shows
+ * the short form below `sm`: "4", or "9 (was 6)" for a change, so the
+ * change is still in words. Screen readers keep the full label
+ * (`PhoneLabel`). `data-platform-badge` opts the badge out of Mantine's
+ * ellipsis (`app/globals.css`): it is never cut short, whatever its
+ * width. */
 export function PlatformBadge({
   platform,
   plannedPlatform,
   platformChanged,
   platformStatus = null,
+  compact = false,
 }: {
   platform: string | null;
   plannedPlatform: string | null;
   platformChanged: boolean;
   platformStatus?: PlatformStatus | null | undefined;
+  compact?: boolean;
 }) {
   if (platform === null) return null;
 
-  const changed = platformChanged && plannedPlatform !== null;
-  const label = changed ? `Platform ${platform} (changed from ${plannedPlatform})` : `Platform ${platform}`;
+  const facts = { platform, plannedPlatform, platformChanged };
+  const changed = isPlatformChange(facts);
+  const fullLabel = platformLabel(facts);
+  const label = compact ? <PhoneLabel full={fullLabel} compact={compactPlatformLabel(facts)} /> : fullLabel;
 
   if (platformStatus === 'cancelled') {
     return (
@@ -62,6 +75,7 @@ export function PlatformBadge({
         color="red"
         variant="light"
         tt="none"
+        data-platform-badge
         data-platform-changed={changed}
         data-platform-cancelled="true"
         title="Cancelled: the train no longer calls at this platform"
@@ -73,7 +87,13 @@ export function PlatformBadge({
   }
 
   return (
-    <Badge color={changed ? 'blue' : 'gray'} variant="light" tt="none" data-platform-changed={changed}>
+    <Badge
+      color={changed ? 'blue' : 'gray'}
+      variant="light"
+      tt="none"
+      data-platform-badge
+      data-platform-changed={changed}
+    >
       {label}
     </Badge>
   );

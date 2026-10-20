@@ -21,6 +21,25 @@ describe('DelayBadge', () => {
     expect(screen.getByText('5 min late').closest('.mantine-Badge-root')).toHaveStyle({ textTransform: 'none' });
   });
 
+  it('marks itself as never cut short (`data-delay-badge`, globals.css)', () => {
+    renderWithMantine(<DelayBadge delayMinutes={5} />);
+    expect(screen.getByText('5 min late').closest('.mantine-Badge-root')).toHaveAttribute('data-delay-badge', 'late');
+  });
+
+  it('with `compact`, adds the short phone form beside the full words, hidden from screen readers', () => {
+    renderWithMantine(<DelayBadge delayMinutes={12} compact />);
+    expect(screen.getByText('12 min late')).toHaveClass('phoneLabel__full');
+    const short = screen.getByText('+12 min');
+    expect(short).toHaveClass('phoneLabel__compact');
+    expect(short).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('with `compact`, leaves "On time" alone: it is already short', () => {
+    renderWithMantine(<DelayBadge delayMinutes={0} compact />);
+    expect(screen.getByText('On time')).toHaveClass('mantine-Badge-label');
+    expect(document.querySelector('.phoneLabel__compact')).toBeNull();
+  });
+
   it('holds the one delay-to-colour table', () => {
     expect(DELAY_TONE_COLOR).toEqual({ late: 'orange', early: 'teal', onTime: 'green' });
   });

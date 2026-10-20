@@ -100,4 +100,33 @@ describe('PlatformBadge', () => {
       expect(badge.closest('[data-platform-cancelled]')).toBeNull();
     });
   });
+
+  describe('compact (a narrow table column)', () => {
+    it('adds the short phone form, hidden from screen readers, beside the full label', () => {
+      renderWithMantine(<PlatformBadge platform="4" plannedPlatform="4" platformChanged={false} compact />);
+      expect(screen.getByText('Platform 4')).toHaveClass('phoneLabel__full');
+      const short = screen.getByText('4');
+      expect(short).toHaveClass('phoneLabel__compact');
+      expect(short).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('keeps a platform change in words: "9 (was 6)"', () => {
+      renderWithMantine(<PlatformBadge platform="9" plannedPlatform="6" platformChanged={true} compact />);
+      expect(screen.getByText('9 (was 6)').closest('[data-platform-changed="true"]')).not.toBeNull();
+      expect(screen.getByText('Platform 9 (changed from 6)')).toBeInTheDocument();
+    });
+
+    it('strikes through both forms of a cancelled platform', () => {
+      renderWithMantine(
+        <PlatformBadge platform="4" plannedPlatform="4" platformChanged={false} platformStatus="cancelled" compact />,
+      );
+      expect(screen.getByText('Platform 4').closest('s')).not.toBeNull();
+      expect(screen.getByText('4').closest('s')).not.toBeNull();
+    });
+  });
+
+  it('marks itself as never cut short (`data-platform-badge`, globals.css)', () => {
+    renderWithMantine(<PlatformBadge platform="4" plannedPlatform="4" platformChanged={false} />);
+    expect(screen.getByText('Platform 4').closest('.mantine-Badge-root')).toHaveAttribute('data-platform-badge');
+  });
 });
