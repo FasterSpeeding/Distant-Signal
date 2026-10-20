@@ -23,7 +23,7 @@
 //! failed lookup leaves every row's phase `None` (the wire's `null`), which
 //! the frontend reads as today's behaviour.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Serialize;
@@ -145,10 +145,11 @@ pub async fn timetable_facts(
     pool: &PgPool,
     keys: &[(String, NaiveDate)],
 ) -> anyhow::Result<HashMap<(String, NaiveDate), TimetableFacts>> {
+    let mut seen: HashSet<(&str, NaiveDate)> = HashSet::with_capacity(keys.len());
     let mut uids: Vec<String> = Vec::with_capacity(keys.len());
     let mut dates: Vec<NaiveDate> = Vec::with_capacity(keys.len());
     for (uid, date) in keys {
-        if uids.iter().zip(&dates).any(|(u, d)| u == uid && d == date) {
+        if !seen.insert((uid.as_str(), *date)) {
             continue;
         }
         uids.push(uid.clone());
