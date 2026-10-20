@@ -25,6 +25,36 @@ Additive. Spec: `docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-tr
 - **For ds-mcp.** Nothing to change. A planned route's transfers can be
   sent the same way, as `kind: "untracked"` itinerary legs.
 
+## 2026-10-20: hand-entered train legs are checked against the timetable
+
+A train leg typed by hand is refused with `422` when its train can't
+serve it. Checked: each `POST /Journeys/itinerary` train leg with `originCrs` or
+`destinationCrs`; a `knownTrain` leg's `originCrs`/`destinationCrs` on
+`POST /Journeys` and `POST /Journeys/{id}/legs`; and the leg's own origin
+and destination on `POST /Journeys/{id}/legs/{legId}/train`.
+
+- **Rules.** The train must stop at the origin and later at the
+  destination on `serviceDate`. A passing point is not a stop. Boarding
+  must be allowed at the origin and getting off at the destination. A
+  request stop allows both. An absent `originCrs` or `destinationCrs`
+  means the train's own end, which always passes.
+- **Codes** (`error` for a delegated client; the web app gets the
+  `message` as plain text): `train_does_not_call_at_origin`,
+  `train_does_not_call_at_destination`, `destination_before_origin`,
+  `boarding_not_allowed` (set-down-only stop or terminus) and
+  `alighting_not_allowed` (pick-up-only stop, such as a sleeper's
+  northbound Watford, Crewe and Preston). `message` names the train, the
+  station and the date. On an itinerary with more than one leg it starts
+  `Leg N: ` (1-based, untracked legs counted). Nothing is saved, and the `Idempotency-Key` stays
+  unused.
+- **Not in the timetable yet.** A UID with no schedule for that date (a
+  late STP or VSTP service, a date not published yet) is accepted
+  unchecked, as before. Saved legs are never re-checked.
+- **For ds-mcp.** Handle `422` on `POST /Journeys/itinerary`: show
+  `message` and don't retry the same legs. Legs taken as-is from
+  `/Trips/plan` always pass. Full table:
+  [connected-apps.md](connected-apps.md#itinerary-errors).
+
 ## 2026-10-20: untracked journey legs, `trackingPhase`
 
 Additive; no existing request or field changes meaning. Spec:
