@@ -75,7 +75,6 @@ pub fn ended_at(periods: &[ValidityPeriod], now: DateTime<Utc>) -> Option<DateTi
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code")]
 mod tests {
     use super::*;
     use chrono::{Duration, NaiveDate, TimeZone};
