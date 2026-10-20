@@ -60,6 +60,25 @@ export function bucketFor(status: LineStatus, now: number): IssueBucket {
   return 'ended';
 }
 
+/** An incident's own validity windows relative to `now`, by the api's rule
+ * (`common::incident_validity::ValidityPhase`): `active` while a window
+ * covers now (`[fromDate, toDate)`, an open end never finishing) or there
+ * are none, `upcoming` while none does and one starts later, else `ended`.
+ * Only `incidentState`'s fallback for an api that predates `state`; the
+ * api's own answer wins whenever it is there. Unlike `periodIsActive`,
+ * which reads a line status's single display period, it ignores `isNow`
+ * ("open-ended", not "now") and reads an unparseable bound as absent. */
+export function validityPhase(periods: readonly ValidityPeriod[], now: number): 'active' | 'upcoming' | 'ended' {
+  if (periods.length === 0) return 'active';
+  const bounds = periods.map((period) => ({
+    from: Date.parse(period.fromDate),
+    to: period.toDate === null ? Number.NaN : Date.parse(period.toDate),
+  }));
+  if (bounds.some(({ from, to }) => !(from > now) && (Number.isNaN(to) || to > now))) return 'active';
+  if (bounds.some(({ from }) => from > now)) return 'upcoming';
+  return 'ended';
+}
+
 /** The period a collapsed row should describe: whichever one covers now,
  * else the soonest one still to come, else the earliest on record. */
 export function governingPeriod(status: LineStatus, now: number): ValidityPeriod | undefined {

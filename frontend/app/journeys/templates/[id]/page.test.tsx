@@ -79,9 +79,11 @@ describe('JourneyTemplateDetailPage', () => {
     expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('09:00');
   });
 
-  it('falls back to a generic title when there is no custom name', async () => {
+  it('falls back to the route, as the templates list names it, when there is no custom name', async () => {
     vi.mocked(api.getJourneyTemplate).mockResolvedValue(template({ customName: null }));
     await renderPage();
-    expect(screen.getByRole('heading', { level: 1, name: 'Journey template' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'London Kings Cross (KGX) to Edinburgh (EDB)' }),
+    ).toBeInTheDocument();
   });
 });

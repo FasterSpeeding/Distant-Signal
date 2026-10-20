@@ -33,6 +33,32 @@ and destination on `POST /Journeys/{id}/legs/{legId}/train`.
   `/Trips/plan` always pass. Full table:
   [connected-apps.md](connected-apps.md#itinerary-errors).
 
+## 2026-10-20: whole-journey names in journey lists
+
+Additive; no existing field changes meaning. A journey is named from its
+first leg's origin to its LAST leg's destination, on its first leg's date
+(`docs/style-guide.md`, "Journey names"). The list payloads only carried
+one leg's ends, so a planned multi-leg journey read as ending at its
+first change.
+
+- **`GET /Journeys/mine`.** Each row gains `firstOriginCrs`,
+  `firstOriginName`, `lastDestinationCrs`, `lastDestinationName` (names
+  `null` when no station row resolves), `firstServiceDate`
+  (`YYYY-MM-DD`) and `legCount`. `originCrs`, `destinationCrs`,
+  `serviceDate` and the rest still describe the current leg, as before.
+- **`GET /groups/{id}/journeys` and `GET /groups/shared-journeys`.**
+  Each row gains `firstOriginCrs`, `firstOriginName`,
+  `lastDestinationCrs` and `lastDestinationName`, from the journey's legs.
+  The `pin*` fields are still the first leg's train pin, empty until that
+  leg has a train.
+- **Push notifications** (no API change): a multi-leg delay or
+  cancellation names an unnamed journey "your journey to <last
+  destination>", numbers the leg by its position (no gaps after a deleted
+  leg), and uses station names instead of codes when both ends resolve.
+- **For ds-mcp.** Nothing breaks. To name a journey the way the site does,
+  use `customName`, else `firstOriginName` (or `firstOriginCrs`) to
+  `lastDestinationName` (or `lastDestinationCrs`) and `firstServiceDate`.
+
 ## 2026-10-20: `journeyStops[].passingPoint`
 
 Additive. Every `journeyStops` entry (train detail, tracked trains,
@@ -76,6 +102,34 @@ Additive; a request without the new parameter is unchanged.
   either date's live data applied. `provisional` follows the later date.
 - **For ds-mcp.** Nothing to change. To plan "arrive by 00:30 on Saturday",
   send `date=<Friday>&arriveBy=00:30&dayOffset=1&acrossMidnight=true`.
+
+## 2026-10-20: incident state from the validity windows
+
+Spec: `docs/superpowers/specs/2026-10-20-incident-validity-state-design.md`.
+New fields and a new filter value are additive; `state=active` (and
+`cleared=false`) now returns fewer rows.
+
+- **`state` on every incident.** `GET /public/incidents` rows and `GET
+  /public/incidents/{id}` gain `state`: `active`, `upcoming`, `ended` or
+  `cleared`. First match wins: `cleared` when RDM cleared it; `ended` when
+  the feed stopped listing it (`sourceRemovedAt`); then by the incident's
+  own `validityPeriods`: `active` while one covers now (or there are none),
+  `upcoming` while none has started yet (or now is between two), `ended`
+  once every one has finished. Until now "active" only meant "not cleared
+  and still listed", so planned work next week read as active.
+- **`startsAt`** (RFC3339 or `null`): when the next window starts, for
+  `upcoming`. **`validityEndedAt`** (RFC3339 or `null`): when the last
+  window finished, once every one has; `sourceRemovedAt` still says when a
+  removed one was last listed.
+- **`state=upcoming`** is a new filter value. `state=active` and the
+  legacy `cleared=false` now exclude upcoming incidents and listed ones
+  whose windows have all finished; `state=ended` now includes the latter.
+  `total` counts the same rows as the filter.
+- **Unchanged.** `isCleared`, `sourceRemovedAt`, `validityPeriods` and
+  `isNow` (which means "open-ended", not "covers now"). The line status
+  routes were already gated on the same windows.
+- **For ds-mcp.** Prefer `state` over deriving one from `isCleared` and
+  `sourceRemovedAt`; a client that ignores it keeps working.
 
 ## 2026-10-19: `/Trips/plan` overnight times (`dayOffset`)
 

@@ -7,6 +7,12 @@ polls" non-goal of
 filter in
 [2026-09-12-incident-archive-design.md](2026-09-12-incident-archive-design.md).
 
+**Amended 2026-10-20** by
+[2026-10-20-incident-validity-state-design.md](2026-10-20-incident-validity-state-design.md):
+"Active" below also needs a validity window covering now. A listed,
+uncleared incident none of whose windows has started is "Upcoming", and
+one whose windows have all finished is "Ended".
+
 ## Problem (investigated on production, 2026-10-06)
 
 "Active" was computed only as `NOT incidents.is_cleared`, and `is_cleared` is

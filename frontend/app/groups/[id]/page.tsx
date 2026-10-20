@@ -31,6 +31,7 @@ import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
+import { groupJourneyNameInput, journeyDisplayName, journeyPreviewLine } from '@/lib/journeyName';
 import { worstStatus } from '@/lib/severity';
 import { groupRoleLabel, memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
 import { getSiteOrigin } from '@/lib/siteOrigin';
@@ -474,30 +475,32 @@ function SharedJourneyRow({
   currentUserId: string | null;
 }) {
   const canRemove = canManage || (currentUserId !== null && journey.addedBy === currentUserId);
-  // Same route+date(/time) default `SharedTrainRow` above computes via
-  // `trackedTrainDisplayName` -- `GroupJourney` carries every field that
-  // helper needs (it's the first leg's own identity/status fields), so
-  // this row's default now agrees with every other tracked-train label in
-  // the app instead of a hand-rolled "Untitled journey" placeholder.
-  // Appends a "+N more legs" suffix for a multi-leg journey (this row's
-  // own prior intent, kept): the helper's default only ever describes ONE
-  // leg's route, so a journey with more legs than that needs its own
-  // signal that there's more to it.
-  const displayName =
-    trackedTrainDisplayName(journey) +
-    (journey.legCount > 1 ? ` (+${journey.legCount - 1} more leg${journey.legCount > 2 ? 's' : ''})` : '');
+  // The one journey-naming rule (`lib/journeyName.ts`), the same name the
+  // owner's own Track list and the journey page show: custom name, else the
+  // whole route (first leg's origin to LAST leg's destination) and date. It
+  // used to be the first leg's train pin plus "(+N more legs)", which named
+  // only the first leg and was "Unknown station" until that leg had a train.
+  const name = groupJourneyNameInput(journey);
+  const preview = journeyPreviewLine(name);
   return (
     <Card withBorder>
       <StatusRow
         title={
           <Link href={`/journeys/${journey.journeyId}`} data-card-link>
-            <Text fw={500}>{displayName}</Text>
+            <Text fw={500}>{journeyDisplayName(name)}</Text>
           </Link>
         }
         subtitle={
-          <Text size="sm" c="dimmed">
-            Shared by {memberLabel(journey.addedByName, journey.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
-          </Text>
+          <>
+            {preview && (
+              <Text size="sm" c="dimmed">
+                {preview}
+              </Text>
+            )}
+            <Text size="sm" c="dimmed">
+              Shared by {memberLabel(journey.addedByName, journey.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
+            </Text>
+          </>
         }
         trailing={
           <Group gap="xs" wrap="nowrap">

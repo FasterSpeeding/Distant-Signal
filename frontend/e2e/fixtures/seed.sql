@@ -176,6 +176,36 @@ ON CONFLICT (incident_id) DO UPDATE SET
   fetched_at = EXCLUDED.fetched_at, source_missing_polls = EXCLUDED.source_missing_polls,
   source_removed_at = EXCLUDED.source_removed_at;
 
+-- An "Upcoming" incident: listed and uncleared, but its only validity
+-- window is next week, so it is not in effect yet (2026-10-20,
+-- docs/superpowers/specs/2026-10-20-incident-validity-state-design.md).
+-- The window is relative to NOW() so it stays upcoming. First seen on a
+-- fixed date more than 30 days before both today and visual.spec.ts's
+-- FIXED_NOW (2026-09-17), so /incidents' default 30 days (and its
+-- screenshot) leaves it out; `period=all` shows it. No "signal" or
+-- "engineering" in its text: list-filters.spec.ts searches for both.
+INSERT INTO incidents (
+    incident_id, summary, description, operators, affected_stations,
+    priority, validity_periods, is_planned, is_cleared, fetched_at,
+    first_seen_at, affected_lines
+)
+VALUES (
+    'FIXTURE-INCIDENT-UPCOMING',
+    'Buses replace trains between Middlesbrough and Saltburn next week',
+    'Fixture incident: buses replace trains on one day next week.',
+    '{NT}', '{}',
+    2,
+    jsonb_build_array(jsonb_build_object(
+        'from_date', to_char((NOW() + interval '5 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+        'to_date', to_char((NOW() + interval '6 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+        'is_now', false)),
+    TRUE, FALSE, NOW(), '2026-07-01T09:00:00Z', '{}'
+)
+ON CONFLICT (incident_id) DO UPDATE SET
+  summary = EXCLUDED.summary, description = EXCLUDED.description,
+  validity_periods = EXCLUDED.validity_periods, affected_lines = EXCLUDED.affected_lines,
+  fetched_at = EXCLUDED.fetched_at, first_seen_at = EXCLUDED.first_seen_at;
+
 -- ---------------------------------------------------------------------
 -- Shared train identity + a pinned RESOLVED subscription (the second
 -- train_subscriptions row -- see the unresolved one's comment above for why
@@ -436,3 +466,25 @@ VALUES
   ('2026-09-18', 'E2EPL4', 0, 'E2EPLA', 'origin', NULL, '00:10:00', 0),
   ('2026-09-18', 'E2EPL4', 1, 'E2EPLC', 'terminate', '00:40:00', NULL, 0)
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- A PLANNED three-leg journey for fixture-owner (journey-names.spec.ts and
+-- the logged-in /track/mine screenshot in visual.spec.ts): no leg has a
+-- train yet, so there is no tracking data at all. Its row on /track/mine
+-- must name it from the first leg's origin (EUS) to the LAST leg's
+-- destination (KGX), not the first leg's (MKC). EUS and KGX are the two
+-- seeded `stations` rows, so both ends have names; MKC and PBO are not.
+-- A fixed id far above the sequence so a spec's own POST /Journeys never
+-- meets it (E2E_PLANNED_JOURNEY_ID, default 900001).
+-- ---------------------------------------------------------------------
+INSERT INTO journeys (id, user_id, custom_name, created_at, updated_at)
+VALUES (900001, 'fixture-owner', NULL, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO journey_legs
+  (journey_id, leg_order, origin_crs, destination_crs, service_date, depart_after, match_mode)
+VALUES
+  (900001, 1, 'EUS', 'MKC', '2026-09-17', '08:00', 'unmatched'),
+  (900001, 2, 'MKC', 'PBO', '2026-09-17', '10:00', 'unmatched'),
+  (900001, 3, 'PBO', 'KGX', '2026-09-17', '12:00', 'unmatched')
+ON CONFLICT (journey_id, leg_order) DO NOTHING;

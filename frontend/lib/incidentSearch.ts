@@ -7,15 +7,16 @@ import type { IncidentSummary } from '@/lib/types';
 export type DatePreset = '7d' | '30d' | '90d' | 'all';
 
 /** The Status filter: `GET /public/incidents`' `state`, or no filter.
- * "Ended" is an incident the Knowledgebase feed stopped listing without
- * clearing it (see `incidentState` in `lib/incidents.ts`). */
-export type StateFilter = 'all' | 'active' | 'ended' | 'cleared';
+ * "Upcoming" is listed but not in effect yet; "Ended" is an incident the
+ * Knowledgebase feed stopped listing without clearing it, or whose every
+ * validity window has finished (see `incidentState` in `lib/incidents.ts`). */
+export type StateFilter = 'all' | 'active' | 'upcoming' | 'ended' | 'cleared';
 
 /** The Status filter a URL restores: `?state=` when it names a real state,
  * else the legacy `?cleared=` boolean (`false` = active, `true` = cleared),
  * else All. Malformed means absent, as for the priority params. */
 export function initialStateFilter(state: string | undefined, cleared: string | undefined): StateFilter {
-  if (state === 'active' || state === 'ended' || state === 'cleared') return state;
+  if (state === 'active' || state === 'upcoming' || state === 'ended' || state === 'cleared') return state;
   if (cleared === 'false') return 'active';
   if (cleared === 'true') return 'cleared';
   return 'all';

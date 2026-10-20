@@ -139,7 +139,13 @@ export function IncidentResults({
                 affects is plain dimmed text, operators by name. */}
             <Group gap="xs">
               {row.isPlanned && <StateBadge tone="planned">Planned work</StateBadge>}
-              <IncidentStateBadge isCleared={row.isCleared} sourceRemovedAt={row.sourceRemovedAt} />
+              <IncidentStateBadge
+                isCleared={row.isCleared}
+                sourceRemovedAt={row.sourceRemovedAt}
+                state={row.state}
+                startsAt={row.startsAt}
+                validityEndedAt={row.validityEndedAt}
+              />
             </Group>
             {affectsSummary(row, tocNamesByCode, lineNamesById) && (
               <Text size="xs" c="dimmed">

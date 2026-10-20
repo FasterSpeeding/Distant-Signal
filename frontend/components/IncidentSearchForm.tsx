@@ -392,6 +392,7 @@ export function IncidentSearchForm({
         options={[
           { label: 'All', value: 'all' },
           { label: 'Active', value: 'active' },
+          { label: 'Upcoming', value: 'upcoming' },
           { label: 'Ended', value: 'ended' },
           { label: 'Cleared', value: 'cleared' },
         ]}

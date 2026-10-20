@@ -229,6 +229,46 @@ describe('IncidentDetailPage', () => {
       expect(screen.queryByRole('link', { name: 'South Western Main Line' })).not.toBeInTheDocument();
     });
 
+    // 2026-10-20: 2D8C8B610B654F93BEC3A7B377A9B2A0 was "Active" for a
+    // closure on Sunday 25 October.
+    it('shows an Upcoming badge, and says when it starts instead of "Currently affects", for planned work not yet in effect', async () => {
+      vi.mocked(api.getIncident).mockResolvedValue(
+        detail({
+          isPlanned: true,
+          validityPeriods: [
+            { fromDate: '2026-10-24T23:00:00+00:00', toDate: '2026-10-25T23:59:00+00:00', isNow: false },
+          ],
+          state: 'upcoming',
+          startsAt: '2026-10-24T23:00:00+00:00',
+          validityEndedAt: null,
+          currentlyAffectsLines: [],
+        }),
+      );
+      renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
+      expect(document.querySelector('[data-incident-state="upcoming"]')).not.toBeNull();
+      expect(screen.queryByText('Active')).not.toBeInTheDocument();
+      expect(screen.getByText('Not in effect yet: starts 25 Oct 2026, 00:00.')).toBeInTheDocument();
+      expect(screen.queryByText('Currently affects')).not.toBeInTheDocument();
+    });
+
+    it('shows an Ended badge, and when its validity period ended, for a listed incident whose windows have all finished', async () => {
+      vi.mocked(api.getIncident).mockResolvedValue(
+        detail({
+          validityPeriods: [
+            { fromDate: '2026-10-17T23:00:00+00:00', toDate: '2026-10-18T22:59:00+00:00', isNow: false },
+          ],
+          state: 'ended',
+          startsAt: null,
+          validityEndedAt: '2026-10-18T22:59:00+00:00',
+          currentlyAffectsLines: [],
+        }),
+      );
+      renderWithMantine(await IncidentDetailPage({ params: Promise.resolve({ id: '12345' }) }));
+      expect(document.querySelector('[data-incident-state="ended"]')).not.toBeNull();
+      expect(screen.getByText('Its validity period ended 18 Oct 2026, 23:59.')).toBeInTheDocument();
+      expect(screen.queryByText('Currently affects')).not.toBeInTheDocument();
+    });
+
     it('resolves an operator code to its name via the TOC reference lookup, falling back to the bare code', async () => {
       const tocs: Suggestion[] = [{ code: 'VT', name: 'Avanti West Coast' }];
       vi.mocked(api.getAllTocs).mockResolvedValue(tocs);

@@ -2831,19 +2831,40 @@ pub struct IncidentSummaryRow {
     pub fetched_at: chrono::DateTime<chrono::Utc>,
     /// See `IncidentRow::source_removed_at`.
     pub source_removed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Raw, as `IncidentRow::validity_periods`. Not rendered on a list row
+    /// (Decision 7 above still holds), only read for the row's state
+    /// (`IncidentTiming`, 2026-10-20).
+    pub validity_periods: serde_json::Value,
 }
 
-/// An incident's lifecycle state, as the archive filters on it
-/// (2026-10-06, docs/superpowers/specs/2026-10-06-incident-source-removal-design.md).
-/// The three are disjoint: a listed row's `source_removed_at` is reset to
-/// NULL, and only uncleared rows are ever marked removed.
+/// An incident's state, as the archive shows and filters on it
+/// (2026-10-06, docs/superpowers/specs/2026-10-06-incident-source-removal-design.md;
+/// the validity windows since 2026-10-20,
+/// docs/superpowers/specs/2026-10-20-incident-validity-state-design.md).
+/// Exactly one applies, first match wins:
+///
+/// 1. `Cleared`: RDM set `ClearedIncident` (`is_cleared`). A reopen clears
+///    the flag, and the incident is placed by its windows again.
+/// 2. `Ended`: the feed stopped listing it without clearing it
+///    (`source_removed_at`), whatever its windows say.
+/// 3. Its feed validity windows (`common::incident_validity::ValidityPhase`):
+///    `Active` while one covers now (or there are none), `Upcoming` while
+///    none does and one starts later, `Ended` once all have finished.
+///
+/// [`IncidentState::derive`] is the rule; [`incident_state_sql`] is the
+/// same rule in SQL for the archive's filter and count, and
+/// `incident_search_query_tests` checks the two agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IncidentState {
-    /// Not cleared by RDM and still listed by the feed.
+    /// Not cleared, still listed, and a validity window covers now.
     Active,
+    /// Not cleared, still listed, and no window has started yet (or now is
+    /// between two windows): planned work that isn't in effect yet.
+    Upcoming,
     /// RDM set `ClearedIncident` (`is_cleared`).
     Cleared,
-    /// Left the feed without RDM clearing it (`source_removed_at` set).
+    /// Left the feed without RDM clearing it (`source_removed_at` set), or
+    /// still listed but every validity window has finished.
     Ended,
 }
 
@@ -2852,6 +2873,7 @@ impl IncidentState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Upcoming => "upcoming",
             Self::Cleared => "cleared",
             Self::Ended => "ended",
         }
@@ -2860,11 +2882,102 @@ impl IncidentState {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "active" => Some(Self::Active),
+            "upcoming" => Some(Self::Upcoming),
             "cleared" => Some(Self::Cleared),
             "ended" => Some(Self::Ended),
             _ => None,
         }
     }
+
+    /// The rule (type docs). `periods` are the feed's validity windows.
+    pub fn derive(
+        is_cleared: bool,
+        source_removed_at: Option<chrono::DateTime<chrono::Utc>>,
+        periods: &[common::ValidityPeriod],
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        use common::incident_validity::ValidityPhase;
+        if is_cleared {
+            return Self::Cleared;
+        }
+        if source_removed_at.is_some() {
+            return Self::Ended;
+        }
+        match ValidityPhase::of(periods, now) {
+            ValidityPhase::Active => Self::Active,
+            ValidityPhase::Upcoming => Self::Upcoming,
+            ValidityPhase::Ended => Self::Ended,
+        }
+    }
+}
+
+/// An incident's state with the times that explain it, as the api serves
+/// them (`state`, `startsAt`, `validityEndedAt`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IncidentTiming {
+    pub state: IncidentState,
+    /// When the next validity window starts, for an `Upcoming` incident.
+    pub starts_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the last validity window finished, for an incident whose every
+    /// window has (`Ended`, or `Cleared` after its windows ran out).
+    pub validity_ended_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Parses a stored `validity_periods` JSONB. A malformed value reads as
+/// no windows (and so `Active`, as `incident_state_sql` reads a non-array),
+/// with a warning, rather than failing the request.
+pub fn parse_validity_periods(raw: &serde_json::Value) -> Vec<common::ValidityPeriod> {
+    match serde_json::from_value(raw.clone()) {
+        Ok(periods) => periods,
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to deserialize validity_periods JSONB, reading it as empty");
+            Vec::new()
+        }
+    }
+}
+
+impl IncidentTiming {
+    pub fn derive(
+        is_cleared: bool,
+        source_removed_at: Option<chrono::DateTime<chrono::Utc>>,
+        periods: &[common::ValidityPeriod],
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        let state = IncidentState::derive(is_cleared, source_removed_at, periods, now);
+        Self {
+            state,
+            starts_at: (state == IncidentState::Upcoming)
+                .then(|| common::incident_validity::next_start(periods, now))
+                .flatten(),
+            validity_ended_at: common::incident_validity::ended_at(periods, now),
+        }
+    }
+}
+
+/// [`IncidentState::derive`] as a SQL expression over an `incidents` row,
+/// evaluated at the `timestamptz` parameter `now_param` (e.g. `"$10"`),
+/// yielding [`IncidentState::as_str`]. `validity_periods` holds
+/// `common::ValidityPeriod`s as serde writes them: `from_date`, `to_date`
+/// (JSON `null` when open-ended) and `is_now`. The `WHEN`s run in order, so
+/// the array functions only ever see an array.
+pub fn incident_state_sql(now_param: &str) -> String {
+    format!(
+        r"(CASE
+            WHEN is_cleared THEN 'cleared'
+            WHEN source_removed_at IS NOT NULL THEN 'ended'
+            WHEN jsonb_typeof(validity_periods) IS DISTINCT FROM 'array' THEN 'active'
+            WHEN jsonb_array_length(validity_periods) = 0 THEN 'active'
+            WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(validity_periods) AS vp
+                         WHERE (vp ->> 'from_date')::timestamptz <= {now_param}
+                           AND (vp ->> 'to_date' IS NULL
+                                OR (vp ->> 'to_date')::timestamptz > {now_param}))
+              THEN 'active'
+            WHEN EXISTS (SELECT 1 FROM jsonb_array_elements(validity_periods) AS vp
+                         WHERE (vp ->> 'from_date')::timestamptz > {now_param})
+              THEN 'upcoming'
+            ELSE 'ended'
+          END)"
+    )
 }
 
 /// Keyset cursor for `search_incidents`, matching
@@ -2968,6 +3081,10 @@ pub fn incident_search_tsquery(raw: &str) -> Option<String> {
 /// have been even if the column were populated, since the matcher's
 /// `KeywordOnly`/`OperatorOnly` tiers -- which station overlap could never
 /// see -- are how most real incidents are attributed to a line.
+///
+/// `state` is judged at `now` ([`incident_state_sql`]); the caller derives
+/// each returned row's state ([`IncidentTiming`]) at the same instant, so a
+/// row never comes back from `state=active` labelled anything else.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
@@ -2975,7 +3092,7 @@ pub fn incident_search_tsquery(raw: &str) -> Option<String> {
     clippy::too_many_arguments,
     reason = "each argument is an independent input from the single caller; a struct would only wrap them; limit is a validated page size, far below usize::MAX and i64::MAX"
 )]
-pub async fn search_incidents(
+pub async fn search_incidents_at(
     pool: &PgPool,
     operators: Option<Vec<String>>,
     line: Option<String>,
@@ -2988,22 +3105,23 @@ pub async fn search_incidents(
     text: Option<&str>,
     after: Option<&IncidentSearchCursor>,
     limit: i64,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<IncidentSearchPage> {
     let fetch = limit.saturating_add(1);
 
     // Shared by the page and the total, so the two can't disagree about
     // what matches. `$9` is `incident_search_tsquery`'s output (letters,
     // digits, `:*` and ` & ` only); `numnode = 0` is a query of nothing but
-    // stop words, which filters nothing rather than everything.
+    // stop words, which filters nothing rather than everything. `$10` is
+    // `now`, the instant the state is judged at (`incident_state_sql`); the
+    // route derives each row's state at the same instant.
+    let state_sql = incident_state_sql("$10");
     let filters = format!(
         r"
               ($1::text[]      IS NULL OR operators && $1)
               AND ($2::text        IS NULL OR affected_lines @> ARRAY[$2::text])
               AND ($3::boolean     IS NULL OR is_planned = $3)
-              AND ($4::text        IS NULL
-                   OR ($4 = 'active'  AND NOT is_cleared AND source_removed_at IS NULL)
-                   OR ($4 = 'cleared' AND is_cleared)
-                   OR ($4 = 'ended'   AND NOT is_cleared AND source_removed_at IS NOT NULL))
+              AND ($4::text        IS NULL OR {state_sql} = $4)
               AND ($5::integer     IS NULL OR priority >= $5)
               AND ($6::integer     IS NULL OR priority <= $6)
               AND ($7::timestamptz IS NULL OR first_seen_at >= $7)
@@ -3021,13 +3139,13 @@ pub async fn search_incidents(
                    COALESCE(affected_lines, '{{}}') AS affected_lines,
                    priority, is_planned, is_cleared, first_seen_at,
                    {fetched_at} AS fetched_at,
-                   source_removed_at
+                   source_removed_at, validity_periods
             FROM incidents
             WHERE {filters}
-              AND ($10::timestamptz IS NULL
-                   OR (first_seen_at, incident_id) < ($10, $11))
+              AND ($11::timestamptz IS NULL
+                   OR (first_seen_at, incident_id) < ($11, $12))
             ORDER BY first_seen_at DESC, incident_id DESC
-            LIMIT $12
+            LIMIT $13
             ",
         fetched_at = ds_store::incidents::FETCHED_AT_SQL,
     );
@@ -3041,6 +3159,7 @@ pub async fn search_incidents(
         .bind(first_seen_from)
         .bind(first_seen_to)
         .bind(text)
+        .bind(now)
         .bind(after.map(|c| c.first_seen_at))
         .bind(after.map(|c| c.incident_id.as_str()))
         .bind(fetch)
@@ -3059,6 +3178,7 @@ pub async fn search_incidents(
             .bind(first_seen_from)
             .bind(first_seen_to)
             .bind(text)
+            .bind(now)
             .fetch_one(pool)
             .await?;
         Some(count)
@@ -3086,6 +3206,44 @@ pub async fn search_incidents(
         next_cursor,
         total,
     })
+}
+
+/// [`search_incidents_at`] now, for tests that don't care about the instant.
+#[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors search_incidents_at's arguments"
+)]
+pub async fn search_incidents(
+    pool: &PgPool,
+    operators: Option<Vec<String>>,
+    line: Option<String>,
+    is_planned: Option<bool>,
+    state: Option<IncidentState>,
+    priority_min: Option<i32>,
+    priority_max: Option<i32>,
+    first_seen_from: Option<chrono::DateTime<chrono::Utc>>,
+    first_seen_to: Option<chrono::DateTime<chrono::Utc>>,
+    text: Option<&str>,
+    after: Option<&IncidentSearchCursor>,
+    limit: i64,
+) -> Result<IncidentSearchPage> {
+    search_incidents_at(
+        pool,
+        operators,
+        line,
+        is_planned,
+        state,
+        priority_min,
+        priority_max,
+        first_seen_from,
+        first_seen_to,
+        text,
+        after,
+        limit,
+        chrono::Utc::now(),
+    )
+    .await
 }
 
 /// Every fixture `incident_id` in this module is prefixed `archive-test-`
@@ -3906,6 +4064,230 @@ mod incident_search_query_tests {
         assert!(
             page.results.iter().all(|r| r.source_removed_at.is_some()),
             "an ended row carries when the feed last listed it"
+        );
+        delete_fixtures(&pool).await;
+    }
+
+    /// 2026-10-20: a listed, uncleared incident is placed by its feed
+    /// validity windows (`IncidentState`), so planned work next Sunday is
+    /// `upcoming`, not `active` (2D8C8B610B654F93BEC3A7B377A9B2A0). The
+    /// filter, the total and every row's own derived state agree: the SQL
+    /// twin (`incident_state_sql`) and `IncidentTiming::derive` give the
+    /// same answer for every fixture.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                incident_search_query_tests -- --ignored --test-threads=1`"]
+    async fn search_incidents_state_follows_the_validity_windows() {
+        let pool = test_pool().await;
+        delete_fixtures(&pool).await;
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 20, 12, 0, 0)
+            .unwrap();
+        let ts = |hours: i64| (now + chrono::Duration::hours(hours)).to_rfc3339();
+        let window = |from: i64, to: Option<i64>| {
+            serde_json::json!({
+                "from_date": ts(from),
+                "to_date": to.map(ts),
+                "is_now": to.is_none(),
+            })
+        };
+        // (id, validity_periods, is_cleared, removed, expected state)
+        let fixtures: Vec<(&str, serde_json::Value, bool, bool, IncidentState)> = vec![
+            (
+                "archive-test-v-future",
+                serde_json::json!([window(108, Some(132))]),
+                false,
+                false,
+                IncidentState::Upcoming,
+            ),
+            (
+                "archive-test-v-current",
+                serde_json::json!([window(-2, Some(2))]),
+                false,
+                false,
+                IncidentState::Active,
+            ),
+            (
+                "archive-test-v-open",
+                serde_json::json!([window(-48, None)]),
+                false,
+                false,
+                IncidentState::Active,
+            ),
+            (
+                "archive-test-v-open-future",
+                serde_json::json!([window(24, None)]),
+                false,
+                false,
+                IncidentState::Upcoming,
+            ),
+            (
+                "archive-test-v-past",
+                serde_json::json!([window(-48, Some(-24))]),
+                false,
+                false,
+                IncidentState::Ended,
+            ),
+            (
+                "archive-test-v-straddle",
+                serde_json::json!([
+                    window(-48, Some(-24)),
+                    window(-1, Some(1)),
+                    window(24, Some(48))
+                ]),
+                false,
+                false,
+                IncidentState::Active,
+            ),
+            (
+                "archive-test-v-gap",
+                serde_json::json!([window(-48, Some(-24)), window(24, Some(48))]),
+                false,
+                false,
+                IncidentState::Upcoming,
+            ),
+            (
+                "archive-test-v-none",
+                serde_json::json!([]),
+                false,
+                false,
+                IncidentState::Active,
+            ),
+            (
+                "archive-test-v-cleared-future",
+                serde_json::json!([window(24, Some(48))]),
+                true,
+                false,
+                IncidentState::Cleared,
+            ),
+            (
+                "archive-test-v-removed-future",
+                serde_json::json!([window(24, Some(48))]),
+                false,
+                true,
+                IncidentState::Ended,
+            ),
+        ];
+        for (id, periods, cleared, removed, _) in &fixtures {
+            seed_incident(&pool, id, &["QV"], &[], 1, true, *cleared, at(9)).await;
+            sqlx::query(
+                "UPDATE incidents SET validity_periods = $2, \
+                    source_removed_at = CASE WHEN $3 THEN fetched_at END \
+                 WHERE incident_id = $1",
+            )
+            .bind(id)
+            .bind(periods)
+            .bind(removed)
+            .execute(&pool)
+            .await
+            .expect("set validity");
+        }
+
+        let search = |state: Option<IncidentState>| {
+            let pool = pool.clone();
+            async move {
+                search_incidents_at(
+                    &pool,
+                    Some(vec!["QV".to_string()]),
+                    None,
+                    None,
+                    state,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    100,
+                    now,
+                )
+                .await
+                .expect("search")
+            }
+        };
+
+        for state in [
+            IncidentState::Active,
+            IncidentState::Upcoming,
+            IncidentState::Ended,
+            IncidentState::Cleared,
+        ] {
+            let page = search(Some(state)).await;
+            let mut ids: Vec<&str> = page
+                .results
+                .iter()
+                .map(|r| r.incident_id.as_str())
+                .collect();
+            ids.sort_unstable();
+            let mut expected: Vec<&str> = fixtures
+                .iter()
+                .filter(|f| f.4 == state)
+                .map(|f| f.0)
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(ids, expected, "state={}", state.as_str());
+            assert_eq!(
+                page.total,
+                Some(i64::try_from(expected.len()).unwrap()),
+                "state={} total",
+                state.as_str()
+            );
+        }
+
+        // Every row, unfiltered: the Rust rule gives the same state.
+        let all = search(None).await;
+        assert_eq!(all.total, Some(i64::try_from(fixtures.len()).unwrap()));
+        for row in &all.results {
+            let expected = fixtures.iter().find(|f| f.0 == row.incident_id).unwrap().4;
+            let timing = IncidentTiming::derive(
+                row.is_cleared,
+                row.source_removed_at,
+                &parse_validity_periods(&row.validity_periods),
+                now,
+            );
+            assert_eq!(timing.state, expected, "{}", row.incident_id);
+            match row.incident_id.as_str() {
+                "archive-test-v-future" => {
+                    assert_eq!(timing.starts_at, Some(now + chrono::Duration::hours(108)));
+                }
+                "archive-test-v-gap" => {
+                    assert_eq!(timing.starts_at, Some(now + chrono::Duration::hours(24)));
+                }
+                "archive-test-v-past" => {
+                    assert_eq!(
+                        timing.validity_ended_at,
+                        Some(now - chrono::Duration::hours(24))
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        // Two hours on, the straddling row's current window has finished
+        // and its next one is still to come.
+        let later = search_incidents_at(
+            &pool,
+            Some(vec!["QV".to_string()]),
+            None,
+            None,
+            Some(IncidentState::Upcoming),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            100,
+            now + chrono::Duration::hours(2),
+        )
+        .await
+        .expect("search later");
+        assert!(
+            later
+                .results
+                .iter()
+                .any(|r| r.incident_id == "archive-test-v-straddle"),
+            "between two windows is upcoming"
         );
         delete_fixtures(&pool).await;
     }

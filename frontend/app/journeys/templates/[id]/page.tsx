@@ -6,6 +6,7 @@ import { EditJourneyTemplateForm } from '@/components/EditJourneyTemplateForm';
 import { LoginControl } from '@/components/LoginControl';
 import { RunTemplateNowButton } from '@/components/RunTemplateNowButton';
 import { TextLink } from '@/components/TextLink';
+import { journeyDisplayName, journeyNameInputFromLegs } from '@/lib/journeyName';
 import type { Metadata } from 'next';
 
 export const revalidate = 0;
@@ -47,7 +48,7 @@ export default async function JourneyTemplateDetailPage({ params }: { params: Pr
         Back to your templates
       </TextLink>
       <Group justify="space-between" align="baseline">
-        <Title order={1}>{template.customName ?? 'Journey template'}</Title>
+        <Title order={1}>{journeyDisplayName(journeyNameInputFromLegs(template.customName, template.legs))}</Title>
         <Group gap="xs">
           <RunTemplateNowButton templateId={template.id} />
           <DeleteJourneyTemplateButton templateId={template.id} />
