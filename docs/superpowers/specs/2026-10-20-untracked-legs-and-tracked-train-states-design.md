@@ -148,13 +148,15 @@ leg (arrival equals departure) goes straight from `planned` to `done`.
   train" control.
 - **Connections across mixed legs.** The connector between two legs names
   the change point and its time, read per kind: a train leg's arrival at
-  its own destination (the existing `legArrivalInstant`, public timetable
-  time), an untracked leg's `planned_arrival`. A leg's departure is read
-  the same way (a train leg's departure from its own origin, an untracked
-  leg's `planned_departure`). When both ends are known the connector adds
-  the gap: "12 min to change", or "Leaves before the last leg arrives"
-  when the next leg is timetabled to leave before the previous one arrives.
-  No minimum interchange time is assumed.
+  its own destination, an untracked leg's `planned_arrival`. The gap to the
+  next leg is measured from the arrival we now expect (a train's reported
+  arrival, else its estimate, else the timetable: `legExpectedArrivalInstant`)
+  to the next leg's timetabled departure (a train leg's public departure
+  from its own origin, an untracked leg's `planned_departure`). When both
+  are known the connector adds "12 min to change", or "The next leg leaves
+  before this one arrives" when it is negative, so a late-running train
+  shows a missed change. No minimum interchange time is assumed. The
+  carry-over into "Add a leg" (below) still uses the timetabled arrival.
 - **Carry over into "Add a leg".** The 2026-10-20 "start a new leg from the
   previous leg's arrival" change (`ea40c5ca`, DS-65, not yet on main when
   this was written, so this branch carries it) seeds the next leg's date
@@ -363,8 +365,8 @@ sense: once a train should have left, a missing report is worth saying.
 
 A new, computed field on `TrackedTrainState` (`GET /Train/{id}`, journey
 legs), `TrackedTrainListItem` (`GET /Train/mine`), `PublicTrainState`
-(`GET /Train/by-uid/{uid}/{date}`), `JourneyListItem` (`GET
-/Journeys/mine`) and the group train and journey rows, with
+(`GET /Train/by-uid/{uid}/{date}`) and `JourneyListItem` (`GET
+/Journeys/mine`), with
 `firstReportExpectedAt` (RFC3339 or `null`). Evaluated in this order:
 
 | `trackingPhase` | When | Display |
@@ -423,8 +425,8 @@ All sentence case, no em dashes, ellipses or arrows
 | Untracked leg badge | "Planned", "In progress (not live tracked)", "Done" |
 | Untracked leg card | "{Mode}: {Line}" heading ("Tube: Victoria line", "Walk"), "{from} to {to}", "08:05 to 08:20", "Times are planned. We have no live data for this leg." |
 | Add a leg mode | "Tube, bus or walk" |
-| Untracked form fields | "How", "Line (optional)", "From (optional)", "To (optional)", "Leaves", "Arrives" |
-| Connector | "Change at Euston, 10:50", then ". 12 min to change" or ". Leaves before the last leg arrives" |
+| Untracked form fields | "How", "Line (optional)", "From (optional)", "To (optional)", "Date", "Leaves", "Arrives" ("The next day." when it arrives after midnight), "Start journey" on `/journeys/new` |
+| Connector | "Change at Euston, arrive 10:50", then ". 12 min to change." or ". The next leg leaves before this one arrives." |
 | Train not in the timetable | heading "Not matched to a timetable", badge "Not in the timetable", body §3 |
 | Planned train | heading "Planned", badge "Planned", body "We expect Network Rail's first report by 07:45." |
 
@@ -479,3 +481,33 @@ response keeps its shape.
 4. Should an untracked leg that runs past its planned arrival nudge the
    next train leg (for example "your Tube leg is planned to arrive after
    this train leaves")? Today the connector says so; nothing pushes.
+
+## 10. As built (2026-10-20)
+
+Differences from the design above, and things it left implicit:
+
+- **Group pages.** `GET /groups/{id}/trains` and `.../journeys` rows do not
+  carry `trackingPhase` yet; their badge keeps the old words ("Pending
+  match"). A group's journey row now summarises the journey's first TRAIN
+  leg (else its first leg), so a journey starting with a walk doesn't read
+  as an unresolved train. Adding the phase there is a follow-up.
+- **Journey titles.** The default title of a journey whose first leg is
+  untracked reads "Unknown station, {date}" until the shared journey-name
+  helper (another change) reads `originName`/`destinationName` and the
+  planned times generically, which the API now provides for every leg.
+- **Add a leg.** The three modes stack vertically in the dialog: side by
+  side they cut "Search a time window" short.
+- **Visual baselines.** `visual.spec.ts` shoots the seed's unresolved pin
+  (not in the timetable), a train tracked by UID in 2099 (planned) and a
+  named journey with a walk before that train, at both widths and schemes
+  (12 new images). The ids come from insert order on a fresh database
+  (`E2E_TRACKING_ID`, `E2E_PLANNED_TRACKING_ID`, `E2E_JOURNEY_ID`).
+- **Tests.** Rust: `data::tracking_phase` (every row of §4.3, the
+  after-midnight case, the batched lookup against a database),
+  `data::journeys::untracked_tests`, the itinerary's validation and
+  backward-compatible hash, and DB tests through the routes (create, add,
+  detail, list, validation, export, delete, candidates and pick-a-train
+  refused, the database constraint, templates, delegated save and delete,
+  phases on every surface). Frontend: vitest for each display, Playwright
+  for adding a Tube leg and starting with a walk (`page.route` mocks) and
+  for the not-in-the-timetable and planned trains (seeded stack).
