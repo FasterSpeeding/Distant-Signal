@@ -36,7 +36,7 @@
 //!
 //! A state (s, v) DOMINATES (s', v') when `s >= s'` and `v >= v'`: whatever
 //! a journey can still do from the lesser state, it can do from the greater
-//! one. Labels and rides at a dominated state are pruned (see `relax` and
+//! one. Labels and rides at a dominated state are pruned (see `record` and
 //! `sweep`). Without vias the states are just the stages, and this is the
 //! 2026-09-29 search unchanged.
 //!
@@ -58,7 +58,8 @@
 //! `raptor.rs` remain the implementation for that case, and a differential
 //! test checks the two agree.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use chrono::NaiveDate;
 use schedule_query::{
@@ -289,6 +290,10 @@ enum Candidate {
     Fresh(usize),
 }
 
+/// Labels waiting to have their fixed links expanded: (the time the links
+/// start, the label's arrival, its state, its TIPLOC), earliest first.
+type LinkQueue = BinaryHeap<Reverse<(u32, u32, usize, String)>>;
+
 struct Forward<'a> {
     interchange: &'a InterchangeData,
     restrictions: Option<&'a Restrictions>,
@@ -335,13 +340,34 @@ impl<'a> Forward<'a> {
         let mut labels = Labels::new();
         let origin: Vec<String> = self.origin.iter().cloned().collect();
         for tiploc in origin {
-            self.relax_links(&mut labels, 0, &tiploc, self.departure_min);
+            let mut queue = LinkQueue::new();
+            self.expand_links(&mut labels, 0, &tiploc, self.departure_min, &mut queue);
+            self.drain_links(&mut labels, &mut queue);
         }
         labels
     }
 
-    /// `csa::Scan::relax`, per state, plus the advances at a waypoint or via.
+    /// `csa::Scan::relax`, per state, plus the advances at a waypoint or via:
+    /// records the arrival, then walks on over fixed links from every label
+    /// it improves (see [`Self::drain_links`]).
     fn relax(&self, labels: &mut Labels, state: usize, tiploc: &str, time: u32, reached: Reached) {
+        let mut queue = LinkQueue::new();
+        self.record(labels, state, tiploc, time, reached, &mut queue);
+        self.drain_links(labels, &mut queue);
+    }
+
+    /// The bookkeeping half of [`Self::relax`]: records the label (and the
+    /// advances it makes) unless it is dominated, and queues each label it
+    /// records to have its fixed links expanded.
+    fn record(
+        &self,
+        labels: &mut Labels,
+        state: usize,
+        tiploc: &str,
+        time: u32,
+        reached: Reached,
+        queue: &mut LinkQueue,
+    ) {
         let tiploc = normalize_tiploc(tiploc);
         if !restrictions::allows_interchange(self.restrictions, tiploc) {
             return;
@@ -389,21 +415,52 @@ impl<'a> Forward<'a> {
         let (at_stage, progress) = (grid.stage(state), grid.progress(state));
         if at_stage < self.last_stage() && self.targets[at_stage].contains(tiploc) {
             let next = grid.state(at_stage + 1, progress);
-            self.relax(labels, next, tiploc, time, Reached::Advance { from: state });
+            let reached = Reached::Advance { from: state };
+            self.record(labels, next, tiploc, time, reached, queue);
         }
         let passed = advance_at(self.vias, progress, tiploc);
         if passed != progress {
             let next = grid.state(at_stage, passed);
-            self.relax(labels, next, tiploc, time, Reached::Advance { from: state });
+            let reached = Reached::Advance { from: state };
+            self.record(labels, next, tiploc, time, reached, queue);
         }
-        self.relax_links(labels, state, tiploc, walk_from);
+        queue.push(Reverse((walk_from, time, state, tiploc.to_string())));
     }
 
+    /// Expands the queued labels' fixed links earliest first (a min-heap on
+    /// the time the links start), so each (stop, state) is expanded once per
+    /// call, at its best time. The depth-first recursion this replaced
+    /// re-expanded a stop each time another route improved it, and with
+    /// every fixed link usable both ways
+    /// (`schedule_query::index_fixed_links_both_ways`) London's links are
+    /// one dense component: as `csa::Scan::relax_fixed_links`.
+    fn drain_links(&self, labels: &mut Labels, queue: &mut LinkQueue) {
+        while let Some(Reverse((walk_from, time, state, tiploc))) = queue.pop() {
+            // Superseded by an earlier arrival at this state since queued.
+            if labels
+                .label(&tiploc, state)
+                .is_none_or(|label| label.time != time)
+            {
+                continue;
+            }
+            self.expand_links(labels, state, &tiploc, walk_from, queue);
+        }
+    }
+
+    /// One step of [`Self::drain_links`]: records, at `state`, every stop
+    /// one fixed link from `from_tiploc` started at `at`.
     #[expect(
         clippy::cast_sign_loss,
         reason = "the value is clamped to >= 0 first, and minute values fit easily"
     )]
-    fn relax_links(&self, labels: &mut Labels, state: usize, from_tiploc: &str, at: u32) {
+    fn expand_links(
+        &self,
+        labels: &mut Labels,
+        state: usize,
+        from_tiploc: &str,
+        at: u32,
+        queue: &mut LinkQueue,
+    ) {
         let from_tiploc = normalize_tiploc(from_tiploc);
         let Some(crs) = self.interchange.tiploc_to_crs.get(from_tiploc) else {
             return;
@@ -413,17 +470,13 @@ impl<'a> Forward<'a> {
                 continue;
             };
             for to_tiploc in destinations {
-                self.relax(
-                    labels,
-                    state,
-                    to_tiploc,
-                    at + link.minutes.max(0) as u32,
-                    Reached::Link {
-                        from_tiploc: from_tiploc.to_string(),
-                        mode: link.mode.clone(),
-                        minutes: link.minutes,
-                    },
-                );
+                let reached = Reached::Link {
+                    from_tiploc: from_tiploc.to_string(),
+                    mode: link.mode.clone(),
+                    minutes: link.minutes,
+                };
+                let arrival = at + link.minutes.max(0) as u32;
+                self.record(labels, state, to_tiploc, arrival, reached, queue);
             }
         }
     }
@@ -583,8 +636,8 @@ impl<'a> Forward<'a> {
                 continue;
             }
             // Furthest along first: once a state rides this connection, the
-            // same ride at a state it dominates is pruned (see `relax`).
-            candidates.sort_unstable_by_key(|(state, _)| std::cmp::Reverse(*state));
+            // same ride at a state it dominates is pruned (see `record`).
+            candidates.sort_unstable_by_key(|(state, _)| Reverse(*state));
             riding.clear();
             continuations.clear();
             for (state, candidate) in candidates.drain(..) {

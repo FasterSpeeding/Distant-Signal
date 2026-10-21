@@ -820,29 +820,13 @@ fn bench_link_rows(rng: &mut Rng) -> Vec<(String, schedule_query::FixedLink)> {
     rows
 }
 
-/// The ALF fixed links one way (as published) against both ways
-/// (`schedule_query::index_fixed_links_both_ways`), on the synthetic
-/// network plus [`bench_link_rows`]. Each row: CSA depart-after, CSA
-/// arrive-by, RAPTOR depart-after (4 rounds) and RAPTOR arrive-by, one way
-/// then both ways. For the real file's links:
-///
-/// ```text
-/// DS_BENCH_ALF=/path/to/RJTTF995ALF.txt cargo test --release -p trip-planner \
-///     --test bench_arrive_by bench_fixed_links_both_ways -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "benchmark; see the module doc"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one bench: building both indexes and timing four searches on each"
-)]
-fn bench_fixed_links_both_ways() {
+/// The synthetic network with [`bench_link_rows`] indexed one way (as
+/// published) and both ways (`schedule_query::index_fixed_links_both_ways`).
+fn link_indexes() -> (Vec<Connection>, InterchangeData, InterchangeData) {
     use schedule_query::index_fixed_links_both_ways;
 
     let (connections, base) = network();
-    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
-    let mut rng = Rng(0x0a1f);
-    let rows = bench_link_rows(&mut rng);
+    let rows = bench_link_rows(&mut Rng(0x0a1f));
     let mut one_way = base.clone();
     for (from, link) in rows.clone() {
         one_way
@@ -862,6 +846,25 @@ fn bench_fixed_links_both_ways() {
             .map(Vec::len)
             .sum::<usize>()
     );
+    (connections, one_way, both_ways)
+}
+
+/// The ALF fixed links one way (as published) against both ways
+/// (`schedule_query::index_fixed_links_both_ways`), on the synthetic
+/// network plus [`bench_link_rows`]. Each row: CSA depart-after, CSA
+/// arrive-by, RAPTOR depart-after (4 rounds) and RAPTOR arrive-by, one way
+/// then both ways. For the real file's links:
+///
+/// ```text
+/// DS_BENCH_ALF=/path/to/RJTTF995ALF.txt cargo test --release -p trip-planner \
+///     --test bench_arrive_by bench_fixed_links_both_ways -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_fixed_links_both_ways() {
+    let (connections, one_way, both_ways) = link_indexes();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0x0a1f);
 
     let mut table: Vec<[Duration; 8]> = Vec::new();
     for _ in 0..10 {
@@ -942,5 +945,93 @@ fn bench_fixed_links_both_ways() {
             "{label:16} one way median {before_median:>8.1?} max {before_max:>8.1?}  \
              both ways median {after_median:>8.1?} max {after_max:>8.1?}"
         );
+    }
+}
+
+/// [`bench_fixed_links_both_ways`] for the staged (waypoint and via)
+/// searches: CSA depart-after, RAPTOR depart-after (6 rounds) and CSA
+/// arrive-by, with 0 and 2 hub waypoints and with one via, one way then
+/// both ways. `DS_BENCH_ALF` as there.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_staged_fixed_links_both_ways() {
+    use trip_planner::{StagedOptions, raptor_staged, scan_staged, staged_arrive_by};
+
+    let (connections, one_way, both_ways) = link_indexes();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let vias = bench_vias(&connections, 1);
+    for (shape, waypoint_count, with_via) in [
+        ("no waypoints", 0usize, false),
+        ("2 waypoints", 2, false),
+        ("1 via", 0, true),
+    ] {
+        let mut rng = Rng(0x57a9);
+        let mut table: Vec<[(Duration, usize); 6]> = Vec::new();
+        for _ in 0..10 {
+            let from = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+            let to = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+            let mut waypoints: Vec<Vec<String>> = Vec::new();
+            while waypoints.len() < waypoint_count {
+                let hub = vec![tiploc(rng.next(HUBS))];
+                if waypoints.last() != Some(&hub) {
+                    waypoints.push(hub);
+                }
+            }
+            let vias = with_via.then_some(&vias);
+            let times = |interchange: &InterchangeData| {
+                let staged = StagedOptions {
+                    connections: &connections,
+                    interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    date,
+                };
+                let arrive = ArriveByOptions {
+                    connections: &connections,
+                    interchange,
+                    from_tiplocs: &from,
+                    waypoints: &waypoints,
+                    to_tiplocs: &to,
+                    vias,
+                    arrive_by_min: 1380,
+                    date,
+                };
+                [
+                    median(|| usize::from(scan_staged(&staged, 480, None, None).is_some())),
+                    median(|| raptor_staged(&staged, 480, 6, None, None).len()),
+                    median(|| usize::from(staged_arrive_by(&arrive, None, None).is_some())),
+                ]
+            };
+            let before = times(&one_way);
+            let after = times(&both_ways);
+            let mut row = [(Duration::ZERO, 0); 6];
+            row[..3].copy_from_slice(&before);
+            row[3..].copy_from_slice(&after);
+            table.push(row);
+        }
+        for (column, label) in ["csa depart", "raptor depart", "csa arriveBy"]
+            .iter()
+            .enumerate()
+        {
+            let pick = |offset: usize| {
+                let mut values: Vec<Duration> =
+                    table.iter().map(|row| row[column + offset].0).collect();
+                values.sort();
+                let found: usize = table
+                    .iter()
+                    .map(|row| usize::from(row[column + offset].1 > 0))
+                    .sum();
+                (values[values.len() / 2], values[values.len() - 1], found)
+            };
+            let (before_median, before_max, before_found) = pick(0);
+            let (after_median, after_max, after_found) = pick(3);
+            println!(
+                "{shape:12} {label:14} one way median {before_median:>8.1?} max {before_max:>8.1?} \
+                 ({before_found}/10)  both ways median {after_median:>8.1?} max {after_max:>8.1?} \
+                 ({after_found}/10)"
+            );
+        }
     }
 }
