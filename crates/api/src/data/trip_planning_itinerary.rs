@@ -44,11 +44,15 @@ pub const fn max_rounds(max_changes: u32) -> u32 {
     max_changes + 2
 }
 
-// The train variant is larger than the transfer one, but no longer by
-// enough for clippy's large_enum_variant since the transfer's TfL stops
-// (2026-10-20). A response holds a few dozen legs at most and nearly all of
-// them are trains, so boxing the train would add an allocation per leg to
-// save nothing.
+// The train variant is larger than the transfer one, by enough for clippy's
+// large_enum_variant since the working-time fields (2026-10-20). A response
+// holds a few dozen legs at most and nearly all of them are trains, so
+// boxing the train would add an allocation per leg to save nothing. `allow`
+// rather than `expect`: whether the lint fires depends on the toolchain.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "nearly every leg is a train; boxing it saves nothing"
+)]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum PlannedLeg {
