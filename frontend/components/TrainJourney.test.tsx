@@ -944,6 +944,47 @@ describe('TrainJourney suppressTrainUidHeading', () => {
     expect(screen.queryByText('UID C21373')).not.toBeInTheDocument();
   });
 
+  // DS-111: in the journey view the leg card's title already names the leg
+  // and links the train, so a train with no route of its own drops the
+  // line above its progress rather than repeating "Train X" (or, before,
+  // showing "Unknown station").
+  it('omits the route line in the journey view when the train has no route and no custom name', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          pinOriginCrs: null,
+          pinOriginName: null,
+          pinDestinationCrs: null,
+          pinDestinationName: null,
+        })}
+        suppressTrainUidHeading
+      />,
+    );
+    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Train C21373/)).not.toBeInTheDocument();
+  });
+
+  it('keeps a no-route train named by UID outside the journey view', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          resolutionStatus: 'resolved',
+          trainUid: 'C21373',
+          status: 'en_route',
+          pinOriginCrs: null,
+          pinOriginName: null,
+          pinDestinationCrs: null,
+          pinDestinationName: null,
+        })}
+      />,
+    );
+    expect(screen.getByText(/^Train C21373, /)).toBeInTheDocument();
+    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
+  });
+
   it('defaults to showing the line when the prop is omitted (by-id page behavior unchanged)', () => {
     renderWithMantine(
       <TrainJourney state={baseState({ resolutionStatus: 'resolved', trainUid: 'C21373', status: 'en_route' })} />,

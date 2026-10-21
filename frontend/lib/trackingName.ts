@@ -1,5 +1,36 @@
 import { formatDate, formatTime } from './dateFormat';
-import { routeLabel } from './stationLabel';
+import { routeLabel, stationLabel } from './stationLabel';
+
+/** The route fields a tracked train's label reads. `trainUid` is optional
+ * so a caller with only a pin shape can still pass it. */
+export interface TrackedTrainRouteInput {
+  pinOriginCrs: string | null;
+  pinOriginName: string | null;
+  pinDestinationCrs: string | null;
+  pinDestinationName: string | null;
+  trainUid?: string | null | undefined;
+}
+
+/** What a train is still waiting to be named by when it has no route at
+ * all: no pin, and no timetable on its shared train row (the API falls
+ * back to that row's route, DS-111). */
+export const UNIDENTIFIED_TRAIN_LABEL = 'Train not identified yet';
+
+/** A tracked train's route, `"A (AAA) to B (BBB)"` via `routeLabel`.
+ *
+ * With no origin there is no station to name, which is a normal state for
+ * a train tracked by UID before its timetable arrives -- not an unknown
+ * station. So this names the train itself ("Train W12345", "Train W12345
+ * to York (YRK)") rather than `routeLabel`'s "Unknown station" (DS-111). */
+export function trackedTrainRouteLabel(train: TrackedTrainRouteInput): string {
+  if (train.pinOriginCrs) {
+    return routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
+  }
+  const subject = train.trainUid ? `Train ${train.trainUid}` : UNIDENTIFIED_TRAIN_LABEL;
+  return train.pinDestinationCrs
+    ? `${subject} to ${stationLabel(train.pinDestinationCrs, train.pinDestinationName)}`
+    : subject;
+}
 
 /** The label a tracked train's row/title should show: the user's own
  * `customName` if they set one, verbatim; otherwise the same
@@ -24,18 +55,16 @@ import { routeLabel } from './stationLabel';
  * Decision 3 for why a stored-at-creation default would go stale the
  * moment a pre-match pin's destination or a slow-to-load station name
  * resolves later. */
-export function trackedTrainDisplayName(train: {
-  customName: string | null;
-  pinOriginCrs: string | null;
-  pinOriginName: string | null;
-  pinDestinationCrs: string | null;
-  pinDestinationName: string | null;
-  serviceDate: string;
-  pinScheduledDeparture?: string | null | undefined;
-}): string {
+export function trackedTrainDisplayName(
+  train: TrackedTrainRouteInput & {
+    customName: string | null;
+    serviceDate: string;
+    pinScheduledDeparture?: string | null | undefined;
+  },
+): string {
   if (train.customName) return train.customName;
 
-  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
+  const route = trackedTrainRouteLabel(train);
   const when = train.pinScheduledDeparture
     ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
     : formatDate(train.serviceDate);

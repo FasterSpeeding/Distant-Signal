@@ -155,12 +155,24 @@ function TimetableOnlyMessage({
           </Text>
         )}
       </Group>
-      <Text size="sm" c="dimmed">
-        {trackedTrainDisplayName(state)}
-      </Text>
+      {showPinSummary(state, suppressTrainUidHeading) && (
+        <Text size="sm" c="dimmed">
+          {trackedTrainDisplayName(state)}
+        </Text>
+      )}
       <Text size="sm">{TIMETABLE_ONLY_MESSAGE}. These are the scheduled times.</Text>
     </Stack>
   );
+}
+
+/** Whether the dimmed route-and-date line above a train's status is worth
+ * showing. In the journey view (`suppressTrainUidHeading`) the leg card's
+ * own title already names the leg's route and links the train by UID, so a
+ * train with no route of its own and no custom name would only repeat
+ * that as "Train W12345, 21 Oct 2026" -- or, before DS-111, a misleading
+ * "Unknown station". Everywhere else it is the page's only route line. */
+function showPinSummary(state: TrainJourneyState, suppressTrainUidHeading: boolean): boolean {
+  return !suppressTrainUidHeading || !!state.customName || !!state.pinOriginCrs;
 }
 
 function StatusMessage({
@@ -183,11 +195,11 @@ function StatusMessage({
       </Text>
     );
 
-  const pinSummary = (
+  const pinSummary = showPinSummary(state, suppressTrainUidHeading) ? (
     <Text size="sm" c="dimmed">
       {trackedTrainDisplayName(state)}
     </Text>
-  );
+  ) : null;
 
   // Spec 2026-10-20 §3: no timetable match and no Network Rail report.
   // This used to fall through to "Waiting to hear from Network Rail" with a
