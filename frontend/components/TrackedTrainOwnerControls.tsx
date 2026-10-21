@@ -27,6 +27,9 @@ import { trackedTrainDisplayName } from '@/lib/trackingName';
  * `pin*`/`serviceDate` fields `trackedTrainDisplayName` reads), so no
  * adapter is required for either caller.
  *
+ * `journeyIds` (only on a `TrackedTrainListItem`) tells `DeleteTrainButton`
+ * the train is part of a journey (its `inJourney`).
+ *
  * `afterDelete` passes straight through to `DeleteTrainButton` -- see that
  * component's own doc comment for why it's a plain optional prop (default
  * `'redirect'`, matching `/train/by-id/[trackingId]`'s existing behaviour)
@@ -57,6 +60,7 @@ export function TrackedTrainOwnerControls({
     serviceDate: string;
     pinScheduledDeparture?: string | null;
     sharedGroupCount: number;
+    journeyIds?: number[] | undefined;
   };
   afterDelete?: 'redirect' | 'refresh' | undefined;
 }) {
@@ -68,7 +72,12 @@ export function TrackedTrainOwnerControls({
         defaultName={trackedTrainDisplayName(train)}
       />
       <AddToGroupButton trainSubscriptionId={train.id} />
-      <DeleteTrainButton trackingId={train.id} sharedGroupCount={train.sharedGroupCount} afterDelete={afterDelete} />
+      <DeleteTrainButton
+        trackingId={train.id}
+        sharedGroupCount={train.sharedGroupCount}
+        afterDelete={afterDelete}
+        inJourney={(train.journeyIds?.length ?? 0) > 0}
+      />
     </>
   );
 }

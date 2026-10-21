@@ -68,7 +68,12 @@ export type DeleteTrainButtonHandle = ConfirmActionButtonHandle;
  * sibling of `<Menu>`, never inside `<Menu.Dropdown>`: Mantine's `Popover`
  * closes on the same click that opens the modal and hid a nested modal's
  * portal wrapper with `display: none !important` (traced live), so the
- * menu item calls `ref.current.open()` instead. */
+ * menu item calls `ref.current.open()` instead.
+ *
+ * `inJourney` (the train's `journeyIds` are non-empty): since DS-93 the
+ * backend keeps a train a journey leg uses and only stops tracking it on
+ * its own, so the leg, its tickets and its group shares stay. The modal
+ * says so instead of "cannot be undone" and the group warning. */
 export const DeleteTrainButton = forwardRef<
   DeleteTrainButtonHandle,
   {
@@ -76,8 +81,12 @@ export const DeleteTrainButton = forwardRef<
     sharedGroupCount: number;
     afterDelete?: 'redirect' | 'refresh' | undefined;
     hideTrigger?: boolean | undefined;
+    inJourney?: boolean | undefined;
   }
->(function DeleteTrainButton({ trackingId, sharedGroupCount, afterDelete = 'redirect', hideTrigger = false }, ref) {
+>(function DeleteTrainButton(
+  { trackingId, sharedGroupCount, afterDelete = 'redirect', hideTrigger = false, inJourney = false },
+  ref,
+) {
   return (
     <ConfirmActionButton
       ref={ref}
@@ -90,8 +99,15 @@ export const DeleteTrainButton = forwardRef<
       loginPrompt="Log in to stop tracking this train"
       onSuccess={(router) => (afterDelete === 'refresh' ? router.refresh() : router.push('/track/mine'))}
     >
-      <Text>This cannot be undone.</Text>
-      {sharedGroupCount > 0 && (
+      {inJourney ? (
+        <Text>
+          This train is part of a journey, so it stays tracked there. To stop tracking it altogether, remove it from the
+          journey.
+        </Text>
+      ) : (
+        <Text>This cannot be undone.</Text>
+      )}
+      {!inJourney && sharedGroupCount > 0 && (
         <Text>
           This train is shared in {sharedGroupCount} group{sharedGroupCount === 1 ? '' : 's'}. Deleting it will remove
           it from {sharedGroupCount === 1 ? 'that group' : 'those groups'} too.

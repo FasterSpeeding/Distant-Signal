@@ -15,6 +15,15 @@ needs to know about. Newest first. Field names are as served (camelCase).
   /Train/by-uid/{uid}/{date}/track`, including one that is also a leg's
   train) keeps tracking and pushing after that leg's "Change train"; it
   used to have its pushes switched off.
+- **`DELETE /Journeys/{id}/legs/{legId}`** now deletes the leg's tracked
+  train too, with its tickets and group shares (as `DELETE
+  /Train/{trackingId}` does), unless another leg still uses it or the
+  user tracks it on its own. It used to stay in `GET /Train/mine` as a
+  train tracked on its own. `DELETE /Journeys/{id}` is unchanged.
+- **`DELETE /Train/{trackingId}`** on a train a journey leg uses now only
+  stops tracking it on its own (still `204`): the row, the leg's link to
+  it, its tickets and its group shares stay, and `GET /Train/mine` shows
+  it under the journey. It used to delete the row and unmatch the leg.
 - The account export's `train_subscriptions` rows gain
   `tracked_standalone`.
 

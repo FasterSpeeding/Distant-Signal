@@ -1390,54 +1390,51 @@ pub async fn get_by_tracking_ids(
 /// layer, same as every other ownership check in this file; the route
 /// handler maps `false` to `404`, never `403`).
 ///
-/// **Journey-leg cleanup (2026-09-26 review, Low finding 13).**
-/// `journey_legs.train_subscription_id` is `ON DELETE SET NULL`
-/// (`20260922090000_journeys.sql`), so this delete alone already un-links
-/// any leg that pointed at this subscription -- but that FK only touches
-/// `train_subscription_id`, never `journey_legs.match_mode`. Left alone, a
-/// leg that was `'manual'` (a direct pin/known-train pick, or an earlier
-/// "Change train" re-pick -- see `journeys::set_leg_train_subscription`)
-/// or `'auto'` (a template sweep's own auto-commit --
-/// `notifier::queries::auto_commit_leg_to_train`) would end up with NO
-/// subscription attached but a `match_mode` column still claiming it's
-/// resolved. Two concrete failures came out of that mismatch: (1)
-/// `notifier::queries::unmatched_auto_legs_for_commit_check`, the template
-/// auto-sweep, only ever selects `WHERE match_mode = 'unmatched'` -- an
-/// orphaned `'auto'` leg from a `default_match_mode = 'auto'` template
-/// would never be reconsidered for re-matching, silently going dark
-/// instead of the sweep picking a fresh candidate the way it would for a
-/// leg that had never matched at all; (2) `routes::journeys::build_journey_detail_response`
-/// derives `trackedTrainState: None` purely from `train_subscription_id IS
-/// NULL`, regardless of `match_mode`, so the frontend's `JourneyLegCard`
-/// would render this leg as "Open" (offering `JourneyLegCandidates`) while
-/// the DB still called it `'manual'`/`'auto'` -- a status column lying
-/// about a leg the UI itself no longer treats as matched. Resetting
-/// `match_mode` to `'unmatched'` here (scoped by the same ownership guard
-/// as the delete below, so a not-this-caller's `id` touches nothing) makes
-/// both facts agree again: the leg reads as genuinely unmatched everywhere,
-/// exactly the state it would be in had it never been matched, and (for a
-/// leg whose journey does trace back to an `'auto'` template) becomes
-/// reachable by the auto-sweep again on its next cycle.
+/// **A train a journey leg uses (DS-93).** One row can be both a leg's
+/// train and a train the user tracks on its own (`create_subscription_for_train`
+/// is idempotent per `(user_id, trains_id)`). Deleting it used to unbind
+/// the leg (`journey_legs.train_subscription_id ... ON DELETE SET NULL`,
+/// with `match_mode` reset to `'unmatched'` to match: 2026-09-26 review,
+/// Low finding 13). Now, while any leg uses the row, this only clears
+/// `tracked_standalone`: the user stops tracking it on its own and the leg
+/// keeps its train, tickets and shares; the row goes once no leg uses it
+/// (`journeys::delete_leg`, or a "Change train"). Still `true`, so the
+/// route answers `204` either way. Takes the `(user_id, trains_id)` lock
+/// `create_subscription_for_train` takes, so a leg bind racing this delete
+/// either lands first (and the row is kept) or waits and makes a new row.
 pub async fn delete_tracked_train(pool: &PgPool, id: i64, user_id: &str) -> anyhow::Result<bool> {
     let mut tx = pool.begin().await?;
 
-    // Ownership-scoped via the same `EXISTS` idiom
-    // `journeys::set_leg_train_subscription` already uses: this only
-    // matches `journey_legs` rows at all when `id` is a subscription that
-    // truly belongs to `user_id`, so a not-this-caller's (or nonexistent)
-    // `id` leaves every other user's `journey_legs` rows completely
-    // untouched, exactly like the `DELETE` below.
-    sqlx::query(
-        "UPDATE journey_legs jl SET match_mode = 'unmatched' \
-         WHERE jl.train_subscription_id = $1 \
-           AND EXISTS ( \
-               SELECT 1 FROM train_subscriptions ts WHERE ts.id = $1 AND ts.user_id = $2 \
-           )",
+    let owned: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((trains_id,)) = owned else {
+        return Ok(false);
+    };
+    if let Some(trains_id) = trains_id {
+        common::pg::lock_user_train_subscription(&mut tx, user_id, trains_id).await?;
+    }
+    let (leg_uses_it,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM journey_legs WHERE train_subscription_id = $1)",
     )
     .bind(id)
-    .bind(user_id)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
+    if leg_uses_it {
+        let result = sqlx::query(
+            "UPDATE train_subscriptions SET tracked_standalone = FALSE \
+             WHERE id = $1 AND user_id = $2",
+        )
+        .bind(id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(result.rows_affected() > 0);
+    }
 
     let result = sqlx::query("DELETE FROM train_subscriptions WHERE id = $1 AND user_id = $2")
         .bind(id)

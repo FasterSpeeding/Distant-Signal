@@ -128,4 +128,14 @@ describe('DeleteTrainButton', () => {
       screen.getByText('This train is shared in 3 groups. Deleting it will remove it from those groups too.'),
     ).toBeInTheDocument();
   });
+
+  // DS-93: a train a journey leg uses stays tracked there.
+  it('says a journey keeps the train instead of warning it cannot be undone', async () => {
+    renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={2} inJourney />);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
+    expect(screen.getByText(/part of a journey, so it stays tracked there/)).toBeInTheDocument();
+    expect(screen.queryByText('This cannot be undone.')).toBeNull();
+    expect(screen.queryByText(/shared in 2 groups/)).toBeNull();
+  });
 });

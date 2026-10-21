@@ -2216,8 +2216,8 @@ async fn post_leg_train(
 /// `AuthenticatedUser` + 404-for-unknown-or-not-yours + `204 No Content` on
 /// success) on the ownership check `journeys::delete_leg` folds into its own
 /// query -- see that function's doc comment for why deleting the journey's
-/// LAST leg deletes the whole journey too, and why the leg's underlying
-/// `train_subscriptions` row (if any) is left untouched either way.
+/// LAST leg deletes the whole journey too, and what happens to the leg's
+/// `train_subscriptions` row (dropped unless still wanted, DS-93).
 async fn delete_journey_leg(
     State(app): State<App>,
     user: AuthenticatedUser,
