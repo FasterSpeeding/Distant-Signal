@@ -3,6 +3,34 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-21: a Tube stop's station, and editing a journey leg's search
+
+Additive; nothing existing changes meaning.
+
+- **`GET /public/tfl/stops/rail-crs?ids=940GZZLUEUS[,...]`** (new,
+  unauthenticated): each `TfL` stop's National Rail stations as CRS
+  codes, best first, as `{ "940GZZLUEUS": ["EUS"] }`. The reverse of
+  `/tfl/stops/by-crs`: a London terminus's pinned stop, then the hub
+  crosswalk (hub links before `TIPLOC` ones), then the nearest station
+  within 300 m. A stop with no station is absent. Up to 20 ids; 400
+  without `ids` or with one that isn't a stop id. The web app uses it to
+  start the next leg after a Tube leg at that leg's station.
+- **`GET /Journeys/{id}/legs/{legId}/candidates`** takes an optional
+  edited search: `origin`, `destination`, `serviceDate` (all three
+  together) and `departAfter`, `departBefore`, `arriveAfter`,
+  `arriveBefore` (`HH:MM`, at least one). Given, it is searched instead of
+  the leg's stored search, and not saved. The rules are those of adding a
+  window leg (400 otherwise).
+- **`POST /Journeys/{id}/legs/{legId}/train`** takes an optional
+  `search: { originCrs, destinationCrs, departWindow, arriveWindow }`
+  (the window-leg fields; the date is the body's `serviceDate`). Given, it
+  becomes the leg's own search (origin, destination, date, window;
+  `windowSearched: true`) in the same transaction as the pick, so the leg
+  and its train always agree. The train is checked against the new origin
+  and destination. Absent, the route behaves as before.
+- **For ds-mcp.** Nothing to change. To re-search a leg, pass the new
+  search to `candidates` and the same `search` with the pick.
+
 ## 2026-10-21: whole-journey summary on `GET /Journeys/mine`
 
 Additive; no existing field changes meaning. Each row still describes its

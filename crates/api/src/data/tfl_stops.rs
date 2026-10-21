@@ -304,6 +304,106 @@ pub async fn stops_for_crs(
     Ok(out)
 }
 
+/// Each of `stop_ids`' National Rail stations (CRS codes), best first: the
+/// reverse of [`CRS_OVERRIDES`] (a stop pinned for a station is that
+/// station's), then the hub crosswalk (`tfl_stop_crs`, a hub link before a
+/// `TIPLOC` one), and only for a stop with neither, the nearest station
+/// within [`NEAREST_MAX_METRES`]. The reverse of [`stops_for_crs`], for a
+/// journey leg that ends at a Tube stop and is followed by a train
+/// (`Euston` `940GZZLUEUS` -> `EUS`). A stop that is not in `tfl_stops`,
+/// or has no station, is absent.
+pub async fn rail_crs_for_stops(
+    pool: &PgPool,
+    stop_ids: &[String],
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut ids: Vec<String> = stop_ids.iter().map(|id| id.trim().to_owned()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let push = |out: &mut BTreeMap<String, Vec<String>>, (stop_id, crs): (String, String)| {
+        let codes = out.entry(stop_id).or_default();
+        if !codes.contains(&crs) {
+            codes.push(crs);
+        }
+    };
+
+    let (override_ids, override_crs): (Vec<&str>, Vec<&str>) = CRS_OVERRIDES
+        .iter()
+        .filter(|(_, stop)| ids.iter().any(|id| id == stop))
+        .map(|(crs, stop)| (*stop, *crs))
+        .unzip();
+    if !override_ids.is_empty() {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r"
+            SELECT o.stop_id, o.crs
+            FROM UNNEST($1::text[], $2::text[]) WITH ORDINALITY AS o(stop_id, crs, n)
+            JOIN tfl_stops t ON t.stop_id = o.stop_id
+            ORDER BY o.n
+            ",
+        )
+        .bind(&override_ids)
+        .bind(&override_crs)
+        .fetch_all(pool)
+        .await?;
+        for row in rows {
+            push(&mut out, row);
+        }
+    }
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        r"
+        SELECT c.stop_id, c.crs::text
+        FROM tfl_stop_crs c
+        JOIN tfl_stops t ON t.stop_id = c.stop_id
+        WHERE c.stop_id = ANY($1::text[])
+        ORDER BY c.stop_id, c.source <> 'hub', c.crs
+        ",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        push(&mut out, row);
+    }
+
+    let missing: Vec<String> = ids
+        .iter()
+        .filter(|id| !out.contains_key(*id))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r"
+            SELECT DISTINCT ON (t.stop_id) t.stop_id, s.crs::text
+            FROM tfl_stops t
+            JOIN stations s ON s.latitude IS NOT NULL AND s.longitude IS NOT NULL
+            CROSS JOIN LATERAL (
+              SELECT 6371000.0 * 2 * asin(sqrt(
+                power(sin(radians(t.latitude - s.latitude) / 2), 2)
+                + cos(radians(s.latitude)) * cos(radians(t.latitude))
+                  * power(sin(radians(t.longitude - s.longitude) / 2), 2)
+              )) AS metres
+            ) d
+            WHERE t.stop_id = ANY($1::text[])
+              AND t.latitude IS NOT NULL AND t.longitude IS NOT NULL
+              AND d.metres <= $2
+            ORDER BY t.stop_id, d.metres, s.crs
+            ",
+        )
+        .bind(&missing)
+        .bind(NEAREST_MAX_METRES)
+        .fetch_all(pool)
+        .await?;
+        for row in rows {
+            push(&mut out, row);
+        }
+    }
+    Ok(out)
+}
+
 /// The stop modes a planner transfer's `mode` (the CIF fixed link's) maps
 /// to, the preferred first: `TUBE` -> Tube; `METRO` -> DLR, tram or Tube.
 /// `None` for a walk, bus, ferry or anything else.
@@ -702,6 +802,74 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(ids(&metro["Z8A"]), ["940GZZTESTB", "940GZZTESTA"]);
+        cleanup(&pool).await;
+    }
+
+    /// The reverse lookup: a stop's override station, then its crosswalk
+    /// stations (hub first), then the nearest station within 300 m.
+    #[tokio::test]
+    #[ignore = "requires a live database (DATABASE_URL)"]
+    async fn stops_map_back_to_their_rail_stations() {
+        let pool = connect().await;
+        seed(&pool).await;
+        // Euston's override stop, inserted only when this database has no
+        // real one (a fresh test database never does), and removed after.
+        let euston_inserted = sqlx::query(
+            "INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, fetched_at) \
+             VALUES ('940GZZLUEUS', 'Euston', 'euston', '{tube}', '[]', NOW()) \
+             ON CONFLICT (stop_id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .rows_affected()
+            == 1;
+        // A crosswalk link on the override stop must not outrank the
+        // override.
+        sqlx::query(
+            "INSERT INTO tfl_stop_crs (stop_id, crs, source) VALUES ('940GZZLUEUS', 'Z8C', 'tiploc') \
+             ON CONFLICT DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let ids: Vec<String> = [
+            "940GZZLUEUS",
+            "940GZZTESTB",
+            "940GZZTESTA",
+            "940GZZTESTC",
+            "940GZZTESTD",
+            "940GZZNOPE",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let found = rail_crs_for_stops(&pool, &ids).await.unwrap();
+        assert_eq!(found["940GZZLUEUS"][0], "EUS", "{found:?}");
+        assert!(
+            found["940GZZLUEUS"].contains(&"Z8C".to_owned()),
+            "{found:?}"
+        );
+        // Hub and TIPLOC links alike.
+        assert_eq!(found["940GZZTESTA"], ["Z8A"]);
+        assert_eq!(found["940GZZTESTB"], ["Z8A"]);
+        // No crosswalk: the station 150 m away.
+        assert_eq!(found["940GZZTESTC"], ["Z8B"]);
+        // 600 m is too far; an unknown stop has nothing.
+        assert!(!found.contains_key("940GZZTESTD"), "{found:?}");
+        assert!(!found.contains_key("940GZZNOPE"), "{found:?}");
+        assert!(rail_crs_for_stops(&pool, &[]).await.unwrap().is_empty());
+
+        sqlx::query("DELETE FROM tfl_stop_crs WHERE stop_id = '940GZZLUEUS' AND crs = 'Z8C'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        if euston_inserted {
+            sqlx::query("DELETE FROM tfl_stops WHERE stop_id = '940GZZLUEUS'")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
         cleanup(&pool).await;
     }
 

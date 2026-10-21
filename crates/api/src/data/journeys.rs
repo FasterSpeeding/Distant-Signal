@@ -1736,6 +1736,37 @@ pub async fn create_subscription_and_bind_leg(
     user_id: &str,
     trains_id: i64,
 ) -> anyhow::Result<Option<i64>> {
+    create_subscription_and_bind_leg_with_search(pool, journey_id, leg_id, user_id, trains_id, None)
+        .await
+}
+
+/// A train leg's window search, as "Edit search" on a journey leg saves it
+/// along with the train picked from it: the leg's own origin and
+/// destination, service date and time window. Validated by
+/// [`validate_window_leg`] before it gets here.
+#[derive(Debug, Clone)]
+pub struct LegSearch {
+    pub origin_crs: String,
+    pub destination_crs: String,
+    pub service_date: NaiveDate,
+    pub depart_window: TimeWindow,
+    pub arrive_window: TimeWindow,
+}
+
+/// [`create_subscription_and_bind_leg`], and when `search` is given, the
+/// leg's search replaced by it in the same transaction (an edited search
+/// and the train picked from it land together or not at all, so the leg
+/// never names one route and tracks a train for another). The leg becomes
+/// window-searched, so "Change train" re-runs the new search. An untracked
+/// leg is never touched (`Ok(None)`).
+pub async fn create_subscription_and_bind_leg_with_search(
+    pool: &PgPool,
+    journey_id: i64,
+    leg_id: i64,
+    user_id: &str,
+    trains_id: i64,
+    search: Option<&LegSearch>,
+) -> anyhow::Result<Option<i64>> {
     let mut tx = pool.begin().await?;
     let tracking_id =
         crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
@@ -1746,6 +1777,31 @@ pub async fn create_subscription_and_bind_leg(
     if !updated {
         tx.rollback().await?;
         return Ok(None);
+    }
+    if let Some(search) = search {
+        // The row is already locked and owner-checked above.
+        let result = sqlx::query(
+            "UPDATE journey_legs SET origin_crs = $1, destination_crs = $2, service_date = $3, \
+                 depart_after = $4, depart_before = $5, arrive_after = $6, arrive_before = $7, \
+                 window_searched = TRUE \
+             WHERE id = $8 AND journey_id = $9 AND kind <> $10",
+        )
+        .bind(search.origin_crs.trim().to_ascii_uppercase())
+        .bind(search.destination_crs.trim().to_ascii_uppercase())
+        .bind(search.service_date)
+        .bind(search.depart_window.after)
+        .bind(search.depart_window.before)
+        .bind(search.arrive_window.after)
+        .bind(search.arrive_window.before)
+        .bind(leg_id)
+        .bind(journey_id)
+        .bind(LEG_KIND_UNTRACKED)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
     }
     tx.commit().await?;
     Ok(Some(tracking_id))
