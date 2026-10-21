@@ -21,6 +21,10 @@ current leg, and now also the whole journey:
 - The list's travel order now treats a journey whose last train is
   cancelled as travelled once that train's timetabled departure has
   passed, as the web app's home page does.
+- `travelled` on each `GET /Journeys/mine` row and each `GET /Train/mine`
+  row: whether it's over, by the same rule that splits the travel order.
+  Rows come still-to-come first, so the first `true` is where past ones
+  begin.
 - **For ds-mcp.** Use `finalArrivalDelayMinutes` for a journey's
   punctuality and the counts for cancelled or part-cancelled; the existing
   `delayMinutes` stays the current leg's.

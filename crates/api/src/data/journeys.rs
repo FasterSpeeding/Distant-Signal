@@ -2044,6 +2044,10 @@ pub(crate) async fn delete_journey_row_releasing_trains(
 /// or the journey's LAST leg if every leg is `completed`). A genuine
 /// multi-leg rollup (design doc §3's "worst status across legs" idiom) is a
 /// later phase's job.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a wire row: each flag is an independent API field, not a state machine"
+)]
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JourneyListItem {
@@ -2146,6 +2150,12 @@ pub struct JourneyListItem {
     /// per `travel_order::train_arrived_sql`; an untracked leg once its
     /// planned arrival has passed.
     pub train_leg_count: i64,
+    /// Whether the journey is over, by the same rule that splits the
+    /// list's travel order (`travel_order`): the last leg has actually
+    /// arrived (a cancelled last train once its departure has passed), or
+    /// every leg is finished. Rows come still-to-come first, so the first
+    /// `true` is where past journeys begin.
+    pub travelled: bool,
     pub cancelled_leg_count: i64,
     pub unmatched_leg_count: i64,
     pub finished_leg_count: i64,
@@ -2341,7 +2351,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
              WHERE c.coarse_rank <= $2 \
          ), \
          recent AS ( \
-             SELECT t.id, t.custom_name, t.created_at, t.created_via, \
+             SELECT t.id, t.custom_name, t.created_at, t.created_via, t.travelled, \
                     ROW_NUMBER() OVER (ORDER BY {order}, t.id DESC) AS position \
              FROM timed t \
              ORDER BY position \
@@ -2411,7 +2421,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
                                    ORDER BY (jl.kind = 'train') DESC, jl.leg_order DESC), \
                     journey AS (PARTITION BY jl.journey_id) \
          ) \
-         SELECT r.id, r.custom_name, r.created_at, r.created_via, \
+         SELECT r.id, r.custom_name, r.created_at, r.created_via, r.travelled, \
                 rl.id AS leg_id, rl.origin_crs, rl.destination_crs, rl.service_date, \
                 COALESCE(so.name, rl.origin_place) AS origin_name, \
                 COALESCE(sd.name, rl.destination_place) AS destination_name, \
@@ -5673,6 +5683,7 @@ mod db_tests {
 
         let rows = list_journeys_for_user(&pool, user_id).await.expect("list");
         let row = rows.iter().find(|r| r.id == journey).expect("journey row");
+        assert!(!row.travelled, "leg 2 is still running");
         assert_eq!(row.leg_count, 3);
         assert_eq!(row.train_leg_count, 3);
         assert_eq!(row.cancelled_leg_count, 0);
