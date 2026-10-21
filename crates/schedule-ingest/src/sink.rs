@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use common::secret::Secret;
 use ds_store::corpus::{
     CorpusLocation, DeliveredFileProvenance, corpus_delivery_problem, corpus_provenance_problem,
-    replace_corpus_locations_with_provenance,
+    delivery_source_problem, replace_corpus_locations_with_provenance,
 };
 use ds_store::schedule::{
     ScheduleFeedSource, insert_schedule_feed_ingest, schedule_feed_ingest_problem,
@@ -90,6 +90,8 @@ pub(crate) struct CorpusLoadRequest<'a> {
     /// The delivered file's size and SHA-256 (`audit.rs`).
     pub source_bytes: u64,
     pub sha256: &'a str,
+    /// The lane it came through: `sftp` or `bucket`.
+    pub delivery_source: &'a str,
 }
 
 /// The two writes ([`DbSink`]; a fake in the tests).
@@ -162,6 +164,7 @@ impl IngestSink for DbSink {
             file: record.source_file.as_deref(),
             bytes: record.source_bytes.and_then(|b| i64::try_from(b).ok()),
             sha256: record.source_sha256.as_deref(),
+            delivery_source: record.delivery_source.as_deref(),
         };
         insert_schedule_feed_ingest(
             &self.pool,
@@ -197,6 +200,7 @@ impl IngestSink for DbSink {
             &DeliveredFileProvenance {
                 bytes: i64::try_from(request.source_bytes).ok(),
                 sha256: Some(request.sha256),
+                delivery_source: Some(request.delivery_source),
             },
             request.locations,
         )
@@ -233,6 +237,7 @@ fn feed_ingest_record(
         source_file: Some(request.source_file.clone()),
         source_bytes: Some(request.source_bytes),
         source_sha256: Some(request.source_sha256.clone()),
+        delivery_source: Some(request.delivery_source.to_string()),
     }
 }
 
@@ -241,6 +246,7 @@ fn feed_ingest_record(
 fn corpus_load_request_problem(request: &CorpusLoadRequest<'_>) -> Option<String> {
     corpus_delivery_problem(request.source_file, request.locations)
         .or_else(|| corpus_provenance_problem(Some(request.sha256), Some(request.source_bytes)))
+        .or_else(|| delivery_source_problem(Some(request.delivery_source)))
 }
 
 #[cfg(test)]
@@ -342,6 +348,7 @@ pub(crate) mod tests {
             source_file: "timetable_full.zip".to_string(),
             source_bytes: 77_222_226,
             source_sha256: "ab".repeat(32),
+            delivery_source: "sftp",
         }
     }
 
@@ -382,6 +389,7 @@ pub(crate) mod tests {
             Box::new(|r| r.source_bytes = u64::MAX),
             Box::new(|r| r.source_file = "  ".to_string()),
             Box::new(|r| r.files[0].sha256 = Some("AB".repeat(32))),
+            Box::new(|r| r.delivery_source = "ftp"),
         ];
         for (i, mutate) in cases.iter().enumerate() {
             let mut request = feed_request();
@@ -416,6 +424,7 @@ pub(crate) mod tests {
             locations,
             source_bytes,
             sha256,
+            delivery_source: "bucket",
         };
         let cases = [
             request("CORPUSExtract.json.gz", &[][..], 1, sha.as_str()),
@@ -425,6 +434,10 @@ pub(crate) mod tests {
             request("CORPUSExtract.json.gz", &good[..], u64::MAX, sha.as_str()),
             // Both wrong: the 400 wins, as in the route.
             request("CORPUSExtract.json.gz", &[][..], 1, "NOT-A-SHA"),
+            CorpusLoadRequest {
+                delivery_source: "ftp",
+                ..request("CORPUSExtract.json.gz", &good[..], 1, sha.as_str())
+            },
         ];
         for (i, case) in cases.iter().enumerate() {
             let parsed: ds_store::corpus::CorpusLoadRequest =
@@ -433,6 +446,7 @@ pub(crate) mod tests {
                 .or_else(|| {
                     corpus_provenance_problem(parsed.sha256.as_deref(), parsed.source_bytes)
                 })
+                .or_else(|| delivery_source_problem(parsed.delivery_source.as_deref()))
                 .unwrap_or_else(|| panic!("case {i}: the route accepts it"));
             let direct = rejected_message(sink.load_corpus(case).await);
             assert_eq!(direct, route, "case {i}");
@@ -522,6 +536,7 @@ mod db_tests {
             Option<String>,
             Option<i64>,
             Option<String>,
+            Option<String>,
         );
         let delivered_at = Utc.with_ymd_and_hms(2001, 2, 3, 4, 5, 6).unwrap();
         let cleanup = cleanup_pool().await;
@@ -552,6 +567,7 @@ mod db_tests {
             source_file: "timetable_full.zip".to_string(),
             source_bytes: 77_222_226,
             source_sha256: "ab".repeat(32),
+            delivery_source: "bucket",
         };
         let sink = sink().await;
         sink.record_feed_ingest(&request).await.unwrap();
@@ -560,7 +576,8 @@ mod db_tests {
         sink.record_feed_ingest(&again).await.unwrap();
 
         let row: Row = sqlx::query_as(
-            "SELECT ingested_at, files, source_file, source_bytes, source_sha256 \
+            "SELECT ingested_at, files, source_file, source_bytes, source_sha256, \
+                    delivery_source \
              FROM schedule_feed_ingests WHERE delivered_at = $1",
         )
         .bind(delivered_at)
@@ -579,6 +596,8 @@ mod db_tests {
         );
         assert_eq!(row.3, Some(77_222_226));
         assert_eq!(row.4, route.source_sha256);
+        assert_eq!(row.5.as_deref(), Some("bucket"));
+        assert_eq!(row.5, route.delivery_source);
         delete().await;
     }
 
@@ -626,6 +645,7 @@ mod db_tests {
             locations: &locations,
             source_bytes: 295_957,
             sha256: &sha,
+            delivery_source: "sftp",
         };
         let sink = sink().await;
         for _ in 0..2 {
@@ -644,8 +664,9 @@ mod db_tests {
                 ("559500".to_string(), Some("CLPHMJN".to_string()))
             ]
         );
-        let delivery: (String, i32, Option<i64>, Option<String>) = sqlx::query_as(
-            "SELECT source_file, row_count, source_bytes, sha256 FROM corpus_deliveries",
+        let delivery: (String, i32, Option<i64>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT source_file, row_count, source_bytes, sha256, delivery_source \
+             FROM corpus_deliveries",
         )
         .fetch_one(&cleanup)
         .await
@@ -656,7 +677,8 @@ mod db_tests {
                 "CORPUSExtract.json.gz".to_string(),
                 2,
                 Some(295_957),
-                Some(sha.clone())
+                Some(sha.clone()),
+                Some("sftp".to_string())
             )
         );
         delete().await;

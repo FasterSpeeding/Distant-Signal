@@ -48,6 +48,9 @@
 
 mod audit;
 mod bucket;
+mod bucket_audit;
+#[cfg(test)]
+mod bucket_e2e_tests;
 mod cif_check;
 mod config;
 mod corpus;
@@ -56,6 +59,7 @@ mod corpus_xml;
 mod delivery;
 mod gcs;
 mod pattern;
+mod pubsub;
 mod scan;
 mod sink;
 mod sources;
@@ -342,20 +346,43 @@ async fn run_lanes_once(
 /// landing folder, the bucket lane's watch directory.
 fn spawn_bucket_source(config: &Config, routing: &Routing) -> anyhow::Result<PathBuf> {
     let args = &config.sources.bucket;
-    if args.bucket_audit_logs_ship {
-        tracing::warn!(
-            "BUCKET_AUDIT_LOGS_SHIP is set, but shipping the bucket's audit log is not implemented yet (GCS spec phase 5); nothing is shipped"
-        );
-    }
-    let credentials = match args.credential()? {
-        config::BucketCredential::Key(path) => gcs::Credentials::key(path),
-        config::BucketCredential::ExternalAccount(path) => gcs::Credentials::external_account(path),
+    let credentials = || -> anyhow::Result<gcs::Credentials> {
+        Ok(match args.credential()? {
+            config::BucketCredential::Key(path) => gcs::Credentials::key(path),
+            config::BucketCredential::ExternalAccount(path) => {
+                gcs::Credentials::external_account(path)
+            }
+        })
     };
     let client = gcs::GcsClient::new(
         args.bucket_base_url.as_deref(),
         args.bucket_name.as_deref().unwrap_or_default(),
-        credentials,
+        credentials()?,
     )?;
+    if args.bucket_audit_logs_ship {
+        // The same reader credential, with its own token cache and task.
+        let audit = gcs::GcsClient::new(
+            args.bucket_base_url.as_deref(),
+            args.bucket_audit_logs_bucket.as_deref().unwrap_or_default(),
+            credentials()?,
+        )?;
+        let settings = bucket_audit::AuditSettings {
+            poll_interval: Duration::from_secs(args.bucket_audit_logs_poll_interval_secs),
+            max_backoff: Duration::from_secs(
+                args.bucket_max_backoff_secs
+                    .max(args.bucket_audit_logs_poll_interval_secs),
+            ),
+        };
+        tokio::spawn(
+            bucket_audit::AuditShipper::new(
+                audit,
+                settings,
+                &config.storage_dir,
+                std::sync::Arc::new(SystemTime::now),
+            )
+            .run(),
+        );
+    }
     let settings = bucket::BucketSettings {
         expected: FilePattern::parse(args.bucket_expected_keys.as_deref().unwrap_or_default())
             .map_err(|err| anyhow::anyhow!("BUCKET_EXPECTED_KEYS: {err}"))?,
@@ -371,7 +398,31 @@ fn spawn_bucket_source(config: &Config, routing: &Routing) -> anyhow::Result<Pat
     };
     let dirs = bucket::BucketDirs::new(&config.storage_dir);
     let incoming = dirs.incoming.clone();
-    tokio::spawn(bucket::BucketSource::new(client, settings, dirs).run());
+    let mut source = bucket::BucketSource::new(client, settings, dirs);
+    if let Some(subscription) = args.pubsub_subscription() {
+        // OBJECT_FINALIZE notifications wake a poll early; polling stays,
+        // every reconcile interval while the subscription is healthy.
+        let wake = bucket::Wake::new(pubsub::MIN_WAKE_GAP);
+        let client = pubsub::PubSubClient::new(
+            args.bucket_pubsub_base_url.as_deref(),
+            subscription,
+            credentials()?,
+        )?;
+        tokio::spawn(
+            pubsub::Subscriber::new(
+                client,
+                args.bucket_name.as_deref().unwrap_or_default(),
+                std::sync::Arc::clone(&wake),
+                Duration::from_secs(args.bucket_max_backoff_secs),
+            )
+            .run(),
+        );
+        source = source.with_wake(
+            wake,
+            Duration::from_secs(args.bucket_pubsub_reconcile_interval_secs),
+        );
+    }
+    tokio::spawn(source.run());
     Ok(incoming)
 }
 
@@ -761,6 +812,7 @@ async fn run_scan_cycle(
         source_file: delivered.name.clone(),
         source_bytes: delivered.bytes,
         source_sha256: delivered.sha256.clone(),
+        delivery_source: lane.ctx.source.as_str(),
     };
 
     match sink.record_feed_ingest(&request).await {
@@ -889,7 +941,9 @@ fn queue_or_quarantine_failed_post(
 ///
 /// `source_*` are the delivered zip's own name, size and SHA-256 (see
 /// `audit.rs`), stored with the record (migration
-/// `20261001150000_schedule_feed_delivery_sha256.sql`).
+/// `20261001150000_schedule_feed_delivery_sha256.sql`), and
+/// `delivery_source` the lane it came through (`sftp` or `bucket`,
+/// `20261021090500_schedule_delivery_source.sql`).
 #[derive(Debug, Clone, Serialize)]
 struct ScheduleFeedIngestRequest {
     delivered_at: DateTime<Utc>,
@@ -898,6 +952,7 @@ struct ScheduleFeedIngestRequest {
     source_file: String,
     source_bytes: u64,
     source_sha256: String,
+    delivery_source: &'static str,
 }
 
 impl ScheduleFeedIngestRequest {

@@ -44,7 +44,8 @@ serde_json = "1.0.149"
 sha2 = "0.10"
 # The DB sink's pool and SQLSTATE classification; the ingest-writer's spec.
 sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
+# `sync`: the bucket source's Pub/Sub wake-up (`bucket::Wake`).
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1.44"
 # Same version/feature spec as `crates/api`'s existing direct dependency
 # (deflate-only, no default features) -- the real delivery zip uses
@@ -53,6 +54,10 @@ tracing = "0.1.44"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+# The in-process proxy in front of fake-gcs-server in the bucket source's
+# end-to-end tests (`bucket_e2e_tests.rs`); `health-http`'s version, so
+# already in this crate's tree.
+axum = "0.8.9"
 # Renders the registered metrics in tests (the bucket source's
 # registered-at-0 check); the version `common` uses.
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

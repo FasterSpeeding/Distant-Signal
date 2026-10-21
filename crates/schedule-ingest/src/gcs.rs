@@ -346,7 +346,17 @@ struct ListPage {
     #[serde(default)]
     items: Vec<RawObject>,
     #[serde(default)]
+    prefixes: Vec<String>,
+    #[serde(default)]
     next_page_token: Option<String>,
+}
+
+/// One listing: the objects, and with a delimiter the "folders" below the
+/// prefix (`prefixes`).
+#[derive(Debug, Default)]
+pub(crate) struct Listing {
+    pub objects: Vec<ObjectMeta>,
+    pub prefixes: Vec<String>,
 }
 
 impl RawObject {
@@ -431,67 +441,54 @@ impl GcsClient {
         )
     }
 
-    /// Sends the request `build` makes with a bearer token: a 401 is
-    /// retried once with a fresh token, a second 401 or a 403 is
-    /// [`GcsError::Revoked`]. Any other status is returned for the caller.
+    /// [`send_authorized`] with this client's credentials.
     async fn send(
         &self,
         what: &str,
         build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, GcsError> {
-        for attempt in 0..2 {
-            let token = self.credentials.token().await?;
-            let response = build(&self.http)
-                .bearer_auth(token.expose())
-                .send()
-                .await
-                .map_err(|err| GcsError::Failed(format!("{what}: {}", without_url(&err))))?;
-            match response.status().as_u16() {
-                401 if attempt == 0 => {
-                    tracing::info!(
-                        call = what,
-                        "GCS refused the access token (401); renewing it and retrying once"
-                    );
-                    self.credentials.invalidate(&token).await;
-                }
-                401 => {
-                    return Err(GcsError::Revoked(format!(
-                        "{what}: 401 after a fresh token"
-                    )));
-                }
-                403 => {
-                    return Err(GcsError::Revoked(format!(
-                        "{what}: 403 (IAM refused the reader)"
-                    )));
-                }
-                _ => return Ok(response),
-            }
-        }
-        Err(GcsError::Revoked(format!("{what}: 401")))
+        send_authorized(&self.http, &self.credentials, what, build).await
     }
 
     /// Every object at the bucket root (`delimiter=/`, so nested names are
     /// never seen), following `nextPageToken`.
     pub(crate) async fn list_root(&self) -> Result<Vec<ObjectMeta>, GcsError> {
+        Ok(self.list("", true, None).await?.objects)
+    }
+
+    /// Every object under `prefix` (only one level, and the folders below
+    /// it as `prefixes`, with `delimiter`), from `start_offset` on (names
+    /// sorting at or after it), following `nextPageToken`.
+    pub(crate) async fn list(
+        &self,
+        prefix: &str,
+        delimiter: bool,
+        start_offset: Option<&str>,
+    ) -> Result<Listing, GcsError> {
         let url = format!(
             "{}/storage/v1/b/{}/o",
             self.base,
             encode_segment(&self.bucket)
         );
-        let mut objects = Vec::new();
+        let mut listing = Listing::default();
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_LIST_PAGES {
             let token = page_token.clone();
             let response = self
                 .send("list", |http| {
                     let mut request = http.get(&url).timeout(CALL_TIMEOUT).query(&[
-                        ("delimiter", "/"),
-                        ("prefix", ""),
+                        ("prefix", prefix),
                         (
                             "fields",
-                            "items(name,size,generation,crc32c,md5Hash,timeCreated),nextPageToken",
+                            "items(name,size,generation,crc32c,md5Hash,timeCreated),prefixes,nextPageToken",
                         ),
                     ]);
+                    if delimiter {
+                        request = request.query(&[("delimiter", "/")]);
+                    }
+                    if let Some(start) = start_offset {
+                        request = request.query(&[("startOffset", start)]);
+                    }
                     if let Some(token) = &token {
                         request = request.query(&[("pageToken", token)]);
                     }
@@ -507,14 +504,15 @@ impl GcsClient {
                 .await
                 .map_err(|err| GcsError::Failed(format!("list: {}", without_url(&err))))?;
             for raw in page.items {
-                objects.push(
+                listing.objects.push(
                     raw.parse()
                         .map_err(|why| GcsError::Failed(format!("list: {why}")))?,
                 );
             }
+            listing.prefixes.extend(page.prefixes);
             match page.next_page_token.filter(|t| !t.is_empty()) {
                 Some(next) => page_token = Some(next),
-                None => return Ok(objects),
+                None => return Ok(listing),
             }
         }
         Err(GcsError::Failed(format!(
@@ -566,9 +564,51 @@ impl GcsClient {
     }
 }
 
+/// Sends the request `build` makes with a bearer token from `credentials`
+/// (any Google API with the `cloud-platform` scope: GCS here, Pub/Sub in
+/// `pubsub.rs`): a 401 is retried once with a fresh token, a second 401 or
+/// a 403 is [`GcsError::Revoked`]. Any other status is returned for the
+/// caller.
+pub(crate) async fn send_authorized(
+    http: &reqwest::Client,
+    credentials: &Credentials,
+    what: &str,
+    build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, GcsError> {
+    for attempt in 0..2 {
+        let token = credentials.token().await?;
+        let response = build(http)
+            .bearer_auth(token.expose())
+            .send()
+            .await
+            .map_err(|err| GcsError::Failed(format!("{what}: {}", without_url(&err))))?;
+        match response.status().as_u16() {
+            401 if attempt == 0 => {
+                tracing::info!(
+                    call = what,
+                    "Google refused the access token (401); renewing it and retrying once"
+                );
+                credentials.invalidate(&token).await;
+            }
+            401 => {
+                return Err(GcsError::Revoked(format!(
+                    "{what}: 401 after a fresh token"
+                )));
+            }
+            403 => {
+                return Err(GcsError::Revoked(format!(
+                    "{what}: 403 (IAM refused the reader)"
+                )));
+            }
+            _ => return Ok(response),
+        }
+    }
+    Err(GcsError::Revoked(format!("{what}: 401")))
+}
+
 /// A reqwest error's text without its URL (the object name in it is
 /// attacker-controlled; it is logged separately, escaped).
-fn without_url(err: &reqwest::Error) -> String {
+pub(crate) fn without_url(err: &reqwest::Error) -> String {
     let mut text = err.to_string();
     if let Some(url) = err.url() {
         text = text.replace(url.as_str(), "<url>");

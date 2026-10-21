@@ -905,6 +905,7 @@ pub(crate) async fn run_corpus_cycle(
         locations: &locations,
         source_bytes: delivered.bytes,
         sha256: &delivered.sha256,
+        delivery_source: lane.ctx.source.as_str(),
     };
     if let Err(err) = sink.load_corpus(&request).await {
         // Every failure is retried, a rejection too (as before the sink):
