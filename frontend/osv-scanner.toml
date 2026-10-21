@@ -5,11 +5,16 @@
 
 [[IgnoredVulns]]
 id = "GHSA-vfj7-8cjw-p6xm"
-ignoreUntil = 2026-11-05T00:00:00Z
+ignoreUntil = 2027-02-05T00:00:00Z
 reason = """\
-braces 3.0.3 (stack exhaustion on deeply nested patterns), dev-only and \
-transitive via micromatch in the build/lint toolchain; it never ships in an \
-image and only sees patterns from our own config. No fixed release exists \
-(3.0.3 is the latest). Accepted by the user 2026-10-05; at expiry, upgrade \
-if a fix has shipped, otherwise review again.\
+braces 3.0.3 (stack exhaustion on deeply nested patterns). No fixed release \
+exists: 3.0.3 is the latest and is OSV's last_affected version. Dev-only, \
+on one path: eslint-config-next -> @next/eslint-plugin-next, which pins \
+fast-glob 3.3.1 exactly (still so in 16.4.2 and 16.5 canary) -> micromatch \
+4.0.8 (latest) -> braces. Not reachable: the plugin only globs \
+settings.next.rootDir (no-html-link-for-pages), which our ESLint config \
+leaves unset, so braces never sees a pattern; nothing of it ships in the \
+standalone image. Accepted by the user 2026-10-05, extended 2026-10-21 \
+(DS-100); at expiry, upgrade if braces >= 3.0.4 or a plugin release that \
+drops fast-glob has shipped, otherwise review again.\
 """
