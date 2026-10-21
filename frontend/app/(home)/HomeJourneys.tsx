@@ -15,7 +15,7 @@ import {
   journeyNameInputFromLegs,
   journeyPreviewLine,
 } from '@/lib/journeyName';
-import { legStatusGroup } from '@/lib/journeyStatus';
+import { legStatusGroup, type LegStatusGroup } from '@/lib/journeyStatus';
 import { routeLabel, stationLabel } from '@/lib/stationLabel';
 import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
@@ -68,14 +68,15 @@ function legArrivalText(leg: JourneyLegDetail): string | null {
   return legDestinationArrivalLabel(leg.destinationCrs, leg.trackedTrainState?.journeyStops);
 }
 
-/** The current leg's own live status: its delay in minutes where a running
- * train has one ("12 min late"), otherwise its status badge. `null` for a
- * single-leg journey with nothing the journey's own badge doesn't say. */
-function LegStatus({ leg, legCount }: { leg: JourneyLegDetail; legCount: number }) {
+/** The current leg's own live status, secondary to the journey's: its
+ * delay in minutes where a running train has one ("12 min late"),
+ * otherwise its status badge. `null` when that would only repeat the
+ * journey's own badge (`headline`). */
+function LegStatus({ leg, headline }: { leg: JourneyLegDetail; headline: LegStatusGroup }) {
   const group = legStatusGroup(leg);
   const delay = leg.trackedTrainState?.delayMinutes ?? null;
   if (group === 'delayed' && delay !== null) return <DelayBadge delayMinutes={delay} />;
-  if (legCount < 2) return null;
+  if (group === headline) return null;
   return <JourneyStatusGroupBadge group={group} />;
 }
 
@@ -90,6 +91,7 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
   const { detail } = journey;
   const name = journeyNameInputFromLegs(detail.customName, detail.legs);
   const preview = journeyPreviewLine(name);
+  const headline = homeJourneyStatusGroup(journey);
   const leg = currentLeg(detail, now);
   const legIndex = leg === null ? -1 : detail.legs.indexOf(leg);
   const isLastLeg = legIndex === detail.legs.length - 1;
@@ -101,22 +103,24 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
     <Box className="currentJourneyCard">
       <CardLink href={`/journeys/${detail.id}`} padding="lg">
         <Stack gap="sm">
-          <StatusRow
-            align="flex-start"
-            title={
-              <Text fw={700} fz="lg" lineClamp={2} miw={0}>
-                {journeyDisplayName(name)}
-              </Text>
-            }
-            subtitle={
-              preview && (
-                <Text size="sm" c="dimmed">
-                  {preview}
+          {/* The preview line sits under the row, not beside the badge, so
+              on a phone it gets the card's full width. */}
+          <Stack gap={4}>
+            <StatusRow
+              align="flex-start"
+              title={
+                <Text fw={700} fz="lg" lineClamp={2} miw={0}>
+                  {journeyDisplayName(name)}
                 </Text>
-              )
-            }
-            trailing={<JourneyStatusGroupBadge group={homeJourneyStatusGroup(journey)} />}
-          />
+              }
+              trailing={<JourneyStatusGroupBadge group={headline} />}
+            />
+            {preview && (
+              <Text size="sm" c="dimmed">
+                {preview}
+              </Text>
+            )}
+          </Stack>
           {leg !== null && (
             <dl className="keyFacts keyFacts--compact">
               <div>
@@ -124,7 +128,7 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
                 <dd>
                   <Group gap="xs" wrap="wrap">
                     <span>{legNowText(leg)}</span>
-                    <LegStatus leg={leg} legCount={detail.legs.length} />
+                    <LegStatus leg={leg} headline={headline} />
                   </Group>
                 </dd>
               </div>
