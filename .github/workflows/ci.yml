@@ -1329,6 +1329,17 @@ jobs:
           grep -q '~ds:ingest:tfl ~ds:ingest:tfl-stops ' <<<"${out}" \
             || fail "the poller-tfl ACL user must reach ds:ingest:tfl-stops"
 
+          # DistantSignalPollerStale for the tfl-stops cycle: only while the
+          # job is on, at 2 x its daily interval.
+          rules=(--set metrics.prometheusRule.enabled=true)
+          off=$(render "${rules[@]}")
+          if grep -q 'cycle="tfl-stops"' <<<"${off}"; then
+            fail "no tfl-stops staleness rule while the job is off"
+          fi
+          on=$(render "${rules[@]}" --set pollers.tfl.stops.enabled=true --set ingestWriter.streams.tfl-stops=apply)
+          stale=$(grep -A1 'cycle="tfl-stops"' <<<"${on}" || true)
+          grep -q '> 172800' <<<"${stale}" || fail "tfl-stops must go stale after 172800s: ${stale}"
+
       - name: helm template (enricher workload identity)
         run: |
           set -euo pipefail

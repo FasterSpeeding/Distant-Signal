@@ -20,9 +20,12 @@ list is empty until the operator turns on poller-tfl's stops job.
   override list, then TfL's interchange hubs, then the nearest stop within
   300 m. A code with none is absent. Up to 20 codes.
 - **Stop ids on untracked legs.** `POST /Journeys` (`leg`), `POST
-  /Journeys/{id}/legs` and `POST /Journeys/itinerary` untracked legs take
-  optional `originStopId` and `destinationStopId` (a stop `id` from the
-  search). Each must be a known stop, on a `tube`, `dlr` or `tram` leg
+  /Journeys/{id}/legs` (with or without `?before=`), `PUT
+  /Journeys/{id}/legs/{legId}` and `POST /Journeys/itinerary` untracked
+  legs take optional `originStopId` and `destinationStopId` (a stop `id`
+  from the search). A `PUT` replaces them like the other fields: leave one
+  out to clear it. Each must be a known stop, on a `tube`, `dlr`, `tram`
+  or `metro` leg
   (400 otherwise; `invalid_itinerary` on the itinerary route, where a
   train leg with one is refused too). A blank `originName`/
   `destinationName` takes the stop's name. Every leg of `GET
@@ -38,6 +41,39 @@ list is empty until the operator turns on poller-tfl's stops job.
 - **For ds-mcp.** Nothing has to change. To save a planner Tube transfer
   as an untracked leg, send `originName: originStop.name` and
   `originStopId: originStop.id` (and the same for the destination).
+
+## 2026-10-20: `/Trips/plan` uses fixed links in both directions
+
+No shape change. The timetable's fixed links (Tube, walk, transfer, bus,
+ferry) were used only in the direction the feed happens to list them, so
+half of them were missing: Vauxhall to Euston went by train via Waterloo
+East and Charing Cross because only Euston to Vauxhall by Tube was listed.
+Each link now runs both ways, with the same minutes and hours. Plans can
+change: a `transfer` leg (`mode` `TUBE`, `WALK`, and so on) may now appear
+where trains were offered before, e.g. Vauxhall to Euston is one 22-minute
+`TUBE` leg (27 minutes evenings and Sundays). A small curated set adds
+links the feed lacks, so far Vauxhall to Victoria (`TUBE`, 11 minutes;
+`reference-data/supplementary-fixed-links.csv`). Transfer legs still carry
+no line name.
+
+## 2026-10-20: `journeyIds` on tracked trains
+
+Additive; no existing request or field changes meaning.
+
+- **`GET /Train/mine`** rows gain `journeyIds`: the caller's journeys the
+  train belongs to, ascending, `[]` for a train tracked on its own. Every
+  leg counts, not only the current one `GET /Journeys/mine` describes, and
+  so does another of the caller's subscriptions on the same physical train
+  (a pin tracked separately that resolved to a leg's train). The site lists
+  a train with a non-empty `journeyIds` under its journey only, never again
+  as a standalone tracked train.
+- **Push notifications.** A user with two live subscriptions on one train
+  gets one push per change, on the journey leg's subscription when there
+  is one.
+- **For ds-mcp.** To list standalone tracked trains next to journeys
+  without repeating journey legs, skip rows whose `journeyIds` is not
+  empty. Matching on `GET /Journeys/mine`'s `trainSubscriptionId` misses
+  every leg but the current one.
 
 ## 2026-10-20: `trackingPhase` on group and shared rows
 
@@ -67,6 +103,28 @@ its owner saw "Planned").
 - **For ds-mcp.** Nothing has to change. The delegated Phase 3 group reads,
   when they ship, get these fields too: read `trackingPhase` and, for a
   journey, `kind`/`untrackedStatus`, the same way as on the owner's lists.
+
+## 2026-10-20: insert a leg, edit an untracked leg, `metro`
+
+Additive. Spec: `docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md` §11.
+
+- **Insert before.** `POST /Journeys/{id}/legs?before={legId}` adds the
+  leg (any mode) in front of that leg; it and every later leg move one
+  place down. Without `before`, the leg is appended as before. An unknown
+  `before` (not a leg of this journey) is 404 and adds nothing; any other
+  query key is a 400. Leg numbers everywhere (the journey's own list, push
+  copy's "leg 2 of 3") follow the new order.
+- **Edit an untracked leg.** `PUT /Journeys/{id}/legs/{legId}` with the
+  untracked fields (`transitMode`, `plannedDeparture`, `plannedArrival`,
+  optional `originName`, `destinationName`, `lineName`; no `mode`)
+  replaces them in place: same id, same place. 204; 404 for no such leg or
+  not the caller's; 400 for a train leg or invalid fields.
+- **`metro`** is a new `transitMode` (Tyne and Wear Metro and similar),
+  which the planner's fixed links use.
+- **Web planner.** "Track this journey" now sends each Tube, walk, metro,
+  bus or ferry transfer as an untracked leg between its train legs.
+- **For ds-mcp.** Nothing to change. A planned route's transfers can be
+  sent the same way, as `kind: "untracked"` itinerary legs.
 
 ## 2026-10-20: hand-entered train legs are checked against the timetable
 
@@ -106,8 +164,8 @@ Additive; no existing request or field changes meaning. Spec:
 - **Untracked legs.** A journey leg for transport we have no data for
   (Tube, bus, walk, ferry). `POST /Journeys` (`leg`) and `POST
   /Journeys/{id}/legs` take `"mode": "untracked"` with `transitMode`
-  (`tube`, `bus`, `tram`, `rail`, `walk`, `ferry`, `taxi`, `cycle`,
-  `other`), optional `lineName` (60 characters), `originName` and
+  (`tube`, `bus`, `tram`, `metro`, `rail`, `walk`, `ferry`, `taxi`,
+  `cycle`, `other`), optional `lineName` (60 characters), `originName` and
   `destinationName` (100 each, free text), and required
   `plannedDeparture`/`plannedArrival` (RFC3339; arrival not before
   departure, at most 24 hours later; departure at most 28 days ahead and 7

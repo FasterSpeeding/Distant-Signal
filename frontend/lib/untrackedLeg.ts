@@ -21,6 +21,7 @@ export const TRANSIT_MODES: readonly { value: TransitMode; label: string }[] = [
   { value: 'dlr', label: 'DLR' },
   { value: 'bus', label: 'Bus' },
   { value: 'tram', label: 'Tram' },
+  { value: 'metro', label: 'Metro' },
   { value: 'rail', label: 'Train (not tracked)' },
   { value: 'walk', label: 'Walk' },
   { value: 'ferry', label: 'Ferry' },
@@ -30,12 +31,24 @@ export const TRANSIT_MODES: readonly { value: TransitMode; label: string }[] = [
 ];
 
 /** The modes whose places can be picked from TfL's stops
- * (`GET /tfl/stops`), each searching its own mode's stops. */
-export const TFL_STOP_MODES: readonly TransitMode[] = ['tube', 'dlr', 'tram'];
+ * (`GET /tfl/stops`), with the stop modes each searches: its own, or for
+ * `metro` (the planner's generic METRO transfer) DLR, tram and Tube. */
+const TFL_STOP_SEARCH: Partial<Record<TransitMode, readonly string[]>> = {
+  tube: ['tube'],
+  dlr: ['dlr'],
+  tram: ['tram'],
+  metro: ['dlr', 'tram', 'tube'],
+};
 
 /** Whether `mode`'s places come from the TfL stop lookup. */
 export function hasTflStops(mode: TransitMode): boolean {
-  return TFL_STOP_MODES.includes(mode);
+  return TFL_STOP_SEARCH[mode] !== undefined;
+}
+
+/** The TfL stop modes a `mode` leg's place fields search (none for a mode
+ * without TfL stops). */
+export function tflStopSearchModes(mode: TransitMode): readonly string[] {
+  return TFL_STOP_SEARCH[mode] ?? [];
 }
 
 /** A mode's label; an unknown mode from a newer backend reads "Other". */

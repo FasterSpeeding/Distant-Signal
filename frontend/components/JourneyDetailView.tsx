@@ -11,6 +11,7 @@ import { TrackJourneyAgainButton } from './TrackJourneyAgainButton';
 import {
   connectionGapMinutes,
   journeyCanAddLeg,
+  journeyFirstLegStart,
   journeyPriorArrival,
   journeyPriorDestinationCrs,
   journeyPriorDestinationName,
@@ -149,6 +150,7 @@ export function JourneyDetailView({
   const priorDestinationCrs = journeyPriorDestinationCrs(journey);
   const priorArrival = journeyPriorArrival(journey);
   const priorPlaceName = journeyPriorDestinationName(journey);
+  const firstLegStart = journeyFirstLegStart(journey);
   const canAddLeg = journeyCanAddLeg(journey);
   const multiLeg = journey.legs.length > 1;
   const name = journeyNameInput(journey);
@@ -173,6 +175,17 @@ export function JourneyDetailView({
               priorDestinationCrs={priorDestinationCrs}
               priorArrival={priorArrival}
               priorPlaceName={priorPlaceName}
+            />
+          )}
+          {/* Insert before the first leg (spec 2026-10-20 §2.3): a Tube
+              ride or walk to the station, added after the trains. */}
+          {journey.isOwner && firstLegStart && (
+            <AddJourneyLegButton
+              journeyId={journey.id}
+              priorDestinationCrs={null}
+              beforeLegId={firstLegStart.legId}
+              nextLegStart={firstLegStart}
+              label="Add a leg at the start"
             />
           )}
           {journey.isOwner && <ShareJourneyButton journeyId={journey.id} />}

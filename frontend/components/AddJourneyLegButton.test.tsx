@@ -578,4 +578,44 @@ describe('AddJourneyLegButton', () => {
       plannedArrival: '2026-10-21T09:25:00.000Z',
     });
   });
+
+  /** Spec 2026-10-20 §2.3 follow-up: "Add a leg at the start" inserts in
+   * front of the first leg, opening on "Tube, bus or walk" and ending where
+   * and when that leg starts. */
+  it('inserts an untracked leg before a leg, seeded to end where it starts', async () => {
+    const fetchMock = mockFetch(legResponse);
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        beforeLegId={7}
+        nextLegStart={{ place: 'London Euston', crs: 'EUS', departure: { date: '2026-10-21', time: '09:30' } }}
+        label="Add a leg at the start"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg at the start' }));
+    expect(await screen.findByRole('combobox', { name: 'To (optional)' })).toHaveValue('London Euston');
+    expect(screen.getByLabelText('Date')).toHaveValue('21 Oct 2026');
+    expect(screen.getByLabelText('Arrives')).toHaveValue('09:30');
+    fireEvent.change(placeField('From (optional)'), { target: { value: 'Brixton' } });
+    fireEvent.change(screen.getByLabelText('Leaves'), { target: { value: '09:05' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add leg' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/Journeys/1/legs?before=7',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            mode: 'untracked',
+            transitMode: 'tube',
+            originName: 'Brixton',
+            destinationName: 'London Euston',
+            plannedDeparture: '2026-10-21T08:05:00.000Z',
+            plannedArrival: '2026-10-21T08:30:00.000Z',
+          }),
+        }),
+      );
+    });
+  });
 });

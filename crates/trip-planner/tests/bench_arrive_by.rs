@@ -722,3 +722,225 @@ fn bench_group_waypoints_against_single() {
         }
     }
 }
+
+/// Fixed-link rows `(from_crs, link)` for [`bench_fixed_links_both_ways`].
+///
+/// With `DS_BENCH_ALF` set to a real `RJTTF*ALF.txt`, its rows, each CRS
+/// mapped onto a synthetic station: the 40 most-linked CRSs (London's
+/// termini and the like) onto the hubs, the rest onto other stations. The
+/// ALF is Rail Data Marketplace data, so it is not checked in. Without it,
+/// synthetic rows of the same size and shape (4,651 rows over 1,308 links in
+/// RJTTF995ALF, 2026-10-20; three to five time windows per link; half the
+/// links at a hub, each to a station near it in the numbering).
+#[expect(
+    clippy::unwrap_used,
+    reason = "bench code: an unreadable or malformed ALF file should stop the bench"
+)]
+fn bench_link_rows(rng: &mut Rng) -> Vec<(String, schedule_query::FixedLink)> {
+    use schedule_query::FixedLink;
+
+    let link = |from: u64, to: u64, minutes: i32, window: (&str, &str, &str)| {
+        (
+            format!("C{from:04}"),
+            FixedLink {
+                mode: "TUBE".to_string(),
+                to_crs: format!("C{to:04}"),
+                minutes,
+                valid_from: window.0.to_string(),
+                valid_to: window.1.to_string(),
+                days_mask: window.2.to_string(),
+            },
+        )
+    };
+    if let Ok(path) = std::env::var("DS_BENCH_ALF") {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let parsed: Vec<HashMap<&str, &str>> = text
+            .lines()
+            .filter(|line| line.starts_with("M="))
+            .map(|line| {
+                line.trim()
+                    .split(',')
+                    .filter_map(|kv| kv.split_once('='))
+                    .collect()
+            })
+            .collect();
+        let mut degree: HashMap<&str, usize> = HashMap::new();
+        for row in &parsed {
+            *degree.entry(row["O"]).or_default() += 1;
+            *degree.entry(row["D"]).or_default() += 1;
+        }
+        let mut by_degree: Vec<(&str, usize)> = degree.into_iter().collect();
+        by_degree.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let station: HashMap<&str, u64> = by_degree
+            .iter()
+            .enumerate()
+            .map(|(i, (crs, _))| {
+                let i = i as u64;
+                let index = if i < HUBS {
+                    i
+                } else {
+                    HUBS + (i * 7) % (STATIONS - HUBS)
+                };
+                (*crs, index)
+            })
+            .collect();
+        println!("{} ALF rows from {path}", parsed.len());
+        return parsed
+            .iter()
+            .map(|row| {
+                link(
+                    station[row["O"]],
+                    station[row["D"]],
+                    row["T"].parse().unwrap(),
+                    (row["S"], row["E"], row["R"]),
+                )
+            })
+            .collect();
+    }
+    let windows = [
+        (("0700", "1900", "1111110"), 0),
+        (("1901", "2359", "1111110"), 5),
+        (("0529", "0659", "1111100"), 5),
+        (("0700", "2359", "0000001"), 5),
+        (("0001", "0529", "1111100"), 10),
+    ];
+    let mut rows = Vec::new();
+    for _ in 0..1308 {
+        let from = if rng.next(2) == 0 {
+            rng.next(HUBS)
+        } else {
+            rng.next(STATIONS)
+        };
+        let to = (from + 1 + rng.next(60)) % STATIONS;
+        let minutes = 5 + rng.next(40) as i32;
+        for (window, extra) in &windows[..3 + rng.next(3) as usize] {
+            rows.push(link(from, to, minutes + extra, *window));
+        }
+    }
+    rows
+}
+
+/// The ALF fixed links one way (as published) against both ways
+/// (`schedule_query::index_fixed_links_both_ways`), on the synthetic
+/// network plus [`bench_link_rows`]. Each row: CSA depart-after, CSA
+/// arrive-by, RAPTOR depart-after (4 rounds) and RAPTOR arrive-by, one way
+/// then both ways. For the real file's links:
+///
+/// ```text
+/// DS_BENCH_ALF=/path/to/RJTTF995ALF.txt cargo test --release -p trip-planner \
+///     --test bench_arrive_by bench_fixed_links_both_ways -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "benchmark; see the module doc"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bench: building both indexes and timing four searches on each"
+)]
+fn bench_fixed_links_both_ways() {
+    use schedule_query::index_fixed_links_both_ways;
+
+    let (connections, base) = network();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0x0a1f);
+    let rows = bench_link_rows(&mut rng);
+    let mut one_way = base.clone();
+    for (from, link) in rows.clone() {
+        one_way
+            .fixed_links_from_crs
+            .entry(from)
+            .or_default()
+            .push(link);
+    }
+    let mut both_ways = base;
+    both_ways.fixed_links_from_crs = index_fixed_links_both_ways(rows.clone());
+    println!(
+        "{} fixed-link rows; indexed both ways: {}",
+        rows.len(),
+        both_ways
+            .fixed_links_from_crs
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+    );
+
+    let mut table: Vec<[Duration; 8]> = Vec::new();
+    for _ in 0..10 {
+        let from = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+        let to = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+        let times = |interchange: &InterchangeData| {
+            let arrive = || ArriveByOptions {
+                connections: &connections,
+                interchange,
+                from_tiplocs: &from,
+                waypoints: &[],
+                to_tiplocs: &to,
+                vias: None,
+                arrive_by_min: 720,
+                date,
+            };
+            [
+                median(|| {
+                    usize::from(
+                        scan_connections_restricted(
+                            ScanOptions {
+                                connections: &connections,
+                                interchange,
+                                from_tiplocs: &from,
+                                to_tiplocs: &to,
+                                departure_min: 480,
+                                date,
+                            },
+                            None,
+                            None,
+                        )
+                        .is_some(),
+                    )
+                }),
+                median(|| usize::from(scan_connections_arrive_by(arrive(), None, None).is_some())),
+                median(|| {
+                    raptor_search_restricted(
+                        RaptorOptions {
+                            connections: &connections,
+                            interchange,
+                            from_tiplocs: &from,
+                            to_tiplocs: &to,
+                            departure_min: 480,
+                            date,
+                            max_rounds: 4,
+                        },
+                        None,
+                        None,
+                    )
+                    .len()
+                }),
+                median(|| raptor_arrive_by(arrive(), None, None, 4).len()),
+            ]
+            .map(|(t, _)| t)
+        };
+        let before = times(&one_way);
+        let after = times(&both_ways);
+        let mut row = [Duration::ZERO; 8];
+        row[..4].copy_from_slice(&before);
+        row[4..].copy_from_slice(&after);
+        table.push(row);
+    }
+    let labels = [
+        "csa depart",
+        "csa arriveBy",
+        "raptor depart",
+        "raptor arriveBy",
+    ];
+    for (column, label) in labels.iter().enumerate() {
+        let pick = |offset: usize| {
+            let mut values: Vec<Duration> = table.iter().map(|row| row[column + offset]).collect();
+            values.sort();
+            (values[values.len() / 2], values[values.len() - 1])
+        };
+        let (before_median, before_max) = pick(0);
+        let (after_median, after_max) = pick(4);
+        println!(
+            "{label:16} one way median {before_median:>8.1?} max {before_max:>8.1?}  \
+             both ways median {after_median:>8.1?} max {after_max:>8.1?}"
+        );
+    }
+}

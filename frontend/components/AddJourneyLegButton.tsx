@@ -77,9 +77,23 @@ export function AddJourneyLegButton({
   priorDestinationCrs,
   priorArrival = null,
   priorPlaceName = null,
+  beforeLegId = null,
+  nextLegStart = null,
+  label = 'Add a leg',
   onAdded,
 }: {
   journeyId: number;
+  /** Insert the new leg in front of this leg (`POST .../legs?before=`)
+   * instead of after the last one (spec 2026-10-20 §2.3): for a Tube or
+   * walk start added to a journey that already has its trains. The dialog
+   * then opens on "Tube, bus or walk" and seeds from `nextLegStart`. */
+  beforeLegId?: number | null;
+  /** Where and when the leg being inserted before starts: the new leg's
+   * default "to" place (and, for a train search, destination station) and
+   * arrival. */
+  nextLegStart?: { place: string | null; crs: string | null; departure: LondonDateTime | null } | null;
+  /** The button's words; "Add a leg" by default. */
+  label?: string;
   priorDestinationCrs: string | null;
   /** The previous leg's destination in words (`journeyPriorDestinationName`),
    * the default "from" of a new untracked leg. */
@@ -148,11 +162,11 @@ export function AddJourneyLegButton({
   function handleOpen() {
     setError(null);
     needsLoginState.reset();
-    setMode('window');
+    setMode(beforeLegId === null ? 'window' : 'untracked');
     // Re-seeded on every open (not just once at mount) -- see this
     // component's own doc comment.
-    setOriginCrs(priorDestinationCrs ?? '');
-    setDestinationCrs('');
+    setOriginCrs(beforeLegId === null ? (priorDestinationCrs ?? '') : '');
+    setDestinationCrs(beforeLegId === null ? '' : (nextLegStart?.crs ?? ''));
     setOriginTouched(false);
     setDestinationTouched(false);
     // The previous leg's arrival when known (already London time, and on
@@ -166,11 +180,18 @@ export function AddJourneyLegButton({
     setArriveTo('');
     setIncompleteTimes({ departFrom: false, departTo: false, arriveFrom: false, arriveTo: false });
     setUntrackedDraft(
-      newUntrackedLegDraft({
-        date: priorArrival?.date ?? nowInLondon().format('YYYY-MM-DD'),
-        leaves: priorArrival?.time ?? '',
-        originName: priorPlaceName ?? '',
-      }),
+      beforeLegId === null
+        ? newUntrackedLegDraft({
+            date: priorArrival?.date ?? nowInLondon().format('YYYY-MM-DD'),
+            leaves: priorArrival?.time ?? '',
+            originName: priorPlaceName ?? '',
+          })
+        : // Inserted before a leg: it ends where and when that leg starts.
+          newUntrackedLegDraft({
+            date: nextLegStart?.departure?.date ?? nowInLondon().format('YYYY-MM-DD'),
+            arrives: nextLegStart?.departure?.time ?? '',
+            destinationName: nextLegStart?.place ?? '',
+          }),
     );
     open();
   }
@@ -235,7 +256,8 @@ export function AddJourneyLegButton({
     setError(null);
     needsLoginState.reset();
     try {
-      const response = await fetch(`/api/Journeys/${journeyId}/legs`, {
+      const query = beforeLegId === null ? '' : `?before=${beforeLegId}`;
+      const response = await fetch(`/api/Journeys/${journeyId}/legs${query}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -270,9 +292,13 @@ export function AddJourneyLegButton({
   return (
     <>
       <Button variant="default" size="xs" onClick={handleOpen}>
-        Add a leg
+        {label}
       </Button>
-      <Modal opened={opened} onClose={close} title="Add a leg to this journey">
+      <Modal
+        opened={opened}
+        onClose={close}
+        title={beforeLegId === null ? 'Add a leg to this journey' : 'Add a leg at the start'}
+      >
         <Stack>
           {/* Review §2.1/I21: aligned with `TrackTrainForm`'s own mode
               toggle, which used to say "Search a time window" while this

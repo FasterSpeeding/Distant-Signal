@@ -230,20 +230,29 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
     )
     .fetch_all(pool)
     .await?;
-    let mut fixed_links_from_crs: HashMap<String, Vec<FixedLink>> = HashMap::new();
-    for row in fixed_link_rows {
-        fixed_links_from_crs
-            .entry(row.from_crs)
-            .or_default()
-            .push(FixedLink {
-                mode: row.mode,
-                to_crs: row.to_crs,
-                minutes: row.minutes,
-                valid_from: row.valid_from,
-                valid_to: row.valid_to,
-                days_mask: row.days_mask,
-            });
-    }
+    // The table keeps the ALF as published, one row per link; each link
+    // runs both ways (`schedule_query::index_fixed_links_both_ways`). The
+    // curated links the ALF lacks join them.
+    let fixed_links_from_crs = schedule_query::index_fixed_links_both_ways(
+        fixed_link_rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.from_crs,
+                    FixedLink {
+                        mode: row.mode,
+                        to_crs: row.to_crs,
+                        minutes: row.minutes,
+                        valid_from: row.valid_from,
+                        valid_to: row.valid_to,
+                        days_mask: row.days_mask,
+                    },
+                )
+            })
+            .chain(supplementary_link_rows(
+                &common::supplementary_links::supplementary_links(),
+            )),
+    );
 
     let mut data = InterchangeData {
         modal_change: schedule_query::ModalChangeBuffer::default(),
@@ -260,7 +269,32 @@ pub async fn fetch_interchange_data(pool: &PgPool) -> Result<InterchangeData> {
         &parent_links,
         &common::tiploc_parents::curated_parents(),
     );
+    // Back into lookup order after the walks were appended, so the
+    // planner's link lookups never sort per call.
+    data.sort_fixed_links();
     Ok(data)
+}
+
+/// The curated links (`reference-data/supplementary-fixed-links.csv`) as
+/// fixed-link rows, `(from_crs, link)`, for
+/// [`schedule_query::index_fixed_links_both_ways`]. A link to or from a CRS
+/// the planner has no TIPLOC for is harmless: it is never reached.
+pub fn supplementary_link_rows(
+    links: &[common::supplementary_links::SupplementaryLink],
+) -> impl Iterator<Item = (String, FixedLink)> + '_ {
+    links.iter().map(|link| {
+        (
+            link.from_crs.clone(),
+            FixedLink {
+                mode: link.mode.clone(),
+                to_crs: link.to_crs.clone(),
+                minutes: link.minutes,
+                valid_from: link.valid_from.clone(),
+                valid_to: link.valid_to.clone(),
+                days_mask: link.days_mask.clone(),
+            },
+        )
+    })
 }
 
 /// The `mode` of a stop <-> parent station walking link: the same `WALK`
@@ -1261,6 +1295,47 @@ mod parent_walk_tests {
 }
 
 #[cfg(test)]
+mod supplementary_link_tests {
+    use super::*;
+
+    #[test]
+    fn the_curated_vauxhall_victoria_link_runs_both_ways_beside_the_alf() {
+        let alf = (
+            "EUS".to_string(),
+            FixedLink {
+                mode: "TUBE".to_string(),
+                to_crs: "VXH".to_string(),
+                minutes: 22,
+                valid_from: "0700".to_string(),
+                valid_to: "1900".to_string(),
+                days_mask: "1111110".to_string(),
+            },
+        );
+        let curated = common::supplementary_links::supplementary_links();
+        let data = InterchangeData {
+            fixed_links_from_crs: schedule_query::index_fixed_links_both_ways(
+                std::iter::once(alf).chain(supplementary_link_rows(&curated)),
+            ),
+            ..InterchangeData::default()
+        };
+        // Wednesday 21 October 2026, 10:00.
+        let wednesday = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        let from_vxh: Vec<(&str, i32)> =
+            schedule_query::fixed_links_from(&data, "VXH", wednesday, 600)
+                .iter()
+                .map(|link| (link.to_crs.as_str(), link.minutes))
+                .collect();
+        assert_eq!(from_vxh, [("EUS", 22), ("VIC", 11)]);
+        let to_vxh =
+            schedule_query::fixed_link_between(&data, "VIC", "VXH", wednesday, 600).unwrap();
+        assert_eq!((to_vxh.mode.as_str(), to_vxh.minutes), ("TUBE", 11));
+        // Evenings, the ALF's +5 convention.
+        let evening = schedule_query::fixed_link_between(&data, "VXH", "VIC", wednesday, 20 * 60);
+        assert_eq!(evening.map(|link| link.minutes), Some(16));
+    }
+}
+
+#[cfg(test)]
 mod db_tests {
     use super::*;
 
@@ -1345,6 +1420,12 @@ mod db_tests {
                 .get("ZZZ")
                 .is_some_and(|links| links.iter().any(|l| l.to_crs == "YYY"))
         );
+        // The ALF lists each link once; it runs back the other way too.
+        assert!(data.fixed_links_from_crs.get("YYY").is_some_and(|links| {
+            links
+                .iter()
+                .any(|l| l.to_crs == "ZZZ" && l.minutes == 8 && l.mode == "WALK")
+        }));
 
         sqlx::query("DELETE FROM stanox_crs WHERE stanox = 'TEST-IC-STANOX'")
             .execute(&pool)

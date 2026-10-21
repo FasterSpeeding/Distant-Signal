@@ -113,6 +113,12 @@ pub(crate) enum Outcome {
     RejectedByApi,
     /// A CORPUS file that failed its checks, moved to the rejected archive.
     CorpusRejected,
+    /// The same content already came through the other delivery source
+    /// (`sources.rs`): not extracted, checked or recorded again.
+    Duplicate,
+    /// The other source delivered different content within the
+    /// disagreement window and wins by `SOURCE_PRECEDENCE`: not ingested.
+    Superseded,
 }
 
 impl Outcome {
@@ -122,41 +128,63 @@ impl Outcome {
             Self::Quarantined => "quarantined",
             Self::RejectedByApi => "rejected_by_api",
             Self::CorpusRejected => "corpus_rejected",
+            Self::Duplicate => "duplicate",
+            Self::Superseded => "superseded",
         }
     }
 }
 
+/// Where an audited file came from, with several delivery sources on
+/// (`sources.rs`). With SFTP alone there is none, and the line has exactly
+/// the fields it always had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Provenance<'a> {
+    /// `sftp` or `bucket`.
+    pub source: &'a str,
+    /// On `duplicate` and `superseded`: the SHA-256 of the copy that came
+    /// first (the same content for a duplicate, the winner's otherwise).
+    pub duplicate_of: Option<&'a str>,
+    /// On `duplicate` and `superseded`: that copy's source.
+    pub first_source: Option<&'a str>,
+}
+
 /// Logs the one audit line for `file`. `reason` is required for every
-/// outcome but [`Outcome::Accepted`], and omitted for it.
+/// outcome but [`Outcome::Accepted`], and omitted for it. (The pipeline
+/// logs through `sources::LaneCtx::audit`, which adds the provenance when
+/// several sources run.)
+#[cfg(test)]
 pub(crate) fn decision(
     file: &DeliveredFile,
     delivered_at: DateTime<Utc>,
     outcome: Outcome,
     reason: Option<&str>,
 ) {
+    decision_from(file, delivered_at, outcome, reason, None);
+}
+
+/// [`decision`], plus `source` (and `duplicate_of`, `first_source`) when
+/// `provenance` is given. Absent fields are left out of the line.
+pub(crate) fn decision_from(
+    file: &DeliveredFile,
+    delivered_at: DateTime<Utc>,
+    outcome: Outcome,
+    reason: Option<&str>,
+    provenance: Option<&Provenance<'_>>,
+) {
     let delivered_at = delivered_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    if let Some(reason) = reason {
-        tracing::info!(
-            target: "schedule_ingest::audit",
-            file = %file.name,
-            bytes = file.bytes,
-            sha256 = %file.sha256,
-            delivered_at = %delivered_at,
-            outcome = outcome.as_str(),
-            reason = %reason,
-            "delivery decision"
-        );
-    } else {
-        tracing::info!(
-            target: "schedule_ingest::audit",
-            file = %file.name,
-            bytes = file.bytes,
-            sha256 = %file.sha256,
-            delivered_at = %delivered_at,
-            outcome = outcome.as_str(),
-            "delivery decision"
-        );
-    }
+    tracing::info!(
+        target: "schedule_ingest::audit",
+        file = %file.name,
+        bytes = file.bytes,
+        sha256 = %file.sha256,
+        delivered_at = %delivered_at,
+        outcome = outcome.as_str(),
+        reason,
+        source = provenance.map(|p| p.source),
+        duplicate_of = provenance.and_then(|p| p.duplicate_of),
+        first_source = provenance.and_then(|p| p.first_source),
+        "delivery decision"
+    );
 }
 
 #[cfg(test)]
@@ -309,15 +337,63 @@ pub(crate) mod tests {
                 Outcome::Accepted,
                 Outcome::Quarantined,
                 Outcome::RejectedByApi,
-                Outcome::CorpusRejected
+                Outcome::CorpusRejected,
+                Outcome::Duplicate,
+                Outcome::Superseded
             ]
             .map(Outcome::as_str),
             [
                 "accepted",
                 "quarantined",
                 "rejected_by_api",
-                "corpus_rejected"
+                "corpus_rejected",
+                "duplicate",
+                "superseded"
             ]
         );
+    }
+
+    /// With several sources the line gains `source`, and a duplicate also
+    /// `duplicate_of` and `first_source`; nothing else changes.
+    #[test]
+    fn a_sourced_decision_adds_only_the_provenance_fields() {
+        let file = DeliveredFile::from_bytes("timetable_full.zip", b"abc");
+        let at = DateTime::parse_from_rfc3339("2026-09-30T19:59:59Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ((), out) = capture(|| {
+            decision_from(
+                &file,
+                at,
+                Outcome::Accepted,
+                None,
+                Some(&Provenance {
+                    source: "bucket",
+                    duplicate_of: None,
+                    first_source: None,
+                }),
+            );
+            decision_from(
+                &file,
+                at,
+                Outcome::Duplicate,
+                Some("already handled through sftp"),
+                Some(&Provenance {
+                    source: "bucket",
+                    duplicate_of: Some(&file.sha256),
+                    first_source: Some("sftp"),
+                }),
+            );
+            decision(&file, at, Outcome::Accepted, None);
+        });
+        let lines = out.audit_lines();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["source"], "bucket");
+        assert!(lines[0].get("duplicate_of").is_none(), "{}", lines[0]);
+        assert!(lines[0].get("reason").is_none(), "{}", lines[0]);
+        assert_eq!(lines[1]["outcome"], "duplicate");
+        assert_eq!(lines[1]["duplicate_of"], file.sha256.as_str());
+        assert_eq!(lines[1]["first_source"], "sftp");
+        assert!(lines[2].get("source").is_none(), "{}", lines[2]);
     }
 }

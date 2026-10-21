@@ -10,7 +10,7 @@ import { addCalendarDays, LONDON_TZ } from '@/lib/londonWallClock';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { searchTflStops } from '@/lib/suggestions';
 import { TFL_STOPS_ATTRIBUTION } from '@/lib/tflAttribution';
-import { hasTflStops, TRANSIT_MODES } from '@/lib/untrackedLeg';
+import { hasTflStops, tflStopSearchModes, TRANSIT_MODES } from '@/lib/untrackedLeg';
 import { useSuggestions } from '@/lib/useSuggestions';
 import type { TransitMode, UntrackedLegRequest } from '@/lib/types';
 
@@ -35,17 +35,54 @@ export interface UntrackedLegDraft {
 /** A fresh draft, seeded from the previous leg when there is one: its
  * arrival date and time (the same carry-over the train modes get) and its
  * destination as this leg's start. */
-export function newUntrackedLegDraft(seed: { date: string; leaves?: string; originName?: string }): UntrackedLegDraft {
+export function newUntrackedLegDraft(seed: {
+  date: string;
+  leaves?: string;
+  arrives?: string;
+  originName?: string;
+  destinationName?: string;
+}): UntrackedLegDraft {
   return {
     transitMode: 'tube',
     lineName: '',
     originName: seed.originName ?? '',
-    destinationName: '',
+    destinationName: seed.destinationName ?? '',
     originStopId: null,
     destinationStopId: null,
     date: seed.date,
     leaves: seed.leaves ?? '',
-    arrives: '',
+    arrives: seed.arrives ?? '',
+    incomplete: { leaves: false, arrives: false },
+  };
+}
+
+/** A draft holding an existing untracked leg, for editing it: its own
+ * mode, line, places, and its planned times as London date and times. */
+export function untrackedDraftFromLeg(leg: {
+  transitMode?: TransitMode | null;
+  lineName?: string | null;
+  originName: string | null;
+  destinationName: string | null;
+  originStopId?: string | null;
+  destinationStopId?: string | null;
+  plannedDeparture?: string | null;
+  plannedArrival?: string | null;
+  serviceDate: string;
+}): UntrackedLegDraft {
+  const london = (instant: string | null | undefined) => (instant ? dayjs(instant).tz(LONDON_TZ) : null);
+  const departure = london(leg.plannedDeparture);
+  const arrival = london(leg.plannedArrival);
+  return {
+    transitMode: leg.transitMode ?? 'other',
+    lineName: leg.lineName ?? '',
+    originName: leg.originName ?? '',
+    destinationName: leg.destinationName ?? '',
+    // Kept until the place is edited, so saving an untouched stop keeps it.
+    originStopId: leg.originStopId ?? null,
+    destinationStopId: leg.destinationStopId ?? null,
+    date: departure?.format('YYYY-MM-DD') ?? leg.serviceDate,
+    leaves: departure?.format('HH:mm') ?? '',
+    arrives: arrival?.format('HH:mm') ?? '',
     incomplete: { leaves: false, arrives: false },
   };
 }
@@ -126,7 +163,10 @@ function StopPlaceField({
   /** A stop was picked: its name and id. */
   onPick: (name: string, stopId: string) => void;
 }) {
-  const search = useCallback((q: string, signal: AbortSignal) => searchTflStops(q, [mode], signal), [mode]);
+  const search = useCallback(
+    (q: string, signal: AbortSignal) => searchTflStops(q, tflStopSearchModes(mode), signal),
+    [mode],
+  );
   const { suggestions, loading } = useSuggestions(value, search);
   return (
     <Autocomplete

@@ -270,17 +270,12 @@ fn relax_fixed_links_in_round(
     at_min: u32,
 ) {
     let from_tiploc = normalize_tiploc(from_tiploc);
-    let Some(crs) = interchange.tiploc_to_crs.get(from_tiploc).cloned() else {
+    let Some(crs) = interchange.tiploc_to_crs.get(from_tiploc) else {
         return;
     };
-    let links: Vec<_> = fixed_links_from(interchange, &crs, date, at_min)
-        .into_iter()
-        .cloned()
-        .collect();
-    for link in links {
+    for link in fixed_links_from(interchange, crs, date, at_min) {
         let candidate = at_min + link.minutes as u32;
-        let Some(destination_tiplocs) = interchange.crs_to_tiplocs.get(&link.to_crs).cloned()
-        else {
+        let Some(destination_tiplocs) = interchange.crs_to_tiplocs.get(&link.to_crs) else {
             continue;
         };
         for to_tiploc in destination_tiplocs {
@@ -290,7 +285,7 @@ fn relax_fixed_links_in_round(
                 interchange,
                 restrictions,
                 date,
-                &to_tiploc,
+                to_tiploc,
                 candidate,
                 ArrivalSource::Link {
                     from_tiploc: from_tiploc.to_string(),
