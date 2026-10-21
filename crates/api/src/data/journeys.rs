@@ -1814,10 +1814,15 @@ pub async fn delete_leg(
         .fetch_optional(&mut *tx)
         .await?;
 
+    // `FOR UPDATE OF jl`: a train the notifier's auto-match is binding to
+    // this leg right now is waited for and read as committed, so it is
+    // released below rather than left behind (DS-93; see
+    // [`delete_journey_row_releasing_trains`]).
     let owned: Option<(Option<i64>,)> = sqlx::query_as(
         "SELECT jl.train_subscription_id FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
-         WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3",
+         WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3 \
+         FOR UPDATE OF jl",
     )
     .bind(leg_id)
     .bind(journey_id)
@@ -1993,16 +1998,33 @@ pub(crate) async fn delete_journey_row_releasing_trains(
     journey_id: i64,
     user_id: &str,
 ) -> anyhow::Result<bool> {
-    let subscriptions: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT jl.train_subscription_id FROM journey_legs jl \
-         JOIN journeys j ON j.id = jl.journey_id \
-         WHERE jl.journey_id = $1 AND j.user_id = $2 AND jl.train_subscription_id IS NOT NULL \
-         ORDER BY 1",
+    // The journey row first, as every add-leg path and [`delete_leg`] lock
+    // it: a leg added concurrently either committed already (and is read
+    // below) or waits and then finds no journey. Then every leg row, with
+    // no filter on its train: a leg the notifier's auto-match
+    // (`notifier::queries::auto_commit_leg_to_train`) or a "Change train"
+    // is binding right now is waited for and read as committed, so its new
+    // train is released too. Reading the legs without the lock (or only
+    // those already bound) let a bind that committed between that read and
+    // the delete leave its train behind as one tracked on its own.
+    let owned: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2 FOR UPDATE")
+            .bind(journey_id)
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if owned.is_none() {
+        return Ok(false);
+    }
+    let legs: Vec<Option<i64>> = sqlx::query_scalar(
+        "SELECT train_subscription_id FROM journey_legs WHERE journey_id = $1 \
+         ORDER BY id FOR UPDATE",
     )
     .bind(journey_id)
-    .bind(user_id)
     .fetch_all(&mut *conn)
     .await?;
+    // Every leg's train once, whichever legs share it, in id order.
+    let subscriptions: std::collections::BTreeSet<i64> = legs.into_iter().flatten().collect();
     let result = sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
         .bind(journey_id)
         .bind(user_id)
@@ -2219,7 +2241,9 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
          timed AS MATERIALIZED ( \
              SELECT c.id, c.custom_name, c.created_at, c.created_via, c.travelled, \
                     COALESCE(CASE WHEN c.first_kind = 'untracked' THEN c.first_planned_departure \
-                                  ELSE COALESCE({first_departure}, c.first_pin) \
+                                  ELSE COALESCE({first_departure}, c.first_pin, \
+                                                (SELECT ft.scheduled_departure FROM trains ft \
+                                                 WHERE ft.id = c.first_trains_id)) \
                              END, \
                              {first_day_start}) AS departs_at \
              FROM candidates c \
@@ -2285,6 +2309,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
          LEFT JOIN stations sld ON sld.crs = UPPER(rl.last_destination_crs)::bpchar \
          ORDER BY r.position",
         last_arrived = train_arrived_sql(
+            "s.last_trains_id",
             "(SELECT lt.train_uid FROM trains lt WHERE lt.id = s.last_trains_id)",
             "s.last_service_date",
             "s.last_destination_crs",
@@ -2313,11 +2338,14 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
 ///
 /// The first leg's departure is an untracked leg's `planned_departure`, a
 /// train leg's timetabled departure from the leg's own origin, else its
-/// subscription's pinned departure, else the start of its service date.
-/// The journey is travelled once its last leg's arrival (planned; or
-/// timetabled plus the train's running delay, else the end of its service
-/// date) has passed, or every leg is finished (the rule `ranked_legs` uses
-/// for the current leg). Ordering by `created_at` instead kept the
+/// subscription's pinned departure, else the train's own scheduled
+/// departure, else the start of its service date. The journey is
+/// travelled once its last leg has actually arrived (an untracked leg's
+/// planned arrival has passed; a train leg's per
+/// `travel_order::train_arrived_sql`: TRUST's reported arrival, else the
+/// timetable plus the live delay, else plus
+/// `TRAVEL_ARRIVAL_GRACE_MINUTES`), or every leg is finished (the rule
+/// `ranked_legs` uses for the current leg). Ordering by `created_at` instead kept the
 /// newest-saved journeys, so a trip saved weeks ahead could drop off
 /// behind a hundred since-travelled ones.
 ///
@@ -4111,6 +4139,329 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
+    /// A window leg added to `journey_id` (WAT to RDG on the fixture date,
+    /// after 08:00), unbound.
+    async fn add_window_leg(pool: &PgPool, journey_id: i64, user_id: &str) -> i64 {
+        match add_window_leg_to_journey(
+            pool,
+            journey_id,
+            user_id,
+            "WAT",
+            "RDG",
+            "2026-09-22".parse().unwrap(),
+            TimeWindow {
+                after: Some("08:00:00".parse().unwrap()),
+                before: None,
+            },
+            TimeWindow::default(),
+        )
+        .await
+        .expect("add window leg")
+        {
+            AddLegOutcome::Added(leg_id) => leg_id,
+            _ => panic!("the journey is the caller's and under the leg cap"),
+        }
+    }
+
+    /// The notifier's auto-match (`notifier::queries::auto_commit_leg_to_train`)
+    /// as SQL on `conn`: the user's row for `trains_id`, bound to the leg
+    /// with `match_mode = 'auto'`. Returns the subscription id.
+    async fn auto_bind_leg(
+        conn: &mut sqlx::PgConnection,
+        leg_id: i64,
+        trains_id: i64,
+        user_id: &str,
+    ) -> i64 {
+        let tracking_id = crate::data::train_tracking::create_subscription_for_train(
+            &mut *conn, trains_id, user_id,
+        )
+        .await
+        .expect("subscribe as the auto-match does");
+        sqlx::query(
+            "UPDATE journey_legs SET train_subscription_id = $1, match_mode = 'auto' \
+             WHERE id = $2 AND match_mode = 'unmatched'",
+        )
+        .bind(tracking_id)
+        .bind(leg_id)
+        .execute(&mut *conn)
+        .await
+        .expect("bind the leg as the auto-match does");
+        tracking_id
+    }
+
+    /// DS-93, the production report: deleting a journey of many legs
+    /// untracks every leg's train, not only the first or current leg's. One
+    /// journey with every kind of leg: planner legs (two sharing one
+    /// train's row), an untracked leg, a leg on a CRS+time pin with no train
+    /// yet, a pin resolved to the same train as a planner leg (a second row
+    /// for that train), an auto-matched leg, an unmatched window leg, and a
+    /// leg on a train the user also tracks on its own. Only that last train
+    /// is left, listed on its own and still pushing.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                delete_journey_releases -- --ignored --test-threads=1`"]
+    async fn delete_journey_releases_every_legs_train_of_a_many_leg_journey() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-DS93-DELETE-MANY-LEGS";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+        let mut trains = Vec::new();
+        for uid in [
+            "TEST-TRAIN-DS93-MANY-FIRST",
+            "TEST-TRAIN-DS93-MANY-SECOND",
+            "TEST-TRAIN-DS93-MANY-OWN",
+            "TEST-TRAIN-DS93-MANY-AUTO",
+        ] {
+            trains.push(
+                crate::data::trains::find_or_create_train(&pool, uid, service_date)
+                    .await
+                    .expect("seed train"),
+            );
+        }
+        let [first, second, own, auto] = trains[..] else {
+            unreachable!("four trains seeded");
+        };
+        let train_leg = |trains_id| ItineraryLeg::Train {
+            trains_id,
+            service_date,
+            origin_crs: None,
+            destination_crs: None,
+        };
+        let untracked = ItineraryLeg::Untracked(UntrackedLeg {
+            transit_mode: "bus".to_string(),
+            origin_place: Some("Stop A".to_string()),
+            destination_place: Some("Stop B".to_string()),
+            line_name: None,
+            planned_departure: "2026-09-22T10:00:00Z".parse().unwrap(),
+            planned_arrival: "2026-09-22T10:30:00Z".parse().unwrap(),
+            origin_stop_id: None,
+            destination_stop_id: None,
+        });
+
+        let mut tx = pool.begin().await.expect("begin");
+        let (journey_id, created) = create_journey_from_itinerary(
+            &mut tx,
+            user_id,
+            None,
+            "web",
+            &[
+                train_leg(first),
+                untracked,
+                train_leg(second),
+                train_leg(first),
+                train_leg(own),
+            ],
+        )
+        .await
+        .expect("save the itinerary");
+        tx.commit().await.expect("commit");
+        let tracking: Vec<Option<i64>> = created.iter().map(|(_, t)| *t).collect();
+        let [
+            Some(first_sub),
+            None,
+            Some(second_sub),
+            Some(first_again),
+            Some(own_sub),
+        ] = tracking[..]
+        else {
+            panic!("five legs, the second untracked: {tracking:?}");
+        };
+        assert_eq!(
+            first_again, first_sub,
+            "two legs share the first train's row"
+        );
+        crate::data::train_tracking::create_standalone_subscription_for_train(&pool, own, user_id)
+            .await
+            .expect("track it on its own too");
+
+        let pending_pin_leg = add_window_leg(&pool, journey_id, user_id).await;
+        let pending_pin =
+            crate::data::train_tracking::create_pin(&pool, &fixture_pin("WAT"), user_id)
+                .await
+                .expect("pin with no train yet");
+        assert!(
+            set_leg_train_subscription(&pool, journey_id, pending_pin_leg, user_id, pending_pin)
+                .await
+                .expect("bind the pin")
+        );
+        let resolved_pin_leg = add_window_leg(&pool, journey_id, user_id).await;
+        let resolved_pin =
+            crate::data::train_tracking::create_pin(&pool, &fixture_pin("RDG"), user_id)
+                .await
+                .expect("second pin");
+        sqlx::query(
+            "UPDATE train_subscriptions SET trains_id = $1, resolution_status = 'resolved' \
+             WHERE id = $2",
+        )
+        .bind(second)
+        .bind(resolved_pin)
+        .execute(&pool)
+        .await
+        .expect("resolve the pin to the second planner leg's train");
+        assert!(
+            set_leg_train_subscription(&pool, journey_id, resolved_pin_leg, user_id, resolved_pin)
+                .await
+                .expect("bind the resolved pin")
+        );
+        let auto_leg = add_window_leg(&pool, journey_id, user_id).await;
+        let mut conn = pool.acquire().await.expect("acquire");
+        let auto_sub = auto_bind_leg(&mut conn, auto_leg, auto, user_id).await;
+        drop(conn);
+        add_window_leg(&pool, journey_id, user_id).await;
+
+        let legs = list_legs_for_journey(&pool, journey_id)
+            .await
+            .expect("list legs");
+        assert_eq!(legs.len(), 9);
+        assert!(
+            standalone_listed(&pool, user_id).await.is_empty(),
+            "every train is folded into the journey before the delete"
+        );
+
+        assert!(
+            delete_journey(&pool, journey_id, user_id)
+                .await
+                .expect("delete the journey")
+        );
+        for tracking_id in [first_sub, second_sub, pending_pin, resolved_pin, auto_sub] {
+            assert!(
+                !subscription_exists(&pool, tracking_id).await,
+                "subscription {tracking_id}, used only by this journey, is released"
+            );
+        }
+        assert_eq!(standalone_listed(&pool, user_id).await, vec![own_sub]);
+        assert!(notifications_enabled_of(&pool, own_sub).await);
+        assert_eq!(
+            pushed_subscription(&pool, own, user_id).await,
+            Some(own_sub)
+        );
+        for trains_id in [first, second, auto] {
+            assert_eq!(pushed_subscription(&pool, trains_id, user_id).await, None);
+        }
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// Waits until another backend is blocked on a lock in a statement
+    /// naming a journey table: the delete under test has reached the leg
+    /// the racing transaction holds.
+    async fn wait_for_a_lock_waiter(pool: &PgPool) {
+        for _ in 0..200 {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pg_stat_activity \
+                 WHERE wait_event_type = 'Lock' AND query ILIKE '%journey%' \
+                   AND pid <> pg_backend_pid()",
+            )
+            .fetch_one(pool)
+            .await
+            .expect("read pg_stat_activity");
+            if waiting > 0 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("the delete never waited on the leg the auto-match holds");
+    }
+
+    /// Seeds a journey with one bound leg and one unbound window leg, and
+    /// starts the notifier's auto-match on the unbound one in a transaction
+    /// left open. Returns `(journey_id, bound_tracking_id, racing_leg_id,
+    /// auto_tracking_id, open_transaction)`.
+    async fn racing_auto_match(
+        pool: &PgPool,
+        user_id: &str,
+        uid_prefix: &str,
+    ) -> (
+        i64,
+        i64,
+        i64,
+        i64,
+        sqlx::Transaction<'static, sqlx::Postgres>,
+    ) {
+        cleanup_user(pool, user_id).await;
+        seed_user(pool, user_id).await;
+        let (journey_id, _, bound) = bound_leg(pool, user_id, &format!("{uid_prefix}-BOUND")).await;
+        let racing_leg = add_window_leg(pool, journey_id, user_id).await;
+        let trains_id = crate::data::trains::find_or_create_train(
+            pool,
+            &format!("{uid_prefix}-AUTO"),
+            "2026-09-22".parse().unwrap(),
+        )
+        .await
+        .expect("seed train");
+        let mut matching = pool.begin().await.expect("begin the auto-match");
+        let auto_sub = auto_bind_leg(&mut matching, racing_leg, trains_id, user_id).await;
+        (journey_id, bound, racing_leg, auto_sub, matching)
+    }
+
+    /// DS-93: the notifier's auto-match binding a leg while its journey is
+    /// being deleted. The delete waits for it and releases the train it
+    /// bound; reading the legs before locking them missed that train and
+    /// left it behind as one tracked on its own.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                delete_journey_releases -- --ignored --test-threads=1`"]
+    async fn delete_journey_releases_a_train_auto_matched_mid_delete() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-DS93-DELETE-RACING-MATCH";
+        let (journey_id, bound, _, auto_sub, matching) =
+            racing_auto_match(&pool, user_id, "TEST-TRAIN-DS93-RACE").await;
+        let delete = tokio::spawn({
+            let pool = pool.clone();
+            async move { delete_journey(&pool, journey_id, user_id).await }
+        });
+        wait_for_a_lock_waiter(&pool).await;
+        matching.commit().await.expect("commit the auto-match");
+        assert!(delete.await.expect("join").expect("delete the journey"));
+
+        assert!(!subscription_exists(&pool, bound).await);
+        assert!(
+            !subscription_exists(&pool, auto_sub).await,
+            "the train matched mid-delete is released too"
+        );
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-93: the same race for "Remove leg".
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                delete_leg_ -- --ignored --test-threads=1`"]
+    async fn delete_leg_releases_a_train_auto_matched_mid_delete() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-DS93-DELETE-LEG-RACING-MATCH";
+        let (journey_id, bound, racing_leg, auto_sub, matching) =
+            racing_auto_match(&pool, user_id, "TEST-TRAIN-DS93-LEG-RACE").await;
+        let delete = tokio::spawn({
+            let pool = pool.clone();
+            async move { delete_leg(&pool, journey_id, racing_leg, user_id).await }
+        });
+        wait_for_a_lock_waiter(&pool).await;
+        matching.commit().await.expect("commit the auto-match");
+        assert_eq!(
+            delete.await.expect("join").expect("remove the leg"),
+            Some(false),
+            "the journey keeps its other leg"
+        );
+
+        assert!(
+            subscription_exists(&pool, bound).await,
+            "the other leg's train stays"
+        );
+        assert!(
+            !subscription_exists(&pool, auto_sub).await,
+            "the train matched mid-delete is released"
+        );
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
+
+        cleanup_user(&pool, user_id).await;
+    }
+
     #[tokio::test]
     #[ignore = "requires a live database; see this plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
@@ -5048,6 +5399,82 @@ mod db_tests {
                 past_old,
             ],
         );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-112: a journey is over only once its last train has actually
+    /// arrived. Both trains here were due at RDG ten minutes ago with no
+    /// live delay, so inside `TRAVEL_ARRIVAL_GRACE_MINUTES`; the one TRUST
+    /// reported arriving is travelled, the other is still under way.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_journeys_for_user_waits_for_the_actual_arrival -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_waits_for_the_actual_arrival() {
+        let pool = connect().await;
+        let _fixtures = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [
+                "DELETE FROM schedule_destination_departures \
+                 WHERE train_uid IN ('TSORT31', 'TSORT32')",
+                "DELETE FROM trains WHERE train_uid IN ('TSORT31', 'TSORT32')",
+            ],
+        )
+        .await;
+        let user_id = "TEST-DS112-JOURNEY-ARRIVED";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let (date, due): (String, NaiveTime) = sqlx::query_as(
+            "SELECT (t AT TIME ZONE 'Europe/London')::date::text, \
+                    (t AT TIME ZONE 'Europe/London')::time \
+             FROM (SELECT now() - INTERVAL '10 minutes' AS t) x",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("due time");
+
+        let mut journeys = Vec::new();
+        for uid in ["TSORT31", "TSORT32"] {
+            let journey = seed_journey(&pool, user_id).await;
+            let (trains_id, subscription) =
+                seed_subscribed_train(&pool, user_id, uid, &date, None).await;
+            seed_train_leg(&pool, journey, 1, &date, Some(subscription)).await;
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                     (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                      destination_arrival) \
+                 VALUES ($1::date, 'RDG', '00:00', $2, 'WAT', $3)",
+            )
+            .bind(&date)
+            .bind(uid)
+            .bind(due)
+            .execute(&pool)
+            .await
+            .expect("seed timetable");
+            journeys.push((journey, trains_id));
+        }
+        let (still_running, _) = journeys[0];
+        let (arrived, arrived_train) = journeys[1];
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                 (trains_id, dedup_key, msg_type, event_type, loc_crs, actual_timestamp, raw_body) \
+             VALUES ($1, 'ds112-journey-arrival', '0003', 'ARRIVAL', 'RDG', \
+                     now() - INTERVAL '2 minutes', '{}'::jsonb)",
+        )
+        .bind(arrived_train)
+        .execute(&pool)
+        .await
+        .expect("seed arrival report");
+
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id)
+            .await
+            .expect("list")
+            .iter()
+            .map(|j| j.id)
+            .collect();
+        // Under way first even though it was created first and departs no
+        // earlier: the arrived one is in the travelled half.
+        assert_eq!(listed, vec![still_running, arrived]);
 
         cleanup_user(&pool, user_id).await;
     }

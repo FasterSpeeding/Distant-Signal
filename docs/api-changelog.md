@@ -13,21 +13,48 @@ Behaviour only; no request or response shape changes.
   newer journey (higher `id`) first on a tie. It used to be newest
   created first (`createdAt`). The first departure is an untracked leg's
   `plannedDeparture`, a train leg's public timetabled departure from the
-  leg's origin, else its pinned departure, else the start of its service
-  date (London). A journey is travelled once its last leg's arrival has
-  passed (planned; or timetabled plus the train's running delay, else the
-  end of its service date), or every leg is finished. The 100-row cap
+  leg's origin, else its pinned departure, else the train's own scheduled
+  departure, else the start of its service date (London). A journey is
+  travelled once its last leg has actually arrived (below), or every leg
+  is finished. The 100-row cap
   therefore keeps the upcoming journeys and the most recent past ones,
   not the 100 newest saved.
-- **`GET /Train/mine`** is in the same order, by `pinScheduledDeparture`
-  (else the train's own departure from its origin, else its service
-  date), a newer `id` first on a tie. It used to be newest tracked first
-  (`trackedAt`, which is still served). A train is travelled once its
-  `status` is `completed`, or its timetabled arrival at the pinned
-  destination (else its terminus) plus its delay has passed, else once its
-  service date is over. `journeyIds` is unchanged.
+- **`GET /Train/mine`** is in the same order, by the
+  `pinScheduledDeparture` it serves (which falls back to the train's own
+  departure, see the entry below; else its service date), a newer `id`
+  first on a tie. It used to be newest tracked first (`trackedAt`, which
+  is still served). A train is travelled once its `status` is
+  `completed` or it has actually arrived at the `pinDestinationCrs` it
+  serves. `journeyIds` is unchanged.
+- **Actually arrived** (both lists): an untracked leg once its
+  `plannedArrival` has passed. A train once TRUST has reported its
+  arrival at the stop; else, with a live running delay, once its
+  timetabled arrival plus that delay has passed; else once its
+  timetabled arrival plus 30 minutes has passed
+  (`TRAVEL_ARRIVAL_GRACE_MINUTES`, which the web app matches); else,
+  with no timetabled arrival, once its service date (London) is over. A
+  delayed train is never over just because its timetabled arrival has
+  passed.
 - **For ds-mcp.** Don't rely on either list being newest-saved first; to
   show "what's next", take the rows from the top.
+
+## 2026-10-21: tracked trains with no pin take the train's own route
+
+No new fields; existing ones are filled in more often.
+
+- A tracked train with no pin of its own (tracked by UID, or picked for a
+  journey leg) used to keep `pinOriginCrs`, `pinDestinationCrs`,
+  `pinScheduledDeparture` and their `*Name` fields `null` for good, even
+  once its timetable was known, because they were copied from the train
+  only when it was tracked. They now fall back to the train's own origin,
+  destination and scheduled departure whenever the stored pin is `null`.
+  A pin the user chose still wins. This covers **`GET /Train/mine`**,
+  **`GET /Train/{trackingId}`**, the trains inside **`GET
+  /Journeys/{id}`** (and its shared view), **`GET /groups/{id}/trains`**,
+  **`GET /groups/{id}/journeys`**, **`GET /groups/shared-trains`**,
+  **`GET /groups/shared-journeys`**, and the tracked-train fields on
+  **`GET /Train/tickets/mine`**. They are still `null` for a train with no
+  timetable yet.
 
 ## 2026-10-21: "Change train" drops the old train
 

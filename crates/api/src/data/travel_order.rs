@@ -9,10 +9,10 @@
 //!
 //! with the row's id, newest first, breaking a tie.
 //!
-//! "Travelled" is: the last arrival (the timetabled one, plus the train's
-//! running delay) is in the past, or every leg is finished (a train leg's
-//! `train_current_state.status` is `completed`, an untracked leg's planned
-//! arrival has passed).
+//! "Travelled" is: the last leg has actually arrived (see
+//! [`train_arrived_sql`]; an untracked leg's planned arrival has passed),
+//! or every leg is finished (a train leg's `train_current_state.status` is
+//! `completed`, an untracked leg's planned arrival has passed).
 //!
 //! Timetabled times come from `schedule_destination_departures`, the public
 //! (GBTT) time where the timetable has one, else the working one. That
@@ -20,9 +20,7 @@
 //! not yet replaced, so each caller falls back (see each list's own doc
 //! comment), finally to the start or the end of the service date. Each
 //! lookup is one probe of
-//! `schedule_destination_departures_train_uid_service_date_scheduled_idx`,
-//! and an arrival is only looked up for a train running today or yesterday
-//! (London): one dated earlier has arrived, one dated later has not.
+//! `schedule_destination_departures_train_uid_service_date_scheduled_idx`.
 
 /// The London local start of `date` (a SQL `date` expression), as a
 /// `timestamptz`: the departure of a leg or train whose time is unknown.
@@ -30,19 +28,45 @@ pub(crate) fn day_start_sql(date: &str) -> String {
     format!("(({date})::timestamp AT TIME ZONE 'Europe/London')")
 }
 
-/// Whether train `uid` on service date `date` has reached station `crs`
-/// (SQL expressions): its timetabled arrival there plus `delay_minutes`
-/// (its running delay, a SQL `int` expression, `NULL` for none; early
-/// running is ignored) has passed, else, with no timetabled arrival, the
-/// service date (London) is over. Never `NULL`.
-pub(crate) fn train_arrived_sql(uid: &str, date: &str, crs: &str, delay_minutes: &str) -> String {
+/// How long after its timetabled arrival a train with no live data (no
+/// TRUST report of its arrival, no running delay) still counts as under
+/// way. The web app's own "is this journey over" test uses the same
+/// figure, under the same name (DS-112).
+pub const TRAVEL_ARRIVAL_GRACE_MINUTES: i32 = 30;
+
+/// Whether train `trains_id` (its `trains.id`), `uid`, on service date
+/// `date` has actually reached station `crs` (SQL expressions). In order:
+/// TRUST reported its arrival there; else, with a live running delay
+/// (`delay_minutes`, a SQL `int` expression, `NULL` without one; early
+/// running is ignored), its timetabled arrival plus that delay has passed;
+/// else its timetabled arrival plus [`TRAVEL_ARRIVAL_GRACE_MINUTES`] has
+/// passed. With no timetabled arrival either, once its service date
+/// (London) is over. A delayed train is never over just because its
+/// timetabled arrival has passed. Only a train dated today or yesterday is
+/// looked up: one dated earlier has arrived, one dated later has not.
+/// Never `NULL`.
+pub(crate) fn train_arrived_sql(
+    trains_id: &str,
+    uid: &str,
+    date: &str,
+    crs: &str,
+    delay_minutes: &str,
+) -> String {
     let today = "(now() AT TIME ZONE 'Europe/London')::date";
     let arrival = scheduled_arrival_sql(uid, date, crs);
     format!(
         "(CASE WHEN ({date}) < {today} - 1 THEN TRUE \
                WHEN ({date}) > {today} THEN FALSE \
+               WHEN EXISTS (SELECT 1 FROM train_movement_events tme \
+                            WHERE tme.trains_id = ({trains_id}) \
+                              AND UPPER(tme.loc_crs) = UPPER({crs}) \
+                              AND tme.event_type = 'ARRIVAL' \
+                              AND tme.actual_timestamp <= now()) THEN TRUE \
                ELSE COALESCE({arrival} \
-                                 + GREATEST(COALESCE({delay_minutes}, 0), 0) * INTERVAL '1 minute', \
+                                 + (CASE WHEN ({delay_minutes}) IS NULL \
+                                         THEN {TRAVEL_ARRIVAL_GRACE_MINUTES} \
+                                         ELSE GREATEST({delay_minutes}, 0) END) \
+                                   * INTERVAL '1 minute', \
                              ((({date}) + 1)::timestamp AT TIME ZONE 'Europe/London')) <= now() \
           END)"
     )
