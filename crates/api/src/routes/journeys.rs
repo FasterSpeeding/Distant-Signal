@@ -3118,7 +3118,9 @@ mod db_tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
         let (status, body) = request(
             router.clone(),
-            format!("{candidates}?origin=WOK&destination=BSK&serviceDate=2026-09-23&departAfter=9am"),
+            format!(
+                "{candidates}?origin=WOK&destination=BSK&serviceDate=2026-09-23&departAfter=9am"
+            ),
             Some(&token),
         )
         .await;
@@ -3145,7 +3147,12 @@ mod db_tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
-        let (_, detail) = request(router.clone(), format!("/Journeys/{journey_id}"), Some(&token)).await;
+        let (_, detail) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
         let leg = &detail["legs"][0];
         assert_eq!(leg["originCrs"], "WAT", "{detail:?}");
         assert!(leg["trackedTrainState"].is_null(), "{detail:?}");
@@ -3178,11 +3185,15 @@ mod db_tests {
         assert!(leg["departAfter"].is_null(), "{detail:?}");
         assert!(leg["departBefore"].is_null(), "{detail:?}");
         assert!(
-            leg["arriveAfter"].as_str().is_some_and(|t| t.starts_with("09:15")),
+            leg["arriveAfter"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("09:15")),
             "{detail:?}"
         );
         assert!(
-            leg["arriveBefore"].as_str().is_some_and(|t| t.starts_with("10:30")),
+            leg["arriveBefore"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("10:30")),
             "{detail:?}"
         );
         assert_eq!(leg["windowSearched"], true, "{detail:?}");
