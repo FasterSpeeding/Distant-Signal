@@ -510,6 +510,14 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   no timetable and no report. An untracked leg (Tube, bus, walk) says
   "Planned", "In progress (not live tracked)" or "Done", and that we have
   no live data for it.
+- The Track list gives a lone tracked train and a journey one status
+  badge, `TrackedRowStatusBadge` (classified by `lib/trackedRowStatus.ts`):
+  the journey rollup's words and colours, with the delay badge ("12 min
+  late") in place of "On time"/"Delayed" once the delay is known. Rows that
+  have arrived, are done or are from a past day sit under a "Finished"
+  heading below the active ones: "Completed" (gray, with its final delay),
+  "No report received", "No train picked". Cancelled stays red there, "Leg
+  cancelled" for a multi-leg journey.
 - Severity labels are TfL's own Title Case names; unknown codes read
   "Unknown" in gray (`lib/severity.ts`).
 

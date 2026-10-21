@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { expectShrinkGuarded, expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
@@ -106,6 +106,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   beforeEach(() => {
     vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
     vi.mocked(api.getMyJourneys).mockResolvedValue([]);
+    // The page puts rows from a past London day under "Finished". Pin
+    // "today" to the fixtures' own service date so they stay active.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-31T12:00:00Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('null (not logged in): titles the page Track, with a log in button and no auto-opened modal', async () => {
@@ -497,7 +505,8 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
       expect(screen.queryByRole('link', { name: /PAD to RDG/ })).not.toBeInTheDocument();
-      expect(screen.getByText('Pending match')).toBeInTheDocument();
+      // The journey rollup's word for a train not yet reporting.
+      expect(screen.getByText('Awaiting first report')).toBeInTheDocument();
     });
 
     // The reported mismatch: the owner's own row said "Planned" while the
@@ -550,7 +559,8 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText('En route')).toBeInTheDocument();
+      // The delay badge alone, as on a journey row: no separate "En route".
+      expect(screen.queryByText('En route')).not.toBeInTheDocument();
       expect(screen.getByText('9 min late')).toBeInTheDocument();
     });
 
@@ -903,7 +913,60 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       renderWithMantine(await MyTrackedTrainsPage());
 
-      expect(screen.getByText('Delayed')).toBeInTheDocument();
+      // The delay badge, worded the same as on a lone train's row.
+      expect(screen.getByText('22 min late')).toBeInTheDocument();
+    });
+
+    it('gives a journey and a lone train in the same state the same badge', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 7, delayMinutes: 6, journeyIds: [] })]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 6 }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      const badges = screen.getAllByText('6 min late');
+      expect(badges).toHaveLength(2);
+      expect(badges[0]?.closest('[data-delay-badge]')).toHaveAttribute('data-delay-badge', 'late');
+      expect(badges[1]?.closest('[data-delay-badge]')).toHaveAttribute('data-delay-badge', 'late');
+    });
+
+    it('moves finished journeys and trains under "Finished", keeping cancellations red', async () => {
+      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+        train({ id: 7, status: 'completed', delayMinutes: 3, journeyIds: [] }),
+        train({ id: 8, pinOriginCrs: 'GLD', pinDestinationCrs: 'WOK', journeyIds: [] }),
+      ]);
+      vi.mocked(api.getMyTickets).mockResolvedValue([]);
+      vi.mocked(api.getMyJourneys).mockResolvedValue([
+        journey({
+          id: 170,
+          serviceDate: '2026-08-30',
+          legCount: 2,
+          matchMode: 'auto',
+          trainSubscriptionId: 296,
+          status: 'cancelled',
+        }),
+        journey({ id: 171, originCrs: 'YRK', destinationCrs: 'NCL' }),
+      ]);
+
+      renderWithMantine(await MyTrackedTrainsPage());
+
+      const active = screen.getByRole('heading', { name: 'Your journeys' }).parentElement!;
+      expect(within(active).getByRole('link', { name: /YRK to NCL/ })).toBeInTheDocument();
+      expect(within(active).getByText('Needs a train picked')).toBeInTheDocument();
+
+      const finished = screen.getByRole('heading', { name: 'Finished' }).parentElement!;
+      expect(within(finished).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/170');
+      expect(within(finished).getByText('Leg cancelled').closest('[data-state-badge]')).toHaveAttribute(
+        'data-state-badge',
+        'critical',
+      );
+      expect(within(finished).getByText('Completed')).toBeInTheDocument();
+      expect(within(finished).getByText('3 min late')).toBeInTheDocument();
+      // The still-running train stays above the heading.
+      expect(within(finished).queryByText(/GLD to WOK/)).not.toBeInTheDocument();
+      expect(screen.getByText(byVisibleText(/GLD to WOK/))).toBeInTheDocument();
     });
 
     it("does not list a journey leg's own train a second time as a standalone tracked train", async () => {

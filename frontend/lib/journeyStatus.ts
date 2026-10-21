@@ -1,5 +1,5 @@
 import { isUntrackedLeg } from './untrackedLeg';
-import type { JourneyLegDetail, JourneyListItem } from './types';
+import type { JourneyLegDetail, JourneyListItem, TrackingPhaseFields } from './types';
 
 /** A journey leg's own status classification, independent of
  * `severity.ts`'s `SeverityGroup` -- a leg's status space (has this leg
@@ -144,6 +144,45 @@ export function journeyListItemStatusGroup(item: JourneyListItem): LegStatusGrou
             resolutionStatus: item.resolutionStatus,
             trackingPhase: item.trackingPhase ?? null,
           } as JourneyLegDetail['trackedTrainState']),
+    legSkip: null,
+  });
+}
+
+/** The same classification for a train tracked on its own (`GET
+ * /Train/mine`'s `TrackedTrainListItem`, or a group-shared train), so a
+ * lone train and a journey whose current leg is that train read the same
+ * on `/track/mine`. Adapts the row onto `journeyListItemStatusGroup`'s own
+ * input rather than restating the branch chain. A tracked train always
+ * has a subscription, so it never reads as "Needs a train picked". */
+export function trackedTrainListStatusGroup(
+  train: {
+    serviceDate: string;
+    status: string | null;
+    delayMinutes: number | null;
+    resolutionStatus: string;
+  } & TrackingPhaseFields,
+): LegStatusGroup {
+  return legStatusGroup({
+    id: 0,
+    originCrs: null,
+    originName: null,
+    destinationCrs: null,
+    destinationName: null,
+    serviceDate: train.serviceDate,
+    departAfter: null,
+    departBefore: null,
+    arriveAfter: null,
+    arriveBefore: null,
+    matchMode: 'manual',
+    windowSearched: false,
+    kind: 'train',
+    untrackedStatus: null,
+    trackedTrainState: {
+      status: train.status,
+      delayMinutes: train.delayMinutes,
+      resolutionStatus: train.resolutionStatus,
+      trackingPhase: train.trackingPhase ?? null,
+    } as JourneyLegDetail['trackedTrainState'],
     legSkip: null,
   });
 }

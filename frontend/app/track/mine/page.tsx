@@ -17,15 +17,14 @@ import { DeleteTicketButton } from '@/components/DeleteTicketButton';
 import { RenameTicketButton } from '@/components/RenameTicketButton';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
-import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
-import { formatDate, formatTime } from '@/lib/dateFormat';
+import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
+import { formatDate, formatTime, londonDayKey } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
-import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
-import { journeyListItemStatusGroup } from '@/lib/journeyStatus';
+import { journeyRowStatus, trackedTrainRowStatus, type TrackedRowStatus } from '@/lib/trackedRowStatus';
 import { journeyDisplayName, journeyListItemNameInput, journeyPreviewLine } from '@/lib/journeyName';
 import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
 import type { Metadata } from 'next';
@@ -178,6 +177,21 @@ export default async function MyTrackedTrainsPage() {
   const hasOwnContent = trains.length > 0 || unattachedTickets.length > 0;
   const nothingToShow = !hasOwnContent && shared.length === 0 && journeyRows.length === 0;
 
+  // Active rows first, finished ones (arrived, done, or from a past day)
+  // under their own heading, each list keeping its endpoint's order. One
+  // status rule for journeys and lone trains alike: `lib/trackedRowStatus.ts`.
+  const today = londonDayKey(new Date());
+  const journeyItems = journeyRows.map((journey) => ({ journey, status: journeyRowStatus(journey, today) }));
+  const trainItems = standaloneTrains.map((train) => ({ train, status: trackedTrainRowStatus(train, today) }));
+  const sharedItems = shared.map((row) => ({ row, status: trackedTrainRowStatus(row.train, today) }));
+  const activeJourneys = journeyItems.filter((item) => !item.status.finished);
+  const activeTrains = trainItems.filter((item) => !item.status.finished);
+  const activeShared = sharedItems.filter((item) => !item.status.finished);
+  const finishedJourneys = journeyItems.filter((item) => item.status.finished);
+  const finishedTrains = trainItems.filter((item) => item.status.finished);
+  const finishedShared = sharedItems.filter((item) => item.status.finished);
+  const hasFinished = finishedJourneys.length + finishedTrains.length + finishedShared.length > 0;
+
   return (
     <Stack p="lg" gap="lg">
       <TrackHeader authenticated />
@@ -188,15 +202,20 @@ export default async function MyTrackedTrainsPage() {
         </Text>
       ) : (
         <>
-          {journeyRows.length > 0 && (
+          {activeJourneys.length > 0 && (
             <Stack gap="xs">
               <SectionTitle>Your journeys</SectionTitle>
-              {journeyRows.map((journey) => (
-                <JourneyListRow key={journey.id} journey={journey} tickets={ticketsForJourney(journey.id)} />
+              {activeJourneys.map(({ journey, status }) => (
+                <JourneyListRow
+                  key={journey.id}
+                  journey={journey}
+                  status={status}
+                  tickets={ticketsForJourney(journey.id)}
+                />
               ))}
             </Stack>
           )}
-          {(standaloneTrains.length > 0 || shared.length > 0) && (
+          {(activeTrains.length > 0 || activeShared.length > 0) && (
             // ONE list, not a "shared with me" section of its own: the
             // whole point of the fix is that a shared train sits alongside
             // the caller's own, which is also why each shared row carries
@@ -218,11 +237,42 @@ export default async function MyTrackedTrainsPage() {
             // ordered, rather than one list ordered by something neither
             // half chose.
             <Stack gap="xs">
-              {standaloneTrains.map((train) => (
-                <TrackedTrainListRow key={train.id} train={train} tickets={ticketsByTrain.get(train.id) ?? []} />
+              {activeTrains.map(({ train, status }) => (
+                <TrackedTrainListRow
+                  key={train.id}
+                  train={train}
+                  status={status}
+                  tickets={ticketsByTrain.get(train.id) ?? []}
+                />
               ))}
-              {shared.map((row) => (
-                <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} />
+              {activeShared.map(({ row, status }) => (
+                <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
+              ))}
+            </Stack>
+          )}
+          {hasFinished && (
+            // Arrived, done, or from a past day. A cancelled one keeps its
+            // red badge here.
+            <Stack gap="xs">
+              <SectionTitle>Finished</SectionTitle>
+              {finishedJourneys.map(({ journey, status }) => (
+                <JourneyListRow
+                  key={journey.id}
+                  journey={journey}
+                  status={status}
+                  tickets={ticketsForJourney(journey.id)}
+                />
+              ))}
+              {finishedTrains.map(({ train, status }) => (
+                <TrackedTrainListRow
+                  key={train.id}
+                  train={train}
+                  status={status}
+                  tickets={ticketsByTrain.get(train.id) ?? []}
+                />
+              ))}
+              {finishedShared.map(({ row, status }) => (
+                <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
               ))}
             </Stack>
           )}
@@ -288,7 +338,15 @@ function TrackHeader({ authenticated = false }: { authenticated?: boolean }) {
  * `Group justify="space-between"`, for the shrink-safe title/trailing
  * behaviour the primitive encodes (review P2) -- the same reason
  * `ScheduleRow` is built on it. */
-function JourneyListRow({ journey, tickets }: { journey: JourneyListItem; tickets: TicketListItem[] }) {
+function JourneyListRow({
+  journey,
+  status,
+  tickets,
+}: {
+  journey: JourneyListItem;
+  status: TrackedRowStatus;
+  tickets: TicketListItem[];
+}) {
   const name = journeyListItemNameInput(journey);
   const preview = journeyPreviewLine(name);
 
@@ -304,7 +362,7 @@ function JourneyListRow({ journey, tickets }: { journey: JourneyListItem; ticket
               </Text>
             </Link>
           }
-          trailing={<JourneyStatusGroupBadge group={journeyListItemStatusGroup(journey)} />}
+          trailing={<TrackedRowStatusBadge status={status} />}
         />
         {preview && (
           <Text size="sm" c="dimmed">
@@ -348,7 +406,15 @@ function AttachedTickets({ tickets }: { tickets: TicketListItem[] }) {
   );
 }
 
-function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; tickets: TicketListItem[] }) {
+function TrackedTrainListRow({
+  train,
+  status,
+  tickets,
+}: {
+  train: TrackedTrainListItem;
+  status: TrackedRowStatus;
+  tickets: TicketListItem[];
+}) {
   // Canonical, shareable URL once resolved; the by-id detail route
   // otherwise -- matching the existing by-id page's own "canonical link
   // once resolved" logic rather than always sending the user through the
@@ -386,7 +452,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
           title={
             <Link href={href} data-card-link>
               <Stack gap={4}>
-                <StatusRow title={displayName} trailing={<TrackedTrainStatusBadge train={train} />} />
+                <StatusRow title={displayName} trailing={<TrackedRowStatusBadge status={status} />} />
                 {/* Task 3.6.8: `displayName` (`trackedTrainDisplayName`)
                     already falls back to `${route}, ${when}` -- the exact
                     same `when` string -- whenever no custom name is set,
@@ -441,7 +507,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
  * (spec §4 forbids a shared train ever carrying ticket data at all), and
  * no delete. What's left in common -- the display name, the when line, the
  * status/delay badges -- is shared directly (`trackedTrainDisplayName`,
- * `TrackedTrainStatusBadge`) rather than duplicated.
+ * `TrackedRowStatusBadge`) rather than duplicated.
  *
  * The header links exactly when a `trainUid` is known, and not otherwise.
  * `/train/[uid]/[date]` is public and unscoped, so a uid is the whole
@@ -456,7 +522,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
  * is also why a uid-less shared train is rendered as plain text here
  * rather than linked, the same dead-end reasoning that leaves
  * `/groups/{id}`'s own shared rows unlinked entirely. */
-function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
+function SharedTrainListRow({ row, status }: { row: MergedSharedTrain; status: TrackedRowStatus }) {
   const { train, groupNames } = row;
   const displayName = trackedTrainDisplayName({
     customName: train.customName,
@@ -494,7 +560,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
               heading
             )
           }
-          trailing={<TrackedTrainStatusBadge train={train} />}
+          trailing={<TrackedRowStatusBadge status={status} />}
         />
         {/* Task 3.6.8: same fix as the caller's own row above -- `heading`
             already falls back to `${route}, ${when}` whenever this
