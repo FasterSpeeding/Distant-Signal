@@ -43,6 +43,11 @@ const FIXED_NOW = new Date('2026-09-17T11:00:00Z');
 
 const PAGES: [name: string, path: string][] = [
   ['home', '/'],
+  // Logged in: the seed's 2099 journey under "Upcoming journeys" at the top,
+  // its pins, and its trains tracked on their own under "Tracked trains".
+  // No journey of the seed's is under way at any server time, so there is
+  // no "Current journey" here (home-journeys.spec.ts covers it).
+  ['home-logged-in', '/'],
   ['status', '/status'],
   ['lines', '/lines'],
   ['line', `/lines/${REAL_LINE_ID}`],
@@ -88,6 +93,7 @@ const PAGES: [name: string, path: string][] = [
 
 /** The pages shot with the seed's session cookie (E2E_SESSION_COOKIE). */
 const LOGGED_IN_PAGES: ReadonlySet<string> = new Set([
+  'home-logged-in',
   'account',
   'preferences-logged-in',
   'track',

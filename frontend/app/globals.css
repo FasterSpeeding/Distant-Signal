@@ -2158,6 +2158,28 @@ svg[data-icon='external-link'] {
   }
 }
 
+/* The home page's current-journey card (`app/(home)/HomeJourneys.tsx`):
+   the one card on the page drawn with a 2px brand border, so the journey
+   under way reads first. Its "Current journey" heading says the same in
+   words. Hover and focus keep `[data-card-link]`'s grape border and add the
+   raised shadow, since the border is already grape. */
+.currentJourneyCard [data-card] {
+  border-width: 2px;
+  border-color: var(--mantine-color-grape-filled);
+}
+
+.currentJourneyCard a[data-card-link]:hover [data-card] {
+  box-shadow: var(--mantine-shadow-md);
+}
+
+/* `.keyFacts` with short terms ("Now", "Next change"): a narrower term
+   column from `xs` up. */
+@media (min-width: 36em) {
+  .keyFacts--compact > div {
+    grid-template-columns: 9rem minmax(0, 1fr);
+  }
+}
+
 /* `OperatorStatusCard` is a column, so its footer (`mt="auto"`) sits on
    the card's bottom edge whatever the text above it wrapped to (review
    M6). */

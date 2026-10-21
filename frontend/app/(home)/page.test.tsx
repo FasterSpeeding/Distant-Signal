@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
@@ -6,6 +6,8 @@ import DashboardPage, { metadata } from './page';
 import * as api from '@/lib/api';
 import { __resetStaleCacheForTests } from '@/lib/liveDataCache';
 import type {
+  JourneyDetail,
+  JourneyListItem,
   LineStatusReport,
   OperatorSummary,
   SharedGroupCustomLine,
@@ -14,6 +16,7 @@ import type {
 } from '@/lib/types';
 import { byVisibleText, visibleText } from '@/test/routeText';
 import { MINOR_DELAYS, NETWORK as TRAM_NETWORK } from '@/test/transitFixtures';
+import { journeyDetail, journeyListItem, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
 
 vi.mock('@/lib/api');
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -150,6 +153,10 @@ beforeEach(() => {
   // Load-bearing mechanically too: `allOperators.filter(...)` below is
   // unguarded, and an automocked `undefined` return has no `.filter`.
   vi.mocked(api.getAllOperators).mockResolvedValue([]);
+  // Every test that predates the journey sections says nothing about
+  // journeys: no journeys, and no detail to read.
+  vi.mocked(api.getMyJourneys).mockResolvedValue([]);
+  vi.mocked(api.getJourney).mockRejectedValue(new Error('no journey in this test'));
 });
 
 describe('DashboardPage', () => {
@@ -390,9 +397,9 @@ describe('DashboardPage', () => {
 
   it('renders the module at heading level 2 in the authenticated branch, no skip', async () => {
     // All three pinned sections are empty here, so review §3.1.4 puts
-    // "Right now" first: h2 "Right now" -> h1 "Your Lines" -> h2 "Your
-    // Stations" -> ... . Its own level-2 heading never skips to h3
-    // regardless of where in the page it renders.
+    // "Right now" first: h1 "Home" (visually hidden) -> h2 "Right now" ->
+    // h2 "Your lines" -> h2 "Your stations" -> ... . Its own level-2
+    // heading never skips to h3 regardless of where in the page it renders.
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
       authenticated: true,
       id: 'u1',
@@ -402,7 +409,9 @@ describe('DashboardPage', () => {
     vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Home', level: 1 })).toBeInTheDocument();
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Right now', level: 2 })).toBeInTheDocument();
   });
 
@@ -444,7 +453,7 @@ describe('DashboardPage', () => {
       });
       vi.mocked(api.getStationName).mockResolvedValue('Waterloo');
       renderWithMantine(await DashboardPage());
-      const heading = screen.getByRole('heading', { name: 'Your lines', level: 1 });
+      const heading = screen.getByRole('heading', { name: 'Your lines', level: 2 });
       // Scope to everything from the heading's own row up to (but not
       // including) the next section, so this can't accidentally pass by
       // matching the "Your Stations" section's own link instead.
@@ -485,7 +494,7 @@ describe('DashboardPage', () => {
       });
       vi.mocked(api.getLineStatusForMode).mockResolvedValue([report({ id: 'central', name: 'Central' })]);
       renderWithMantine(await DashboardPage());
-      const heading = screen.getByRole('heading', { name: 'Your lines', level: 1 });
+      const heading = screen.getByRole('heading', { name: 'Your lines', level: 2 });
       expect(
         within(heading.parentElement as HTMLElement).getByRole('link', { name: 'Browse all lines' }),
       ).toHaveAttribute('href', '/lines');
@@ -813,7 +822,7 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
   it('getMyTrackedTrains() returns null (logged out): section absent, other two sections unchanged', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     renderWithMantine(await DashboardPage());
-    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Your lines' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Your stations' })).toBeInTheDocument();
   });
@@ -821,13 +830,13 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
   it('getMyTrackedTrains() returns [] (logged in, nothing tracked): section absent', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     renderWithMantine(await DashboardPage());
-    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
   });
 
   it('populated list: section present with a "View all" link to /track/mine', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
   });
 
@@ -935,7 +944,7 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getLineStatusForMode).mockResolvedValue([report()]);
 
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
     expect(screen.getByText(/haven't pinned any lines yet/)).toBeInTheDocument();
   });
 
@@ -950,8 +959,8 @@ describe('DashboardPage -- outage behaviour', () => {
     vi.mocked(api.getMyTrackedTrains).mockRejectedValue(new Error('500'));
 
     renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
   });
 
   it("keeps the dashboard up when a pinned station's disruption fetch fails", async () => {
@@ -1418,7 +1427,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
     expect(screen.getByText('From Family')).toBeInTheDocument();
@@ -1431,7 +1440,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
   });
@@ -1461,7 +1470,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
   });
 
   it('carries both tags inside the shared row itself, not stranded elsewhere in the section', async () => {
@@ -1745,8 +1754,8 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByRole('heading', { name: 'Your lines', level: 1 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Your tracked trains' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
     expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
   });
@@ -1766,9 +1775,166 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.queryByRole('heading', { name: 'Your tracked trains' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
     expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
     expect(screen.queryByText('From Family')).not.toBeInTheDocument();
+  });
+});
+
+describe('DashboardPage -- journey sections', () => {
+  const KGX: [string, string] = ['KGX', 'London Kings Cross'];
+  const YRK: [string, string] = ['YRK', 'York'];
+  const LOGGED_IN = { authenticated: true as const, id: 'u1', username: 'a', name: 'A' };
+
+  // Midday on 17 Sep 2026, UK time. Only `Date` is faked: the page awaits
+  // real promises.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-17T11:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Under way now: 11:30 to 13:30 UK time, its train 12 min late. */
+  const underWay = journeyDetail(
+    10,
+    [
+      trainLeg(1, KGX, YRK, '2026-09-17T10:30:00Z', '2026-09-17T12:30:00Z', {
+        id: 101,
+        status: 'en_route',
+        delayMinutes: 12,
+      }),
+    ],
+    'Work trip',
+  );
+  /** Later today: a Tube ride at 18:00. */
+  const laterToday = journeyDetail(
+    11,
+    [untrackedLeg(1, 'Euston', 'Victoria', '2026-09-17T17:00:00Z', '2026-09-17T17:20:00Z')],
+    'Evening out',
+  );
+  /** Next week, not read in full. */
+  const nextWeek = journeyDetail(12, [
+    trainLeg(1, YRK, KGX, '2026-09-24T08:00:00Z', '2026-09-24T10:00:00Z', { id: 102 }),
+  ]);
+  /** This morning, done. */
+  const thisMorning = journeyDetail(
+    13,
+    [untrackedLeg(1, 'Home', 'Euston', '2026-09-17T06:00:00Z', '2026-09-17T06:30:00Z')],
+    'Early walk',
+  );
+
+  function mockJourneys(details: JourneyDetail[], unreadItems: JourneyListItem[] = []) {
+    vi.mocked(api.getMyJourneys).mockResolvedValue([
+      ...details.map((detail) => journeyListItem(detail)),
+      ...unreadItems,
+    ]);
+    vi.mocked(api.getJourney).mockImplementation(async (id) => {
+      const detail = details.find((candidate) => candidate.id === id);
+      if (!detail) throw new Error(`no journey ${id}`);
+      return detail;
+    });
+  }
+
+  it('logged out: no journey sections, and the journeys are never fetched', async () => {
+    vi.mocked(api.getMyJourneys).mockClear();
+    vi.mocked(api.getJourney).mockClear();
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Upcoming journeys' })).not.toBeInTheDocument();
+    expect(api.getMyJourneys).not.toHaveBeenCalled();
+    expect(api.getJourney).not.toHaveBeenCalled();
+  });
+
+  it('logged in with a journey under way and others to come: current first, then upcoming, then the pins', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    vi.mocked(api.getJourney).mockClear();
+    mockJourneys(
+      [underWay, laterToday, thisMorning],
+      [journeyListItem(nextWeek, undefined, { firstServiceDate: '2026-09-24', serviceDate: '2026-09-24' })],
+    );
+    renderWithMantine(await DashboardPage());
+
+    const headings = screen.getAllByRole('heading').map((heading) => heading.textContent);
+    // Nothing is pinned, so "Right now" leads the pins (review §3.1.4), after
+    // the journeys.
+    expect(headings.slice(0, 5)).toEqual(['Home', 'Current journey', 'Upcoming journeys', 'Right now', 'Your lines']);
+
+    const current = screen.getByRole('region', { name: 'Current journey' });
+    const card = within(current).getByRole('link', { name: /Work trip/ });
+    expect(card).toHaveAttribute('href', '/journeys/10');
+    expect(within(card).getByText('Delayed')).toBeInTheDocument();
+    expect(within(card).getByText('12 min late')).toBeInTheDocument();
+
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    const rows = within(upcoming)
+      .getAllByRole('link')
+      .map((link) => link.getAttribute('href'))
+      .filter((href) => href?.startsWith('/journeys/'));
+    // Soonest first; this morning's finished journey is on neither list.
+    expect(rows).toEqual(['/journeys/11', '/journeys/12']);
+    expect(within(upcoming).getByText(/Departs 18:00/)).toBeInTheDocument();
+    expect(screen.queryByText('Early walk')).not.toBeInTheDocument();
+    // Only today's journeys were read in full.
+    expect(
+      vi
+        .mocked(api.getJourney)
+        .mock.calls.map(([id]) => id)
+        .sort(),
+    ).toEqual([10, 11, 13]);
+  });
+
+  it('logged in with upcoming journeys only: no current section', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([laterToday]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Upcoming journeys' })).toBeInTheDocument();
+  });
+
+  it('logged in with no current or upcoming journeys: neither section, the page as before', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([thisMorning]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Upcoming journeys' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
+  });
+
+  it("moves a journey's train out of Tracked trains, and keeps the trains tracked on their own", async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([underWay]);
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      item({ id: 101, pinOriginCrs: 'KGX', pinDestinationCrs: 'YRK', journeyIds: [10] }),
+      item({ id: 5, pinOriginCrs: 'WAT', pinDestinationCrs: 'WOK', journeyIds: [] }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    const heading = screen.getByRole('heading', { name: 'Tracked trains' });
+    const section = heading.closest('div')?.parentElement as HTMLElement;
+    expect(within(section).getAllByRole('link', { name: /WAT to WOK/ })).toHaveLength(1);
+    expect(within(section).queryByRole('link', { name: /KGX to YRK/ })).not.toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+  });
+
+  it('a failing journeys fetch drops only the journey sections, and folds no trains away', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    vi.mocked(api.getMyJourneys).mockRejectedValue(new Error('down'));
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      item({ id: 101, pinOriginCrs: 'KGX', pinDestinationCrs: 'YRK', journeyIds: [10] }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /KGX to YRK/ })).toBeInTheDocument();
+  });
+
+  it('a failing detail read leaves a journey starting today in the upcoming list', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    vi.mocked(api.getMyJourneys).mockResolvedValue([journeyListItem(underWay)]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(upcoming).getByRole('link', { name: /Work trip/ })).toBeInTheDocument();
   });
 });
 
