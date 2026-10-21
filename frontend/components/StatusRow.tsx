@@ -5,8 +5,8 @@ export interface StatusRowProps {
   /** The row's heading. A plain string (or number) is wrapped in a `Text`
    * that carries this component's own `fw={500}`/`lineClamp`/
    * `minWidth: 0` — `fw={500}` matches every one of this row's current
-   * plain-string title call sites (`TrackedTrainSummaryRow`,
-   * `SharedTrainSummaryRow`, `SharedCustomLineSummaryRow`, `SharedTrainRow`,
+   * plain-string title call sites (`HomeJourneyRow`, `HomeTrainRow`,
+   * `SharedCustomLineSummaryRow`, `SharedTrainRow`,
    * `TrackedTrainListRow`'s inner row), NOT `LineStatusCard.tsx`'s own
    * `fw={600}` — that card isn't built on `StatusRow` and this task
    * doesn't touch it, so there's no live caller that wants 600 here. Pass

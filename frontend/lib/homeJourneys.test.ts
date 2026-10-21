@@ -3,13 +3,16 @@ import {
   currentLeg,
   homeJourneyDetailIds,
   homeJourneyStatusGroup,
+  isLoneTrain,
   TRAVEL_ARRIVAL_GRACE_MINUTES,
   journeyPhase,
   legEndMs,
   MAX_HOME_JOURNEY_DETAILS,
   splitHomeJourneys,
+  type HomeEntry,
 } from './homeJourneys';
-import { journeyDetail, journeyListItem, stop, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
+import { trackedTrainRowStatus } from './trackedRowStatus';
+import { journeyDetail, journeyListItem, loneTrain, stop, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
 import type { JourneyDetail } from './types';
 
 const KGX: [string, string] = ['KGX', 'London Kings Cross'];
@@ -209,6 +212,11 @@ describe('homeJourneyDetailIds', () => {
 describe('splitHomeJourneys', () => {
   const now = at('2026-09-17T10:00:00Z');
 
+  /** "j1" for journey 1, "t5" for lone train 5, so an order mixing the two
+   * reads plainly. */
+  const ids = (entries: readonly HomeEntry[]) =>
+    entries.map((entry) => (isLoneTrain(entry) ? `t${entry.train.id}` : `j${entry.item.id}`));
+
   it('makes the soonest-arriving journey under way the current one, and lists the others', () => {
     const later = twoLegs(1);
     const sooner = journeyDetail(2, [
@@ -218,9 +226,9 @@ describe('splitHomeJourneys', () => {
       [1, later],
       [2, sooner],
     ]);
-    const split = splitHomeJourneys([journeyListItem(later), journeyListItem(sooner)], details, now);
-    expect(split.current?.item.id).toBe(2);
-    expect(split.alsoInProgress.map((journey) => journey.item.id)).toEqual([1]);
+    const split = splitHomeJourneys([journeyListItem(later), journeyListItem(sooner)], details, [], now);
+    expect(ids(split.current ? [split.current] : [])).toEqual(['j2']);
+    expect(ids(split.alsoInProgress)).toEqual(['j1']);
     expect(split.upcoming).toEqual([]);
   });
 
@@ -245,21 +253,121 @@ describe('splitHomeJourneys', () => {
     const split = splitHomeJourneys(
       [nextWeekItem, journeyListItem(past), journeyListItem(laterToday), journeyListItem(soonToday)],
       details,
+      [],
       now,
     );
     expect(split.current).toBeNull();
-    expect(split.upcoming.map((journey) => journey.item.id)).toEqual([3, 2, 4]);
+    expect(ids(split.upcoming)).toEqual(['j3', 'j2', 'j4']);
     expect(split.upcoming[0]?.departure).toBe('2026-09-17T12:00:00Z');
     expect(split.upcoming[2]?.departure).toBeNull();
   });
 
   it('lists a journey starting today whose detail failed to load as upcoming, not lost', () => {
-    const split = splitHomeJourneys([journeyListItem(twoLegs(1))], new Map(), now);
-    expect(split.upcoming.map((journey) => journey.item.id)).toEqual([1]);
+    const split = splitHomeJourneys([journeyListItem(twoLegs(1))], new Map(), [], now);
+    expect(ids(split.upcoming)).toEqual(['j1']);
   });
 
-  it('has nothing to show for no journeys', () => {
-    expect(splitHomeJourneys([], new Map(), now)).toEqual({ current: null, alsoInProgress: [], upcoming: [] });
+  it('has nothing to show for no journeys and no trains', () => {
+    expect(splitHomeJourneys([], new Map(), [], now)).toEqual({ current: null, alsoInProgress: [], upcoming: [] });
+  });
+
+  describe('a train tracked on its own, as a one-leg journey', () => {
+    it('is the current journey while under way: reported moving, or past its departure', () => {
+      const moving = splitHomeJourneys(
+        [],
+        new Map(),
+        [loneTrain(5, { status: 'en_route' })],
+        at('2026-09-17T08:59:00Z'),
+      );
+      expect(ids(moving.current ? [moving.current] : [])).toEqual(['t5']);
+      const departed = splitHomeJourneys([], new Map(), [loneTrain(5)], at('2026-09-17T09:01:00Z'));
+      expect(ids(departed.current ? [departed.current] : [])).toEqual(['t5']);
+      expect(departed.upcoming).toEqual([]);
+    });
+
+    it('carries the Track list badge status (`trackedTrainRowStatus`)', () => {
+      const split = splitHomeJourneys([], new Map(), [loneTrain(5, { status: 'en_route', delayMinutes: 7 })], now);
+      const current = split.current;
+      expect(current !== null && isLoneTrain(current) ? current.status : null).toEqual(
+        trackedTrainRowStatus(loneTrain(5, { status: 'en_route', delayMinutes: 7 }), '2026-09-17'),
+      );
+    });
+
+    it('is upcoming before its departure', () => {
+      const split = splitHomeJourneys([], new Map(), [loneTrain(5)], at('2026-09-17T08:00:00Z'));
+      expect(split.current).toBeNull();
+      expect(ids(split.upcoming)).toEqual(['t5']);
+      expect(split.upcoming[0]?.departure).toBe('2026-09-17T09:00:00Z');
+    });
+
+    it("is gone once the api says it's travelled, however late it is running", () => {
+      const split = splitHomeJourneys([], new Map(), [loneTrain(5, { status: 'en_route', travelled: true })], now);
+      expect(split).toEqual({ current: null, alsoInProgress: [], upcoming: [] });
+    });
+
+    it('stays current past its timetabled arrival while the api says it is not travelled', () => {
+      // The api applies the arrival rule and grace (`legIsOver`'s) and sends
+      // the verdict; the list row has no arrival time to second-guess it.
+      const split = splitHomeJourneys([], new Map(), [loneTrain(5, { delayMinutes: 40 })], at('2026-09-17T11:20:00Z'));
+      expect(ids(split.current ? [split.current] : [])).toEqual(['t5']);
+    });
+
+    it('is over once completed, or cancelled and due to have left, as a last leg is', () => {
+      expect(splitHomeJourneys([], new Map(), [loneTrain(5, { status: 'completed' })], now).current).toBeNull();
+      const cancelled = loneTrain(5, { status: 'cancelled' });
+      expect(splitHomeJourneys([], new Map(), [cancelled], now).current).toBeNull();
+      // Before then it is listed, badged cancelled.
+      const before = splitHomeJourneys([], new Map(), [cancelled], at('2026-09-17T08:00:00Z'));
+      expect(ids(before.upcoming)).toEqual(['t5']);
+    });
+
+    it('with an older api (no `travelled`), drops a train from an earlier day as the Journeys page does', () => {
+      const old = { ...loneTrain(5, { serviceDate: '2026-09-16', pinScheduledDeparture: '2026-09-16T09:00:00Z' }) };
+      delete old.travelled;
+      expect(splitHomeJourneys([], new Map(), [old], now)).toEqual({ current: null, alsoInProgress: [], upcoming: [] });
+    });
+
+    it('is ordered in with the upcoming journeys by day, then departure', () => {
+      const soonToday = journeyDetail(3, [
+        untrackedLeg(1, 'Home', 'Gym', '2026-09-17T12:00:00Z', '2026-09-17T12:30:00Z'),
+      ]);
+      const laterToday = journeyDetail(2, [
+        untrackedLeg(1, 'Euston', 'Home', '2026-09-17T17:00:00Z', '2026-09-17T17:30:00Z'),
+      ]);
+      const nextWeekItem = journeyListItem(twoLegs(4), undefined, {
+        firstServiceDate: '2026-09-24',
+        serviceDate: '2026-09-24',
+      });
+      const trains = [
+        loneTrain(6, { pinScheduledDeparture: '2026-09-17T14:00:00Z' }),
+        loneTrain(7, { serviceDate: '2026-09-20', pinScheduledDeparture: '2026-09-20T08:00:00Z' }),
+        loneTrain(8, { pinScheduledDeparture: '2026-09-17T11:00:00Z' }),
+      ];
+      const split = splitHomeJourneys(
+        [nextWeekItem, journeyListItem(laterToday), journeyListItem(soonToday)],
+        new Map([
+          [2, laterToday],
+          [3, soonToday],
+        ]),
+        trains,
+        now,
+      );
+      expect(ids(split.upcoming)).toEqual(['t8', 'j3', 't6', 'j2', 't7', 'j4']);
+    });
+
+    it('gives way as current to a journey under way, whose arrival is known, and is listed under it', () => {
+      const underWay = journeyDetail(1, [
+        untrackedLeg(1, 'Home', 'Euston', '2026-09-17T09:30:00Z', '2026-09-17T10:30:00Z'),
+      ]);
+      const split = splitHomeJourneys(
+        [journeyListItem(underWay)],
+        new Map([[1, underWay]]),
+        [loneTrain(5, { status: 'en_route' })],
+        now,
+      );
+      expect(ids(split.current ? [split.current] : [])).toEqual(['j1']);
+      expect(ids(split.alsoInProgress)).toEqual(['t5']);
+    });
   });
 });
 

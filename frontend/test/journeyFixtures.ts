@@ -1,4 +1,11 @@
-import type { JourneyDetail, JourneyLegDetail, JourneyListItem, JourneyStop, TrackedTrainState } from '@/lib/types';
+import type {
+  JourneyDetail,
+  JourneyLegDetail,
+  JourneyListItem,
+  JourneyStop,
+  TrackedTrainListItem,
+  TrackedTrainState,
+} from '@/lib/types';
 
 /* Journey builders for the home page's journey tests (`lib/homeJourneys`,
  * `app/(home)/HomeJourneys`, `app/(home)/page`). Defaults describe one
@@ -167,6 +174,32 @@ export function journeyListItem(
     trackingPhase: state?.trackingPhase ?? null,
     kind: current?.kind ?? 'train',
     untrackedStatus: current?.untrackedStatus ?? null,
+    ...overrides,
+  };
+}
+
+/** A `GET /Train/mine` row for a train tracked on its own (no journey):
+ * Kings Cross to York, departing 10:00 UK time (09:00Z) on 17 Sep 2026,
+ * timetabled and not yet travelled. */
+export function loneTrain(id: number, overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListItem {
+  return {
+    id,
+    serviceDate: '2026-09-17',
+    pinOriginCrs: 'KGX',
+    pinDestinationCrs: 'YRK',
+    pinOriginName: 'London Kings Cross',
+    pinDestinationName: 'York',
+    pinScheduledDeparture: '2026-09-17T09:00:00Z',
+    resolutionStatus: 'resolved',
+    trainUid: `W${id}`,
+    status: null,
+    delayMinutes: null,
+    trackedAt: '2026-09-01T00:00:00Z',
+    customName: null,
+    sharedGroupCount: 0,
+    journeyIds: [],
+    travelled: false,
+    trackingPhase: 'planned',
     ...overrides,
   };
 }

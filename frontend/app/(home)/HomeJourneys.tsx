@@ -6,10 +6,20 @@ import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
 import { SectionTitle } from '@/components/SectionTitle';
 import { StatusRow } from '@/components/StatusRow';
 import { TextLink } from '@/components/TextLink';
+import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
 import { JOURNEYS_DESTINATION, NEW_JOURNEY_LABEL, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
-import { currentLeg, homeJourneyStatusGroup, MAX_UPCOMING_JOURNEYS, type HomeJourney } from '@/lib/homeJourneys';
+import {
+  currentLeg,
+  homeJourneyStatusGroup,
+  isLoneTrain,
+  MAX_UPCOMING_JOURNEYS,
+  type HomeCurrent,
+  type HomeEntry,
+  type HomeJourney,
+  type HomeLoneTrain,
+} from '@/lib/homeJourneys';
 import { legDepartureInstant, legExpectedArrivalInstant } from '@/lib/journeyLegChaining';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
 import {
@@ -20,13 +30,16 @@ import {
 } from '@/lib/journeyName';
 import { legStatusGroup, type LegStatusGroup } from '@/lib/journeyStatus';
 import { routeLabel, stationLabel } from '@/lib/stationLabel';
+import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
 import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
 
 /* The logged-in home page's journey sections: "Current journey" (the one
- * under way now) and "Upcoming journeys". `lib/homeJourneys.ts` decides
- * which journey goes where; this file only draws them. Server-rendered,
- * like the rest of the home page. */
+ * under way now) and "Upcoming journeys". A train tracked on its own is a
+ * one-leg journey in both, drawn from its list row with the Track list's
+ * own badge (`TrackedRowStatusBadge`). `lib/homeJourneys.ts` decides which
+ * goes where; this file only draws them. Server-rendered, like the rest
+ * of the home page. */
 
 /** What the traveller is doing now: the current leg's route and time ("York
  * (YRK) to Newcastle (NCL) · 14:02"), or an untracked leg's mode, places
@@ -176,27 +189,114 @@ export function HomeJourneyRow({ journey }: { journey: HomeJourney }) {
   );
 }
 
-/** "Current journey": the soonest-arriving journey under way, then any
- * others under way at the same time as compact rows. Rendered only when
- * there is one. */
+/** A lone train's default name (route, date and time), the line under a
+ * custom name, as `journeyPreviewLine` gives a journey's. */
+function loneTrainDefaultName(entry: HomeLoneTrain): string {
+  return trackedTrainDisplayName({ ...entry.train, customName: null });
+}
+
+/** A lone train under way, drawn like `CurrentJourneyCard`: its name and
+ * status badge, then the train it is (route and departure) and where it
+ * goes. Its list row carries no arrival time, so there is no arrival
+ * fact. The whole card links to the train's page. */
+export function CurrentTrainCard({ entry }: { entry: HomeLoneTrain }) {
+  const { train } = entry;
+  const route = trackedTrainRouteLabel(train);
+  const nowText = entry.departure ? `${route} · ${formatTime(entry.departure)}` : route;
+  const destination = train.pinDestinationCrs ? stationLabel(train.pinDestinationCrs, train.pinDestinationName) : null;
+  return (
+    <Box className="currentJourneyCard">
+      <CardLink href={trackedTrainHref(train)} padding="lg">
+        <Stack gap="sm">
+          <Stack gap={4}>
+            <StatusRow
+              align="flex-start"
+              title={
+                <Text fw={700} fz="lg" lineClamp={2} miw={0}>
+                  {trackedTrainDisplayName(train)}
+                </Text>
+              }
+              trailing={<TrackedRowStatusBadge status={entry.status} />}
+            />
+            {train.customName && (
+              <Text size="sm" c="dimmed">
+                {loneTrainDefaultName(entry)}
+              </Text>
+            )}
+          </Stack>
+          <dl className="keyFacts keyFacts--compact">
+            <div>
+              <dt>Now</dt>
+              <dd>{nowText}</dd>
+            </div>
+            {destination !== null && (
+              <div>
+                <dt>Destination</dt>
+                <dd>{destination}</dd>
+              </div>
+            )}
+          </dl>
+        </Stack>
+      </CardLink>
+    </Box>
+  );
+}
+
+/** A lone train in a compact list, as `HomeJourneyRow` draws a journey:
+ * its name (by default its route, date and time), that default under a
+ * custom name, and its badge. Links to the train's page. */
+export function HomeTrainRow({ entry }: { entry: HomeLoneTrain }) {
+  const { train } = entry;
+  return (
+    <CardLink href={trackedTrainHref(train)}>
+      <StatusRow
+        align="flex-start"
+        title={trackedTrainDisplayName(train)}
+        subtitle={
+          train.customName && (
+            <Text size="sm" c="dimmed">
+              {loneTrainDefaultName(entry)}
+            </Text>
+          )
+        }
+        trailing={<TrackedRowStatusBadge status={entry.status} />}
+      />
+    </CardLink>
+  );
+}
+
+/** One row of either section: a journey or a lone train. */
+function HomeEntryRow({ entry }: { entry: HomeEntry }) {
+  return isLoneTrain(entry) ? <HomeTrainRow entry={entry} /> : <HomeJourneyRow journey={entry} />;
+}
+
+/** A React key unique across journeys and trains, whose ids are separate
+ * spaces. */
+function entryKey(entry: HomeEntry): string {
+  return isLoneTrain(entry) ? `train-${entry.train.id}` : `journey-${entry.item.id}`;
+}
+
+/** "Current journey": the soonest-arriving journey (or lone train) under
+ * way, then any others under way at the same time as compact rows.
+ * Rendered only when there is one. */
 export function CurrentJourneySection({
   current,
   alsoInProgress,
   now,
 }: {
-  current: HomeJourney & { detail: JourneyDetail };
-  alsoInProgress: readonly HomeJourney[];
+  current: HomeCurrent;
+  alsoInProgress: readonly HomeEntry[];
   now: Date;
 }) {
   return (
     <Stack component="section" aria-labelledby="current-journey-heading" gap="md">
       <SectionTitle id="current-journey-heading">Current journey</SectionTitle>
-      <CurrentJourneyCard journey={current} now={now} />
+      {isLoneTrain(current) ? <CurrentTrainCard entry={current} /> : <CurrentJourneyCard journey={current} now={now} />}
       {alsoInProgress.length > 0 && (
         <Stack gap="xs">
           <SectionTitle order={3}>Also in progress</SectionTitle>
-          {alsoInProgress.map((journey) => (
-            <HomeJourneyRow key={journey.item.id} journey={journey} />
+          {alsoInProgress.map((entry) => (
+            <HomeEntryRow key={entryKey(entry)} entry={entry} />
           ))}
         </Stack>
       )}
@@ -204,18 +304,20 @@ export function CurrentJourneySection({
   );
 }
 
-/** "Upcoming journeys", soonest first, capped at `MAX_UPCOMING_JOURNEYS`
- * with "View all" to the Journeys page, which lists every journey. Its
- * header carries "New journey", one of the two ways in to `/journeys/new`
- * now the nav has none (DS-115), so the section is rendered for every
- * logged-in visitor: with no upcoming journey it says so (or, when
- * `loadFailed`, that the list couldn't be read), and still offers "New
- * journey" where a new user would look for it. */
+/** "Upcoming journeys": journeys and trains tracked on their own together,
+ * soonest first, capped at `MAX_UPCOMING_JOURNEYS` with "View all" to the
+ * Journeys page, which lists every one. Its header carries "New journey",
+ * one of the two ways in to `/journeys/new` now the nav has none (DS-115),
+ * so the section is rendered for every logged-in visitor: with nothing
+ * upcoming it says so, and still offers "New journey" where a new user
+ * would look for it. When `loadFailed` (the journeys couldn't be read), it
+ * says that instead of claiming there are none, and still lists any lone
+ * trains under it. */
 export function UpcomingJourneysSection({
   upcoming,
   loadFailed = false,
 }: {
-  upcoming: readonly HomeJourney[];
+  upcoming: readonly HomeEntry[];
   loadFailed?: boolean;
 }) {
   const shown = upcoming.slice(0, MAX_UPCOMING_JOURNEYS);
@@ -231,12 +333,15 @@ export function UpcomingJourneysSection({
           </ButtonLink>
         </Group>
       </Group>
-      {shown.length === 0 ? (
-        <Text c="dimmed">{loadFailed ? describeFailure('load', 'your journeys') : 'No upcoming journeys.'}</Text>
+      {loadFailed ? (
+        <Text c="dimmed">{describeFailure('load', 'your journeys')}</Text>
       ) : (
+        shown.length === 0 && <Text c="dimmed">No upcoming journeys.</Text>
+      )}
+      {shown.length > 0 && (
         <Stack gap="xs">
-          {shown.map((journey) => (
-            <HomeJourneyRow key={journey.item.id} journey={journey} />
+          {shown.map((entry) => (
+            <HomeEntryRow key={entryKey(entry)} entry={entry} />
           ))}
         </Stack>
       )}

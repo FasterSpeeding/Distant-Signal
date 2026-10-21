@@ -70,3 +70,19 @@ export function trackedTrainDisplayName(
     : formatDate(train.serviceDate);
   return `${route}, ${when}`;
 }
+
+/** Where one of the caller's own tracked trains links: its canonical,
+ * shareable `/train/{uid}/{date}` page once resolved, else the
+ * owner-scoped `/train/by-id/{id}`. The resolved-with-no-uid fallback is
+ * defensive: the backend's resolution invariant means it shouldn't
+ * happen. */
+export function trackedTrainHref(train: {
+  id: number;
+  resolutionStatus: string;
+  trainUid: string | null;
+  serviceDate: string;
+}): string {
+  return train.resolutionStatus === 'resolved' && train.trainUid
+    ? `/train/${train.trainUid}/${train.serviceDate}`
+    : `/train/by-id/${train.id}`;
+}

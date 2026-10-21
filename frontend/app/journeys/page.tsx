@@ -19,7 +19,7 @@ import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
 import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatDate, formatTime, londonDayKey } from '@/lib/dateFormat';
-import { trackedTrainDisplayName, trackedTrainRouteLabel } from '@/lib/trackingName';
+import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
@@ -419,15 +419,9 @@ function TrackedTrainListRow({
   tickets: TicketListItem[];
 }) {
   // Canonical, shareable URL once resolved; the by-id detail route
-  // otherwise -- matching the existing by-id page's own "canonical link
-  // once resolved" logic rather than always sending the user through the
-  // by-id redirect hop. The `resolved`-with-null-`trainUid` fallback is
-  // defensive: the backend's own resolution invariant means this
-  // shouldn't happen, but this component doesn't assume it.
-  const href =
-    train.resolutionStatus === 'resolved' && train.trainUid
-      ? `/train/${train.trainUid}/${train.serviceDate}`
-      : `/train/by-id/${train.id}`;
+  // otherwise, rather than always sending the user through the by-id
+  // redirect hop. The home page's lone-train rows link the same way.
+  const href = trackedTrainHref(train);
 
   const route = trackedTrainRouteLabel(train);
   const displayName = trackedTrainDisplayName(train);

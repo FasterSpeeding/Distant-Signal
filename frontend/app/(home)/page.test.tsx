@@ -11,12 +11,9 @@ import type {
   LineStatusReport,
   OperatorSummary,
   SharedGroupCustomLine,
-  SharedGroupTrain,
-  TrackedTrainListItem,
 } from '@/lib/types';
-import { byVisibleText, visibleText } from '@/test/routeText';
 import { MINOR_DELAYS, NETWORK as TRAM_NETWORK } from '@/test/transitFixtures';
-import { journeyDetail, journeyListItem, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
+import { journeyDetail, journeyListItem, loneTrain, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
 
 vi.mock('@/lib/api');
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -60,30 +57,6 @@ function report(overrides: Partial<LineStatusReport> = {}): LineStatusReport {
   };
 }
 
-function item(overrides: Partial<TrackedTrainListItem> = {}): TrackedTrainListItem {
-  return {
-    id: 1,
-    serviceDate: '2026-08-31',
-    pinOriginCrs: 'WAT',
-    pinDestinationCrs: 'WOK',
-    // Defaults to null (bare-code rendering) rather than a real name so
-    // every pre-existing assertion in this file that checks for the code
-    // itself keeps working unchanged -- the name-rendering path gets its
-    // own dedicated test below.
-    pinOriginName: null,
-    pinDestinationName: null,
-    pinScheduledDeparture: '2026-08-31T18:32:00Z',
-    resolutionStatus: 'resolved',
-    trainUid: 'C21373',
-    status: 'en_route',
-    delayMinutes: 4,
-    trackedAt: '2026-08-31T12:00:00Z',
-    sharedGroupCount: 0,
-    ...overrides,
-    customName: overrides.customName ?? null,
-  };
-}
-
 function operator(overrides: Partial<OperatorSummary> = {}): OperatorSummary {
   return {
     code: 'VT',
@@ -92,33 +65,6 @@ function operator(overrides: Partial<OperatorSummary> = {}): OperatorSummary {
     worstSeverity: 1,
     reason: 'Operational issues',
     computedAt: '2026-09-01T00:00:00Z',
-    ...overrides,
-  };
-}
-
-// One row of `GET /public/groups/shared-trains` -- a train another member
-// shared into a group this caller belongs to. Distinct origin/destination
-// from `item()` above so a shared row and an own row are never confusable
-// in an assertion.
-function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrain {
-  return {
-    groupId: 'group-1',
-    groupName: 'Family',
-    trainSubscriptionId: 50,
-    pinOriginCrs: 'PAD',
-    pinDestinationCrs: 'RDG',
-    pinOriginName: null,
-    pinDestinationName: null,
-    pinScheduledDeparture: '2026-08-31T07:15:00Z',
-    serviceDate: '2026-08-31',
-    resolutionStatus: 'resolved',
-    trainUid: 'S99999',
-    status: 'en_route',
-    delayMinutes: null,
-    customName: null,
-    addedBy: 'user-2',
-    addedByName: 'Sam',
-    addedByTag: null,
     ...overrides,
   };
 }
@@ -143,7 +89,6 @@ beforeEach(() => {
   // exactly the scenario it was written for. Also load-bearing mechanically:
   // the page calls `.catch()` on this promise, and an automocked `undefined`
   // return has no `.catch`.
-  vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
   vi.mocked(api.getStationName).mockResolvedValue(null);
   vi.mocked(api.getStopPointDisruption).mockResolvedValue([]);
   vi.mocked(api.getSharedGroupCustomLines).mockResolvedValue(null);
@@ -794,131 +739,6 @@ describe('DashboardPage', () => {
   });
 });
 
-// Minimal, shared stubs for the two pre-existing fetches this page also
-// makes -- not under test here, just enough for the page to render without
-// throwing. Scoped to this describe block only (not global): the
-// `DashboardPage` describe block above sets its own explicit mocks per
-// test and doesn't need these defaults.
-//
-// `getSessionOrLoggedOut` is explicitly re-mocked to a logged-in user here
-// too -- without this, the last test in the `DashboardPage` describe block
-// above leaves it mocked to a logged-out `SessionInfo`, and since Vitest
-// doesn't reset mocks between tests by default, that would otherwise leak
-// into every test below and force the anonymous branch, which never
-// renders the Your Tracked Trains section this whole describe block exists
-// to test.
-describe('DashboardPage -- Your Tracked Trains section', () => {
-  beforeEach(() => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
-      authenticated: true,
-      id: 'u1',
-      username: 'a',
-      name: 'A',
-    });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
-    vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
-  });
-
-  it('getMyTrackedTrains() returns null (logged out): section absent, other two sections unchanged', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
-    renderWithMantine(await DashboardPage());
-    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Your lines' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Your stations' })).toBeInTheDocument();
-  });
-
-  it('getMyTrackedTrains() returns [] (logged in, nothing tracked): section absent', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    renderWithMantine(await DashboardPage());
-    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
-  });
-
-  it('populated list: section present with a "View all" link to /journeys', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
-    renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
-  });
-
-  it('more than 5 tracked trains: only the first 5 (as returned) are rendered', async () => {
-    const trains = Array.from({ length: 7 }, (_, i) => item({ id: i + 1, pinOriginCrs: `T${i + 1}` }));
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(trains);
-    renderWithMantine(await DashboardPage());
-    for (let i = 1; i <= 5; i++) {
-      expect(screen.getByText(new RegExp(`^T${i}`))).toBeInTheDocument();
-    }
-    expect(screen.queryByText(/^T6/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^T7/)).not.toBeInTheDocument();
-  });
-
-  it('rows render in the order getMyTrackedTrains returned them (no client-side re-sort)', async () => {
-    const first = item({ id: 1, pinOriginCrs: 'WAT' });
-    const second = item({ id: 2, pinOriginCrs: 'PAD' });
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([first, second]);
-    renderWithMantine(await DashboardPage());
-
-    const links = screen.getAllByRole('link');
-    const originOrder = links
-      .map((link) => link.textContent)
-      .filter((text) => text.startsWith('WAT') || text.startsWith('PAD'));
-    expect(originOrder).toEqual([expect.stringMatching(/^WAT/), expect.stringMatching(/^PAD/)]);
-  });
-
-  it('renders a delay badge for a resolved, delayed train', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ delayMinutes: 12 })]);
-    renderWithMantine(await DashboardPage());
-    expect(screen.getByText('12 min late')).toBeInTheDocument();
-  });
-
-  // Task 1.5 (WCAG 2.5.3): the tracked-train row pairs a route title with
-  // this delay badge in a `Group wrap="nowrap"` (`StatusRow`) -- without a
-  // shrink guard on the badge, a long enough route/station name can crush
-  // it instead of the title truncating. `expectNoUnguardedNowrapBadges`
-  // sweeps every `data-wrap="nowrap"` row this page renders, not just this
-  // one train's.
-  it('gives every wrap="nowrap" row\'s badge a shrink guard, even with a long route name', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({
-        delayMinutes: 12,
-        pinOriginName: 'A Station With An Implausibly Long Name For Testing',
-        pinDestinationName: 'Another Equally Verbose Destination Station Name',
-      }),
-    ]);
-    const { container } = renderWithMantine(await DashboardPage());
-    expect(screen.getByText('12 min late')).toBeInTheDocument();
-    expectNoUnguardedNowrapBadges(container);
-  });
-
-  it('resolved train with a trainUid: links to the canonical /train/{uid}/{date} URL', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
-    renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('link', { name: /WAT to WOK/ })).toHaveAttribute('href', '/train/C21373/2026-08-31');
-  });
-
-  it('renders station names when the backend resolved them, not just bare codes', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' }),
-    ]);
-    renderWithMantine(await DashboardPage());
-    expect(screen.getByText(byVisibleText('London Waterloo (WAT) to Woking (WOK)'))).toBeInTheDocument();
-  });
-
-  it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ pinOriginName: null, pinDestinationName: null })]);
-    renderWithMantine(await DashboardPage());
-    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
-    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
-  });
-
-  it('pending train: links to the by-id detail route', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({ resolutionStatus: 'pending', trainUid: null, status: null, delayMinutes: null }),
-    ]);
-    renderWithMantine(await DashboardPage());
-    expect(screen.getByRole('link', { name: /WAT to WOK/ })).toHaveAttribute('href', '/train/by-id/1');
-  });
-});
-
 describe('DashboardPage -- outage behaviour', () => {
   // Outage behaviour (design spec Decision 5 / plan Task 5).
   it('keeps rendering the last-known line status when the status fetch fails', async () => {
@@ -960,7 +780,7 @@ describe('DashboardPage -- outage behaviour', () => {
 
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Upcoming journeys' })).toBeInTheDocument();
   });
 
   it("keeps the dashboard up when a pinned station's disruption fetch fails", async () => {
@@ -1402,385 +1222,6 @@ describe('DashboardPage -- Your Operators section', () => {
     expect(screen.getByText(/See/)).toBeInTheDocument();
   });
 });
-
-// The home page's own copy of the /journeys fix: a train another member
-// shared into a group the caller belongs to is one of "their" trains for
-// the purposes of this section, and before this it was invisible here --
-// the only surfaces that showed it at all were /groups/{id} and
-// /journeys. Mirrors app/journeys/page.test.tsx's own
-// `group-shared trains` block, scoped to this page's condensed section.
-describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
-  beforeEach(() => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
-      authenticated: true,
-      id: 'u1',
-      username: 'a',
-      name: 'A',
-    });
-    vi.mocked(api.getPreferences).mockResolvedValue({ pinnedLines: [], pinnedStations: [], pinnedOperators: [] });
-    vi.mocked(api.getLineStatusForMode).mockResolvedValue([]);
-  });
-
-  it('renders a group-shared train alongside the caller’s own, tagged with its group and sharer', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
-    expect(screen.getByText('From Family')).toBeInTheDocument();
-    expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
-  });
-
-  it('a caller who tracks nothing themselves still gets the section for trains shared with them', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
-  });
-
-  // Task 1.5 (WCAG 2.5.3): `SharedTrainSummaryRow` pairs its title with
-  // `TrackedTrainStatusBadge` in a `Group wrap="nowrap"` (`StatusRow`) --
-  // the badge(s) must not be crushable, even with very long station names.
-  it('gives the shared row’s status badges a shrink guard, even with very long station names', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({
-        delayMinutes: 9,
-        pinOriginName: 'A Station With An Implausibly Long Name For Testing',
-        pinDestinationName: 'Another Equally Verbose Destination Station Name',
-      }),
-    ]);
-
-    const { container } = renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText('9 min late')).toBeInTheDocument();
-    expectNoUnguardedNowrapBadges(container);
-  });
-
-  it('nothing own and nothing shared: the section stays hidden entirely (Decision 4)', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
-  });
-
-  it('carries both tags inside the shared row itself, not stranded elsewhere in the section', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
-
-    renderWithMantine(await DashboardPage());
-
-    const sharedRow = screen.getByText(byVisibleText('PAD to RDG')).closest('.mantine-Card-root');
-    expect(sharedRow).not.toBeNull();
-    expect(within(sharedRow as HTMLElement).getByText('From Family')).toBeInTheDocument();
-    expect(within(sharedRow as HTMLElement).getByText('Shared by Sam')).toBeInTheDocument();
-
-    // ...and the caller's own row carries neither -- an unattributed row
-    // must keep reading as "one I tracked myself".
-    const ownRow = screen.getByText(byVisibleText('WAT to WOK')).closest('.mantine-Card-root');
-    expect(within(ownRow as HTMLElement).queryByText(/^from /)).not.toBeInTheDocument();
-    expect(within(ownRow as HTMLElement).queryByText(/^Shared by /)).not.toBeInTheDocument();
-  });
-
-  it('a train shared into two of the caller’s groups renders once, tagged with both', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ groupId: 'g1', groupName: 'Family' }),
-      sharedTrain({ groupId: 'g2', groupName: 'Commuters' }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getAllByText(byVisibleText('PAD to RDG'))).toHaveLength(1);
-    expect(screen.getByText('From Family')).toBeInTheDocument();
-    expect(screen.getByText('From Commuters')).toBeInTheDocument();
-  });
-
-  it('a shared train with a uid links to the public /train/{uid}/{date} page, even before it resolves', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ resolutionStatus: 'schedule_matched', trainUid: 'S99999', status: null }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByRole('link', { name: /PAD to RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
-  });
-
-  it('a shared train with no uid is not linked at all — the by-id route is owner-scoped', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ resolutionStatus: 'pending', trainUid: null, status: null }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /PAD to RDG/ })).not.toBeInTheDocument();
-    // Specifically never the owner-scoped by-id route, which 404s for
-    // anyone but the train's owner.
-    for (const link of screen.getAllByRole('link')) {
-      expect(link.getAttribute('href') ?? '').not.toMatch(/\/train\/by-id\//);
-    }
-  });
-
-  it('renders the shared train’s live status and delay badges, same as an own row', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ delayMinutes: 9 })]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText('En route')).toBeInTheDocument();
-    expect(screen.getByText('9 min late')).toBeInTheDocument();
-  });
-
-  it('falls back to "a member" when the sharer has no name or username, never a raw user id', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ addedBy: 'sso-subject-1234', addedByName: null }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText('Shared by a member')).toBeInTheDocument();
-    expect(screen.queryByText(/sso-subject-1234/)).not.toBeInTheDocument();
-  });
-
-  /** A BLANK name, not a null one -- what an identity provider with no name
-   * on file for the sharer actually sends. `??` treats `''` as a usable
-   * label, which would render "Shared by " with nothing after it. The
-   * backend normalizes blanks away now; this guards the rows written before
-   * it did, exactly as the Journeys page's and /groups/{id}'s own rows do. */
-  it('a sharer whose name is blank rather than null is still credited as "a member"', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ addedBy: 'sso-subject-1234', addedByName: '   ' }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText('Shared by a member')).toBeInTheDocument();
-  });
-
-  /** Same distinguishing suffix /journeys and /groups/{id} render, on the
-   * home page's copy of the shared-train row: two sharers this app cannot
-   * name are two different credits, not one repeated "a member". */
-  it('credits two unnameable sharers distinguishably', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ trainSubscriptionId: 50, addedBy: 'sso-1', addedByName: null, addedByTag: 'a1b2c3' }),
-      sharedTrain({
-        trainSubscriptionId: 51,
-        pinOriginCrs: 'WOK',
-        pinDestinationCrs: 'WAT',
-        addedBy: 'sso-2',
-        addedByName: null,
-        addedByTag: 'd4e5f6',
-      }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText('Shared by a member (#a1b2c3)')).toBeInTheDocument();
-    expect(screen.getByText('Shared by a member (#d4e5f6)')).toBeInTheDocument();
-  });
-
-  it('offers no edit/delete/ticket control on someone else’s shared train', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.queryByRole('button', { name: /rename/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /ticket/i })).not.toBeInTheDocument();
-  });
-
-  it('puts the caller’s own rows before the shared ones, each half in its endpoint’s order', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ id: 1, pinOriginCrs: 'WAT' })]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ trainSubscriptionId: 50, pinOriginCrs: 'PAD' }),
-      sharedTrain({ trainSubscriptionId: 51, pinOriginCrs: 'KGX' }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    const rendered = screen.getAllByText(byVisibleText(/ to (WOK|RDG)$/)).map((el) => visibleText(el));
-    expect(rendered).toEqual(['WAT to WOK', 'PAD to RDG', 'KGX to RDG']);
-  });
-
-  /** The home page labels a shared row by ROUTE, deliberately, where
-   * /journeys labels it with the sharer's `customName`: this page's own
-   * rows label by route too, and the two halves of one list disagreeing
-   * about what a heading even is would be worse than differing from a
-   * sibling page. Pinned so a later "unify these two rows" refactor has to
-   * make that choice consciously rather than silently. */
-  it('labels a shared row by route, not by the sharer’s custom name', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ customName: 'Morning commute' })]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
-    expect(screen.queryByText('Morning commute')).not.toBeInTheDocument();
-  });
-
-  it('a shared train with no pin data degrades to a date-only label, never "Invalid Date"', async () => {
-    // The pre-match case: an NR-primary subscription whose train has no
-    // schedule data yet has no departure time, and a pin created from a
-    // bare origin has no destination.
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({
-        pinOriginCrs: null,
-        pinDestinationCrs: null,
-        pinScheduledDeparture: null,
-        resolutionStatus: 'pending',
-        trainUid: null,
-        status: null,
-      }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    // No route and no UID: a normal pre-match state, not a missing station
-    // (DS-111), so never "Unknown station".
-    expect(screen.getByText('Train not identified yet')).toBeInTheDocument();
-    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
-    // Still attributed -- the tags are what stop an unlabelled row reading
-    // as one the caller tracked themselves.
-    expect(screen.getByText('From Family')).toBeInTheDocument();
-  });
-
-  // DS-111: every train tracked by UID read "Unknown station" here. With no
-  // route yet the row names the train itself.
-  it('names an own train with no route by its UID, never "Unknown station"', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({
-        id: 7,
-        pinOriginCrs: null,
-        pinOriginName: null,
-        pinDestinationCrs: null,
-        pinDestinationName: null,
-        pinScheduledDeparture: null,
-        trainUid: 'W12345',
-      }),
-    ]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText('Train W12345')).toBeInTheDocument();
-    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
-  });
-
-  it('caps the whole section at 5 rows across both halves, not 5 of each', async () => {
-    // The cap is Decision 1's, and it is about this supplementary section
-    // not out-competing the line-status overview above it -- two five-row
-    // halves would be ten rows.
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(
-      Array.from({ length: 4 }, (_, i) => item({ id: i + 1, pinOriginCrs: `T${i + 1}` })),
-    );
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
-      sharedTrain({ trainSubscriptionId: 50, pinOriginCrs: 'S1' }),
-      sharedTrain({ trainSubscriptionId: 51, pinOriginCrs: 'S2' }),
-    ]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText(byVisibleText('T4 to WOK'))).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('S1 to RDG'))).toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('S2 to RDG'))).not.toBeInTheDocument();
-  });
-
-  it('a caller with five of their own trains sees no shared rows here — "View all" is the way to them', async () => {
-    // The documented, deliberate consequence of capping the SECTION rather
-    // than each half. It's the case most likely to surprise someone later,
-    // so it is pinned rather than left implied by the partial-truncation
-    // test above.
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(
-      Array.from({ length: 5 }, (_, i) => item({ id: i + 1, pinOriginCrs: `T${i + 1}` })),
-    );
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText(byVisibleText('T5 to WOK'))).toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
-    expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
-  });
-
-  it('never renders the same train twice when a shared row collides with one of the caller’s own', async () => {
-    // `trainSubscriptionId` and `TrackedTrainListItem.id` are the same id
-    // space (`train_subscriptions.id`). The backend already excludes the
-    // caller's own subscriptions (`ts.user_id <> $1`); `mergeSharedTrains`
-    // filters again so a regression there can't produce a duplicated row
-    // that ALSO loses its own row's affordances.
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item({ id: 50 })]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ trainSubscriptionId: 50 })]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
-    expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
-  });
-
-  it('a null (401) shared-trains response degrades to the caller’s own list, not a crash', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue(null);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
-    expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
-  });
-
-  it('a failing shared-trains fetch still renders the caller’s own trains and the rest of the page', async () => {
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
-    vi.mocked(api.getSharedGroupTrains).mockRejectedValue(new Error('API request failed: 500'));
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
-    expect(screen.getByText(byVisibleText('WAT to WOK'))).toBeInTheDocument();
-    expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
-  });
-
-  it('an anonymous visitor never sees the section, whatever the shared-trains call returns', async () => {
-    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue({
-      authenticated: false,
-      id: null,
-      username: null,
-      name: null,
-    });
-    vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
-    // Defensive: the anonymous branch returns before any of this is read,
-    // so even an (impossible) populated response can't leak a shared train
-    // onto a logged-out home page.
-    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
-
-    renderWithMantine(await DashboardPage());
-
-    expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
-    expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
-    expect(screen.queryByText('From Family')).not.toBeInTheDocument();
-  });
-});
-
 describe('DashboardPage -- journey sections', () => {
   const KGX: [string, string] = ['KGX', 'London Kings Cross'];
   const YRK: [string, string] = ['YRK', 'York'];
@@ -1918,32 +1359,96 @@ describe('DashboardPage -- journey sections', () => {
     expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
   });
 
-  it("moves a journey's train out of Tracked trains, and keeps the trains tracked on their own", async () => {
+  // The home page has no "Tracked trains" list: a train tracked on its own
+  // is a one-leg journey in the two journey sections.
+  it('has no Tracked trains section, whatever is tracked', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
     mockJourneys([underWay]);
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({ id: 101, pinOriginCrs: 'KGX', pinDestinationCrs: 'YRK', journeyIds: [10] }),
-      item({ id: 5, pinOriginCrs: 'WAT', pinDestinationCrs: 'WOK', journeyIds: [] }),
+      loneTrain(101, { journeyIds: [10], status: 'en_route' }),
+      loneTrain(5, {
+        pinOriginCrs: 'WAT',
+        pinOriginName: 'London Waterloo',
+        pinDestinationCrs: 'WOK',
+        pinDestinationName: 'Woking',
+        pinScheduledDeparture: '2026-09-17T15:00:00Z',
+      }),
+      loneTrain(6, { serviceDate: '2026-09-10', travelled: true }),
     ]);
     renderWithMantine(await DashboardPage());
-    const heading = screen.getByRole('heading', { name: 'Tracked trains' });
-    const section = heading.closest('div')?.parentElement as HTMLElement;
-    expect(within(section).getAllByRole('link', { name: /WAT to WOK/ })).toHaveLength(1);
-    expect(within(section).queryByRole('link', { name: /KGX to YRK/ })).not.toBeInTheDocument();
-    expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
+    const headings = screen.getAllByRole('heading').map((heading) => heading.textContent);
+    expect(headings).not.toContain('Tracked trains');
+    // The journey's own train is shown through the journey, not again on
+    // its own; the travelled train is left to the Journeys page.
+    expect(screen.queryByRole('link', { name: /^London Kings Cross \(KGX\) to York \(YRK\)/ })).toBeNull();
+    expect(screen.getAllByRole('link', { name: /^London Waterloo \(WAT\) to Woking \(WOK\)/ })).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: /10 Sep 2026/ })).not.toBeInTheDocument();
+  });
+
+  it('makes a lone train under way the current journey, with the Track list badge and its train page link', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([]);
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      loneTrain(5, { status: 'en_route', delayMinutes: 12, delayProvisional: true }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    const current = screen.getByRole('region', { name: 'Current journey' });
+    const card = within(current).getByRole('link', {
+      name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep 2026 · 10:00/,
+    });
+    expect(card).toHaveAttribute('href', '/train/W5/2026-09-17');
+    expect(within(card).getByText(/12 min late/)).toBeInTheDocument();
+    expect(within(card).getByText('Destination')).toBeInTheDocument();
+    expect(within(card).getByText('York (YRK)')).toBeInTheDocument();
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(upcoming).getByText('No upcoming journeys.')).toBeInTheDocument();
+  });
+
+  it('lists a lone train still to come in Upcoming journeys, ordered in with the journeys by departure', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys(
+      [laterToday],
+      [journeyListItem(nextWeek, undefined, { firstServiceDate: '2026-09-24', serviceDate: '2026-09-24' })],
+    );
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      loneTrain(5, { pinScheduledDeparture: '2026-09-17T13:00:00Z', customName: 'Lunch train' }),
+      loneTrain(6, { serviceDate: '2026-09-20', pinScheduledDeparture: '2026-09-20T07:00:00Z' }),
+    ]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    const rows = within(upcoming)
+      .getAllByRole('link')
+      .map((link) => link.getAttribute('href'))
+      .filter((href) => href !== '/journeys/new' && href !== '/journeys');
+    expect(rows).toEqual(['/train/W5/2026-09-17', '/journeys/11', '/train/W6/2026-09-20', '/journeys/12']);
+    const lunch = within(upcoming).getByRole('link', { name: /^Lunch train/ });
+    expect(within(lunch).getByText('London Kings Cross (KGX) to York (YRK), 17 Sep 2026 · 14:00')).toBeInTheDocument();
+    expect(within(lunch).getByText('Planned')).toBeInTheDocument();
+    expect(within(upcoming).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
+    expect(within(upcoming).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
+  });
+
+  it('leaves trains shared into a group to the Journeys page', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([]);
+    vi.mocked(api.getSharedGroupTrains).mockClear();
+    renderWithMantine(await DashboardPage());
+    expect(api.getSharedGroupTrains).not.toHaveBeenCalled();
+    expect(screen.queryByText(/^From /)).not.toBeInTheDocument();
   });
 
   it('a failing journeys fetch drops only the journey sections, and folds no trains away', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
     vi.mocked(api.getMyJourneys).mockRejectedValue(new Error('down'));
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-      item({ id: 101, pinOriginCrs: 'KGX', pinDestinationCrs: 'YRK', journeyIds: [10] }),
+      loneTrain(101, { journeyIds: [10], pinScheduledDeparture: '2026-09-17T13:00:00Z' }),
     ]);
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /KGX to YRK/ })).toBeInTheDocument();
     // "New journey" stays, and the section doesn't claim there are none.
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(upcoming).getByRole('link', { name: /KGX\) to York/ })).toBeInTheDocument();
     expect(within(upcoming).getByText("Couldn't load your journeys. Try again.")).toBeInTheDocument();
     expect(within(upcoming).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
     expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');

@@ -1,11 +1,15 @@
 import { addCalendarDays, londonCalendarDay, londonDayEndIso } from './londonWallClock';
 import { legArrivalInstant, legDepartureInstant, legExpectedDepartureInstant } from './journeyLegChaining';
 import { journeyListItemStatusGroup, worstLegStatus, type LegStatusGroup } from './journeyStatus';
+import { trackedTrainRowStatus, type TrackedRowStatus } from './trackedRowStatus';
+import { splitTrainRows } from './upcomingPast';
 import { isUntrackedLeg } from './untrackedLeg';
-import type { JourneyDetail, JourneyLegDetail, JourneyListItem, JourneyStop } from './types';
+import type { JourneyDetail, JourneyLegDetail, JourneyListItem, JourneyStop, TrackedTrainListItem } from './types';
 
 /** The home page's journey sections (logged in): the journey under way
- * now, then the ones still to come. `GET /Journeys/mine` names a journey
+ * now, then the ones still to come. A train tracked on its own (no
+ * journey) is a one-leg journey here, as on the Journeys page
+ * (`lib/upcomingPast.ts`), so it can be either. `GET /Journeys/mine` names a journey
  * and its current leg but carries no departure or arrival time, so the
  * journeys that could be under way or still to come today are read in full
  * (`GET /Journeys/{id}`) and timed from their legs, with the live delay and
@@ -31,13 +35,36 @@ export interface HomeJourney {
   departure: string | null;
 }
 
+/** A train tracked on its own (`GET /Train/mine`, in no journey), shown
+ * as a one-leg journey with the Track list's own badge status
+ * (`trackedTrainRowStatus`). */
+export interface HomeLoneTrain {
+  train: TrackedTrainListItem;
+  status: TrackedRowStatus;
+  /** Its timetabled departure from the traveller's stop, when known. */
+  departure: string | null;
+}
+
+/** One row of the home page's journey sections: a journey, or a train
+ * tracked on its own (`isLoneTrain`). */
+export type HomeEntry = HomeJourney | HomeLoneTrain;
+
+/** Whether a home entry is a train tracked on its own. */
+export function isLoneTrain(entry: HomeEntry): entry is HomeLoneTrain {
+  return 'train' in entry;
+}
+
+/** The entry under way shown as current: a journey read in full, or a
+ * lone train. */
+export type HomeCurrent = (HomeJourney & { detail: JourneyDetail }) | HomeLoneTrain;
+
 /** The journey shown as current, and any others under way at once. */
 export interface HomeJourneySplit {
-  current: (HomeJourney & { detail: JourneyDetail }) | null;
+  current: HomeCurrent | null;
   /** Other journeys under way at the same time, soonest arriving first. */
-  alsoInProgress: (HomeJourney & { detail: JourneyDetail })[];
+  alsoInProgress: HomeCurrent[];
   /** Journeys whose first departure is still to come, soonest first. */
-  upcoming: HomeJourney[];
+  upcoming: HomeEntry[];
 }
 
 /** The headline status of a journey on the home page: the WHOLE journey's,
@@ -178,41 +205,75 @@ export function currentLeg(detail: JourneyDetail, now: Date): JourneyLegDetail |
   );
 }
 
-/** When the journey is expected to end (its last leg's live arrival), for
- * picking the soonest-arriving of two journeys under way at once. */
-function expectedEnd(detail: JourneyDetail): number {
-  const last = detail.legs.at(-1);
+/** Where a lone train is, relative to `now`. Its list row has no arrival
+ * time, so whether it is over is the api's verdict, `travelled`, which the
+ * api reaches by `legIsOver`'s own arrival rule (`travel_order::
+ * train_arrived_sql`: the reported arrival, else the timetable plus the
+ * running delay, else plus `TRAVEL_ARRIVAL_GRACE_MINUTES`). An older api
+ * without it is read as the Journeys page reads it (`splitTrainRows`).
+ * On top of that, as `legIsOver` has it for a last leg: a completed train
+ * is over, and a cancelled one once its departure has passed. It is under
+ * way once it reports moving or its timetabled departure has passed. */
+export function loneTrainPhase(train: TrackedTrainListItem, travelled: boolean, now: Date): JourneyPhase {
+  const departed = isBefore(train.pinScheduledDeparture, now);
+  if (travelled || train.status === 'completed' || (train.status === 'cancelled' && departed)) return 'past';
+  return train.status === 'en_route' || departed ? 'inProgress' : 'upcoming';
+}
+
+/** When an entry under way is expected to end (a journey's last leg's live
+ * arrival), for picking the soonest-arriving of two under way at once. A
+ * lone train's list row has no arrival time: it sorts after any journey
+ * whose end is known. */
+function expectedEnd(entry: HomeCurrent): number {
+  const last = isLoneTrain(entry) ? undefined : entry.detail.legs.at(-1);
   return (last && legEndMs(last)) ?? Number.POSITIVE_INFINITY;
 }
 
-function departureMs(journey: HomeJourney): number {
-  return journey.departure === null ? Number.POSITIVE_INFINITY : Date.parse(journey.departure);
+function departureMs(entry: HomeEntry): number {
+  return entry.departure === null ? Number.POSITIVE_INFINITY : Date.parse(entry.departure);
 }
 
-/** Splits the caller's journeys for the home page.
+function startDay(entry: HomeEntry): string {
+  return isLoneTrain(entry) ? entry.train.serviceDate : firstServiceDate(entry.item);
+}
+
+/** The last tie-break: journeys before lone trains, then newest first. */
+function byKindThenNewest(a: HomeEntry, b: HomeEntry): number {
+  const kind = Number(isLoneTrain(a)) - Number(isLoneTrain(b));
+  const id = (entry: HomeEntry) => (isLoneTrain(entry) ? entry.train.id : entry.item.id);
+  return kind || id(b) - id(a);
+}
+
+/** Splits the caller's journeys and lone trains for the home page.
  *
- * - In progress: read in full and between first departure and last
- *   arrival (`journeyPhase`). More than one at once (a return trip
- *   overlapping, two people's plans): the one arriving soonest is the
- *   current journey, the rest are listed under it.
+ * - In progress: a journey read in full and between first departure and
+ *   last arrival (`journeyPhase`), or a lone train under way
+ *   (`loneTrainPhase`). More than one at once (a return trip overlapping,
+ *   two people's plans): the one arriving soonest is the current journey,
+ *   the rest are listed under it. A lone train has no known arrival, so a
+ *   journey wins that; between two with no known end, the one that left
+ *   last is the one the traveller is likeliest on.
  * - Upcoming: a journey starting on a later day, or one read in full whose
- *   first departure is still to come. Soonest first: by first day, then
- *   departure time where known, then newest.
+ *   first departure is still to come, and a lone train still to come.
+ *   Soonest first, journeys and trains together: by first day, then
+ *   departure time where known, then journeys before trains, newest first.
  * - Everything else (past, or not read when it should have been) is left
  *   to the Journeys page.
  *
  * `details` maps journey id to its detail; a missing entry is a journey
  * that wasn't read or whose read failed. One that starts today with no
  * detail is listed as upcoming rather than dropped: its date says no more,
- * and the Journeys page has the rest. */
+ * and the Journeys page has the rest. `trains` are the caller's trains in
+ * no journey (`splitJourneyTrains`), in `GET /Train/mine`'s order. */
 export function splitHomeJourneys(
   items: readonly JourneyListItem[],
   details: ReadonlyMap<number, JourneyDetail>,
+  trains: readonly TrackedTrainListItem[],
   now: Date,
 ): HomeJourneySplit {
   const today = londonCalendarDay(now.toISOString());
-  const inProgress: (HomeJourney & { detail: JourneyDetail })[] = [];
-  const upcoming: HomeJourney[] = [];
+  const inProgress: HomeCurrent[] = [];
+  const upcoming: HomeEntry[] = [];
 
   for (const item of items) {
     const detail = details.get(item.id) ?? null;
@@ -227,12 +288,24 @@ export function splitHomeJourneys(
     else if (phase === 'upcoming') upcoming.push({ item, detail, departure });
   }
 
-  inProgress.sort((a, b) => expectedEnd(a.detail) - expectedEnd(b.detail) || b.item.id - a.item.id);
+  // The Journeys page's own Upcoming half: `travelled`, or the fallback.
+  const notTravelled = new Set(splitTrainRows(trains, today).upcoming.map(({ train }) => train.id));
+  for (const train of trains) {
+    const entry: HomeLoneTrain = {
+      train,
+      status: trackedTrainRowStatus(train, today),
+      departure: train.pinScheduledDeparture,
+    };
+    const phase = loneTrainPhase(train, !notTravelled.has(train.id), now);
+    if (phase === 'inProgress') inProgress.push(entry);
+    else if (phase === 'upcoming') upcoming.push(entry);
+  }
+
+  inProgress.sort(
+    (a, b) => expectedEnd(a) - expectedEnd(b) || departureMs(b) - departureMs(a) || byKindThenNewest(a, b),
+  );
   upcoming.sort(
-    (a, b) =>
-      firstServiceDate(a.item).localeCompare(firstServiceDate(b.item)) ||
-      departureMs(a) - departureMs(b) ||
-      b.item.id - a.item.id,
+    (a, b) => startDay(a).localeCompare(startDay(b)) || departureMs(a) - departureMs(b) || byKindThenNewest(a, b),
   );
   const [current = null, ...alsoInProgress] = inProgress;
   return { current, alsoInProgress, upcoming };

@@ -417,8 +417,17 @@ used, rather than as a literal in a component.
   there is no live data; never at the timetable alone while a late train
   runs. A cancelled last train ends the journey once it was due to leave;
   an untracked leg ends at its planned arrival (`legEndMs`).
-  Trains tracked on their own (no journey) stay below the pins as
-  "Tracked trains"; a journey's trains are shown through the journey.
+  There is no "Tracked trains" list: a train tracked on its own (no
+  journey) is a one-leg journey, current while under way and upcoming
+  while still to come, ordered in with the journeys by departure. It is
+  over by the api's `travelled` (the same arrival rule), or once
+  `completed`, or cancelled and due to have left. Its card and row carry
+  its name (route, date and time by default), the Track list's badge
+  (`TrackedRowStatusBadge`) and link to its train page; the card's facts
+  are "Now" (route and departure) and "Destination". A journey's trains
+  are shown through the journey. Trains shared into a group are left to
+  the Journeys page and the group's page: they are not the caller's own
+  travel.
 - **Station accessibility** (`StationAccessibilitySection`): the section
   opens with its key facts as a definition list (`<dl class="keyFacts">`,
   term above value on a phone and beside it from `xs` up): step-free access

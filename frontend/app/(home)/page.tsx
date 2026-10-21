@@ -12,7 +12,6 @@ import {
   getPreferences,
   getSessionOrLoggedOut,
   getSharedGroupCustomLines,
-  getSharedGroupTrains,
   getStationName,
   getStopPointDisruption,
 } from '@/lib/api';
@@ -23,14 +22,13 @@ import { PinnedTramLineCard } from '@/components/PinnedTramLineCard';
 import { LoginControl } from '@/components/LoginControl';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
-import { JOURNEYS_DESTINATION, PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { StateBadge } from '@/components/StateBadge';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { loadPinnedTramLines } from '@/lib/transit';
 import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/sharedCustomLines';
-import { mergeSharedTrains } from '@/lib/sharedTrains';
 import { homeJourneyDetailIds, splitHomeJourneys } from '@/lib/homeJourneys';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { londonCalendarDay } from '@/lib/londonWallClock';
@@ -38,12 +36,7 @@ import type { JourneyDetail, LineStatus, LineStatusReport, Preferences } from '@
 import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
 import { CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
 import { notGoodServiceSummary, RightNowModule } from './RightNowModule';
-import {
-  SharedCustomLineSummaryRow,
-  SharedTrainSummaryRow,
-  TrackedTrainSummaryRow,
-  type TrackedTrainRow,
-} from './TrackedTrainRows';
+import { SharedCustomLineSummaryRow } from './SharedCustomLineSummaryRow';
 
 // See app/lines/[id]/page.tsx-adjacent history page and this repo's other
 // dynamic routes for the same `revalidate = 0` rationale: without it,
@@ -157,70 +150,63 @@ export default async function DashboardPage() {
   // branch, which simply doesn't use it). Per
   // docs/superpowers/specs/2026-09-01-tracked-trains-home-page-design.md
   // Decision 3.
-  const [preferences, allReports, myTrackedTrains, sharedGroupTrains, sharedCustomLines, allOperators, myJourneys] =
-    await Promise.all([
-      // Fails closed to "nothing pinned" -- the exact shape getPreferences
-      // already returns for a 401 -- rather than being stale-served: this is
-      // per-user data, and the design spec's Decision 5 excludes per-user
-      // state from the stale cache on correctness grounds. Losing the pinned
-      // sections for the duration of an outage is materially better than
-      // losing the whole page, which is what an unguarded throw here did.
-      getPreferences().catch(() => NO_PREFERENCES),
-      // Every displayed mode, not just national-rail: a pinned TfL line would
-      // otherwise be silently missing from "Your Lines".
-      withStaleFallback(`lineStatusForMode:${DISPLAYED_MODES_PARAM}`, () =>
-        getLineStatusForMode(DISPLAYED_MODES_PARAM),
-      ),
-      // null is getMyTrackedTrains()'s own established "not logged in" value,
-      // and the call site below already collapses it to []. Same fail-closed
-      // rationale as preferences above.
-      getMyTrackedTrains().catch(() => null),
-      // Trains OTHER members shared into a group the caller belongs to.
-      // Gated and null-on-401 in exactly the same way as the call above, and
-      // `.catch(() => null)` for the same reason /journeys gives for its
-      // own copy of this call: the group-shared half of this section is
-      // auxiliary, so a backend hiccup there must cost the caller the shared
-      // rows, never their own rows or the whole dashboard. `null` is already
-      // a value this page handles (it is the 401 return), so the failure
-      // collapses into the existing "nothing shared with you" branch.
-      getSharedGroupTrains().catch(() => null),
-      // Custom LINES other members have shared into a group the caller
-      // belongs to -- the lines-section counterpart of the call directly
-      // above, with the same null-on-401 / fail-closed treatment for the
-      // same reason.
-      getSharedGroupCustomLines().catch(() => null),
-      // Same public, unauthenticated, cheap-to-fetch-in-full list
-      // `/operators` itself fetches (~25-40 rows) -- filtered down to the
-      // caller's own pins below, rather than a per-code batch fetch. See
-      // this plan's Judgment Call 6.
-      //
-      // Gated on `session.authenticated`: the anonymous branch below never
-      // renders "Your Operators" (or anything else pinned-operator-shaped)
-      // at all, so fetching the catalogue for an anonymous visitor would be
-      // pure cost. `Promise.resolve([])` is a safe placeholder for that
-      // branch specifically because nothing downstream of it in the
-      // anonymous return path ever reads this value.
-      //
-      // `.catch(() => null)`, NOT `.catch(() => [])`: unlike the anonymous
-      // placeholder above, a `[]` here would be indistinguishable from "the
-      // catalogue is genuinely empty" once fed through the same filter a
-      // real result goes through, and would tell a caller who HAS pinned
-      // operators that they have nothing pinned. `null` is already a value
-      // this page handles elsewhere in this same `Promise.all` (see
-      // `getMyTrackedTrains`/`getSharedGroupTrains` above) -- the "Your
-      // Operators" section below renders a distinct "couldn't load" branch
-      // for it instead of the ordinary empty-state sentence, whenever the
-      // caller actually has pinned operators to have lost.
-      session.authenticated
-        ? withStaleFallback('allOperators', () => getAllOperators()).catch(() => null)
-        : Promise.resolve([]),
-      // The "Current journey" and "Upcoming journeys" sections. Gated like
-      // the operators catalogue (the anonymous branch shows neither), and
-      // per-user, so a failure is `null`: no journey sections, and the
-      // journeys' trains stay in "Tracked trains" (`splitJourneyTrains`
-      // folds nothing then), so nothing vanishes.
-      session.authenticated ? getMyJourneys().catch(() => null) : Promise.resolve(null),
-    ]);
+  const [preferences, allReports, myTrackedTrains, sharedCustomLines, allOperators, myJourneys] = await Promise.all([
+    // Fails closed to "nothing pinned" -- the exact shape getPreferences
+    // already returns for a 401 -- rather than being stale-served: this is
+    // per-user data, and the design spec's Decision 5 excludes per-user
+    // state from the stale cache on correctness grounds. Losing the pinned
+    // sections for the duration of an outage is materially better than
+    // losing the whole page, which is what an unguarded throw here did.
+    getPreferences().catch(() => NO_PREFERENCES),
+    // Every displayed mode, not just national-rail: a pinned TfL line would
+    // otherwise be silently missing from "Your Lines".
+    withStaleFallback(`lineStatusForMode:${DISPLAYED_MODES_PARAM}`, () => getLineStatusForMode(DISPLAYED_MODES_PARAM)),
+    // null is getMyTrackedTrains()'s own established "not logged in" value,
+    // and the call site below already collapses it to []. Same fail-closed
+    // rationale as preferences above.
+    //
+    // Trains OTHER members shared into the caller's groups are not
+    // fetched: the journey sections are the caller's own travel, and a
+    // train someone else is on is no journey of theirs. /journeys and
+    // /groups/{id} list those.
+    getMyTrackedTrains().catch(() => null),
+    // Custom LINES other members have shared into a group the caller
+    // belongs to. Gated and null-on-401 like the call above, and
+    // `.catch(() => null)`: this section is auxiliary, so a backend hiccup
+    // there must cost the caller the shared rows, never the dashboard.
+    getSharedGroupCustomLines().catch(() => null),
+    // Same public, unauthenticated, cheap-to-fetch-in-full list
+    // `/operators` itself fetches (~25-40 rows) -- filtered down to the
+    // caller's own pins below, rather than a per-code batch fetch. See
+    // this plan's Judgment Call 6.
+    //
+    // Gated on `session.authenticated`: the anonymous branch below never
+    // renders "Your Operators" (or anything else pinned-operator-shaped)
+    // at all, so fetching the catalogue for an anonymous visitor would be
+    // pure cost. `Promise.resolve([])` is a safe placeholder for that
+    // branch specifically because nothing downstream of it in the
+    // anonymous return path ever reads this value.
+    //
+    // `.catch(() => null)`, NOT `.catch(() => [])`: unlike the anonymous
+    // placeholder above, a `[]` here would be indistinguishable from "the
+    // catalogue is genuinely empty" once fed through the same filter a
+    // real result goes through, and would tell a caller who HAS pinned
+    // operators that they have nothing pinned. `null` is already a value
+    // this page handles elsewhere in this same `Promise.all` (see
+    // `getMyTrackedTrains`/`getSharedGroupCustomLines` above) -- the "Your
+    // Operators" section below renders a distinct "couldn't load" branch
+    // for it instead of the ordinary empty-state sentence, whenever the
+    // caller actually has pinned operators to have lost.
+    session.authenticated
+      ? withStaleFallback('allOperators', () => getAllOperators()).catch(() => null)
+      : Promise.resolve([]),
+    // The "Current journey" and "Upcoming journeys" sections. Gated like
+    // the operators catalogue (the anonymous branch shows neither), and
+    // per-user, so a failure is `null`: no journeys, and every train is
+    // listed as one tracked on its own (`splitJourneyTrains` folds
+    // nothing then), so no train vanishes.
+    session.authenticated ? getMyJourneys().catch(() => null) : Promise.resolve(null),
+  ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:
   // it's a pure function (see its own doc comment) of `allReports`, which
@@ -282,9 +268,10 @@ export default async function DashboardPage() {
     );
   }
 
-  // Logged-in branch: the journey sections (current, upcoming), the pinned
-  // lines, stations and operators, then the trains tracked on their own,
-  // reusing what was fetched concurrently above.
+  // Logged-in branch: the journey sections (current, upcoming, with the
+  // trains tracked on their own as one-leg journeys), then the pinned
+  // lines, stations and operators, reusing what was fetched concurrently
+  // above.
   // The pinned set came out in whatever order `/Line/Mode/…/Status`
   // happened to return, which visibly differed between two captures minutes
   // apart. Worst first, then alphabetical: a dashboard should lead with
@@ -380,47 +367,14 @@ export default async function DashboardPage() {
   const journeyDetails = new Map<number, JourneyDetail>(
     (await journeyDetailsPromise).filter((entry): entry is readonly [number, JourneyDetail] => entry !== null),
   );
-  const { current, alsoInProgress, upcoming } = splitHomeJourneys(journeyItems, journeyDetails, now);
-
-  // null (not logged in) collapses to [] -- the same "hide entirely"
-  // treatment a logged-in user with zero tracked trains gets (Decision 4 of
-  // the design spec).
-  const ownTrains = myTrackedTrains ?? [];
-  // "Tracked trains" lists only the trains tracked on their own: a train
-  // that is a leg of one of the caller's journeys is shown through that
-  // journey (above, or on the Journeys page once it's past), the same rule
-  // /journeys applies (`splitJourneyTrains`).
-  const { standalone: standaloneTrains } = splitJourneyTrains(ownTrains, myJourneys);
-  // De-duplicated per train and filtered against the caller's own rows --
-  // see `mergeSharedTrains`' own doc comment for why both halves of that
-  // are the frontend's job rather than the query's. Note the full own-train
-  // list (not the sliced five) is what that filter is built from: a train
-  // that is the caller's own is never a "shared" row here, whether or not
-  // it made this section's cap.
-  const sharedTrains = mergeSharedTrains(sharedGroupTrains ?? [], new Set(ownTrains.map((t) => t.id)));
-
-  // ONE list, own rows first then shared -- the same single-list, own-first
-  // shape /journeys settled on (see its own comment): in a merged list a
-  // row with no attribution reads as one the caller tracked themselves,
-  // which is exactly why each shared row carries its "from <group>"/
-  // "Shared by <who>" tags. Interleaving is deliberately not attempted:
-  // the caller's own half comes in the backend's travel order and the
-  // shared half after it, as on /journeys.
-  //
-  // slice(0, 5) of the already travel-ordered response (`GET /Train/mine`:
-  // still to come or running, soonest first, then travelled, most recent
-  // first; DS-112) is the caller's next five trains, with no client-side
-  // re-sort needed. It used to be the five most recently tracked
-  // (Decision 1/3). The cap is on the
-  // section as a whole, not per half: Decision 1's whole point is that this
-  // supplementary section must not out-compete the line-status overview
-  // above it, and two five-row halves would be ten rows. A caller with five
-  // or more of their own trains therefore sees the shared ones via "View
-  // all" (/journeys, which caps neither half) rather than here.
-  const trackedTrainRows: TrackedTrainRow[] = [
-    ...standaloneTrains.map((train): TrackedTrainRow => ({ kind: 'own', train })),
-    ...sharedTrains.map((row): TrackedTrainRow => ({ kind: 'shared', row })),
-  ].slice(0, 5);
+  // A train tracked on its own is a one-leg journey: it is the current
+  // journey while under way, and among the upcoming ones while still to
+  // come, ordered in with them by departure. A train that is a leg of one
+  // of the caller's journeys is shown through that journey, the same rule
+  // /journeys applies (`splitJourneyTrains`). null (not logged in, or the
+  // fetch failed) is no trains.
+  const { standalone: standaloneTrains } = splitJourneyTrains(myTrackedTrains ?? [], myJourneys);
+  const { current, alsoInProgress, upcoming } = splitHomeJourneys(journeyItems, journeyDetails, standaloneTrains, now);
 
   // Custom lines a fellow group member shared with the caller. One row per
   // line carrying every group it reached them through (the wire shape is
@@ -652,33 +606,6 @@ export default async function DashboardPage() {
           narrower case where Lines is empty but Stations or Operators is
           not. */}
       {!allPinnedSectionsEmpty && pinnedLineCount === 0 && <RightNowModule summary={rightNow} />}
-
-      {/* Trains tracked on their own (no journey), and trains shared into the
-          caller's groups. Kept, below the pins rather than at the top: the
-          journey sections now carry what is happening today, and these stay
-          one click from the Journeys page's full list. */}
-      {trackedTrainRows.length > 0 && (
-        <Stack gap="md">
-          <Group justify="space-between">
-            <SectionTitle>Tracked trains</SectionTitle>
-            <TextLink href={JOURNEYS_DESTINATION.href}>View all</TextLink>
-          </Group>
-          <Stack gap="xs">
-            {/* Keys are prefixed per half because the two id spaces are
-                the same one -- `SharedGroupTrain.trainSubscriptionId` and
-                `TrackedTrainListItem.id` are both `train_subscriptions.id`
-                -- so an unprefixed key could collide if
-                `mergeSharedTrains`' own own-train filter ever regressed. */}
-            {trackedTrainRows.map((row) =>
-              row.kind === 'own' ? (
-                <TrackedTrainSummaryRow key={`own-${row.train.id}`} train={row.train} />
-              ) : (
-                <SharedTrainSummaryRow key={`shared-${row.row.train.trainSubscriptionId}`} row={row.row} />
-              ),
-            )}
-          </Stack>
-        </Stack>
-      )}
     </Stack>
   );
 }

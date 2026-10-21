@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
-import { journeyDetail, journeyListItem, stop, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
-import { MAX_UPCOMING_JOURNEYS, type HomeJourney } from '@/lib/homeJourneys';
-import type { JourneyDetail } from '@/lib/types';
+import { journeyDetail, journeyListItem, loneTrain, stop, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
+import { MAX_UPCOMING_JOURNEYS, type HomeJourney, type HomeLoneTrain } from '@/lib/homeJourneys';
+import { trackedTrainRowStatus } from '@/lib/trackedRowStatus';
+import type { JourneyDetail, TrackedTrainListItem } from '@/lib/types';
 import { CurrentJourneyCard, CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
 
 const KGX: [string, string] = ['KGX', 'London Kings Cross'];
@@ -38,6 +39,12 @@ function journey(id = 7, customName: string | null = null): HomeJourney & { deta
     customName,
   );
   return { item: journeyListItem(detail), detail, departure: '2026-09-17T09:12:00Z' };
+}
+
+/** A Kings Cross to York train tracked on its own, as the home page gets it. */
+function lone(id: number, overrides: Partial<TrackedTrainListItem> = {}): HomeLoneTrain {
+  const train = loneTrain(id, overrides);
+  return { train, status: trackedTrainRowStatus(train, '2026-09-17'), departure: train.pinScheduledDeparture };
 }
 
 describe('CurrentJourneyCard', () => {
@@ -142,6 +149,39 @@ describe('CurrentJourneySection', () => {
     );
     expect(screen.queryByRole('heading', { name: 'Also in progress' })).not.toBeInTheDocument();
   });
+
+  it('draws a lone train under way as the current journey, linking to its train page', () => {
+    renderWithMantine(
+      <CurrentJourneySection
+        current={lone(5, { status: 'en_route', delayMinutes: 6, customName: 'Commute' })}
+        alsoInProgress={[journey(8, 'Second trip')]}
+        now={new Date('2026-09-17T10:00:00Z')}
+      />,
+    );
+    const section = screen.getByRole('region', { name: 'Current journey' });
+    const card = within(section).getByRole('link', { name: /^Commute/ });
+    expect(card).toHaveAttribute('href', '/train/W5/2026-09-17');
+    expect(card.closest('.currentJourneyCard')).not.toBeNull();
+    expect(within(card).getByText('London Kings Cross (KGX) to York (YRK), 17 Sep 2026 · 10:00')).toBeInTheDocument();
+    expect(within(card).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
+    expect(within(card).getByText('York (YRK)')).toBeInTheDocument();
+    expect(within(card).getByText('6 min late')).toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: /Second trip/ })).toHaveAttribute('href', '/journeys/8');
+  });
+
+  it('lists a lone train under way beside the current journey', () => {
+    renderWithMantine(
+      <CurrentJourneySection
+        current={journey()}
+        alsoInProgress={[lone(5, { status: 'en_route', resolutionStatus: 'pending' })]}
+        now={new Date('2026-09-17T10:00:00Z')}
+      />,
+    );
+    const section = screen.getByRole('region', { name: 'Current journey' });
+    expect(
+      within(section).getByRole('link', { name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep/ }),
+    ).toHaveAttribute('href', '/train/by-id/5');
+  });
 });
 
 describe('UpcomingJourneysSection', () => {
@@ -207,5 +247,24 @@ describe('UpcomingJourneysSection', () => {
     renderWithMantine(<UpcomingJourneysSection upcoming={many} />);
     expect(screen.getAllByRole('link', { name: /to York/ })).toHaveLength(MAX_UPCOMING_JOURNEYS);
     expect(screen.getByText('2 more upcoming journeys are on the Journeys page.')).toBeInTheDocument();
+  });
+
+  it('lists a lone train among the journeys, with the Track list badge, linking to its train page', () => {
+    renderWithMantine(
+      <UpcomingJourneysSection upcoming={[lone(5, { status: 'cancelled' }), upcoming(1, 'Weekend away')]} />,
+    );
+    const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+    const train = within(section).getByRole('link', { name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep/ });
+    expect(train).toHaveAttribute('href', '/train/W5/2026-09-17');
+    expect(within(train).getByText('Cancelled')).toBeInTheDocument();
+    expect(within(section).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
+  });
+
+  it("when the journeys couldn't be read, says so and still lists the lone trains", () => {
+    renderWithMantine(<UpcomingJourneysSection upcoming={[lone(5)]} loadFailed />);
+    const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(section).getByText("Couldn't load your journeys. Try again.")).toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: /to York/ })).toHaveAttribute('href', '/train/W5/2026-09-17');
   });
 });

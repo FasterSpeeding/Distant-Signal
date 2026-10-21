@@ -2,8 +2,9 @@ import { test, expect, type APIRequestContext, type BrowserContext } from '@play
 import AxeBuilder from '@axe-core/playwright';
 
 // The logged-in home page's journey sections: "Current journey" for the
-// journey under way, "Upcoming journeys" for the ones still to come, and
-// "Tracked trains" for trains tracked on their own. The page renders on the
+// journey under way, and "Upcoming journeys" for the ones still to come; a
+// train tracked on its own is a one-leg journey in them, and there is no
+// "Tracked trains" list. The page renders on the
 // server from the api, so this runs against the seeded e2e stack
 // (frontend/e2e/fixtures/seed.sql), logged in as the seed's owner, whose
 // 2099 journey "Fixture door to door" is always upcoming.
@@ -83,12 +84,12 @@ test.describe('home page journeys (logged in)', () => {
     journeyId = null;
   });
 
-  test('upcoming journeys lead the page, with tracked trains kept below', async ({ page }) => {
+  test('upcoming journeys lead the page, with no Tracked trains list', async ({ page }) => {
     await page.goto('/');
     const upcoming = page.getByRole('region', { name: 'Upcoming journeys' });
     await expect(upcoming.getByRole('link', { name: /Fixture door to door/ })).toBeVisible();
     await expect(upcoming.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
-    await expect(page.getByRole('heading', { name: 'Tracked trains' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Tracked trains' })).toHaveCount(0);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home');
   });
 
