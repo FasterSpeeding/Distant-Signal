@@ -3,7 +3,7 @@ import {
   currentLeg,
   homeJourneyDetailIds,
   homeJourneyStatusGroup,
-  JOURNEY_ARRIVAL_GRACE_MINUTES,
+  TRAVEL_ARRIVAL_GRACE_MINUTES,
   journeyPhase,
   legEndMs,
   MAX_HOME_JOURNEY_DETAILS,
@@ -37,12 +37,19 @@ describe('journeyPhase', () => {
     expect(journeyPhase(twoLegs(), at('2026-09-17T14:01:00Z'))).toBe('past');
   });
 
-  it(`with no live data, waits ${JOURNEY_ARRIVAL_GRACE_MINUTES} min past the timetabled arrival`, () => {
+  it(`with no live data, waits ${TRAVEL_ARRIVAL_GRACE_MINUTES} min past the timetabled arrival`, () => {
     const quiet = journeyDetail(1, [trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z')]);
     expect(legEndMs(quiet.legs[0]!)).toBe(Date.parse('2026-09-17T11:30:00Z'));
     expect(journeyPhase(quiet, at('2026-09-17T11:05:00Z'))).toBe('inProgress');
     expect(journeyPhase(quiet, at('2026-09-17T11:29:00Z'))).toBe('inProgress');
     expect(journeyPhase(quiet, at('2026-09-17T11:31:00Z'))).toBe('past');
+  });
+
+  it('ignores early running, as the api does: an early train ends at its timetabled arrival', () => {
+    const early = journeyDetail(1, [
+      trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', { status: 'en_route', delayMinutes: -4 }),
+    ]);
+    expect(legEndMs(early.legs[0]!)).toBe(Date.parse('2026-09-17T11:00:00Z'));
   });
 
   it('stays current past the timetabled arrival while the train runs late, with no estimate at the stop', () => {

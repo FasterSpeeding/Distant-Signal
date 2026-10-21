@@ -76,10 +76,13 @@ function isBefore(instant: string | null, now: Date): boolean {
 }
 
 /** How long past its timetabled arrival a train leg with no live data at
- * all (no report, no estimate, no delay) still counts as under way: a
+ * all (no arrival report, no running delay) still counts as under way: a
  * train Network Rail hasn't reported on is not dropped the minute it is
- * due. 30 minutes covers ordinary late running the feeds missed. */
-export const JOURNEY_ARRIVAL_GRACE_MINUTES = 30;
+ * due. The same figure, under the same name, as the api's travel order
+ * (`TRAVEL_ARRIVAL_GRACE_MINUTES` in crates/api/src/data/travel_order.rs),
+ * so the home page and `GET /Journeys/mine`'s order agree on when a
+ * journey is over. Change both together. */
+export const TRAVEL_ARRIVAL_GRACE_MINUTES = 30;
 
 const MINUTE_MS = 60_000;
 
@@ -100,9 +103,13 @@ function legAlightingStop(leg: JourneyLegDetail): JourneyStop | null {
  *
  * 1. a train's ACTUAL arrival at the traveller's alighting stop, when
  *    reported;
- * 2. else, with live data, its live estimate there (the stop's estimate,
- *    else the timetable plus the train's current delay);
- * 3. else the timetable plus `JOURNEY_ARRIVAL_GRACE_MINUTES`.
+ * 2. else, with a live running delay, the timetabled arrival plus that
+ *    delay (early running ignored);
+ * 3. else the timetabled arrival plus `TRAVEL_ARRIVAL_GRACE_MINUTES`.
+ *
+ * The client copy of the api's `travel_order::train_arrived_sql`, which
+ * orders `GET /Journeys/mine` by the same rule. (A day with no arrival
+ * time at all is handled by `legIsOver`, as there.)
  *
  * An untracked leg ends at its planned arrival. `null` when nothing is
  * known (no train picked, no stop list). */
@@ -110,12 +117,11 @@ export function legEndMs(leg: JourneyLegDetail): number | null {
   if (isUntrackedLeg(leg)) return leg.plannedArrival ? Date.parse(leg.plannedArrival) : null;
   const stop = legAlightingStop(leg);
   if (stop?.actualArrival) return Date.parse(stop.actualArrival);
-  if (stop?.estimatedArrival) return Date.parse(stop.estimatedArrival);
   const scheduled = legArrivalInstant(leg);
   if (scheduled === null) return null;
   const delay = leg.trackedTrainState?.delayMinutes ?? null;
-  if (delay !== null) return Date.parse(scheduled) + delay * MINUTE_MS;
-  return Date.parse(scheduled) + JOURNEY_ARRIVAL_GRACE_MINUTES * MINUTE_MS;
+  if (delay !== null) return Date.parse(scheduled) + Math.max(delay, 0) * MINUTE_MS;
+  return Date.parse(scheduled) + TRAVEL_ARRIVAL_GRACE_MINUTES * MINUTE_MS;
 }
 
 /** Whether a leg is over (`legEndMs`). A train leg is over at once when

@@ -408,7 +408,7 @@ used, rather than as a literal in a component.
   shape: name, preview line, "Departs 18:00" when known, status badge.
   A train leg ends at its actual arrival at the traveller's stop (or
   `completed`), else its live estimate (timetable plus the current
-  delay), else the timetable plus `JOURNEY_ARRIVAL_GRACE_MINUTES` (30) when
+  delay), else the timetable plus `TRAVEL_ARRIVAL_GRACE_MINUTES` (30) when
   there is no live data; never at the timetable alone while a late train
   runs. A cancelled last train ends the journey once it was due to leave;
   an untracked leg ends at its planned arrival (`legEndMs`).
