@@ -1360,19 +1360,19 @@ static LIST_TRACKED_TRAINS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
 /// running one comes first, the one a month out after everything sooner),
 /// and the cap no longer drops today's train behind a hundred newer pins.
 ///
-/// No status-based filtering: `train_current_state.status` CAN reach
-/// `'completed'` now (`trust_schema::journey::apply_movement`'s
-/// confirmed-terminus-ARRIVAL check), but only when `trains.destination_crs` already happened to be
-/// known as that event was ingested -- which the
-/// backlog-replay-before-schedule-match ordering in
-/// `routes::train::enrich_shared_train` often means it wasn't, and nothing
-/// re-derives it afterwards. `journey::apply_confirmed_arrival` closes that
-/// for the two single-train read routes by reading the finished journey off
-/// its own timeline, but deliberately not for this batched list (see that
-/// function's own doc comment), so a long-finished train can still show
-/// here as `'en_route'`. An "active only" filter would therefore silently
-/// do almost nothing while implying curation that isn't happening; this
-/// function intentionally does not attempt one.
+/// No status-based filtering: `train_current_state.status` reaches
+/// `'completed'` on a confirmed terminus ARRIVAL
+/// (`trust_schema::journey::apply_movement`), including one ingested before
+/// the schedule match supplied `trains.destination_crs` (the match and the
+/// backlog replay re-derive it:
+/// `ds_store::sweeps::train_completion::complete_on_known_destination_arrival`),
+/// and the reconciliation sweep finishes whatever is still `en_route` two
+/// days after its service date. Until then a train that never reported its
+/// arrival still shows here as `'en_route'`; `journey::apply_confirmed_arrival`
+/// covers the two single-train read routes, deliberately not this batched
+/// list (see that function's own doc comment). An "active only" filter would
+/// therefore still miss some finished trains while implying curation that
+/// isn't happening; this function intentionally does not attempt one.
 pub async fn list_tracked_trains_for_user(
     pool: &PgPool,
     user_id: &str,
