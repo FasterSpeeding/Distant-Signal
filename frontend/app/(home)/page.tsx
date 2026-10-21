@@ -14,6 +14,7 @@ import {
   getSharedGroupCustomLines,
   getStationName,
   getStopPointDisruption,
+  getTrackedTrainById,
 } from '@/lib/api';
 import { withStaleFallback } from '@/lib/liveDataCache';
 import { DISPLAYED_MODES_PARAM, MERGED_TFL_LINE_IDS } from '@/lib/modes';
@@ -29,10 +30,10 @@ import { severityRank, worstStatus } from '@/lib/severity';
 import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { loadPinnedTramLines } from '@/lib/transit';
 import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/sharedCustomLines';
-import { homeJourneyDetailIds, splitHomeJourneys } from '@/lib/homeJourneys';
+import { homeDetailReads, splitHomeJourneys } from '@/lib/homeJourneys';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { londonCalendarDay } from '@/lib/londonWallClock';
-import type { JourneyDetail, LineStatus, LineStatusReport, Preferences } from '@/lib/types';
+import type { JourneyDetail, LineStatus, LineStatusReport, Preferences, TrackedTrainState } from '@/lib/types';
 import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
 import { CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
 import { notGoodServiceSummary, RightNowModule } from './RightNowModule';
@@ -276,17 +277,31 @@ export default async function DashboardPage() {
   // happened to return, which visibly differed between two captures minutes
   // apart. Worst first, then alphabetical: a dashboard should lead with
   // what needs attention, and must not reshuffle under the user.
-  // Every journey that could be under way or still to come today is read in
-  // full (`homeJourneyDetailIds`): the list row has no departure or arrival
-  // time. Started here, awaited below, so these reads overlap the pinned
-  // station and tram reads. A failed read leaves that journey to its list
-  // row (`splitHomeJourneys`).
+  // Every journey, and every train tracked on its own, that could be under
+  // way or still to come today is read in full (`homeDetailReads`, one cap
+  // for both): a list row has no live departure or arrival time. A train
+  // tracked on its own is a one-leg journey: it is the current journey
+  // while under way, and among the upcoming ones while still to come. A
+  // train that is a leg of one of the caller's journeys is shown through
+  // that journey, the same rule /journeys applies (`splitJourneyTrains`).
+  // null (not logged in, or the fetch failed) is no trains. Started here,
+  // awaited below, so these reads overlap the pinned station and tram
+  // reads. A failed read leaves that journey or train to its list row
+  // (`splitHomeJourneys`).
   const now = new Date();
   const journeyItems = myJourneys ?? [];
+  const { standalone: standaloneTrains } = splitJourneyTrains(myTrackedTrains ?? [], myJourneys);
+  const reads = homeDetailReads(journeyItems, standaloneTrains, londonCalendarDay(now.toISOString()));
   const journeyDetailsPromise = Promise.all(
-    homeJourneyDetailIds(journeyItems, londonCalendarDay(now.toISOString())).map(async (id) => {
+    reads.journeyIds.map(async (id) => {
       const detail = await getJourney(id).catch(() => null);
       return detail === null ? null : ([id, detail] as const);
+    }),
+  );
+  const trainStatesPromise = Promise.all(
+    reads.trainIds.map(async (id) => {
+      const state = await getTrackedTrainById(id).catch(() => null);
+      return state === null ? null : ([id, state] as const);
     }),
   );
 
@@ -367,14 +382,16 @@ export default async function DashboardPage() {
   const journeyDetails = new Map<number, JourneyDetail>(
     (await journeyDetailsPromise).filter((entry): entry is readonly [number, JourneyDetail] => entry !== null),
   );
-  // A train tracked on its own is a one-leg journey: it is the current
-  // journey while under way, and among the upcoming ones while still to
-  // come, ordered in with them by departure. A train that is a leg of one
-  // of the caller's journeys is shown through that journey, the same rule
-  // /journeys applies (`splitJourneyTrains`). null (not logged in, or the
-  // fetch failed) is no trains.
-  const { standalone: standaloneTrains } = splitJourneyTrains(myTrackedTrains ?? [], myJourneys);
-  const { current, alsoInProgress, upcoming } = splitHomeJourneys(journeyItems, journeyDetails, standaloneTrains, now);
+  const trainStates = new Map<number, TrackedTrainState>(
+    (await trainStatesPromise).filter((entry): entry is readonly [number, TrackedTrainState] => entry !== null),
+  );
+  const { current, alsoInProgress, upcoming } = splitHomeJourneys(
+    journeyItems,
+    journeyDetails,
+    standaloneTrains,
+    now,
+    trainStates,
+  );
 
   // Custom lines a fellow group member shared with the caller. One row per
   // line carrying every group it reached them through (the wire shape is

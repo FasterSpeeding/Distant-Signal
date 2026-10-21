@@ -13,7 +13,15 @@ import type {
   SharedGroupCustomLine,
 } from '@/lib/types';
 import { MINOR_DELAYS, NETWORK as TRAM_NETWORK } from '@/test/transitFixtures';
-import { journeyDetail, journeyListItem, loneTrain, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
+import {
+  journeyDetail,
+  journeyListItem,
+  loneTrain,
+  stop,
+  trainLeg,
+  trainState,
+  untrackedLeg,
+} from '@/test/journeyFixtures';
 
 vi.mock('@/lib/api');
 // `withStaleFallback` (lib/liveDataCache.ts) reads the session cookie via
@@ -102,6 +110,7 @@ beforeEach(() => {
   // journeys: no journeys, and no detail to read.
   vi.mocked(api.getMyJourneys).mockResolvedValue([]);
   vi.mocked(api.getJourney).mockRejectedValue(new Error('no journey in this test'));
+  vi.mocked(api.getTrackedTrainById).mockRejectedValue(new Error('no train in this test'));
 });
 
 describe('DashboardPage', () => {
@@ -1385,13 +1394,15 @@ describe('DashboardPage -- journey sections', () => {
     expect(screen.queryByRole('link', { name: /10 Sep 2026/ })).not.toBeInTheDocument();
   });
 
-  it('makes a lone train under way the current journey, with the Track list badge and its train page link', async () => {
+  it('makes a lone train under way the current journey by its list row when its read fails', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    vi.mocked(api.getTrackedTrainById).mockClear();
     mockJourneys([]);
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
       loneTrain(5, { status: 'en_route', delayMinutes: 12, delayProvisional: true }),
     ]);
     renderWithMantine(await DashboardPage());
+    expect(api.getTrackedTrainById).toHaveBeenCalledWith(5);
     const current = screen.getByRole('region', { name: 'Current journey' });
     const card = within(current).getByRole('link', {
       name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep 2026 · 10:00/,
@@ -1399,9 +1410,64 @@ describe('DashboardPage -- journey sections', () => {
     expect(card).toHaveAttribute('href', '/train/W5/2026-09-17');
     expect(within(card).getByText(/12 min late/)).toBeInTheDocument();
     expect(within(card).getByText('Destination')).toBeInTheDocument();
+    // The list row has no arrival time.
     expect(within(card).getByText('York (YRK)')).toBeInTheDocument();
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
     expect(within(upcoming).getByText('No upcoming journeys.')).toBeInTheDocument();
+  });
+
+  it("reads a lone train in full and shows its arrival on the current card, as a journey's", async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([]);
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([loneTrain(5, { status: 'en_route', delayMinutes: 7 })]);
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trainState('KGX', 'YRK', '2026-09-17T10:30:00Z', '2026-09-17T12:30:00Z', {
+        id: 5,
+        status: 'en_route',
+        delayMinutes: 7,
+        journeyStops: [
+          stop('KGX', {
+            kind: 'Origin',
+            scheduledDeparture: '2026-09-17T10:30:00Z',
+            actualDeparture: '2026-09-17T10:37:00Z',
+          }),
+          stop('YRK', {
+            kind: 'Terminate',
+            scheduledArrival: '2026-09-17T12:30:00Z',
+            estimatedArrival: '2026-09-17T12:37:00Z',
+          }),
+        ],
+      }),
+    );
+    renderWithMantine(await DashboardPage());
+    const card = within(screen.getByRole('region', { name: 'Current journey' })).getByRole('link');
+    expect(within(card).getByText('York (YRK), arrive est. 13:37')).toBeInTheDocument();
+  });
+
+  it('keeps a lone train late leaving out of Current journey until it goes', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([]);
+    // Timetabled 11:50 UK time, now 12:00, expected away 12:15.
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      loneTrain(5, { pinScheduledDeparture: '2026-09-17T10:50:00Z' }),
+    ]);
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trainState('KGX', 'YRK', '2026-09-17T10:50:00Z', '2026-09-17T12:50:00Z', {
+        id: 5,
+        journeyStops: [
+          stop('KGX', {
+            kind: 'Origin',
+            scheduledDeparture: '2026-09-17T10:50:00Z',
+            estimatedDeparture: '2026-09-17T11:15:00Z',
+          }),
+          stop('YRK', { kind: 'Terminate', scheduledArrival: '2026-09-17T12:50:00Z' }),
+        ],
+      }),
+    );
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(upcoming).getByRole('link', { name: /to York/ })).toHaveAttribute('href', '/train/W5/2026-09-17');
   });
 
   it('lists a lone train still to come in Upcoming journeys, ordered in with the journeys by departure', async () => {

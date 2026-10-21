@@ -2,8 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
-import { journeyDetail, journeyListItem, loneTrain, stop, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
-import { MAX_UPCOMING_JOURNEYS, type HomeJourney, type HomeLoneTrain } from '@/lib/homeJourneys';
+import {
+  journeyDetail,
+  journeyListItem,
+  loneTrain,
+  stop,
+  trainLeg,
+  trainState,
+  untrackedLeg,
+} from '@/test/journeyFixtures';
+import { loneTrainLeg, MAX_UPCOMING_JOURNEYS, type HomeJourney, type HomeLoneTrain } from '@/lib/homeJourneys';
 import { trackedTrainRowStatus } from '@/lib/trackedRowStatus';
 import type { JourneyDetail, TrackedTrainListItem } from '@/lib/types';
 import { CurrentJourneyCard, CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
@@ -41,10 +49,40 @@ function journey(id = 7, customName: string | null = null): HomeJourney & { deta
   return { item: journeyListItem(detail), detail, departure: '2026-09-17T09:12:00Z' };
 }
 
-/** A Kings Cross to York train tracked on its own, as the home page gets it. */
+/** A Kings Cross to York train tracked on its own, as the home page gets
+ * it from its list row alone (not read in full). */
 function lone(id: number, overrides: Partial<TrackedTrainListItem> = {}): HomeLoneTrain {
   const train = loneTrain(id, overrides);
-  return { train, status: trackedTrainRowStatus(train, '2026-09-17'), departure: train.pinScheduledDeparture };
+  return {
+    train,
+    status: trackedTrainRowStatus(train, '2026-09-17'),
+    departure: train.pinScheduledDeparture,
+    leg: null,
+  };
+}
+
+/** The same train read in full (`GET /Train/{id}`): left 10:05, due into
+ * York 12:00 UK time and expected 12:07. */
+function loneRead(id: number): HomeLoneTrain {
+  const entry = lone(id, { status: 'en_route', delayMinutes: 7 });
+  const state = trainState('KGX', 'YRK', '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', {
+    id,
+    status: 'en_route',
+    delayMinutes: 7,
+    journeyStops: [
+      stop('KGX', {
+        kind: 'Origin',
+        scheduledDeparture: '2026-09-17T09:00:00Z',
+        actualDeparture: '2026-09-17T09:05:00Z',
+      }),
+      stop('YRK', {
+        kind: 'Terminate',
+        scheduledArrival: '2026-09-17T11:00:00Z',
+        estimatedArrival: '2026-09-17T11:07:00Z',
+      }),
+    ],
+  });
+  return { ...entry, departure: '2026-09-17T09:05:00Z', leg: loneTrainLeg(entry.train, state) };
 }
 
 describe('CurrentJourneyCard', () => {
@@ -148,6 +186,31 @@ describe('CurrentJourneySection', () => {
       <CurrentJourneySection current={journey()} alsoInProgress={[]} now={new Date('2026-09-17T10:00:00Z')} />,
     );
     expect(screen.queryByRole('heading', { name: 'Also in progress' })).not.toBeInTheDocument();
+  });
+
+  it('gives a lone train read in full its destination and arrival, as a journey leg', () => {
+    renderWithMantine(
+      <CurrentJourneySection current={loneRead(5)} alsoInProgress={[]} now={new Date('2026-09-17T10:00:00Z')} />,
+    );
+    const card = within(screen.getByRole('region', { name: 'Current journey' })).getByRole('link', {
+      name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep/,
+    });
+    expect(within(card).getByText('Destination')).toBeInTheDocument();
+    expect(within(card).getByText('York (YRK), arrive est. 12:07')).toBeInTheDocument();
+    expect(within(card).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
+  });
+
+  it('gives a lone train known only by its list row its destination, without an arrival', () => {
+    renderWithMantine(
+      <CurrentJourneySection
+        current={lone(5, { status: 'en_route' })}
+        alsoInProgress={[]}
+        now={new Date('2026-09-17T10:00:00Z')}
+      />,
+    );
+    const card = within(screen.getByRole('region', { name: 'Current journey' })).getByRole('link');
+    expect(within(card).getByText('York (YRK)')).toBeInTheDocument();
+    expect(within(card).queryByText(/arrive/)).not.toBeInTheDocument();
   });
 
   it('draws a lone train under way as the current journey, linking to its train page', () => {

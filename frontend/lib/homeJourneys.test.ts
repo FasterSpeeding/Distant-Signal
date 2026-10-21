@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   currentLeg,
-  homeJourneyDetailIds,
+  homeDetailReads,
   homeJourneyStatusGroup,
   isLoneTrain,
   TRAVEL_ARRIVAL_GRACE_MINUTES,
@@ -12,7 +12,15 @@ import {
   type HomeEntry,
 } from './homeJourneys';
 import { trackedTrainRowStatus } from './trackedRowStatus';
-import { journeyDetail, journeyListItem, loneTrain, stop, trainLeg, untrackedLeg } from '@/test/journeyFixtures';
+import {
+  journeyDetail,
+  journeyListItem,
+  loneTrain,
+  stop,
+  trainLeg,
+  trainState,
+  untrackedLeg,
+} from '@/test/journeyFixtures';
 import type { JourneyDetail } from './types';
 
 const KGX: [string, string] = ['KGX', 'London Kings Cross'];
@@ -28,6 +36,11 @@ function twoLegs(id = 1, legState: Parameters<typeof trainLeg>[5] = {}): Journey
 }
 
 const at = (iso: string) => new Date(iso);
+
+/** "j1" for journey 1, "t5" for lone train 5, so an order mixing the two
+ * reads plainly. */
+const ids = (entries: readonly HomeEntry[]) =>
+  entries.map((entry) => (isLoneTrain(entry) ? `t${entry.train.id}` : `j${entry.item.id}`));
 
 describe('journeyPhase', () => {
   it('is upcoming before the first departure, in progress between, past after the last arrival', () => {
@@ -183,7 +196,7 @@ describe('currentLeg', () => {
   });
 });
 
-describe('homeJourneyDetailIds', () => {
+describe('homeDetailReads', () => {
   it('reads journeys starting today, and yesterday ones still on yesterday or later, newest travel first', () => {
     const today = journeyListItem(twoLegs(1));
     const tomorrow = journeyListItem(twoLegs(2), undefined, {
@@ -198,24 +211,121 @@ describe('homeJourneyDetailIds', () => {
       firstServiceDate: '2026-09-10',
       serviceDate: '2026-09-10',
     });
-    expect(homeJourneyDetailIds([lastWeek, tomorrow, overnight, today], '2026-09-17')).toEqual([3, 1]);
+    expect(homeDetailReads([lastWeek, tomorrow, overnight, today], [], '2026-09-17')).toEqual({
+      journeyIds: [3, 1],
+      trainIds: [],
+    });
+  });
+
+  it("reads lone trains dated today or yesterday that aren't travelled", () => {
+    const trains = [
+      loneTrain(5),
+      loneTrain(6, { serviceDate: '2026-09-16', pinScheduledDeparture: '2026-09-16T22:00:00Z' }),
+      loneTrain(7, { serviceDate: '2026-09-18', pinScheduledDeparture: '2026-09-18T09:00:00Z' }),
+      loneTrain(8, { travelled: true }),
+      loneTrain(9, { serviceDate: '2026-09-10', pinScheduledDeparture: '2026-09-10T09:00:00Z' }),
+    ];
+    expect(homeDetailReads([], trains, '2026-09-17')).toEqual({ journeyIds: [], trainIds: [5, 6] });
+  });
+
+  it('shares one cap between journeys and trains, keeping the soonest: today first, then by departure', () => {
+    const journeys = Array.from({ length: MAX_HOME_JOURNEY_DETAILS - 2 }, (_, index) =>
+      journeyListItem(twoLegs(index + 1)),
+    );
+    const trains = [
+      loneTrain(50, { pinScheduledDeparture: '2026-09-17T18:00:00Z' }),
+      loneTrain(51, { pinScheduledDeparture: '2026-09-17T08:00:00Z' }),
+      loneTrain(52, { pinScheduledDeparture: '2026-09-17T12:00:00Z' }),
+      loneTrain(53, { serviceDate: '2026-09-16', pinScheduledDeparture: '2026-09-16T23:00:00Z' }),
+    ];
+    const reads = homeDetailReads(journeys, trains, '2026-09-17');
+    expect(reads.journeyIds).toHaveLength(MAX_HOME_JOURNEY_DETAILS - 2);
+    expect(reads.trainIds).toEqual([51, 52]);
   });
 
   it('caps the reads', () => {
     const many = Array.from({ length: MAX_HOME_JOURNEY_DETAILS + 3 }, (_, index) =>
       journeyListItem(twoLegs(index + 1)),
     );
-    expect(homeJourneyDetailIds(many, '2026-09-17')).toHaveLength(MAX_HOME_JOURNEY_DETAILS);
+    expect(homeDetailReads(many, [loneTrain(50)], '2026-09-17').journeyIds).toHaveLength(MAX_HOME_JOURNEY_DETAILS);
+  });
+});
+
+describe('a lone train read in full', () => {
+  /** Kings Cross 10:00 to York 12:00 UK time, as `GET /Train/{id}` gives it. */
+  function state(overrides: Parameters<typeof trainState>[4] = {}) {
+    return trainState('KGX', 'YRK', '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', { id: 5, ...overrides });
+  }
+  const split = (states: Map<number, ReturnType<typeof state>>, now: Date, train = loneTrain(5)) =>
+    splitHomeJourneys([], new Map(), [train], now, states);
+  const lateLeaving = state({
+    journeyStops: [
+      stop('KGX', {
+        kind: 'Origin',
+        scheduledDeparture: '2026-09-17T09:00:00Z',
+        estimatedDeparture: '2026-09-17T09:20:00Z',
+      }),
+      stop('YRK', { kind: 'Terminate', scheduledArrival: '2026-09-17T11:00:00Z' }),
+    ],
+  });
+
+  it('is not current while it is late leaving, though its timetabled departure has passed', () => {
+    const result = split(new Map([[5, lateLeaving]]), at('2026-09-17T09:10:00Z'));
+    expect(result.current).toBeNull();
+    expect(result.upcoming[0]?.departure).toBe('2026-09-17T09:20:00Z');
+    // Once it has gone, it is.
+    expect(split(new Map([[5, lateLeaving]]), at('2026-09-17T09:21:00Z')).current).not.toBeNull();
+  });
+
+  it('ends as a journey leg does: the actual arrival, else timetable plus delay, else plus the grace', () => {
+    const quiet = new Map([[5, state()]]);
+    expect(split(quiet, at('2026-09-17T11:29:00Z')).current).not.toBeNull();
+    expect(split(quiet, at('2026-09-17T11:31:00Z')).current).toBeNull();
+    const late = new Map([[5, state({ status: 'en_route', delayMinutes: 40 })]]);
+    expect(split(late, at('2026-09-17T11:39:00Z')).current).not.toBeNull();
+    expect(split(late, at('2026-09-17T11:41:00Z')).current).toBeNull();
+    const arrived = new Map([
+      [
+        5,
+        state({
+          status: 'en_route',
+          delayMinutes: 40,
+          journeyStops: [
+            stop('KGX', { kind: 'Origin', scheduledDeparture: '2026-09-17T09:00:00Z' }),
+            stop('YRK', {
+              kind: 'Terminate',
+              scheduledArrival: '2026-09-17T11:00:00Z',
+              actualArrival: '2026-09-17T10:58:00Z',
+            }),
+          ],
+        }),
+      ],
+    ]);
+    expect(split(arrived, at('2026-09-17T10:59:00Z')).current).toBeNull();
+  });
+
+  it('wins current from a lone train known only by its list row, its arrival being known', () => {
+    const result = splitHomeJourneys(
+      [],
+      new Map(),
+      [loneTrain(5), loneTrain(6, { status: 'en_route', pinScheduledDeparture: '2026-09-17T09:30:00Z' })],
+      at('2026-09-17T10:00:00Z'),
+      new Map([[5, state()]]),
+    );
+    expect(ids(result.current ? [result.current] : [])).toEqual(['t5']);
+    expect(ids(result.alsoInProgress)).toEqual(['t6']);
+  });
+
+  it('falls back to its list row when its read failed (no state)', () => {
+    // The timetabled departure has passed: by the row alone it is under way.
+    const result = split(new Map(), at('2026-09-17T09:10:00Z'));
+    const current = result.current;
+    expect(current !== null && isLoneTrain(current) ? current.leg : 'none').toBeNull();
   });
 });
 
 describe('splitHomeJourneys', () => {
   const now = at('2026-09-17T10:00:00Z');
-
-  /** "j1" for journey 1, "t5" for lone train 5, so an order mixing the two
-   * reads plainly. */
-  const ids = (entries: readonly HomeEntry[]) =>
-    entries.map((entry) => (isLoneTrain(entry) ? `t${entry.train.id}` : `j${entry.item.id}`));
 
   it('makes the soonest-arriving journey under way the current one, and lists the others', () => {
     const later = twoLegs(1);

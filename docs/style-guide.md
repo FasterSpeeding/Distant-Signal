@@ -419,12 +419,17 @@ used, rather than as a literal in a component.
   an untracked leg ends at its planned arrival (`legEndMs`).
   There is no "Tracked trains" list: a train tracked on its own (no
   journey) is a one-leg journey, current while under way and upcoming
-  while still to come, ordered in with the journeys by departure. It is
-  over by the api's `travelled` (the same arrival rule), or once
-  `completed`, or cancelled and due to have left. Its card and row carry
-  its name (route, date and time by default), the Track list's badge
-  (`TrackedRowStatusBadge`) and link to its train page; the card's facts
-  are "Now" (route and departure) and "Destination". A journey's trains
+  while still to come, ordered in with the journeys by departure. One
+  dated today or yesterday is read in full (`GET /Train/{id}`, under the
+  journeys' read cap) and timed exactly as a journey's train leg: under
+  way from its live or actual departure, over by `legEndMs`. Otherwise
+  (another day, a failed read) its list row decides: over by the api's
+  `travelled` (the same arrival rule), or once `completed`, or cancelled
+  and due to have left. Its card and row carry its name (route, date and
+  time by default), the Track list's badge (`TrackedRowStatusBadge`) and
+  link to its train page; the card's facts are "Now" (route and
+  departure) and "Destination" with the arrival when read in full ("York
+  (YRK), arrive est. 12:07"). A journey's trains
   are shown through the journey. Trains shared into a group are left to
   the Journeys page and the group's page: they are not the caller's own
   travel.

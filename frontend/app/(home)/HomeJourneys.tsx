@@ -195,15 +195,27 @@ function loneTrainDefaultName(entry: HomeLoneTrain): string {
   return trackedTrainDisplayName({ ...entry.train, customName: null });
 }
 
-/** A lone train under way, drawn like `CurrentJourneyCard`: its name and
- * status badge, then the train it is (route and departure) and where it
- * goes. Its list row carries no arrival time, so there is no arrival
- * fact. The whole card links to the train's page. */
+/** A lone train under way, drawn like `CurrentJourneyCard` for a one-leg
+ * journey: its name and status badge, then the train it is (route and
+ * timetabled departure) and its destination with the arrival ("York
+ * (YRK), arrive est. 12:12"). Read in full (`entry.leg`), both facts come
+ * from the same helpers as a journey's leg; otherwise from the list row,
+ * which has no arrival time. The whole card links to the train's page. */
 export function CurrentTrainCard({ entry }: { entry: HomeLoneTrain }) {
-  const { train } = entry;
+  const { train, leg } = entry;
   const route = trackedTrainRouteLabel(train);
-  const nowText = entry.departure ? `${route} · ${formatTime(entry.departure)}` : route;
-  const destination = train.pinDestinationCrs ? stationLabel(train.pinDestinationCrs, train.pinDestinationName) : null;
+  const nowText =
+    leg !== null
+      ? legNowText(leg)
+      : train.pinScheduledDeparture
+        ? `${route} · ${formatTime(train.pinScheduledDeparture)}`
+        : route;
+  const destination = [
+    train.pinDestinationCrs ? stationLabel(train.pinDestinationCrs, train.pinDestinationName) : null,
+    leg === null ? null : legArrivalText(leg),
+  ]
+    .filter((part): part is string => part !== null)
+    .join(', ');
   return (
     <Box className="currentJourneyCard">
       <CardLink href={trackedTrainHref(train)} padding="lg">
@@ -229,7 +241,7 @@ export function CurrentTrainCard({ entry }: { entry: HomeLoneTrain }) {
               <dt>Now</dt>
               <dd>{nowText}</dd>
             </div>
-            {destination !== null && (
+            {destination !== '' && (
               <div>
                 <dt>Destination</dt>
                 <dd>{destination}</dd>
