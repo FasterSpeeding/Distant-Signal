@@ -26,9 +26,10 @@ import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantB
 import { AddJourneyToGroupButton } from '@/components/AddJourneyToGroupButton';
 import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton';
 import { StatusBadge } from '@/components/StatusBadge';
-import { SharedJourneyStatusBadge } from '@/components/SharedJourneyStatusBadge';
 import { StatusRow } from '@/components/StatusRow';
-import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
+import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
+import { londonDayKey } from '@/lib/dateFormat';
+import { groupJourneyRowStatus, trackedTrainRowStatus } from '@/lib/trackedRowStatus';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
@@ -449,8 +450,10 @@ function SharedTrainRow({
             that disagreed with every other status badge in the app.
             Same shared component `/` and `/track/mine` render off, so
             this card and those two pages can never drift on wording
-            again (review §2.9). */}
-        <TrackedTrainStatusBadge train={train} />
+            again (review §2.9). Now the Track list's one status badge
+            (DS-114), so a shared train and the owner's own row read the
+            same. */}
+        <TrackedRowStatusBadge status={trackedTrainRowStatus(train, londonDayKey(new Date()))} />
         {canRemove && <RemoveGroupTrainButton groupId={groupId} trainSubscriptionId={train.trainSubscriptionId} />}
       </Group>
     </Card>
@@ -509,9 +512,10 @@ function SharedJourneyRow({
       />
       {/* Under the title, as on `SharedTrainRow`. An untracked-only
           journey, one still needing its train, or a picked train with its
-          phase and mode: the owner's words. */}
+          phase and mode: the owner's words, by the Track list's rule
+          (`groupJourneyRowStatus`). */}
       <Group justify="space-between" gap="xs" mt="xs">
-        <SharedJourneyStatusBadge journey={journey} />
+        <TrackedRowStatusBadge status={groupJourneyRowStatus(journey, londonDayKey(new Date()))} />
         {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
       </Group>
     </Card>

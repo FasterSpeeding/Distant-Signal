@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { journeyRowStatus, trackedTrainRowStatus, type TrackedTrainRowInput } from './trackedRowStatus';
-import type { JourneyListItem } from './types';
+import {
+  groupJourneyRowStatus,
+  journeyRowStatus,
+  trackedTrainRowStatus,
+  type TrackedTrainRowInput,
+} from './trackedRowStatus';
+import type { GroupJourney, JourneyListItem } from './types';
 
 const TODAY = '2026-10-21';
 const PAST = '2026-10-20';
@@ -135,6 +140,61 @@ describe('tracked row status: a lone train and a journey read the same', () => {
     const past = { status: null, delayMinutes: null, trackingPhase: 'awaitingReport' as const, serviceDate: PAST };
     expect(trackedTrainRowStatus(train(past), TODAY)).toMatchObject({ kind: 'noReport', finished: true });
     expect(journeyRowStatus(journey(past), TODAY)).toMatchObject({ kind: 'noReport', finished: true });
+  });
+
+  it('a past day whose reports stopped short of arriving reads "no report", without its stale forecast', () => {
+    const stuck = { status: 'en_route', delayMinutes: 4, delayProvisional: true, serviceDate: PAST };
+    const expected = { kind: 'noReport', finished: true, delayMinutes: null, delayProvisional: false };
+    expect(trackedTrainRowStatus(train(stuck), TODAY)).toMatchObject(expected);
+    expect(journeyRowStatus(journey(stuck), TODAY)).toMatchObject(expected);
+  });
+});
+
+describe('groupJourneyRowStatus: a group row says what the owner sees', () => {
+  function shared(overrides: Partial<GroupJourney> = {}): GroupJourney {
+    return {
+      journeyId: 1,
+      customName: null,
+      legCount: 2,
+      pinOriginCrs: 'KGX',
+      pinDestinationCrs: 'EDB',
+      pinOriginName: null,
+      pinDestinationName: null,
+      pinScheduledDeparture: null,
+      serviceDate: TODAY,
+      resolutionStatus: 'resolved',
+      trainUid: 'C1',
+      status: 'en_route',
+      delayMinutes: 6,
+      addedBy: 'user-2',
+      addedByName: null,
+      addedByTag: null,
+      ...overrides,
+    };
+  }
+
+  it('a running train reads like a lone train', () => {
+    expect(groupJourneyRowStatus(shared(), TODAY)).toEqual(
+      trackedTrainRowStatus(train({ status: 'en_route', delayMinutes: 6, trackingPhase: null }), TODAY),
+    );
+  });
+
+  it('a leg with no train picked asks for one', () => {
+    expect(groupJourneyRowStatus(shared({ resolutionStatus: null, status: null }), TODAY)).toMatchObject({
+      kind: 'unmatched',
+    });
+  });
+
+  it('an untracked-only journey shows its clock state, and completed once done', () => {
+    expect(
+      groupJourneyRowStatus(
+        shared({ kind: 'untracked', untrackedStatus: 'inProgress', resolutionStatus: null }),
+        TODAY,
+      ),
+    ).toMatchObject({ kind: 'untrackedInProgress', finished: false });
+    expect(
+      groupJourneyRowStatus(shared({ kind: 'untracked', untrackedStatus: 'done', resolutionStatus: null }), TODAY),
+    ).toMatchObject({ kind: 'completed', finished: true });
   });
 });
 

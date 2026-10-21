@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { expectShrinkGuarded } from '@/test/shrinkGuard';
@@ -43,6 +43,14 @@ beforeEach(() => {
   vi.mocked(getGroupCustomLines).mockResolvedValue([]);
   vi.mocked(getLineStatus).mockResolvedValue([]);
   vi.mocked(getGroupJourneys).mockResolvedValue([]);
+  // Rows from a past London day read as finished; pin "today" to the
+  // fixtures' own service date so they stay active.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-11T12:00:00Z'));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 vi.mock('next/navigation', () => ({
@@ -139,9 +147,9 @@ describe('GroupDetailPage', () => {
     expect(screen.getByText(/Shared by Sam/)).toBeInTheDocument();
     // Review §2.9: this card used to print the raw `status` enum token
     // ("en_route") verbatim in the subtitle. It now renders through the
-    // same `TrackedTrainStatusBadge` `/` and `/track/mine` use, so the
-    // word here must match theirs -- and the raw token must never appear.
-    expect(screen.getByText('En route')).toBeInTheDocument();
+    // Track list's `TrackedRowStatusBadge`: the delay badge alone, as on
+    // the owner's own row -- and the raw token must never appear.
+    expect(screen.queryByText('En route')).not.toBeInTheDocument();
     expect(screen.getByText('5 min late')).toBeInTheDocument();
     expect(screen.queryByText('en_route')).not.toBeInTheDocument();
   });
@@ -902,9 +910,9 @@ describe('GroupDetailPage', () => {
         '/journeys/501',
       );
       expect(screen.getByText('Shared by Sam')).toBeInTheDocument();
-      // Same shared `TrackedTrainStatusBadge` `/` and `/track/mine` use --
-      // the raw `status` enum token must never leak into the page.
-      expect(screen.getByText('En route')).toBeInTheDocument();
+      // The Track list's `TrackedRowStatusBadge`: the delay badge alone,
+      // and the raw `status` enum token must never leak into the page.
+      expect(screen.queryByText('En route')).not.toBeInTheDocument();
       expect(screen.getByText('5 min late')).toBeInTheDocument();
       expect(screen.queryByText('en_route')).not.toBeInTheDocument();
     });
@@ -1067,7 +1075,7 @@ describe('GroupDetailPage', () => {
       await renderAsViewer(SHARER, 'member');
 
       // On their own line under the title, as on the shared train rows.
-      expect(screen.getByText('En route').closest('[data-status-row]')).toBeNull();
+      expect(screen.getByText('5 min late').closest('[data-status-row]')).toBeNull();
       expect(screen.getByRole('button', { name: 'Remove from group' }).closest('[data-status-row]')).toBeNull();
     });
   });
