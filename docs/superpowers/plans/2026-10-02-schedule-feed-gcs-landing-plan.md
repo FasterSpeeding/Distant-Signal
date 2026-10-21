@@ -17,8 +17,10 @@ done (DS-92): `crates/schedule-ingest/src/bucket_e2e_tests.rs` runs the
 reader against fake-gcs-server through a tampering proxy, in CI's
 `rust-db-test` job. 3.3 is done (DS-89) in ds-store, the api's data
 access since plan 1A: migration `20261021090000_schedule_delivery_source.sql`,
-written by both lanes through schedule-ingest's direct sink. Still open:
-phase 5 (the audit-log tailer) and phase 6 (Pub/Sub).
+written by both lanes through schedule-ingest's direct sink. 5.1 is done
+(DS-90, `bucket_audit.rs`; a lookback window instead of a single cursor,
+see the spec's status). Still open: 5.2 (Ranma's Alloy stage and Loki
+rules) and phase 6 (Pub/Sub).
 
 ## Decisions this plan builds on (user, 2026-10-02)
 

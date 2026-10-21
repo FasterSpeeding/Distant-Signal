@@ -346,7 +346,17 @@ struct ListPage {
     #[serde(default)]
     items: Vec<RawObject>,
     #[serde(default)]
+    prefixes: Vec<String>,
+    #[serde(default)]
     next_page_token: Option<String>,
+}
+
+/// One listing: the objects, and with a delimiter the "folders" below the
+/// prefix (`prefixes`).
+#[derive(Debug, Default)]
+pub(crate) struct Listing {
+    pub objects: Vec<ObjectMeta>,
+    pub prefixes: Vec<String>,
 }
 
 impl RawObject {
@@ -473,25 +483,42 @@ impl GcsClient {
     /// Every object at the bucket root (`delimiter=/`, so nested names are
     /// never seen), following `nextPageToken`.
     pub(crate) async fn list_root(&self) -> Result<Vec<ObjectMeta>, GcsError> {
+        Ok(self.list("", true, None).await?.objects)
+    }
+
+    /// Every object under `prefix` (only one level, and the folders below
+    /// it as `prefixes`, with `delimiter`), from `start_offset` on (names
+    /// sorting at or after it), following `nextPageToken`.
+    pub(crate) async fn list(
+        &self,
+        prefix: &str,
+        delimiter: bool,
+        start_offset: Option<&str>,
+    ) -> Result<Listing, GcsError> {
         let url = format!(
             "{}/storage/v1/b/{}/o",
             self.base,
             encode_segment(&self.bucket)
         );
-        let mut objects = Vec::new();
+        let mut listing = Listing::default();
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_LIST_PAGES {
             let token = page_token.clone();
             let response = self
                 .send("list", |http| {
                     let mut request = http.get(&url).timeout(CALL_TIMEOUT).query(&[
-                        ("delimiter", "/"),
-                        ("prefix", ""),
+                        ("prefix", prefix),
                         (
                             "fields",
-                            "items(name,size,generation,crc32c,md5Hash,timeCreated),nextPageToken",
+                            "items(name,size,generation,crc32c,md5Hash,timeCreated),prefixes,nextPageToken",
                         ),
                     ]);
+                    if delimiter {
+                        request = request.query(&[("delimiter", "/")]);
+                    }
+                    if let Some(start) = start_offset {
+                        request = request.query(&[("startOffset", start)]);
+                    }
                     if let Some(token) = &token {
                         request = request.query(&[("pageToken", token)]);
                     }
@@ -507,14 +534,15 @@ impl GcsClient {
                 .await
                 .map_err(|err| GcsError::Failed(format!("list: {}", without_url(&err))))?;
             for raw in page.items {
-                objects.push(
+                listing.objects.push(
                     raw.parse()
                         .map_err(|why| GcsError::Failed(format!("list: {why}")))?,
                 );
             }
+            listing.prefixes.extend(page.prefixes);
             match page.next_page_token.filter(|t| !t.is_empty()) {
                 Some(next) => page_token = Some(next),
-                None => return Ok(objects),
+                None => return Ok(listing),
             }
         }
         Err(GcsError::Failed(format!(

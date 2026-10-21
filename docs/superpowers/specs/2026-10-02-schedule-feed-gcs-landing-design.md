@@ -80,8 +80,14 @@ sketch, and why:
   (`sftp` or `bucket`, CHECKed), written by both lanes through
   schedule-ingest's direct sink (`ds_store`), not an api route: the api's
   ingest routes were retired in ingest phase 5.
-- **Not built:** the audit-log tailer (phase 5; `auditLogs.ship` logs a
-  warning) and Pub/Sub (phase 6). `expectedKeys` now includes
+- **The audit-log tailer** (phase 5, §8; DS-90) is
+  `crates/schedule-ingest/src/bucket_audit.rs`. No single cursor: a sink
+  writes a late shard of an earlier hour after later hours, so it lists
+  every log's folders from two days back (`startOffset`) and keeps the
+  names it shipped within that window in `sources/bucket/.audit-shipped`.
+  Lines carry `resource`, `log` and `insert_id` besides §8's fields;
+  `status` is the `google.rpc.Code` name.
+- **Not built:** Pub/Sub (phase 6). `expectedKeys` now includes
   `NLC*.xml.gz`.
 
 The remaining switch-on steps are in

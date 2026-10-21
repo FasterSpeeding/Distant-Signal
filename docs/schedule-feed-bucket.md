@@ -18,9 +18,9 @@ never in this repository.
 **Status (2026-10-20, DS-22):** the chart side and the schedule-ingest
 bucket source (the Rust reader) are both built, off by default
 (`scheduleFeed.bucket.enabled: false`). Nothing is provisioned yet: the
-remaining steps are in [Switching it on](#switching-it-on). Not built: the
-audit-log shipper (`bucket.auditLogs.ship` only logs a warning) and Pub/Sub
-notifications.
+remaining steps are in [Switching it on](#switching-it-on). The audit-log
+shipper (`bucket.auditLogs.ship`, [below](#audit-log)) is built too, off by
+default. Not built: Pub/Sub notifications.
 
 ## Switching it on
 
@@ -57,7 +57,9 @@ email lives in Ranma-Config, never here.
    ```
 
    (Key mode instead: `auth: key` and `existingSecret` naming the sealed
-   reader key.) The first poll logs `bucket source started`; an empty
+   reader key.) Add `auditLogs: {ship: true, bucket: <the audit-log
+   bucket>}` under `bucket` to ship its audit log (below). The first poll
+   logs `bucket source started`; an empty
    bucket is fine. `DistantSignalScheduleBucketAccessRevoked` firing means
    step 1's sign-in is not right yet; SFTP carries on regardless.
 4. **Verify both** for a week, as in [Adoption](#adoption-from-dss-side).
@@ -100,8 +102,9 @@ resources `READY`. Then:
 
 1. **Turn the source on with SFTP still on**: `scheduleFeed.bucket.enabled:
    true`, `scheduleFeed.bucket.name`, and the credential (keyless, or
-   `scheduleFeed.bucket.existingSecret` naming the sealed reader key). The
-   audit-log shipper (below) is not built yet.
+   `scheduleFeed.bucket.existingSecret` naming the sealed reader key), and
+   `scheduleFeed.bucket.auditLogs.ship: true` with the audit-log bucket
+   (below).
 2. **Ask RDM to add the bucket** as a destination for the timetable and
    CORPUS subscriptions, in addition to SFTP.
 3. **Verify both for at least 7 daily deliveries and one CORPUS**: each
@@ -322,13 +325,38 @@ key looks the same from DS (`AccessRevoked`); check the Secret exists first.
 
 The bucket's Cloud Audit Logs (Data Access on, so every object read, write
 and delete is logged with the caller's principal and IP) are sunk into a
-private audit-log bucket. **Not built yet** (the GCS spec's phase 5): today
-`scheduleFeed.bucket.auditLogs.ship` only makes schedule-ingest log a
-warning at start. Once built, with it on, schedule-ingest reads that bucket
-with the same credential every
-`auditLogs.pollIntervalSecs` and writes one JSON line per entry to stdout,
-target `schedule_ingest::bucket_access` (`principal`, `caller_ip`,
-`method`, `object`, `status`, `time`).
+private audit-log bucket by Ranma's Logging sink, as hourly files
+`cloudaudit.googleapis.com/<log>/YYYY/MM/DD/<hour>_S<n>.json`. With
+`scheduleFeed.bucket.auditLogs.ship` on (and `auditLogs.bucket` naming that
+bucket), schedule-ingest (`crates/schedule-ingest/src/bucket_audit.rs`)
+lists it every `auditLogs.pollIntervalSecs` with the reader's own
+credential, downloads each new file (CRC32C checked, at most 64 MiB) and
+writes one JSON line per entry to stdout, target
+`schedule_ingest::bucket_access`, message `bucket access`:
+
+| Field | From the entry |
+| --- | --- |
+| `principal` | `protoPayload.authenticationInfo.principalEmail` |
+| `caller_ip` | `protoPayload.requestMetadata.callerIp` |
+| `method` | `protoPayload.methodName` (`storage.objects.get`, `.create`, `.delete`, `storage.setIamPermissions`, ...) |
+| `object` | the object's name, when `resourceName` is an object (absent for a bucket-level call) |
+| `resource` | `protoPayload.resourceName`, in full |
+| `status` | `OK`, or the `google.rpc.Code` name (`PERMISSION_DENIED`, `NOT_FOUND`, ...) |
+| `time` | the entry's `timestamp` |
+| `log` | `activity` (Admin Activity) or `data_access` |
+| `insert_id` | the entry's `insertId`, unique per entry |
+
+Every folder from two days back is listed, so a late shard of an earlier
+hour is still shipped; each file is shipped once, recorded in
+`/data/schedule-feed/sources/bucket/.audit-shipped`, so a restart ships
+nothing twice (a crash between a file's lines and that record ships the
+file again: `insert_id` tells copies apart). A first start ships the last
+two days. A refused listing (the reader has no `objectViewer` on the
+audit-log bucket) is logged once and retried at `maxBackoffSecs`; nothing
+here affects the reader or SFTP. Metrics:
+`distant_signal_schedule_feed_bucket_audit_lines_total` and
+`..._bucket_audit_errors_total{kind}` (`auth`, `list`, `get`, `verify`,
+`parse`).
 
 Every bucket call, as a table:
 
@@ -350,7 +378,7 @@ Refused calls:
 
 ```logql
 {namespace="distant-signal", container="ingest"} |= `schedule_ingest::bucket_access`
-  | json status | status =~ "PERMISSION_DENIED|403|401"
+  | json status | status =~ "PERMISSION_DENIED|UNAUTHENTICATED"
 ```
 
 Once Alloy tags these lines, `{audit="bucket-delivery"}` is the cheaper

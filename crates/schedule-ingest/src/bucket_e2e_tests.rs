@@ -240,7 +240,14 @@ async fn handle(
     if uri.path() == list_path && code.is_success() {
         let mut page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let tamper = proxy.tamper();
-        for item in page["items"].as_array_mut().into_iter().flatten() {
+        // `get_mut`, not indexing: indexing would add `"items": null` to a
+        // page without objects.
+        for item in page
+            .get_mut("items")
+            .and_then(serde_json::Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
             let name = item["name"].as_str().unwrap_or_default().to_string();
             for (field, value) in tamper.listing.get(&name).into_iter().flatten() {
                 let item = item.as_object_mut().unwrap();
@@ -812,4 +819,126 @@ async fn a_delivery_through_both_sources_is_ingested_once() {
         assert_eq!(sink.feed_records().len(), 1);
         assert_eq!(f.proxy.all_gets(), 1);
     }
+}
+
+/// One Cloud Audit Logs entry for a Cloud Storage call by the reader.
+fn audit_entry(method: &str, at: &str) -> String {
+    serde_json::json!({
+        "insertId": format!("{method}-{at}"),
+        "protoPayload": {
+            "status": {},
+            "authenticationInfo": { "principalEmail": "reader@example-project.iam.gserviceaccount.com" },
+            "requestMetadata": { "callerIp": "203.0.113.7" },
+            "methodName": method,
+            "resourceName": "projects/_/buckets/example-ds-ingest/objects/timetable_full.zip",
+        },
+        "timestamp": at,
+    })
+    .to_string()
+}
+
+/// A Logging sink's file name for `log`, `days_ago` days back, hour 0.
+fn audit_file(log: &str, days_ago: i64, shard: u8) -> String {
+    let day = (chrono::Utc::now() - chrono::Duration::days(days_ago)).format("%Y/%m/%d");
+    format!("cloudaudit.googleapis.com/{log}/{day}/00:00:00_00:59:59_S{shard}.json")
+}
+
+impl Fixture {
+    /// An audit-log shipper reading this fixture's bucket, its state under
+    /// `storage` (a restart when called again).
+    fn audit_shipper(&self) -> crate::bucket_audit::AuditShipper {
+        crate::bucket_audit::AuditShipper::new(
+            GcsClient::new(
+                Some(&self.proxy_url),
+                &self.proxy.bucket,
+                Credentials::key(self.key.path().join("service-account.json")),
+            )
+            .unwrap(),
+            crate::bucket_audit::AuditSettings {
+                poll_interval: Duration::from_secs(600),
+                max_backoff: Duration::from_secs(3600),
+            },
+            &self.storage,
+            Arc::new(SystemTime::now),
+        )
+    }
+}
+
+/// One shipper poll: its delay and its `bucket_access` lines.
+async fn audit_poll(
+    shipper: &mut crate::bucket_audit::AuditShipper,
+) -> (Duration, Vec<serde_json::Value>) {
+    let (guard, logs) = crate::audit::tests::capture_default();
+    let delay = shipper.poll_once().await;
+    drop(guard);
+    let lines = logs
+        .lines()
+        .into_iter()
+        .filter(|l| l["target"] == crate::bucket_audit::TARGET)
+        .collect();
+    (delay, lines)
+}
+
+/// The audit-log shipper against the emulator: a Logging sink's hourly
+/// files (the real `cloudaudit.googleapis.com/<log>/YYYY/MM/DD/` names,
+/// `:` included) are listed with `startOffset`, shipped once as
+/// `bucket_access` lines, and folders older than the lookback are skipped.
+#[tokio::test]
+#[ignore = "requires fake-gcs-server; run with FAKE_GCS_URL=... cargo test -p schedule-ingest bucket_e2e_tests -- --ignored"]
+async fn the_audit_log_shipper_ships_each_sink_file_once() {
+    let storage = tempfile::tempdir().unwrap();
+    let f = Fixture::new("audit", storage.path()).await;
+    let today = format!(
+        "{}\n{}\n",
+        audit_entry("storage.objects.get", "2026-10-21T00:10:00Z"),
+        audit_entry("storage.objects.delete", "2026-10-21T00:11:00Z")
+    );
+    f.proxy
+        .upload(&audit_file("data_access", 0, 0), today.as_bytes())
+        .await;
+    f.proxy
+        .upload(
+            &audit_file("activity", 1, 0),
+            audit_entry("storage.setIamPermissions", "2026-10-20T00:10:00Z").as_bytes(),
+        )
+        .await;
+    f.proxy
+        .upload(
+            &audit_file("data_access", 5, 0),
+            audit_entry("storage.objects.get", "2026-10-16T00:10:00Z").as_bytes(),
+        )
+        .await;
+
+    let mut shipper = f.audit_shipper();
+    let (delay, lines) = audit_poll(&mut shipper).await;
+    assert_eq!(delay, Duration::from_secs(600));
+    let methods: Vec<&str> = lines
+        .iter()
+        .map(|l| l["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "storage.setIamPermissions",
+            "storage.objects.get",
+            "storage.objects.delete"
+        ],
+        "oldest first; the file from five days ago is beyond the lookback"
+    );
+    assert_eq!(lines[1]["object"], "timetable_full.zip");
+    assert_eq!(lines[1]["status"], "OK");
+    assert_eq!(lines[1]["log"], "data_access");
+
+    // A restart ships nothing again; a late shard is shipped.
+    drop(shipper);
+    let mut shipper = f.audit_shipper();
+    assert!(audit_poll(&mut shipper).await.1.is_empty());
+    f.proxy
+        .upload(
+            &audit_file("data_access", 0, 1),
+            audit_entry("storage.objects.get", "2026-10-21T00:59:00Z").as_bytes(),
+        )
+        .await;
+    assert_eq!(audit_poll(&mut shipper).await.1.len(), 1);
+    assert_eq!(f.proxy.all_gets(), 3);
 }
