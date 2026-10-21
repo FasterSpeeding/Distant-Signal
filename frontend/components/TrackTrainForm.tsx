@@ -120,9 +120,11 @@ export function TrackTrainForm({
   initialDestination?: string | undefined;
   attachTicketId?: number | undefined;
   // Review §2.1/I21: the mode toggle used to live only in `useState`, so
-  // nothing in the app could send a user straight to window mode -- not
-  // even `JourneyLegCard`'s own "Edit search" link. `track/page.tsx` reads
-  // this off `?mode=window`, the same pattern its `?origin=` already uses.
+  // nothing in the app could send a user straight to window mode.
+  // `track/page.tsx` reads this off `?mode=window`, the same pattern its
+  // `?origin=` already uses. (A journey leg's "Edit search" no longer
+  // comes here: this form starts a NEW journey, so it re-searches the leg
+  // in place instead, `JourneyLegCard`'s `LegTrainPicker`.)
   initialMode?: 'pick' | 'window';
   /** "YYYY-MM-DD" -- window mode's own service-date field
    * (`windowServiceDate`, below), which otherwise always defaults to

@@ -17,6 +17,7 @@ import { dayOffsetMarker } from '@/lib/serviceStatus';
 import type { TrainSearchResult } from '@/lib/types';
 import { LoadingText } from '@/components/LoadingText';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
+import { legSearchPickBody, legSearchQuery, type LegSearch } from '@/lib/legSearch';
 
 // Mirrors `lib/useSuggestions.ts`'s own (non-exported) `DEBOUNCE_MS = 250`
 // constant -- this is a SEPARATE debounce, for the committed filter value
@@ -99,18 +100,32 @@ function hasRows(
  * sort past the default 50-row page, with no indication more results
  * existed. `LoadMoreControl` is shared with `TrainSearchForm.tsx` and
  * `IncidentSearchForm.tsx`, so this list gets the same three-state footer
- * (button / end-of-results line / failed-with-retry) for free. */
+ * (button / end-of-results line / failed-with-retry) for free.
+ *
+ * `search` is an edited search ("Edit search" on the leg's card,
+ * `LegSearchForm`): the list is of ITS trains instead of the leg's stored
+ * search, and the pick saves it as the leg's own along with the train, on
+ * the same route as a plain pick or "Change train". Never `/track`, which
+ * would start a new journey. */
 export function JourneyLegCandidates({
   journeyId,
   legId,
-  serviceDate,
+  serviceDate: storedServiceDate,
+  search = null,
+  onEditSearch,
   onPicked,
 }: {
   journeyId: number;
   legId: number;
   serviceDate: string;
+  search?: LegSearch | null;
+  /** Offered when no train matches, instead of a manual search that would
+   * leave the journey. */
+  onEditSearch?: () => void;
   onPicked: () => void;
 }) {
+  const serviceDate = search?.serviceDate ?? storedServiceDate;
+  const searchQuery = search ? legSearchQuery(search).toString() : '';
   const [results, setResults] = useState<Results>(null);
   const [picking, setPicking] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -167,7 +182,7 @@ export function JourneyLegCandidates({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- shows the loading state for the fetch this effect starts
     setResults('loading');
     needsLoginState.reset();
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(searchQuery);
     if (committedOperator) params.set('operator', committedOperator);
     const query = params.toString();
     fetch(`/api/Journeys/${journeyId}/legs/${legId}/candidates${query ? `?${query}` : ''}`)
@@ -199,8 +214,9 @@ export function JourneyLegCandidates({
     // every render (its `reset`/`markNeedsLogin` callbacks aren't
     // memoized), so listing it would re-run this fetch on every render
     // instead of only on a real prop/filter change.
+    // An edited search (`searchQuery`, its query string) is a fresh search too.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- needsLoginState is a fresh object every render (see above)
-  }, [journeyId, legId, committedOperator]);
+  }, [journeyId, legId, committedOperator, searchQuery]);
 
   // Mirrors `TrainSearchForm.tsx`'s own `handleLoadMore` almost verbatim:
   // the `pagedFrom` identity check guards against a page 2 response landing
@@ -215,7 +231,8 @@ export function JourneyLegCandidates({
     const pagedFrom = results;
     setLoadingMore(true);
     try {
-      const params = new URLSearchParams({ after: results.nextCursor });
+      const params = new URLSearchParams(searchQuery);
+      params.set('after', results.nextCursor);
       if (committedOperator) params.set('operator', committedOperator);
       const response = await fetch(`/api/Journeys/${journeyId}/legs/${legId}/candidates?${params.toString()}`);
       if (!response.ok) {
@@ -248,7 +265,9 @@ export function JourneyLegCandidates({
       const response = await fetch(`/api/Journeys/${journeyId}/legs/${legId}/train`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trainUid: uid, serviceDate }),
+        body: JSON.stringify(
+          search ? { trainUid: uid, serviceDate, search: legSearchPickBody(search) } : { trainUid: uid, serviceDate },
+        ),
       });
       if (!response.ok) {
         // The API's own sentence when it refused the pick for a reason the
@@ -294,10 +313,21 @@ export function JourneyLegCandidates({
           {committedOperator
             ? `No scheduled trains from operator ${committedOperator} match this window.`
             : 'No scheduled trains match this window.'}{' '}
-          <TextLink href="/track" inline underline="always">
-            Search manually
-          </TextLink>{' '}
-          instead.
+          {onEditSearch ? (
+            <>
+              <Button variant="subtle" size="compact-sm" onClick={onEditSearch}>
+                Edit the search
+              </Button>{' '}
+              to try other times or stations.
+            </>
+          ) : (
+            <>
+              <TextLink href="/track" inline underline="always">
+                Search manually
+              </TextLink>{' '}
+              instead.
+            </>
+          )}
         </Text>
       );
     }

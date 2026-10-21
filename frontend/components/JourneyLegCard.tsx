@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Card, Group, Stack, Text } from '@mantine/core';
 import { TrainJourney } from './TrainJourney';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
+import { LegSearchForm } from './LegSearchForm';
 import { TextLink } from './TextLink';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
 import { UntrackedLegCard } from './UntrackedLegCard';
@@ -12,6 +13,7 @@ import { isUntrackedLeg } from '@/lib/untrackedLeg';
 import { legRouteAndTime } from '@/lib/journeyLegLabel';
 import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
+import type { LegSearch } from '@/lib/legSearch';
 import type { JourneyLegDetail } from '@/lib/types';
 
 /** Decorative "needs attention" glyph for the open-leg card (review
@@ -77,7 +79,9 @@ function windowSideSummary(verb: 'departing' | 'arriving', after: string | null,
   return null;
 }
 
-function windowSummary(leg: JourneyLegDetail): string | null {
+function windowSummary(
+  leg: Pick<JourneyLegDetail, 'departAfter' | 'departBefore' | 'arriveAfter' | 'arriveBefore'>,
+): string | null {
   const parts = [
     windowSideSummary('departing', leg.departAfter, leg.departBefore),
     windowSideSummary('arriving', leg.arriveAfter, leg.arriveBefore),
@@ -227,35 +231,22 @@ export function JourneyLegCard({
                 all. */}
             {isOwner && <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />}
           </Group>
-          {criteria && (
-            <Group justify="space-between" wrap="wrap" gap="xs">
-              <Text size="sm" c="dimmed">
-                {criteria}
-              </Text>
-              {isOwner && (
-                // Review §2.1/I21: `/track` now accepts `?mode=window`, so
-                // this finally has somewhere honest to link to -- prefills
-                // the origin the same way the station-page "Track a train
-                // from here" link already does. Doesn't restore the
-                // destination/date/times too (no query-param contract for
-                // those yet); a real re-search, not a form round-trip.
-                <TextLink href={`/track?mode=window&origin=${encodeURIComponent(leg.originCrs ?? '')}`}>
-                  Edit search
-                </TextLink>
-              )}
-            </Group>
-          )}
           {isOwner ? (
-            <JourneyLegCandidates
-              journeyId={journeyId}
-              legId={leg.id}
-              serviceDate={leg.serviceDate}
-              onPicked={() => router.refresh()}
-            />
+            // "Edit search" re-searches THIS leg in place (`LegTrainPicker`).
+            // It used to link to `/track`, whose form starts a new journey
+            // (and asks personal or group), and carried only the origin.
+            <LegTrainPicker journeyId={journeyId} leg={leg} criteria={criteria} onPicked={() => router.refresh()} />
           ) : (
-            <Text size="sm" c="dimmed">
-              Waiting for the owner to pick a train.
-            </Text>
+            <>
+              {criteria && (
+                <Text size="sm" c="dimmed">
+                  {criteria}
+                </Text>
+              )}
+              <Text size="sm" c="dimmed">
+                Waiting for the owner to pick a train.
+              </Text>
+            </>
           )}
         </Stack>
       </Card>
@@ -346,10 +337,10 @@ export function JourneyLegCard({
           suppressTrainUidHeading
         />
         {hasWindow && isOwner && changingTrain && (
-          <JourneyLegCandidates
+          <LegTrainPicker
             journeyId={journeyId}
-            legId={leg.id}
-            serviceDate={leg.serviceDate}
+            leg={leg}
+            criteria={windowSummary(leg)}
             onPicked={() => {
               setChangingTrain(false);
               router.refresh();
@@ -358,5 +349,78 @@ export function JourneyLegCard({
         )}
       </Stack>
     </Card>
+  );
+}
+
+/** A train leg's candidates and its search, for the owner: the search
+ * the leg was made with (`criteria`, its times in words), "Edit search"
+ * to change any of it in place (`LegSearchForm`, opened with everything
+ * the leg stores), and the trains it finds (`JourneyLegCandidates`). An
+ * edited search is only listed until a train is picked from it; the pick
+ * saves both to this leg (`POST .../legs/{id}/train` with `search`), the
+ * same route as a first pick or "Change train", which releases the old
+ * train's subscription. The traveller never leaves the journey page. */
+function LegTrainPicker({
+  journeyId,
+  leg,
+  criteria,
+  onPicked,
+}: {
+  journeyId: number;
+  leg: JourneyLegDetail;
+  criteria: string | null;
+  onPicked: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [search, setSearch] = useState<LegSearch | null>(null);
+  const shownCriteria = search ? windowSummary(search) : criteria;
+
+  if (editing) {
+    return (
+      <LegSearchForm
+        leg={leg}
+        initial={search}
+        onSearch={(edited) => {
+          setSearch(edited);
+          setEditing(false);
+        }}
+        onCancel={() => setEditing(false)}
+      />
+    );
+  }
+  return (
+    <Stack gap="sm">
+      <Group justify="space-between" wrap="wrap" gap="xs">
+        <Stack gap={2}>
+          {search && (
+            <Text size="sm" fw={600}>
+              New search: {routeLabel(search.originCrs, null, search.destinationCrs, null)},{' '}
+              {formatDate(search.serviceDate)}
+            </Text>
+          )}
+          {shownCriteria && (
+            <Text size="sm" c="dimmed">
+              {shownCriteria}
+            </Text>
+          )}
+          {search && (
+            <Text size="xs" c="dimmed">
+              Saved to this leg when you pick a train.
+            </Text>
+          )}
+        </Stack>
+        <Button size="xs" variant="default" onClick={() => setEditing(true)}>
+          Edit search
+        </Button>
+      </Group>
+      <JourneyLegCandidates
+        journeyId={journeyId}
+        legId={leg.id}
+        serviceDate={leg.serviceDate}
+        search={search}
+        onEditSearch={() => setEditing(true)}
+        onPicked={onPicked}
+      />
+    </Stack>
   );
 }

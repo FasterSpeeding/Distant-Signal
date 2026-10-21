@@ -47,6 +47,44 @@ describe('EditUntrackedLegButton', () => {
     vi.unstubAllGlobals();
   });
 
+  it('opens with every field the leg was made with, and an untouched save keeps them all, stop ids too', async () => {
+    renderWithMantine(
+      <EditUntrackedLegButton
+        journeyId={3}
+        leg={{ ...leg, originStopId: '940GZZLUBXN', destinationStopId: '940GZZLUEUS' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Edit leg' }));
+    expect(await screen.findByLabelText('Line (optional)')).toHaveValue('Victoria line');
+    // The mode ("How", a Mantine Select showing its label).
+    expect(screen.getByDisplayValue('Tube')).toHaveAttribute('id', screen.getByText('How').getAttribute('for'));
+    expect(screen.getByRole('combobox', { name: 'From (optional)' })).toHaveValue('Brixton');
+    expect(screen.getByRole('combobox', { name: 'To (optional)' })).toHaveValue('Euston');
+    expect(screen.getByLabelText('Date')).toHaveValue('21 Oct 2026');
+    expect(screen.getByLabelText('Leaves')).toHaveValue('09:05');
+    expect(screen.getByLabelText('Arrives')).toHaveValue('09:30');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save leg' }));
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        '/api/Journeys/3/legs/12',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({
+            transitMode: 'tube',
+            lineName: 'Victoria line',
+            originName: 'Brixton',
+            originStopId: '940GZZLUBXN',
+            destinationName: 'Euston',
+            destinationStopId: '940GZZLUEUS',
+            plannedDeparture: '2026-10-21T08:05:00.000Z',
+            plannedArrival: '2026-10-21T08:30:00.000Z',
+          }),
+        }),
+      );
+    });
+  });
+
   it('opens seeded from the leg and PUTs the edited fields', async () => {
     renderWithMantine(<EditUntrackedLegButton journeyId={3} leg={leg} />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit leg' }));

@@ -451,7 +451,7 @@ describe('JourneyLegCard (open leg)', () => {
     expect(screen.getByText(byVisibleText('KGX to EDB, 22 Sep 2026'))).toBeInTheDocument();
   });
 
-  it('shows the persisted search window back to the user, and an Edit search link for the owner', async () => {
+  it('shows the persisted search window back to the user, and an in-place Edit search for the owner', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('{"results":[],"nextCursor":null}', { status: 200 })),
@@ -467,8 +467,10 @@ describe('JourneyLegCard (open leg)', () => {
     await settleCandidates();
 
     expect(screen.getByText('Departing at or after 08:00 · arriving at or before 12:30')).toBeInTheDocument();
-    const editLink = screen.getByRole('link', { name: 'Edit search' });
-    expect(editLink).toHaveAttribute('href', '/track?mode=window&origin=KGX');
+    // A button on this page, not a link to /track (which starts a new journey).
+    expect(screen.getByRole('button', { name: 'Edit search' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit search' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Search manually' })).not.toBeInTheDocument();
   });
 
   it('does not offer Edit search to a non-owning group member', () => {
@@ -479,6 +481,7 @@ describe('JourneyLegCard (open leg)', () => {
     );
 
     expect(screen.queryByRole('link', { name: 'Edit search' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit search' })).not.toBeInTheDocument();
     // Still shows the criteria, just without the edit affordance.
     expect(screen.getByText(/Departing at or after 08:00/)).toBeInTheDocument();
   });
@@ -584,5 +587,201 @@ describe('JourneyLegCard (open leg)', () => {
     const card = container.querySelector('.mantine-Card-root');
     expect(card).toHaveClass('openLegCard');
     expect(screen.getByText('Waiting for the owner to pick a train.')).toBeInTheDocument();
+  });
+});
+
+describe('JourneyLegCard: Edit search', () => {
+  const STATIONS = [
+    { code: 'KGX', name: 'London Kings Cross' },
+    { code: 'YRK', name: 'York' },
+    { code: 'EDB', name: 'Edinburgh' },
+  ];
+  const CANDIDATES = {
+    results: [
+      {
+        uid: 'C11052',
+        scheduled: '10:32',
+        destinationCrs: 'EDB',
+        originCrs: 'KGX',
+        destinationArrival: '14:05',
+        legOriginCrs: 'KGX',
+        legDestinationCrs: 'YRK',
+        legDestinationArrival: '12:28',
+        legDestinationArrivalDayOffset: 0,
+        operator: null,
+      },
+    ],
+    nextCursor: null,
+  };
+
+  /** Stations, candidates and the pick, by URL; every call is recorded. */
+  function mockApi() {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/stations?')) {
+        const q = (new URLSearchParams(url.split('?')[1]).get('q') ?? '').toLowerCase();
+        const matches = STATIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
+        return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
+      }
+      if (url.includes('/candidates'))
+        return Promise.resolve(new Response(JSON.stringify(CANDIDATES), { status: 200 }));
+      if (url.endsWith('/train')) return Promise.resolve(new Response('{"trackingId":5}', { status: 200 }));
+      return Promise.resolve(new Response('', { status: 404 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+  const calls = (fetchMock: ReturnType<typeof mockApi>, part: string) =>
+    fetchMock.mock.calls.filter(([input]) => String(input).includes(part));
+
+  beforeEach(() => {
+    pushMock.mockClear();
+    refreshMock.mockClear();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('opens with every setting the leg was searched with', async () => {
+    mockApi();
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={7}
+        isOwner
+        isOnlyLeg={false}
+        leg={openLeg({
+          id: 3,
+          serviceDate: '2026-10-23',
+          departAfter: '08:00:00',
+          departBefore: '09:30:00',
+          arriveAfter: '12:00:00',
+          arriveBefore: '13:30:00',
+          windowSearched: true,
+        })}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit search' }));
+
+    expect(screen.getByRole('combobox', { name: 'From station' })).toHaveValue('KGX');
+    expect(screen.getByRole('combobox', { name: 'To station' })).toHaveValue('EDB');
+    expect(screen.getByLabelText('Service date')).toHaveValue('23 Oct 2026');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('08:00');
+    expect(screen.getByLabelText('Latest departure (optional)')).toHaveValue('09:30');
+    expect(screen.getByLabelText('Earliest arrival (optional)')).toHaveValue('12:00');
+    expect(screen.getByLabelText('Latest arrival (optional)')).toHaveValue('13:30');
+    expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
+  });
+
+  it('re-searches this leg in place, and the pick saves the search to it, with no new journey', async () => {
+    const fetchMock = mockApi();
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={7}
+        isOwner
+        isOnlyLeg={false}
+        leg={openLeg({ id: 3, departAfter: '08:00:00', windowSearched: true })}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit search' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'YRK' } });
+    fireEvent.change(screen.getByLabelText('Latest departure (optional)'), { target: { value: '10:45' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    // The edited search is listed for THIS leg, and shown as not yet saved.
+    await waitFor(() =>
+      expect(calls(fetchMock, '/candidates').map(([input]) => String(input))).toContain(
+        '/api/Journeys/7/legs/3/candidates?origin=KGX&destination=YRK&serviceDate=2026-09-22&departAfter=08%3A00&departBefore=10%3A45',
+      ),
+    );
+    expect(screen.getByText(byVisibleText('New search: KGX to YRK, 22 Sep 2026'))).toBeInTheDocument();
+    expect(screen.getByText('Saved to this leg when you pick a train.')).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Track this train: 10:32/ }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    const picks = calls(fetchMock, '/train');
+    expect(picks).toHaveLength(1);
+    expect(picks[0]?.[0]).toBe('/api/Journeys/7/legs/3/train');
+    expect(JSON.parse(String(picks[0]?.[1]?.body))).toEqual({
+      trainUid: 'C11052',
+      serviceDate: '2026-09-22',
+      search: {
+        originCrs: 'KGX',
+        destinationCrs: 'YRK',
+        departWindow: { after: '08:00', before: '10:45' },
+        arriveWindow: { after: null, before: null },
+      },
+    });
+    // Never the track-a-new-train flow: no POST /Journeys, no navigation,
+    // no personal-or-group choice.
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/Journeys')).toBe(false);
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(screen.queryByText(/personal|group/i)).not.toBeInTheDocument();
+  });
+
+  it('changes a matched leg to an arrive-by search from "Change train"', async () => {
+    const fetchMock = mockApi();
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={7}
+        isOwner
+        isOnlyLeg={false}
+        leg={baseLeg({ id: 4, departAfter: '15:00:00', windowSearched: true })}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Change train' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit search' }));
+    expect(screen.getByRole('combobox', { name: 'To station' })).toHaveValue('YRK');
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('15:00');
+
+    // No time at all is not a search.
+    fireEvent.change(screen.getByLabelText('Earliest departure (optional)'), { target: { value: '' } });
+    expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Latest arrival (optional)'), { target: { value: '18:00' } });
+    // An earliest after its latest is not one either.
+    fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '19:00' } });
+    expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Earliest arrival (optional)'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() =>
+      expect(calls(fetchMock, '/candidates').map(([input]) => String(input))).toContain(
+        '/api/Journeys/7/legs/4/candidates?origin=KGX&destination=YRK&serviceDate=2026-09-22&arriveBefore=18%3A00',
+      ),
+    );
+    expect(screen.getByText('Arriving at or before 18:00')).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Track this train: 10:32/ }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    const pick = calls(fetchMock, '/train')[0];
+    expect(pick?.[0]).toBe('/api/Journeys/7/legs/4/train');
+    expect((JSON.parse(String(pick?.[1]?.body)) as { search: unknown }).search).toEqual({
+      originCrs: 'KGX',
+      destinationCrs: 'YRK',
+      departWindow: { after: null, before: null },
+      arriveWindow: { after: null, before: '18:00' },
+    });
+  });
+
+  it('cancelling an edit keeps the stored search, and a pick sends none', async () => {
+    const fetchMock = mockApi();
+    renderWithMantine(
+      <JourneyLegCard
+        journeyId={7}
+        isOwner
+        isOnlyLeg={false}
+        leg={openLeg({ id: 3, departAfter: '08:00:00', windowSearched: true })}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit search' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'To station' }), { target: { value: 'YRK' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Track this train: 10:32/ }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    expect(calls(fetchMock, '/candidates').every(([input]) => !String(input).includes('origin='))).toBe(true);
+    expect(JSON.parse(String(calls(fetchMock, '/train')[0]?.[1]?.body))).toEqual({
+      trainUid: 'C11052',
+      serviceDate: '2026-09-22',
+    });
   });
 });

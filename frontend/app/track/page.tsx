@@ -73,10 +73,11 @@ export default async function TrackPage({
   // Review §2.1/I21: previously nothing in the app could link straight to
   // window mode -- it lived only in `TrackTrainForm`'s own `useState`, not
   // URL-addressable at all (unlike `?origin=` just above, which already had
-  // this exact pattern). `JourneyLegCard`'s "Edit search" link
-  // (`components/JourneyLegCard.tsx`) is one real caller of `?mode=window`,
-  // now redundant with the default below but left working unchanged for
-  // any existing link/bookmark relying on it explicitly.
+  // this exact pattern). `?mode=window` is now redundant with the default
+  // below but left working unchanged for any existing link or bookmark
+  // relying on it. (`JourneyLegCard`'s "Edit search" used to link here;
+  // it now re-searches the leg in place, because this page starts a new
+  // journey.)
   //
   // Product decision (2026-09-24): "Search a time window" is now the
   // DEFAULT mode for this page -- most visitors don't already know a
