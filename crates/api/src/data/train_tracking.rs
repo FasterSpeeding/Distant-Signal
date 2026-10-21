@@ -1216,6 +1216,11 @@ pub struct TrackedTrainListItem {
     /// folds these rows into their journey instead of listing them as
     /// standalone tracked trains. Additive (2026-10-20).
     pub journey_ids: Vec<i64>,
+    /// Whether the train is over, by the rule that splits this list's
+    /// travel order (`travel_order`): `completed`, or it has actually
+    /// reached its destination. Rows come still-to-come first, so the first
+    /// `true` is where past trains begin. Additive (2026-10-21).
+    pub travelled: bool,
 }
 
 impl crate::data::tracking_phase::PhaseRow for TrackedTrainListItem {
@@ -1309,7 +1314,8 @@ static LIST_TRACKED_TRAINS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
                     OR jl.train_subscription_id IN ( \
                         SELECT ts2.id FROM train_subscriptions ts2 \
                         WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)) \
-                    AS journey_ids \
+                    AS journey_ids, \
+                k.travelled \
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
