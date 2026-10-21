@@ -359,7 +359,8 @@ pub enum DelegatedDeleteOutcome {
 /// checked under that lock, the user's deletes in the last 24 hours are
 /// counted (under a per-user advisory lock, so two concurrent deletes
 /// cannot both pass the cap), and the delete runs exactly as
-/// `journeys::delete_journey` does (template tombstone included), with a
+/// `journeys::delete_journey` does (template tombstone and the release of
+/// its legs' trains included), with a
 /// `delegated_deletions` row recording what went.
 pub async fn delete_journey_delegated(
     pool: &PgPool,
@@ -431,10 +432,7 @@ pub async fn delete_journey_delegated(
     .await?;
     let summary = serde_json::json!({ "customName": custom_name, "legs": legs });
     crate::data::journeys::record_template_occurrence_skips(&mut tx, journey_id).await?;
-    sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
-        .bind(journey_id)
-        .bind(user_id)
-        .execute(&mut *tx)
+    crate::data::journeys::delete_journey_row_releasing_trains(&mut tx, journey_id, user_id)
         .await?;
     sqlx::query(
         "INSERT INTO delegated_deletions (user_id, client, grant_id, journey_id, summary) \

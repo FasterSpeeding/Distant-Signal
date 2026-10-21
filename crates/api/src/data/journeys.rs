@@ -1618,8 +1618,9 @@ async fn set_leg_train_subscription_locked(
 }
 
 /// Cleanup of a subscription a leg just stopped using, `old_id` (DS-93):
-/// "Change train" (`move_to` is the leg's new subscription) and "Remove
-/// leg" ([`delete_leg`], `move_to` is `None`). Deletes it unless it is still
+/// "Change train" (`move_to` is the leg's new subscription), "Remove leg"
+/// ([`delete_leg`]) and deleting a whole journey
+/// ([`delete_journey_row_releasing_trains`]), both with `move_to` `None`. Deletes it unless it is still
 /// wanted: another leg (any journey) still references it, or the user
 /// tracks it on its own (`tracked_standalone`, set by the standalone track
 /// routes, `train_tracking::create_standalone_*`).
@@ -1938,11 +1939,12 @@ pub(crate) async fn record_template_occurrence_skips(
 /// touches `journey_templates` at all (a template is a saved, independent
 /// SHAPE, not owned by any journey it once produced).
 ///
-/// The leg(s)' own `train_subscriptions` rows, if matched, are left
-/// completely untouched. (Since DS-93 [`delete_leg`] drops a leg-only
-/// subscription instead, including when it removes a journey's last leg;
-/// this whole-journey delete has not been changed to match.)
-/// `train_subscription_id ... ON DELETE SET NULL` runs in
+/// Each leg's `train_subscriptions` row, if matched, is released as
+/// [`delete_leg`] releases one ([`delete_journey_row_releasing_trains`],
+/// DS-93): deleted, with its tickets and group shares, unless the user
+/// tracks it on its own or another journey's leg uses it. Before DS-93 they
+/// were all left behind and showed in `GET /Train/mine` as trains tracked
+/// on their own. `train_subscription_id ... ON DELETE SET NULL` runs in
 /// the other direction only (deleting the SUBSCRIPTION orphans the leg,
 /// not the reverse), so this delete never cascades into that table at
 /// all.
@@ -1975,12 +1977,40 @@ pub async fn delete_journey(pool: &PgPool, journey_id: i64, user_id: &str) -> an
     // hour. See `record_template_occurrence_skips`.
     record_template_occurrence_skips(&mut tx, journey_id).await?;
 
+    let deleted = delete_journey_row_releasing_trains(&mut tx, journey_id, user_id).await?;
+    tx.commit().await?;
+    Ok(deleted)
+}
+
+/// Deletes `user_id`'s journey `journey_id` (its legs cascade) and then
+/// releases each leg's train subscription with
+/// [`release_leg_subscription`] (no `move_to`), all on the caller's
+/// transaction: [`delete_journey`] and the delegated delete
+/// (`delegated::delete_journey_delegated`) both end this way (DS-93).
+/// Returns whether the journey row was deleted.
+pub(crate) async fn delete_journey_row_releasing_trains(
+    conn: &mut sqlx::PgConnection,
+    journey_id: i64,
+    user_id: &str,
+) -> anyhow::Result<bool> {
+    let subscriptions: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT jl.train_subscription_id FROM journey_legs jl \
+         JOIN journeys j ON j.id = jl.journey_id \
+         WHERE jl.journey_id = $1 AND j.user_id = $2 AND jl.train_subscription_id IS NOT NULL \
+         ORDER BY 1",
+    )
+    .bind(journey_id)
+    .bind(user_id)
+    .fetch_all(&mut *conn)
+    .await?;
     let result = sqlx::query("DELETE FROM journeys WHERE id = $1 AND user_id = $2")
         .bind(journey_id)
         .bind(user_id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
-    tx.commit().await?;
+    for subscription in subscriptions {
+        release_leg_subscription(&mut *conn, user_id, subscription, None).await?;
+    }
     Ok(result.rows_affected() > 0)
 }
 
@@ -3805,6 +3835,182 @@ mod db_tests {
             .expect("leg is the caller's");
         assert!(!subscription_exists(&pool, tracking_id).await);
         assert_eq!(pushed_subscription(&pool, trains_id, user_id).await, None);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-93: deleting a whole journey releases every leg's train as
+    /// "Remove leg" does. Here: a two-leg journey whose first train only it
+    /// uses (with a ticket and a group share), whose second train another
+    /// journey's leg also uses, plus a third journey on a train the user
+    /// also tracks on its own.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                delete_journey_releases -- --ignored --test-threads=1`"]
+    async fn delete_journey_releases_its_legs_trains() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-DS93-DELETE-JOURNEY";
+        let group_id = "TEST-DS93-DELETE-JOURNEY-GROUP";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .expect("clear the fixture group");
+        sqlx::query("INSERT INTO groups (id, name, created_by) VALUES ($1, 'DS-93', $2)")
+            .bind(group_id)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed group");
+
+        // Journey A: leg 1 on a train only it uses, leg 2 (moved in from a
+        // journey of its own) on a train journey B's leg also uses.
+        let (journey_a, _, only_a) = bound_leg(&pool, user_id, "TEST-TRAIN-DS93-DJ-ONLY").await;
+        let (scratch, scratch_leg, shared) =
+            bound_leg(&pool, user_id, "TEST-TRAIN-DS93-DJ-SHARED").await;
+        sqlx::query("UPDATE journey_legs SET journey_id = $1, leg_order = 2 WHERE id = $2")
+            .bind(journey_a)
+            .bind(scratch_leg)
+            .execute(&pool)
+            .await
+            .expect("move the second leg into journey A");
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(scratch)
+            .execute(&pool)
+            .await
+            .expect("drop the emptied journey");
+        let (journey_b, leg_b, shared_b) =
+            bound_leg(&pool, user_id, "TEST-TRAIN-DS93-DJ-SHARED").await;
+        assert_eq!(shared_b, shared, "journey B's leg shares the row");
+        sqlx::query(
+            "INSERT INTO tracked_train_tickets (tracked_train_id, user_id) VALUES ($1, $2)",
+        )
+        .bind(only_a)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("attach a ticket");
+        sqlx::query(
+            "INSERT INTO group_trains (group_id, train_subscription_id, added_by) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(group_id)
+        .bind(only_a)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("share it into a group");
+
+        // Journey C: a train the user also tracks on its own.
+        let (journey_c, _, standalone) =
+            bound_leg(&pool, user_id, "TEST-TRAIN-DS93-DJ-STANDALONE").await;
+        let standalone_trains_id: i64 =
+            sqlx::query_scalar("SELECT trains_id FROM train_subscriptions WHERE id = $1")
+                .bind(standalone)
+                .fetch_one(&pool)
+                .await
+                .expect("read trains_id");
+        crate::data::train_tracking::create_standalone_subscription_for_train(
+            &pool,
+            standalone_trains_id,
+            user_id,
+        )
+        .await
+        .expect("track it on its own too");
+
+        assert!(
+            delete_journey(&pool, journey_a, user_id)
+                .await
+                .expect("delete journey A")
+        );
+        assert!(
+            !subscription_exists(&pool, only_a).await,
+            "a train only journey A used goes"
+        );
+        let tickets: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tracked_train_tickets WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count tickets");
+        assert_eq!(tickets, 0, "its ticket goes with it");
+        let group_shares: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM group_trains WHERE group_id = $1")
+                .bind(group_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count shares");
+        assert_eq!(group_shares, 0, "its group share goes with it");
+        assert!(
+            subscription_exists(&pool, shared).await,
+            "journey B's leg still uses the shared train"
+        );
+        let leg = get_owned_leg(&pool, journey_b, leg_b, user_id)
+            .await
+            .expect("read leg")
+            .expect("journey B's leg exists");
+        assert_eq!(leg.train_subscription_id, Some(shared));
+
+        assert!(
+            delete_journey(&pool, journey_c, user_id)
+                .await
+                .expect("delete journey C")
+        );
+        assert!(notifications_enabled_of(&pool, standalone).await);
+        assert_eq!(standalone_listed(&pool, user_id).await, vec![standalone]);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .expect("clear the fixture group");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-93: a delegated client's journey delete releases the legs' trains
+    /// too.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                delete_journey_releases -- --ignored --test-threads=1`"]
+    async fn delegated_delete_journey_releases_its_legs_trains() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-DS93-DELEGATED-DELETE";
+        let client = "ds93-test";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let (journey_id, _, tracking_id) =
+            bound_leg(&pool, user_id, "TEST-TRAIN-DS93-DELEGATED").await;
+        sqlx::query("UPDATE journeys SET created_via = $1 WHERE id = $2")
+            .bind(client)
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .expect("saved by the client");
+        let grant_id: i64 = sqlx::query_scalar(
+            "INSERT INTO delegated_grants (user_id, client, client_display_name, scopes) \
+             VALUES ($1, $2, 'DS-93 test', ARRAY['journeys:delete']) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(client)
+        .fetch_one(&pool)
+        .await
+        .expect("seed grant");
+
+        let outcome = crate::data::delegated::delete_journey_delegated(
+            &pool, journey_id, user_id, client, grant_id, 10,
+        )
+        .await
+        .expect("delegated delete");
+        assert!(matches!(
+            outcome,
+            crate::data::delegated::DelegatedDeleteOutcome::Deleted
+        ));
+        assert!(!subscription_exists(&pool, tracking_id).await);
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
 
         cleanup_user(&pool, user_id).await;
     }

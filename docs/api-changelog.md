@@ -19,7 +19,8 @@ needs to know about. Newest first. Field names are as served (camelCase).
   train too, with its tickets and group shares (as `DELETE
   /Train/{trackingId}` does), unless another leg still uses it or the
   user tracks it on its own. It used to stay in `GET /Train/mine` as a
-  train tracked on its own. `DELETE /Journeys/{id}` is unchanged.
+  train tracked on its own. **`DELETE /Journeys/{id}`** (cookie or
+  delegated) does the same for each of the journey's legs.
 - **`DELETE /Train/{trackingId}`** on a train a journey leg uses now only
   stops tracking it on its own (still `204`): the row, the leg's link to
   it, its tickets and its group shares stay, and `GET /Train/mine` shows
