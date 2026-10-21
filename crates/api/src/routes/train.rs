@@ -674,7 +674,7 @@ async fn post_track(
     train_tracking::validate_pin(&pin, Utc::now()).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     enforce_pin_cap(&app, &user.id).await?;
 
-    let tracking_id = train_tracking::create_pin(&app.database, &pin, &user.id)
+    let tracking_id = train_tracking::create_standalone_pin(&app.database, &pin, &user.id)
         .await
         .map_err(internal_error("create tracking pin"))?;
 
@@ -1331,10 +1331,13 @@ async fn post_track_by_uid(
     let trains_id = crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
         .await
         .map_err(internal_error("find or create train"))?;
-    let tracking_id =
-        train_tracking::create_subscription_for_train(&app.database, trains_id, &user.id)
-            .await
-            .map_err(internal_error("create subscription"))?;
+    let tracking_id = train_tracking::create_standalone_subscription_for_train(
+        &app.database,
+        trains_id,
+        &user.id,
+    )
+    .await
+    .map_err(internal_error("create subscription"))?;
 
     enrich_shared_train(&app, tracking_id, trains_id, &train_uid, date).await;
 

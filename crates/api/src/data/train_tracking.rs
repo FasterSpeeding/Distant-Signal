@@ -393,8 +393,10 @@ where
 ///
 /// **Re-enables a previously-deactivated row (2026-09-26 review, Medium
 /// finding 10).** `journeys::set_leg_train_subscription` ("Change train")
-/// sets `notifications_enabled = FALSE` on a subscription once it becomes
-/// unreferenced by any leg -- but that's scoped to the journey-leg context
+/// set `notifications_enabled = FALSE` on a subscription once it became
+/// unreferenced by any leg (since DS-93 it deletes a leg-only one instead,
+/// and nothing writes FALSE any more; this stays for any row still
+/// disabled) -- but that's scoped to the journey-leg context
 /// it was meant for, not a permanent verdict on the underlying
 /// `(user_id, trains_id)` pin. Before this fix, THIS function's idempotency
 /// meant a disabled row, once created, could never be re-enabled: any
@@ -468,6 +470,53 @@ where
     .await?;
     tx.commit().await?;
     Ok(row.0)
+}
+
+/// [`create_pin`] for a train the user tracks on its own (`POST
+/// /Train/track`): the row is marked `tracked_standalone`, so a journey
+/// leg's "Change train" never drops it (DS-93,
+/// `journeys::set_leg_train_subscription`).
+pub async fn create_standalone_pin(
+    pool: &PgPool,
+    pin: &TrackPinRequest,
+    user_id: &str,
+) -> anyhow::Result<i64> {
+    let mut tx = pool.begin().await?;
+    let tracking_id = create_pin(&mut *tx, pin, user_id).await?;
+    mark_tracked_standalone(&mut tx, tracking_id).await?;
+    tx.commit().await?;
+    Ok(tracking_id)
+}
+
+/// [`create_subscription_for_train`] for a train the user tracks on its own
+/// (`POST /Train/by-uid/{uid}/{date}/track`). That function hands back the
+/// user's existing row for the train, which may be a journey leg's; either
+/// way the row is now also tracked on its own, so it is marked
+/// `tracked_standalone` and survives that leg's "Change train" (DS-93).
+pub async fn create_standalone_subscription_for_train(
+    pool: &PgPool,
+    trains_id: i64,
+    user_id: &str,
+) -> anyhow::Result<i64> {
+    let mut tx = pool.begin().await?;
+    let tracking_id = create_subscription_for_train(&mut *tx, trains_id, user_id).await?;
+    mark_tracked_standalone(&mut tx, tracking_id).await?;
+    tx.commit().await?;
+    Ok(tracking_id)
+}
+
+async fn mark_tracked_standalone(
+    conn: &mut sqlx::PgConnection,
+    tracking_id: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE train_subscriptions SET tracked_standalone = TRUE \
+         WHERE id = $1 AND NOT tracked_standalone",
+    )
+    .bind(tracking_id)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Every allowed value of `tracked_train_tickets.source` -- kept in one

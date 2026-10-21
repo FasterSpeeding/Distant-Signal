@@ -3,6 +3,21 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-21: "Change train" drops the old train
+
+- **`POST /Journeys/{id}/legs/{legId}/train`** on a leg that already had a
+  train ("Change train") now deletes the leg's previous tracked train
+  unless another leg still uses it or the user tracks it on its own. Its
+  tickets and group shares move to the new train. Before, the old train
+  stayed in `GET /Train/mine` (empty `journeyIds`) with its pushes
+  silently off; its `trackingId` now returns 404.
+- A train tracked on its own (`POST /Train/track`, `POST
+  /Train/by-uid/{uid}/{date}/track`, including one that is also a leg's
+  train) keeps tracking and pushing after that leg's "Change train"; it
+  used to have its pushes switched off.
+- The account export's `train_subscriptions` rows gain
+  `tracked_standalone`.
+
 ## 2026-10-21: `line` on `/Trips/plan` transfer legs
 
 Additive; no existing field changes meaning.
