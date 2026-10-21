@@ -3,6 +3,27 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-21: whole-journey summary on `GET /Journeys/mine`
+
+Additive; no existing field changes meaning. Each row still describes its
+current leg, and now also the whole journey:
+
+- `trainLegCount`, `cancelledLegCount`, `unmatchedLegCount` (train legs
+  with no train picked), `finishedLegCount` and `startedLegCount`, over
+  every leg. A train leg is finished once its train is `completed` or has
+  reached the leg's destination (a TRUST arrival there, else the timetable
+  plus the live delay, else plus 30 minutes; a cancelled train never); an
+  untracked leg once its planned arrival has passed.
+- `finalArrivalDelayMinutes` and `finalArrivalDelayProvisional`: the last
+  train leg's public delay at its own destination. A journey is on time or
+  late by this, not by an earlier leg's delay. `null` when not known, when
+  the last train leg has no train or its train is cancelled.
+- The list's travel order now treats a journey whose last train is
+  cancelled as travelled once that train's timetabled departure has
+  passed, as the web app's home page does.
+- **For ds-mcp.** Use `finalArrivalDelayMinutes` for a journey's
+  punctuality and the counts for cancelled or part-cancelled; the existing
+  `delayMinutes` stays the current leg's.
 ## 2026-10-21: `/Journeys/mine` and `/Train/mine` in travel order
 
 Behaviour only; no request or response shape changes.
