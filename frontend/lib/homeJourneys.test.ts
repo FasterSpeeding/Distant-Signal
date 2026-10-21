@@ -3,7 +3,9 @@ import {
   currentLeg,
   homeJourneyDetailIds,
   homeJourneyStatusGroup,
+  JOURNEY_ARRIVAL_GRACE_MINUTES,
   journeyPhase,
+  legEndMs,
   MAX_HOME_JOURNEY_DETAILS,
   splitHomeJourneys,
 } from './homeJourneys';
@@ -30,7 +32,27 @@ describe('journeyPhase', () => {
     expect(journeyPhase(twoLegs(), at('2026-09-17T09:01:00Z'))).toBe('inProgress');
     // Between legs, at the change: still in progress.
     expect(journeyPhase(twoLegs(), at('2026-09-17T11:10:00Z'))).toBe('inProgress');
-    expect(journeyPhase(twoLegs(), at('2026-09-17T13:31:00Z'))).toBe('past');
+    // No live data on the last train: past only once the grace margin after
+    // its 13:30Z timetabled arrival has gone too.
+    expect(journeyPhase(twoLegs(), at('2026-09-17T14:01:00Z'))).toBe('past');
+  });
+
+  it(`with no live data, waits ${JOURNEY_ARRIVAL_GRACE_MINUTES} min past the timetabled arrival`, () => {
+    const quiet = journeyDetail(1, [trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z')]);
+    expect(legEndMs(quiet.legs[0]!)).toBe(Date.parse('2026-09-17T11:30:00Z'));
+    expect(journeyPhase(quiet, at('2026-09-17T11:05:00Z'))).toBe('inProgress');
+    expect(journeyPhase(quiet, at('2026-09-17T11:29:00Z'))).toBe('inProgress');
+    expect(journeyPhase(quiet, at('2026-09-17T11:31:00Z'))).toBe('past');
+  });
+
+  it('stays current past the timetabled arrival while the train runs late, with no estimate at the stop', () => {
+    const late = journeyDetail(1, [
+      trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', { status: 'en_route', delayMinutes: 40 }),
+    ]);
+    // Timetable plus the current delay, and no grace on top of live data.
+    expect(legEndMs(late.legs[0]!)).toBe(Date.parse('2026-09-17T11:40:00Z'));
+    expect(journeyPhase(late, at('2026-09-17T11:35:00Z'))).toBe('inProgress');
+    expect(journeyPhase(late, at('2026-09-17T11:41:00Z'))).toBe('past');
   });
 
   it('keeps a journey upcoming while its first train is late leaving', () => {
@@ -72,23 +94,53 @@ describe('journeyPhase', () => {
     expect(journeyPhase(late, at('2026-09-17T11:26:00Z'))).toBe('past');
   });
 
-  it('is past once the last train has arrived, or may have', () => {
+  it('is past as soon as the train reports an actual arrival at the alighting stop, or completed', () => {
+    const arrived = journeyDetail(1, [
+      trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', {
+        status: 'en_route',
+        delayMinutes: 20,
+        journeyStops: [
+          stop('KGX', { kind: 'Origin', scheduledDeparture: '2026-09-17T09:00:00Z' }),
+          stop('YRK', {
+            kind: 'Intermediate',
+            scheduledArrival: '2026-09-17T11:00:00Z',
+            actualArrival: '2026-09-17T10:58:00Z',
+          }),
+          stop('EDB', { kind: 'Terminate', scheduledArrival: '2026-09-17T13:30:00Z' }),
+        ],
+      }),
+    ]);
+    // Early, before the timetable and the 20 min delay would say so.
+    expect(journeyPhase(arrived, at('2026-09-17T10:59:00Z'))).toBe('past');
     const done = journeyDetail(1, [
       trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', { status: 'completed' }),
     ]);
     expect(journeyPhase(done, at('2026-09-17T10:30:00Z'))).toBe('past');
+  });
+
+  it("doesn't end a journey early on the may-have-arrived guess", () => {
     const mayHave = journeyDetail(1, [
       trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', {
         status: 'en_route',
+        delayMinutes: 30,
         mayHaveArrived: true,
       }),
     ]);
-    expect(journeyPhase(mayHave, at('2026-09-17T10:30:00Z'))).toBe('past');
+    expect(journeyPhase(mayHave, at('2026-09-17T11:20:00Z'))).toBe('inProgress');
   });
 
-  it('keeps a cancelled journey current until its timetabled arrival', () => {
+  it('keeps a journey current through a cancelled earlier leg, until its timetabled arrival', () => {
     const cancelled = twoLegs(1, { status: 'cancelled' });
     expect(journeyPhase(cancelled, at('2026-09-17T09:30:00Z'))).toBe('inProgress');
+    expect(currentLeg(cancelled, at('2026-09-17T11:05:00Z'))?.id).toBe(2);
+  });
+
+  it('ends a journey whose last train is cancelled once it was due to leave, and lists it before then', () => {
+    const cancelled = journeyDetail(1, [
+      trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', { status: 'cancelled' }),
+    ]);
+    expect(journeyPhase(cancelled, at('2026-09-17T08:30:00Z'))).toBe('upcoming');
+    expect(journeyPhase(cancelled, at('2026-09-17T09:01:00Z'))).toBe('past');
   });
 
   it('reads an untracked leg by its planned times', () => {
@@ -114,7 +166,10 @@ describe('journeyPhase', () => {
 describe('currentLeg', () => {
   it('is the first leg not yet over', () => {
     expect(currentLeg(twoLegs(), at('2026-09-17T10:00:00Z'))?.id).toBe(1);
-    expect(currentLeg(twoLegs(), at('2026-09-17T11:10:00Z'))?.id).toBe(2);
+    // The first train has no live data: it is still the current leg within
+    // the grace margin after its 11:00Z arrival, and the second after it.
+    expect(currentLeg(twoLegs(), at('2026-09-17T11:10:00Z'))?.id).toBe(1);
+    expect(currentLeg(twoLegs(), at('2026-09-17T11:31:00Z'))?.id).toBe(2);
   });
 });
 

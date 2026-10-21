@@ -1,8 +1,8 @@
 import { addCalendarDays, londonCalendarDay, londonDayEndIso } from './londonWallClock';
-import { legArrivalInstant, legExpectedArrivalInstant, legExpectedDepartureInstant } from './journeyLegChaining';
+import { legArrivalInstant, legDepartureInstant, legExpectedDepartureInstant } from './journeyLegChaining';
 import { journeyListItemStatusGroup, worstLegStatus, type LegStatusGroup } from './journeyStatus';
 import { isUntrackedLeg } from './untrackedLeg';
-import type { JourneyDetail, JourneyLegDetail, JourneyListItem } from './types';
+import type { JourneyDetail, JourneyLegDetail, JourneyListItem, JourneyStop } from './types';
 
 /** The home page's journey sections (logged in): the journey under way
  * now, then the ones still to come. `GET /Journeys/mine` names a journey
@@ -75,19 +75,69 @@ function isBefore(instant: string | null, now: Date): boolean {
   return instant !== null && Date.parse(instant) <= now.getTime();
 }
 
-/** Whether a leg is over: its train has arrived (or may have, 15 minutes
- * past the estimate), its untracked leg is done by the clock, or its
- * expected arrival has passed. A cancelled train's leg is over once its
- * TIMETABLED arrival has passed, so the journey stays current, badged
- * "Cancelled", for as long as the traveller would have been on it. */
-export function legIsOver(leg: JourneyLegDetail, now: Date): boolean {
+/** How long past its timetabled arrival a train leg with no live data at
+ * all (no report, no estimate, no delay) still counts as under way: a
+ * train Network Rail hasn't reported on is not dropped the minute it is
+ * due. 30 minutes covers ordinary late running the feeds missed. */
+export const JOURNEY_ARRIVAL_GRACE_MINUTES = 30;
+
+const MINUTE_MS = 60_000;
+
+/** The stop a train leg gets off at, looked for after its own origin. */
+function legAlightingStop(leg: JourneyLegDetail): JourneyStop | null {
+  const state = leg.trackedTrainState;
+  const stops = state?.journeyStops ?? null;
+  const destination = leg.destinationCrs ?? state?.scheduleDestinationCrs ?? null;
+  if (stops === null || destination === null) return null;
+  const same = (crs: string | null, other: string) => crs !== null && crs.toUpperCase() === other.toUpperCase();
+  const origin = leg.originCrs ?? state?.pinOriginCrs ?? null;
+  const originIndex = origin === null ? -1 : stops.findIndex((stop) => same(stop.crs, origin));
+  return stops.slice(originIndex + 1).find((stop) => same(stop.crs, destination)) ?? null;
+}
+
+/** When a leg ends, in ms since the epoch, by the one rule for "in
+ * progress" against "past" on the home page:
+ *
+ * 1. a train's ACTUAL arrival at the traveller's alighting stop, when
+ *    reported;
+ * 2. else, with live data, its live estimate there (the stop's estimate,
+ *    else the timetable plus the train's current delay);
+ * 3. else the timetable plus `JOURNEY_ARRIVAL_GRACE_MINUTES`.
+ *
+ * An untracked leg ends at its planned arrival. `null` when nothing is
+ * known (no train picked, no stop list). */
+export function legEndMs(leg: JourneyLegDetail): number | null {
+  if (isUntrackedLeg(leg)) return leg.plannedArrival ? Date.parse(leg.plannedArrival) : null;
+  const stop = legAlightingStop(leg);
+  if (stop?.actualArrival) return Date.parse(stop.actualArrival);
+  if (stop?.estimatedArrival) return Date.parse(stop.estimatedArrival);
+  const scheduled = legArrivalInstant(leg);
+  if (scheduled === null) return null;
+  const delay = leg.trackedTrainState?.delayMinutes ?? null;
+  if (delay !== null) return Date.parse(scheduled) + delay * MINUTE_MS;
+  return Date.parse(scheduled) + JOURNEY_ARRIVAL_GRACE_MINUTES * MINUTE_MS;
+}
+
+/** Whether a leg is over (`legEndMs`). A train leg is over at once when
+ * its train reports completed or an actual arrival at the alighting stop,
+ * and never only because its timetabled arrival has passed: a late train
+ * keeps the journey current until it really arrives. A cancelled train
+ * that is the LAST leg ends the journey once its departure time has
+ * passed (there is no onward leg to be on; before then the journey stays
+ * upcoming, badged "Cancelled"); a cancelled earlier leg is over at its
+ * timetabled arrival, so the journey moves on to the next leg. An
+ * untracked leg is over by the clock. With nothing known, a leg is over
+ * once its day is. */
+export function legIsOver(leg: JourneyLegDetail, now: Date, isLast = false): boolean {
   if (isUntrackedLeg(leg)) return leg.untrackedStatus === 'done' || isBefore(leg.plannedArrival ?? null, now);
   const state = leg.trackedTrainState;
-  if (state?.status === 'completed' || state?.mayHaveArrived) return true;
-  const arrival = state?.status === 'cancelled' ? legArrivalInstant(leg) : legExpectedArrivalInstant(leg);
-  if (arrival !== null) return isBefore(arrival, now);
-  // No arrival known (no train picked yet, or no stop list): over once its
-  // day is.
+  if (state?.status === 'completed') return true;
+  if (legAlightingStop(leg)?.actualArrival) return true;
+  if (state?.status === 'cancelled') {
+    return isBefore(isLast ? legDepartureInstant(leg) : legArrivalInstant(leg), now);
+  }
+  const end = legEndMs(leg);
+  if (end !== null) return end <= now.getTime();
   return isBefore(londonDayEndIso(leg.serviceDate), now);
 }
 
@@ -106,7 +156,7 @@ function legHasStarted(leg: JourneyLegDetail, now: Date): boolean {
  * picked), it is upcoming until its first day ends. */
 export function journeyPhase(detail: JourneyDetail, now: Date): JourneyPhase {
   const last = detail.legs.at(-1);
-  if (last === undefined || legIsOver(last, now)) return 'past';
+  if (last === undefined || legIsOver(last, now, true)) return 'past';
   // Any leg, not only the first: a later leg reported moving means the
   // journey is under way even when the first leg's times are unknown.
   return detail.legs.some((leg) => legHasStarted(leg, now)) ? 'inProgress' : 'upcoming';
@@ -115,15 +165,18 @@ export function journeyPhase(detail: JourneyDetail, now: Date): JourneyPhase {
 /** The leg the traveller is on or heading for now: the first leg not yet
  * over, else the last. */
 export function currentLeg(detail: JourneyDetail, now: Date): JourneyLegDetail | null {
-  return detail.legs.find((leg) => !legIsOver(leg, now)) ?? detail.legs.at(-1) ?? null;
+  return (
+    detail.legs.find((leg, index) => !legIsOver(leg, now, index === detail.legs.length - 1)) ??
+    detail.legs.at(-1) ??
+    null
+  );
 }
 
 /** When the journey is expected to end (its last leg's live arrival), for
  * picking the soonest-arriving of two journeys under way at once. */
 function expectedEnd(detail: JourneyDetail): number {
   const last = detail.legs.at(-1);
-  const arrival = last ? legExpectedArrivalInstant(last) : null;
-  return arrival === null ? Number.POSITIVE_INFINITY : Date.parse(arrival);
+  return (last && legEndMs(last)) ?? Number.POSITIVE_INFINITY;
 }
 
 function departureMs(journey: HomeJourney): number {

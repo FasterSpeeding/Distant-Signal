@@ -396,8 +396,7 @@ used, rather than as a literal in a component.
   `/track/mine`. Never add `app/loading.tsx`.
 - **Home journeys** (`app/(home)/HomeJourneys.tsx`, `lib/homeJourneys.ts`):
   logged in, the home page leads with "Current journey" (a journey whose
-  first departure has passed and whose last arrival hasn't, live delays
-  and cancellations counted) and then "Upcoming journeys" (first departure
+  first departure has passed and whose last leg hasn't ended) and then "Upcoming journeys" (first departure
   still to come, soonest first, five then "View all"). Each renders only
   when it has a journey. The current journey is one `CardLink` with a 2px
   grape border (`.currentJourneyCard`), the only such card on the page:
@@ -407,6 +406,12 @@ used, rather than as a literal in a component.
   two under way at once, the soonest arriving is current and the rest are
   rows under "Also in progress". Upcoming rows are the Track page's row
   shape: name, preview line, "Departs 18:00" when known, status badge.
+  A train leg ends at its actual arrival at the traveller's stop (or
+  `completed`), else its live estimate (timetable plus the current
+  delay), else the timetable plus `JOURNEY_ARRIVAL_GRACE_MINUTES` (30) when
+  there is no live data; never at the timetable alone while a late train
+  runs. A cancelled last train ends the journey once it was due to leave;
+  an untracked leg ends at its planned arrival (`legEndMs`).
   Trains tracked on their own (no journey) stay below the pins as
   "Tracked trains"; a journey's trains are shown through the journey.
 - **Station accessibility** (`StationAccessibilitySection`): the section
