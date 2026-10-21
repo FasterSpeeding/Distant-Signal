@@ -61,7 +61,7 @@ The inactive-account sweep (below) uses the same function.
 | `pinned_lines`, `pinned_stations`, `pinned_operators` | Pins | Cascade | Life of the account | `pinnedLines`, `pinnedStations`, `pinnedOperators` |
 | `custom_lines` | User-defined lines | Cascade, which also removes its group grants, so group members lose access | Life of the account | `customLines` |
 | `custom_line_group_grants` | Grants of the user's custom line to a group (`granted_by`) | Cascade | Life of the line or group | `customLineGroupGrants` |
-| `train_subscriptions` | Tracked trains: date, origin, destination, operator, platform, custom name | Cascade | Deleted `PAST_TRAVEL_RETENTION_DAYS` (548, about 18 months) after `service_date` | `trackedTrains` |
+| `train_subscriptions` | Tracked trains: date, origin, destination, operator, platform, custom name | Cascade | Deleted `PAST_TRAVEL_RETENTION_DAYS` (548, about 18 months) after `service_date`. A tracked train only journey legs use is also deleted when the last of those legs (or its journey) is removed, unless the user also tracks it on its own. | `trackedTrains` |
 | `tracked_train_tickets` | Ticket records: operator, ticket type, origin and destination, source | Cascade | Attached to a tracked train: deleted with it. Standalone: deleted 548 days after the departure date (or the creation date if there is no departure date). | `tickets` |
 | `train_notification_state` | Last push sent per tracked train | Cascade | Deleted with its tracked train | `notificationState.trains` |
 | `line_notification_state` | Last push sent per pinned line | Cascade | Life of the account | `notificationState.lines` |

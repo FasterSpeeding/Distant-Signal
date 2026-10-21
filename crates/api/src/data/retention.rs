@@ -157,6 +157,14 @@ async fn prune_past_travel(
             .rows_affected();
     }
 
+    // A journey deleted above needs no release of its legs' trains
+    // (`journeys::delete_journey_row_releasing_trains`, DS-93): every one of
+    // its legs is before the cutoff, and a leg's subscription carries the
+    // leg's own service date (both are the train's), so the statement below
+    // deletes those subscriptions in this same transaction, whether or not
+    // they were also tracked on their own. Production on 2026-10-21: 23
+    // bound legs, none with a different date from its subscription.
+    //
     // Any surviving journey leg still pointing at a train about to go is
     // marked unmatched, as `train_tracking::delete_tracked_train` does; the
     // FK then sets its `train_subscription_id` to NULL. Tickets attached to
