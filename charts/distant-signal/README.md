@@ -1895,7 +1895,7 @@ Used only when `postgresql.enabled` is `false`.
 | `api.malloc.arenaMax` | `"2"` | `MALLOC_ARENA_MAX`: caps glibc's retained per-arena memory. |
 | `api.malloc.mmapThreshold` | `"131072"` | `MALLOC_MMAP_THRESHOLD_` in bytes: allocations at least this large are returned to the OS on free. |
 | `api.extraEnv` | `[]` | Extra env vars for the container. One named like a chart-set var replaces it; the rest follow the chart's own. |
-| `api.resources` | requests `200m`/`1Gi`, limit `3Gi` | Container resource requests/limits. Deliberately generous, stopgap-derived sizes (production's OOM-era overrides); the raw-JSON population relay, ETag reloads and `api.malloc` tuning should bring real usage well below them. Resize from live `kubectl top`. |
+| `api.resources` | requests `200m`/`512Mi`, limit `1Gi` | Container resource requests/limits, sized from production (working set p95 about 300Mi, max 500Mi over 20 days; the resource-tuning study's request, limit twice it). |
 | `api.nodeSelector` | `{}` | Pod node selector. |
 | `api.tolerations` | `[]` | Pod tolerations. |
 | `api.affinity` | `{}` | Pod affinity rules. |
@@ -2832,7 +2832,7 @@ one-pod layout.
 | `scheduleFeed.reference.healthPort` | `8091` | Health port. Must differ from `workerHealth.port`, which the ingest container in the same pod uses. |
 | `scheduleFeed.reference.progressStallSecs` | `7200` | `/livez` stall window: one cycle publishes every derived product of a full timetable. |
 | `scheduleFeed.reference.metricsPort` | `9092` | Prometheus `/metrics` port. Must differ from `metrics.port`, which the ingest container uses. |
-| `scheduleFeed.reference.resources` | requests `250m`/`3Gi`, limit `4Gi` | schedule-reference container resource requests/limits: the largest in the chart, since it parses the whole timetable. The ~1.2-1.4GiB peak lasts only the nightly publish; afterwards the binary returns its freed heap (`malloc_trim`) and RSS falls to tens of MiB (`distant_signal_schedule_reference_post_publish_resident_memory_bytes`), so a request of about `512Mi` with the `4Gi` limit fits. |
+| `scheduleFeed.reference.resources` | requests `250m`/`512Mi`, limit `2304Mi` | schedule-reference container resource requests/limits: the largest in the chart, since it parses the whole timetable. The ~1.2-1.4GiB peak (1429Mi max in production over 20 days) lasts only the nightly publish; afterwards the binary returns its freed heap (`malloc_trim`) and RSS falls to tens of MiB (`distant_signal_schedule_reference_post_publish_resident_memory_bytes`), so `512Mi` sizes the idle state and the limit is 1.6x the peak. |
 | `scheduleFeed.service.type` | `LoadBalancer` | `LoadBalancer`, or `NodePort` behind an external load balancer. Not an Ingress: SFTP is not HTTP. |
 | `scheduleFeed.service.annotations` | `{}` | Service annotations. |
 | `scheduleFeed.service.nodePort` | `null` | Explicit NodePort for the SFTP port. Empty lets Kubernetes assign one. |
