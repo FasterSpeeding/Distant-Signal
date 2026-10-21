@@ -2455,15 +2455,12 @@ mod db_tests {
     /// someone truncates the table by hand. Upserting makes this helper
     /// idempotent the same way the `users` insert already is.
     async fn seed_session(pool: &PgPool, user_id: &str) -> String {
-        sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(user_id)
-        .bind(format!("{user_id}@example.com"))
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .expect("seed fixture user");
+        sqlx::query("INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+            .bind(user_id)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("seed fixture user");
 
         let raw_token = format!("test-raw-session-token-for-{user_id}");
         sqlx::query(

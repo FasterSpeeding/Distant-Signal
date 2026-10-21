@@ -138,15 +138,12 @@ mod db_tests {
     }
 
     async fn seed_user(pool: &PgPool, user_id: &str) {
-        sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(user_id)
-        .bind(format!("{user_id}@example.com"))
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .expect("seed fixture user");
+        sqlx::query("INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING")
+            .bind(user_id)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("seed fixture user");
     }
 
     async fn cleanup_user(pool: &PgPool, user_id: &str) {

@@ -229,7 +229,7 @@ mod db_tests {
     async fn replace_pinned_operators_then_list_pinned_operator_codes_round_trips() {
         let pool = connect().await;
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-PINNED-OPERATORS-USER', 'test@example.com', 'Test Rider') \
+            "INSERT INTO users (id, name) VALUES ('TEST-PINNED-OPERATORS-USER', 'Test Rider') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)
@@ -278,7 +278,7 @@ mod db_tests {
         let pool = connect().await;
         let user_id = "TEST-PINNED-ORDER-USER";
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ($1, 'order@example.com', 'Test Rider') \
+            "INSERT INTO users (id, name) VALUES ($1, 'Test Rider') \
              ON CONFLICT (id) DO NOTHING",
         )
         .bind(user_id)
@@ -369,7 +369,7 @@ mod db_tests {
     {
         let pool = connect().await;
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-PINNED-DUP-USER', 'test@example.com', 'Test Rider') \
+            "INSERT INTO users (id, name) VALUES ('TEST-PINNED-DUP-USER', 'Test Rider') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)

@@ -461,7 +461,7 @@ mod db_tests {
             .expect("connect to postgres");
 
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-PREFS-USER', 'test@example.com', 'Test Rider') \
+            "INSERT INTO users (id, name) VALUES ('TEST-PREFS-USER', 'Test Rider') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)
@@ -588,7 +588,7 @@ mod db_tests {
             .expect("connect to postgres");
 
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-PREFS-OPERATOR-USER', 'test@example.com', 'Test Rider') \
+            "INSERT INTO users (id, name) VALUES ('TEST-PREFS-OPERATOR-USER', 'Test Rider') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)

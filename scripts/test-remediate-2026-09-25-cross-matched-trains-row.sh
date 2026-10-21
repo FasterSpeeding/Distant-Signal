@@ -64,9 +64,9 @@ DATABASE_URL="${TEST_URL}" sqlx migrate run --source "${REPO_ROOT}/crates/ds-sto
 echo "== Seeding the corrupted shape + unrelated control data =="
 psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q <<'SEED'
 -- Users.
-INSERT INTO users (id, email, name) VALUES
-    ('test-user-y80926', 'y80926-owner@example.com', 'Y80926 Owner'),
-    ('test-user-control', 'control-owner@example.com', 'Control Owner');
+INSERT INTO users (id, name) VALUES
+    ('test-user-y80926', 'Y80926 Owner'),
+    ('test-user-control', 'Control Owner');
 
 -- The corrupted trains row: train_uid is the user's real London
 -- Northwestern service (Y80926), but train_id was wrongly resolved to the
