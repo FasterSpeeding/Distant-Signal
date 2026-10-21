@@ -268,14 +268,6 @@ pub(crate) struct Config {
     #[arg(long, env, default_value_t = 5)]
     pub stability_cycles: u32,
 
-    /// Where each delivery's record and each CORPUS load go: only `db`,
-    /// Postgres directly at `DATABASE_URL` (`sink.rs`). `http` (api's
-    /// `/private/*` routes) was removed in release B (ingest phase 5,
-    /// docs/ingest-phase5-runbook.md), so an old `INGEST_SINK=http` fails
-    /// at startup; the next release drops the variable.
-    #[arg(long, env = "INGEST_SINK", default_value = "db", value_parser = ["db"])]
-    pub ingest_sink: String,
-
     /// Postgres, as the `schedule_ingest` role. The pool reads the shared
     /// `DATABASE_*` settings (`common::pg`); its default size is 1.
     #[arg(long, env, hide_env_values = true)]
@@ -605,10 +597,10 @@ mod chart_env_wiring_tests {
         );
     }
 
-    /// Release B: the chart sets the `schedule_ingest` role's
-    /// `DATABASE_URL` on this container, and no longer `INGEST_SINK`, the
-    /// api URLs or the internal OAuth settings; `INGEST_SINK` accepts only
-    /// its default, `db`.
+    /// The chart sets the `schedule_ingest` role's `DATABASE_URL` on this
+    /// container, and no longer the api URLs or the internal OAuth settings
+    /// (release B) or `INGEST_SINK` (release D, which also removed the
+    /// variable from this crate).
     #[test]
     fn the_db_sink_env_is_set_on_the_charts_ingest_container() {
         let block = ingest_container_block();
@@ -638,23 +630,12 @@ mod chart_env_wiring_tests {
                 .find(|arg| arg.get_id() == id)
                 .unwrap_or_else(|| panic!("no argument {id}"))
         };
-        let sink = arg("ingest_sink");
-        assert_eq!(
-            sink.get_env().and_then(|env| env.to_str()),
-            Some("INGEST_SINK")
+        assert!(
+            command
+                .get_arguments()
+                .all(|arg| arg.get_env().is_none_or(|env| env != "INGEST_SINK")),
+            "INGEST_SINK was removed in release D"
         );
-        let defaults: Vec<String> = sink
-            .get_default_values()
-            .iter()
-            .map(|v| v.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(defaults, ["db"]);
-        let possible: Vec<String> = sink
-            .get_possible_values()
-            .iter()
-            .map(|v| v.get_name().to_owned())
-            .collect();
-        assert_eq!(possible, ["db"], "http and http+shadow are refused");
         assert_eq!(
             arg("database_url").get_env().and_then(|env| env.to_str()),
             Some("DATABASE_URL")

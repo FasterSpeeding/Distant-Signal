@@ -120,7 +120,6 @@ async fn run() -> anyhow::Result<()> {
 
     let config = Config::parse();
     config.sources.validate()?;
-    common::metrics::ingest_sink_info(&config.ingest_sink);
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
@@ -1505,7 +1504,6 @@ mod tests {
                 cif_max_record_drop_percent: 20,
             },
             stability_cycles: 2,
-            ingest_sink: "db".to_string(),
             // Unused: the tests pass their own sink.
             database_url: common::secret::Secret::new("postgres://unused@127.0.0.1:1/none"),
             metrics_port: 0,
