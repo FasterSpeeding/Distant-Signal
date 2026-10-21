@@ -420,6 +420,7 @@ function SharedTrainRow({
     pinOriginName: train.pinOriginName,
     pinDestinationCrs: train.pinDestinationCrs,
     pinDestinationName: train.pinDestinationName,
+    trainUid: train.trainUid,
     serviceDate: train.serviceDate,
     pinScheduledDeparture: train.pinScheduledDeparture,
   });

@@ -3,6 +3,24 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-21: tracked trains with no pin take the train's own route
+
+No new fields; existing ones are filled in more often.
+
+- A tracked train with no pin of its own (tracked by UID, or picked for a
+  journey leg) used to keep `pinOriginCrs`, `pinDestinationCrs`,
+  `pinScheduledDeparture` and their `*Name` fields `null` for good, even
+  once its timetable was known, because they were copied from the train
+  only when it was tracked. They now fall back to the train's own origin,
+  destination and scheduled departure whenever the stored pin is `null`.
+  A pin the user chose still wins. This covers **`GET /Train/mine`**,
+  **`GET /Train/{trackingId}`**, the trains inside **`GET
+  /Journeys/{id}`** (and its shared view), **`GET /groups/{id}/trains`**,
+  **`GET /groups/{id}/journeys`**, **`GET /groups/shared-trains`**,
+  **`GET /groups/shared-journeys`**, and the tracked-train fields on
+  **`GET /Train/tickets/mine`**. They are still `null` for a train with no
+  timetable yet.
+
 ## 2026-10-21: "Change train" drops the old train
 
 - **`POST /Journeys/{id}/legs/{legId}/train`** on a leg that already had a

@@ -6,10 +6,10 @@ import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { formatDate, formatTime } from '@/lib/dateFormat';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
+import { trackedTrainRouteLabel } from '@/lib/trackingName';
 import type { MergedSharedCustomLine } from '@/lib/sharedCustomLines';
 import type { MergedSharedTrain } from '@/lib/sharedTrains';
 import { worstStatus } from '@/lib/severity';
-import { routeLabel } from '@/lib/stationLabel';
 import { tokens } from '@/lib/theme';
 import type { LineStatusReport, TrackedTrainListItem } from '@/lib/types';
 
@@ -103,7 +103,7 @@ export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
   // disagree about what a row's heading even is. /track/mine, whose own
   // rows DO show a custom name, shows it for shared rows for the same
   // consistency reason.
-  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
+  const route = trackedTrainRouteLabel(train);
   // Same date-only degradation as the own row below, for the same reason:
   // a pin with no schedule data yet has no departure time, and `Invalid
   // Date` is never an acceptable label.
@@ -166,7 +166,7 @@ export function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem 
       ? `/train/${train.trainUid}/${train.serviceDate}`
       : `/train/by-id/${train.id}`;
 
-  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
+  const route = trackedTrainRouteLabel(train);
 
   return (
     <CardLink href={href}>

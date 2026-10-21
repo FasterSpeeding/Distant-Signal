@@ -1541,9 +1541,12 @@ where
 pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<GroupTrain>> {
     let rows: Vec<GroupTrainRow> = sqlx::query_as(
         "SELECT gt.train_subscription_id, \
-                ts.pin_origin_crs, ts.pin_destination_crs, \
+                COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+                COALESCE(ts.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
+                COALESCE(ts.pin_scheduled_departure, tr.scheduled_departure) \
+                    AS pin_scheduled_departure, \
+                ts.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, ts.custom_name, \
                 gt.added_by, u.name AS added_by_name, u.username AS added_by_username, \
                 (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row \
@@ -1552,8 +1555,8 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
          JOIN users u ON u.id = gt.added_by \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
+         LEFT JOIN stations so ON so.crs = UPPER(COALESCE(ts.pin_origin_crs, tr.origin_crs))::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
          WHERE gt.group_id = $1 \
          ORDER BY gt.added_at DESC, gt.train_subscription_id DESC \
          LIMIT $2",
@@ -1603,9 +1606,10 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
     let rows: Vec<GroupJourneyRow> = sqlx::query_as(
         "SELECT gj.journey_id, j.custom_name, \
                 (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
-                ts.pin_origin_crs, ts.pin_destination_crs, \
+                COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+                COALESCE(ts.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                ts.pin_scheduled_departure, \
+                COALESCE(ts.pin_scheduled_departure, tr.scheduled_departure) AS pin_scheduled_departure, \
                 fl.origin_crs AS first_origin_crs, \
                 COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
                 ll.destination_crs AS last_destination_crs, \
@@ -1634,8 +1638,8 @@ pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<Gr
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
+         LEFT JOIN stations so ON so.crs = UPPER(COALESCE(ts.pin_origin_crs, tr.origin_crs))::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
          LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
          WHERE gj.group_id = $1 \
@@ -1850,9 +1854,12 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
     let rows: Vec<SharedTrainRow> = sqlx::query_as(
         "SELECT g.id AS group_id, g.name AS group_name, \
                 gt.train_subscription_id, \
-                ts.pin_origin_crs, ts.pin_destination_crs, \
+                COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+                COALESCE(ts.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                ts.pin_scheduled_departure, ts.service_date, ts.resolution_status, \
+                COALESCE(ts.pin_scheduled_departure, tr.scheduled_departure) \
+                    AS pin_scheduled_departure, \
+                ts.service_date, ts.resolution_status, \
                 tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, ts.custom_name, \
                 gt.added_by, u.name AS added_by_name, u.username AS added_by_username, \
                 (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row \
@@ -1863,8 +1870,8 @@ pub async fn list_shared_trains_for_user(pool: &PgPool, user_id: &str) -> Result
          JOIN users u ON u.id = gt.added_by \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
+         LEFT JOIN stations so ON so.crs = UPPER(COALESCE(ts.pin_origin_crs, tr.origin_crs))::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
          WHERE me.user_id = $1 AND ts.user_id <> $1 \
          ORDER BY gt.added_at DESC, gt.train_subscription_id DESC \
          LIMIT $2",
@@ -2067,9 +2074,10 @@ pub async fn list_shared_journeys_for_user(
         "SELECT g.id AS group_id, g.name AS group_name, \
                 gj.journey_id, j.custom_name, \
                 (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
-                ts.pin_origin_crs, ts.pin_destination_crs, \
+                COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+                COALESCE(ts.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                ts.pin_scheduled_departure, \
+                COALESCE(ts.pin_scheduled_departure, tr.scheduled_departure) AS pin_scheduled_departure, \
                 fl.origin_crs AS first_origin_crs, \
                 COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
                 ll.destination_crs AS last_destination_crs, \
@@ -2100,8 +2108,8 @@ pub async fn list_shared_journeys_for_user(
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(ts.pin_origin_crs)::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(ts.pin_destination_crs)::bpchar \
+         LEFT JOIN stations so ON so.crs = UPPER(COALESCE(ts.pin_origin_crs, tr.origin_crs))::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
          LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
          WHERE me.user_id = $1 AND j.user_id <> $1 \
@@ -5163,6 +5171,85 @@ mod db_tests {
             ],
         )
         .await;
+    }
+
+    /// DS-111: a train tracked by UID has no stored pin, so the shared and
+    /// group lists named it "Unknown station" even once its shared `trains`
+    /// row knew the route. Both lists now fall back to that row's route.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                shared_and_group_train_lists_fall_back_to_the_trains_route \
+                -- --ignored --test-threads=1`"]
+    async fn shared_and_group_train_lists_fall_back_to_the_trains_route() {
+        let pool = connect().await;
+        let sharer = "TEST-GROUPS-NULLPIN-SHARER";
+        let viewer = "TEST-GROUPS-NULLPIN-VIEWER";
+        seed_user(&pool, sharer).await;
+        seed_user(&pool, viewer).await;
+        let group_id = create_group(&pool, "Null Pin Test", sharer)
+            .await
+            .expect("create group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-GROUPS-NULLPIN-UID",
+            "2026-09-06".parse().unwrap(),
+        )
+        .await
+        .expect("seed a bare trains row");
+        let subscription_id =
+            crate::data::train_tracking::create_subscription_for_train(&pool, trains_id, sharer)
+                .await
+                .expect("track by UID");
+        sqlx::query("UPDATE trains SET origin_crs = 'WOK', destination_crs = 'WAT' WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .expect("timetable arrives later");
+        add_train_to_group(&pool, &group_id, subscription_id, sharer)
+            .await
+            .expect("share");
+
+        let shared_with_viewer = list_shared_trains_for_user(&pool, viewer)
+            .await
+            .expect("list shared trains");
+        assert_eq!(shared_with_viewer.len(), 1);
+        assert_eq!(shared_with_viewer[0].pin_origin_crs.as_deref(), Some("WOK"));
+        assert_eq!(
+            shared_with_viewer[0].pin_destination_crs.as_deref(),
+            Some("WAT")
+        );
+        let in_group = list_group_trains(&pool, &group_id)
+            .await
+            .expect("list group trains");
+        assert_eq!(in_group.len(), 1);
+        assert_eq!(in_group[0].pin_origin_crs.as_deref(), Some("WOK"));
+        assert_eq!(in_group[0].pin_destination_crs.as_deref(), Some("WAT"));
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(subscription_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &[sharer, viewer]).await;
     }
 
     #[tokio::test]
