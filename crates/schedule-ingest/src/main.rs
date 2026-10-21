@@ -48,6 +48,8 @@
 
 mod audit;
 mod bucket;
+#[cfg(test)]
+mod bucket_e2e_tests;
 mod cif_check;
 mod config;
 mod corpus;

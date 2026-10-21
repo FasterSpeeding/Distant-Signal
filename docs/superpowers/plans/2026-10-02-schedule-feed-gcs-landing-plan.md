@@ -12,10 +12,11 @@ Phase 0 and phase 4 (the chart) are done. Phases 1–3 were built on
 2026-10-20 (DS-22) in a simpler shape than the tables below, recorded in
 the spec's "Implementation status": a GCS JSON API client instead of
 `object_store` (2.1), lanes through the existing cycles instead of a
-`Source` trait (1.1–1.3), one content ledger instead of 1.5/1.6. Still
-open: 3.3 (the api's `delivery_source`), 2.8 (a fake-gcs-server
-integration test; the unit tests use a wiremock fake of the JSON API),
-phase 5 (the audit-log tailer) and phase 6 (Pub/Sub).
+`Source` trait (1.1–1.3), one content ledger instead of 1.5/1.6. 2.8 is
+done (DS-92): `crates/schedule-ingest/src/bucket_e2e_tests.rs` runs the
+reader against fake-gcs-server through a tampering proxy, in CI's
+`rust-db-test` job. Still open: 3.3 (the api's `delivery_source`), phase 5
+(the audit-log tailer) and phase 6 (Pub/Sub).
 
 ## Decisions this plan builds on (user, 2026-10-02)
 

@@ -199,6 +199,27 @@ hour and day (`DistantSignalScheduleBucketDownloadBudget`). Errors back off
 up to `bucket.maxBackoffSecs`. None of this ever blocks or restarts the SFTP
 source.
 
+### Tests against a GCS emulator
+
+`crates/schedule-ingest/src/bucket_e2e_tests.rs` runs the reader end to
+end against [fake-gcs-server](https://github.com/fsouza/fake-gcs-server):
+paged root listings, generation-pinned downloads, the size, CRC32C and MD5
+checks, the archive and seen ledger, the delete once
+`deleteMinAgeSecs` old, the loop guards, and cross-source dedup with the
+SFTP lane. A small in-process proxy in front of the emulator tampers with
+listings and downloads, plays the publisher mid-poll, refuses calls (403)
+and enforces `ifGenerationMatch` on deletes, which fake-gcs-server 1.55
+ignores. No Google credentials: the reader signs in with a throwaway key.
+The tests are `#[ignore]`d and need `FAKE_GCS_URL`; CI's `rust-db-test`
+job runs them:
+
+```sh
+docker run -d --rm --name fake-gcs -p 127.0.0.1:4443:4443 \
+  fsouza/fake-gcs-server:1.55 -scheme http -port 4443 -backend memory
+FAKE_GCS_URL=http://127.0.0.1:4443 \
+  cargo test -p schedule-ingest bucket_e2e_tests -- --ignored
+```
+
 ### PVC sizing
 
 The archive lives on the existing schedulefeed PVC. With the bucket on,

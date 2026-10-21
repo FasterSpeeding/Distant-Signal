@@ -53,6 +53,10 @@ tracing = "0.1.44"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+# The in-process proxy in front of fake-gcs-server in the bucket source's
+# end-to-end tests (`bucket_e2e_tests.rs`); `health-http`'s version, so
+# already in this crate's tree.
+axum = "0.8.9"
 # Renders the registered metrics in tests (the bucket source's
 # registered-at-0 check); the version `common` uses.
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

@@ -34,11 +34,11 @@ fn other_zip() -> Vec<u8> {
     delivery::build_test_zip(&entries)
 }
 
-fn sha(bytes: &[u8]) -> String {
+pub(crate) fn sha(bytes: &[u8]) -> String {
     audit::DeliveredFile::from_bytes("", bytes).sha256
 }
 
-fn put(dir: &Path, name: &str, bytes: &[u8], mtime: SystemTime) {
+pub(crate) fn put(dir: &Path, name: &str, bytes: &[u8], mtime: SystemTime) {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
@@ -50,7 +50,7 @@ fn put(dir: &Path, name: &str, bytes: &[u8], mtime: SystemTime) {
         .unwrap();
 }
 
-fn ago(minutes: u64) -> SystemTime {
+pub(crate) fn ago(minutes: u64) -> SystemTime {
     // Whole seconds, as a delivery directory name keeps.
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -59,7 +59,7 @@ fn ago(minutes: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(now - minutes * 60)
 }
 
-fn delivery_dirs(storage: &Path) -> Vec<String> {
+pub(crate) fn delivery_dirs(storage: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(storage)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -69,14 +69,14 @@ fn delivery_dirs(storage: &Path) -> Vec<String> {
     names
 }
 
-struct Setup {
-    watch: tempfile::TempDir,
-    storage: tempfile::TempDir,
-    config: Config,
+pub(crate) struct Setup {
+    pub(crate) watch: tempfile::TempDir,
+    pub(crate) storage: tempfile::TempDir,
+    pub(crate) config: Config,
 }
 
 impl Setup {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let watch = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let config = test_config(watch.path(), storage.path());
@@ -87,17 +87,17 @@ impl Setup {
         }
     }
 
-    fn incoming(&self) -> PathBuf {
+    pub(crate) fn incoming(&self) -> PathBuf {
         BucketDirs::new(self.storage.path()).incoming
     }
 
-    fn multi(&self, precedence: Precedence) -> MultiSource {
+    pub(crate) fn multi(&self, precedence: Precedence) -> MultiSource {
         MultiSource::new(self.storage.path(), precedence, 120)
     }
 
     /// Both lanes, in `precedence` order (SFTP with the config's stability
     /// gate, the bucket with none), as `run` builds them.
-    fn lanes(&self, precedence: Precedence) -> Vec<LaneState> {
+    pub(crate) fn lanes(&self, precedence: Precedence) -> Vec<LaneState> {
         let mut lanes = vec![
             LaneState::new(
                 SourceId::Sftp,
@@ -110,7 +110,7 @@ impl Setup {
         lanes
     }
 
-    async fn cycles(
+    pub(crate) async fn cycles(
         &self,
         sink: &FakeSink,
         routing: &Routing,
