@@ -1,5 +1,6 @@
 import dayjs from 'dayjs';
 import { LONDON_TZ } from './londonWallClock';
+import { transferLineName } from './displayLabels';
 import { isTiplocCode } from './stationLabel';
 import type { TransitMode, TripPlanItinerary, TripPlanLeg } from './types';
 
@@ -16,18 +17,21 @@ export type ItineraryLegBody =
       transitMode: TransitMode;
       originName?: string;
       destinationName?: string;
+      lineName?: string;
       originStopId?: string;
       destinationStopId?: string;
       plannedDeparture: string;
       plannedArrival: string;
     };
 
-/** What an untracked leg takes from a transfer: its mode, place names
- * and, for a Tube or metro transfer, the TfL stops at each end. */
+/** What an untracked leg takes from a transfer: its mode, place names,
+ * line where the planner knows it and, for a Tube or metro transfer, the
+ * TfL stops at each end. */
 export interface TransferAsUntracked {
   transitMode: TransitMode;
   originName?: string;
   destinationName?: string;
+  lineName?: string;
   originStopId?: string;
   destinationStopId?: string;
 }
@@ -45,7 +49,9 @@ const TRANSFER_MODES: Record<string, TransitMode> = {
  * each end's station name (else its code). Where `/Trips/plan` names the
  * TfL stop at an end (`originStop`/`destinationStop`, on TUBE and METRO
  * transfers; docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md
- * §5), that end is the stop: its name and its id. `null` for a change
+ * §5), that end is the stop: its name and its id. The transfer's `line`
+ * (2026-10-21) is the leg's line name, as people write it ("Victoria
+ * line"). `null` for a change
  * within one station (`TRANSFER`), which isn't a journey of its own. */
 export function transferAsUntracked(
   leg: TransferLeg,
@@ -61,10 +67,12 @@ export function transferAsUntracked(
   const destinationName = leg.destinationStop?.name ?? place(leg.destinationCrs);
   const originStopId = leg.originStop?.id;
   const destinationStopId = leg.destinationStop?.id;
+  const lineName = transferLineName(leg.mode, leg.line);
   return {
     transitMode,
     ...(originName ? { originName } : {}),
     ...(destinationName ? { destinationName } : {}),
+    ...(lineName ? { lineName } : {}),
     ...(originStopId ? { originStopId } : {}),
     ...(destinationStopId ? { destinationStopId } : {}),
   };

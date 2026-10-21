@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { categoryLabel, tocNameLookup, operatorLabel } from './displayLabels';
+import { categoryLabel, tocNameLookup, operatorLabel, transferLabel } from './displayLabels';
 
 describe('categoryLabel', () => {
   it('maps a known TOML-enum category to a human label', () => {
@@ -46,5 +46,19 @@ describe('operatorLabel', () => {
   it('falls back to the bare code for every operator when the TOC list is empty', () => {
     const lookup = tocNameLookup([]);
     expect(operatorLabel('SW', lookup)).toBe('SW');
+  });
+});
+
+describe('transferLabel', () => {
+  it('adds the line where known, saying "line" once for the Tube', () => {
+    expect(transferLabel('TUBE', 'Victoria')).toBe('Tube (Victoria line)');
+    expect(transferLabel('tube', 'Elizabeth line')).toBe('Tube (Elizabeth line)');
+    expect(transferLabel('METRO', 'DLR')).toBe('Metro (DLR)');
+  });
+
+  it('is the mode alone without a line', () => {
+    expect(transferLabel('TUBE')).toBe('Tube');
+    expect(transferLabel('WALK', '  ')).toBe('Walk');
+    expect(transferLabel('TUBE', null)).toBe('Tube');
   });
 });

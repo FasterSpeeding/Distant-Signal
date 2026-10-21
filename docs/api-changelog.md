@@ -3,6 +3,23 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-21: `line` on `/Trips/plan` transfer legs
+
+Additive; no existing field changes meaning.
+
+- **`GET /Trips/plan`** `kind: "transfer"` legs gain an optional `line`:
+  the line ridden, as TfL names it (`"Victoria"`, `"Northern"`, `"DLR"`).
+  It comes from the curated link's own line where the link is one of
+  `reference-data/supplementary-fixed-links.csv`'s (Vauxhall to Victoria,
+  `TUBE`, `"Victoria"`), else from the TfL stops at the two ends
+  (`originStop`, `destinationStop`) when they share exactly one line
+  (Vauxhall to Euston: `"Victoria"`; Euston to King's Cross St. Pancras
+  shares two, so none). Absent when unknown, so a walk or a leg without
+  both stops has no `line` key.
+- **For ds-mcp.** Show it next to the mode where present ("Tube, Victoria
+  line"). When saving a transfer as an untracked leg, the web app sends it
+  as `lineName` (`"Victoria line"` for a Tube line, else as given).
+
 ## 2026-10-20: TfL stop lookup (Tube, DLR, tram)
 
 Additive; no existing request or field changes meaning. Spec:

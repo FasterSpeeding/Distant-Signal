@@ -75,3 +75,20 @@ const TRANSFER_MODE_LABELS: Record<string, string> = {
 export function transferModeLabel(mode: string): string {
   return TRANSFER_MODE_LABELS[mode.toUpperCase()] ?? 'Change';
 }
+
+/** A transfer leg's line (`/Trips/plan`'s `line`, 2026-10-21) as people
+ * write it: "Victoria line". A Tube line's TfL name is the bare name
+ * ("Victoria"), so " line" is added; a name that already says it, or one
+ * on another mode ("DLR"), is as given. `undefined` without a line. */
+export function transferLineName(mode: string, line?: string | null): string | undefined {
+  const name = line?.trim();
+  if (!name) return undefined;
+  return mode.toUpperCase() === 'TUBE' && !/\bline$/i.test(name) ? `${name} line` : name;
+}
+
+/** A transfer leg's mode with its line where known: "Tube (Victoria line)". */
+export function transferLabel(mode: string, line?: string | null): string {
+  const modeLabel = transferModeLabel(mode);
+  const lineName = transferLineName(mode, line);
+  return lineName ? `${modeLabel} (${lineName})` : modeLabel;
+}
