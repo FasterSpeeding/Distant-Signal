@@ -1268,15 +1268,78 @@ impl crate::data::stop_delay::PublicDelayFields for TrackedTrainListItem {
     }
 }
 
-/// A user's own tracked trains, most-recently-tracked first (`tracked_at
-/// DESC`, deliberately NOT `pin_scheduled_departure` -- a train pinned a
-/// month in advance would otherwise sit ahead of one pinned five minutes
-/// ago for a service that's delayed right now, which is very likely the
-/// one thing the caller actually wants to check on; see Decision 2 of the
-/// design spec), capped at `MINE_LIST_LIMIT` rows. No status-based
-/// filtering: `train_current_state.status` CAN reach `'completed'` now
-/// (`trust_schema::journey::apply_movement`'s confirmed-terminus-ARRIVAL
-/// check), but only when `trains.destination_crs` already happened to be
+/// `list_tracked_trains_for_user`'s query, built once: its sort key is
+/// assembled from `travel_order`'s shared fragments.
+///
+/// Same `LEFT JOIN stations ... ON so.crs = UPPER(...)` mechanism as
+/// `TRACKED_TRAIN_STATE_SELECT` -- see its comment for why `UPPER` is
+/// mandatory. This feeds the home dashboard, `/track/mine`, and
+/// `AttachTicketAction`'s `Select` -- three of F3's six sites.
+static LIST_TRACKED_TRAINS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use crate::data::travel_order::{day_start_sql, order_by_sql, train_arrived_sql};
+    format!(
+        "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
+                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
+                tt.pin_scheduled_departure, tt.resolution_status, tr.train_uid, \
+                cs.status, cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
+                tr.id AS trains_id, tt.tracked_at, tt.custom_name, \
+                (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
+                    AS shared_group_count, \
+                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) \
+                    AS timetable_on_row, \
+                (SELECT COALESCE(array_agg(DISTINCT jl.journey_id ORDER BY jl.journey_id), \
+                                 '{{}}'::bigint[]) \
+                 FROM journey_legs jl \
+                 JOIN journeys j ON j.id = jl.journey_id AND j.user_id = tt.user_id \
+                 WHERE jl.train_subscription_id = tt.id \
+                    OR jl.train_subscription_id IN ( \
+                        SELECT ts2.id FROM train_subscriptions ts2 \
+                        WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)) \
+                    AS journey_ids \
+         FROM train_subscriptions tt \
+         LEFT JOIN trains tr ON tr.id = tt.trains_id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
+         LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs)::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)::bpchar \
+         CROSS JOIN LATERAL ( \
+             SELECT COALESCE(tt.pin_scheduled_departure, tr.scheduled_departure, \
+                             {day_start}) AS departs_at, \
+                    (COALESCE(cs.status = 'completed', FALSE) OR {arrived}) AS travelled \
+         ) k \
+         WHERE tt.user_id = $1 \
+         ORDER BY {order}, tt.id DESC \
+         LIMIT $2",
+        day_start = day_start_sql("tt.service_date"),
+        arrived = train_arrived_sql(
+            "tr.train_uid",
+            "tt.service_date",
+            "COALESCE(tt.pin_destination_crs, tr.destination_crs)",
+            "cs.delay_minutes",
+        ),
+        order = order_by_sql("k.travelled", "k.departs_at"),
+    )
+});
+
+/// A user's own tracked trains in travel order (`travel_order`, DS-112):
+/// still to come or running, soonest departure first, then travelled, most
+/// recent first, newest subscription on a tie; capped at `MINE_LIST_LIMIT`
+/// rows. The departure is the pinned one (what `/track/mine` shows), else
+/// the train's own from its origin, else the start of its service date.
+/// A train is travelled once `train_current_state.status` is `completed`,
+/// or its timetabled arrival at the pinned destination (else its terminus)
+/// plus its running delay has passed, else once its service date is over.
+/// The arrival test matters because `completed` is often never reached
+/// (below).
+///
+/// This used to be most-recently-tracked first (`tracked_at DESC`): a
+/// train pinned a month ahead was not to outrank one pinned five minutes
+/// ago for a service running now. Travel order serves that better (the
+/// running one comes first, the one a month out after everything sooner),
+/// and the cap no longer drops today's train behind a hundred newer pins.
+///
+/// No status-based filtering: `train_current_state.status` CAN reach
+/// `'completed'` now (`trust_schema::journey::apply_movement`'s
+/// confirmed-terminus-ARRIVAL check), but only when `trains.destination_crs` already happened to be
 /// known as that event was ingested -- which the
 /// backlog-replay-before-schedule-match ordering in
 /// `routes::train::enrich_shared_train` often means it wasn't, and nothing
@@ -1291,42 +1354,11 @@ pub async fn list_tracked_trains_for_user(
     pool: &PgPool,
     user_id: &str,
 ) -> anyhow::Result<Vec<TrackedTrainListItem>> {
-    // Same `LEFT JOIN stations ... ON so.crs = UPPER(...)` mechanism as
-    // `TRACKED_TRAIN_STATE_SELECT` -- see its comment for why `UPPER` is
-    // mandatory. This feeds the home dashboard, `/track/mine`, and
-    // `AttachTicketAction`'s `Select` -- three of F3's six sites.
-    let rows = sqlx::query_as::<_, TrackedTrainListItem>(
-        "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
-                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                tt.pin_scheduled_departure, tt.resolution_status, tr.train_uid, \
-                cs.status, cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
-                tr.id AS trains_id, tt.tracked_at, tt.custom_name, \
-                (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
-                    AS shared_group_count, \
-                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) \
-                    AS timetable_on_row, \
-                (SELECT COALESCE(array_agg(DISTINCT jl.journey_id ORDER BY jl.journey_id), \
-                                 '{}'::bigint[]) \
-                 FROM journey_legs jl \
-                 JOIN journeys j ON j.id = jl.journey_id AND j.user_id = tt.user_id \
-                 WHERE jl.train_subscription_id = tt.id \
-                    OR jl.train_subscription_id IN ( \
-                        SELECT ts2.id FROM train_subscriptions ts2 \
-                        WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)) \
-                    AS journey_ids \
-         FROM train_subscriptions tt \
-         LEFT JOIN trains tr ON tr.id = tt.trains_id \
-         LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs)::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)::bpchar \
-         WHERE tt.user_id = $1 \
-         ORDER BY tt.tracked_at DESC \
-         LIMIT $2",
-    )
-    .bind(user_id)
-    .bind(MINE_LIST_LIMIT)
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query_as::<_, TrackedTrainListItem>(LIST_TRACKED_TRAINS_SQL.as_str())
+        .bind(user_id)
+        .bind(MINE_LIST_LIMIT)
+        .fetch_all(pool)
+        .await?;
     let mut rows = rows;
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     crate::data::schedule_services::attach(pool, &mut rows).await;
@@ -2763,6 +2795,112 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("cleanup fixture station");
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-112: `GET /Train/mine` comes in travel order, not tracked order.
+    /// Trains still to come first, soonest departure first (the pinned
+    /// departure, else the train's own); then travelled ones, most recent
+    /// first, a train whose state is `completed` counting as travelled even
+    /// though its date is ahead.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_tracked_trains_for_user_orders_by_travel_time -- --ignored --test-threads=1`"]
+    async fn list_tracked_trains_for_user_orders_by_travel_time() {
+        let pool = connect().await;
+        let _fixtures = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [
+                "DELETE FROM trains WHERE service_date IN ('2099-01-20', '2099-01-21') \
+              AND train_uid IN ('TSORT4', 'TSORT6')",
+            ],
+        )
+        .await;
+        let user_id = "TEST-DS112-TRAIN-ORDER";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+
+        async fn pinned(pool: &PgPool, user_id: &str, at: &str) -> i64 {
+            sqlx::query_scalar(
+                "INSERT INTO train_subscriptions \
+                     (user_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+                 VALUES ($1, ($2::timestamptz)::date, 'WAT', $2::timestamptz) RETURNING id",
+            )
+            .bind(user_id)
+            .bind(at)
+            .fetch_one(pool)
+            .await
+            .expect("seed pinned train")
+        }
+        async fn unpinned(
+            pool: &PgPool,
+            user_id: &str,
+            uid: &str,
+            date: &str,
+            departs: Option<&str>,
+        ) -> (i64, i64) {
+            let trains_id: i64 = sqlx::query_scalar(
+                "INSERT INTO trains (train_uid, service_date, scheduled_departure) \
+                 VALUES ($1, $2::date, $3::timestamptz) RETURNING id",
+            )
+            .bind(uid)
+            .bind(date)
+            .bind(departs)
+            .fetch_one(pool)
+            .await
+            .expect("seed train");
+            let id: i64 = sqlx::query_scalar(
+                "INSERT INTO train_subscriptions (user_id, trains_id, service_date) \
+                 VALUES ($1, $2, $3::date) RETURNING id",
+            )
+            .bind(user_id)
+            .bind(trains_id)
+            .bind(date)
+            .fetch_one(pool)
+            .await
+            .expect("seed subscription");
+            (trains_id, id)
+        }
+
+        // Tracked in this order; newest-tracked first would be the reverse.
+        let past_old = pinned(&pool, user_id, "2020-01-01T08:00:00Z").await;
+        let past_recent = pinned(&pool, user_id, "2020-02-01T08:00:00Z").await;
+        let nine = pinned(&pool, user_id, "2099-01-20T09:00:00Z").await;
+        let eight = pinned(&pool, user_id, "2099-01-20T08:00:00Z").await;
+        let (_, half_past_eight) = unpinned(
+            &pool,
+            user_id,
+            "TSORT4",
+            "2099-01-20",
+            Some("2099-01-20T08:30:00Z"),
+        )
+        .await;
+        let (completed_train, completed) =
+            unpinned(&pool, user_id, "TSORT6", "2099-01-21", None).await;
+        sqlx::query("INSERT INTO train_current_state (trains_id, status) VALUES ($1, 'completed')")
+            .bind(completed_train)
+            .execute(&pool)
+            .await
+            .expect("seed completed state");
+
+        let listed: Vec<i64> = list_tracked_trains_for_user(&pool, user_id)
+            .await
+            .expect("list tracked trains")
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                eight,
+                half_past_eight,
+                nine,
+                completed,
+                past_recent,
+                past_old
+            ],
+        );
+
         cleanup_user(&pool, user_id).await;
     }
 

@@ -1109,7 +1109,7 @@ export interface TrackedTrainListItem extends ServiceModeFields, TrackingPhaseFi
   /** `true` while `delayMinutes` is a forecast (the train has not reached
    * the stop it is measured at yet). */
   delayProvisional?: boolean;
-  trackedAt: string; // RFC3339 -- list ordering key
+  trackedAt: string; // RFC3339; no longer the list order (`GET /Train/mine` is in travel order)
   // See `TrackedTrainState.customName`'s comment -- same contract.
   customName: string | null;
   // See `TrackedTrainState.sharedGroupCount`'s comment -- same contract.

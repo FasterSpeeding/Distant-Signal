@@ -3,6 +3,32 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-21: `/Journeys/mine` and `/Train/mine` in travel order
+
+Behaviour only; no request or response shape changes.
+
+- **`GET /Journeys/mine`** (cookie or delegated) is now in travel order:
+  journeys still to come or under way first, soonest first departure
+  first, then travelled journeys, most recent first departure first; a
+  newer journey (higher `id`) first on a tie. It used to be newest
+  created first (`createdAt`). The first departure is an untracked leg's
+  `plannedDeparture`, a train leg's public timetabled departure from the
+  leg's origin, else its pinned departure, else the start of its service
+  date (London). A journey is travelled once its last leg's arrival has
+  passed (planned; or timetabled plus the train's running delay, else the
+  end of its service date), or every leg is finished. The 100-row cap
+  therefore keeps the upcoming journeys and the most recent past ones,
+  not the 100 newest saved.
+- **`GET /Train/mine`** is in the same order, by `pinScheduledDeparture`
+  (else the train's own departure from its origin, else its service
+  date), a newer `id` first on a tie. It used to be newest tracked first
+  (`trackedAt`, which is still served). A train is travelled once its
+  `status` is `completed`, or its timetabled arrival at the pinned
+  destination (else its terminus) plus its delay has passed, else once its
+  service date is over. `journeyIds` is unchanged.
+- **For ds-mcp.** Don't rely on either list being newest-saved first; to
+  show "what's next", take the rows from the top.
+
 ## 2026-10-21: "Change train" drops the old train
 
 - **`POST /Journeys/{id}/legs/{legId}/train`** on a leg that already had a
