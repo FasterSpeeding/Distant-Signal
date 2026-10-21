@@ -2184,31 +2184,76 @@ impl crate::data::stop_delay::PublicDelayFields for JourneyListItem {
     }
 }
 
-/// Most-recently-created journey first, capped at the same
-/// `train_tracking::MINE_LIST_LIMIT` `GET /Train/mine` already uses --
-/// `pub(crate)` on that constant already permits this cross-module read
-/// (see its own doc comment, which anticipates exactly this: "any list
-/// this list's own cap should agree with"). Each journey is shown with its
-/// "current leg" -- the earliest leg that isn't already `completed`, or the
-/// journey's LAST leg (highest `leg_order`) if every leg is `completed`.
-///
-/// **Newest journeys first, then their legs (DB2-18).** The `recent` CTE
-/// picks the user's newest `MINE_LIST_LIMIT` journeys that have a leg (the
-/// old inner join already dropped leg-less ones), served by
-/// `journeys_user_id_created_at`; only their legs are ranked. It used to
-/// rank every leg the user owned, including up to ~548 days of
-/// template-materialised journeys, before the LIMIT. `id DESC` breaks
-/// `created_at` ties so the page is deterministic.
-pub async fn list_journeys_for_user(
-    pool: &PgPool,
-    user_id: &str,
-) -> anyhow::Result<Vec<JourneyListItem>> {
-    let rows = sqlx::query_as::<_, JourneyListItem>(
-        "WITH recent AS ( \
-             SELECT j.id, j.custom_name, j.created_at, j.created_via FROM journeys j \
+/// `list_journeys_for_user`'s query, built once: its sort key is assembled
+/// from `travel_order`'s shared fragments.
+static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    use crate::data::travel_order::{
+        day_start_sql, order_by_sql, scheduled_departure_sql, train_arrived_sql,
+    };
+    format!(
+        "WITH keyed AS ( \
+             SELECT j.id, j.custom_name, j.created_at, j.created_via, \
+                    s.first_kind, s.first_service_date, s.first_origin_crs, \
+                    s.first_planned_departure, s.first_trains_id, s.first_pin, \
+                    CASE WHEN s.first_kind = 'untracked' \
+                         THEN (s.first_planned_departure AT TIME ZONE 'Europe/London')::date \
+                         ELSE s.first_service_date \
+                    END AS first_date, \
+                    (s.all_finished \
+                     OR CASE WHEN s.last_kind = 'untracked' \
+                             THEN s.last_planned_arrival <= now() \
+                             ELSE {last_arrived} \
+                        END) AS travelled \
+             FROM journeys j \
+             CROSS JOIN LATERAL ( \
+                 SELECT (array_agg(l.kind ORDER BY l.leg_order))[1] AS first_kind, \
+                        (array_agg(l.service_date ORDER BY l.leg_order))[1] AS first_service_date, \
+                        (array_agg(l.origin_crs ORDER BY l.leg_order))[1] AS first_origin_crs, \
+                        (array_agg(l.planned_departure ORDER BY l.leg_order))[1] \
+                            AS first_planned_departure, \
+                        (array_agg(ts.trains_id ORDER BY l.leg_order))[1] AS first_trains_id, \
+                        (array_agg(ts.pin_scheduled_departure ORDER BY l.leg_order))[1] \
+                            AS first_pin, \
+                        (array_agg(l.kind ORDER BY l.leg_order DESC))[1] AS last_kind, \
+                        (array_agg(l.service_date ORDER BY l.leg_order DESC))[1] \
+                            AS last_service_date, \
+                        (array_agg(l.destination_crs ORDER BY l.leg_order DESC))[1] \
+                            AS last_destination_crs, \
+                        (array_agg(l.planned_arrival ORDER BY l.leg_order DESC))[1] \
+                            AS last_planned_arrival, \
+                        (array_agg(ts.trains_id ORDER BY l.leg_order DESC))[1] AS last_trains_id, \
+                        (array_agg(cs.delay_minutes ORDER BY l.leg_order DESC))[1] AS last_delay, \
+                        bool_and(COALESCE(cs.status = 'completed', FALSE) \
+                                 OR (l.kind = 'untracked' AND l.planned_arrival <= now())) \
+                            AS all_finished \
+                 FROM journey_legs l \
+                 LEFT JOIN train_subscriptions ts ON ts.id = l.train_subscription_id \
+                 LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+                 WHERE l.journey_id = j.id \
+                 HAVING COUNT(*) > 0 \
+             ) s \
              WHERE j.user_id = $1 \
-               AND EXISTS (SELECT 1 FROM journey_legs l WHERE l.journey_id = j.id) \
-             ORDER BY j.created_at DESC, j.id DESC \
+         ), \
+         candidates AS ( \
+             SELECT k.*, RANK() OVER (ORDER BY {coarse_order}) AS coarse_rank \
+             FROM keyed k \
+         ), \
+         timed AS MATERIALIZED ( \
+             SELECT c.id, c.custom_name, c.created_at, c.created_via, c.travelled, \
+                    COALESCE(CASE WHEN c.first_kind = 'untracked' THEN c.first_planned_departure \
+                                  ELSE COALESCE({first_departure}, c.first_pin, \
+                                                (SELECT ft.scheduled_departure FROM trains ft \
+                                                 WHERE ft.id = c.first_trains_id)) \
+                             END, \
+                             {first_day_start}) AS departs_at \
+             FROM candidates c \
+             WHERE c.coarse_rank <= $2 \
+         ), \
+         recent AS ( \
+             SELECT t.id, t.custom_name, t.created_at, t.created_via, \
+                    ROW_NUMBER() OVER (ORDER BY {order}, t.id DESC) AS position \
+             FROM timed t \
+             ORDER BY position \
              LIMIT $2 \
          ), \
          ranked_legs AS ( \
@@ -2262,12 +2307,69 @@ pub async fn list_journeys_for_user(
          LEFT JOIN stations sd ON sd.crs = UPPER(rl.destination_crs)::bpchar \
          LEFT JOIN stations sfo ON sfo.crs = UPPER(rl.first_origin_crs)::bpchar \
          LEFT JOIN stations sld ON sld.crs = UPPER(rl.last_destination_crs)::bpchar \
-         ORDER BY r.created_at DESC, r.id DESC",
+         ORDER BY r.position",
+        last_arrived = train_arrived_sql(
+            "s.last_trains_id",
+            "(SELECT lt.train_uid FROM trains lt WHERE lt.id = s.last_trains_id)",
+            "s.last_service_date",
+            "s.last_destination_crs",
+            "s.last_delay",
+        ),
+        coarse_order = order_by_sql("k.travelled", "k.first_date"),
+        first_departure = scheduled_departure_sql(
+            "(SELECT ft.train_uid FROM trains ft WHERE ft.id = c.first_trains_id)",
+            "c.first_service_date",
+            "c.first_origin_crs",
+        ),
+        first_day_start = day_start_sql("c.first_date"),
+        order = order_by_sql("t.travelled", "t.departs_at"),
     )
-    .bind(user_id)
-    .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
-    .fetch_all(pool)
-    .await?;
+});
+
+/// Journeys in travel order (`travel_order`, DS-112): still to come or
+/// under way, soonest first departure first, then travelled, most recent
+/// first; capped at the same `train_tracking::MINE_LIST_LIMIT` `GET
+/// /Train/mine` uses -- `pub(crate)` on that constant already permits this
+/// cross-module read (see its own doc comment, which anticipates exactly
+/// this: "any list this list's own cap should agree with"). Each journey
+/// is shown with its "current leg" -- the earliest leg that isn't already
+/// `completed`, or the journey's LAST leg (highest `leg_order`) if every
+/// leg is `completed`.
+///
+/// The first leg's departure is an untracked leg's `planned_departure`, a
+/// train leg's timetabled departure from the leg's own origin, else its
+/// subscription's pinned departure, else the train's own scheduled
+/// departure, else the start of its service date. The journey is
+/// travelled once its last leg has actually arrived (an untracked leg's
+/// planned arrival has passed; a train leg's per
+/// `travel_order::train_arrived_sql`: TRUST's reported arrival, else the
+/// timetable plus the live delay, else plus
+/// `TRAVEL_ARRIVAL_GRACE_MINUTES`), or every leg is finished (the rule
+/// `ranked_legs` uses for the current leg). Ordering by `created_at` instead kept the
+/// newest-saved journeys, so a trip saved weeks ahead could drop off
+/// behind a hundred since-travelled ones.
+///
+/// **Order and cap first, then legs (DB2-18).** `keyed` reads each of the
+/// user's journeys' legs once (one index scan per journey; `HAVING` drops
+/// a leg-less journey) for the first and last legs' fields. Only the
+/// day of the first departure is needed to rank most journeys, so
+/// `candidates` ranks on that (`RANK`, so every journey tied with the
+/// `MINE_LIST_LIMIT`-th stays in), and only those get the timetable probe
+/// for the exact time (`timed`). `recent` keeps the first `MINE_LIST_LIMIT`
+/// of those, and only their legs are ranked. (A train leg leaving after
+/// midnight counts as its service date's for that first cut, so at the
+/// cap's very edge it is kept or dropped by that date.) With 1,500
+/// journeys (seeded, EXPLAIN ANALYZE) the query takes about 30 ms against
+/// 5 ms for the old `created_at` order.
+pub async fn list_journeys_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> anyhow::Result<Vec<JourneyListItem>> {
+    let rows = sqlx::query_as::<_, JourneyListItem>(LIST_JOURNEYS_SQL.as_str())
+        .bind(user_id)
+        .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
+        .fetch_all(pool)
+        .await?;
     let mut rows = rows;
     crate::data::stop_delay::apply_public_delays(pool, &mut rows).await?;
     let now = Utc::now();
@@ -5047,40 +5149,393 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
-    /// DB2-18: the list is the newest `MINE_LIST_LIMIT` journeys that have
-    /// a leg, newest first, with a stable order for equal `created_at`.
-    /// A newer leg-less journey neither appears nor takes a slot.
+    /// One untracked leg, planned `departure` to `arrival`.
+    async fn seed_untracked_leg(
+        pool: &PgPool,
+        journey_id: i64,
+        leg_order: i32,
+        departure: &str,
+        arrival: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO journey_legs (journey_id, leg_order, service_date, match_mode, kind, \
+                                       transit_mode, planned_departure, planned_arrival) \
+             VALUES ($1, $2, ($3::timestamptz)::date, 'manual', 'untracked', 'bus', \
+                     $3::timestamptz, $4::timestamptz)",
+        )
+        .bind(journey_id)
+        .bind(leg_order)
+        .bind(departure)
+        .bind(arrival)
+        .execute(pool)
+        .await
+        .expect("seed untracked leg");
+    }
+
+    /// One WAT to RDG train leg on `service_date`, bound to
+    /// `train_subscription_id` when given, else unmatched.
+    async fn seed_train_leg(
+        pool: &PgPool,
+        journey_id: i64,
+        leg_order: i32,
+        service_date: &str,
+        train_subscription_id: Option<i64>,
+    ) {
+        sqlx::query(
+            "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, \
+                                       service_date, train_subscription_id, match_mode) \
+             VALUES ($1, $2, 'WAT', 'RDG', $3::date, $4, \
+                     CASE WHEN $4::bigint IS NULL THEN 'unmatched' ELSE 'manual' END)",
+        )
+        .bind(journey_id)
+        .bind(leg_order)
+        .bind(service_date)
+        .bind(train_subscription_id)
+        .execute(pool)
+        .await
+        .expect("seed train leg");
+    }
+
+    /// A `trains` row for `uid` on `service_date` and `user_id`'s
+    /// subscription to it, pinned at WAT at `pinned` when given.
+    async fn seed_subscribed_train(
+        pool: &PgPool,
+        user_id: &str,
+        uid: &str,
+        service_date: &str,
+        pinned: Option<&str>,
+    ) -> (i64, i64) {
+        let trains_id: i64 = sqlx::query_scalar(
+            "INSERT INTO trains (train_uid, service_date) VALUES ($1, $2::date) RETURNING id",
+        )
+        .bind(uid)
+        .bind(service_date)
+        .fetch_one(pool)
+        .await
+        .expect("seed train");
+        let subscription_id: i64 = sqlx::query_scalar(
+            "INSERT INTO train_subscriptions \
+                 (user_id, trains_id, service_date, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, $2, $3::date, CASE WHEN $4::timestamptz IS NULL THEN NULL ELSE 'WAT' END, \
+                     $4::timestamptz) \
+             RETURNING id",
+        )
+        .bind(user_id)
+        .bind(trains_id)
+        .bind(service_date)
+        .bind(pinned)
+        .fetch_one(pool)
+        .await
+        .expect("seed subscription");
+        (trains_id, subscription_id)
+    }
+
+    /// DS-112: journeys come in travel order. Still to come or under way
+    /// first, soonest first departure first (the journey in progress, then
+    /// by first leg: an untracked leg's planned time, a train leg's PUBLIC
+    /// timetabled departure from its origin, else its pinned departure, else
+    /// its service date), newest id on a tie; then travelled journeys, most
+    /// recent first. A journey whose every leg is finished is travelled even
+    /// though its date is ahead; one whose train runs past midnight is not
+    /// travelled until its timetabled arrival. A leg-less journey is left
+    /// out.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
-                list_journeys_for_user_returns_the_newest_journeys_with_legs -- --ignored --test-threads=1`"]
-    async fn list_journeys_for_user_returns_the_newest_journeys_with_legs() {
+                list_journeys_for_user_orders_by_travel_time -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_orders_by_travel_time() {
         let pool = connect().await;
-        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let _fixtures = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [
+                "DELETE FROM schedule_destination_departures WHERE service_date = '2099-01-20' \
+                 AND train_uid IN ('TSORT1', 'TSORT2', 'TSORT3')",
+                "DELETE FROM trains WHERE service_date IN ('2099-01-20', '2099-01-21') \
+                 AND train_uid IN ('TSORT1', 'TSORT2', 'TSORT3')",
+                "DELETE FROM schedule_destination_departures WHERE train_uid = 'TSORT7'",
+                "DELETE FROM trains WHERE train_uid = 'TSORT7'",
+            ],
+        )
+        .await;
+        let user_id = "TEST-DS112-JOURNEY-ORDER";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let journey = || seed_journey(&pool, user_id);
+
+        // Still running: yesterday's (London) 22:00 overnight train, due at
+        // its terminus at 23:59:59 tonight. Its arrival comes from the
+        // timetable; the end of its service date (midnight just gone) would
+        // have called it travelled.
+        let yesterday: String =
+            sqlx::query_scalar("SELECT ((now() AT TIME ZONE 'Europe/London')::date - 1)::text")
+                .fetch_one(&pool)
+                .await
+                .expect("yesterday");
+        let overnight = journey().await;
+        let (_, overnight_sub) =
+            seed_subscribed_train(&pool, user_id, "TSORT7", &yesterday, None).await;
+        seed_train_leg(&pool, overnight, 1, &yesterday, Some(overnight_sub)).await;
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                 (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                  public_departure, destination_arrival, destination_arrival_day_offset) \
+             VALUES ($1::date, 'RDG', '22:00', 'TSORT7', 'WAT', '22:00', '23:59:59', 1)",
+        )
+        .bind(&yesterday)
+        .execute(&pool)
+        .await
+        .expect("seed overnight timetable");
+
+        // Travelled: a train leg whose service date is long over, and an
+        // untracked leg that arrived four hours ago.
+        let past_old = journey().await;
+        seed_train_leg(&pool, past_old, 1, "2020-01-01", None).await;
+        let past_recent = journey().await;
+        let now = Utc::now();
+        let hours = |h: i64| (now + chrono::Duration::hours(h)).to_rfc3339();
+        seed_untracked_leg(&pool, past_recent, 1, &hours(-5), &hours(-4)).await;
+        // Under way: left an hour ago, arrives in an hour.
+        let in_progress = journey().await;
+        seed_untracked_leg(&pool, in_progress, 1, &hours(-1), &hours(1)).await;
+        // 2099-01-20 (GMT, so London time is UTC): a leg with no time at
+        // all sorts at the start of its day; a pinned train at 08:00; an
+        // untracked leg at 08:59:30; a train whose working departure is
+        // 08:59 but whose public one is 09:00 sorts by the public one.
+        let day_only = journey().await;
+        seed_train_leg(&pool, day_only, 1, "2099-01-20", None).await;
+        let scheduled = journey().await;
+        let (_, scheduled_sub) =
+            seed_subscribed_train(&pool, user_id, "TSORT1", "2099-01-20", None).await;
+        seed_train_leg(&pool, scheduled, 1, "2099-01-20", Some(scheduled_sub)).await;
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                 (service_date, destination_crs, scheduled, train_uid, origin_crs, public_departure) \
+             VALUES ('2099-01-20', 'RDG', '08:59', 'TSORT1', 'WAT', '09:00')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed timetable");
+        let pinned = journey().await;
+        let (_, pinned_sub) = seed_subscribed_train(
+            &pool,
+            user_id,
+            "TSORT2",
+            "2099-01-20",
+            Some("2099-01-20T08:00:00Z"),
+        )
+        .await;
+        seed_train_leg(&pool, pinned, 1, "2099-01-20", Some(pinned_sub)).await;
+        let untracked = journey().await;
+        seed_untracked_leg(
+            &pool,
+            untracked,
+            1,
+            "2099-01-20T08:59:30Z",
+            "2099-01-20T10:00:00Z",
+        )
+        .await;
+        // Two legs: sorted by the first (the day before), not the second.
+        let two_legs = journey().await;
+        seed_untracked_leg(
+            &pool,
+            two_legs,
+            1,
+            "2099-01-19T12:00:00Z",
+            "2099-01-19T13:00:00Z",
+        )
+        .await;
+        seed_train_leg(&pool, two_legs, 2, "2099-01-21", None).await;
+        // Same departure: the newer journey first.
+        let tie_older = journey().await;
+        seed_untracked_leg(
+            &pool,
+            tie_older,
+            1,
+            "2099-01-22T10:00:00Z",
+            "2099-01-22T11:00:00Z",
+        )
+        .await;
+        let tie_newer = journey().await;
+        seed_untracked_leg(
+            &pool,
+            tie_newer,
+            1,
+            "2099-01-22T10:00:00Z",
+            "2099-01-22T11:00:00Z",
+        )
+        .await;
+        // Dated ahead, but its only train has completed: travelled.
+        let completed = journey().await;
+        let (completed_train, completed_sub) =
+            seed_subscribed_train(&pool, user_id, "TSORT3", "2099-01-21", None).await;
+        seed_train_leg(&pool, completed, 1, "2099-01-21", Some(completed_sub)).await;
+        sqlx::query("INSERT INTO train_current_state (trains_id, status) VALUES ($1, 'completed')")
+            .bind(completed_train)
+            .execute(&pool)
+            .await
+            .expect("seed completed state");
+        // No leg: never listed.
+        let _legless = journey().await;
+
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id)
+            .await
+            .expect("list")
+            .iter()
+            .map(|j| j.id)
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                overnight,
+                in_progress,
+                two_legs,
+                day_only,
+                pinned,
+                untracked,
+                scheduled,
+                tie_newer,
+                tie_older,
+                completed,
+                past_recent,
+                past_old,
+            ],
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-112: a journey is over only once its last train has actually
+    /// arrived. Both trains here were due at RDG ten minutes ago with no
+    /// live delay, so inside `TRAVEL_ARRIVAL_GRACE_MINUTES`; the one TRUST
+    /// reported arriving is travelled, the other is still under way.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_journeys_for_user_waits_for_the_actual_arrival -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_waits_for_the_actual_arrival() {
+        let pool = connect().await;
+        let _fixtures = crate::test_support::FixtureCleanup::new(
+            &pool,
+            [
+                "DELETE FROM schedule_destination_departures \
+                 WHERE train_uid IN ('TSORT31', 'TSORT32')",
+                "DELETE FROM trains WHERE train_uid IN ('TSORT31', 'TSORT32')",
+            ],
+        )
+        .await;
+        let user_id = "TEST-DS112-JOURNEY-ARRIVED";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let (date, due): (String, NaiveTime) = sqlx::query_as(
+            "SELECT (t AT TIME ZONE 'Europe/London')::date::text, \
+                    (t AT TIME ZONE 'Europe/London')::time \
+             FROM (SELECT now() - INTERVAL '10 minutes' AS t) x",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("due time");
+
+        let mut journeys = Vec::new();
+        for uid in ["TSORT31", "TSORT32"] {
+            let journey = seed_journey(&pool, user_id).await;
+            let (trains_id, subscription) =
+                seed_subscribed_train(&pool, user_id, uid, &date, None).await;
+            seed_train_leg(&pool, journey, 1, &date, Some(subscription)).await;
+            sqlx::query(
+                "INSERT INTO schedule_destination_departures \
+                     (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                      destination_arrival) \
+                 VALUES ($1::date, 'RDG', '00:00', $2, 'WAT', $3)",
+            )
+            .bind(&date)
+            .bind(uid)
+            .bind(due)
+            .execute(&pool)
+            .await
+            .expect("seed timetable");
+            journeys.push((journey, trains_id));
+        }
+        let (still_running, _) = journeys[0];
+        let (arrived, arrived_train) = journeys[1];
+        sqlx::query(
+            "INSERT INTO train_movement_events \
+                 (trains_id, dedup_key, msg_type, event_type, loc_crs, actual_timestamp, raw_body) \
+             VALUES ($1, 'ds112-journey-arrival', '0003', 'ARRIVAL', 'RDG', \
+                     now() - INTERVAL '2 minutes', '{}'::jsonb)",
+        )
+        .bind(arrived_train)
+        .execute(&pool)
+        .await
+        .expect("seed arrival report");
+
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id)
+            .await
+            .expect("list")
+            .iter()
+            .map(|j| j.id)
+            .collect();
+        // Under way first even though it was created first and departs no
+        // earlier: the arrived one is in the travelled half.
+        assert_eq!(listed, vec![still_running, arrived]);
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-112 (and DB2-18): the cap keeps the journeys still to come, then
+    /// the most recently travelled, however long ago the upcoming ones were
+    /// saved. Ordering by `created_at` kept the newest-saved instead, here
+    /// all travelled. A newer leg-less journey neither appears nor takes a
+    /// slot.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                list_journeys_for_user_keeps_the_upcoming_journeys_under_the_cap -- --ignored --test-threads=1`"]
+    async fn list_journeys_for_user_keeps_the_upcoming_journeys_under_the_cap() {
+        let pool = connect().await;
         let user_id = "TEST-DB2-18-LIST";
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
         let limit = crate::data::train_tracking::MINE_LIST_LIMIT;
 
-        // limit + 5 journeys with one leg each, one minute apart, plus a
-        // pair sharing the newest timestamp.
-        let ids: Vec<i64> = sqlx::query_scalar(
+        // Five upcoming journeys, saved long ago, one day apart in 2099.
+        let upcoming: Vec<i64> = sqlx::query_scalar(
             "INSERT INTO journeys (user_id, created_at) \
-             SELECT $1, TIMESTAMPTZ '2026-09-01 00:00Z' + LEAST(g, $2) * INTERVAL '1 minute' \
-             FROM generate_series(1, $2 + 1) g ORDER BY g RETURNING id",
+             SELECT $1, TIMESTAMPTZ '2020-01-01 00:00Z' + g * INTERVAL '1 minute' \
+             FROM generate_series(1, 5) g ORDER BY g RETURNING id",
         )
         .bind(user_id)
-        .bind((limit + 4) as i32)
         .fetch_all(&pool)
         .await
-        .expect("seed journeys");
+        .expect("seed upcoming journeys");
+        // Saved in the order 5th, 4th, ... so the soonest is the newest:
+        // the list must not just be id order.
         sqlx::query(
             "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
-             SELECT id, 1, 'WAT', 'RDG', DATE '2026-09-22', 'unmatched' FROM unnest($1::bigint[]) id",
+             SELECT id, 1, 'WAT', 'RDG', DATE '2099-02-06' - n::int, 'unmatched' \
+             FROM unnest($1::bigint[]) WITH ORDINALITY AS u(id, n)",
         )
-        .bind(&ids)
+        .bind(&upcoming)
         .execute(&pool)
         .await
-        .expect("seed legs");
+        .expect("seed upcoming legs");
+        // `limit` travelled journeys, all saved after the upcoming ones,
+        // one day apart in 2020.
+        let travelled: Vec<i64> = sqlx::query_scalar(
+            "INSERT INTO journeys (user_id, created_at) \
+             SELECT $1, TIMESTAMPTZ '2026-09-01 00:00Z' + g * INTERVAL '1 minute' \
+             FROM generate_series(1, $2) g ORDER BY g RETURNING id",
+        )
+        .bind(user_id)
+        .bind(limit as i32)
+        .fetch_all(&pool)
+        .await
+        .expect("seed travelled journeys");
+        sqlx::query(
+            "INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs, service_date, match_mode) \
+             SELECT id, 1, 'WAT', 'RDG', DATE '2020-01-01' + n::int, 'unmatched' \
+             FROM unnest($1::bigint[]) WITH ORDINALITY AS u(id, n)",
+        )
+        .bind(&travelled)
+        .execute(&pool)
+        .await
+        .expect("seed travelled legs");
         // Newest of all, but with no leg.
         sqlx::query("INSERT INTO journeys (user_id, created_at) VALUES ($1, TIMESTAMPTZ '2026-12-01 00:00Z')")
             .bind(user_id)
@@ -5089,24 +5544,18 @@ mod db_tests {
             .expect("seed leg-less journey");
 
         let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
-        assert_eq!(listed.len() as i64, limit);
-        let mut expected: Vec<(DateTime<Utc>, i64)> =
-            sqlx::query_as("SELECT created_at, id FROM journeys WHERE id = ANY($1)")
-                .bind(&ids)
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        expected.sort_by(|a, b| b.cmp(a));
-        let expected: Vec<i64> = expected
-            .into_iter()
-            .take(limit as usize)
-            .map(|(_, id)| id)
-            .collect();
+        assert_eq!(listed.len() as i64, limit, "capped");
         let got: Vec<i64> = listed.iter().map(|j| j.id).collect();
-        assert_eq!(
-            got, expected,
-            "newest first, id DESC on ties, leg-less journey skipped"
-        );
+        // Upcoming soonest first (the last seeded is the soonest), then
+        // travelled most recent first (the last seeded is the most recent).
+        let expected: Vec<i64> = upcoming
+            .iter()
+            .rev()
+            .chain(travelled.iter().rev())
+            .take(limit as usize)
+            .copied()
+            .collect();
+        assert_eq!(got, expected);
 
         cleanup_user(&pool, user_id).await;
     }

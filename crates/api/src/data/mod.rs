@@ -48,6 +48,7 @@ pub mod train_reasons;
 pub mod train_resolve;
 pub mod train_tracking;
 pub mod trains;
+pub mod travel_order;
 pub mod trip_leg_details;
 pub mod trip_plan_live;
 pub mod trip_plan_overnight;
