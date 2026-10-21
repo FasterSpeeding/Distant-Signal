@@ -186,7 +186,9 @@ describe('OpenDataAttributionDetails (/attribution)', () => {
 
   it('carries the TfL and National Rail wording verbatim', () => {
     renderWithMantine(<OpenDataAttributionDetails />);
-    expect(visibleText(statementOf('tfl') as Element)).toMatch(/^Powered by TfL Open Data$/);
+    expect(visibleText(statementOf('tfl') as Element)).toMatch(
+      /^Powered by TfL Open Data\. Contains OS data © Crown copyright and database rights 2016\. Geomni UK Map data © and database rights 2019\.$/,
+    );
     expect(visibleText(statementOf('national-rail') as Element)).toMatch(
       /^powered by NationalRail \(Train Information Services Ltd\)$/,
     );

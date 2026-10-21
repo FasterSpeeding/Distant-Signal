@@ -131,6 +131,11 @@ pub struct JourneyLegWithNamesRow {
     pub line_name: Option<String>,
     pub planned_departure: Option<DateTime<Utc>>,
     pub planned_arrival: Option<DateTime<Utc>>,
+    /// The `TfL` stops an untracked leg's places were picked from (spec
+    /// 2026-10-20-tfl-stop-lookup-design.md §4), `None` for free text and
+    /// on a train leg.
+    pub origin_stop_id: Option<String>,
+    pub destination_stop_id: Option<String>,
 }
 
 /// Generic over `E: PgExecutor` (rather than `&PgPool`) -- see
@@ -986,8 +991,8 @@ pub const LEG_KIND_UNTRACKED: &str = "untracked";
 /// Every `transit_mode` an untracked leg may have, in the order the form
 /// offers them. Checked here, not by the database (whose CHECK only bounds
 /// the shape), so adding a mode needs no migration.
-pub const TRANSIT_MODES: [&str; 10] = [
-    "tube", "bus", "tram", "metro", "rail", "walk", "ferry", "taxi", "cycle", "other",
+pub const TRANSIT_MODES: [&str; 11] = [
+    "tube", "dlr", "bus", "tram", "metro", "rail", "walk", "ferry", "taxi", "cycle", "other",
 ];
 /// The longest place name an untracked leg keeps (the migration's CHECK).
 pub const UNTRACKED_PLACE_MAX_CHARS: usize = 100;
@@ -1006,6 +1011,11 @@ pub struct UntrackedLeg {
     pub line_name: Option<String>,
     pub planned_departure: DateTime<Utc>,
     pub planned_arrival: DateTime<Utc>,
+    /// The `TfL` stops its places were picked from (spec
+    /// 2026-10-20-tfl-stop-lookup-design.md §4): `None` from
+    /// [`validate_untracked_leg`], set by [`attach_untracked_stops`].
+    pub origin_stop_id: Option<String>,
+    pub destination_stop_id: Option<String>,
 }
 
 impl UntrackedLeg {
@@ -1101,8 +1111,77 @@ pub fn validate_untracked_leg(
         line_name: text(input.line_name, UNTRACKED_LINE_MAX_CHARS, "The line")?,
         planned_departure,
         planned_arrival,
+        origin_stop_id: None,
+        destination_stop_id: None,
     })
 }
+
+/// Gives a validated untracked leg the `TfL` stops its places were picked
+/// from (spec 2026-10-20-tfl-stop-lookup-design.md §4): `originStopId` and
+/// `destinationStopId`, each optional. Each must be a stop in `tfl_stops`;
+/// the inner `Err` is the 400's sentence otherwise. A place left blank
+/// takes its stop's name. Blank ids are absent.
+pub async fn attach_untracked_stops(
+    pool: &PgPool,
+    mut leg: UntrackedLeg,
+    origin_stop_id: Option<&str>,
+    destination_stop_id: Option<&str>,
+) -> anyhow::Result<Result<UntrackedLeg, String>> {
+    let clean = |id: Option<&str>| {
+        id.map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    };
+    let origin = clean(origin_stop_id);
+    let destination = clean(destination_stop_id);
+    for (field, id) in [
+        ("originStopId", &origin),
+        ("destinationStopId", &destination),
+    ] {
+        if id
+            .as_deref()
+            .is_some_and(|id| !common::tfl_stops::is_stop_id(id))
+        {
+            return Ok(Err(format!(
+                "{field} must be a TfL stop id from GET /tfl/stops."
+            )));
+        }
+    }
+    let ids: Vec<String> = origin.iter().chain(destination.iter()).cloned().collect();
+    if ids.is_empty() {
+        return Ok(Ok(leg));
+    }
+    if !TFL_STOP_MODES.contains(&leg.transit_mode.as_str()) {
+        return Ok(Err(format!(
+            "Only a {} leg can have a stop id.",
+            TFL_STOP_MODES.join(", ")
+        )));
+    }
+    let known = crate::data::tfl_stops::stops_by_id(pool, &ids).await?;
+    for (field, id, place) in [
+        ("originStopId", &origin, &mut leg.origin_place),
+        (
+            "destinationStopId",
+            &destination,
+            &mut leg.destination_place,
+        ),
+    ] {
+        let Some(id) = id else { continue };
+        let Some(stop) = known.get(id) else {
+            return Ok(Err(format!("{field} {id} is not a stop we know.")));
+        };
+        if place.is_none() {
+            *place = Some(stop.name.chars().take(UNTRACKED_PLACE_MAX_CHARS).collect());
+        }
+    }
+    leg.origin_stop_id = origin;
+    leg.destination_stop_id = destination;
+    Ok(Ok(leg))
+}
+
+/// The untracked-leg modes whose places may carry a `TfL` stop id.
+/// `metro` is the planner's generic `METRO` transfer (DLR, tram or Tube).
+pub const TFL_STOP_MODES: [&str; 4] = ["tube", "dlr", "tram", "metro"];
 
 /// An untracked leg's state, from the clock alone (spec §2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1208,7 +1287,7 @@ mod untracked_tests {
                 transit_mode: "zeppelin",
                 ..input("2026-10-21T09:00:00Z", "2026-10-21T09:10:00Z")
             })
-            .starts_with("transitMode must be one of: tube, bus")
+            .starts_with("transitMode must be one of: tube, dlr, bus")
         );
         let long = "x".repeat(UNTRACKED_LINE_MAX_CHARS + 1);
         assert_eq!(
@@ -1266,8 +1345,8 @@ where
         "INSERT INTO journey_legs \
             (journey_id, leg_order, service_date, match_mode, window_searched, kind, \
              transit_mode, origin_place, destination_place, line_name, \
-             planned_departure, planned_arrival) \
-         VALUES ($1, $2, $3, 'manual', FALSE, 'untracked', $4, $5, $6, $7, $8, $9) \
+             planned_departure, planned_arrival, origin_stop_id, destination_stop_id) \
+         VALUES ($1, $2, $3, 'manual', FALSE, 'untracked', $4, $5, $6, $7, $8, $9, $10, $11) \
          RETURNING id",
     )
     .bind(journey_id)
@@ -1279,6 +1358,8 @@ where
     .bind(&leg.line_name)
     .bind(leg.planned_departure)
     .bind(leg.planned_arrival)
+    .bind(&leg.origin_stop_id)
+    .bind(&leg.destination_stop_id)
     .fetch_one(executor)
     .await?;
     Ok(id)
@@ -1375,7 +1456,8 @@ pub async fn update_untracked_leg(
     }
     sqlx::query(
         "UPDATE journey_legs SET transit_mode = $2, origin_place = $3, destination_place = $4, \
-             line_name = $5, planned_departure = $6, planned_arrival = $7, service_date = $8 \
+             line_name = $5, planned_departure = $6, planned_arrival = $7, service_date = $8, \
+             origin_stop_id = $9, destination_stop_id = $10 \
          WHERE id = $1",
     )
     .bind(leg_id)
@@ -1386,6 +1468,8 @@ pub async fn update_untracked_leg(
     .bind(leg.planned_departure)
     .bind(leg.planned_arrival)
     .bind(leg.service_date())
+    .bind(&leg.origin_stop_id)
+    .bind(&leg.destination_stop_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -2184,7 +2268,8 @@ pub async fn list_legs_for_journey(
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
                 jl.train_subscription_id, jl.match_mode, jl.window_searched, jl.kind, \
                 jl.transit_mode, jl.origin_place, jl.destination_place, jl.line_name, \
-                jl.planned_departure, jl.planned_arrival \
+                jl.planned_departure, jl.planned_arrival, jl.origin_stop_id, \
+                jl.destination_stop_id \
          FROM journey_legs jl \
          LEFT JOIN stations so ON so.crs = UPPER(jl.origin_crs)::bpchar \
          LEFT JOIN stations sd ON sd.crs = UPPER(jl.destination_crs)::bpchar \

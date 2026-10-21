@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { searchNearbyStations, getStationNames, roundCoordinate } from './suggestions';
+import { searchNearbyStations, getStationNames, roundCoordinate, searchTflStops, tflStopDetail } from './suggestions';
 
 describe('searchNearbyStations', () => {
   afterEach(() => {
@@ -132,5 +132,43 @@ describe('roundCoordinate', () => {
     await searchNearbyStations(51.3191234, -0.5612345);
     expect(fetchMock.mock.calls[0]![0]).toBe('/api/stations/nearby?lat=51.319&lon=-0.561');
     vi.unstubAllGlobals();
+  });
+});
+
+describe('searchTflStops', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('asks for the modes and maps stops to suggestions with their detail', async () => {
+    const fetchMock = vi.fn(
+      async (_input: string, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify([
+            { id: '940GZZTESTA', name: 'Aardvark', modes: ['tube'], lines: [{ id: 'a', name: 'Testline' }] },
+            { id: '940GZZTESTB', name: 'Badger', modes: ['dlr'], lines: [{ id: 'dlr', name: 'DLR' }] },
+          ]),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await searchTflStops('a & b', ['tube', 'dlr']);
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/tfl/stops?q=a+%26+b&modes=tube%2Cdlr');
+    expect(result).toEqual([
+      { code: '940GZZTESTA', name: 'Aardvark', detail: 'Tube: Testline' },
+      { code: '940GZZTESTB', name: 'Badger', detail: 'DLR' },
+    ]);
+  });
+
+  it('is empty for a blank query or a failed request, so the field stays free text', async () => {
+    const fetchMock = vi.fn(async () => new Response('', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await searchTflStops('  ', ['tube'])).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await searchTflStops('bank', ['tube'])).toEqual([]);
+  });
+
+  it('names a tram stop by its mode alone', () => {
+    expect(tflStopDetail({ id: 'X', name: 'Y', modes: ['tram'], lines: [{ id: 'tram', name: 'Tram' }] })).toBe('Tram');
   });
 });

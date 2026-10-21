@@ -103,6 +103,12 @@ struct ItineraryLegRequest {
     planned_departure: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     planned_arrival: Option<chrono::DateTime<chrono::Utc>>,
+    /// An untracked leg's `TfL` stops (additive, 2026-10-20). Skipped when
+    /// absent, so a body without them hashes as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin_stop_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    destination_stop_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -243,7 +249,12 @@ enum ValidLeg {
         origin_crs: Option<String>,
         destination_crs: Option<String>,
     },
-    Untracked(journeys::UntrackedLeg),
+    /// Its stop ids are checked against `tfl_stops` when it is saved.
+    Untracked {
+        leg: journeys::UntrackedLeg,
+        origin_stop_id: Option<String>,
+        destination_stop_id: Option<String>,
+    },
 }
 
 fn invalid(message: impl Into<String>) -> RouteError {
@@ -293,10 +304,12 @@ fn validate_leg(
                 || leg.line_name.is_some()
                 || leg.planned_departure.is_some()
                 || leg.planned_arrival.is_some()
+                || leg.origin_stop_id.is_some()
+                || leg.destination_stop_id.is_some()
             {
                 return Err(invalid(
                     "A train leg takes no transitMode, originName, destinationName, lineName, \
-                     plannedDeparture or plannedArrival.",
+                     plannedDeparture, plannedArrival, originStopId or destinationStopId.",
                 ));
             }
             let (Some(train_uid), Some(service_date)) = (&leg.train_uid, leg.service_date) else {
@@ -345,7 +358,11 @@ fn validate_leg(
                 london_today,
             )
             .map_err(invalid)?;
-            Ok(ValidLeg::Untracked(untracked))
+            Ok(ValidLeg::Untracked {
+                leg: untracked,
+                origin_stop_id: leg.origin_stop_id.clone(),
+                destination_stop_id: leg.destination_stop_id.clone(),
+            })
         }
         Some(_) => Err(invalid("A leg's kind must be train or untracked.")),
     }
@@ -558,8 +575,22 @@ async fn save_itinerary(
             destination_crs,
         } = leg
         else {
-            if let ValidLeg::Untracked(untracked) = leg {
-                resolved.push(journeys::ItineraryLeg::Untracked(untracked.clone()));
+            if let ValidLeg::Untracked {
+                leg,
+                origin_stop_id,
+                destination_stop_id,
+            } = leg
+            {
+                let leg = journeys::attach_untracked_stops(
+                    &app.database,
+                    leg.clone(),
+                    origin_stop_id.as_deref(),
+                    destination_stop_id.as_deref(),
+                )
+                .await
+                .map_err(internal("check untracked leg stops"))?
+                .map_err(invalid)?;
+                resolved.push(journeys::ItineraryLeg::Untracked(leg));
             }
             continue;
         };
@@ -747,7 +778,7 @@ mod tests {
             untracked_leg("")
         );
         let (_, _, legs) = validate(body.as_bytes(), MAX_ITINERARY_LEGS, today()).unwrap();
-        let ValidLeg::Untracked(untracked) = &legs[0] else {
+        let ValidLeg::Untracked { leg: untracked, .. } = &legs[0] else {
             panic!("the first leg is untracked");
         };
         assert_eq!(untracked.transit_mode, "tube");

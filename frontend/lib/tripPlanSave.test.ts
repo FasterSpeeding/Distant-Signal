@@ -185,4 +185,44 @@ describe('transferAsUntracked', () => {
       ),
     ).toBeNull();
   });
+
+  it("takes a Tube transfer's TfL stops, names and ids, where the plan has them", () => {
+    const euston = { id: '940GZZTESTE', name: 'Euston', modes: ['tube'], lines: [] };
+    const kingsCross = { id: '940GZZTESTK', name: "King's Cross St. Pancras", modes: ['tube'], lines: [] };
+    const tube: TripPlanLeg = {
+      kind: 'transfer',
+      mode: 'TUBE',
+      originCrs: 'EUS',
+      destinationCrs: 'KGX',
+      minutes: 12,
+      originStop: euston,
+      destinationStop: kingsCross,
+    };
+    expect(transferAsUntracked(tube, nameFor)).toEqual({
+      transitMode: 'tube',
+      originName: 'Euston',
+      originStopId: '940GZZTESTE',
+      destinationName: "King's Cross St. Pancras",
+      destinationStopId: '940GZZTESTK',
+    });
+    // One end unknown: that end keeps the station name and sends no id.
+    const { destinationStop: _gone, ...half } = tube;
+    expect(transferAsUntracked(half, nameFor)).toEqual({
+      transitMode: 'tube',
+      originName: 'Euston',
+      originStopId: '940GZZTESTE',
+      destinationName: 'London Kings Cross',
+    });
+    // And the saved itinerary carries them on the untracked leg.
+    const legs = itineraryLegsForSaving(
+      [itinerary([train('A1', 'MKC', 'EUS', '08:00', '08:40'), tube, train('B2', 'KGX', 'YRK', '09:30', '11:30')])],
+      nameFor,
+    );
+    expect(legs[1]).toMatchObject({
+      kind: 'untracked',
+      transitMode: 'tube',
+      originStopId: '940GZZTESTE',
+      destinationStopId: '940GZZTESTK',
+    });
+  });
 });

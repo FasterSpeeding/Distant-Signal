@@ -3,6 +3,45 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-20: TfL stop lookup (Tube, DLR, tram)
+
+Additive; no existing request or field changes meaning. Spec:
+`docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md`. The stop
+list is empty until the operator turns on poller-tfl's stops job.
+
+- **`GET /public/tfl/stops?q=&modes=`** (no auth): up to 20 TfL stops,
+  best match first (whole name, name prefix, word prefix, substring;
+  punctuation and case ignored, `&` matches `and`). Each is `{id, name,
+  modes, lines: [{id, name}]}`; `id` is the NaPTAN id (`940GZZLUEUS`).
+  `modes` is a comma list of `tube`, `dlr`, `tram` (default all); another
+  value is a 400. A blank `q` is `[]`.
+- **`GET /public/tfl/stops/by-crs?crs=EUS[,KGX][&modes=]`** (no auth): each
+  National Rail station's TfL stops, best first, keyed by CRS: a short
+  override list, then TfL's interchange hubs, then the nearest stop within
+  300 m. A code with none is absent. Up to 20 codes.
+- **Stop ids on untracked legs.** `POST /Journeys` (`leg`), `POST
+  /Journeys/{id}/legs` (with or without `?before=`), `PUT
+  /Journeys/{id}/legs/{legId}` and `POST /Journeys/itinerary` untracked
+  legs take optional `originStopId` and `destinationStopId` (a stop `id`
+  from the search). A `PUT` replaces them like the other fields: leave one
+  out to clear it. Each must be a known stop, on a `tube`, `dlr`, `tram`
+  or `metro` leg
+  (400 otherwise; `invalid_itinerary` on the itinerary route, where a
+  train leg with one is refused too). A blank `originName`/
+  `destinationName` takes the stop's name. Every leg of `GET
+  /Journeys/{id}` gains `originStopId`/`destinationStopId` (`null` for free
+  text and on train legs); the account export has `origin_stop_id`/
+  `destination_stop_id`; a delegated deletion summary has both. An
+  itinerary body without them hashes for `Idempotency-Key` as before.
+- **`transitMode: "dlr"`** joins the untracked-leg modes.
+- **`/Trips/plan` transfers.** A `kind: "transfer"` leg whose `mode` is
+  `TUBE` or `METRO` may carry `originStop` and `destinationStop` (`{id,
+  name, modes, lines}`), the TfL stop at each National Rail end. Absent
+  when unknown.
+- **For ds-mcp.** Nothing has to change. To save a planner Tube transfer
+  as an untracked leg, send `originName: originStop.name` and
+  `originStopId: originStop.id` (and the same for the destination).
+
 ## 2026-10-20: `scheduled*` times are now public
 
 A meaning change, no field removed: the second step of the 2026-10-01

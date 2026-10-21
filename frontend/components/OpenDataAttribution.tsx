@@ -5,6 +5,7 @@ import { TextLink } from './TextLink';
 import { PREFERENCES_DESTINATION } from '@/lib/navLinks';
 import { LEGAL_LINKS, legalPagesVisible } from '@/lib/legal';
 import { NATIONAL_RAIL_URL } from './NationalRailCredit';
+import { TFL_STOPS_ATTRIBUTION } from '@/lib/tflAttribution';
 
 // Re-exported so existing imports keep working; it lives in its own module
 // because client components render it too.
@@ -23,11 +24,14 @@ export { NationalRailCredit } from './NationalRailCredit';
  *
  * The licence also asks for Ordnance Survey and Geomni attributions where
  * the data used is derived from theirs. That applies to TfL's *geographic*
- * data — StopPoint coordinates, maps, route geometry — and this app ingests
- * none of it: v1 is line status only (see
- * `docs/superpowers/plans/2026-08-22-tfl-line-status-integration.md`). If
- * stop-level TfL data is ever added, those two lines have to be added here
- * with it.
+ * data — StopPoint coordinates, maps, route geometry. Since the TfL stop
+ * lookup (docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md) this
+ * app ingests StopPoint names and coordinates, so both statements
+ * (`lib/tflAttribution.ts`) sit with the TfL credit on `/attribution` and
+ * under the untracked-leg form's stop fields, where the stop data is shown
+ * (`UntrackedLegFields`). The footer keeps the short credit only, as it
+ * keeps every other source's details for `/attribution`. No TfL roundel,
+ * logo or brand styling is used, as TfL's terms require.
  *
  * The four RDM feeds this app consumes are NOT one shared licence family --
  * a Data Sharing Agreement audit (docs/superpowers/plans/2026-09-01-rdm-attribution-wording.md
@@ -242,8 +246,8 @@ export const DATA_SOURCES: readonly DataSource[] = [
   {
     id: 'tfl',
     title: 'Transport for London',
-    use: 'Transport for London line status.',
-    statement: 'Powered by TfL Open Data',
+    use: 'Transport for London line status, and the Tube, DLR and tram stops offered when you add a leg we do not track.',
+    statement: TFL_STOPS_ATTRIBUTION,
     licence: (
       <>
         <ExternalLink href={TFL_TERMS_URL}>TfL transport data service terms</ExternalLink> (based on the Open Government

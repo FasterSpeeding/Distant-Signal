@@ -13,6 +13,13 @@ const STATIONS = [
   { code: 'MKC', name: 'Milton Keynes Central' },
 ];
 
+/** `GET /tfl/stops` rows (invented ids): the TfL stop lookup. */
+const TFL_STOPS = [
+  { id: '940GZZTESTE', name: 'Euston', modes: ['tube'], lines: [{ id: 'northern', name: 'Northern' }] },
+  { id: '940GZZTESTV', name: 'Victoria', modes: ['tube'], lines: [{ id: 'victoria', name: 'Victoria' }] },
+  { id: '940GZZTESTB', name: 'Bank', modes: ['dlr'], lines: [{ id: 'dlr', name: 'DLR' }] },
+];
+
 const JOURNEY_ID = 77;
 
 /** Leg 1: Milton Keynes to Euston, timetabled to arrive at 09:52 BST. */
@@ -101,6 +108,8 @@ function untrackedLegFrom(body: Record<string, unknown>, id: number) {
     originName: body.originName ?? null,
     destinationCrs: null,
     destinationName: body.destinationName ?? null,
+    originStopId: body.originStopId ?? null,
+    destinationStopId: body.destinationStopId ?? null,
     serviceDate: '2026-10-21',
     departAfter: null,
     departBefore: null,
@@ -139,6 +148,14 @@ async function mockApi(page: Page, firstLegs: unknown[]): Promise<Record<string,
       );
     }
     if (/^\/api\/stations\/[A-Z]{3}\//.test(path)) return json(route, []);
+    if (path === '/api/tfl/stops') {
+      const q = (url.searchParams.get('q') ?? '').toLowerCase();
+      const modes = (url.searchParams.get('modes') ?? '').split(',');
+      return json(
+        route,
+        TFL_STOPS.filter((s) => s.name.toLowerCase().includes(q) && s.modes.some((m) => modes.includes(m))),
+      );
+    }
     if (path === '/api/Journeys' && request.method() === 'POST') {
       const body = request.postDataJSON() as { leg: Record<string, unknown> };
       bodies.push(body.leg);
@@ -181,13 +198,14 @@ test.describe('untracked legs', () => {
     await dialog.getByText('Tube, bus or walk', { exact: true }).click();
 
     // Seeded from leg 1: where and when it arrives.
-    await expect(dialog.getByLabel('From (optional)')).toHaveValue('London Euston');
+    await expect(dialog.getByRole('combobox', { name: 'From (optional)' })).toHaveValue('London Euston');
     await expect(dialog.getByLabel('Date', { exact: true })).toHaveValue('21 Oct 2026');
     await expect(dialog.getByRole('textbox', { name: 'Leaves', exact: true })).toHaveValue('09:52');
     await expect(dialog.getByText('Your last leg arrives at 09:52.')).toBeVisible();
 
     await dialog.getByLabel('Line (optional)').fill('Victoria line');
-    await dialog.getByLabel('To (optional)').fill('Victoria');
+    // Typed, not picked: free text, so no stop id is sent.
+    await dialog.getByRole('combobox', { name: 'To (optional)' }).fill('Victoria Coach Station');
     await dialog.getByRole('textbox', { name: 'Leaves', exact: true }).fill('10:05');
     await dialog.getByRole('textbox', { name: 'Arrives', exact: true }).fill('10:20');
 
@@ -201,12 +219,43 @@ test.describe('untracked legs', () => {
       transitMode: 'tube',
       lineName: 'Victoria line',
       originName: 'London Euston',
-      destinationName: 'Victoria',
+      destinationName: 'Victoria Coach Station',
       plannedDeparture: '2026-10-21T09:05:00.000Z',
       plannedArrival: '2026-10-21T09:20:00.000Z',
     });
-    await expect(page.getByText('Leg 2: Tube: Victoria line, London Euston to Victoria')).toBeVisible();
+    await expect(page.getByText('Leg 2: Tube: Victoria line, London Euston to Victoria Coach Station')).toBeVisible();
     await expect(page.getByText('Not live tracked')).toBeVisible();
+  });
+
+  test('starts a journey with Tube stops picked from the TfL lookup', async ({ page }) => {
+    const bodies = await mockApi(page, []);
+    await page.goto('/journeys/new');
+    await page.getByText('Tube, bus or walk', { exact: true }).click();
+    const from = page.getByRole('combobox', { name: 'From (optional)' });
+    await from.fill('eus');
+    await page.getByRole('option', { name: 'Euston · Tube: Northern' }).click();
+    await expect(from).toHaveValue('Euston');
+    const to = page.getByRole('combobox', { name: 'To (optional)' });
+    await to.fill('vic');
+    await page.getByRole('option', { name: 'Victoria · Tube: Victoria' }).click();
+    await expect(to).toHaveValue('Victoria');
+    await page.getByRole('textbox', { name: 'Leaves', exact: true }).fill('08:30');
+    await page.getByRole('textbox', { name: 'Arrives', exact: true }).fill('08:45');
+
+    const results = await new AxeBuilder({ page }).analyze();
+    expect(results.violations).toEqual([]);
+
+    await page.getByRole('button', { name: 'Start journey' }).click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0]).toMatchObject({
+      mode: 'untracked',
+      transitMode: 'tube',
+      originName: 'Euston',
+      originStopId: '940GZZTESTE',
+      destinationName: 'Victoria',
+      destinationStopId: '940GZZTESTV',
+    });
+    await expect(page.getByText('Leg 1: Tube, Euston to Victoria')).toBeVisible();
   });
 
   test('starts a journey with a walk', async ({ page }) => {

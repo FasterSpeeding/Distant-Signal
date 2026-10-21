@@ -16,15 +16,20 @@ export type ItineraryLegBody =
       transitMode: TransitMode;
       originName?: string;
       destinationName?: string;
+      originStopId?: string;
+      destinationStopId?: string;
       plannedDeparture: string;
       plannedArrival: string;
     };
 
-/** What an untracked leg takes from a transfer: its mode and place names. */
+/** What an untracked leg takes from a transfer: its mode, place names
+ * and, for a Tube or metro transfer, the TfL stops at each end. */
 export interface TransferAsUntracked {
   transitMode: TransitMode;
   originName?: string;
   destinationName?: string;
+  originStopId?: string;
+  destinationStopId?: string;
 }
 
 const TRANSFER_MODES: Record<string, TransitMode> = {
@@ -37,10 +42,11 @@ const TRANSFER_MODES: Record<string, TransitMode> = {
 
 /** The ONE place a planner transfer becomes an untracked leg's mode and
  * place names: the fixed-link mode (WALK, TUBE, ...) as a journey mode, and
- * each end's station name (else its code). `null` for a change within one
- * station (`TRANSFER`), which isn't a journey of its own. A TfL stop lookup
- * can replace the names here (and add stop ids) without touching the
- * callers. */
+ * each end's station name (else its code). Where `/Trips/plan` names the
+ * TfL stop at an end (`originStop`/`destinationStop`, on TUBE and METRO
+ * transfers; docs/superpowers/specs/2026-10-20-tfl-stop-lookup-design.md
+ * §5), that end is the stop: its name and its id. `null` for a change
+ * within one station (`TRANSFER`), which isn't a journey of its own. */
 export function transferAsUntracked(
   leg: TransferLeg,
   nameFor: (code: string) => string | undefined,
@@ -51,12 +57,16 @@ export function transferAsUntracked(
     if (!code || isTiplocCode(code)) return undefined;
     return nameFor(code) ?? code;
   };
-  const originName = place(leg.originCrs);
-  const destinationName = place(leg.destinationCrs);
+  const originName = leg.originStop?.name ?? place(leg.originCrs);
+  const destinationName = leg.destinationStop?.name ?? place(leg.destinationCrs);
+  const originStopId = leg.originStop?.id;
+  const destinationStopId = leg.destinationStop?.id;
   return {
     transitMode,
     ...(originName ? { originName } : {}),
     ...(destinationName ? { destinationName } : {}),
+    ...(originStopId ? { originStopId } : {}),
+    ...(destinationStopId ? { destinationStopId } : {}),
   };
 }
 

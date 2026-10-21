@@ -64,7 +64,7 @@ test.describe('edit and insert journey legs', () => {
     // Add a walk at the start, ending where the Tube leg starts.
     await main.getByRole('button', { name: 'Add a leg at the start' }).click();
     const add = page.getByRole('dialog', { name: 'Add a leg at the start' });
-    await expect(add.getByLabel('To (optional)')).toHaveValue('Victoria');
+    await expect(add.getByRole('combobox', { name: 'To (optional)' })).toHaveValue('Victoria');
     const londonTime = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/London',
       hour: '2-digit',

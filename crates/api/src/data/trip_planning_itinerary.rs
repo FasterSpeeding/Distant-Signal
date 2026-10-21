@@ -1,4 +1,4 @@
-//! Turns a raw `trip_planner::Journey`/`RaptorJourney` (TIPLOC-keyed,
+//! Turns a raw `trip_planner::Journey`/`RaptorJourney` (`TIPLOC`-keyed,
 //! minutes-from-midnight) into the CRS/human-time-keyed shape
 //! `routes::trips` serializes, applies this feature's interchange cap
 //! (design spec §4: ≤2 by default, caller-raisable to ≤6 via
@@ -44,13 +44,11 @@ pub const fn max_rounds(max_changes: u32) -> u32 {
     max_changes + 2
 }
 
-// The train variant is much larger than the transfer one. A response holds a
-// few dozen legs at most and nearly all of them are trains, so boxing it
-// would add an allocation per leg to save nothing.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "nearly every leg is a train, so boxing would add an allocation per leg; see above"
-)]
+// The train variant is larger than the transfer one, but no longer by
+// enough for clippy's large_enum_variant since the transfer's TfL stops
+// (2026-10-20). A response holds a few dozen legs at most and nearly all of
+// them are trains, so boxing the train would add an allocation per leg to
+// save nothing.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum PlannedLeg {
@@ -132,7 +130,7 @@ pub enum PlannedLeg {
         /// `trip_leg_details::attach_leg_details`; a train until then.
         #[serde(flatten)]
         service: crate::data::schedule_services::ServiceModeFields,
-        /// Internal (never serialized): the boarding/alighting TIPLOCs and
+        /// Internal (never serialized): the boarding/alighting `TIPLOCs` and
         /// raw minutes-from-service-day-midnight the planner produced, so
         /// waypoint chaining and the live overlay can work on exact values
         /// rather than re-deriving them from the rendered clock times.
@@ -157,6 +155,16 @@ pub enum PlannedLeg {
         origin_crs: Option<String>,
         destination_crs: Option<String>,
         minutes: i32,
+        /// For a `TUBE` or `METRO` transfer, the `TfL` stop at each end
+        /// (`{id, name, modes, lines}`; additive, 2026-10-20, docs/superpowers/
+        /// specs/2026-10-20-tfl-stop-lookup-design.md §5), so a client saving
+        /// the transfer as an untracked leg can send its `originStopId` and
+        /// place name. Absent when unknown. Filled in by
+        /// `tfl_stops::attach_transfer_stops`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        origin_stop: Option<Box<crate::data::tfl_stops::TflStopSummary>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination_stop: Option<Box<crate::data::tfl_stops::TflStopSummary>>,
     },
 }
 
@@ -170,7 +178,7 @@ pub struct PlannedItinerary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exceeds_recommended_changes: Option<bool>,
     /// Internal (never serialized): minutes from service-day midnight of the
-    /// itinerary's first departure and final arrival, and the TIPLOC it
+    /// itinerary's first departure and final arrival, and the `TIPLOC` it
     /// finally arrives at -- what [`plan_via_waypoints`] chains the next
     /// segment from.
     #[serde(skip)]
@@ -179,7 +187,7 @@ pub struct PlannedItinerary {
     pub arrival_min: u32,
     #[serde(skip)]
     pub arrival_tiploc: Option<String>,
-    /// Internal: the TIPLOC the itinerary starts from -- what an arrive-by
+    /// Internal: the `TIPLOC` the itinerary starts from -- what an arrive-by
     /// chain ([`chain_deadline_min`]) charges the change time at.
     #[serde(skip)]
     pub departure_tiploc: Option<String>,
@@ -232,12 +240,12 @@ impl PlannedItinerary {
     }
 }
 
-/// Normalizes `tiploc` before the lookup -- every other TIPLOC-keyed lookup
+/// Normalizes `tiploc` before the lookup -- every other `TIPLOC`-keyed lookup
 /// in this codebase does the same, at its own point of use, because a real
 /// production incident (2026-09-16, "Unknown location" -- see
 /// `data::trip_planning`'s own doc comments and its
 /// `a_padded_tiploc_from_calling_points_full_still_matches_bare_stanox_crs_change_time`
-/// test) was caused by exactly this bug: a padded/un-normalized TIPLOC
+/// test) was caused by exactly this bug: a padded/un-normalized `TIPLOC`
 /// (as flows through this whole system, straight off
 /// `schedule_calling_points_full.tiploc`) failing to match a bare-keyed
 /// lookup table. `tiploc_to_crs` is built from the UNION of `tiploc_crs`
@@ -325,6 +333,8 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
             origin_crs: crs_for_tiploc(interchange, &transfer.from_tiploc),
             destination_crs: crs_for_tiploc(interchange, &transfer.to_tiploc),
             minutes: transfer.minutes,
+            origin_stop: None,
+            destination_stop: None,
         },
     }
 }
@@ -393,7 +403,7 @@ fn clock_minutes(time: NaiveTime) -> u32 {
     time.num_seconds_from_midnight() / 60
 }
 
-/// The CRS -> TIPLOC resolution [`plan_segment`] starts with, factored out
+/// The CRS -> `TIPLOC` resolution [`plan_segment`] starts with, factored out
 /// so [`plan_via_waypoints`] can still validate a segment it has no reason
 /// to search (see there).
 fn resolve_segment_tiplocs(
@@ -516,7 +526,7 @@ impl SegmentSearch<'_> {
         self.search_tiplocs(&from_tiplocs, &to_tiplocs, bound)
     }
 
-    /// [`Self::search`] between resolved TIPLOC sets (either end may be an
+    /// [`Self::search`] between resolved `TIPLOC` sets (either end may be an
     /// OR choice of stations, a group waypoint's).
     pub fn search_tiplocs(
         &self,
@@ -741,7 +751,7 @@ pub struct SegmentResult {
 /// is the `NoInterchange` sentinel: the traveller explicitly asked to stop
 /// there, so the station's "never change here" marker (the coach-stand
 /// sentinels) says nothing about how long they need -- use the same 5-minute
-/// default `schedule_query::minimum_change_time` gives a TIPLOC with no MSN
+/// default `schedule_query::minimum_change_time` gives a `TIPLOC` with no MSN
 /// record at all.
 const WAYPOINT_FALLBACK_CHANGE_MINUTES: u32 = 5;
 
@@ -757,7 +767,7 @@ fn waypoint_change_minutes(interchange: &InterchangeData, tiploc: Option<&str>) 
 }
 
 /// When the traveller can leave the waypoint `itinerary` arrives at: its
-/// arrival plus the minimum change time at the TIPLOC it arrives at.
+/// arrival plus the minimum change time at the `TIPLOC` it arrives at.
 fn ready_after(itinerary: &PlannedItinerary, interchange: &InterchangeData) -> u32 {
     itinerary.arrival_min
         + waypoint_change_minutes(interchange, itinerary.arrival_tiploc.as_deref())
@@ -780,7 +790,7 @@ pub fn chain_ready_min(
 
 /// The arrive-by mirror of [`chain_ready_min`]: the latest a segment
 /// PRECEDING `itineraries` may arrive at the waypoint -- the latest
-/// departure among them, less the minimum change time at the TIPLOC it
+/// departure among them, less the minimum change time at the `TIPLOC` it
 /// leaves from (searching to the latest keeps every one of them reachable
 /// from at least one earlier option). `None` when that segment found
 /// nothing.
@@ -805,7 +815,7 @@ pub fn chain_deadline_min(
 /// segment's own result rather than re-optimising across the whole trip.
 /// `departure_after` applies to the FIRST segment; each later segment
 /// searches from the previous segment's earliest arrival plus the minimum
-/// change time at the TIPLOC it arrives at ([`chain_ready_min`]). Until
+/// change time at the `TIPLOC` it arrives at ([`chain_ready_min`]). Until
 /// 2026-09-28 later segments searched from `00:00`, so an onward train that
 /// left before the traveller even reached the waypoint could be offered.
 ///
@@ -962,7 +972,7 @@ fn describe_list(name: &str, codes: &[String]) -> String {
 /// - `avoidChange` (Distant Signal's own, the loosest): never board, alight,
 ///   change or walk there; staying aboard a train that calls there is fine.
 ///
-/// Every CRS code covers all of its TIPLOCs.
+/// Every CRS code covers all of its `TIPLOCs`.
 pub fn build_restrictions(
     connections: &[schedule_query::Connection],
     interchange: &InterchangeData,
@@ -1035,7 +1045,7 @@ pub struct ViaSatisfied {
     /// The station that satisfied it (2026-10-07): for an OR choice, the
     /// member the journey passed; otherwise the via itself. A CRS, or a
     /// `tiploc:` code for a bus stop or ferry terminal; `null` only if the
-    /// TIPLOC has no code (not expected).
+    /// `TIPLOC` has no code (not expected).
     pub matched_crs: Option<String>,
     /// Index into `segments` (the part of the journey).
     pub segment: usize,
@@ -1051,7 +1061,7 @@ pub struct ViaSatisfied {
 /// ([`trip_planner::Vias`]), or `None` when there are none. `Err` names an
 /// unrecognised code.
 ///
-/// Every CRS code covers all of its TIPLOCs. A via is passed by a train
+/// Every CRS code covers all of its `TIPLOCs`. A via is passed by a train
 /// that calls there or runs through it; running through is only visible
 /// where `passes` (the day's [`schedule_query::PassIndex`]) has a row, and
 /// CIF records one only at a timing point -- so at a station that is not a
@@ -1063,7 +1073,7 @@ pub struct ViaSatisfied {
 /// `vias[v]` is via `v`'s station codes (2026-10-07): one for a plain via,
 /// several for an OR choice (`KGX|EUS`, `group:LON`; see
 /// [`crate::data::station_groups`]), which is passed by ANY of them. Its
-/// targets are the union of their TIPLOCs, so it is still one via (one
+/// targets are the union of their `TIPLOCs`, so it is still one via (one
 /// step of progress) to the search.
 pub fn build_vias(
     connections: &[schedule_query::Connection],
@@ -1173,7 +1183,7 @@ impl TripPlanInput<'_> {
         waypoint_choice(self.waypoints, self.waypoint_codes, index)
     }
 
-    /// Every TIPLOC of one segment end: the origin, the destination or a
+    /// Every `TIPLOC` of one segment end: the origin, the destination or a
     /// waypoint's label (an OR choice's being the union of its stations').
     fn stop_tiplocs(&self, stop: &str) -> Result<Vec<String>, String> {
         let choice = self
@@ -1235,7 +1245,7 @@ pub fn waypoints_at_ends(
     (first, last)
 }
 
-/// Every TIPLOC of one station code, or the "not a recognised station
+/// Every `TIPLOC` of one station code, or the "not a recognised station
 /// CRS code" message.
 fn resolve_code_tiplocs(interchange: &InterchangeData, code: &str) -> Result<Vec<String>, String> {
     let tiplocs = interchange
@@ -1258,7 +1268,7 @@ pub struct WaypointSatisfied {
     /// The waypoint as requested (`KGX`, `KGX|EUS`, `group:LON`).
     pub crs: String,
     /// The station the journey stopped at for it: the member, for a choice.
-    /// `null` only if its TIPLOC has no code (not expected).
+    /// `null` only if its `TIPLOC` has no code (not expected).
     pub matched_crs: Option<String>,
     /// The segment that ends there (the next one starts there). For one
     /// satisfied at the origin, 0 (which starts there); at the destination,
@@ -1801,7 +1811,7 @@ fn leg_arrival_min(leg: &JourneyLeg) -> u32 {
 
 /// When the traveller can leave a waypoint on `next`, having arrived on
 /// `previous`: at once when `next` continues the same train, otherwise
-/// after the change time at the TIPLOC `next` leaves from (the rule the
+/// after the change time at the `TIPLOC` `next` leaves from (the rule the
 /// joint search applies).
 pub fn waypoint_ready_min(
     previous: &PlannedItinerary,
@@ -4182,6 +4192,8 @@ mod tests {
             origin_crs: None,
             destination_crs: None,
             minutes: 5,
+            origin_stop: None,
+            destination_stop: None,
         };
         let segment = |from: &str, to: &str, itineraries| SegmentResult {
             origin_crs: from.to_string(),

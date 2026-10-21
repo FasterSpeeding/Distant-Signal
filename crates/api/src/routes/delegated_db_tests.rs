@@ -1129,6 +1129,16 @@ async fn a_delegated_save_may_include_untracked_legs() {
     )
     .await;
     let all = token(&h, &user, "journeys:read journeys:write journeys:delete", 0);
+    // A TfL stop for the Tube hop's origin (TfL stop lookup, 2026-10-20).
+    let stop_fixture = "DELETE FROM tfl_stops WHERE stop_id = '940GZZTESTK'";
+    sqlx::query(stop_fixture).execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO tfl_stops (stop_id, name, search_name, modes, fetched_at) \
+         VALUES ('940GZZTESTK', 'Brixton', 'brixton', '{tube}', NOW())",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let departure = chrono::Utc::now() + chrono::Duration::days(2);
     let body = json!({
         "customName": "Door to door",
@@ -1138,6 +1148,7 @@ async fn a_delegated_save_may_include_untracked_legs() {
                 "transitMode": "tube",
                 "lineName": "Victoria line",
                 "originName": "Brixton",
+                "originStopId": "940GZZTESTK",
                 "destinationName": "Euston",
                 "plannedDeparture": departure.to_rfc3339(),
                 "plannedArrival": (departure + chrono::Duration::minutes(25)).to_rfc3339(),
@@ -1189,8 +1200,42 @@ async fn a_delegated_save_may_include_untracked_legs() {
     assert_eq!(legs[0]["kind"], "untracked");
     assert_eq!(legs[0]["transitMode"], "tube");
     assert_eq!(legs[0]["originName"], "Brixton");
+    assert_eq!(legs[0]["originStopId"], "940GZZTESTK");
+    assert!(legs[0]["destinationStopId"].is_null());
     assert_eq!(legs[0]["untrackedStatus"], "planned");
     assert_eq!(legs[1]["kind"], "train");
+    assert!(legs[1]["originStopId"].is_null());
+
+    // An unknown stop id, or one on a train leg, is refused.
+    for (key, legs) in [
+        (
+            "u3",
+            json!([
+                {
+                    "kind": "untracked", "transitMode": "tube", "originStopId": "940GZZNOWHERE",
+                    "plannedDeparture": departure.to_rfc3339(),
+                    "plannedArrival": departure.to_rfc3339(),
+                },
+                { "trainUid": UIDS[0], "serviceDate": service_date() },
+            ]),
+        ),
+        (
+            "u4",
+            json!([{ "trainUid": UIDS[0], "serviceDate": service_date(), "originStopId": "940GZZTESTK" }]),
+        ),
+    ] {
+        let refused = send(
+            &h,
+            "POST",
+            "/Journeys/itinerary",
+            &Auth::Bearer(&all),
+            Some(json!({ "legs": legs })),
+            &[("idempotency-key", key)],
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+        assert_eq!(refused.error(), "invalid_itinerary");
+    }
 
     // An untracked leg alone is not an itinerary.
     let alone = send(
@@ -1230,8 +1275,10 @@ async fn a_delegated_save_may_include_untracked_legs() {
     assert_eq!(summary["legs"][0]["kind"], "untracked");
     assert_eq!(summary["legs"][0]["transitMode"], "tube");
     assert_eq!(summary["legs"][0]["originName"], "Brixton");
+    assert_eq!(summary["legs"][0]["originStopId"], "940GZZTESTK");
     assert_eq!(summary["legs"][1]["trainUid"], UIDS[0]);
     cleanup(&pool, prefix).await;
+    sqlx::query(stop_fixture).execute(&pool).await.unwrap();
 }
 
 #[tokio::test]

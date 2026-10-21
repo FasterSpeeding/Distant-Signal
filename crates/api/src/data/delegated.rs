@@ -418,7 +418,8 @@ pub async fn delete_journey_delegated(
              'destinationCrs', jl.destination_crs, 'trainUid', tr.train_uid, \
              'kind', jl.kind, 'transitMode', jl.transit_mode, \
              'originName', jl.origin_place, 'destinationName', jl.destination_place, \
-             'lineName', jl.line_name, 'plannedDeparture', jl.planned_departure) \
+             'lineName', jl.line_name, 'plannedDeparture', jl.planned_departure, \
+             'originStopId', jl.origin_stop_id, 'destinationStopId', jl.destination_stop_id) \
              ORDER BY jl.leg_order), '[]'::jsonb) \
          FROM journey_legs jl \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \

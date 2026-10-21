@@ -51,7 +51,7 @@ describe('EditUntrackedLegButton', () => {
     renderWithMantine(<EditUntrackedLegButton journeyId={3} leg={leg} />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit leg' }));
     expect(await screen.findByLabelText('Line (optional)')).toHaveValue('Victoria line');
-    expect(screen.getByLabelText('From (optional)')).toHaveValue('Brixton');
+    expect(screen.getByRole('combobox', { name: 'From (optional)' })).toHaveValue('Brixton');
     expect(screen.getByLabelText('Date')).toHaveValue('21 Oct 2026');
     expect(screen.getByLabelText('Leaves')).toHaveValue('09:05');
     expect(screen.getByLabelText('Arrives')).toHaveValue('09:30');

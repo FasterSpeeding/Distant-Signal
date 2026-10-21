@@ -547,6 +547,25 @@ export interface Suggestion {
   // `(ferry)`.
   kind?: 'bus' | 'ferry';
   parentCrs?: string;
+  /** A TfL stop's modes and lines (`Tube: Northern, Victoria`), shown after
+   * its name in the dropdown (`searchTflStops`). */
+  detail?: string;
+}
+
+/** One line at a TfL stop. */
+export interface TflStopLine {
+  id: string;
+  name: string;
+}
+
+/** A TfL Tube, DLR or tram stop (`GET /public/tfl/stops`,
+ * `crates/api/src/data/tfl_stops.rs::TflStopSummary`). `id` is its NaPTAN
+ * id, what an untracked leg stores as `originStopId`/`destinationStopId`. */
+export interface TflStop {
+  id: string;
+  name: string;
+  modes: string[];
+  lines: TflStopLine[];
 }
 
 /** A code/name pair from `GET /public/stations/nearby` --
@@ -597,7 +616,8 @@ export interface TrackingPhaseFields {
 }
 
 /** An untracked leg's mode (`data::journeys::TRANSIT_MODES`). */
-export type TransitMode = 'tube' | 'bus' | 'tram' | 'metro' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
+export type TransitMode =
+  'tube' | 'dlr' | 'bus' | 'tram' | 'metro' | 'rail' | 'walk' | 'ferry' | 'taxi' | 'cycle' | 'other';
 
 /** An untracked leg's state from the clock alone, computed by the api. */
 export type UntrackedStatus = 'planned' | 'inProgress' | 'done';
@@ -617,6 +637,9 @@ export interface UntrackedLegFields {
   plannedDeparture?: string | null; // RFC3339
   plannedArrival?: string | null; // RFC3339
   untrackedStatus?: UntrackedStatus | null;
+  /** The TfL stops its places were picked from, `null` for free text. */
+  originStopId?: string | null;
+  destinationStopId?: string | null;
 }
 export type JourneyStatus = 'awaiting_activation' | 'en_route' | 'cancelled' | 'completed';
 export type EtaSource = 'trust-propagated' | 'darwin-estimated';
@@ -1283,6 +1306,11 @@ export type TripPlanLeg =
       originCrs: string | null;
       destinationCrs: string | null;
       minutes: number;
+      /** For a `TUBE` or `METRO` transfer, the TfL stop at each end, when
+       * known: what saving it as an untracked leg sends as the place and
+       * its stop id. */
+      originStop?: TflStop;
+      destinationStop?: TflStop;
     };
 
 /** One candidate itinerary for one segment
@@ -1493,6 +1521,9 @@ export interface UntrackedLegRequest {
   transitMode: TransitMode;
   originName?: string;
   destinationName?: string;
+  /** A TfL stop picked for the place (`TflStop.id`); Tube, DLR and tram only. */
+  originStopId?: string;
+  destinationStopId?: string;
   lineName?: string;
   plannedDeparture: string;
   plannedArrival: string;
