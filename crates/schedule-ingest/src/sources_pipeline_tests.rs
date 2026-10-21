@@ -192,6 +192,7 @@ async fn a_bucket_object_goes_through_the_existing_cif_pipeline() {
     let records = sink.feed_records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["source_sha256"], sha(&bytes).as_str());
+    assert_eq!(records[0]["delivery_source"], "bucket");
 }
 
 /// The same delivery through both sources, in either precedence order:
@@ -221,6 +222,12 @@ async fn the_same_delivery_through_both_sources_is_ingested_once() {
         assert_eq!(audit[1]["duplicate_of"], sha(&bytes).as_str());
         assert_eq!(audit[1]["first_source"], audit[0]["source"]);
         assert_ne!(audit[0]["source"], audit[1]["source"]);
+        // The record names the lane of the accepted copy: SFTP's when it
+        // ranks first, the bucket's otherwise.
+        assert_eq!(
+            sink.feed_records()[0]["delivery_source"],
+            audit[0]["source"]
+        );
 
         // A restart: fresh lanes, the same disk.
         let mut lanes = setup.lanes(precedence);
@@ -375,6 +382,7 @@ async fn the_same_corpus_extract_through_both_sources_is_loaded_once() {
         .cycles(&sink, &Routing::with_corpus(), &multi, &mut lanes, 4)
         .await;
     assert_eq!(sink.corpus_loads().len(), 1);
+    assert_eq!(sink.corpus_loads()[0]["delivery_source"], "bucket");
     let outcomes: Vec<(&str, &str)> = audit
         .iter()
         .map(|l| {

@@ -75,9 +75,14 @@ sketch, and why:
   loser's directory is retired (renamed to `.stale-superseded-*` and
   removed) so schedule-reference publishes the winner. A quarantined
   winner never promotes the loser.
-- **Not built:** the api's `delivery_source` column (§9 "Records", plan
-  3.3), the audit-log tailer (phase 5; `auditLogs.ship` logs a warning),
-  and Pub/Sub (phase 6). `expectedKeys` now includes `NLC*.xml.gz`.
+- **`delivery_source`** (§9 "Records", plan 3.3; DS-89):
+  `schedule_feed_ingests` and `corpus_deliveries` gain the nullable column
+  (`sftp` or `bucket`, CHECKed), written by both lanes through
+  schedule-ingest's direct sink (`ds_store`), not an api route: the api's
+  ingest routes were retired in ingest phase 5.
+- **Not built:** the audit-log tailer (phase 5; `auditLogs.ship` logs a
+  warning) and Pub/Sub (phase 6). `expectedKeys` now includes
+  `NLC*.xml.gz`.
 
 The remaining switch-on steps are in
 [docs/schedule-feed-bucket.md](../../schedule-feed-bucket.md#switching-it-on).

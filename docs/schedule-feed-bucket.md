@@ -19,8 +19,8 @@ never in this repository.
 bucket source (the Rust reader) are both built, off by default
 (`scheduleFeed.bucket.enabled: false`). Nothing is provisioned yet: the
 remaining steps are in [Switching it on](#switching-it-on). Not built: the
-audit-log shipper (`bucket.auditLogs.ship` only logs a warning), the api's
-`delivery_source` column, and Pub/Sub notifications.
+audit-log shipper (`bucket.auditLogs.ship` only logs a warning) and Pub/Sub
+notifications.
 
 ## Switching it on
 
@@ -171,6 +171,13 @@ against it first (`crates/schedule-ingest/src/sources.rs`):
 The audit lines gain `source` (`sftp` or `bucket`), and on `duplicate` and
 `superseded` lines `duplicate_of` and `first_source`. With SFTP alone none
 of this runs: no ledger, no new fields.
+
+Every recorded delivery also names its lane in Postgres:
+`schedule_feed_ingests.delivery_source` and
+`corpus_deliveries.delivery_source` are `sftp` or `bucket` (the accepted
+copy's), whichever sources are on (migration
+`20261021090000_schedule_delivery_source.sql`, DS-89). Rows from before it,
+or from an older schedule-ingest, are NULL: they all came over SFTP.
 
 Reader state on the PVC, all under `/data/schedule-feed/sources/`:
 

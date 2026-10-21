@@ -764,6 +764,7 @@ async fn run_scan_cycle(
         source_file: delivered.name.clone(),
         source_bytes: delivered.bytes,
         source_sha256: delivered.sha256.clone(),
+        delivery_source: lane.ctx.source.as_str(),
     };
 
     match sink.record_feed_ingest(&request).await {
@@ -892,7 +893,9 @@ fn queue_or_quarantine_failed_post(
 ///
 /// `source_*` are the delivered zip's own name, size and SHA-256 (see
 /// `audit.rs`), stored with the record (migration
-/// `20261001150000_schedule_feed_delivery_sha256.sql`).
+/// `20261001150000_schedule_feed_delivery_sha256.sql`), and
+/// `delivery_source` the lane it came through (`sftp` or `bucket`,
+/// `20261021090000_schedule_delivery_source.sql`).
 #[derive(Debug, Clone, Serialize)]
 struct ScheduleFeedIngestRequest {
     delivered_at: DateTime<Utc>,
@@ -901,6 +904,7 @@ struct ScheduleFeedIngestRequest {
     source_file: String,
     source_bytes: u64,
     source_sha256: String,
+    delivery_source: &'static str,
 }
 
 impl ScheduleFeedIngestRequest {
