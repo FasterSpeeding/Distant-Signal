@@ -1652,12 +1652,37 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     renderWithMantine(await DashboardPage());
 
-    expect(screen.getByText('Unknown station')).toBeInTheDocument();
+    // No route and no UID: a normal pre-match state, not a missing station
+    // (DS-111), so never "Unknown station".
+    expect(screen.getByText('Train not identified yet')).toBeInTheDocument();
+    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
     // Still attributed -- the tags are what stop an unlabelled row reading
     // as one the caller tracked themselves.
     expect(screen.getByText('From Family')).toBeInTheDocument();
+  });
+
+  // DS-111: every train tracked by UID read "Unknown station" here. With no
+  // route yet the row names the train itself.
+  it('names an own train with no route by its UID, never "Unknown station"', async () => {
+    vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+      item({
+        id: 7,
+        pinOriginCrs: null,
+        pinOriginName: null,
+        pinDestinationCrs: null,
+        pinDestinationName: null,
+        pinScheduledDeparture: null,
+        trainUid: 'W12345',
+      }),
+    ]);
+    vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
+
+    renderWithMantine(await DashboardPage());
+
+    expect(screen.getByText('Train W12345')).toBeInTheDocument();
+    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
   });
 
   it('caps the whole section at 5 rows across both halves, not 5 of each', async () => {
