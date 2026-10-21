@@ -1,13 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Modal, SegmentedControl, Stack, Text, TextInput } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { DateInput } from '@mantine/dates';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
-import type { LondonDateTime } from '@/lib/journeyLegChaining';
+import { resolvePriorOriginCrs, type LondonDateTime } from '@/lib/journeyLegChaining';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginControl } from './LoginControl';
 import { TimeFilterInput } from './TimeFilterInput';
@@ -19,7 +19,7 @@ import {
 } from './UntrackedLegFields';
 import type { NewJourneyLegRequest, AddJourneyLegResponse } from '@/lib/types';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
-import { searchStations } from '@/lib/suggestions';
+import { railCrsForStop, searchStations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { resolveStationCode, suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 
@@ -71,10 +71,21 @@ type LegMode = NewJourneyLegRequest['mode'];
  * docs/superpowers/specs/2026-10-20-untracked-legs-and-tracked-train-states-design.md
  * §2), adds an untracked leg: a mode, optional line and places, and planned
  * times (`UntrackedLegFields`). It is seeded the same way: its date and
- * "leaves" from `priorArrival`, its "from" from `priorPlaceName`. */
+ * "leaves" from `priorArrival`, its "from" from `priorPlaceName`.
+ *
+ * After an untracked last leg (a Tube ride to Euston, a walk) there is no
+ * `priorDestinationCrs`, so the train modes' "From station" is resolved
+ * when the dialog opens (`resolvePriorOriginCrs`): the TfL stop the leg
+ * ended at (`priorStopId`) through the hub crosswalk, else its place name
+ * when that is exactly a station's. It lands only while the field is still
+ * empty, so it never replaces what the traveller has started typing. The
+ * dialog still opens on "Search a time window": after a Tube or walk the
+ * next leg is most often a train, and the untracked mode is one click away
+ * with its "from" already the place. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
+  priorStopId = null,
   priorArrival = null,
   priorPlaceName = null,
   beforeLegId = null,
@@ -95,6 +106,9 @@ export function AddJourneyLegButton({
   /** The button's words; "Add a leg" by default. */
   label?: string;
   priorDestinationCrs: string | null;
+  /** The TfL stop an untracked previous leg ended at, when it was picked
+   * from TfL's stops: mapped to its station for the train modes' origin. */
+  priorStopId?: string | null;
   /** The previous leg's destination in words (`journeyPriorDestinationName`),
    * the default "from" of a new untracked leg. */
   priorPlaceName?: string | null;
@@ -158,6 +172,9 @@ export function AddJourneyLegButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
+  // Which opening a late origin lookup belongs to: one from an earlier
+  // opening is dropped.
+  const openingRef = useRef(0);
 
   function handleOpen() {
     setError(null);
@@ -166,6 +183,17 @@ export function AddJourneyLegButton({
     // Re-seeded on every open (not just once at mount) -- see this
     // component's own doc comment.
     setOriginCrs(beforeLegId === null ? (priorDestinationCrs ?? '') : '');
+    const opening = ++openingRef.current;
+    if (beforeLegId === null && !priorDestinationCrs && (priorStopId || priorPlaceName)) {
+      void resolvePriorOriginCrs(
+        { crs: null, stopId: priorStopId, name: priorPlaceName },
+        { railCrsForStop: (stopId) => railCrsForStop(stopId), searchStations: (q) => searchStations(q) },
+      ).then((crs) => {
+        if (crs !== null && opening === openingRef.current) {
+          setOriginCrs((current) => (current.trim() === '' ? crs : current));
+        }
+      });
+    }
     setDestinationCrs(beforeLegId === null ? '' : (nextLegStart?.crs ?? ''));
     setOriginTouched(false);
     setDestinationTouched(false);

@@ -13,6 +13,7 @@ import {
   journeyCanAddLeg,
   journeyFirstLegStart,
   journeyPriorArrival,
+  journeyPriorDestination,
   journeyPriorDestinationCrs,
   journeyPriorDestinationName,
 } from '@/lib/journeyLegChaining';
@@ -150,6 +151,7 @@ export function JourneyDetailView({
   const priorDestinationCrs = journeyPriorDestinationCrs(journey);
   const priorArrival = journeyPriorArrival(journey);
   const priorPlaceName = journeyPriorDestinationName(journey);
+  const priorStopId = journeyPriorDestination(journey)?.stopId ?? null;
   const firstLegStart = journeyFirstLegStart(journey);
   const canAddLeg = journeyCanAddLeg(journey);
   const multiLeg = journey.legs.length > 1;
@@ -173,6 +175,7 @@ export function JourneyDetailView({
             <AddJourneyLegButton
               journeyId={journey.id}
               priorDestinationCrs={priorDestinationCrs}
+              priorStopId={priorStopId}
               priorArrival={priorArrival}
               priorPlaceName={priorPlaceName}
             />

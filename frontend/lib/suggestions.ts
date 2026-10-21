@@ -52,6 +52,19 @@ export async function searchTflStops(q: string, modes: readonly string[], signal
   return stops.map((stop) => ({ code: stop.id, name: stop.name, detail: tflStopDetail(stop) }));
 }
 
+/** The National Rail station a TfL stop serves, best first
+ * (`GET /public/tfl/stops/rail-crs`: a terminus's own Tube stop, the hub
+ * crosswalk, else the nearest station within 300 m), as its CRS: Euston's
+ * Tube stop is EUS. `null` when it has none, or the lookup fails. */
+export async function railCrsForStop(stopId: string, signal?: AbortSignal): Promise<string | null> {
+  if (!stopId.trim()) return null;
+  const params = new URLSearchParams({ ids: stopId.trim() });
+  const response = await fetch(`/api/tfl/stops/rail-crs?${params.toString()}`, signal ? { signal } : {});
+  if (!response.ok) return null;
+  const byStop = (await response.json()) as Record<string, string[] | undefined>;
+  return byStop[stopId.trim()]?.[0] ?? null;
+}
+
 export async function searchTocs(q: string, signal?: AbortSignal): Promise<Suggestion[]> {
   if (!q.trim()) return [];
   const response = await fetch(`/api/tocs?q=${encodeURIComponent(q)}`, signal ? { signal } : {});

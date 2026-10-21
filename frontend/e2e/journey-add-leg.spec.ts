@@ -119,6 +119,9 @@ async function mockApi(page: Page, firstLeg: object = MATCHED_LEG): Promise<unkn
       );
     }
     if (/^\/api\/stations\/[A-Z]{3}\//.test(path)) return json(route, []);
+    if (path === '/api/tfl/stops/rail-crs') {
+      return json(route, url.searchParams.get('ids') === '940GZZLUEUS' ? { '940GZZLUEUS': ['EUS'] } : {});
+    }
     if (path === '/api/Journeys' && request.method() === 'POST') {
       return json(route, { journeyId: JOURNEY_ID, legId: 1, trackingId: 42, resolutionStatus: 'pending' });
     }
@@ -185,6 +188,48 @@ test.describe('add a leg', () => {
       serviceDate: '2026-09-23',
       departWindow: { after: '00:12', before: null },
     });
+  });
+
+  test("after a Tube leg, starts at the Tube stop's station and the leg's arrival", async ({ page }) => {
+    // Vauxhall to Euston on the Victoria line, picked from TfL's stops, as
+    // the API serves an untracked leg: no station code, a stop id.
+    const legBodies = await mockApi(page, {
+      ...MATCHED_LEG,
+      kind: 'untracked',
+      originCrs: null,
+      originName: 'Vauxhall',
+      destinationCrs: null,
+      destinationName: 'Euston',
+      transitMode: 'tube',
+      lineName: 'Victoria line',
+      originStopId: '940GZZLUVXL',
+      destinationStopId: '940GZZLUEUS',
+      plannedDeparture: '2026-09-22T08:00:00Z',
+      plannedArrival: '2026-09-22T08:16:00Z',
+      untrackedStatus: 'planned',
+      departAfter: null,
+      windowSearched: false,
+      trackedTrainState: null,
+    });
+    await page.goto('/journeys/new');
+    await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
+    await page.getByText('Search a time window', { exact: true }).click();
+    await page.getByRole('combobox', { name: 'Destination station' }).fill('EUS');
+    await page.getByLabel('Earliest departure (optional)').fill('08:00');
+    await page.getByRole('button', { name: 'Search for a train' }).click();
+
+    await page.getByRole('button', { name: 'Add a leg' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Add a leg to this journey' });
+    await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveValue('EUS');
+    await expect(dialog.getByLabel('Service date')).toHaveValue('22 Sep 2026');
+    await expect(dialog.getByLabel('Earliest departure (optional)')).toHaveValue('09:16');
+
+    const to = dialog.getByRole('combobox', { name: 'To station' });
+    await to.fill('mkc');
+    await to.press('Tab');
+    await dialog.getByRole('button', { name: 'Add leg' }).click();
+    await expect.poll(() => legBodies.length).toBe(1);
+    expect(legBodies[0]).toMatchObject({ mode: 'window', originCrs: 'EUS', destinationCrs: 'MKC' });
   });
 
   test('leaves the time empty when the previous arrival is not known', async ({ page }) => {

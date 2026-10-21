@@ -4,10 +4,12 @@ import {
   journeyCanAddLeg,
   journeyFirstLegStart,
   journeyPriorArrival,
+  journeyPriorDestination,
   journeyPriorDestinationCrs,
   journeyPriorDestinationName,
   legDepartureInstant,
   legExpectedDepartureInstant,
+  resolvePriorOriginCrs,
 } from './journeyLegChaining';
 import type { JourneyDetail, JourneyLegDetail, JourneyStop, TrackedTrainState } from './types';
 
@@ -256,6 +258,111 @@ describe('chaining across untracked legs', () => {
     expect(connectionGapMinutes(train, tube)).toBe(15);
     expect(connectionGapMinutes(tube, train)).toBe(-58);
     expect(connectionGapMinutes(tube, leg({ id: 4, trackedTrainState: null }))).toBeNull();
+  });
+});
+
+describe('the next leg starts where the last one ended, whatever kind it was', () => {
+  const STATIONS = [
+    { code: 'EUS', name: 'London Euston' },
+    { code: 'EUS', name: 'Euston Square' },
+    { code: 'VXH', name: 'Vauxhall' },
+  ];
+  /** Lookups that know Euston's Tube stop and a small station list, and
+   * record what was asked. */
+  function lookups() {
+    const asked: string[] = [];
+    return {
+      asked,
+      lookups: {
+        railCrsForStop: (stopId: string) => {
+          asked.push(`stop:${stopId}`);
+          return Promise.resolve(stopId === '940GZZLUEUS' ? 'EUS' : null);
+        },
+        searchStations: (q: string) => {
+          asked.push(`search:${q}`);
+          const lower = q.toLowerCase();
+          return Promise.resolve(
+            STATIONS.filter((s) => s.code.toLowerCase() === lower || s.name.toLowerCase().includes(lower)),
+          );
+        },
+      },
+    };
+  }
+  const untracked = (overrides: Partial<JourneyLegDetail>) =>
+    leg({
+      id: 2,
+      kind: 'untracked',
+      originCrs: null,
+      destinationCrs: null,
+      originName: 'Vauxhall',
+      transitMode: 'tube',
+      plannedDeparture: '2026-09-22T08:00:00Z',
+      plannedArrival: '2026-09-22T08:16:00Z',
+      untrackedStatus: 'planned',
+      ...overrides,
+    });
+
+  it('a train leg: its own station code, with no lookup', async () => {
+    const { asked, lookups: l } = lookups();
+    const j = journey([leg({ destinationCrs: 'eus', destinationName: 'London Euston' })]);
+    expect(journeyPriorDestination(j)).toEqual({ crs: 'eus', stopId: null, name: 'London Euston' });
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(j), l)).resolves.toBe('EUS');
+    expect(asked).toEqual([]);
+  });
+
+  it("a Tube leg picked from TfL's stops: the stop's National Rail station", async () => {
+    const { asked, lookups: l } = lookups();
+    const j = journey([untracked({ destinationName: 'Euston', destinationStopId: '940GZZLUEUS' })]);
+    const prior = journeyPriorDestination(j);
+    expect(prior).toEqual({ crs: null, stopId: '940GZZLUEUS', name: 'Euston' });
+    await expect(resolvePriorOriginCrs(prior, l)).resolves.toBe('EUS');
+    expect(asked).toEqual(['stop:940GZZLUEUS']);
+    // The time carries over from the planned arrival (09:16 BST).
+    expect(journeyPriorArrival(j)).toEqual({ date: '2026-09-22', time: '09:16' });
+  });
+
+  it('a Tube leg with only a place name: the station of exactly that name', async () => {
+    const { lookups: l } = lookups();
+    const j = journey([untracked({ destinationName: 'London Euston' })]);
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(j), l)).resolves.toBe('EUS');
+    // Case and spaces don't matter; a part of a name is not a station.
+    const typed = journey([untracked({ destinationName: '  london EUSTON ' })]);
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(typed), l)).resolves.toBe('EUS');
+    const partial = journey([untracked({ destinationName: 'Euston' })]);
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(partial), l)).resolves.toBeNull();
+    expect(journeyPriorDestinationName(partial)).toBe('Euston');
+  });
+
+  it('a stop with no station falls back to the name', async () => {
+    const { asked, lookups: l } = lookups();
+    const j = journey([untracked({ destinationName: 'Vauxhall', destinationStopId: '940GZZLUVXL' })]);
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(j), l)).resolves.toBe('VXH');
+    expect(asked).toEqual(['stop:940GZZLUVXL', 'search:Vauxhall']);
+  });
+
+  it('a walk to a station by name, or by the code the planner writes when it has no name', async () => {
+    const { lookups: l } = lookups();
+    const walk = (destinationName: string) =>
+      journey([untracked({ transitMode: 'walk', destinationName, destinationStopId: null })]);
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(walk('Vauxhall')), l)).resolves.toBe('VXH');
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(walk('VXH')), l)).resolves.toBe('VXH');
+  });
+
+  it('a walk to a place that is not a station: no station, only the place for an untracked next leg', async () => {
+    const { lookups: l } = lookups();
+    const j = journey([untracked({ transitMode: 'walk', destinationName: 'Home' })]);
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(j), l)).resolves.toBeNull();
+    expect(journeyPriorDestinationName(j)).toBe('Home');
+  });
+
+  it('a failed lookup is no station, not an error', async () => {
+    const failing = {
+      railCrsForStop: () => Promise.reject(new Error('offline')),
+      searchStations: () => Promise.reject(new Error('offline')),
+    };
+    const j = journey([untracked({ destinationName: 'London Euston', destinationStopId: '940GZZLUEUS' })]);
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(j), failing)).resolves.toBeNull();
+    await expect(resolvePriorOriginCrs(journeyPriorDestination(journey([])), failing)).resolves.toBeNull();
   });
 });
 

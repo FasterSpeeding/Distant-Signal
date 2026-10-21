@@ -10,6 +10,7 @@ import { UntrackedLegStartForm } from './UntrackedLegStartForm';
 import {
   journeyCanAddLeg,
   journeyPriorArrival,
+  journeyPriorDestination,
   journeyPriorDestinationCrs,
   journeyPriorDestinationName,
 } from '@/lib/journeyLegChaining';
@@ -168,6 +169,7 @@ export function JourneyCreationFlow({
   const priorDestinationCrs = journey ? journeyPriorDestinationCrs(journey) : null;
   const priorArrival = journey ? journeyPriorArrival(journey) : null;
   const priorPlaceName = journey ? journeyPriorDestinationName(journey) : null;
+  const priorStopId = journey ? (journeyPriorDestination(journey)?.stopId ?? null) : null;
   const canAddLeg = journey !== null && journeyCanAddLeg(journey);
 
   return (
@@ -215,6 +217,7 @@ export function JourneyCreationFlow({
           <AddJourneyLegButton
             journeyId={journeyId}
             priorDestinationCrs={priorDestinationCrs}
+            priorStopId={priorStopId}
             priorArrival={priorArrival}
             priorPlaceName={priorPlaceName}
             onAdded={handleLegAdded}

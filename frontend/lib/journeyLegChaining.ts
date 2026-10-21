@@ -2,7 +2,7 @@ import dayjs from 'dayjs';
 import { LONDON_TZ } from './londonWallClock';
 import { stopDisplayArrival, stopDisplayTime } from './stopTimes';
 import { isUntrackedLeg } from './untrackedLeg';
-import type { JourneyDetail, JourneyLegDetail, JourneyStop } from './types';
+import type { JourneyDetail, JourneyLegDetail, JourneyStop, Suggestion } from './types';
 
 /** A London calendar date (`'YYYY-MM-DD'`) and wall-clock time (`'HH:MM'`). */
 export interface LondonDateTime {
@@ -55,6 +55,67 @@ export function journeyPriorDestinationName(journey: JourneyDetail): string | nu
   return (
     lastLeg.destinationName ?? lastLeg.trackedTrainState?.scheduleDestinationName ?? journeyPriorDestinationCrs(journey)
   );
+}
+
+/** Where the CURRENT last leg ends, every way it is known: a station code
+ * (a train leg's, `journeyPriorDestinationCrs`), the TfL stop an untracked
+ * Tube, DLR or tram leg's destination was picked from, and the place in
+ * words (`journeyPriorDestinationName`). `null` with no last leg. */
+export interface PriorDestination {
+  crs: string | null;
+  stopId: string | null;
+  name: string | null;
+}
+
+export function journeyPriorDestination(journey: JourneyDetail): PriorDestination | null {
+  const lastLeg = journey.legs.at(-1) ?? null;
+  if (lastLeg === null) return null;
+  return {
+    crs: journeyPriorDestinationCrs(journey),
+    stopId: isUntrackedLeg(lastLeg) ? (lastLeg.destinationStopId ?? null) : null,
+    name: journeyPriorDestinationName(journey),
+  };
+}
+
+/** The lookups `resolvePriorOriginCrs` needs, injected so it can be tested
+ * without a network: a TfL stop's National Rail station
+ * (`railCrsForStop`, `GET /tfl/stops/rail-crs`) and the station search
+ * (`searchStations`). */
+export interface PriorOriginLookups {
+  railCrsForStop: (stopId: string) => Promise<string | null>;
+  searchStations: (q: string) => Promise<Suggestion[]>;
+}
+
+const CRS_CODE = /^[A-Z]{3}$/;
+
+/** The station a next TRAIN leg should start from, after any kind of last
+ * leg. A train leg ends at a station code already. An untracked leg (a
+ * Tube ride, a walk) has only a place: a TfL stop is mapped to its
+ * National Rail station through the hub crosswalk (Euston's Tube stop to
+ * EUS); otherwise the place's name counts only when it is exactly a
+ * station's name, or its upper-case code (as the planner writes an end it
+ * has no name for), so a free-text place ("Home") never becomes whichever
+ * station a search happens to list first. `null` when there is no such
+ * station, or a lookup fails: the untracked form still starts from the
+ * place's name (`PriorDestination.name`). */
+export async function resolvePriorOriginCrs(
+  prior: PriorDestination | null,
+  lookups: PriorOriginLookups,
+): Promise<string | null> {
+  if (prior === null) return null;
+  if (prior.crs) return prior.crs.toUpperCase();
+  if (prior.stopId) {
+    const crs = await lookups.railCrsForStop(prior.stopId).catch(() => null);
+    if (crs) return crs.toUpperCase();
+  }
+  const name = prior.name?.trim() ?? '';
+  if (name === '') return null;
+  const suggestions = await lookups.searchStations(name).catch(() => [] as Suggestion[]);
+  const lower = name.toLowerCase();
+  const match = suggestions.find(
+    (s) => CRS_CODE.test(s.code) && (s.code === name || s.name.trim().toLowerCase() === lower),
+  );
+  return match?.code ?? null;
 }
 
 /** When the CURRENT last leg's train is timetabled to reach that leg's

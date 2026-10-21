@@ -40,6 +40,11 @@ function mockFetch(legs: () => Response = legResponse) {
       const matches = STATIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
       return Promise.resolve(new Response(JSON.stringify(matches), { status: 200 }));
     }
+    if (url.startsWith('/api/tfl/stops/rail-crs?')) {
+      const ids = new URLSearchParams(url.split('?')[1]).get('ids') ?? '';
+      const known: Record<string, string[]> = { '940GZZLUEUS': ['EUS'] };
+      return Promise.resolve(new Response(JSON.stringify(ids in known ? { [ids]: known[ids] } : {}), { status: 200 }));
+    }
     if (url.startsWith('/api/tfl/stops?')) {
       const params = new URLSearchParams(url.split('?')[1]);
       const q = (params.get('q') ?? '').toLowerCase();
@@ -202,6 +207,76 @@ describe('AddJourneyLegButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
     const reopenedOrigin = await screen.findByRole('combobox', { name: 'From station' });
     expect(reopenedOrigin).toHaveValue('WAT');
+  });
+
+  it("after a Tube leg, starts the next train leg at the Tube stop's station, and the time at its arrival", async () => {
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        priorStopId="940GZZLUEUS"
+        priorPlaceName="Euston"
+        priorArrival={{ date: '2026-10-21', time: '10:07' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
+    await waitFor(() => expect(origin).toHaveValue('EUS'));
+    expect(screen.getByLabelText('Earliest departure (optional)')).toHaveValue('10:07');
+    expect(screen.getByLabelText('Service date')).toHaveValue('21 Oct 2026');
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/tfl/stops/rail-crs?ids=940GZZLUEUS', {});
+
+    // The untracked mode starts from the place itself.
+    fireEvent.click(screen.getByText('Tube, bus or walk'));
+    expect(await screen.findByRole('combobox', { name: 'From (optional)' })).toHaveValue('Euston');
+  });
+
+  it('after a walk to a station by name, starts the next train leg there', async () => {
+    renderWithMantine(
+      <AddJourneyLegButton journeyId={1} priorDestinationCrs={null} priorPlaceName="Clapham Junction" />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
+    await waitFor(() => expect(origin).toHaveValue('CLJ'));
+  });
+
+  it('after a walk to a place that is no station, leaves the train origin empty', async () => {
+    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} priorPlaceName="Home" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === '/api/stations?q=Home')).toBe(true),
+    );
+    expect(origin).toHaveValue('');
+  });
+
+  it('never replaces an origin the traveller typed before the lookup came back', async () => {
+    let answer: (response: Response) => void = () => {};
+    const fetchMock = mockFetch();
+    const routed = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).startsWith('/api/tfl/stops/rail-crs?')
+        ? new Promise<Response>((resolve) => {
+            answer = resolve;
+          })
+        : routed!(input, init),
+    );
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        priorStopId="940GZZLUEUS"
+        priorPlaceName="Euston"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+    const origin = await screen.findByRole('combobox', { name: 'From station' });
+    fireEvent.change(origin, { target: { value: 'WOK' } });
+    answer(new Response(JSON.stringify({ '940GZZLUEUS': ['EUS'] }), { status: 200 }));
+    // Let the lookup's promise chain finish (it has nowhere to wait on).
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(origin).toHaveValue('WOK');
   });
 
   it('POSTs a window-mode request with the entered origin/destination/date/departWindow', async () => {
