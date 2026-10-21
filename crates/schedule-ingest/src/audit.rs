@@ -238,6 +238,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// Keeps two do-nothing dispatchers alive for the rest of the test
+    /// process (DS-106).
+    ///
+    /// `tracing-core` caches each callsite's `Interest` process-wide. While
+    /// at most one dispatcher is alive it computes that interest from the
+    /// *registering thread's* default, so a parallel test with no subscriber
+    /// that is first to reach the audit line's callsite caches
+    /// `Interest::never` for every thread, and a capture installed on
+    /// another thread then sees nothing. With two dispatchers always alive
+    /// that shortcut is off: every registration asks every live dispatcher,
+    /// these two always say yes, and each thread's own default still decides
+    /// where an event goes (nowhere, for a test without a capture).
+    /// Installing them also rebuilds every interest already cached, as does
+    /// each capture's own dispatcher.
+    fn pin_callsite_interest() {
+        static PINNED: std::sync::OnceLock<[tracing::Dispatch; 2]> = std::sync::OnceLock::new();
+        PINNED.get_or_init(|| {
+            [
+                tracing::Dispatch::new(tracing_subscriber::registry()),
+                tracing::Dispatch::new(tracing_subscriber::registry()),
+            ]
+        });
+    }
+
     /// Runs `f` with the production JSON subscriber writing into a capture.
     pub(crate) fn capture<T>(f: impl FnOnce() -> T) -> (T, Capture) {
         let (guard, out) = capture_default();
@@ -250,6 +274,7 @@ pub(crate) mod tests {
     /// this thread's default until the guard drops (for `#[tokio::test]`'s
     /// single-threaded runtime).
     pub(crate) fn capture_default() -> (tracing::subscriber::DefaultGuard, Capture) {
+        pin_callsite_interest();
         let out = Capture::default();
         let subscriber = common::logging::json_subscriber(
             "schedule-ingest",

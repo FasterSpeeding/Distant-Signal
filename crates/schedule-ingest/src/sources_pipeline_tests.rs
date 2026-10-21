@@ -34,11 +34,11 @@ fn other_zip() -> Vec<u8> {
     delivery::build_test_zip(&entries)
 }
 
-fn sha(bytes: &[u8]) -> String {
+pub(crate) fn sha(bytes: &[u8]) -> String {
     audit::DeliveredFile::from_bytes("", bytes).sha256
 }
 
-fn put(dir: &Path, name: &str, bytes: &[u8], mtime: SystemTime) {
+pub(crate) fn put(dir: &Path, name: &str, bytes: &[u8], mtime: SystemTime) {
     std::fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
@@ -50,7 +50,7 @@ fn put(dir: &Path, name: &str, bytes: &[u8], mtime: SystemTime) {
         .unwrap();
 }
 
-fn ago(minutes: u64) -> SystemTime {
+pub(crate) fn ago(minutes: u64) -> SystemTime {
     // Whole seconds, as a delivery directory name keeps.
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -59,7 +59,7 @@ fn ago(minutes: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(now - minutes * 60)
 }
 
-fn delivery_dirs(storage: &Path) -> Vec<String> {
+pub(crate) fn delivery_dirs(storage: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(storage)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -69,14 +69,14 @@ fn delivery_dirs(storage: &Path) -> Vec<String> {
     names
 }
 
-struct Setup {
-    watch: tempfile::TempDir,
-    storage: tempfile::TempDir,
-    config: Config,
+pub(crate) struct Setup {
+    pub(crate) watch: tempfile::TempDir,
+    pub(crate) storage: tempfile::TempDir,
+    pub(crate) config: Config,
 }
 
 impl Setup {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let watch = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let config = test_config(watch.path(), storage.path());
@@ -87,17 +87,17 @@ impl Setup {
         }
     }
 
-    fn incoming(&self) -> PathBuf {
+    pub(crate) fn incoming(&self) -> PathBuf {
         BucketDirs::new(self.storage.path()).incoming
     }
 
-    fn multi(&self, precedence: Precedence) -> MultiSource {
+    pub(crate) fn multi(&self, precedence: Precedence) -> MultiSource {
         MultiSource::new(self.storage.path(), precedence, 120)
     }
 
     /// Both lanes, in `precedence` order (SFTP with the config's stability
     /// gate, the bucket with none), as `run` builds them.
-    fn lanes(&self, precedence: Precedence) -> Vec<LaneState> {
+    pub(crate) fn lanes(&self, precedence: Precedence) -> Vec<LaneState> {
         let mut lanes = vec![
             LaneState::new(
                 SourceId::Sftp,
@@ -110,7 +110,7 @@ impl Setup {
         lanes
     }
 
-    async fn cycles(
+    pub(crate) async fn cycles(
         &self,
         sink: &FakeSink,
         routing: &Routing,
@@ -192,6 +192,7 @@ async fn a_bucket_object_goes_through_the_existing_cif_pipeline() {
     let records = sink.feed_records();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["source_sha256"], sha(&bytes).as_str());
+    assert_eq!(records[0]["delivery_source"], "bucket");
 }
 
 /// The same delivery through both sources, in either precedence order:
@@ -221,6 +222,12 @@ async fn the_same_delivery_through_both_sources_is_ingested_once() {
         assert_eq!(audit[1]["duplicate_of"], sha(&bytes).as_str());
         assert_eq!(audit[1]["first_source"], audit[0]["source"]);
         assert_ne!(audit[0]["source"], audit[1]["source"]);
+        // The record names the lane of the accepted copy: SFTP's when it
+        // ranks first, the bucket's otherwise.
+        assert_eq!(
+            sink.feed_records()[0]["delivery_source"],
+            audit[0]["source"]
+        );
 
         // A restart: fresh lanes, the same disk.
         let mut lanes = setup.lanes(precedence);
@@ -375,6 +382,7 @@ async fn the_same_corpus_extract_through_both_sources_is_loaded_once() {
         .cycles(&sink, &Routing::with_corpus(), &multi, &mut lanes, 4)
         .await;
     assert_eq!(sink.corpus_loads().len(), 1);
+    assert_eq!(sink.corpus_loads()[0]["delivery_source"], "bucket");
     let outcomes: Vec<(&str, &str)> = audit
         .iter()
         .map(|l| {

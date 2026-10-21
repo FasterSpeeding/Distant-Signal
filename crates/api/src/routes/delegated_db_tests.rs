@@ -122,7 +122,7 @@ async fn cleanup(pool: &PgPool, prefix: &str) {
 /// Seeds a user and a session; returns the raw cookie value.
 async fn seed_user(pool: &PgPool, user: &str, session: &str) -> String {
     sqlx::query(
-        "INSERT INTO users (id, email, name, username) VALUES ($1, $1, $1, $1) \
+        "INSERT INTO users (id, name, username) VALUES ($1, $1, $1) \
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(user)

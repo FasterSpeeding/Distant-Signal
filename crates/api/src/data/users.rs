@@ -473,10 +473,9 @@ pub fn retain_allowed_groups(groups: &[String], allowlist: &[String]) -> Vec<Str
 /// login for the same reason `name` is: this table mirrors what the `IdP`
 /// currently asserts, it is not an independent record.
 ///
-/// `users.email` is no longer written (2026-09-30: the app stopped
-/// requesting the `email` scope, and nothing reads the column). A row
-/// written before then has its email cleared here at the user's next
-/// sign-in, so the column empties itself out; dropping it is a follow-up.
+/// No email (2026-09-30: the app stopped requesting the `email` scope).
+/// This statement no longer clears the legacy `users.email` column either,
+/// so the migration that drops it can run while this build is live.
 ///
 /// `created` comes from `xmax = 0`, true only for a row this statement
 /// `INSERTed` (an `ON CONFLICT DO UPDATE` sets `xmax` to this transaction).
@@ -487,7 +486,7 @@ pub async fn upsert_user(pool: &PgPool, identity: &OidcIdentity) -> Result<User>
         "INSERT INTO users (id, name, username, groups, created_at, last_login_at) \
          VALUES ($1, $2, $3, $4, NOW(), NOW()) \
          ON CONFLICT (id) DO UPDATE SET \
-            email = NULL, name = EXCLUDED.name, \
+            name = EXCLUDED.name, \
             username = EXCLUDED.username, groups = EXCLUDED.groups, \
             last_login_at = NOW() \
          RETURNING id, name, username, (xmax = 0) AS created",
@@ -1081,21 +1080,9 @@ mod db_tests {
         assert_eq!(user.username.as_deref(), Some("test-rider"));
         assert!(user.created, "the first sign-in creates the row");
 
-        // A return visit is not a new user, and clears an email stored by
-        // a build that still wrote one.
-        sqlx::query("UPDATE users SET email = 'old@example.com' WHERE id = $1")
-            .bind(&identity.sub)
-            .execute(&pool)
-            .await
-            .expect("seed a legacy email");
+        // A return visit is not a new user.
         let user = upsert_user(&pool, &identity).await.expect("re-upsert user");
         assert!(!user.created, "a return visit updates the existing row");
-        let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
-            .bind(&identity.sub)
-            .fetch_one(&pool)
-            .await
-            .expect("read email");
-        assert_eq!(email, None);
 
         // A blank `name` claim -- what an IdP with no name on file for the
         // user actually sends -- must be stored as NULL, not as `''`.

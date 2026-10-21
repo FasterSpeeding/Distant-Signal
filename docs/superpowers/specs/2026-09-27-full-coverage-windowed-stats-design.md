@@ -1560,6 +1560,46 @@ workspace tests, DB-gated tests of touched crates on a fresh DB, and
    misses (§3.6), but it is a visible increase in yellow on the map.
    *Recommendation:* ship rank-4-only (`MIN_ESCALATION_RANK=4`). Lower to
    3 after a week of shadow data meets §8.4 for those tiers.
+
+   **Finding (2026-10-21, rechecked on shadow data): keep rank 4.** Read
+   only from production's `full_coverage_window_verdicts` (rows from
+   2026-10-07 01:00Z to 2026-10-21 00:00Z: shadow until 2026-10-09 11:00Z,
+   then `enforce` with `enforceLines: "*"` and `minEscalationRank: 4`; the
+   rank-3 tiers are recorded in both modes as `below_min_rank`), joined to
+   the `recent` window counts and to LDBWS half-hours over the same due
+   range (§8.3 item 3's pairing; LDBWS classified at its own 5-minute
+   threshold). Rate verdicts only (the sparse rule has its own allowlist).
+   Over 14 days, 2 weekends, 92,854 evaluable line-windows:
+
+   | | Rank 4 (today) | Rank 3 gate (rank 4 + Minor/Reduced) |
+   |---|---|---|
+   | Would-escalate windows | 1,198 (1.29%) | 8,987 (9.68%): +7,676 Minor Delays, +113 Reduced Service |
+   | Per day (from 10-08) | 0.6-2.2% | 6.4-10.6% |
+   | Events (consecutive buckets) | 534, about 38 a day | +3,076, about 220 a day |
+   | Lines touched | 110 | 170 |
+   | Lines > 20% of daytime windows (of 173 with ≥ 50) | 0 | 33, none with LDBWS ≥ Minor for half that time |
+   | Line-days flapping (§8.3) | 77 | 483 |
+   | LDBWS ≥ Minor in the same due range (paired windows) | 21.0% of 899 | 1.8% of 5,749 (rank-3 only) |
+
+   Against §8.4: rank 3 fails item 3 (volume, 9.7% vs ≤ 3%, and 33 lines
+   escalated in more than 20% of their daytime windows without
+   corroboration), and its windows are no more often LDBWS-corroborated
+   than windows judged Good (1.8% vs 1.3%), where the rank-4 ones are
+   (21%). False-positive-looking shape: 43% of the rank-3 Minor windows
+   have exactly 3 late trains (the `full_coverage_min_affected` floor),
+   the windows' average delay is a median 2.45 minutes (65% under 3), and
+   20% are exactly-3-late, average under 3 minutes and LDBWS Good, i.e.
+   three trains 3-4 minutes late in an hour. Typical ones read "3 of 9 /
+   10 / 12 / 14 trains due in the last hour were late". The corroborated
+   ones are 6-8 of 15-24 late on busy lines with LDBWS also seeing a
+   quarter late. The cause is the same as "Decisions (2026-10-02)" item 1
+   found for Severe: the 3-minute late threshold with a 3-train floor, now
+   at the 25% tier. Raising the Minor floor alone does not fix it: at 4
+   affected trains the rank-3 gate would still be about 6% of windows, at
+   5 about 4%. `MIN_ESCALATION_RANK` stays 4; lowering it needs the Minor
+   tier recalibrated first (a 5-minute threshold for Minor, as LDBWS, or a
+   higher floor and share) and a new shadow week.
+
 2. **Pilot line(s).** `tfw-conwy-valley` has 68 relevant trains a day
    and is almost always below the 6-train minimum in a 60-min window, so
    it would never escalate and proves nothing. *Recommendation:* pilot on

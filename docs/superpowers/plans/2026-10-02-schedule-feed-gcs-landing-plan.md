@@ -12,10 +12,17 @@ Phase 0 and phase 4 (the chart) are done. Phases 1–3 were built on
 2026-10-20 (DS-22) in a simpler shape than the tables below, recorded in
 the spec's "Implementation status": a GCS JSON API client instead of
 `object_store` (2.1), lanes through the existing cycles instead of a
-`Source` trait (1.1–1.3), one content ledger instead of 1.5/1.6. Still
-open: 3.3 (the api's `delivery_source`), 2.8 (a fake-gcs-server
-integration test; the unit tests use a wiremock fake of the JSON API),
-phase 5 (the audit-log tailer) and phase 6 (Pub/Sub).
+`Source` trait (1.1–1.3), one content ledger instead of 1.5/1.6. 2.8 is
+done (DS-92): `crates/schedule-ingest/src/bucket_e2e_tests.rs` runs the
+reader against fake-gcs-server through a tampering proxy, in CI's
+`rust-db-test` job. 3.3 is done (DS-89) in ds-store, the api's data
+access since plan 1A: migration `20261021090500_schedule_delivery_source.sql`,
+written by both lanes through schedule-ingest's direct sink. 5.1 is done
+(DS-90, `bucket_audit.rs`; a lookback window instead of a single cursor,
+see the spec's status). Phase 6 (6.1-6.3) is done on DS's side (DS-91,
+`pubsub.rs`, `scheduleFeed.bucket.notifications.pubsub.*`, off). Still
+open: 5.2 (Ranma's Alloy stage and Loki rules) and the Ranma side of
+phase 6 (RANMA-87: the `ds-ingest-bucket` Pub/Sub resources).
 
 ## Decisions this plan builds on (user, 2026-10-02)
 

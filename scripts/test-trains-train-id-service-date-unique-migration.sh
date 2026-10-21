@@ -72,14 +72,14 @@ DATABASE_URL="${TEST_URL}" sqlx migrate run --source "${MIGRATIONS_DIR}" \
 echo "== Seeding collisions + control data =="
 psql "${TEST_URL}" -v ON_ERROR_STOP=1 -q <<'SEED'
 -- Users.
-INSERT INTO users (id, email, name) VALUES
-    ('test-user-y80926',   'y80926-owner@example.com',   'Y80926 Owner'),
-    ('test-user-w34058',   'w34058-owner@example.com',   'W34058 Owner'),
-    ('test-user-unresolved', 'unresolved-owner@example.com', 'Unresolved Owner'),
-    ('test-user-3way-a',   '3way-a@example.com',         '3-Way Owner A'),
-    ('test-user-3way-b',   '3way-b@example.com',         '3-Way Owner B'),
-    ('test-user-3way-c',   '3way-c@example.com',         '3-Way Owner C'),
-    ('test-user-control',  'control-owner@example.com',  'Control Owner');
+INSERT INTO users (id, name) VALUES
+    ('test-user-y80926',   'Y80926 Owner'),
+    ('test-user-w34058',   'W34058 Owner'),
+    ('test-user-unresolved', 'Unresolved Owner'),
+    ('test-user-3way-a',   '3-Way Owner A'),
+    ('test-user-3way-b',   '3-Way Owner B'),
+    ('test-user-3way-c',   '3-Way Owner C'),
+    ('test-user-control',  'Control Owner');
 
 -- ---------------------------------------------------------------------
 -- Known-incident shape: TWO trains rows sharing (train_id, service_date).

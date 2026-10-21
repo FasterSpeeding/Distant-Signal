@@ -1936,21 +1936,22 @@ api:
   # catalogue, the trip-planner graph cache, the sqlx pool, and one arena
   # per concurrent request.
   #
-  # 1Gi/3Gi are DELIBERATELY GENEROUS, stopgap-derived sizes: they are the
-  # production overrides that kept the pod from being OOMKilled (at the
-  # old 512Mi/1536Mi) during the 2026-09-26 investigation above, moved
-  # into the chart defaults. The fixes since merged -- line populations
-  # relayed as raw JSON text instead of a serde_json::Value round-trip,
-  # ETag conditional reloads, and the `malloc` tuning above -- are
-  # expected to bring real usage well below them. Resize from live
-  # `kubectl top` once they have run in production for a while, not from
-  # this estimate.
+  # Sized from production (DS-99; Ranma-Config's
+  # docs/specs/resource-tuning-2026-10.md and its rules: memory request
+  # about p95 x 1.2, limit at least max(max x 1.5, request x 2)). With the
+  # fixes above (populations relayed as raw JSON text, ETag conditional
+  # reloads, the `malloc` tuning, no /private publishes) the working set
+  # was p95 265Mi / max 500Mi over 2026-10-01..12 and p95 306Mi / max
+  # 500Mi over the 20 days to 2026-10-21 (max 337Mi in the last 6), with
+  # no OOM. 512Mi is the study's request; 1Gi is twice that and 2x the
+  # 20-day max. These replace the 1Gi/3Gi stopgap (the production
+  # overrides from the 2026-09-26 OOMs, at the old 512Mi/1536Mi).
   resources:
     requests:
       cpu: 200m
-      memory: 1Gi
+      memory: 512Mi
     limits:
-      memory: 3Gi
+      memory: 1Gi
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -4602,14 +4603,37 @@ scheduleFeed:
     # interval while access is revoked. At least pollIntervalSecs.
     maxBackoffSecs: 3600
     # -- Ship the bucket's Cloud Audit Logs (from the audit-log bucket) to
-    # stdout as `schedule_ingest::bucket_access` lines for Loki. Off. Not
-    # implemented in schedule-ingest yet (the GCS spec's phase 5): with it
-    # on, the reader logs a warning at start and ships nothing.
+    # stdout as `schedule_ingest::bucket_access` lines for Loki, with the
+    # reader's credential (it needs objectViewer on the audit-log bucket).
+    # Off. Needs a schedule-ingest image from 2026-10-21 (DS-90) or later;
+    # an older one logs a warning and ships nothing.
     auditLogs:
       ship: false
       # -- Audit-log bucket name. Required with ship.
       bucket: ""
       pollIntervalSecs: 600
+    notifications:
+      pubsub:
+        # -- Wake the reader on the bucket's OBJECT_FINALIZE notifications
+        # (a Pub/Sub pull subscription, outbound HTTPS only) instead of
+        # waiting for the next poll; polling stays as the fallback. Off.
+        # Needs Ranma's ds-ingest-bucket release with
+        # notifications.pubsub.enabled (docs/schedule-feed-bucket.md,
+        # "Pub/Sub notifications") and a schedule-ingest image from
+        # 2026-10-21 (DS-91) on; an older one ignores it and polls.
+        enabled: false
+        # -- The pull subscription's full name,
+        # projects/<project>/subscriptions/<name>. Required when enabled;
+        # set in deploy values. The reader needs roles/pubsub.subscriber on
+        # it.
+        subscription: ""
+        # -- Seconds between polls while the subscription delivers (the
+        # safety net for a lost message). At least pollIntervalSecs; while
+        # it fails, the reader polls every pollIntervalSecs.
+        reconcileIntervalSecs: 3600
+        # -- Empty: https://pubsub.googleapis.com. Set only for a fake
+        # Pub/Sub test server.
+        baseUrl: ""
   # -- Third sibling container in this same Pod (crates/schedule-reference):
   # once `ingest` has moved a verified-complete delivery into
   # storage_dir/<n>/, parses that sequence's TI/A records into the
@@ -4694,14 +4718,9 @@ scheduleFeed:
     # index build and 3.5Gi building one date's destination rows, to 0.9Gi
     # for the index and ~1.2Gi peak.
     #
-    # 3Gi/4Gi are DELIBERATELY GENEROUS, stopgap-derived sizes: they are the
-    # production overrides that carried this container through the OOMs
-    # above (at the old 2.25Gi/3Gi) before the fix landed, moved into the
-    # chart defaults. With the streamed compact timetable index and chunked
-    # per-date rows now on main, actual usage is expected to sit well below
-    # them (~1.2Gi peak by the estimate above). Once live usage confirms
-    # it, bring both down -- resize from live `kubectl top`, not from this
-    # estimate.
+    # The 3Gi/4Gi stopgap (the production overrides that carried this
+    # container through the OOMs above, at the old 2.25Gi/3Gi) is gone:
+    # see the sizing below.
     #
     # Between publishes (2026-10-14). Prod ran at ~1.3GiB RSS from each
     # nightly publish until the next restart: glibc kept the freed index
@@ -4713,12 +4732,19 @@ scheduleFeed:
     # and the "publish cycle finished" log line report it. So the request
     # can size the idle state (512Mi is ample) while the limit covers the
     # ~1.2-1.4GiB nightly burst.
+    #
+    # Production confirms it (DS-99; Ranma-Config's
+    # docs/specs/resource-tuning-2026-10.md and its rules: limit at least
+    # max(max x 1.5, request x 2)): the nightly publish peaked at 1429Mi
+    # working set over the 20 days to 2026-10-21 (1376Mi in the last 6), no
+    # OOM, and since the malloc_trim fix the p95 is 19Mi. 512Mi requests
+    # the idle state with room to spare; 2304Mi (2.25Gi) is 1.6x the peak.
     resources:
       requests:
         cpu: 250m
-        memory: 3Gi
+        memory: 512Mi
       limits:
-        memory: 4Gi
+        memory: 2304Mi
   # -- Which source wins when SFTP and the bucket deliver different
   # content within disagreementWindowMinutes (decision D5: the bucket).
   # Must be a permutation of [bucket, sftp].

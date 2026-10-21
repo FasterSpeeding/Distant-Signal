@@ -225,4 +225,18 @@ describe('transferAsUntracked', () => {
       destinationStopId: '940GZZTESTK',
     });
   });
+
+  it("carries a transfer's line as the untracked leg's line name", () => {
+    const tube: TripPlanLeg = {
+      kind: 'transfer',
+      mode: 'TUBE',
+      originCrs: 'VXH',
+      destinationCrs: 'VIC',
+      minutes: 11,
+      line: 'Victoria',
+    };
+    expect(transferAsUntracked(tube, nameFor)).toMatchObject({ transitMode: 'tube', lineName: 'Victoria line' });
+    const { line: _none, ...unnamed } = tube;
+    expect(transferAsUntracked(unnamed, nameFor)).not.toHaveProperty('lineName');
+  });
 });

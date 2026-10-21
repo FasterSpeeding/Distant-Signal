@@ -268,14 +268,6 @@ pub(crate) struct Config {
     #[arg(long, env, default_value_t = 5)]
     pub stability_cycles: u32,
 
-    /// Where each delivery's record and each CORPUS load go: only `db`,
-    /// Postgres directly at `DATABASE_URL` (`sink.rs`). `http` (api's
-    /// `/private/*` routes) was removed in release B (ingest phase 5,
-    /// docs/ingest-phase5-runbook.md), so an old `INGEST_SINK=http` fails
-    /// at startup; the next release drops the variable.
-    #[arg(long, env = "INGEST_SINK", default_value = "db", value_parser = ["db"])]
-    pub ingest_sink: String,
-
     /// Postgres, as the `schedule_ingest` role. The pool reads the shared
     /// `DATABASE_*` settings (`common::pg`); its default size is 1.
     #[arg(long, env, hide_env_values = true)]
@@ -395,18 +387,46 @@ pub(crate) struct BucketArgs {
     #[arg(long, env, default_value_t = 3600)]
     pub bucket_max_backoff_secs: u64,
 
-    /// Ship the bucket's Cloud Audit Logs to stdout. Not implemented yet
-    /// (the GCS spec's phase 5): a warning at start says so.
+    /// Ship the bucket's Cloud Audit Logs (from the audit-log bucket) to
+    /// stdout as `schedule_ingest::bucket_access` lines (`bucket_audit.rs`,
+    /// the GCS spec's phase 5), with the reader's credential.
     #[arg(long, env, default_value_t = false, action = clap::ArgAction::Set)]
     pub bucket_audit_logs_ship: bool,
 
-    /// The audit-log bucket (phase 5).
+    /// The audit-log bucket. Required with `BUCKET_AUDIT_LOGS_SHIP`.
     #[arg(long, env)]
     pub bucket_audit_logs_bucket: Option<String>,
 
-    /// Seconds between audit-log listings (phase 5).
+    /// Seconds between audit-log listings. At least 60.
     #[arg(long, env, default_value_t = 600)]
     pub bucket_audit_logs_poll_interval_secs: u64,
+
+    /// The pull subscription (`projects/<project>/subscriptions/<name>`)
+    /// carrying the bucket's `OBJECT_FINALIZE` notifications (`pubsub.rs`):
+    /// each wakes a poll early. Empty: poll only.
+    #[arg(long, env)]
+    pub bucket_pubsub_subscription: Option<String>,
+
+    /// With a subscription: seconds between polls while it is healthy (the
+    /// safety net for a lost message). At least `BUCKET_POLL_INTERVAL_SECS`.
+    #[arg(long, env, default_value_t = 3600)]
+    pub bucket_pubsub_reconcile_interval_secs: u64,
+
+    /// Base URL of the Pub/Sub API. Empty: `https://pubsub.googleapis.com`.
+    /// Set only for a fake test server.
+    #[arg(long, env)]
+    pub bucket_pubsub_base_url: Option<String>,
+}
+
+/// A GCS bucket name this reader accepts: 3-63 of a-z, 0-9, `-` and `_`,
+/// starting and ending alphanumeric, no dots.
+fn is_bucket_name(name: &str) -> bool {
+    (3..=63).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        && name.as_bytes()[0].is_ascii_alphanumeric()
+        && name.as_bytes()[name.len() - 1].is_ascii_alphanumeric()
 }
 
 /// The bucket's credential (exactly one of the two paths).
@@ -450,16 +470,21 @@ impl SourceArgs {
 impl BucketArgs {
     fn validate(&self) -> anyhow::Result<()> {
         let name = self.bucket_name.as_deref().unwrap_or_default();
-        let valid_name = (3..=63).contains(&name.len())
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
-            && name.as_bytes()[0].is_ascii_alphanumeric()
-            && name.as_bytes()[name.len() - 1].is_ascii_alphanumeric();
-        if !valid_name {
+        if !is_bucket_name(name) {
             anyhow::bail!(
                 "BUCKET_NAME must be a GCS bucket name (3-63 of a-z, 0-9, - and _, no dots), got {name:?}"
             );
+        }
+        if self.bucket_audit_logs_ship {
+            let audit = self.bucket_audit_logs_bucket.as_deref().unwrap_or_default();
+            if !is_bucket_name(audit) || audit == name {
+                anyhow::bail!(
+                    "BUCKET_AUDIT_LOGS_BUCKET must be the audit-log bucket's name (3-63 of a-z, 0-9, - and _, no dots), not BUCKET_NAME's, got {audit:?}"
+                );
+            }
+            if self.bucket_audit_logs_poll_interval_secs < 60 {
+                anyhow::bail!("BUCKET_AUDIT_LOGS_POLL_INTERVAL_SECS must be at least 60");
+            }
         }
         if self
             .bucket_expected_keys
@@ -474,6 +499,26 @@ impl BucketArgs {
             anyhow::bail!("BUCKET_BASE_URL must be an http(s):// URL, got {url:?}");
         }
         self.credential()?;
+        if let Some(subscription) = self.pubsub_subscription() {
+            if !crate::pubsub::is_subscription_name(subscription) {
+                anyhow::bail!(
+                    "BUCKET_PUBSUB_SUBSCRIPTION must be a subscription's full name, projects/<project>/subscriptions/<name>, got {subscription:?}"
+                );
+            }
+            if self.bucket_pubsub_reconcile_interval_secs < self.bucket_poll_interval_secs {
+                anyhow::bail!(
+                    "BUCKET_PUBSUB_RECONCILE_INTERVAL_SECS must be at least BUCKET_POLL_INTERVAL_SECS"
+                );
+            }
+            if let Some(url) = self
+                .bucket_pubsub_base_url
+                .as_deref()
+                .filter(|u| !u.is_empty())
+                && !(url.starts_with("https://") || url.starts_with("http://"))
+            {
+                anyhow::bail!("BUCKET_PUBSUB_BASE_URL must be an http(s):// URL, got {url:?}");
+            }
+        }
         if self.bucket_poll_interval_secs == 0 {
             anyhow::bail!("BUCKET_POLL_INTERVAL_SECS must be at least 1");
         }
@@ -494,6 +539,13 @@ impl BucketArgs {
             );
         }
         Ok(())
+    }
+
+    /// The Pub/Sub subscription, when set (and not empty).
+    pub(crate) fn pubsub_subscription(&self) -> Option<&str> {
+        self.bucket_pubsub_subscription
+            .as_deref()
+            .filter(|s| !s.is_empty())
     }
 
     /// Exactly one of the two credential paths.
@@ -605,10 +657,10 @@ mod chart_env_wiring_tests {
         );
     }
 
-    /// Release B: the chart sets the `schedule_ingest` role's
-    /// `DATABASE_URL` on this container, and no longer `INGEST_SINK`, the
-    /// api URLs or the internal OAuth settings; `INGEST_SINK` accepts only
-    /// its default, `db`.
+    /// The chart sets the `schedule_ingest` role's `DATABASE_URL` on this
+    /// container, and no longer the api URLs or the internal OAuth settings
+    /// (release B) or `INGEST_SINK` (release D, which also removed the
+    /// variable from this crate).
     #[test]
     fn the_db_sink_env_is_set_on_the_charts_ingest_container() {
         let block = ingest_container_block();
@@ -638,23 +690,12 @@ mod chart_env_wiring_tests {
                 .find(|arg| arg.get_id() == id)
                 .unwrap_or_else(|| panic!("no argument {id}"))
         };
-        let sink = arg("ingest_sink");
-        assert_eq!(
-            sink.get_env().and_then(|env| env.to_str()),
-            Some("INGEST_SINK")
+        assert!(
+            command
+                .get_arguments()
+                .all(|arg| arg.get_env().is_none_or(|env| env != "INGEST_SINK")),
+            "INGEST_SINK was removed in release D"
         );
-        let defaults: Vec<String> = sink
-            .get_default_values()
-            .iter()
-            .map(|v| v.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(defaults, ["db"]);
-        let possible: Vec<String> = sink
-            .get_possible_values()
-            .iter()
-            .map(|v| v.get_name().to_owned())
-            .collect();
-        assert_eq!(possible, ["db"], "http and http+shadow are refused");
         assert_eq!(
             arg("database_url").get_env().and_then(|env| env.to_str()),
             Some("DATABASE_URL")
@@ -760,6 +801,48 @@ mod source_args_tests {
         assert!(refused(&["--bucket-max-backoff-secs=60"]).contains("BACKOFF"));
         assert!(refused(&["--bucket-max-object-bytes=999999999999"]).contains("caps"));
         assert!(refused(&["--bucket-base-url=ftp://x"]).contains("BUCKET_BASE_URL"));
+        assert!(refused(&["--bucket-audit-logs-ship=true"]).contains("BUCKET_AUDIT_LOGS_BUCKET"));
+        assert!(
+            refused(&[
+                "--bucket-audit-logs-ship=true",
+                "--bucket-audit-logs-bucket=example-ds-ingest",
+            ])
+            .contains("not BUCKET_NAME")
+        );
+        assert!(
+            refused(&[
+                "--bucket-audit-logs-ship=true",
+                "--bucket-audit-logs-bucket=example-ds-ingest-audit",
+                "--bucket-audit-logs-poll-interval-secs=5",
+            ])
+            .contains("at least 60")
+        );
+        let mut shipping = BUCKET_ON.to_vec();
+        shipping.extend([
+            "--bucket-audit-logs-ship=true",
+            "--bucket-audit-logs-bucket=example-ds-ingest-audit",
+        ]);
+        parse(&shipping).validate().unwrap();
+
+        let subscription =
+            "--bucket-pubsub-subscription=projects/example-project/subscriptions/ds-ingest-events";
+        let mut notified = BUCKET_ON.to_vec();
+        notified.push(subscription);
+        let args = parse(&notified);
+        args.validate().unwrap();
+        assert_eq!(args.bucket.bucket_pubsub_reconcile_interval_secs, 3600);
+        assert!(
+            refused(&["--bucket-pubsub-subscription=ds-ingest-events"])
+                .contains("BUCKET_PUBSUB_SUBSCRIPTION")
+        );
+        assert!(
+            refused(&[subscription, "--bucket-pubsub-reconcile-interval-secs=60"])
+                .contains("RECONCILE")
+        );
+        assert!(
+            refused(&[subscription, "--bucket-pubsub-base-url=ftp://x"])
+                .contains("BUCKET_PUBSUB_BASE_URL")
+        );
         assert!(
             parse(&["--sftp-source-enabled=false"])
                 .validate()

@@ -75,9 +75,27 @@ sketch, and why:
   loser's directory is retired (renamed to `.stale-superseded-*` and
   removed) so schedule-reference publishes the winner. A quarantined
   winner never promotes the loser.
-- **Not built:** the api's `delivery_source` column (§9 "Records", plan
-  3.3), the audit-log tailer (phase 5; `auditLogs.ship` logs a warning),
-  and Pub/Sub (phase 6). `expectedKeys` now includes `NLC*.xml.gz`.
+- **`delivery_source`** (§9 "Records", plan 3.3; DS-89):
+  `schedule_feed_ingests` and `corpus_deliveries` gain the nullable column
+  (`sftp` or `bucket`, CHECKed), written by both lanes through
+  schedule-ingest's direct sink (`ds_store`), not an api route: the api's
+  ingest routes were retired in ingest phase 5.
+- **The audit-log tailer** (phase 5, §8; DS-90) is
+  `crates/schedule-ingest/src/bucket_audit.rs`. No single cursor: a sink
+  writes a late shard of an earlier hour after later hours, so it lists
+  every log's folders from two days back (`startOffset`) and keeps the
+  names it shipped within that window in `sources/bucket/.audit-shipped`.
+  Lines carry `resource`, `log` and `insert_id` besides §8's fields;
+  `status` is the `google.rpc.Code` name.
+- **Pub/Sub** (phase 6, §6 option C; DS-91) is
+  `crates/schedule-ingest/src/pubsub.rs`, off by default
+  (`scheduleFeed.bucket.notifications.pubsub.*`). A notification wakes the
+  bucket source's next poll early (at most one a minute, never during a
+  backoff) and is acknowledged once a poll that started after it has
+  finished; the regular poll stretches to `reconcileIntervalSecs` only
+  while pulls succeed. What Ranma creates (RANMA-87) is in
+  `docs/schedule-feed-bucket.md`, "Pub/Sub notifications".
+- `expectedKeys` now includes `NLC*.xml.gz`.
 
 The remaining switch-on steps are in
 [docs/schedule-feed-bucket.md](../../schedule-feed-bucket.md#switching-it-on).

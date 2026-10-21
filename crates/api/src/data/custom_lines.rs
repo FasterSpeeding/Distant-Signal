@@ -556,11 +556,10 @@ mod db_tests {
 
         pub(super) async fn seed_user(pool: &PgPool, id: &str) {
             sqlx::query(
-                "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) \
+                "INSERT INTO users (id, name) VALUES ($1, $2) \
                  ON CONFLICT (id) DO NOTHING",
             )
             .bind(id)
-            .bind(format!("{id}@example.com"))
             .bind(id)
             .execute(pool)
             .await
@@ -900,7 +899,7 @@ mod db_tests {
             .expect("connect to postgres");
 
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-CUSTOM-LINE-OWNER', 'owner@example.com', 'Owner') \
+            "INSERT INTO users (id, name) VALUES ('TEST-CUSTOM-LINE-OWNER', 'Owner') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)
@@ -1010,7 +1009,7 @@ mod db_tests {
             .expect("connect to postgres");
 
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-OWNERS-FOR-IDS-OWNER', 'owner@example.com', 'Owner') \
+            "INSERT INTO users (id, name) VALUES ('TEST-OWNERS-FOR-IDS-OWNER', 'Owner') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)
@@ -1086,7 +1085,7 @@ mod db_tests {
 
         // Create two test users
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-LIST-USER-1', 'user1@example.com', 'User 1') \
+            "INSERT INTO users (id, name) VALUES ('TEST-LIST-USER-1', 'User 1') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)
@@ -1094,7 +1093,7 @@ mod db_tests {
         .expect("seed fixture user 1");
 
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES ('TEST-LIST-USER-2', 'user2@example.com', 'User 2') \
+            "INSERT INTO users (id, name) VALUES ('TEST-LIST-USER-2', 'User 2') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)

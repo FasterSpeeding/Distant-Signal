@@ -446,7 +446,7 @@ pub(crate) mod db_tests {
     pub(crate) async fn seed_user(pool: &PgPool, id: &str) {
         exec(
             pool,
-            "INSERT INTO users (id, email, name, username) VALUES ($1, $1 || '@example.com', 'Name ' || $1, $1)",
+            "INSERT INTO users (id, name, username) VALUES ($1, 'Name ' || $1, $1)",
             &[id],
         )
         .await;
