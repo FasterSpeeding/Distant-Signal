@@ -6,7 +6,7 @@ import { JourneyDetailView } from '@/components/JourneyDetailView';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import { formatDate } from '@/lib/dateFormat';
 import { journeyDefaultName, journeyNameInputFromLegs } from '@/lib/journeyName';
-import { worstLegStatus, type LegStatusGroup } from '@/lib/journeyStatus';
+import { journeyDetailSummary, type JourneySummaryGroup } from '@/lib/journeyStatus';
 import type { JourneyDetail, JourneyLegDetail } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -48,8 +48,8 @@ function isValidShareToken(token: string): boolean {
 }
 
 /** Coarse, non-numeric phrasing for a journey's worst-leg status, built on
- * `lib/journeyStatus.ts::worstLegStatus` -- the same "reduce every leg to
- * one worst status" rollup `JourneyStatusBadge` already renders on-page as
+ * `lib/journeyStatus.ts::journeyDetailSummary` -- the same whole-journey
+ * summary `JourneyStatusBadge` already renders on-page as
  * its single header badge. Deliberately coarser than
  * `app/train/[uid]/[date]/page.tsx`'s own `trainStatusSummary`, which
  * quotes an exact `delayMinutes` figure and the train's own last reported
@@ -69,9 +69,9 @@ function isValidShareToken(token: string): boolean {
  * itself) exactly as before -- this function only governs what a passer-by
  * sees without clicking anything. */
 function journeyStatusPhrase(legs: JourneyLegDetail[]): string {
-  const worst = worstLegStatus(legs);
-  if (worst === null) return 'has no legs yet';
-  const PHRASE: Record<LegStatusGroup, string> = {
+  const summary = journeyDetailSummary(legs);
+  if (summary === null) return 'has no legs yet';
+  const PHRASE: Record<JourneySummaryGroup, string> = {
     // A journey of untracked legs only (spec 2026-10-20 §2.3).
     untrackedDone: 'done',
     untrackedPlanned: 'planned',
@@ -84,8 +84,11 @@ function journeyStatusPhrase(legs: JourneyLegDetail[]): string {
     delayed: 'running delayed',
     skipped: 'not stopping at one of its own stations',
     severe: 'cancelled',
+    partCancelled: 'part cancelled',
+    connectionAtRisk: 'at risk of missing a connection',
+    connectionMissed: 'missing a connection',
   };
-  return PHRASE[worst];
+  return PHRASE[summary.group];
 }
 
 /** Per-page Open Graph/Twitter/`<title>` metadata for a journey's unlisted

@@ -83,7 +83,7 @@ describe('tracked row status: a lone train and a journey read the same', () => {
     const today = allThree({ status: 'cancelled' });
     expect(today.lone).toMatchObject({ kind: 'severe', finished: false });
     expect(today.oneLeg).toMatchObject({ kind: 'severe', finished: false });
-    expect(today.multiLeg).toMatchObject({ kind: 'legCancelled', finished: false });
+    expect(today.multiLeg).toMatchObject({ kind: 'partCancelled', finished: false });
 
     expect(trackedTrainRowStatus(train({ status: 'cancelled', serviceDate: PAST }), TODAY)).toMatchObject({
       kind: 'severe',
@@ -95,13 +95,26 @@ describe('tracked row status: a lone train and a journey read the same', () => {
     });
   });
 
+  it('part-cancelled and arrived: finished, still red, with the final arrival delay', () => {
+    const arrived = journey({
+      status: 'completed',
+      legCount: 2,
+      trainLegCount: 2,
+      cancelledLegCount: 1,
+      finishedLegCount: 1,
+      startedLegCount: 1,
+      finalArrivalDelayMinutes: 0,
+    });
+    expect(journeyRowStatus(arrived, TODAY)).toMatchObject({ kind: 'partCancelled', finished: true, delayMinutes: 0 });
+  });
+
   it('part-cancelled: a multi-leg journey with a cancelled leg says so, finished or not', () => {
     expect(journeyRowStatus(journey({ status: 'cancelled', legCount: 2 }), TODAY)).toMatchObject({
-      kind: 'legCancelled',
+      kind: 'partCancelled',
       finished: false,
     });
     expect(journeyRowStatus(journey({ status: 'cancelled', legCount: 2, serviceDate: PAST }), TODAY)).toMatchObject({
-      kind: 'legCancelled',
+      kind: 'partCancelled',
       finished: true,
     });
   });
@@ -147,7 +160,7 @@ describe('journey-only and train-only states', () => {
       finished: false,
     });
     expect(journeyRowStatus(journey({ ...untracked, untrackedStatus: 'done' }), TODAY)).toMatchObject({
-      kind: 'untrackedDone',
+      kind: 'completed',
       finished: true,
     });
   });

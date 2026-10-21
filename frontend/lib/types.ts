@@ -1175,6 +1175,22 @@ export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields
   /** `true` while `delayMinutes` is a forecast (the train has not reached
    * the stop it is measured at yet). */
   delayProvisional?: boolean;
+  /** The whole journey, not just the current leg: how many legs are train
+   * legs, have a cancelled train, are train legs with no train picked,
+   * have arrived (a completed train, or an untracked leg past its planned
+   * arrival) and have started. Optional: absent from a backend that
+   * predates them, when `journeyListItemSummary` falls back to the current
+   * leg alone. */
+  trainLegCount?: number;
+  cancelledLegCount?: number;
+  unmatchedLegCount?: number;
+  finishedLegCount?: number;
+  startedLegCount?: number;
+  /** The delay at the journey's final arrival: the last train leg's public
+   * delay at its own destination. `null` when not known. Optional, as
+   * above. */
+  finalArrivalDelayMinutes?: number | null;
+  finalArrivalDelayProvisional?: boolean;
 }
 
 /** `GET /Journeys/{id}`'s per-leg `legSkip` field

@@ -19,7 +19,9 @@ describe('TrackedRowStatusBadge', () => {
     ['noTimetable', 'Not in the timetable', 'action'],
     ['unmatched', 'Needs a train picked', 'action'],
     ['severe', 'Cancelled', 'critical'],
-    ['legCancelled', 'Leg cancelled', 'critical'],
+    ['partCancelled', 'Part cancelled', 'critical'],
+    ['connectionAtRisk', 'Tight connection', 'caution'],
+    ['connectionMissed', 'Connection missed', 'late'],
     ['noReport', 'No report received', 'neutral'],
     ['noTrainPicked', 'No train picked', 'neutral'],
     ['good', 'On time', 'good'],
@@ -45,6 +47,12 @@ describe('TrackedRowStatusBadge', () => {
     renderWithMantine(<TrackedRowStatusBadge status={status('severe', { finished: true, delayMinutes: 5 })} />);
     expect(toneOf('Cancelled')).toBe('critical');
     expect(screen.queryByText('5 min late')).not.toBeInTheDocument();
+  });
+
+  it('part cancelled sits beside the final arrival delay', () => {
+    renderWithMantine(<TrackedRowStatusBadge status={status('partCancelled', { delayMinutes: 0 })} />);
+    expect(toneOf('Part cancelled')).toBe('critical');
+    expect(screen.getByText('On time')).toBeInTheDocument();
   });
 
   it('a bus says what it is and that it is timetabled only', () => {

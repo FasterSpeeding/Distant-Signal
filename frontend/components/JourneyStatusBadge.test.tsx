@@ -94,7 +94,7 @@ describe('JourneyStatusBadge', () => {
     expect(badge.closest('a')).toHaveAttribute('href', '#leg-1');
   });
 
-  it('shows "Cancelled" when the worst leg is cancelled even if another is merely unmatched', () => {
+  it('shows "Part cancelled" when one leg is cancelled even if another is merely unmatched', () => {
     renderWithMantine(
       <JourneyStatusBadge
         legs={[
@@ -103,8 +103,33 @@ describe('JourneyStatusBadge', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    expect(screen.getByText('Part cancelled')).toBeInTheDocument();
     expect(screen.queryByText('Needs a train picked')).not.toBeInTheDocument();
+  });
+
+  it('heads a journey whose first train ran late but whose last is on time as on time', () => {
+    renderWithMantine(
+      <JourneyStatusBadge
+        legs={[
+          baseLeg({ id: 1, trackedTrainState: baseTrackedTrainState({ status: 'completed', delayMinutes: 12 }) }),
+          baseLeg({ id: 2, trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 0 }) }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('On time')).toBeInTheDocument();
+    expect(screen.queryByText('12 min late')).not.toBeInTheDocument();
+  });
+
+  it('heads a journey by its last train when that one runs late', () => {
+    renderWithMantine(
+      <JourneyStatusBadge
+        legs={[
+          baseLeg({ id: 1, trackedTrainState: baseTrackedTrainState({ status: 'completed', delayMinutes: 0 }) }),
+          baseLeg({ id: 2, trackedTrainState: baseTrackedTrainState({ status: 'en_route', delayMinutes: 9 }) }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('9 min late')).toBeInTheDocument();
   });
 
   it('renders nothing for an empty leg list', () => {

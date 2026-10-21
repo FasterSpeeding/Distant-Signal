@@ -958,7 +958,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
 
       const finished = screen.getByRole('heading', { name: 'Finished' }).parentElement!;
       expect(within(finished).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/170');
-      expect(within(finished).getByText('Leg cancelled').closest('[data-state-badge]')).toHaveAttribute(
+      expect(within(finished).getByText('Part cancelled').closest('[data-state-badge]')).toHaveAttribute(
         'data-state-badge',
         'critical',
       );

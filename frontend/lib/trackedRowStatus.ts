@@ -1,27 +1,31 @@
-import { journeyListItemStatusGroup, trackedTrainListStatusGroup, type LegStatusGroup } from './journeyStatus';
+import {
+  journeyDetailSummary,
+  journeyListItemSummary,
+  summariseJourney,
+  trackedTrainListStatusGroup,
+  type JourneySummary,
+  type JourneySummaryGroup,
+} from './journeyStatus';
 import { isTimetableOnly } from './serviceMode';
-import type { JourneyListItem, ServiceMode, ServiceModeFields, TrackingPhaseFields } from './types';
+import type { JourneyLegDetail, JourneyListItem, ServiceMode, ServiceModeFields, TrackingPhaseFields } from './types';
 
-/** What one `/track/mine` row says about its status, for a train tracked on
- * its own and a journey alike. A `LegStatusGroup` reads exactly as
- * `JourneyStatusGroupBadge` words it; the other four exist only once a row
- * is finished, or for a bus or ferry:
- *  - `completed`: the train (or the journey's last leg) arrived;
+/** What a journey's or a tracked train's status badge says, wherever it is
+ * shown (the Track list, the journey page header, the home page). A
+ * `JourneySummaryGroup` reads as `JourneyStatusGroupBadge` words it; the
+ * others say how a finished row ended, or that it is a bus or ferry:
+ *  - `completed`: arrived (every leg, for a journey);
  *  - `noReport`: its day has passed and Network Rail never reported it;
  *  - `noTrainPicked`: its day has passed and no train was ever picked;
- *  - `legCancelled`: a multi-leg journey's current leg is cancelled. The
- *    list row only carries the current leg, so it can't tell one cancelled
- *    leg from all of them; "Leg cancelled" is true either way;
  *  - `timetableOnly`: a bus or ferry, which Network Rail never reports. */
-export type TrackedRowStatusKind =
-  LegStatusGroup | 'completed' | 'noReport' | 'noTrainPicked' | 'legCancelled' | 'timetableOnly';
+export type TrackedRowStatusKind = JourneySummaryGroup | 'completed' | 'noReport' | 'noTrainPicked' | 'timetableOnly';
 
 export interface TrackedRowStatus {
   kind: TrackedRowStatusKind;
   /** Arrived, done, or its day is over. Finished rows sit under their own
    * heading; a cancelled one keeps its red badge there. */
   finished: boolean;
-  /** The delay at the passenger's own stop, for the delay badge. */
+  /** The delay at the final destination (a lone train's: at the
+   * traveller's stop), for the delay badge. */
   delayMinutes: number | null;
   delayProvisional: boolean;
   /** For `timetableOnly`: which kind of service it is. */
@@ -39,49 +43,74 @@ export type TrackedTrainRowInput = {
 } & ServiceModeFields &
   TrackingPhaseFields;
 
-/** Shared tail of both mappings: a row from a past day that never
- * completed keeps any problem it had (cancelled, not in the timetable, not
- * stopping) and stops asking for anything else. */
-function finish(group: LegStatusGroup, status: string | null, pastDay: boolean, multiLeg: boolean) {
-  const cancelled = group === 'severe';
-  let kind: TrackedRowStatusKind = cancelled && multiLeg ? 'legCancelled' : group;
-  let finished = pastDay || group === 'untrackedDone';
-  if (status === 'completed' && !cancelled) {
+/** Problems that stay on a finished row: it didn't simply arrive. */
+const STILL_FLAGGED: ReadonlySet<JourneySummaryGroup> = new Set(['severe', 'partCancelled', 'noTimetable', 'skipped']);
+
+/** A journey summary as a badge. A finished journey says "Completed"
+ * unless something still flags it; one from a past day that never
+ * finished stops asking for anything ("No report received", "No train
+ * picked") but keeps a problem it had. */
+export function journeySummaryRowStatus(summary: JourneySummary, pastDay: boolean): TrackedRowStatus {
+  const { group } = summary;
+  let kind: TrackedRowStatusKind = group;
+  const finished = pastDay || summary.phase === 'completed';
+  if (summary.phase === 'completed' && !STILL_FLAGGED.has(group)) {
     kind = 'completed';
-    finished = true;
   } else if (pastDay) {
     if (group === 'awaiting' || group === 'planned') kind = 'noReport';
     if (group === 'unmatched') kind = 'noTrainPicked';
-    if (group === 'untrackedPlanned' || group === 'untrackedInProgress') kind = 'untrackedDone';
+    if (group === 'untrackedPlanned' || group === 'untrackedInProgress' || group === 'untrackedDone') {
+      kind = 'completed';
+    }
   }
-  return { kind, finished };
+  return {
+    kind,
+    finished,
+    delayMinutes: summary.finalArrivalDelayMinutes,
+    delayProvisional: summary.finalArrivalDelayProvisional,
+    serviceMode: null,
+  };
 }
 
-/** A train tracked on its own. `today` is the London day ("2026-10-21",
- * `londonDayKey`). */
+/** A train tracked on its own, read as a one-leg journey by the same rule
+ * (`summariseJourney`), so it and a journey on that train say the same.
+ * `today` is the London day ("2026-10-21", `londonDayKey`). */
 export function trackedTrainRowStatus(train: TrackedTrainRowInput, today: string): TrackedRowStatus {
   const pastDay = train.serviceDate < today;
-  const base = {
-    delayMinutes: train.delayMinutes,
-    delayProvisional: train.delayProvisional ?? false,
-    serviceMode: train.serviceMode ?? null,
-  };
   if (isTimetableOnly(train)) {
-    return { ...base, kind: 'timetableOnly', finished: pastDay };
+    return {
+      kind: 'timetableOnly',
+      finished: pastDay,
+      delayMinutes: train.delayMinutes,
+      delayProvisional: train.delayProvisional ?? false,
+      serviceMode: train.serviceMode ?? null,
+    };
   }
-  return { ...base, ...finish(trackedTrainListStatusGroup(train), train.status, pastDay, false) };
+  const cancelled = train.status === 'cancelled';
+  const summary = summariseJourney({
+    currentLegGroup: trackedTrainListStatusGroup(train),
+    otherLegGroups: [],
+    legCount: 1,
+    trainLegCount: 1,
+    cancelledLegCount: cancelled ? 1 : 0,
+    unmatchedLegCount: 0,
+    finishedLegCount: train.status === 'completed' ? 1 : 0,
+    startedLegCount: train.status === 'en_route' || train.status === 'completed' ? 1 : 0,
+    finalArrivalDelayMinutes: cancelled ? null : train.delayMinutes,
+    finalArrivalDelayProvisional: train.delayProvisional ?? false,
+    connection: null,
+  });
+  return journeySummaryRowStatus(summary, pastDay);
 }
 
-/** One row of `GET /Journeys/mine`. The row describes the journey's
- * current leg (the earliest one not yet completed, or the last when all
- * are), so a `completed` status means the whole journey is. */
+/** One row of `GET /Journeys/mine`, by its whole-journey summary
+ * (`journeyListItemSummary`). Past means the current leg's day is over. */
 export function journeyRowStatus(journey: JourneyListItem, today: string): TrackedRowStatus {
-  const pastDay = journey.serviceDate < today;
-  const multiLeg = (journey.legCount ?? 1) > 1;
-  return {
-    delayMinutes: journey.delayMinutes,
-    delayProvisional: journey.delayProvisional ?? false,
-    serviceMode: null,
-    ...finish(journeyListItemStatusGroup(journey), journey.status, pastDay, multiLeg),
-  };
+  return journeySummaryRowStatus(journeyListItemSummary(journey), journey.serviceDate < today);
+}
+
+/** The journey page header's status, from every leg. `null` with no legs. */
+export function journeyDetailRowStatus(legs: readonly JourneyLegDetail[]): TrackedRowStatus | null {
+  const summary = journeyDetailSummary(legs);
+  return summary === null ? null : journeySummaryRowStatus(summary, false);
 }

@@ -510,14 +510,23 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   no timetable and no report. An untracked leg (Tube, bus, walk) says
   "Planned", "In progress (not live tracked)" or "Done", and that we have
   no live data for it.
-- The Track list gives a lone tracked train and a journey one status
-  badge, `TrackedRowStatusBadge` (classified by `lib/trackedRowStatus.ts`):
-  the journey rollup's words and colours, with the delay badge ("12 min
-  late") in place of "On time"/"Delayed" once the delay is known. Rows that
-  have arrived, are done or are from a past day sit under a "Finished"
-  heading below the active ones: "Completed" (gray, with its final delay),
-  "No report received", "No train picked". Cancelled stays red there, "Leg
-  cancelled" for a multi-leg journey.
+- A journey's status is the whole journey's (`summariseJourney` in
+  `lib/journeyStatus.ts`), on the Track list, the journey page header and
+  the home page alike. On time or late is the final arrival: the last
+  train leg's delay at its destination. An earlier leg's delay shows only
+  on that leg (and in the per-leg line), or as "Tight connection" (yellow)
+  or "Connection missed" (orange) when it threatens the change. Any
+  cancelled train leg flags the journey: "Cancelled" when all are, "Part
+  cancelled" (red) otherwise, beside the final delay badge, so a journey
+  that lost a train but arrived on time reads "Part cancelled" "On time".
+- `TrackedRowStatusBadge` (`lib/trackedRowStatus.ts`) is that status as a
+  badge, for a journey and a lone tracked train (read as a one-leg
+  journey) alike: the rollup's words and colours, with the delay badge
+  ("12 min late") in place of "On time"/"Delayed" once the delay is known.
+  Track list rows that have arrived or are from a past day sit under a
+  "Finished" heading below the active ones: "Completed" (gray, with its
+  final delay), "No report received", "No train picked". Cancelled and
+  part cancelled stay red there.
 - Severity labels are TfL's own Title Case names; unknown codes read
   "Unknown" in gray (`lib/severity.ts`).
 
