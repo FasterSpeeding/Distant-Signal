@@ -99,13 +99,12 @@ async fn run() -> anyhow::Result<()> {
     common::heap::pin_mmap_threshold();
 
     let config = Config::parse();
-    common::metrics::ingest_sink_info(&config.ingest_sink);
     config.validate()?;
     if config.metrics.metrics_enabled {
         common::metrics::install(config.metrics_port)?;
     }
     let progress = health_http::spawn_liveness(&config.health);
-    tracing::info!(sink = %config.ingest_sink, "schedule-reference starting");
+    tracing::info!("schedule-reference starting");
     let pool = connect_db(&config, &progress).await?;
     sink::db::register_metrics();
     run_with(&DbSink::new(pool, &config.lines), &config, &progress).await
@@ -4179,7 +4178,6 @@ LTWVRMPTN 2211 22113     TF";
     /// keeping these tests about the whole-network products.
     pub(super) fn test_config() -> Config {
         Config {
-            ingest_sink: "db".to_string(),
             database_url: common::secret::Secret::new("postgres://unused@127.0.0.1:1/none"),
             storage_dir: std::path::PathBuf::from("/tmp/schedule-reference-test-does-not-exist"),
             poll_interval_secs: 1800,

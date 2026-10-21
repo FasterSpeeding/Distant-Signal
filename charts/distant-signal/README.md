@@ -794,8 +794,8 @@ HTTP paths, so these are now the only paths, with no switch:
 | full-coverage-consumer, trust-consumer, poller-ldbws (reads) | read Postgres, each as its own read role |
 
 No producer gets a `/private` URL, an internal OAuth credential,
-`INGEST_SINK` or a `*_SOURCE` any more (the binaries still accept those two
-for one release, only with their one value). The producers'
+`INGEST_SINK` or a `*_SOURCE` any more, and since release D the binaries
+no longer read those two. The producers'
 `postgresql.roles.perService.<role>.connect` (and the writer's) default to
 `true`; a `connect` whose component is not deployed is a no-op.
 
@@ -810,11 +810,10 @@ setting. `ci/ingest-prereqs.yaml` is the least a fresh install adds
 The retired switches (`pollers.<name>.ingest.sink`,
 `<consumer>.ingest.sink`, `scheduleFeed.ingest.sink`,
 `scheduleFeed.reference.ingest.sink`, `<reader>.internalReads.source`) are
-gone from `values.yaml`. A values file that still sets one to anything but
-its one value (`db` for the direct writers, `stream` for the stream
-producers, `db` for the reads), or an `ingestWriter.streams` entry to the
-removed `shadow`, fails the render, naming it; set to that value, it is a
-harmless leftover (delete it when convenient). There is no per-producer
+gone from `values.yaml`, and since release D nothing reads them: a values
+file that still sets one renders as if it did not (delete it when
+convenient). An `ingestWriter.streams` entry set to the removed `shadow`
+fails the render, naming it. There is no per-producer
 rollback: going back to the HTTP paths means the previous chart release and
 images (`docs/ingest-phase5-runbook.md`).
 
@@ -2617,7 +2616,7 @@ Irish Rail GTFS zip. Off by default; no API key needed.
 
 | Key | Default | Description |
 |---|---|---|
-| `pollerIrishRailGtfs.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-gtfs` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailGtfs`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-gtfs: apply` with it. |
+| `pollerIrishRailGtfs.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-gtfs` stream (ingest plan 3c.2: `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailGtfs`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-gtfs: apply` with it. |
 | `pollerIrishRailGtfs.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-irish-rail-gtfs` | Image repository. |
 | `pollerIrishRailGtfs.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `pollerIrishRailGtfs.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
@@ -2643,7 +2642,7 @@ default; no API key needed.
 
 | Key | Default | Description |
 |---|---|---|
-| `pollerIrishRailLive.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-live` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailLive`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-live: apply` with it. |
+| `pollerIrishRailLive.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-live` stream (ingest plan 3c.2: `REDIS_URL`, the user in `redis.acl.clients.pollerIrishRailLive`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-live: apply` with it. |
 | `pollerIrishRailLive.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-irish-rail-live` | Image repository. |
 | `pollerIrishRailLive.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `pollerIrishRailLive.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |
@@ -2669,7 +2668,7 @@ Off by default; no API key needed.
 
 | Key | Default | Description |
 |---|---|---|
-| `pollerNirStations.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-nir` stream (ingest plan 3c.2: `INGEST_SINK=stream`, `REDIS_URL`, the user in `redis.acl.clients.pollerNirStations`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-nir: apply` with it. |
+| `pollerNirStations.enabled` | `false` | Deploy the poller (off by default, decision D8). It writes only to the `ds:ingest:ioi-nir` stream (ingest plan 3c.2: `REDIS_URL`, the user in `redis.acl.clients.pollerNirStations`; no api route or OAuth), so turn on `ingestWriter.streams.ioi-nir: apply` with it. |
 | `pollerNirStations.image.repository` | `ghcr.io/fasterspeeding/distant-signal/poller-nir-stations` | Image repository. |
 | `pollerNirStations.image.tag` | `""` | Empty means "use the chart's appVersion". |
 | `pollerNirStations.image.digest` | `""` | Exact content digest (`sha256:...`). See `api.image.digest` above. |

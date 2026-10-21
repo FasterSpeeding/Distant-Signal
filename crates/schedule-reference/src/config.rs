@@ -50,15 +50,10 @@ const _: () = assert!(
 /// `Debug` is safe to log: `DATABASE_URL` is a [`Secret`].
 #[derive(Debug, Parser)]
 pub(crate) struct Config {
-    /// Where the products go: only `db`, Postgres directly through
-    /// `ds_store` as the `distant_signal_schedule_reference` role. `http`
-    /// (the api's `/private` ingest routes) was removed in release B
-    /// (ingest phase 5, docs/ingest-phase5-runbook.md), so an old
-    /// `INGEST_SINK=http` fails at startup; the next release drops the
-    /// variable.
-    #[arg(long, env = "INGEST_SINK", default_value = "db", value_parser = ["db"])]
-    pub ingest_sink: String,
-
+    /// Where the products go: Postgres directly through `ds_store`, as
+    /// this role (release D, ingest phase 5, removed the `INGEST_SINK`
+    /// switch, `db` only since release B).
+    ///
     /// The `schedule_reference` role's connection. Pool size and timeouts
     /// come from the shared `DATABASE_*` variables (`common::pg`); the
     /// default pool is [`DB_POOL_SIZE`].
@@ -211,19 +206,6 @@ mod tests {
         Config::try_parse_from(argv(args)).expect("parses")
     }
 
-    /// Release B: the sink is `db`, by default and only.
-    #[test]
-    fn the_sink_is_db_and_http_is_refused() {
-        assert_eq!(parse(&[]).ingest_sink, "db");
-        assert_eq!(parse(&["--ingest-sink", "db"]).ingest_sink, "db");
-        for removed in ["http", "http+shadow"] {
-            assert!(
-                Config::try_parse_from(argv(&["--ingest-sink", removed])).is_err(),
-                "{removed} must be refused at startup"
-            );
-        }
-    }
-
     #[test]
     fn the_database_url_must_not_be_empty() {
         let config = parse(&["--database-url", "postgres://u:p@db/ds"]);
@@ -261,18 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_sink_is_a_startup_error() {
-        assert!(Config::try_parse_from(argv(&["--ingest-sink", "redis"])).is_err());
-    }
-
-    #[test]
     fn debug_hides_the_database_url() {
         let config = parse(&["--database-url", "postgres://u:hunter2@db/ds"]);
         assert!(!format!("{config:?}").contains("hunter2"));
     }
 
     #[test]
-    fn the_sink_and_database_variables_keep_their_names() {
+    fn the_database_variables_keep_their_names() {
         use clap::CommandFactory;
         let command = Config::command();
         let env = |id: &str| {
@@ -283,8 +260,13 @@ mod tests {
                 .and_then(|env| env.to_str())
                 .map(str::to_string)
         };
-        assert_eq!(env("ingest_sink").as_deref(), Some("INGEST_SINK"));
         assert_eq!(env("database_url").as_deref(), Some("DATABASE_URL"));
+        assert!(
+            command
+                .get_arguments()
+                .all(|arg| arg.get_env().is_none_or(|env| env != "INGEST_SINK")),
+            "INGEST_SINK was removed in release D"
+        );
         assert_eq!(
             env("forward_publish_days").as_deref(),
             Some("SCHEDULE_FORWARD_PUBLISH_DAYS")
@@ -321,9 +303,9 @@ mod chart_env_wiring_tests {
         rendered[start..end].to_string()
     }
 
-    /// Release B: the `reference` container gets the role's `DATABASE_URL`
-    /// and its settings, and no longer `INGEST_SINK`, the api URLs or the
-    /// internal OAuth settings.
+    /// The `reference` container gets the role's `DATABASE_URL` and its
+    /// settings, and no longer `INGEST_SINK` (release D), the api URLs or
+    /// the internal OAuth settings (release B).
     #[test]
     fn the_charts_reference_container_sets_this_configs_env() {
         let block = reference_container_block();
