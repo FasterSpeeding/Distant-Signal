@@ -220,6 +220,7 @@ test.describe('add a leg', () => {
 
     await page.getByRole('button', { name: 'Add a leg' }).click();
     const dialog = page.getByRole('dialog', { name: 'Add a leg to this journey' });
+    await expect(dialog.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
     await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveValue('EUS');
     await expect(dialog.getByLabel('Service date')).toHaveValue('22 Sep 2026');
     await expect(dialog.getByLabel('Earliest departure (optional)')).toHaveValue('09:16');
@@ -230,6 +231,37 @@ test.describe('add a leg', () => {
     await dialog.getByRole('button', { name: 'Add leg' }).click();
     await expect.poll(() => legBodies.length).toBe(1);
     expect(legBodies[0]).toMatchObject({ mode: 'window', originCrs: 'EUS', destinationCrs: 'MKC' });
+  });
+
+  test('after a walk to a place that is no station, opens on "Tube, bus or walk" from it', async ({ page }) => {
+    await mockApi(page, {
+      ...MATCHED_LEG,
+      kind: 'untracked',
+      originCrs: null,
+      originName: 'Euston',
+      destinationCrs: null,
+      destinationName: 'Home',
+      transitMode: 'walk',
+      plannedDeparture: '2026-09-22T08:00:00Z',
+      plannedArrival: '2026-09-22T08:16:00Z',
+      untrackedStatus: 'planned',
+      departAfter: null,
+      windowSearched: false,
+      trackedTrainState: null,
+    });
+    await page.goto('/journeys/new');
+    await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
+    await page.getByText('Search a time window', { exact: true }).click();
+    await page.getByRole('combobox', { name: 'Destination station' }).fill('EUS');
+    await page.getByLabel('Earliest departure (optional)').fill('08:00');
+    await page.getByRole('button', { name: 'Search for a train' }).click();
+
+    await page.getByRole('button', { name: 'Add a leg' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Add a leg to this journey' });
+    await expect(dialog.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
+    await expect(dialog.getByRole('combobox', { name: 'From (optional)' })).toHaveValue('Home');
+    await expect(dialog.getByRole('textbox', { name: 'Leaves' })).toHaveValue('09:16');
+    await expect(dialog.getByRole('combobox', { name: 'From station' })).toHaveCount(0);
   });
 
   test('leaves the time empty when the previous arrival is not known', async ({ page }) => {

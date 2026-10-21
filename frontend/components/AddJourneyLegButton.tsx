@@ -74,14 +74,12 @@ type LegMode = NewJourneyLegRequest['mode'];
  * "leaves" from `priorArrival`, its "from" from `priorPlaceName`.
  *
  * After an untracked last leg (a Tube ride to Euston, a walk) there is no
- * `priorDestinationCrs`, so the train modes' "From station" is resolved
- * when the dialog opens (`resolvePriorOriginCrs`): the TfL stop the leg
- * ended at (`priorStopId`) through the hub crosswalk, else its place name
- * when that is exactly a station's. It lands only while the field is still
- * empty, so it never replaces what the traveller has started typing. The
- * dialog still opens on "Search a time window": after a Tube or walk the
- * next leg is most often a train, and the untracked mode is one click away
- * with its "from" already the place. */
+ * `priorDestinationCrs`, so the station is looked up before the dialog
+ * opens (`resolvePriorOriginCrs`, the button shows it is busy): the TfL
+ * stop the leg ended at (`priorStopId`) through the hub crosswalk, else
+ * its place name when that is exactly a station's. A station opens the
+ * train search ("Search a time window") from it; a place that is no
+ * station ("Home") opens "Tube, bus or walk" from that place. */
 export function AddJourneyLegButton({
   journeyId,
   priorDestinationCrs,
@@ -172,28 +170,39 @@ export function AddJourneyLegButton({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
-  // Which opening a late origin lookup belongs to: one from an earlier
-  // opening is dropped.
-  const openingRef = useRef(0);
+  // Set while the previous leg's station is being looked up, before the
+  // dialog opens; a second click meanwhile is ignored.
+  const [resolving, setResolving] = useState(false);
+  const resolvingRef = useRef(false);
 
-  function handleOpen() {
+  async function handleOpen() {
+    if (resolvingRef.current) return;
+    // The station the previous leg ended at, when it isn't a train leg's
+    // own code: looked up first, so the dialog opens once, on the right
+    // form, instead of switching under the traveller.
+    let origin = priorDestinationCrs;
+    const needsLookup = beforeLegId === null && !priorDestinationCrs && Boolean(priorStopId || priorPlaceName);
+    if (needsLookup) {
+      resolvingRef.current = true;
+      setResolving(true);
+      try {
+        origin = await resolvePriorOriginCrs(
+          { crs: null, stopId: priorStopId, name: priorPlaceName },
+          { railCrsForStop: (stopId) => railCrsForStop(stopId), searchStations: (q) => searchStations(q) },
+        );
+      } finally {
+        resolvingRef.current = false;
+        setResolving(false);
+      }
+    }
     setError(null);
     needsLoginState.reset();
-    setMode(beforeLegId === null ? 'window' : 'untracked');
+    // A place that is no station ("Home") opens on "Tube, bus or walk",
+    // starting from that place; a station, on the train search from it.
+    setMode(beforeLegId !== null || (needsLookup && origin === null) ? 'untracked' : 'window');
     // Re-seeded on every open (not just once at mount) -- see this
     // component's own doc comment.
-    setOriginCrs(beforeLegId === null ? (priorDestinationCrs ?? '') : '');
-    const opening = ++openingRef.current;
-    if (beforeLegId === null && !priorDestinationCrs && (priorStopId || priorPlaceName)) {
-      void resolvePriorOriginCrs(
-        { crs: null, stopId: priorStopId, name: priorPlaceName },
-        { railCrsForStop: (stopId) => railCrsForStop(stopId), searchStations: (q) => searchStations(q) },
-      ).then((crs) => {
-        if (crs !== null && opening === openingRef.current) {
-          setOriginCrs((current) => (current.trim() === '' ? crs : current));
-        }
-      });
-    }
+    setOriginCrs(beforeLegId === null ? (origin ?? '') : '');
     setDestinationCrs(beforeLegId === null ? '' : (nextLegStart?.crs ?? ''));
     setOriginTouched(false);
     setDestinationTouched(false);
@@ -319,7 +328,7 @@ export function AddJourneyLegButton({
 
   return (
     <>
-      <Button variant="default" size="xs" onClick={handleOpen}>
+      <Button variant="default" size="xs" loading={resolving} onClick={() => void handleOpen()}>
         {label}
       </Button>
       <Modal

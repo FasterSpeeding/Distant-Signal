@@ -241,17 +241,40 @@ describe('AddJourneyLegButton', () => {
     await waitFor(() => expect(origin).toHaveValue('CLJ'));
   });
 
-  it('after a walk to a place that is no station, leaves the train origin empty', async () => {
-    renderWithMantine(<AddJourneyLegButton journeyId={1} priorDestinationCrs={null} priorPlaceName="Home" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
-    const origin = await screen.findByRole('combobox', { name: 'From station' });
-    await waitFor(() =>
-      expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === '/api/stations?q=Home')).toBe(true),
+  it('after a walk to a place that is no station, opens on "Tube, bus or walk" from that place', async () => {
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        priorPlaceName="Home"
+        priorArrival={{ date: '2026-10-21', time: '10:07' }}
+      />,
     );
-    expect(origin).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByRole('combobox', { name: 'From (optional)' })).toHaveValue('Home');
+    expect(screen.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
+    expect(screen.getByLabelText('Leaves')).toHaveValue('10:07');
+    expect(screen.queryByRole('combobox', { name: 'From station' })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === '/api/stations?q=Home')).toBe(true);
   });
 
-  it('never replaces an origin the traveller typed before the lookup came back', async () => {
+  it('after a leg that ends at a station, opens on the train search from it', async () => {
+    renderWithMantine(
+      <AddJourneyLegButton
+        journeyId={1}
+        priorDestinationCrs={null}
+        priorStopId="940GZZLUEUS"
+        priorPlaceName="Euston"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
+
+    expect(await screen.findByRole('combobox', { name: 'From station' })).toHaveValue('EUS');
+    expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+  });
+
+  it('opens once the station lookup answers, and ignores a second click meanwhile', async () => {
     let answer: (response: Response) => void = () => {};
     const fetchMock = mockFetch();
     const routed = fetchMock.getMockImplementation();
@@ -270,13 +293,14 @@ describe('AddJourneyLegButton', () => {
         priorPlaceName="Euston"
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Add a leg' }));
-    const origin = await screen.findByRole('combobox', { name: 'From station' });
-    fireEvent.change(origin, { target: { value: 'WOK' } });
+    const button = screen.getByRole('button', { name: 'Add a leg' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('rail-crs'))).toHaveLength(1);
+
     answer(new Response(JSON.stringify({ '940GZZLUEUS': ['EUS'] }), { status: 200 }));
-    // Let the lookup's promise chain finish (it has nowhere to wait on).
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(origin).toHaveValue('WOK');
+    expect(await screen.findByRole('combobox', { name: 'From station' })).toHaveValue('EUS');
   });
 
   it('POSTs a window-mode request with the entered origin/destination/date/departWindow', async () => {
