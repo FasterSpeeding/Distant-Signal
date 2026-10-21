@@ -59,6 +59,7 @@ mod corpus_xml;
 mod delivery;
 mod gcs;
 mod pattern;
+mod pubsub;
 mod scan;
 mod sink;
 mod sources;
@@ -398,7 +399,31 @@ fn spawn_bucket_source(config: &Config, routing: &Routing) -> anyhow::Result<Pat
     };
     let dirs = bucket::BucketDirs::new(&config.storage_dir);
     let incoming = dirs.incoming.clone();
-    tokio::spawn(bucket::BucketSource::new(client, settings, dirs).run());
+    let mut source = bucket::BucketSource::new(client, settings, dirs);
+    if let Some(subscription) = args.pubsub_subscription() {
+        // OBJECT_FINALIZE notifications wake a poll early; polling stays,
+        // every reconcile interval while the subscription is healthy.
+        let wake = bucket::Wake::new(pubsub::MIN_WAKE_GAP);
+        let client = pubsub::PubSubClient::new(
+            args.bucket_pubsub_base_url.as_deref(),
+            subscription,
+            credentials()?,
+        )?;
+        tokio::spawn(
+            pubsub::Subscriber::new(
+                client,
+                args.bucket_name.as_deref().unwrap_or_default(),
+                std::sync::Arc::clone(&wake),
+                Duration::from_secs(args.bucket_max_backoff_secs),
+            )
+            .run(),
+        );
+        source = source.with_wake(
+            wake,
+            Duration::from_secs(args.bucket_pubsub_reconcile_interval_secs),
+        );
+    }
+    tokio::spawn(source.run());
     Ok(incoming)
 }
 

@@ -441,43 +441,13 @@ impl GcsClient {
         )
     }
 
-    /// Sends the request `build` makes with a bearer token: a 401 is
-    /// retried once with a fresh token, a second 401 or a 403 is
-    /// [`GcsError::Revoked`]. Any other status is returned for the caller.
+    /// [`send_authorized`] with this client's credentials.
     async fn send(
         &self,
         what: &str,
         build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, GcsError> {
-        for attempt in 0..2 {
-            let token = self.credentials.token().await?;
-            let response = build(&self.http)
-                .bearer_auth(token.expose())
-                .send()
-                .await
-                .map_err(|err| GcsError::Failed(format!("{what}: {}", without_url(&err))))?;
-            match response.status().as_u16() {
-                401 if attempt == 0 => {
-                    tracing::info!(
-                        call = what,
-                        "GCS refused the access token (401); renewing it and retrying once"
-                    );
-                    self.credentials.invalidate(&token).await;
-                }
-                401 => {
-                    return Err(GcsError::Revoked(format!(
-                        "{what}: 401 after a fresh token"
-                    )));
-                }
-                403 => {
-                    return Err(GcsError::Revoked(format!(
-                        "{what}: 403 (IAM refused the reader)"
-                    )));
-                }
-                _ => return Ok(response),
-            }
-        }
-        Err(GcsError::Revoked(format!("{what}: 401")))
+        send_authorized(&self.http, &self.credentials, what, build).await
     }
 
     /// Every object at the bucket root (`delimiter=/`, so nested names are
@@ -594,9 +564,51 @@ impl GcsClient {
     }
 }
 
+/// Sends the request `build` makes with a bearer token from `credentials`
+/// (any Google API with the `cloud-platform` scope: GCS here, Pub/Sub in
+/// `pubsub.rs`): a 401 is retried once with a fresh token, a second 401 or
+/// a 403 is [`GcsError::Revoked`]. Any other status is returned for the
+/// caller.
+pub(crate) async fn send_authorized(
+    http: &reqwest::Client,
+    credentials: &Credentials,
+    what: &str,
+    build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, GcsError> {
+    for attempt in 0..2 {
+        let token = credentials.token().await?;
+        let response = build(http)
+            .bearer_auth(token.expose())
+            .send()
+            .await
+            .map_err(|err| GcsError::Failed(format!("{what}: {}", without_url(&err))))?;
+        match response.status().as_u16() {
+            401 if attempt == 0 => {
+                tracing::info!(
+                    call = what,
+                    "Google refused the access token (401); renewing it and retrying once"
+                );
+                credentials.invalidate(&token).await;
+            }
+            401 => {
+                return Err(GcsError::Revoked(format!(
+                    "{what}: 401 after a fresh token"
+                )));
+            }
+            403 => {
+                return Err(GcsError::Revoked(format!(
+                    "{what}: 403 (IAM refused the reader)"
+                )));
+            }
+            _ => return Ok(response),
+        }
+    }
+    Err(GcsError::Revoked(format!("{what}: 401")))
+}
+
 /// A reqwest error's text without its URL (the object name in it is
 /// attacker-controlled; it is logged separately, escaped).
-fn without_url(err: &reqwest::Error) -> String {
+pub(crate) fn without_url(err: &reqwest::Error) -> String {
     let mut text = err.to_string();
     if let Some(url) = err.url() {
         text = text.replace(url.as_str(), "<url>");

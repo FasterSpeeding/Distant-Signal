@@ -408,6 +408,22 @@ pub(crate) struct BucketArgs {
     /// Seconds between audit-log listings. At least 60.
     #[arg(long, env, default_value_t = 600)]
     pub bucket_audit_logs_poll_interval_secs: u64,
+
+    /// The pull subscription (`projects/<project>/subscriptions/<name>`)
+    /// carrying the bucket's `OBJECT_FINALIZE` notifications (`pubsub.rs`):
+    /// each wakes a poll early. Empty: poll only.
+    #[arg(long, env)]
+    pub bucket_pubsub_subscription: Option<String>,
+
+    /// With a subscription: seconds between polls while it is healthy (the
+    /// safety net for a lost message). At least `BUCKET_POLL_INTERVAL_SECS`.
+    #[arg(long, env, default_value_t = 3600)]
+    pub bucket_pubsub_reconcile_interval_secs: u64,
+
+    /// Base URL of the Pub/Sub API. Empty: `https://pubsub.googleapis.com`.
+    /// Set only for a fake test server.
+    #[arg(long, env)]
+    pub bucket_pubsub_base_url: Option<String>,
 }
 
 /// A GCS bucket name this reader accepts: 3-63 of a-z, 0-9, `-` and `_`,
@@ -491,6 +507,26 @@ impl BucketArgs {
             anyhow::bail!("BUCKET_BASE_URL must be an http(s):// URL, got {url:?}");
         }
         self.credential()?;
+        if let Some(subscription) = self.pubsub_subscription() {
+            if !crate::pubsub::is_subscription_name(subscription) {
+                anyhow::bail!(
+                    "BUCKET_PUBSUB_SUBSCRIPTION must be a subscription's full name, projects/<project>/subscriptions/<name>, got {subscription:?}"
+                );
+            }
+            if self.bucket_pubsub_reconcile_interval_secs < self.bucket_poll_interval_secs {
+                anyhow::bail!(
+                    "BUCKET_PUBSUB_RECONCILE_INTERVAL_SECS must be at least BUCKET_POLL_INTERVAL_SECS"
+                );
+            }
+            if let Some(url) = self
+                .bucket_pubsub_base_url
+                .as_deref()
+                .filter(|u| !u.is_empty())
+                && !(url.starts_with("https://") || url.starts_with("http://"))
+            {
+                anyhow::bail!("BUCKET_PUBSUB_BASE_URL must be an http(s):// URL, got {url:?}");
+            }
+        }
         if self.bucket_poll_interval_secs == 0 {
             anyhow::bail!("BUCKET_POLL_INTERVAL_SECS must be at least 1");
         }
@@ -511,6 +547,13 @@ impl BucketArgs {
             );
         }
         Ok(())
+    }
+
+    /// The Pub/Sub subscription, when set (and not empty).
+    pub(crate) fn pubsub_subscription(&self) -> Option<&str> {
+        self.bucket_pubsub_subscription
+            .as_deref()
+            .filter(|s| !s.is_empty())
     }
 
     /// Exactly one of the two credential paths.
@@ -799,6 +842,26 @@ mod source_args_tests {
             "--bucket-audit-logs-bucket=example-ds-ingest-audit",
         ]);
         parse(&shipping).validate().unwrap();
+
+        let subscription =
+            "--bucket-pubsub-subscription=projects/example-project/subscriptions/ds-ingest-events";
+        let mut notified = BUCKET_ON.to_vec();
+        notified.push(subscription);
+        let args = parse(&notified);
+        args.validate().unwrap();
+        assert_eq!(args.bucket.bucket_pubsub_reconcile_interval_secs, 3600);
+        assert!(
+            refused(&["--bucket-pubsub-subscription=ds-ingest-events"])
+                .contains("BUCKET_PUBSUB_SUBSCRIPTION")
+        );
+        assert!(
+            refused(&[subscription, "--bucket-pubsub-reconcile-interval-secs=60"])
+                .contains("RECONCILE")
+        );
+        assert!(
+            refused(&[subscription, "--bucket-pubsub-base-url=ftp://x"])
+                .contains("BUCKET_PUBSUB_BASE_URL")
+        );
         assert!(
             parse(&["--sftp-source-enabled=false"])
                 .validate()

@@ -19,8 +19,10 @@ reader against fake-gcs-server through a tampering proxy, in CI's
 access since plan 1A: migration `20261021090000_schedule_delivery_source.sql`,
 written by both lanes through schedule-ingest's direct sink. 5.1 is done
 (DS-90, `bucket_audit.rs`; a lookback window instead of a single cursor,
-see the spec's status). Still open: 5.2 (Ranma's Alloy stage and Loki
-rules) and phase 6 (Pub/Sub).
+see the spec's status). Phase 6 (6.1-6.3) is done on DS's side (DS-91,
+`pubsub.rs`, `scheduleFeed.bucket.notifications.pubsub.*`, off). Still
+open: 5.2 (Ranma's Alloy stage and Loki rules) and the Ranma side of
+phase 6 (RANMA-87: the `ds-ingest-bucket` Pub/Sub resources).
 
 ## Decisions this plan builds on (user, 2026-10-02)
 

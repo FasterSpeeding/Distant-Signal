@@ -36,11 +36,21 @@
 //! credential) sets `schedule_feed_source_access_revoked`, logs once per
 //! change and retries at the backoff ceiling. Nothing here can stop the SFTP
 //! lane or the process.
+//!
+//! With Pub/Sub notifications on (`pubsub.rs`, [`Wake`]), an
+//! `OBJECT_FINALIZE` message wakes the source for a poll early (at most one
+//! every [`Wake`]'s minimum gap, and never during a backoff), and while the
+//! subscription is healthy the regular poll stretches to
+//! `BUCKET_PUBSUB_RECONCILE_INTERVAL_SECS`. A message is only a hint: the
+//! listing decides what is fetched, so a lost, duplicated or forged message
+//! changes nothing but the timing, and with the subscription failing the
+//! source polls every `BUCKET_POLL_INTERVAL_SECS` as before.
 
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, Utc};
@@ -136,6 +146,61 @@ enum Class {
 /// A wall clock (tests substitute their own).
 pub(crate) type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
+/// Wakes the bucket source early: shared between it and the Pub/Sub
+/// subscriber (`pubsub.rs`).
+pub(crate) struct Wake {
+    notify: tokio::sync::Notify,
+    /// `(polls started, polls finished)`.
+    progress: tokio::sync::watch::Sender<(u64, u64)>,
+    /// The subscription is delivering (its last pull succeeded).
+    healthy: AtomicBool,
+    /// Least time from one poll's start to a woken one's.
+    min_gap: Duration,
+}
+
+impl Wake {
+    pub(crate) fn new(min_gap: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            notify: tokio::sync::Notify::new(),
+            progress: tokio::sync::watch::channel((0, 0)).0,
+            healthy: AtomicBool::new(false),
+            min_gap,
+        })
+    }
+
+    /// Asks for a poll soon. Returns a ticket for [`Wake::wait`].
+    pub(crate) fn request(&self) -> u64 {
+        let started = self.progress.borrow().0;
+        self.notify.notify_one();
+        started + 1
+    }
+
+    /// Returns once a poll that started after `ticket`'s request has
+    /// finished.
+    pub(crate) async fn wait(&self, ticket: u64) {
+        let mut progress = self.progress.subscribe();
+        // The sender lives in `self`, so this never errors.
+        let _ = progress.wait_for(|&(_, done)| done >= ticket).await;
+    }
+
+    pub(crate) fn set_healthy(&self, healthy: bool) {
+        self.healthy.store(healthy, Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Relaxed)
+    }
+
+    fn started(&self) {
+        self.progress.send_modify(|(started, _)| *started += 1);
+    }
+
+    fn finished(&self) {
+        self.progress
+            .send_modify(|(started, done)| *done = *started);
+    }
+}
+
 /// The bucket source. Run it with [`BucketSource::run`].
 pub(crate) struct BucketSource {
     client: GcsClient,
@@ -151,6 +216,8 @@ pub(crate) struct BucketSource {
     /// `(name, generation)` already reported as unexpected.
     reported: HashSet<(String, i64)>,
     clock: Clock,
+    /// Pub/Sub on: the wake-up, and the poll interval while it is healthy.
+    wake: Option<(Arc<Wake>, Duration)>,
 }
 
 impl BucketSource {
@@ -181,7 +248,15 @@ impl BucketSource {
             failures: 0,
             reported: HashSet::new(),
             clock,
+            wake: None,
         }
+    }
+
+    /// Lets `wake` start a poll early, and polls only every `reconcile`
+    /// while its subscription is healthy.
+    pub(crate) fn with_wake(mut self, wake: Arc<Wake>, reconcile: Duration) -> Self {
+        self.wake = Some((wake, reconcile));
+        self
     }
 
     /// Polls forever. Never returns, never panics on a bucket error.
@@ -192,8 +267,42 @@ impl BucketSource {
             "bucket source started"
         );
         loop {
+            let started = Instant::now();
+            if let Some((wake, _)) = &self.wake {
+                wake.started();
+            }
             let delay = self.poll_once().await;
-            tokio::time::sleep(delay).await;
+            if let Some((wake, _)) = &self.wake {
+                wake.finished();
+            }
+            self.wait_next(started, delay).await;
+        }
+    }
+
+    /// Waits out `delay` after the poll that began at `started`; with
+    /// Pub/Sub, the healthy interval instead, cut short by a wake-up (but
+    /// never a backoff).
+    async fn wait_next(&self, started: Instant, delay: Duration) {
+        let Some((wake, _)) = &self.wake else {
+            return tokio::time::sleep(delay).await;
+        };
+        if self.failures > 0 || self.revoked {
+            return tokio::time::sleep(delay).await;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(self.idle_delay(delay)) => {}
+            () = wake.notify.notified() => {
+                tokio::time::sleep_until((started + wake.min_gap).into()).await;
+            }
+        }
+    }
+
+    /// The wait after a successful poll: the reconcile interval while the
+    /// subscription is healthy, else `delay` (the poll interval).
+    fn idle_delay(&self, delay: Duration) -> Duration {
+        match &self.wake {
+            Some((wake, reconcile)) if wake.is_healthy() => delay.max(*reconcile),
+            _ => delay,
         }
     }
 
@@ -743,7 +852,7 @@ fn remove_partials(root: &Path) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Mutex;
 
     use common::secret::Secret;
@@ -758,13 +867,19 @@ mod tests {
 
     /// A fake bucket: a mutable set of objects behind the JSON API.
     #[derive(Clone, Default)]
-    struct FakeBucket(Arc<Mutex<Vec<FakeObject>>>);
+    pub(crate) struct FakeBucket(Arc<Mutex<Vec<FakeObject>>>);
 
     /// An object's JSON resource and its bytes.
     type FakeObject = (serde_json::Value, Vec<u8>);
 
     impl FakeBucket {
-        fn put(&self, name: &str, contents: &[u8], generation: i64, created: DateTime<Utc>) {
+        pub(crate) fn put(
+            &self,
+            name: &str,
+            contents: &[u8],
+            generation: i64,
+            created: DateTime<Utc>,
+        ) {
             let mut objects = self.0.lock().unwrap();
             objects.retain(|(o, _)| o["name"] != name);
             let mut json = object_json(name, contents, generation);
@@ -824,18 +939,18 @@ mod tests {
         }
     }
 
-    struct Fixture {
-        server: MockServer,
-        bucket: FakeBucket,
-        storage: tempfile::TempDir,
+    pub(crate) struct Fixture {
+        pub(crate) server: MockServer,
+        pub(crate) bucket: FakeBucket,
+        pub(crate) storage: tempfile::TempDir,
         now: Arc<Mutex<SystemTime>>,
     }
 
     impl Fixture {
-        async fn new() -> Self {
+        pub(crate) async fn new() -> Self {
             let server = MockServer::start().await;
             let bucket = FakeBucket::default();
-            Mock::given(wiremock::matchers::any())
+            Mock::given(wiremock::matchers::path_regex("^/storage/"))
                 .respond_with(bucket.clone())
                 .mount(&server)
                 .await;
@@ -847,7 +962,7 @@ mod tests {
             }
         }
 
-        fn settings() -> BucketSettings {
+        pub(crate) fn settings() -> BucketSettings {
             BucketSettings {
                 expected: FilePattern::parse(
                     "timetable_full.zip,CORPUSExtract.json.gz,NLC*.xml.gz",
@@ -865,7 +980,7 @@ mod tests {
             }
         }
 
-        fn source(&self, settings: BucketSettings) -> BucketSource {
+        pub(crate) fn source(&self, settings: BucketSettings) -> BucketSource {
             let client = GcsClient::new(
                 Some(&self.server.uri()),
                 BUCKET,
@@ -885,11 +1000,11 @@ mod tests {
             *self.now.lock().unwrap() += by;
         }
 
-        fn created(&self, ago: Duration) -> DateTime<Utc> {
+        pub(crate) fn created(&self, ago: Duration) -> DateTime<Utc> {
             DateTime::<Utc>::from(*self.now.lock().unwrap() - ago)
         }
 
-        fn incoming(&self) -> PathBuf {
+        pub(crate) fn incoming(&self) -> PathBuf {
             BucketDirs::new(self.storage.path()).incoming
         }
 
@@ -1103,6 +1218,39 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 3);
         assert_eq!(source.poll_once().await, Duration::from_secs(300));
         assert!(!source.revoked);
+    }
+
+    /// With Pub/Sub, the idle wait stretches to the reconcile interval only
+    /// while the subscription is healthy; a request during a poll is
+    /// answered by the next poll, not that one.
+    #[tokio::test]
+    async fn a_wake_stretches_the_idle_poll_only_while_healthy() {
+        let f = Fixture::new().await;
+        let wake = Wake::new(Duration::ZERO);
+        let source = f
+            .source(Fixture::settings())
+            .with_wake(Arc::clone(&wake), Duration::from_secs(3600));
+        let poll = Duration::from_secs(300);
+        assert_eq!(
+            source.idle_delay(poll),
+            poll,
+            "unhealthy: the poll interval"
+        );
+        wake.set_healthy(true);
+        assert_eq!(source.idle_delay(poll), Duration::from_secs(3600));
+        wake.set_healthy(false);
+        assert_eq!(source.idle_delay(poll), poll, "falls back");
+
+        wake.started();
+        let ticket = wake.request();
+        wake.finished();
+        let waited = tokio::time::timeout(Duration::from_millis(50), wake.wait(ticket)).await;
+        assert!(waited.is_err(), "the poll in progress does not answer it");
+        wake.started();
+        wake.finished();
+        tokio::time::timeout(Duration::from_secs(1), wake.wait(ticket))
+            .await
+            .unwrap();
     }
 
     #[test]

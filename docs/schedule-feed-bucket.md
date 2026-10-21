@@ -19,8 +19,9 @@ never in this repository.
 bucket source (the Rust reader) are both built, off by default
 (`scheduleFeed.bucket.enabled: false`). Nothing is provisioned yet: the
 remaining steps are in [Switching it on](#switching-it-on). The audit-log
-shipper (`bucket.auditLogs.ship`, [below](#audit-log)) is built too, off by
-default. Not built: Pub/Sub notifications.
+shipper (`bucket.auditLogs.ship`, [below](#audit-log)) and the Pub/Sub
+trigger ([Pub/Sub notifications](#pubsub-notifications)) are built too,
+both off by default.
 
 ## Switching it on
 
@@ -286,6 +287,96 @@ deployment without workload identity federation.
 In keyless mode, revoked access means the impersonation binding or the
 pool provider was removed (or the ConfigMap is missing), and the kill
 switch works the same way: remove the reader's bucket bindings.
+
+## Pub/Sub notifications
+
+Off by default (`scheduleFeed.bucket.notifications.pubsub.enabled: false`):
+polling alone is the chosen design (GCS spec §6) and loses nothing. With
+it on, the bucket's `OBJECT_FINALIZE` notifications go to a Pub/Sub topic
+with a pull subscription, and schedule-ingest
+(`crates/schedule-ingest/src/pubsub.rs`) pulls it over outbound HTTPS, so
+a new object is fetched within seconds instead of at the next poll:
+
+- A message for this bucket's `OBJECT_FINALIZE` wakes the reader for a
+  poll right away (at most one every 60 s, never during a backoff), and is
+  acknowledged once a poll that started after it has finished (its ack
+  deadline extended meanwhile, for up to 30 minutes). Any other message is
+  acknowledged at once.
+- A message is only a hint: the listing decides what is fetched and every
+  guard applies as before. A lost, duplicated or forged message changes
+  the timing only.
+- Polling stays as the fallback: every `reconcileIntervalSecs` (default 1
+  hour) while the subscription delivers, every `pollIntervalSecs` while it
+  fails (refused, missing, unreachable). A failure is logged once per
+  change and retried with backoff.
+- Metrics, all `{source="bucket"}`:
+  `distant_signal_schedule_feed_source_notifications_healthy` (1 while
+  pulls succeed), `..._notifications_total{outcome}` (`wake`, `ignored`) and
+  `..._notification_errors_total{kind}` (`auth`, `pull`, `ack`).
+
+### What Ranma creates (RANMA-87)
+
+Everything below is in Ranma-Config, with its real names; the names here
+are `charts/ds-ingest-bucket`'s defaults and placeholders.
+
+1. **The Pub/Sub API** on the dedicated project:
+   `gcloud services enable pubsub.googleapis.com --project=<project>` (or
+   its OpenTofu `google_project_service`).
+2. **The Cloud Storage service agent**, which publishes the notifications:
+   `gcloud storage service-agent --project=<project>` prints
+   `service-<project number>@gs-project-accounts.iam.gserviceaccount.com`
+   (and creates it if it does not exist yet).
+3. **The Crossplane Pub/Sub provider**: `provider-gcp-pubsub` from
+   provider-upjet-gcp v3.0.0 (`xpkg.upbound.io/upbound/provider-gcp-pubsub`),
+   on the same `ClusterProviderConfig` as the storage provider. The
+   provider's service account needs to create topics and subscriptions and
+   set their IAM policies (`roles/pubsub.admin` on the project), on top of
+   what it has for the bucket (the bucket notification is a bucket update).
+4. **The `ds-ingest-bucket` release values**:
+
+   ```yaml
+   gcp:
+     projectNumber: "<the project's number>"
+   notifications:
+     pubsub:
+       enabled: true
+       # The defaults, shown for reference:
+       topicName: ds-ingest-events
+       subscriptionName: ds-ingest-events-schedule-ingest
+       ackDeadlineSeconds: 600
+       messageRetentionDuration: 604800s
+   ```
+
+   which renders, and Crossplane must report `READY` for each:
+
+   | Resource | What |
+   | --- | --- |
+   | `Topic` `ds-ingest-events` | The notification topic |
+   | `TopicIAMMember` | `roles/pubsub.publisher` on the topic for `serviceAccount:service-<project number>@gs-project-accounts.iam.gserviceaccount.com` only |
+   | `Subscription` `ds-ingest-events-schedule-ingest` | Pull (no push endpoint), ack deadline 600 s, 7-day retention, never expires, no dead-letter topic |
+   | `SubscriptionIAMMember` | `roles/pubsub.subscriber` on the subscription for `reader.member` only (the reader service account; keyless sign-in impersonates it, so nothing more is needed) |
+   | `Notification` | On the delivery bucket: `OBJECT_FINALIZE` only, payload `JSON_API_V1`, to the topic |
+
+5. **The DS release values**, once those are `READY`:
+
+   ```yaml
+   scheduleFeed:
+     bucket:
+       notifications:
+         pubsub:
+           enabled: true
+           subscription: projects/<project>/subscriptions/ds-ingest-events-schedule-ingest
+   ```
+
+   The chart adds `pubsub.googleapis.com` to the schedulefeed egress rule.
+   Check: the `ingest` container logs `bucket Pub/Sub subscriber started`,
+   then `the bucket's Pub/Sub subscription is delivering`, and
+   `..._notifications_healthy` is 1; an upload logs `a new bucket object
+   was notified; polling the bucket early`.
+
+The kill switch needs nothing new: Pub/Sub carries a few small messages a
+day. Removing the subscriber binding only turns the reader back to polling
+every `pollIntervalSecs`; the watcher need not pause it.
 
 ## Restoring a deleted object
 

@@ -87,8 +87,15 @@ sketch, and why:
   names it shipped within that window in `sources/bucket/.audit-shipped`.
   Lines carry `resource`, `log` and `insert_id` besides §8's fields;
   `status` is the `google.rpc.Code` name.
-- **Not built:** Pub/Sub (phase 6). `expectedKeys` now includes
-  `NLC*.xml.gz`.
+- **Pub/Sub** (phase 6, §6 option C; DS-91) is
+  `crates/schedule-ingest/src/pubsub.rs`, off by default
+  (`scheduleFeed.bucket.notifications.pubsub.*`). A notification wakes the
+  bucket source's next poll early (at most one a minute, never during a
+  backoff) and is acknowledged once a poll that started after it has
+  finished; the regular poll stretches to `reconcileIntervalSecs` only
+  while pulls succeed. What Ranma creates (RANMA-87) is in
+  `docs/schedule-feed-bucket.md`, "Pub/Sub notifications".
+- `expectedKeys` now includes `NLC*.xml.gz`.
 
 The remaining switch-on steps are in
 [docs/schedule-feed-bucket.md](../../schedule-feed-bucket.md#switching-it-on).
