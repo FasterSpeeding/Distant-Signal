@@ -807,8 +807,8 @@ mod db_tests {
         delete_full_coverage_fixture(&pool, "ZQK", "ZK").await;
 
         sqlx::query(
-            "INSERT INTO users (id, email, name) VALUES \
-             ('TEST-STATION-STATS-CUSTOM-LINE-OWNER', 'stationstats@example.com', 'Owner') \
+            "INSERT INTO users (id, name) VALUES \
+             ('TEST-STATION-STATS-CUSTOM-LINE-OWNER', 'Owner') \
              ON CONFLICT (id) DO NOTHING",
         )
         .execute(&pool)

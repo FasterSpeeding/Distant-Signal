@@ -140,13 +140,11 @@ async fn connect() -> PgPool {
 }
 
 async fn seed_user(pool: &PgPool, user: &str) -> String {
-    sqlx::query(
-        "INSERT INTO users (id, email, name) VALUES ($1, $1, $1) ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(user)
-    .execute(pool)
-    .await
-    .expect("seed user");
+    sqlx::query("INSERT INTO users (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING")
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("seed user");
     let raw = format!("raw-session-{user}");
     sqlx::query(
         "INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, now() + INTERVAL '1 day') \

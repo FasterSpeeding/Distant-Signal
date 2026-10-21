@@ -38,10 +38,10 @@
 -- Neither user carries any group: `/chat` mounts `ChatPanel` for every
 -- logged-in user (no access group since 2026-10-14), which chat.spec.ts's
 -- logged-in cases rely on.
-INSERT INTO users (id, email, name, username, groups, created_at, last_login_at)
+INSERT INTO users (id, name, username, groups, created_at, last_login_at)
 VALUES
-  ('fixture-owner', 'owner@example.invalid', 'Ada Fixture', 'ada-fixture', '{}', NOW(), NOW()),
-  ('fixture-member', 'member@example.invalid', 'Rider Fixture', 'rider-fixture', '{}', NOW(), NOW())
+  ('fixture-owner', 'Ada Fixture', 'ada-fixture', '{}', NOW(), NOW()),
+  ('fixture-member', 'Rider Fixture', 'rider-fixture', '{}', NOW(), NOW())
 ON CONFLICT (id) DO NOTHING;
 
 -- Session for fixture-owner. Cookie value is the RAW token (E2E_SESSION_COOKIE,

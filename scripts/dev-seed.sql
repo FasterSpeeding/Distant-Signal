@@ -470,9 +470,9 @@ ON CONFLICT (crs) DO UPDATE SET polled_at = EXCLUDED.polled_at, departures = EXC
 --   Cookie: distant_signal_session=preview-demo-session-token-for-demo-user
 --
 -- -------------------------------------------------------------------------
-INSERT INTO users (id, email, name, username)
-VALUES ('demo-user', 'demo@example.invalid', 'Demo Reviewer', 'demo')
-ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name;
+INSERT INTO users (id, name, username)
+VALUES ('demo-user', 'Demo Reviewer', 'demo')
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
 
 DELETE FROM sessions WHERE user_id = 'demo-user';
 INSERT INTO sessions (id, user_id, refresh_token, created_at, expires_at)

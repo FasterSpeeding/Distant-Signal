@@ -281,9 +281,8 @@ mod tests {
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
         let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
         cleanup(&pool, USER).await;
-        sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, $1)")
+        sqlx::query("INSERT INTO users (id, name) VALUES ($1, $1)")
             .bind(USER)
-            .bind(format!("{USER}@example.com"))
             .execute(&pool)
             .await
             .unwrap();
