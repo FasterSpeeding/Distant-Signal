@@ -13,7 +13,7 @@ import { noOptionsFound } from '@/components/noOptionsFound';
  * `trackedTrainId: null`) to one of the caller's own already-tracked
  * trains, per Part B's "a clearly separated section for tickets that
  * exist but aren't attached to any train yet, each with a way to attach
- * them to a train." `trains` is the SAME list the merged `/track/mine`
+ * them to a train." `trains` is the SAME list the merged `/journeys`
  * page already fetched for its own trains section -- no separate fetch
  * here, just a `<Select>` over data the page already has.
  *

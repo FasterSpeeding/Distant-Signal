@@ -6,7 +6,7 @@
  *
  * Decorative on purpose: `aria-hidden` lives here and the accessible name
  * belongs on the `ActionIcon`/button wrapping it, which differs per
- * trigger (Task 3.6.7's `/track/mine` row menu is the first caller). */
+ * trigger (Task 3.6.7's `/journeys` row menu is the first caller). */
 export function KebabIcon() {
   return (
     <svg

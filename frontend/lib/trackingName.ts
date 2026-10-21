@@ -35,7 +35,7 @@ export function trackedTrainRouteLabel(train: TrackedTrainRouteInput): string {
 /** The label a tracked train's row/title should show: the user's own
  * `customName` if they set one, verbatim; otherwise the same
  * route + date(/time) default `TrackedTrainListRow`
- * (`app/track/mine/page.tsx`) and `TrainJourney`'s `pinSummary` already
+ * (`app/journeys/page.tsx`) and `TrainJourney`'s `pinSummary` already
  * compute today -- this function is that computation, extracted so both
  * call sites (and this custom-names feature's own new one) share it rather
  * than each hand-rolling the same `routeLabel(...) + ' · ' + formatDate(...)`

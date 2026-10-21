@@ -152,7 +152,7 @@ export function journeyListItemStatusGroup(item: JourneyListItem): LegStatusGrou
 /** The same classification for a train tracked on its own (`GET
  * /Train/mine`'s `TrackedTrainListItem`, or a group-shared train), so a
  * lone train and a journey whose current leg is that train read the same
- * on `/track/mine`. Adapts the row onto `journeyListItemStatusGroup`'s own
+ * on `/journeys`. Adapts the row onto `journeyListItemStatusGroup`'s own
  * input rather than restating the branch chain. A tracked train always
  * has a subscription, so it never reads as "Needs a train picked". */
 export function trackedTrainListStatusGroup(

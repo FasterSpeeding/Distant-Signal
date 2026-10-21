@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 // The one journey-naming rule (lib/journeyName.ts, docs/style-guide.md
-// "Journey names") on /track/mine, against the seeded backend: the page is
+// "Journey names") on /journeys, against the seeded backend: the page is
 // server-rendered, so its journey list can't be stood in for with
 // `page.route`. The seed (e2e/fixtures/seed.sql) gives fixture-owner a
 // PLANNED three-leg journey, EUS to MKC to PBO to KGX, with no train on any
@@ -10,7 +10,7 @@ import { test, expect } from '@playwright/test';
 const SESSION_COOKIE = process.env.E2E_SESSION_COOKIE;
 const JOURNEY_ID = process.env.E2E_PLANNED_JOURNEY_ID ?? '900001';
 
-test.describe('journey names on /track/mine', () => {
+test.describe('journey names on /journeys', () => {
   test.skip(!SESSION_COOKIE, 'E2E_SESSION_COOKIE is unset');
 
   test.beforeEach(async ({ context }) => {
@@ -30,7 +30,7 @@ test.describe('journey names on /track/mine', () => {
   });
 
   test('a planned three-leg journey shows its real final destination', async ({ page }) => {
-    await page.goto('/track/mine');
+    await page.goto('/journeys');
 
     const row = page.getByRole('link', {
       name: 'London Euston (EUS) to London Kings Cross (KGX), 17 Sep 2026',

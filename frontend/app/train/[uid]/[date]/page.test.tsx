@@ -379,7 +379,7 @@ describe('TrackedTrainByUidPage tracking overlay', () => {
   // takes the default `'redirect'`): this page's own URL -- the train's
   // real `(uid, date)` identity -- stays meaningful after the tracking
   // subscription is gone, so deleting it should stay put and let the
-  // Server Component re-fetch, not navigate to `/track/mine`.
+  // Server Component re-fetch, not navigate to `/journeys`.
   it('stays on the page and calls router.refresh() (not router.push) after deleting the tracked train', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
       trackedTrainListItem({ id: 7, trainUid: 'W12345', serviceDate: '2026-08-31' }),

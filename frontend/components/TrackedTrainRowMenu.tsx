@@ -6,8 +6,8 @@ import { KebabIcon } from './KebabIcon';
 import { RenameTrainButton, type RenameTrainButtonHandle } from './RenameTrainButton';
 import { DeleteTrainButton, type DeleteTrainButtonHandle } from './DeleteTrainButton';
 
-/** Task 3.6.7's `/track/mine` row overflow-kebab, extracted into its own
- * Client Component rather than inlined in `app/track/mine/page.tsx`
+/** Task 3.6.7's `/journeys` row overflow-kebab, extracted into its own
+ * Client Component rather than inlined in `app/journeys/page.tsx`
  * (a Server Component): `RenameTrainButton`'s `trigger`
  * prop is a function that returns JSX (`(onClick) => <Menu.Item .../>`),
  * and a function value can never cross the Server->Client boundary as a
@@ -76,7 +76,7 @@ export function TrackedTrainRowMenu({
         trigger={() => null}
       />
       {/* `afterDelete="refresh"`, not the component's own 'redirect'
-          default: this row's own page IS `/track/mine` already, so a
+          default: this row's own page IS `/journeys` already, so a
           stopped-tracking train should just drop out of this same list on
           `router.refresh()`, not navigate to the page it's already on. */}
       <DeleteTrainButton

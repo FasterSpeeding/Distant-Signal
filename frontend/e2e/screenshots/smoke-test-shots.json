@@ -17,11 +17,11 @@
   },
   {
     "name": "track-mine-authenticated",
-    "url": "/track/mine",
+    "url": "/journeys",
     "viewport": { "width": 1440, "height": 900 },
     "browser": "chromium",
     "authenticated": true,
     "waitFor": { "delay": 1500 },
-    "description": "Authenticated /track/mine page (a user's tracked trains and tickets) to confirm the session-cookie auth path works in the smoke test."
+    "description": "Authenticated /journeys page (a user's tracked trains and tickets) to confirm the session-cookie auth path works in the smoke test."
   }
 ]

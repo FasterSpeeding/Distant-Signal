@@ -87,7 +87,7 @@ test.describe('home page journeys (logged in)', () => {
     await page.goto('/');
     const upcoming = page.getByRole('region', { name: 'Upcoming journeys' });
     await expect(upcoming.getByRole('link', { name: /Fixture door to door/ })).toBeVisible();
-    await expect(upcoming.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+    await expect(upcoming.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
     await expect(page.getByRole('heading', { name: 'Tracked trains' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Home');
   });

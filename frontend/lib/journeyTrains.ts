@@ -9,7 +9,7 @@ export interface JourneyTrainSplit {
   trainIdsByJourney: Map<number, number[]>;
 }
 
-/** The one rule for `/track/mine`: a tracked train that belongs to ANY leg
+/** The one rule for `/journeys`: a tracked train that belongs to ANY leg
  * of one of the caller's journeys is shown under that journey, never again
  * as a standalone tracked train.
  *

@@ -134,8 +134,8 @@ test.describe('desktop nav bar (1440x900)', () => {
     await page.goto('/lines');
     const nav = page.locator('nav[aria-label="Main"]');
     // `exact: true`: Playwright's default accessible-name match is a
-    // substring match, and 'Track' would otherwise also hit other links.
-    for (const label of ['Track', 'Plan a journey', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents']) {
+    // substring match, and 'Journeys' would otherwise also hit other links.
+    for (const label of ['Journeys', 'Plan a journey', 'Status', 'Lines', 'Operators', 'Stations', 'Incidents']) {
       await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
     }
     await expect(nav.getByRole('button', { name: 'Navigation menu' })).toBeHidden();
@@ -213,7 +213,7 @@ test.describe('phone nav bar (390x844)', () => {
     const drawer = await openNavDrawer(page);
     // `exact: true` for the same reason as the desktop-bar test above.
     for (const label of [
-      'Track',
+      'Journeys',
       'Plan a journey',
       'Status',
       'Lines',

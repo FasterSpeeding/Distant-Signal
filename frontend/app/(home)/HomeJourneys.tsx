@@ -1,4 +1,5 @@
 import { Box, Group, Stack, Text } from '@mantine/core';
+import { ButtonLink } from '@/components/ButtonLink';
 import { CardLink } from '@/components/CardLink';
 import { DelayBadge } from '@/components/DelayBadge';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
@@ -6,6 +7,8 @@ import { SectionTitle } from '@/components/SectionTitle';
 import { StatusRow } from '@/components/StatusRow';
 import { TextLink } from '@/components/TextLink';
 import { formatTime } from '@/lib/dateFormat';
+import { describeFailure } from '@/lib/failure';
+import { JOURNEYS_DESTINATION, NEW_JOURNEY_LABEL, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { currentLeg, homeJourneyStatusGroup, MAX_UPCOMING_JOURNEYS, type HomeJourney } from '@/lib/homeJourneys';
 import { legDepartureInstant, legExpectedArrivalInstant } from '@/lib/journeyLegChaining';
 import { legDestinationArrivalLabel, legEndpointName } from '@/lib/journeyLegLabel';
@@ -202,25 +205,44 @@ export function CurrentJourneySection({
 }
 
 /** "Upcoming journeys", soonest first, capped at `MAX_UPCOMING_JOURNEYS`
- * with "View all" to the Track page, which lists every journey. Rendered
- * only when there is one. */
-export function UpcomingJourneysSection({ upcoming }: { upcoming: readonly HomeJourney[] }) {
+ * with "View all" to the Journeys page, which lists every journey. Its
+ * header carries "New journey", one of the two ways in to `/journeys/new`
+ * now the nav has none (DS-115), so the section is rendered for every
+ * logged-in visitor: with no upcoming journey it says so (or, when
+ * `loadFailed`, that the list couldn't be read), and still offers "New
+ * journey" where a new user would look for it. */
+export function UpcomingJourneysSection({
+  upcoming,
+  loadFailed = false,
+}: {
+  upcoming: readonly HomeJourney[];
+  loadFailed?: boolean;
+}) {
   const shown = upcoming.slice(0, MAX_UPCOMING_JOURNEYS);
   const hidden = upcoming.length - shown.length;
   return (
     <Stack component="section" aria-labelledby="upcoming-journeys-heading" gap="md">
-      <Group justify="space-between">
+      <Group justify="space-between" gap="sm">
         <SectionTitle id="upcoming-journeys-heading">Upcoming journeys</SectionTitle>
-        <TextLink href="/track/mine">View all</TextLink>
+        <Group gap="md">
+          {shown.length > 0 && <TextLink href={JOURNEYS_DESTINATION.href}>View all</TextLink>}
+          <ButtonLink href={TRACK_JOURNEY_HREF} variant="light">
+            {NEW_JOURNEY_LABEL}
+          </ButtonLink>
+        </Group>
       </Group>
-      <Stack gap="xs">
-        {shown.map((journey) => (
-          <HomeJourneyRow key={journey.item.id} journey={journey} />
-        ))}
-      </Stack>
+      {shown.length === 0 ? (
+        <Text c="dimmed">{loadFailed ? describeFailure('load', 'your journeys') : 'No upcoming journeys.'}</Text>
+      ) : (
+        <Stack gap="xs">
+          {shown.map((journey) => (
+            <HomeJourneyRow key={journey.item.id} journey={journey} />
+          ))}
+        </Stack>
+      )}
       {hidden > 0 && (
         <Text size="sm" c="dimmed">
-          {hidden} more upcoming {hidden === 1 ? 'journey is' : 'journeys are'} on the Track page.
+          {hidden} more upcoming {hidden === 1 ? 'journey is' : 'journeys are'} on the Journeys page.
         </Text>
       )}
     </Stack>

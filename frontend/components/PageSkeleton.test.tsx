@@ -14,7 +14,7 @@ import HomeLoading from '@/app/(home)/loading';
 import LineLoading from '@/app/lines/[id]/loading';
 import TrainLoading from '@/app/train/[uid]/[date]/loading';
 import TrackedTrainLoading from '@/app/train/by-id/[trackingId]/loading';
-import TrackLoading from '@/app/track/mine/loading';
+import JourneysLoading from '@/app/journeys/loading';
 
 /** Text a reader gets: Mantine's `SimpleGrid` injects a `<style>` tag,
  * whose CSS is text content but never read out. */
@@ -77,7 +77,7 @@ describe('route loading skeletons', () => {
     ['line', LineLoading, 'Loading line'],
     ['train', TrainLoading, 'Loading train'],
     ['tracked train', TrackedTrainLoading, 'Loading train'],
-    ['track', TrackLoading, 'Loading your trains'],
+    ['journeys', JourneysLoading, 'Loading your journeys'],
   ])('the %s page announces one label and no ellipsis', (_name, Loading, label) => {
     renderWithMantine(<Loading />);
     // `getByRole` throws unless there is exactly one status region.

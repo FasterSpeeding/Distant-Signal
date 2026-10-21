@@ -58,22 +58,27 @@ describe('AppNavBar', () => {
     }
   });
 
-  it('has one Track entry, and no separate train search or tracked-trains link', () => {
+  it('has one Journeys entry, and no separate train search, new-journey or tracked-trains link', () => {
     for (const session of [loggedOut, loggedIn]) {
       const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
-      expect(screen.getByRole('link', { name: 'Track' })).toHaveAttribute('href', '/track/mine');
+      expect(screen.getByRole('link', { name: 'Journeys' })).toHaveAttribute('href', '/journeys');
+      expect(barLinkNames()).not.toContain('Track');
       expect(barLinkNames()).not.toContain('Trains');
       expect(barLinkNames()).not.toContain('Track a journey');
+      expect(barLinkNames()).not.toContain('New journey');
       expect(barLinkNames()).not.toContain('My trains & tickets');
       unmount();
     }
   });
 
-  it.each(['/trains', '/journeys/new', '/track', '/track/mine'])('marks Track current on %s', (path) => {
-    pathname = path;
-    renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
-    expect(screen.getByRole('link', { name: 'Track' })).toHaveAttribute('aria-current', 'page');
-  });
+  it.each(['/trains', '/journeys/new', '/track', '/journeys', '/journeys/42'])(
+    'marks Journeys current on %s',
+    (path) => {
+      pathname = path;
+      renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
+      expect(screen.getByRole('link', { name: 'Journeys' })).toHaveAttribute('aria-current', 'page');
+    },
+  );
 
   it('never advertises Groups in the bar itself', () => {
     // Logged out it has no useful landing state at all; logged in it
@@ -116,11 +121,11 @@ describe('AppNavBar', () => {
   });
 
   describe('the "Plan a journey" entry', () => {
-    it('links to /plan for anyone, straight after Track, at every width from md up', () => {
+    it('links to /plan for anyone, straight after Journeys, at every width from md up', () => {
       for (const session of [loggedOut, loggedIn]) {
         const { unmount } = renderWithMantine(<AppNavBar session={session} freshness={freshness} />);
         const names = barLinkNames();
-        expect(names[names.indexOf('Track') + 1]).toBe('Plan a journey');
+        expect(names[names.indexOf('Journeys') + 1]).toBe('Plan a journey');
         const link = screen.getByRole('link', { name: 'Plan a journey' });
         expect(link).toHaveAttribute('href', '/plan');
         expect(link.closest('.mantine-visible-from-lg')).toBeNull();
@@ -132,7 +137,7 @@ describe('AppNavBar', () => {
       pathname = '/plan';
       renderWithMantine(<AppNavBar session={loggedOut} freshness={freshness} />);
       expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('aria-current', 'page');
-      expect(screen.getByRole('link', { name: 'Track' })).not.toHaveAttribute('aria-current');
+      expect(screen.getByRole('link', { name: 'Journeys' })).not.toHaveAttribute('aria-current');
     });
 
     it('is in the drawer, marked current on /plan', async () => {

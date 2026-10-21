@@ -20,7 +20,7 @@ const SOURCE_LABELS: Record<TicketSource, string> = {
 
 /** The "operator · ticket type" / "origin to destination" row renderer,
  * shared by `TicketPanel.tsx` (one tracked train's own tickets) and the
- * merged `app/track/mine/page.tsx` (both a train's attached tickets and
+ * merged `app/journeys/page.tsx` (both a train's attached tickets and
  * its own standalone-tickets section) -- extracted out of `TicketPanel.tsx`,
  * where it was previously a private, unexported function, so both can
  * reuse it rather than duplicating ticket-row rendering. `Pick<...>` keeps
@@ -76,7 +76,7 @@ export function TicketSummary({
             is what answers it -- the same convention an email or
             notification timestamp follows. It reads next to London-pinned
             service dates (`AttachTicketAction.tsx:67-68` on the merged
-            /track/mine page) on purpose, not by oversight: a train's
+            /journeys page) on purpose, not by oversight: a train's
             service date is a fact about the train and stays London wall-
             clock, like a departure board. Don't "fix" the inconsistency by
             converting either one. See

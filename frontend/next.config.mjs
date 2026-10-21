@@ -77,21 +77,26 @@ const nextConfig = {
   // frontend/ does.
   generateBuildId: () => computeBuildId(import.meta.dirname),
   ...(devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
-  // /track/tickets and /track/mine were two separate pages
-  // (docs/superpowers/specs/2026-08-31-tickets-list-design.md,
-  // docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md) until
-  // Part B of the upload-first ticket-tracking plan merged them: once a
-  // ticket can exist standalone (Part A), a bare "My Tickets" list sits
-  // awkwardly next to a bare "My Tracked Trains" list, so `/track/mine` now
-  // renders both. A config-level redirect (not a rendered stub page) keeps
-  // any bookmarked/linked `/track/tickets` URL working rather than 404ing,
-  // without maintaining a second copy of the merged page's content.
+  // The Journeys page (`app/journeys/page.tsx`) was the Track page at
+  // `/track/mine` until DS-115 (21 Oct 2026), and before that
+  // `/track/tickets` was a tickets list of its own, until Part B of the
+  // upload-first ticket-tracking plan merged it into `/track/mine`.
+  // Config-level permanent redirects (not rendered stub pages) keep
+  // bookmarks and shared links to either old path working. Both go straight
+  // to `/journeys`, never through each other, so no visitor takes two hops.
+  // `/track/mine/add-ticket` keeps its URL: a `source` with no wildcard
+  // matches its one path only.
   // eslint-disable-next-line @typescript-eslint/require-await -- NextConfig types redirects() as returning a Promise
   async redirects() {
     return [
       {
+        source: '/track/mine',
+        destination: '/journeys',
+        permanent: true,
+      },
+      {
         source: '/track/tickets',
-        destination: '/track/mine',
+        destination: '/journeys',
         permanent: true,
       },
       // The planner's own page is `/plan` (see app/plan/page.tsx for why a

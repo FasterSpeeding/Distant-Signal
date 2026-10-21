@@ -98,7 +98,7 @@ describe('DelayRepayEstimate', () => {
 
   // Task 3.6.11: the full ~120-word `response.disclaimer` used to render
   // verbatim here, repeated on every ticket -- it now renders once, in
-  // full, at the `/track/mine` card level (`ReliabilityDigest.tsx`'s
+  // full, at the `/journeys` card level (`ReliabilityDigest.tsx`'s
   // `DelayRepaySection`). This component keeps only the short anti-CTA
   // reminder next to its own claim link, in every branch.
   it('always renders the short "never submits a claim" reminder, in every branch, never the full backend disclaimer', () => {

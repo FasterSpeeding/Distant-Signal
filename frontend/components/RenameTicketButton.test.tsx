@@ -6,7 +6,7 @@ import { RenameTicketButton } from './RenameTicketButton';
 const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: refreshMock }),
-  usePathname: () => '/track/mine',
+  usePathname: () => '/journeys',
   useSearchParams: () => new URLSearchParams(''),
 }));
 

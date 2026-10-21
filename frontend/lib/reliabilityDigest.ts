@@ -130,7 +130,7 @@ export interface DelayRepayRollup {
  *
  * Both fields count TICKETS, not distinct journeys/tracked trains: one
  * tracked train can legitimately have more than one ticket attached (see
- * `app/track/mine/page.test.tsx`'s "multiple tickets on one train" case),
+ * `app/journeys/page.test.tsx`'s "multiple tickets on one train" case),
  * and each is counted separately here. Calling code must describe these
  * numbers as ticket counts, not journey counts, to avoid overstating how
  * many distinct journeys were involved.

@@ -7,7 +7,7 @@ import * as api from '@/lib/api';
 vi.mock('@/lib/api');
 // The not-logged-in state renders AutoOpenLoginPrompt -> LoginPromptModal,
 // which calls useLoginHref() (usePathname()/useSearchParams() under the
-// hood) -- same stub track/mine/page.test.tsx/AuthStatus.test.tsx use for
+// hood) -- same stub journeys/page.test.tsx/AuthStatus.test.tsx use for
 // the same reason (useRouter()/usePathname()/useSearchParams() throw
 // outside an app router context in a plain component test).
 vi.mock('next/navigation', () => ({

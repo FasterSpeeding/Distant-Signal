@@ -45,7 +45,7 @@ describe('RemoveJourneyLegButton', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it("DELETEs the leg and redirects to /track/mine when it was the journey's only leg", async () => {
+  it("DELETEs the leg and redirects to /journeys when it was the journey's only leg", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
@@ -57,7 +57,7 @@ describe('RemoveJourneyLegButton', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/168/legs/2', { method: 'DELETE' });
     });
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/track/mine'));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys'));
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

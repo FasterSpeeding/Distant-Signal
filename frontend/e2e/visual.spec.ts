@@ -73,10 +73,10 @@ const PAGES: [name: string, path: string][] = [
   // in prompt, logged in the account sections too.
   ['preferences', '/account/preferences'],
   ['preferences-logged-in', '/account/preferences'],
-  // The Track page's lists, logged in: the seed's tracked trains and its
+  // The Journeys page's Upcoming and Past lists, logged in: the seed's tracked trains and its
   // planned three-leg journey, named end to end (docs/style-guide.md,
   // "Journey names").
-  ['track', '/track/mine'],
+  ['journeys', '/journeys'],
   // A group's shared trains and journeys, logged in as its owner: a live
   // train, a planned one, a timetabled bus, a journey whose train is
   // planned and a walk-and-Tube journey (2026-10-20: the owner's own
@@ -96,7 +96,7 @@ const LOGGED_IN_PAGES: ReadonlySet<string> = new Set([
   'home-logged-in',
   'account',
   'preferences-logged-in',
-  'track',
+  'journeys',
   'group',
   'train-no-timetable',
   'train-planned',

@@ -866,7 +866,7 @@ export async function getPublicTrainByUidAndDate(uid: string, date: string): Pro
  * failure. Unlike that function, there is no second, distinct 404-shaped
  * outcome to also collapse into `null` here -- there's no id in this
  * route's path to be wrong about, so a 401 from this one call is the
- * complete, unambiguous signal. `app/track/mine/page.tsx` does NOT need a
+ * complete, unambiguous signal. `app/journeys/page.tsx` does NOT need a
  * separate `getSession()` call the way `TicketPanel` does. */
 export async function getMyTrackedTrains(): Promise<TrackedTrainListItem[] | null> {
   const url = `${baseUrl()}/Train/mine`;
@@ -1022,7 +1022,7 @@ export async function getDelayRepayEstimate(
  * also collapse into `null` here -- no id in this route's path to be
  * wrong about, so a 401 from this one call is the complete signal (same
  * reasoning as `getTrackedTrainById`'s sibling list route, `getMyTrackedTrains`).
- * Called from the merged `app/track/mine/page.tsx` (Part B of the
+ * Called from the merged `app/journeys/page.tsx` (Part B of the
  * upload-first ticket-tracking plan -- `/track/tickets` used to call this
  * directly, but now just redirects there), which does NOT need a separate
  * `getSession()` call the way `TicketPanel` does. */
@@ -1122,11 +1122,11 @@ export async function getGroupTrains(id: string): Promise<GroupTrain[]> {
  * shared into any group the caller belongs to (never the caller's own
  * tracked trains, which `getMyTrackedTrains()` already returns), each
  * tagged with the group it came from and who shared it. Feeds
- * `/track/mine`, which renders these alongside the caller's own rows.
+ * `/journeys`, which renders these alongside the caller's own rows.
  *
  * `null` on a `401`, exactly like `getMyGroups`/`getMyTrackedTrains` above
  * and for the same reason: no id in the path, so a `401` can only ever
- * mean "not logged in". `/track/mine` still keys its whole logged-out
+ * mean "not logged in". `/journeys` still keys its whole logged-out
  * branch off `getMyTrackedTrains()` alone (see that page's own comment) --
  * this one's `null` is folded into `[]` there, since "anonymous" is
  * already answered by the time it's read. */

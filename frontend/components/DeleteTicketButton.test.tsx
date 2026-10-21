@@ -6,7 +6,7 @@ import { DeleteTicketButton } from './DeleteTicketButton';
 const refreshMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: refreshMock }),
-  usePathname: () => '/track/mine',
+  usePathname: () => '/journeys',
   useSearchParams: () => new URLSearchParams(''),
 }));
 
@@ -71,7 +71,7 @@ describe('DeleteTicketButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete ticket' }));
 
     const loginLink = await screen.findByRole('link', { name: 'Log in to delete this ticket' });
-    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Ftrack%2Fmine');
+    expect(loginLink).toHaveAttribute('href', '/api/auth/login?return_to=%2Fjourneys');
     expect(screen.queryByText('no session')).not.toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
   });

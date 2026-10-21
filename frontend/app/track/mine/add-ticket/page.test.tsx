@@ -8,7 +8,7 @@ vi.mock('@/lib/api');
 // AutoOpenLoginPrompt -> LoginPromptModal calls useLoginHref()
 // (usePathname()/useSearchParams() under the hood), and the expanded
 // TicketEntryForm calls useRouter() -- same workaround
-// app/track/mine/page.test.tsx and TicketEntryForm.test.tsx use for the
+// app/journeys/page.test.tsx and TicketEntryForm.test.tsx use for the
 // same reason (both hooks throw outside a real Next.js App Router tree).
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -54,7 +54,7 @@ describe('AddTicketPage', () => {
         "Save the ticket now; you can attach it to a tracked train afterwards, or we'll try to match it for you.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Back to my trains & tickets' })).toHaveAttribute('href', '/track/mine');
+    expect(screen.getByRole('link', { name: 'Back to journeys' })).toHaveAttribute('href', '/journeys');
     // defaultOpen: the manual-entry fields are visible immediately, no
     // collapsed-button click required.
     expect(screen.getByRole('combobox', { name: 'Operator (optional)' })).toBeInTheDocument();

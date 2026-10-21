@@ -7,7 +7,7 @@ import { TextLink } from '@/components/TextLink';
 import { ButtonLink } from '@/components/ButtonLink';
 import { StateBadge } from '@/components/StateBadge';
 import { pageMetadata } from '@/lib/pageMetadata';
-import { PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
+import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { TicketSummary } from '@/components/TicketSummary';
 import { ReliabilityDigest } from '@/components/ReliabilityDigest';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
@@ -23,7 +23,8 @@ import { trackedTrainDisplayName, trackedTrainRouteLabel } from '@/lib/trackingN
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
-import { journeyRowStatus, trackedTrainRowStatus, type TrackedRowStatus } from '@/lib/trackedRowStatus';
+import { trackedTrainRowStatus, type TrackedRowStatus } from '@/lib/trackedRowStatus';
+import { splitByStatus, splitJourneyRows, splitTrainRows } from '@/lib/upcomingPast';
 import { journeyDisplayName, journeyListItemNameInput, journeyPreviewLine } from '@/lib/journeyName';
 import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
 import type { Metadata } from 'next';
@@ -36,16 +37,20 @@ import type { Metadata } from 'next';
 export const revalidate = 0;
 
 export const metadata: Metadata = {
-  ...pageMetadata('Track', 'Your tracked trains, journeys and tickets, and where to track a new one.'),
+  ...pageMetadata('Journeys', 'Your journeys, upcoming and past, with your tracked trains and tickets.'),
   robots: { index: false },
 };
 
-/** `/track/mine` -- the Track page, the nav's one tracking entry
- * (`TRACK_DESTINATION` in `lib/navLinks.ts`, round 2). Its header starts
- * everything tracking-shaped: "Track a journey", "Find a train", "Add a
- * ticket" and journey templates. Below that, a logged-in user's own
+/** `/journeys` -- the Journeys page, the nav's one tracking entry
+ * (`JOURNEYS_DESTINATION` in `lib/navLinks.ts`). It was the Track page at
+ * `/track/mine` until DS-115, which renamed it, made "New journey" the way
+ * in to `/journeys/new` (no longer a nav entry), and split the list into
+ * Upcoming and Past (`lib/upcomingPast.ts`) with "Your reliability"
+ * between them. Its header starts everything tracking-shaped: "New
+ * journey", "Find a train", "Add a ticket" and journey templates. Below
+ * that, a logged-in user's own
  * tracked trains AND tickets, one merged page (Part B of the upload-first ticket-tracking plan). Was two
- * separate pages (`/track/mine` for trains, `/track/tickets` for tickets)
+ * separate pages (`/journeys` for trains, `/track/tickets` for tickets)
  * per docs/superpowers/specs/2026-08-31-tracked-trains-list-design.md and
  * docs/superpowers/specs/2026-08-31-tickets-list-design.md -- the latter's
  * own Decision 3 gave "a ticket-focused view answers a different question
@@ -101,7 +106,7 @@ export const metadata: Metadata = {
  * Gated and null-on-401 exactly like the first two, and `.catch(() => null)`
  * for the same "auxiliary, don't lose the whole page over it" reason as
  * `getSharedGroupTrains()`. */
-export default async function MyTrackedTrainsPage() {
+export default async function JourneysPage() {
   const [trains, tickets, sharedTrains, journeys] = await Promise.all([
     getMyTrackedTrains(),
     getMyTickets(),
@@ -111,12 +116,14 @@ export default async function MyTrackedTrainsPage() {
 
   if (trains === null) {
     return (
-      // No auto-opening login modal: this is the nav's Track entry, so every
-      // logged-out visitor who taps it lands here. The two things they can
-      // do without an account come first.
+      // No auto-opening login modal: this is the nav's Journeys entry, so
+      // every logged-out visitor who taps it lands here. The header offers
+      // what they can start without logging in first: a new journey (it
+      // asks them to log in when they save it), a train search and the
+      // planner.
       <Stack p="lg" gap="md" maw={640}>
-        <TrackHeader />
-        <Text>Log in to track trains and journeys, and to keep your tickets with them.</Text>
+        <JourneysHeader />
+        <Text>Log in to see your journeys, and to keep your tickets with them.</Text>
         <LoginControl variant="button" title="Log in (needs a Distant Signal account)">
           Log in
         </LoginControl>
@@ -176,35 +183,45 @@ export default async function MyTrackedTrainsPage() {
   const hasOwnContent = trains.length > 0 || unattachedTickets.length > 0;
   const nothingToShow = !hasOwnContent && shared.length === 0 && journeyRows.length === 0;
 
-  // Active rows first, finished ones (arrived, done, or from a past day)
-  // under their own heading, each list keeping its endpoint's order. One
-  // status rule for journeys and lone trains alike: `lib/trackedRowStatus.ts`.
+  // Two lists with one cut-off: Upcoming (still to come, or under way now)
+  // and Past (travelled). Journeys and the caller's own lone trains come in
+  // the api's travel order, and `lib/upcomingPast.ts` finds where that order
+  // crosses from still to come to travelled, by the same "is it over" rule
+  // the home page and the api share. Shared trains come in their group
+  // endpoint's order, so each is placed by its own status.
+  //
+  // Lone and shared trains are folded into the same two lists, not given a
+  // section of their own: a train tracked on its own is a one-leg journey
+  // (`trackedTrainRowStatus` reads it as one), and a third list would blur
+  // the one cut-off this page is built around. Within each list, journeys
+  // lead, then the caller's own trains, then shared ones, each in its
+  // endpoint's order, so the caller's own rows always come first.
   const today = londonDayKey(new Date());
-  const journeyItems = journeyRows.map((journey) => ({ journey, status: journeyRowStatus(journey, today) }));
-  const trainItems = standaloneTrains.map((train) => ({ train, status: trackedTrainRowStatus(train, today) }));
-  const sharedItems = shared.map((row) => ({ row, status: trackedTrainRowStatus(row.train, today) }));
-  const activeJourneys = journeyItems.filter((item) => !item.status.finished);
-  const activeTrains = trainItems.filter((item) => !item.status.finished);
-  const activeShared = sharedItems.filter((item) => !item.status.finished);
-  const finishedJourneys = journeyItems.filter((item) => item.status.finished);
-  const finishedTrains = trainItems.filter((item) => item.status.finished);
-  const finishedShared = sharedItems.filter((item) => item.status.finished);
-  const hasFinished = finishedJourneys.length + finishedTrains.length + finishedShared.length > 0;
+  const journeyItems = splitJourneyRows(journeyRows, today);
+  const trainItems = splitTrainRows(standaloneTrains, today);
+  const sharedItems = splitByStatus(
+    shared.map((row) => ({ row, status: trackedTrainRowStatus(row.train, today) })),
+    (item) => item.status.finished,
+  );
+  const upcomingCount = journeyItems.upcoming.length + trainItems.upcoming.length + sharedItems.upcoming.length;
+  const pastCount = journeyItems.past.length + trainItems.past.length + sharedItems.past.length;
 
   return (
-    <Stack p="lg" gap="lg">
-      <TrackHeader authenticated />
-      {hasOwnContent && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
+    <Stack p="lg" gap="xl">
+      <JourneysHeader authenticated />
       {nothingToShow ? (
         <Text c="dimmed">
-          You aren&apos;t tracking anything yet. Track a journey, or find a train first, and it will show here.
+          You have no journeys yet. Start a new journey, or find a train first, and it will show here.
         </Text>
       ) : (
         <>
-          {activeJourneys.length > 0 && (
-            <Stack gap="xs">
-              <SectionTitle>Your journeys</SectionTitle>
-              {activeJourneys.map(({ journey, status }) => (
+          {(upcomingCount > 0 || pastCount > 0) && (
+            // Upcoming leads even when it is empty, so the cut-off is
+            // always in the same place.
+            <Stack component="section" aria-labelledby="upcoming-heading" gap="xs">
+              <SectionTitle id="upcoming-heading">Upcoming</SectionTitle>
+              {upcomingCount === 0 && <Text c="dimmed">No upcoming journeys.</Text>}
+              {journeyItems.upcoming.map(({ journey, status }) => (
                 <JourneyListRow
                   key={journey.id}
                   journey={journey}
@@ -212,27 +229,12 @@ export default async function MyTrackedTrainsPage() {
                   tickets={ticketsForJourney(journey.id)}
                 />
               ))}
-            </Stack>
-          )}
-          {(activeTrains.length > 0 || activeShared.length > 0) && (
-            // ONE list, not a "shared with me" section of its own: the
-            // whole point of the fix is that a shared train sits alongside
-            // the caller's own, which is also why each shared row carries
-            // its "from <group>"/"Shared by <who>" tags -- in a merged
-            // list, a row with no attribution would read as one the caller
-            // tracked themselves.
-            //
-            // Own rows first, shared rows after, each half in the order
-            // its own endpoint returned; the page sorts nothing itself.
-            // Journeys (above) and the caller's own trains come in travel
-            // order (`crates/api/src/data/travel_order.rs`: still to come
-            // or running, soonest first, then travelled, most recent
-            // first), which the API does so its 100-row cap keeps the ones
-            // that matter. Shared rows stay a half of their own after them,
-            // in `GET /public/groups/shared-trains`'s order, rather than being
-            // merged in, so the caller's own trains always lead.
-            <Stack gap="xs">
-              {activeTrains.map(({ train, status }) => (
+              {/* The caller's own trains and trains shared with them in one
+                  list, not a "shared with me" section of its own: each
+                  shared row carries its "From <group>"/"Shared by <who>"
+                  tags, since in a merged list a row with no attribution
+                  reads as one the caller tracked themselves. */}
+              {trainItems.upcoming.map(({ train, status }) => (
                 <TrackedTrainListRow
                   key={train.id}
                   train={train}
@@ -240,17 +242,21 @@ export default async function MyTrackedTrainsPage() {
                   tickets={ticketsByTrain.get(train.id) ?? []}
                 />
               ))}
-              {activeShared.map(({ row, status }) => (
+              {sharedItems.upcoming.map(({ row, status }) => (
                 <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
               ))}
             </Stack>
           )}
-          {hasFinished && (
-            // Arrived, done, or from a past day. A cancelled one keeps its
-            // red badge here.
-            <Stack gap="xs">
-              <SectionTitle>Finished</SectionTitle>
-              {finishedJourneys.map(({ journey, status }) => (
+          {/* Below Upcoming and above Past (DS-115): the caller's own record
+              matters less than what is coming up, and more than the list of
+              what is over. */}
+          {hasOwnContent && <ReliabilityDigest trains={trains} tickets={tickets ?? []} />}
+          {pastCount > 0 && (
+            // Travelled, most recent first. A cancelled one keeps its red
+            // badge here.
+            <Stack component="section" aria-labelledby="past-heading" gap="xs">
+              <SectionTitle id="past-heading">Past</SectionTitle>
+              {journeyItems.past.map(({ journey, status }) => (
                 <JourneyListRow
                   key={journey.id}
                   journey={journey}
@@ -258,7 +264,7 @@ export default async function MyTrackedTrainsPage() {
                   tickets={ticketsForJourney(journey.id)}
                 />
               ))}
-              {finishedTrains.map(({ train, status }) => (
+              {trainItems.past.map(({ train, status }) => (
                 <TrackedTrainListRow
                   key={train.id}
                   train={train}
@@ -266,14 +272,14 @@ export default async function MyTrackedTrainsPage() {
                   tickets={ticketsByTrain.get(train.id) ?? []}
                 />
               ))}
-              {finishedShared.map(({ row, status }) => (
+              {sharedItems.past.map(({ row, status }) => (
                 <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
               ))}
             </Stack>
           )}
           {unattachedTickets.length > 0 && (
-            <Stack gap="md">
-              <SectionTitle>Tickets not yet attached to a train</SectionTitle>
+            <Stack component="section" aria-labelledby="unattached-tickets-heading" gap="md">
+              <SectionTitle id="unattached-tickets-heading">Tickets not yet attached to a train</SectionTitle>
               <Text size="sm" c="dimmed">
                 We can&apos;t tell which train one of these tickets is for. Attach it to one of your tracked trains
                 below, or track the right one.
@@ -294,16 +300,18 @@ export default async function MyTrackedTrainsPage() {
   );
 }
 
-/** The Track page's h1 and its ways to start tracking. Logged out, the
- * actions are the two that need no account: finding a train and planning
- * a journey. Logged in, "Track a journey" leads, as a button; the rest are
- * links. */
-function TrackHeader({ authenticated = false }: { authenticated?: boolean }) {
+/** The Journeys page's h1 and its ways to start. "New journey" leads, as
+ * a button, for everyone: `/journeys/new` asks a logged-out visitor to log
+ * in when they save, and is reached only from here and the home page, not
+ * the nav. The rest are links: logged out, the two that need no account
+ * (finding a train, planning a journey); logged in, a train search, a
+ * ticket and journey templates. */
+function JourneysHeader({ authenticated = false }: { authenticated?: boolean }) {
   return (
     <Stack gap="sm">
-      <Title order={1}>Track</Title>
+      <Title order={1}>Journeys</Title>
       <Group gap="md" align="center">
-        {authenticated && <ButtonLink href={TRACK_JOURNEY_HREF}>Track a journey</ButtonLink>}
+        <ButtonLink href={TRACK_JOURNEY_HREF}>{NEW_JOURNEY_LABEL}</ButtonLink>
         <TextLink href="/trains">Find a train</TextLink>
         {authenticated ? (
           <>

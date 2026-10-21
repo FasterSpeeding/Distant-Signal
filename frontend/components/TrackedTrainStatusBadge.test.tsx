@@ -6,7 +6,7 @@ import { TrackedTrainStatusBadge } from './TrackedTrainStatusBadge';
 
 // Direct unit tests for the component review §2.9 asked to be shared
 // (previously two byte-identical copies, `app/page.tsx`'s own
-// `TrackedTrainStatusBadge` and `app/track/mine/page.tsx`'s
+// `TrackedTrainStatusBadge` and `app/journeys/page.tsx`'s
 // `RowStatusBadge`, plus a third place -- `/groups/[id]`'s shared-train
 // card -- that printed the raw `status` string with no wording at all).
 // The three call sites' own page tests already exercise this indirectly;

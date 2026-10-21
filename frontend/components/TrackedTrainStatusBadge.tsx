@@ -7,7 +7,7 @@ import type { ServiceModeFields, TrackingPhaseFields } from '@/lib/types';
 
 // Short, human badge words -- the single copy every page that renders a
 // tracked train's status badge shares. Previously duplicated verbatim
-// across `app/page.tsx`, `app/track/mine/page.tsx` and (as a raw
+// across `app/page.tsx`, `app/journeys/page.tsx` and (as a raw
 // `train.status` string literal, with no words at all) `app/groups/[id]/
 // page.tsx`'s shared-train card -- three independent places that could
 // silently drift from each other over one enum's wording. See review

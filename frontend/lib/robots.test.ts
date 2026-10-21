@@ -32,6 +32,7 @@ describe('buildRobots', () => {
     '/connect-claude/authorize',
     '/groups',
     '/journeys/',
+    '/journeys$',
     '/track/mine',
     '/track/tickets',
     '/train/by-id/',

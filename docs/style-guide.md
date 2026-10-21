@@ -161,10 +161,13 @@ used, rather than as a literal in a component.
   text colour at 20%).
 - The bar starts with the wordmark (`Wordmark`: the favicon's signal arm on
   its grape tile, 24px, then "Distant Signal" in 16px bold). Its links are
-  Track, Plan a journey, Status, Lines, Operators, Stations and Incidents
-  (`lib/navLinks.ts`). Track is the one tracking entry: it opens the Track
-  page (`/track/mine`) and stays marked current on `/track`, `/trains` and
-  `/journeys`. No settings live in the bar: the theme and pride flag are
+  Journeys, Plan a journey, Status, Lines, Operators, Stations and
+  Incidents (`lib/navLinks.ts`). Journeys is the one tracking entry: it
+  opens the Journeys page (`/journeys`; `/track/mine` redirects there) and
+  stays marked current on `/track`, `/trains` and every `/journeys` page.
+  Starting a journey is not a nav entry: "New journey" (`/journeys/new`)
+  is a button on the Journeys page and at the top of the home page's
+  "Upcoming journeys". No settings live in the bar: the theme and pride flag are
   on `/account/preferences`, reached from the account menu, the drawer and
   the footer.
 - One exception: a logged-out visitor at `md` and up gets a gear
@@ -287,7 +290,7 @@ used, rather than as a literal in a component.
   joins the ends with "to", so its strings go straight into JSX, titles,
   `aria-label`s and `Select` options. Never "→" in copy.
 - **Journey names**: one rule, `lib/journeyName.ts`, wherever a journey
-  is listed, headed or previewed (the Track list, the journey page, group
+  is listed, headed or previewed (the Journeys list, the journey page, group
   rows, templates, share-link previews, Connected apps). The name is the
   owner's custom name, verbatim. Without one it is the whole route and the
   first day: the FIRST leg's origin to the LAST leg's destination,
@@ -393,18 +396,20 @@ used, rather than as a literal in a component.
   In-page Suspense fallbacks keep using `LoadingPlaceholder`. Today: home
   (in the `(home)` route group, because a root `app/loading.tsx` would wrap
   every route), `/lines/[id]`, both train routes (`TrainPageSkeleton`) and
-  `/track/mine`. Never add `app/loading.tsx`.
+  `/journeys`. Never add `app/loading.tsx`.
 - **Home journeys** (`app/(home)/HomeJourneys.tsx`, `lib/homeJourneys.ts`):
   logged in, the home page leads with "Current journey" (a journey whose
   first departure has passed and whose last leg hasn't ended) and then "Upcoming journeys" (first departure
-  still to come, soonest first, five then "View all"). Each renders only
-  when it has a journey. The current journey is one `CardLink` with a 2px
+  still to come, soonest first, five then "View all"). "Current journey"
+  renders only when there is one; "Upcoming journeys" always does, with a
+  light "New journey" button in its header, and says "No upcoming
+  journeys." when it is empty. The current journey is one `CardLink` with a 2px
   grape border (`.currentJourneyCard`), the only such card on the page:
   its name, its worst status (`JourneyStatusGroupBadge`), the leg under
   way ("Now, leg 1 of 2") with its delay, and the next change or the
   destination with the arrival ("York (YRK), arrive est. 12:12"). With
   two under way at once, the soonest arriving is current and the rest are
-  rows under "Also in progress". Upcoming rows are the Track page's row
+  rows under "Also in progress". Upcoming rows are the Journeys page's row
   shape: name, preview line, "Departs 18:00" when known, status badge.
   A train leg ends at its actual arrival at the traveller's stop (or
   `completed`), else its live estimate (timetable plus the current
@@ -535,7 +540,7 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   "Planned", "In progress (not live tracked)" or "Done", and that we have
   no live data for it.
 - A journey's status is the whole journey's (`summariseJourney` in
-  `lib/journeyStatus.ts`), on the Track list, the journey page header and
+  `lib/journeyStatus.ts`), on the Journeys list, the journey page header and
   the home page alike. On time or late is the final arrival: the last
   train leg's delay at its destination. An earlier leg's delay shows only
   on that leg (and in the per-leg line), or as "Tight connection" (yellow)
@@ -547,10 +552,13 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
   badge, for a journey and a lone tracked train (read as a one-leg
   journey) alike: the rollup's words and colours, with the delay badge
   ("12 min late") in place of "On time"/"Delayed" once the delay is known.
-  Track list rows that have arrived or are from a past day sit under a
-  "Finished" heading below the active ones: "Completed" (gray, with its
-  final delay), "No report received", "No train picked". Cancelled and
-  part cancelled stay red there.
+  The Journeys page lists rows in two sections, "Upcoming" (still to
+  come or under way) then "Past" (travelled), with "Your reliability"
+  between them. The cut-off is the api's travel order read by
+  `lib/upcomingPast.ts`, the same "is it over" rule as the home page;
+  lone and shared trains go in the same two lists. Past rows say
+  "Completed" (gray, with its final delay), "No report received", "No
+  train picked". Cancelled and part cancelled stay red there.
 - Severity labels are TfL's own Title Case names; unknown codes read
   "Unknown" in gray (`lib/severity.ts`).
 
@@ -618,7 +626,7 @@ never "this app".
   text: "7 more lines are not at Good Service" (`severityLabel` in
   `lib/severity.ts`). On a badge the same status
   is sentence case ("Good service", `severityBadgeLabel`).
-- A page's h1 is its nav label: Track, Plan a journey, Status, Lines,
+- A page's h1 is its nav label: Journeys, Plan a journey, Status, Lines,
   Operators, Stations, Incidents, Ask about trains, Preferences. A page
   linked from a hub takes the link's words ("Find a train").
 - Helper text is one line. If the detail matters, put it behind a "How
@@ -775,7 +783,7 @@ Stations, a station, Trains (empty and searched), a train, Incidents, the
 plan form (Depart at and Arrive by), Account (logged in),
 Preferences (logged out, logged in and with a pride flag), home logged in, a tracked train
 not in the timetable, a planned tracked train, a journey with an untracked
-walk, the Track page and a group with shared trains and journeys (all
+walk, the Journeys page and a group with shared trains and journeys (all
 logged in) and the tram pages at 390 and 1366px, light and dark,
 plus the /lines filter bar's stuck and open states and the /incidents
 filters open: 120 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
@@ -856,3 +864,10 @@ train"; the signal-arm wordmark and per-page link previews; `StatusCard`,
 `StatusTile`, `StateBadge` and `BadgeRow`; sentence-case severity group
 and impact labels; station accessibility key facts; themed charts; page
 skeletons; and the largest forms split into smaller modules.
+
+Journeys (DS-115, 21 Oct 2026): the Track entry and page became Journeys
+(`/journeys`, with `/track/mine` and `/track/tickets` redirecting there);
+"New journey" left the nav for a button on the Journeys page and on the
+home page's "Upcoming journeys", and `/journeys/new` took its words as
+its h1; the Journeys list splits into Upcoming and Past, with "Your
+reliability" between them.

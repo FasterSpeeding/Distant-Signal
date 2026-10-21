@@ -12,7 +12,7 @@ import { formatDate } from '@/lib/dateFormat';
  * Deliberately does NOT render `response.disclaimer` (the TOP-LEVEL field,
  * always populated regardless of `estimate`) verbatim any more -- Task
  * 3.6.11 found the same ~120-word disclaimer repeated up to three times
- * across `/track/mine` (once per attached ticket, via this component,
+ * across `/journeys` (once per attached ticket, via this component,
  * PLUS the aggregate rollup) and one more time on the train detail page,
  * which reads as noise rather than caution. The one FULL disclaimer now
  * lives once, at the card level, in `ReliabilityDigest.tsx`'s

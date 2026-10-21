@@ -91,13 +91,13 @@
   },
   {
     "name": "track-mine-journeys",
-    "url": "/track/mine",
+    "url": "/journeys",
     "viewport": { "width": 1440, "height": 900 },
     "browser": "chromium",
     "authenticated": true,
     "waitFor": { "delay": 1500 },
     "fullPage": true,
-    "description": "The /track/mine journeys list, showing both seeded journeys (KGX-to-YRK 22m late, WAT-to-SOU on time) as EN ROUTE cards with their delay-status pills."
+    "description": "The /journeys journeys list, showing both seeded journeys (KGX-to-YRK 22m late, WAT-to-SOU on time) as EN ROUTE cards with their delay-status pills."
   },
   {
     "name": "groups-empty-state",

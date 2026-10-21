@@ -3,11 +3,11 @@ import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
 import { getTrainSearchDates } from '@/lib/api';
-import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { pageMetadata } from '@/lib/pageMetadata';
 
 /** `/journeys/new` -- where tracking something starts, linked first from
- * the Track page (`lib/navLinks.ts`'s `TRACK_DESTINATION`).
+ * the "New journey" buttons on the Journeys page and the home page.
  * Journey tracking is the app's main feature going forward; tracking one
  * train is the simple, one-leg case of a journey, not a separate concept
  * -- this page is where that gets built, whether the visitor stops after
@@ -69,7 +69,7 @@ import { pageMetadata } from '@/lib/pageMetadata';
  * journey exists) already has its own equivalent 401 handling too -- this
  * page adds no login-prompt logic of its own; both reused components
  * bring their own. */
-const METADATA_TITLE = 'Track a journey';
+const METADATA_TITLE = NEW_JOURNEY_LABEL;
 const METADATA_DESCRIPTION = 'Track a journey of one or more trains, from start to finish.';
 
 export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
@@ -82,7 +82,7 @@ export default async function JourneysNewPage() {
 
   return (
     <Stack p="lg" gap="md">
-      <Title order={1}>Track a journey</Title>
+      <Title order={1}>{NEW_JOURNEY_LABEL}</Title>
       <Text c="dimmed">
         Track a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked
         you can add another leg here for a change of trains, or stop now: a single train is already a complete journey.

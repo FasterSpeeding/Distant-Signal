@@ -36,7 +36,7 @@ describe('DeleteJourneyButton', () => {
     expect(screen.getByText(/cannot be undone/)).toBeInTheDocument();
   });
 
-  it('DELETEs the journey and redirects to /track/mine on success', async () => {
+  it('DELETEs the journey and redirects to /journeys on success', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
@@ -48,7 +48,7 @@ describe('DeleteJourneyButton', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/167', { method: 'DELETE' });
     });
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/track/mine'));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys'));
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

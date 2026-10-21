@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
 
-/** `/track/mine`'s own page must stay a Server Component (it directly
+/** `/journeys`'s own page must stay a Server Component (it directly
  * awaits `getMyTrackedTrains()`/`getMyTickets()`), so it can't hold the
  * `useState` a controlled `LoginPromptModal` needs itself -- this small
  * sibling Client Component is the wrapper. See
@@ -16,7 +16,7 @@ import { LoginPromptModal } from '@/components/LoginPromptModal';
  * controlled-`Modal` convention. Closing it (Escape, backdrop, or its own
  * close control) leaves the page showing just its heading -- a deliberate,
  * accepted simplification (Decision 6's Open Question 1), not a gap this
- * component tries to close. A fresh navigation back to `/track/mine`
+ * component tries to close. A fresh navigation back to `/journeys`
  * reopens it, since `opened` re-initializes to `true` on every fresh
  * mount. */
 export function AutoOpenLoginPrompt({ children }: { children: React.ReactNode }) {

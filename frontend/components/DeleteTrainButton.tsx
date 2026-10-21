@@ -17,12 +17,12 @@ export type DeleteTrainButtonHandle = ConfirmActionButtonHandle;
  * The confirm step is `ConfirmActionButton`'s.
  *
  * `afterDelete` controls what happens on success, and defaults to
- * `'redirect'` (push to `/track/mine`): unlike a deleted custom line (which
+ * `'redirect'` (push to `/journeys`): unlike a deleted custom line (which
  * returns to `/lines`, a list every line still on it belongs on), there is
  * no single "all trains" page a deleted tracked train's detail page could
  * sensibly return to, and `/train/by-id/[trackingId]` (the by-`trackingId`
  * page, this component's original caller) is keyed by a `trackingId` that
- * is now meaningless once deleted -- `/track/mine`, the logged-in caller's
+ * is now meaningless once deleted -- `/journeys`, the logged-in caller's
  * own tracked-trains list, is the closest equivalent. `/train/[uid]/[date]`
  * (keyed by the train's real identity, not the tracking id) passes
  * `'refresh'` instead: that URL stays perfectly meaningful post-delete, so
@@ -62,7 +62,7 @@ export type DeleteTrainButtonHandle = ConfirmActionButtonHandle;
  * otherwise unchanged.
  *
  * `hideTrigger` renders no button at all, and `ref` exposes `{ open }`
- * (`ConfirmActionButton`'s handle): `/track/mine`'s row offers this as a
+ * (`ConfirmActionButton`'s handle): `/journeys`'s row offers this as a
  * `Menu.Item` in an overflow kebab (Task 3.6.7) rather than a second
  * free-standing button. `TrackedTrainRowMenu` renders this component as a
  * sibling of `<Menu>`, never inside `<Menu.Dropdown>`: Mantine's `Popover`
@@ -97,7 +97,7 @@ export const DeleteTrainButton = forwardRef<
       request={() => fetch(`/api/Train/${trackingId}`, { method: 'DELETE' })}
       failure={['remove', 'this train']}
       loginPrompt="Log in to stop tracking this train"
-      onSuccess={(router) => (afterDelete === 'refresh' ? router.refresh() : router.push('/track/mine'))}
+      onSuccess={(router) => (afterDelete === 'refresh' ? router.refresh() : router.push('/journeys'))}
     >
       {inJourney ? (
         <Text>

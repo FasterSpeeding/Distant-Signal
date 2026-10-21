@@ -38,7 +38,7 @@ export interface StatusRowProps {
    * content) under it, and wants the trailing content pinned to the
    * title's line rather than the block's vertical middle, should pass
    * `"flex-start"` explicitly — same choice `SharedCustomLineRow`/
-   * `track/mine`'s rows already made by hand before this component
+   * `/journeys`'s rows already made by hand before this component
    * existed. */
   align?: 'center' | 'flex-start' | 'flex-end' | 'stretch';
   /** Gap between the title/subtitle block and the trailing content.

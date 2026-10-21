@@ -19,7 +19,7 @@ import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
  * ordinary, shareable purpose instead.
  *
  * Title matches the page's own `<h1>` ("Find a train"), which is also the
- * link to this route from the Track page (`/track/mine`), the nav's one
+ * link to this route from the Journeys page (`/journeys`), the nav's one
  * tracking entry since round 2.
  *
  * "another station along its route" is deliberately generic rather than

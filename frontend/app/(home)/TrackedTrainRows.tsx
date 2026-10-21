@@ -23,7 +23,7 @@ import type { LineStatusReport, TrackedTrainListItem } from '@/lib/types';
  * owner can change or delete it, and only the owner (or a group
  * `admin`/`owner`, from the group's own page) can stop the sharing.
  *
- * The "From {group}" `StateBadge` (action tone) is the same tag `/track/mine` already
+ * The "From {group}" `StateBadge` (action tone) is the same tag `/journeys` already
  * uses for a group-shared train, deliberately worded and coloured
  * identically so the two surfaces read as one convention. One badge per
  * group this line reached the caller through -- a line shared into two of
@@ -78,7 +78,7 @@ export type TrackedTrainRow = { kind: 'own'; train: TrackedTrainListItem } | { k
 /** A train another member shared into a group the caller belongs to,
  * rendered in the same list as the caller's own summary rows above.
  * Home-page-local sibling of `TrackedTrainSummaryRow` below, and a trimmed
- * mirror of /track/mine's own `SharedTrainListRow` -- same tags, same
+ * mirror of /journeys's own `SharedTrainListRow` -- same tags, same
  * wording, same linking rule.
  *
  * Deliberately NOT `TrackedTrainSummaryRow` with extra props: the caller
@@ -94,13 +94,13 @@ export type TrackedTrainRow = { kind: 'own'; train: TrackedTrainListItem } | { k
  * `resolutionStatus === 'resolved' && trainUid`, because `trainUid` is
  * populated well before the status reaches `resolved` and
  * `/train/{uid}/{date}` is public and unscoped. Same reasoning
- * /track/mine's shared row states at length. */
+ * /journeys's shared row states at length. */
 export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
   const { train, groupNames } = row;
   // `routeLabel`, not `trackedTrainDisplayName`: this page's own rows
   // (`TrackedTrainSummaryRow` below) label by route too, so using the
   // sharer's `customName` here would make the two halves of one list
-  // disagree about what a row's heading even is. /track/mine, whose own
+  // disagree about what a row's heading even is. /journeys, whose own
   // rows DO show a custom name, shows it for shared rows for the same
   // consistency reason.
   const route = trackedTrainRouteLabel(train);
@@ -127,7 +127,7 @@ export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
               a group (`crates/api/src/data/users.rs`'s `display_label`).
               "a member" then, never a raw user id, suffixed with the
               sharer's `addedByTag` so two such sharers don't read
-              identically -- same helper and same wording /track/mine and
+              identically -- same helper and same wording /journeys and
               /groups/{id} already use (`lib/memberLabel.ts`). */}
         {groupNames.map((groupName) => (
           <StateBadge key={groupName} tone="action">
@@ -143,13 +143,13 @@ export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
 
   // Whole-card link when there's somewhere to go, matching the own row
   // directly below; nothing inside the card is itself interactive, so
-  // there's no nested-<a> problem of the kind /track/mine's richer row has
+  // there's no nested-<a> problem of the kind /journeys's richer row has
   // to work around.
   return href ? <CardLink href={href}>{content}</CardLink> : <Card {...tokens.card.static}>{content}</Card>;
 }
 
-// Home-page-local mirror of /track/mine's own row shape
-// (frontend/app/track/mine/page.tsx's TrackedTrainListRow) -- same fields,
+// Home-page-local mirror of /journeys's own row shape
+// (frontend/app/journeys/page.tsx's TrackedTrainListRow) -- same fields,
 // same resolutionStatus-vs-status+delayMinutes branching. The badge itself
 // is shared (`TrackedTrainStatusBadge`, review §2.9) rather than
 // re-derived per page: both this row and /groups/[id]'s shared-train card
@@ -157,7 +157,7 @@ export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
 // status wording the way they used to.
 export function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
   // Canonical, shareable URL once resolved; the by-id detail route
-  // otherwise -- same logic as /track/mine's own row. The
+  // otherwise -- same logic as /journeys's own row. The
   // resolved-with-null-trainUid fallback is defensive: the backend's own
   // resolution invariant means this shouldn't happen, but this component
   // doesn't assume it.
@@ -175,7 +175,7 @@ export function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem 
         <Text size="sm" c="dimmed">
           {/* `pinScheduledDeparture` is `null` for an NR-primary
                 subscription whose train has no schedule data yet -- same
-                date-only degradation as /track/mine's own row. */}
+                date-only degradation as /journeys's own row. */}
           {train.pinScheduledDeparture
             ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
             : formatDate(train.serviceDate)}

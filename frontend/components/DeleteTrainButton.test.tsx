@@ -31,7 +31,7 @@ describe('DeleteTrainButton', () => {
 
   // Default `afterDelete` ('redirect') -- the by-id page's own behaviour,
   // unchanged by the new prop.
-  it('DELETEs the tracked train and redirects to /track/mine on confirm', async () => {
+  it('DELETEs the tracked train and redirects to /journeys on confirm', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
 
@@ -43,7 +43,7 @@ describe('DeleteTrainButton', () => {
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith('/api/Train/42', { method: 'DELETE' });
     });
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/track/mine'));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys'));
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

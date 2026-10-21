@@ -225,7 +225,7 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   // first-paint DOM for an anonymous visitor -- and is where the Mantine
   // close-button `button-name` defect lived -- so it is audited here rather
   // than treated as "logged-in only".
-  ['/track/mine (anonymous)', '/track/mine'],
+  ['/journeys (anonymous)', '/journeys'],
   ['/track/mine/add-ticket (anonymous login prompt)', '/track/mine/add-ticket'],
   ['/groups (anonymous login prompt)', '/groups'],
   ['/chat (anonymous login prompt)', '/chat'],
@@ -282,14 +282,14 @@ test.describe('accessibility: logged in', () => {
 
   // The routes whose logged-in DOM differs meaningfully from the anonymous
   // one: `/` gains the pinned-lines/stations/tracked-trains sections,
-  // `/track/mine` and `/groups` replace a login modal with real content,
+  // `/journeys` and `/groups` replace a login modal with real content,
   // `/lines` gains pin controls, `/chat` swaps its whole body.
   // (`/connect-claude` no longer depends on a session at all.)
   for (const [name, path] of [
     ['/', '/'],
     ['/lines', '/lines'],
     [`/stations/${REAL_STATION_CRS}`, `/stations/${REAL_STATION_CRS}`],
-    ['/track/mine', '/track/mine'],
+    ['/journeys', '/journeys'],
     ['/track/mine/add-ticket', '/track/mine/add-ticket'],
     ['/groups', '/groups'],
     ['/chat', '/chat'],
@@ -652,7 +652,7 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     await expectNoViolations(page);
   });
 
-  test('/track/mine, stop-tracking confirmation modal', async ({ page }) => {
+  test('/journeys, stop-tracking confirmation modal', async ({ page }) => {
     // Mantine's `Modal` close button has no accessible name of its own;
     // `lib/theme.ts` supplies one for every modal in the app through
     // `components.Modal.defaultProps`. This is the live check on that.
@@ -661,7 +661,7 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
     // one overflow-kebab menu (`More actions for ...`) instead of a
     // free-standing "Delete" button -- open that first, then its "Stop
     // tracking" menu item.
-    await page.goto('/track/mine');
+    await page.goto('/journeys');
     await page
       .getByRole('button', { name: /^More actions for/ })
       .first()
@@ -710,7 +710,7 @@ test.describe('accessibility: interactive sub-states, logged in', () => {
   // at a broken backend, keeps this a deterministic check of the ERROR
   // RENDERING and not of the API.
   test('a failed mutation renders its inline error text readably', async ({ page }) => {
-    await page.goto('/track/mine');
+    await page.goto('/journeys');
     // A 500 on purpose: `DeleteTrainButton` shows the API's own sentence
     // only for a readable 400/403/409/422 body (`failureFromResponse`), so a
     // 500 always takes `describeFailure('remove', 'this train', 500)` --
@@ -748,7 +748,7 @@ test.describe('accessibility: logged in, dark scheme', () => {
 
   for (const [name, path] of [
     ['/', '/'],
-    ['/track/mine', '/track/mine'],
+    ['/journeys', '/journeys'],
     ['/groups', '/groups'],
     [`/stations/${REAL_STATION_CRS}`, `/stations/${REAL_STATION_CRS}`],
     [`/lines/${REAL_LINE_ID}`, `/lines/${REAL_LINE_ID}`],

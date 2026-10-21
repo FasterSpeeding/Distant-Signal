@@ -367,7 +367,7 @@ ON CONFLICT DO NOTHING;
 -- What fixture-member shares into the group (trackingPhase on group and
 -- shared rows, 2026-10-20): their own tracking of the planned W77777, a
 -- timetabled bus (W88888) and a walk-and-Tube journey with no train, all
--- in 2099. The owner sees the two trains as shared rows on /track/mine
+-- in 2099. The owner sees the two trains as shared rows on /journeys
 -- ("Planned", "Bus service" + "Timetabled only", as on their own rows)
 -- and everything on /groups/fixture-group-1, with the owner's
 -- door-to-door journey above shared in too. Inserted after every row
@@ -584,8 +584,8 @@ ON CONFLICT DO NOTHING;
 
 -- ---------------------------------------------------------------------
 -- A PLANNED three-leg journey for fixture-owner (journey-names.spec.ts and
--- the logged-in /track/mine screenshot in visual.spec.ts): no leg has a
--- train yet, so there is no tracking data at all. Its row on /track/mine
+-- the logged-in /journeys screenshot in visual.spec.ts): no leg has a
+-- train yet, so there is no tracking data at all. Its row on /journeys
 -- must name it from the first leg's origin (EUS) to the LAST leg's
 -- destination (KGX), not the first leg's (MKC). EUS and KGX are the two
 -- seeded `stations` rows, so both ends have names; MKC and PBO are not.

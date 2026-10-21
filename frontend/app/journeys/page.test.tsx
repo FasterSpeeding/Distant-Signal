@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { expectShrinkGuarded, expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
-import MyTrackedTrainsPage from './page';
+import JourneysPage from './page';
 import * as api from '@/lib/api';
 import type { TrackedTrainListItem, TicketListItem, SharedGroupTrain, JourneyListItem } from '@/lib/types';
 import { byVisibleText, visibleText } from '@/test/routeText';
@@ -16,7 +16,7 @@ vi.mock('@/lib/api');
 // the same reason (useRouter() throws outside an app router context).
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn() }),
-  usePathname: () => '/track/mine',
+  usePathname: () => '/journeys',
   useSearchParams: () => new URLSearchParams(''),
 }));
 
@@ -94,7 +94,7 @@ function sharedTrain(overrides: Partial<SharedGroupTrain> = {}): SharedGroupTrai
   };
 }
 
-describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
+describe('JourneysPage', () => {
   // Every pre-existing test predates group sharing and says nothing about
   // it -- default the third fetch to "no shared trains" so each of them
   // still describes exactly the scenario it was written for. The
@@ -106,7 +106,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   beforeEach(() => {
     vi.mocked(api.getSharedGroupTrains).mockResolvedValue([]);
     vi.mocked(api.getMyJourneys).mockResolvedValue([]);
-    // The page puts rows from a past London day under "Finished". Pin
+    // The page puts rows from a past London day under "Past". Pin
     // "today" to the fixtures' own service date so they stay active.
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-08-31T12:00:00Z'));
@@ -116,39 +116,46 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.useRealTimers();
   });
 
-  it('null (not logged in): titles the page Track, with a log in button and no auto-opened modal', async () => {
+  it('null (not logged in): titles the page Journeys, with a log in button and no auto-opened modal', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
-    renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('heading', { level: 1, name: 'Track' })).toBeInTheDocument();
+    renderWithMantine(await JourneysPage());
+    expect(screen.getByRole('heading', { level: 1, name: 'Journeys' })).toBeInTheDocument();
+    expect(screen.getByText('Log in to see your journeys, and to keep your tickets with them.')).toBeInTheDocument();
     expect(screen.queryByText('Log in required')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Log in' })).toHaveAttribute(
       'href',
-      '/api/auth/login?return_to=%2Ftrack%2Fmine',
+      '/api/auth/login?return_to=%2Fjourneys',
     );
   });
 
-  it('null (not logged in): offers the two things that need no account', async () => {
+  it('null (not logged in): offers New journey first, then the two things that need no account', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue(null);
     vi.mocked(api.getMyTickets).mockResolvedValue(null);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
+    const newJourney = screen.getByRole('link', { name: 'New journey' });
+    expect(newJourney).toHaveAttribute('href', '/journeys/new');
+    expect(newJourney).toHaveClass('mantine-Button-root');
     expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
     expect(screen.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
-    expect(screen.queryByRole('link', { name: 'Track a journey' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Add a ticket' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Upcoming' })).toBeNull();
   });
 
-  it('no trains and no tickets: shows the empty state, under the Track a journey button', async () => {
+  it('no trains and no tickets: shows the empty state, under the New journey button', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByText(/You aren't tracking anything yet/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Track a journey' })).toHaveAttribute('href', '/journeys/new');
+    renderWithMantine(await JourneysPage());
+    expect(screen.getByText(/You have no journeys yet/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(screen.queryByRole('heading', { name: 'Upcoming' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Past' })).toBeNull();
   });
 
   it('a train with no tickets: renders just the train row, no ticket content under it', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     expect(screen.queryByText('LNER')).not.toBeInTheDocument();
     expect(screen.queryByText('Tickets not yet attached to a train')).not.toBeInTheDocument();
@@ -157,7 +164,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('a train with an attached ticket: renders the ticket summary and its Delay Repay estimate under the train', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ trackedTrainId: 1 })]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     expect(screen.getByText(/LNER/)).toBeInTheDocument();
     expect(screen.getByText(byVisibleText(/KGX to EDB/))).toBeInTheDocument();
@@ -174,7 +181,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 9, trackedTrainId: 1 })]);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
 
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => screen.getByRole('button', { name: 'Confirm delete ticket' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete ticket' }));
@@ -196,14 +203,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         claimUrl: 'https://delayrepay.crosscountrytrains.co.uk/',
       }),
     ]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getAllByRole('link', { name: /See how to claim from the operator/ })).toHaveLength(2);
   });
 
   it('a ticket attached to a DIFFERENT tracked train does not render under this one', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ id: 1 })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 1, trackedTrainId: 999 })]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     expect(screen.queryByText('LNER')).not.toBeInTheDocument();
   });
@@ -230,7 +237,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       }),
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText('Train W12345, 31 Aug 2026')).toBeInTheDocument();
     expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
@@ -257,7 +264,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         estimate: null,
       }),
     ]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText('Tickets not yet attached to a train')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Track a new train for this ticket' })).toHaveAttribute(
       'href',
@@ -274,7 +281,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('an unattached ticket with no origin: the track-a-new-train link omits the origin param', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 6, trackedTrainId: null, originCrs: null })]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByRole('link', { name: 'Track a new train for this ticket' })).toHaveAttribute(
       'href',
       '/track?ticketId=6',
@@ -284,7 +291,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('no tracked trains yet: the attach-to-existing-train action is not offered (nothing to attach to)', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([ticket({ id: 5, trackedTrainId: null })]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.queryByLabelText('Attach to one of your tracked trains')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Track a new train for this ticket' })).toBeInTheDocument();
   });
@@ -292,7 +299,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('resolved train with a trainUid: links to the canonical /train/{uid}/{date} URL', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByRole('link', { name: /WAT to WOK/ })).toHaveAttribute('href', '/train/C21373/2026-08-31');
     // The route keeps its arrow on screen; only the accessible text says "to".
     expect(screen.getByText(byVisibleText(/^WAT to WOK, /))).toBeInTheDocument();
@@ -304,14 +311,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       train({ resolutionStatus: 'pending', trainUid: null, status: null, delayMinutes: null }),
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByRole('link', { name: /WAT to WOK/ })).toHaveAttribute('href', '/train/by-id/1');
   });
 
   it('renders a delay badge for a resolved, delayed train', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ delayMinutes: 12 })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText('12 min late')).toBeInTheDocument();
   });
 
@@ -323,7 +330,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('no custom name: the date/time is not printed a second time under the heading', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ customName: null })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     // Scoped to this row's own Card -- the reliability digest above it can
     // independently print the same calendar date in its own "most delayed
     // journeys" list, which isn't what this assertion is about.
@@ -339,7 +346,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('with a custom name: the dimmed date/time line still renders, since the heading no longer shows it', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ customName: 'My trip to York' })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText('My trip to York')).toBeInTheDocument();
     const card = screen.getByText('My trip to York').closest('.mantine-Card-root') as HTMLElement;
     expect(within(card).getAllByText(/31 Aug 2026/)).toHaveLength(1);
@@ -359,7 +366,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       }),
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    const { container } = renderWithMantine(await MyTrackedTrainsPage());
+    const { container } = renderWithMantine(await JourneysPage());
 
     expectShrinkGuarded(screen.getByText('12 min late'));
     expectShrinkGuarded(screen.getByRole('button', { name: `More actions for ${customName}` }));
@@ -371,14 +378,14 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       train({ pinOriginName: 'London Waterloo', pinDestinationName: 'Woking' }),
     ]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText(byVisibleText(/London Waterloo \(WAT\) to Woking \(WOK\)/))).toBeInTheDocument();
   });
 
   it('falls back to the bare code, not "null" or an empty label, when a name did not resolve', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ pinOriginName: null, pinDestinationName: null })]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
@@ -388,7 +395,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
     const second = train({ id: 2, pinOriginCrs: 'PAD' });
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([first, second]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
 
     const links = screen.getAllByRole('link');
     const originOrder = links
@@ -400,23 +407,26 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
   it('renders the reliability digest card when there is something to show', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train()]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.getByText('Your reliability')).toBeInTheDocument();
   });
 
   it('does not render the digest card when nothingToShow (empty state)', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
+    renderWithMantine(await JourneysPage());
     expect(screen.queryByText('Your reliability')).not.toBeInTheDocument();
   });
 
-  it('heads the page Track, with every way to start tracking beside it', async () => {
+  it('heads the page Journeys, with New journey and every other way to start beside it', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getMyTickets).mockResolvedValue([]);
-    renderWithMantine(await MyTrackedTrainsPage());
-    expect(screen.getByRole('heading', { level: 1, name: 'Track' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Track a journey' })).toHaveAttribute('href', '/journeys/new');
+    renderWithMantine(await JourneysPage());
+    expect(screen.getByRole('heading', { level: 1, name: 'Journeys' })).toBeInTheDocument();
+    const newJourney = screen.getByRole('link', { name: 'New journey' });
+    expect(newJourney).toHaveAttribute('href', '/journeys/new');
+    expect(newJourney).toHaveClass('mantine-Button-root');
+    expect(screen.queryByRole('link', { name: 'Track a journey' })).toBeNull();
     expect(screen.getByRole('link', { name: 'Find a train' })).toHaveAttribute('href', '/trains');
     expect(screen.getByRole('link', { name: 'Add a ticket' })).toHaveAttribute('href', '/track/mine/add-ticket');
     expect(screen.getByRole('link', { name: 'Journey templates' })).toHaveAttribute('href', '/journeys/templates');
@@ -432,7 +442,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       // The caller's own row is still there...
       expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
@@ -448,9 +458,9 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
-      expect(screen.queryByText(/You aren't tracking anything yet/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/You have no journeys yet/)).not.toBeInTheDocument();
       expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
       expect(screen.getByText('From Family')).toBeInTheDocument();
     });
@@ -463,7 +473,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         sharedTrain({ groupId: 'g2', groupName: 'Commuters' }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getAllByText(byVisibleText(/PAD to RDG/))).toHaveLength(1);
       expect(screen.getByText('From Family')).toBeInTheDocument();
@@ -475,7 +485,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByRole('link', { name: /PAD to RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
     });
@@ -492,7 +502,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         sharedTrain({ resolutionStatus: 'schedule_matched', trainUid: 'S99999', status: null }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByRole('link', { name: /PAD to RDG/ })).toHaveAttribute('href', '/train/S99999/2026-08-31');
     });
@@ -504,7 +514,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         sharedTrain({ resolutionStatus: 'pending', trainUid: null, status: null }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
       expect(screen.queryByRole('link', { name: /PAD to RDG/ })).not.toBeInTheDocument();
@@ -546,7 +556,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText('Planned')).toBeInTheDocument();
       expect(screen.getByText('Not in the timetable')).toBeInTheDocument();
@@ -560,7 +570,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ delayMinutes: 9 })]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       // The delay badge alone, as on a journey row: no separate "En route".
       expect(screen.queryByText('En route')).not.toBeInTheDocument();
@@ -575,7 +585,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ delayMinutes: 9 })]);
 
-      const { container } = renderWithMantine(await MyTrackedTrainsPage());
+      const { container } = renderWithMantine(await JourneysPage());
 
       expectShrinkGuarded(screen.getByText('9 min late'));
       expectNoUnguardedNowrapBadges(container);
@@ -588,7 +598,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         sharedTrain({ addedBy: 'sso-subject-1234', addedByName: null }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText('Shared by a member')).toBeInTheDocument();
       expect(screen.queryByText(/sso-subject-1234/)).not.toBeInTheDocument();
@@ -606,7 +616,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         sharedTrain({ addedBy: 'sso-subject-1234', addedByName: '   ' }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText('Shared by a member')).toBeInTheDocument();
     });
@@ -638,7 +648,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText('Shared by a member (#a1b2c3)')).toBeInTheDocument();
       expect(screen.getByText('Shared by a member (#d4e5f6)')).toBeInTheDocument();
@@ -651,7 +661,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       // Exactly one overflow-kebab (Rename/Stop tracking) trigger on the
       // page: the caller's own row's -- `SharedTrainListRow` never renders
@@ -672,7 +682,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         sharedTrain({ trainSubscriptionId: 1, pinOriginCrs: 'PAD', pinDestinationCrs: 'RDG' }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       // Same id as the caller's own train, so it's filtered out entirely
       // rather than rendered twice.
@@ -685,7 +695,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       const sharedRow = screen.getByText(byVisibleText(/PAD to RDG/)).closest('.mantine-Card-root');
       expect(sharedRow).not.toBeNull();
@@ -698,7 +708,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue(null);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
       expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
@@ -712,7 +722,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ customName: 'School run' })]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText('School run')).toBeInTheDocument();
       expect(screen.queryByText(byVisibleText(/PAD to RDG/))).not.toBeInTheDocument();
@@ -726,7 +736,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         sharedTrain({ trainSubscriptionId: 51, customName: 'Shared second' }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       const rendered = [...document.querySelectorAll('.mantine-Card-root')].map((card) => visibleText(card));
       const ownIndex = rendered.findIndex((text) => text.includes('WAT to WOK'));
@@ -742,7 +752,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockRejectedValue(new Error('API request failed: 500'));
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
       expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
@@ -753,7 +763,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getSharedGroupTrains).mockResolvedValue([sharedTrain({ delayMinutes: 30 })]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       // The digest is "Your reliability" -- someone else's train is not
       // the caller's own punctuality record, so the card renders off the
@@ -791,10 +801,10 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
-      expect(screen.getByRole('heading', { name: 'Your journeys' })).toBeInTheDocument();
-      const link = screen.getByRole('link', { name: /KGX to EDB/ });
+      const upcoming = screen.getByRole('region', { name: 'Upcoming' });
+      const link = within(upcoming).getByRole('link', { name: /KGX to EDB/ });
       expect(link).toHaveAttribute('href', '/journeys/169');
       expect(screen.getByText('Needs a train picked')).toBeInTheDocument();
     });
@@ -804,9 +814,9 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
-      expect(screen.queryByText(/You aren't tracking anything yet/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/You have no journeys yet/)).not.toBeInTheDocument();
     });
 
     it('renders station names and a formatted date when the backend resolved them', async () => {
@@ -816,7 +826,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         journey({ originName: 'London Kings Cross', destinationName: 'Edinburgh' }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText(byVisibleText(/London Kings Cross \(KGX\) to Edinburgh \(EDB\)/))).toBeInTheDocument();
       // `formatDate`, not the raw ISO `serviceDate` the wire carries.
@@ -845,7 +855,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       const link = screen.getByRole('link', { name: 'London Kings Cross (KGX) to Edinburgh (EDB), 22 Sep 2026' });
       expect(link).toHaveAttribute('href', '/journeys/169');
@@ -872,7 +882,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByRole('link', { name: 'KGX to EDB, 22 Sep 2026' })).toBeInTheDocument();
       expect(screen.getByText('2 legs')).toBeInTheDocument();
@@ -891,7 +901,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByRole('link', { name: 'Trip north' })).toHaveAttribute('href', '/journeys/169');
       expect(screen.getByText('KGX to EDB, 22 Sep 2026')).toBeInTheDocument();
@@ -902,7 +912,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByRole('link', { name: 'KGX to EDB, 22 Sep 2026' })).toBeInTheDocument();
     });
@@ -914,7 +924,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 22 }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       // The delay badge, worded the same as on a lone train's row.
       expect(screen.getByText('22 min late')).toBeInTheDocument();
@@ -927,7 +937,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 6 }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       const badges = screen.getAllByText('6 min late');
       expect(badges).toHaveLength(2);
@@ -935,41 +945,202 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       expect(badges[1]?.closest('[data-delay-badge]')).toHaveAttribute('data-delay-badge', 'late');
     });
 
-    it('moves finished journeys and trains under "Finished", keeping cancellations red', async () => {
-      vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
-        train({ id: 7, status: 'completed', delayMinutes: 3, journeyIds: [] }),
-        train({ id: 8, pinOriginCrs: 'GLD', pinDestinationCrs: 'WOK', journeyIds: [] }),
-      ]);
-      vi.mocked(api.getMyTickets).mockResolvedValue([]);
-      vi.mocked(api.getMyJourneys).mockResolvedValue([
-        journey({
-          id: 170,
-          serviceDate: '2026-08-30',
-          legCount: 2,
-          matchMode: 'auto',
-          trainSubscriptionId: 296,
-          status: 'cancelled',
-        }),
-        journey({ id: 171, originCrs: 'YRK', destinationCrs: 'NCL' }),
-      ]);
+    // DS-115: Upcoming and Past, with one cut-off. Fixtures come in the api's
+    // travel order (`GET /Journeys/mine`, `GET /Train/mine`): still to come
+    // or under way, soonest first, then travelled, most recent first.
+    describe('Upcoming and Past', () => {
+      const region = (name: string) => screen.getByRole('region', { name });
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      it('splits journeys and trains into Upcoming and Past, keeping cancellations red', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+          train({ id: 8, pinOriginCrs: 'GLD', pinDestinationCrs: 'WOK', journeyIds: [] }),
+          train({ id: 7, status: 'completed', delayMinutes: 3, journeyIds: [] }),
+        ]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getMyJourneys).mockResolvedValue([
+          journey({ id: 171, originCrs: 'YRK', destinationCrs: 'NCL' }),
+          journey({
+            id: 170,
+            serviceDate: '2026-08-30',
+            legCount: 2,
+            matchMode: 'auto',
+            trainSubscriptionId: 296,
+            status: 'cancelled',
+          }),
+        ]);
 
-      const active = screen.getByRole('heading', { name: 'Your journeys' }).parentElement!;
-      expect(within(active).getByRole('link', { name: /YRK to NCL/ })).toBeInTheDocument();
-      expect(within(active).getByText('Needs a train picked')).toBeInTheDocument();
+        renderWithMantine(await JourneysPage());
 
-      const finished = screen.getByRole('heading', { name: 'Finished' }).parentElement!;
-      expect(within(finished).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/170');
-      expect(within(finished).getByText('Part cancelled').closest('[data-state-badge]')).toHaveAttribute(
-        'data-state-badge',
-        'critical',
-      );
-      expect(within(finished).getByText('Completed')).toBeInTheDocument();
-      expect(within(finished).getByText('3 min late')).toBeInTheDocument();
-      // The still-running train stays above the heading.
-      expect(within(finished).queryByText(/GLD to WOK/)).not.toBeInTheDocument();
-      expect(screen.getByText(byVisibleText(/GLD to WOK/))).toBeInTheDocument();
+        const upcoming = region('Upcoming');
+        expect(within(upcoming).getByRole('link', { name: /YRK to NCL/ })).toHaveAttribute('href', '/journeys/171');
+        expect(within(upcoming).getByText('Needs a train picked')).toBeInTheDocument();
+        expect(within(upcoming).getByText(byVisibleText(/GLD to WOK/))).toBeInTheDocument();
+
+        const past = region('Past');
+        expect(within(past).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/170');
+        expect(within(past).getByText('Part cancelled').closest('[data-state-badge]')).toHaveAttribute(
+          'data-state-badge',
+          'critical',
+        );
+        expect(within(past).getByText('Completed')).toBeInTheDocument();
+        expect(within(past).getByText('3 min late')).toBeInTheDocument();
+        expect(within(past).queryByText(byVisibleText(/GLD to WOK/))).toBeNull();
+        expect(within(upcoming).queryByRole('link', { name: /KGX to EDB/ })).toBeNull();
+        expect(screen.queryByRole('heading', { name: 'Finished' })).toBeNull();
+      });
+
+      it('puts Your reliability below Upcoming and above Past', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+          train({ id: 8, pinOriginCrs: 'GLD', pinDestinationCrs: 'WOK', journeyIds: [] }),
+          train({ id: 7, status: 'completed', delayMinutes: 3, journeyIds: [] }),
+        ]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+
+        renderWithMantine(await JourneysPage());
+
+        const upcoming = screen.getByRole('heading', { name: 'Upcoming' });
+        const reliability = screen.getByRole('heading', { name: 'Your reliability' });
+        const past = screen.getByRole('heading', { name: 'Past' });
+        expect(upcoming.compareDocumentPosition(reliability) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(reliability.compareDocumentPosition(past) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        // Neither list holds it.
+        expect(within(region('Upcoming')).queryByRole('heading', { name: 'Your reliability' })).toBeNull();
+        expect(within(region('Past')).queryByRole('heading', { name: 'Your reliability' })).toBeNull();
+      });
+
+      it('still shows Upcoming, saying it is empty, when everything is past', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getMyJourneys).mockResolvedValue([journey({ id: 170, serviceDate: '2026-08-20' })]);
+
+        renderWithMantine(await JourneysPage());
+
+        expect(within(region('Upcoming')).getByText('No upcoming journeys.')).toBeInTheDocument();
+        expect(within(region('Past')).getByRole('link', { name: /KGX to EDB/ })).toBeInTheDocument();
+      });
+
+      it('leaves Past out when nothing is over yet', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
+
+        renderWithMantine(await JourneysPage());
+
+        expect(screen.getByRole('heading', { name: 'Upcoming' })).toBeInTheDocument();
+        expect(screen.queryByRole('heading', { name: 'Past' })).toBeNull();
+        expect(screen.queryByText('No upcoming journeys.')).toBeNull();
+      });
+
+      it('counts a journey whose every leg has arrived as past, even on its own day', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getMyJourneys).mockResolvedValue([
+          journey({ id: 180, originCrs: 'YRK', destinationCrs: 'NCL', serviceDate: '2026-08-31', status: 'en_route' }),
+          journey({
+            id: 181,
+            serviceDate: '2026-08-31',
+            legCount: 2,
+            trainLegCount: 2,
+            cancelledLegCount: 0,
+            unmatchedLegCount: 0,
+            finishedLegCount: 2,
+            startedLegCount: 2,
+            matchMode: 'auto',
+            trainSubscriptionId: 296,
+            resolutionStatus: 'resolved',
+            status: 'completed',
+          }),
+        ]);
+
+        renderWithMantine(await JourneysPage());
+
+        expect(within(region('Upcoming')).getByRole('link', { name: /YRK to NCL/ })).toBeInTheDocument();
+        expect(within(region('Past')).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute(
+          'href',
+          '/journeys/181',
+        );
+      });
+
+      // The api orders by its own arrival rule, which a list row has no
+      // times to repeat: a row it put after a later-starting one has been
+      // travelled, whatever its last status said.
+      it('reads the cut-off from the api order when a row has no times of its own', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getMyJourneys).mockResolvedValue([
+          journey({ id: 190, originCrs: 'YRK', destinationCrs: 'NCL', serviceDate: '2026-09-01' }),
+          // Today's, still "en route" (no arrival report yet), but after
+          // tomorrow's in the api's order: the api has it as arrived.
+          journey({
+            id: 191,
+            serviceDate: '2026-08-31',
+            matchMode: 'auto',
+            trainSubscriptionId: 296,
+            resolutionStatus: 'resolved',
+            status: 'en_route',
+          }),
+          // And everything after a past row is past.
+          journey({
+            id: 192,
+            originCrs: 'PAD',
+            destinationCrs: 'RDG',
+            serviceDate: '2026-08-31',
+            matchMode: 'auto',
+            trainSubscriptionId: 297,
+            resolutionStatus: 'resolved',
+            status: 'en_route',
+          }),
+        ]);
+
+        renderWithMantine(await JourneysPage());
+
+        const upcoming = region('Upcoming');
+        const past = region('Past');
+        expect(within(upcoming).getByRole('link', { name: /YRK to NCL/ })).toBeInTheDocument();
+        expect(within(past).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/191');
+        expect(within(past).getByRole('link', { name: /PAD to RDG/ })).toHaveAttribute('href', '/journeys/192');
+      });
+
+      it('keeps a journey that starts after today, and every row before it, upcoming', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getMyJourneys).mockResolvedValue([
+          // A trip whose first leg was yesterday and whose return is next
+          // week: not over, so the api lists it first.
+          journey({ id: 200, firstServiceDate: '2026-08-30', serviceDate: '2026-08-30', legCount: 2 }),
+          journey({ id: 201, originCrs: 'YRK', destinationCrs: 'NCL', serviceDate: '2026-09-05' }),
+        ]);
+
+        renderWithMantine(await JourneysPage());
+
+        const upcoming = region('Upcoming');
+        expect(within(upcoming).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/200');
+        expect(within(upcoming).getByRole('link', { name: /YRK to NCL/ })).toBeInTheDocument();
+        expect(screen.queryByRole('heading', { name: 'Past' })).toBeNull();
+      });
+
+      it('places each shared train by its own status, after the caller’s own rows', async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ journeyIds: [] })]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
+          sharedTrain({
+            trainSubscriptionId: 60,
+            serviceDate: '2026-08-20',
+            pinOriginCrs: 'BTN',
+            pinDestinationCrs: 'VIC',
+          }),
+          sharedTrain({ trainSubscriptionId: 61 }),
+        ]);
+
+        renderWithMantine(await JourneysPage());
+
+        const upcoming = region('Upcoming');
+        expect(within(upcoming).getByText(byVisibleText(/PAD to RDG/))).toBeInTheDocument();
+        const ownRow = within(upcoming).getByText(byVisibleText(/WAT to WOK/));
+        const sharedRow = within(upcoming).getByText(byVisibleText(/PAD to RDG/));
+        expect(ownRow.compareDocumentPosition(sharedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(within(region('Past')).getByText(byVisibleText(/BTN to VIC/))).toBeInTheDocument();
+      });
     });
 
     it("does not list a journey leg's own train a second time as a standalone tracked train", async () => {
@@ -979,7 +1150,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
         journey({ matchMode: 'auto', trainSubscriptionId: 295, status: 'en_route', delayMinutes: 0 }),
       ]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       // The journey row is the one that survives; the bare train row for
       // the same subscription is suppressed.
@@ -999,7 +1170,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([journey({ matchMode: 'manual', trainSubscriptionId: 295 })]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/169');
       expect(screen.queryByText(byVisibleText(/WAT to WOK/))).not.toBeInTheDocument();
@@ -1015,7 +1186,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       ]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.queryByText(byVisibleText(/WAT to WOK/))).not.toBeInTheDocument();
       expect(screen.getByText(/Grand Central/)).toBeInTheDocument();
@@ -1026,7 +1197,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([journey()]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     });
@@ -1036,7 +1207,7 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockResolvedValue([journey({ matchMode: 'auto', trainSubscriptionId: 295 })]);
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
     });
@@ -1046,10 +1217,12 @@ describe('MyTrackedTrainsPage (merged trains + tickets)', () => {
       vi.mocked(api.getMyTickets).mockResolvedValue([]);
       vi.mocked(api.getMyJourneys).mockRejectedValue(new Error('API request failed: 500'));
 
-      renderWithMantine(await MyTrackedTrainsPage());
+      renderWithMantine(await JourneysPage());
 
       expect(screen.getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
-      expect(screen.queryByRole('heading', { name: 'Your journeys' })).not.toBeInTheDocument();
+      expect(within(screen.getByRole('region', { name: 'Upcoming' })).queryAllByRole('link', { name: /^KGX/ })).toEqual(
+        [],
+      );
     });
   });
 });

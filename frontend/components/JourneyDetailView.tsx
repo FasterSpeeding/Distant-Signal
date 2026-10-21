@@ -116,7 +116,7 @@ function LegConnector({ leg, next }: { leg: JourneyLegDetail; next: JourneyLegDe
  * unlisted-links plan, Task 5) from `app/journeys/[id]/page.tsx` so a
  * later `/journeys/shared/[token]` page (Task 6, same plan) can render the
  * identical journey detail view for an anonymous share-link viewer, minus
- * the page-specific "Back to my trains & journeys" link -- there is
+ * the page-specific "Back to journeys" link -- there is
  * nothing for an anonymous viewer to go back to, so that link stays
  * page-specific and is NOT part of this component. Every owner-only
  * control below (`AddJourneyLegButton`, `ShareJourneyButton`,

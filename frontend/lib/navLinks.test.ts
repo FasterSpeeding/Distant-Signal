@@ -9,7 +9,8 @@ import {
   PLAN_JOURNEY_DESTINATION,
   PREFERENCES_DESTINATION,
   PRIMARY_NAV_DESTINATIONS,
-  TRACK_DESTINATION,
+  JOURNEYS_DESTINATION,
+  NEW_JOURNEY_LABEL,
   TRACK_JOURNEY_HREF,
   TRANSIT_DESTINATION,
 } from './navLinks';
@@ -29,9 +30,9 @@ describe('TRANSIT_DESTINATION', () => {
 });
 
 describe('the bar', () => {
-  it('has one Track entry, first, then Plan a journey, then the browse pages', () => {
+  it('has one Journeys entry, first, then Plan a journey, then the browse pages', () => {
     expect(PRIMARY_NAV_DESTINATIONS.map((d) => d.label)).toEqual([
-      'Track',
+      'Journeys',
       'Plan a journey',
       'Status',
       'Lines',
@@ -39,19 +40,35 @@ describe('the bar', () => {
       'Stations',
       'Incidents',
     ]);
-    expect(PRIMARY_NAV_DESTINATIONS[0]).toBe(TRACK_DESTINATION);
+    expect(PRIMARY_NAV_DESTINATIONS[0]).toBe(JOURNEYS_DESTINATION);
     expect(PRIMARY_NAV_DESTINATIONS[1]).toBe(PLAN_JOURNEY_DESTINATION);
   });
 
-  it('sends Track to the Track page, and starts new journeys on /journeys/new', () => {
-    expect(TRACK_DESTINATION.href).toBe('/track/mine');
+  it('sends Journeys to /journeys, and starts new journeys on /journeys/new', () => {
+    expect(JOURNEYS_DESTINATION.href).toBe('/journeys');
     expect(TRACK_JOURNEY_HREF).toBe('/journeys/new');
+    expect(NEW_JOURNEY_LABEL).toBe('New journey');
   });
 
   it('lists no tracking page twice', () => {
     const hrefs = PRIMARY_NAV_DESTINATIONS.map((d) => d.href);
-    for (const href of ['/trains', '/journeys/new', '/track']) {
+    for (const href of ['/trains', '/journeys/new', '/track', '/track/mine']) {
       expect(hrefs).not.toContain(href);
+    }
+  });
+
+  // DS-115: a new journey starts from the Journeys page and the home page's
+  // "Upcoming journeys", never from the nav.
+  it('offers no new-journey entry in the bar, the drawer or the account menu', () => {
+    for (const list of [
+      PRIMARY_NAV_DESTINATIONS,
+      navDrawerDestinations(true, true),
+      navDrawerDestinations(false),
+      accountMenuDestinations(),
+    ]) {
+      expect(list.map((d) => d.href)).not.toContain(TRACK_JOURNEY_HREF);
+      expect(list.map((d) => d.label)).not.toContain(NEW_JOURNEY_LABEL);
+      expect(list.map((d) => d.label)).not.toContain('Track a journey');
     }
   });
 });
@@ -65,8 +82,9 @@ describe('isActiveNavHref', () => {
     expect(isActiveNavHref(null, '/plan')).toBe(false);
   });
 
-  it('marks Track current on every tracking page', () => {
+  it('marks Journeys current on every tracking page', () => {
     for (const path of [
+      '/journeys',
       '/track/mine',
       '/track',
       '/track/mine/add-ticket',
@@ -75,11 +93,11 @@ describe('isActiveNavHref', () => {
       '/journeys/42',
       '/journeys/templates',
     ]) {
-      expect(isActiveNavHref(path, TRACK_DESTINATION), path).toBe(true);
+      expect(isActiveNavHref(path, JOURNEYS_DESTINATION), path).toBe(true);
     }
-    expect(isActiveNavHref('/trainsx', TRACK_DESTINATION)).toBe(false);
-    expect(isActiveNavHref('/plan', TRACK_DESTINATION)).toBe(false);
-    expect(isActiveNavHref('/train/W12345/2026-09-17', TRACK_DESTINATION)).toBe(false);
+    expect(isActiveNavHref('/trainsx', JOURNEYS_DESTINATION)).toBe(false);
+    expect(isActiveNavHref('/plan', JOURNEYS_DESTINATION)).toBe(false);
+    expect(isActiveNavHref('/train/W12345/2026-09-17', JOURNEYS_DESTINATION)).toBe(false);
   });
 
   it('marks Status current on the network history page', () => {
@@ -122,6 +140,6 @@ describe('accountMenuDestinations', () => {
   });
 
   it('no longer carries the tracking page, which is in the bar for everyone', () => {
-    expect(accountMenuDestinations().map((d) => d.href)).not.toContain(TRACK_DESTINATION.href);
+    expect(accountMenuDestinations().map((d) => d.href)).not.toContain(JOURNEYS_DESTINATION.href);
   });
 });

@@ -2155,7 +2155,7 @@ export interface GroupTrain extends ServiceModeFields, TrackingPhaseFields {
  *
  * One item per (group, train) pair -- a train shared into two of the
  * caller's groups arrives twice, once per group, so no attribution is
- * lost on the wire; `/track/mine` merges those back into a single row
+ * lost on the wire; `/journeys` merges those back into a single row
  * carrying both group tags. Never includes the caller's OWN tracked
  * trains (those are `TrackedTrainListItem`s already), and carries the same
  * "never shown" privacy constraint `GroupTrain` does -- no tickets, no

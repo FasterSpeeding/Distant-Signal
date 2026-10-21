@@ -7,7 +7,7 @@ import type { JourneyLegProposal } from '@/lib/types';
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: pushMock }),
-  usePathname: () => '/track/mine',
+  usePathname: () => '/journeys',
   useSearchParams: () => new URLSearchParams(''),
 }));
 

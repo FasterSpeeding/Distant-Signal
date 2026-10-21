@@ -11,7 +11,7 @@ import {
 import { londonDayKey, formatDate } from '@/lib/dateFormat';
 import type { TrackedTrainListItem, TicketListItem } from '@/lib/types';
 
-/** New retrospective summary card for `/track/mine`, per
+/** New retrospective summary card for `/journeys`, per
  * docs/superpowers/specs/2026-09-12-reliability-digest-design.md. Takes the
  * exact same two already-fetched arrays the rest of the page renders from
  * -- no fetch of its own, no new `Promise.all` member (Decision 5).
@@ -151,7 +151,7 @@ function DelayRepaySection({ rollup }: { rollup: DelayRepayRollup }) {
       {/* Counts TICKETS, not distinct journeys -- one tracked train can
           have more than one ticket attached (see
           `computeDelayRepayRollup`'s own doc comment and
-          `app/track/mine/page.test.tsx`'s "multiple tickets on one
+          `app/journeys/page.test.tsx`'s "multiple tickets on one
           train" case), so this copy must not say "journeys" here, or it
           would overstate how many distinct trips were involved. */}
       <Alert color="grape" title="Possible Delay Repay eligibility, across your attached tickets" variant="light">

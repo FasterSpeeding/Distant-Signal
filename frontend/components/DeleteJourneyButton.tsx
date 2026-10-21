@@ -39,11 +39,11 @@ import { ConfirmActionButton } from './ConfirmActionButton';
  * destructive action in this codebase -- deliberately not a bare
  * `window.confirm`.
  *
- * On success, always navigates to `/track/mine` -- unlike
+ * On success, always navigates to `/journeys` -- unlike
  * `RemoveJourneyLegButton` (which only redirects when the removed leg was
  * the journey's LAST one, and otherwise stays on the page and refreshes),
  * this action always makes `/journeys/{journeyId}` itself 404 on a
- * refresh, so there is nothing to refresh back to. `/track/mine` is the
+ * refresh, so there is nothing to refresh back to. `/journeys` is the
  * same "back to my trains & journeys" destination this page's own
  * existing back-link already points to. */
 export function DeleteJourneyButton({ journeyId }: { journeyId: number }) {
@@ -55,7 +55,7 @@ export function DeleteJourneyButton({ journeyId }: { journeyId: number }) {
       request={() => fetch(`/api/Journeys/${journeyId}`, { method: 'DELETE' })}
       failure={['delete', 'this journey']}
       loginPrompt="Log in to delete this journey"
-      onSuccess={(router) => router.push('/track/mine')}
+      onSuccess={(router) => router.push('/journeys')}
     >
       This removes every leg on this journey. This cannot be undone.
     </ConfirmActionButton>

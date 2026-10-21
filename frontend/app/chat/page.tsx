@@ -11,7 +11,7 @@ import type { Metadata } from 'next';
 import { pageMetadata } from '@/lib/pageMetadata';
 
 // Same reasoning as app/page.tsx's own `revalidate = 0` (and
-// track/mine/page.tsx's identical comment): no dynamic segment, so without
+// journeys/page.tsx's identical comment): no dynamic segment, so without
 // this Next.js treats the route as eligible for static generation and
 // tries to prerender it during `next build`, which fails since
 // `getSessionOrLoggedOut()`'s backing `api` service only exists at runtime.
@@ -22,7 +22,7 @@ export const revalidate = 0;
  * an SSO group). Each user brings their own Anthropic key, held in their
  * own browser, so the chat costs Distant Signal no model spend. A logged-out
  * visitor gets `AutoOpenLoginPrompt` (the same modal-login-prompt convention
- * `/track/mine` uses). A failed session lookup renders as logged out, like
+ * `/journeys` uses). A failed session lookup renders as logged out, like
  * the nav (`getSessionOrLoggedOut()` logs it). */
 /** Says plainly what answers here: an AI model, on the visitor's own key. */
 const CHAT_SUBLINE = 'Uses Claude with your own API key';

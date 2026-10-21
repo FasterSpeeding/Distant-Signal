@@ -180,7 +180,7 @@ export function JourneyLegCard({
     // while the matched card one row down rendered "London Kings Cross
     // (KGX) -> York (YRK), 22 Sep 2026" -- two date formats and two
     // naming conventions on the same page. `routeLabel`/`formatDate` are
-    // the shared formatters both `TrainJourney` and `/track/mine` already
+    // the shared formatters both `TrainJourney` and `/journeys` already
     // use. Unlike the matched card there is no `journeyStops` to read
     // names from, but the leg itself now carries `originName`/
     // `destinationName` (resolved server-side from the `stations`

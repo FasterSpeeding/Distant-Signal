@@ -23,7 +23,7 @@ import { PinnedTramLineCard } from '@/components/PinnedTramLineCard';
 import { LoginControl } from '@/components/LoginControl';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
-import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
+import { JOURNEYS_DESTINATION, PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { StateBadge } from '@/components/StateBadge';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
@@ -150,7 +150,7 @@ export default async function DashboardPage() {
   // Concurrent, independent fetches -- getPreferences()/getMyTrackedTrains()
   // have no data dependency on each other or on line status.
   // getMyTrackedTrains()'s own null-on-401 return is the complete "not
-  // logged in" signal (mirroring /track/mine's own established reasoning),
+  // logged in" signal (mirroring /journeys's own established reasoning),
   // so it's safe to fire unconditionally alongside the other two rather
   // than gating it on `session.authenticated` first -- same treatment
   // `preferences` already gets below (fetched even for the anonymous
@@ -177,7 +177,7 @@ export default async function DashboardPage() {
       getMyTrackedTrains().catch(() => null),
       // Trains OTHER members shared into a group the caller belongs to.
       // Gated and null-on-401 in exactly the same way as the call above, and
-      // `.catch(() => null)` for the same reason /track/mine gives for its
+      // `.catch(() => null)` for the same reason /journeys gives for its
       // own copy of this call: the group-shared half of this section is
       // auxiliary, so a backend hiccup there must cost the caller the shared
       // rows, never their own rows or the whole dashboard. `null` is already
@@ -388,8 +388,8 @@ export default async function DashboardPage() {
   const ownTrains = myTrackedTrains ?? [];
   // "Tracked trains" lists only the trains tracked on their own: a train
   // that is a leg of one of the caller's journeys is shown through that
-  // journey (above, or on the Track page once it's past), the same rule
-  // /track/mine applies (`splitJourneyTrains`).
+  // journey (above, or on the Journeys page once it's past), the same rule
+  // /journeys applies (`splitJourneyTrains`).
   const { standalone: standaloneTrains } = splitJourneyTrains(ownTrains, myJourneys);
   // De-duplicated per train and filtered against the caller's own rows --
   // see `mergeSharedTrains`' own doc comment for why both halves of that
@@ -400,12 +400,12 @@ export default async function DashboardPage() {
   const sharedTrains = mergeSharedTrains(sharedGroupTrains ?? [], new Set(ownTrains.map((t) => t.id)));
 
   // ONE list, own rows first then shared -- the same single-list, own-first
-  // shape /track/mine settled on (see its own comment): in a merged list a
+  // shape /journeys settled on (see its own comment): in a merged list a
   // row with no attribution reads as one the caller tracked themselves,
   // which is exactly why each shared row carries its "from <group>"/
   // "Shared by <who>" tags. Interleaving is deliberately not attempted:
   // the caller's own half comes in the backend's travel order and the
-  // shared half after it, as on /track/mine.
+  // shared half after it, as on /journeys.
   //
   // slice(0, 5) of the already travel-ordered response (`GET /Train/mine`:
   // still to come or running, soonest first, then travelled, most recent
@@ -416,7 +416,7 @@ export default async function DashboardPage() {
   // supplementary section must not out-compete the line-status overview
   // above it, and two five-row halves would be ten rows. A caller with five
   // or more of their own trains therefore sees the shared ones via "View
-  // all" (/track/mine, which caps neither half) rather than here.
+  // all" (/journeys, which caps neither half) rather than here.
   const trackedTrainRows: TrackedTrainRow[] = [
     ...standaloneTrains.map((train): TrackedTrainRow => ({ kind: 'own', train })),
     ...sharedTrains.map((row): TrackedTrainRow => ({ kind: 'shared', row })),
@@ -481,10 +481,12 @@ export default async function DashboardPage() {
       </VisuallyHidden>
 
       {/* The journey under way now leads the page, then the journeys still
-          to come. Neither renders at all when empty: a user with no
-          journeys sees the page as it was. */}
+          to come. "Current journey" renders only when there is one.
+          "Upcoming journeys" always does: its "New journey" button is one
+          of the two ways in to /journeys/new (the nav has none, DS-115),
+          so a new user with no journeys finds it here too. */}
       {current !== null && <CurrentJourneySection current={current} alsoInProgress={alsoInProgress} now={now} />}
-      {upcoming.length > 0 && <UpcomingJourneysSection upcoming={upcoming} />}
+      <UpcomingJourneysSection upcoming={upcoming} loadFailed={myJourneys === null} />
 
       {/* When ALL THREE pinned sections are empty, the live "Right now" module
           is the only thing on this page with real content -- it leads,
@@ -654,12 +656,12 @@ export default async function DashboardPage() {
       {/* Trains tracked on their own (no journey), and trains shared into the
           caller's groups. Kept, below the pins rather than at the top: the
           journey sections now carry what is happening today, and these stay
-          one click from the Track page's full list. */}
+          one click from the Journeys page's full list. */}
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">
           <Group justify="space-between">
             <SectionTitle>Tracked trains</SectionTitle>
-            <TextLink href="/track/mine">View all</TextLink>
+            <TextLink href={JOURNEYS_DESTINATION.href}>View all</TextLink>
           </Group>
           <Stack gap="xs">
             {/* Keys are prefixed per half because the two id spaces are

@@ -73,7 +73,7 @@ test.describe('tracked train states', () => {
   });
 
   test('the track page badges both states', async ({ page }) => {
-    await page.goto('/track/mine');
+    await page.goto('/journeys');
     await expect(page.getByText('Planned', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Not in the timetable').first()).toBeVisible();
   });

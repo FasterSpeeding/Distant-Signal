@@ -20,7 +20,7 @@ vi.mock('next/navigation', () => ({
 const destinations: NavDestination[] = [
   { href: '/lines', label: 'Lines' },
   { href: '/stations', label: 'Station Lookup' },
-  { href: '/track/mine', label: 'My trains & tickets' },
+  { href: '/journeys', label: 'My trains & tickets' },
 ];
 
 function burger() {

@@ -16,7 +16,7 @@ export const revalidate = 0;
 export const metadata: Metadata = { title: 'Add a ticket', robots: { index: false } };
 
 /** `/track/mine/add-ticket` -- the standalone ("no tracked train yet")
- * case of `TicketEntryForm`, moved off the bottom of `/track/mine` onto
+ * case of `TicketEntryForm`, moved off the bottom of `/journeys` onto
  * its own dedicated page per
  * docs/superpowers/specs/2026-09-02-standalone-ticket-entry-page-design.md.
  * `TicketPanel.tsx`'s two trackingId-scoped instances (attaching a ticket
@@ -25,13 +25,13 @@ export const metadata: Metadata = { title: 'Add a ticket', robots: { index: fals
  *
  * Proactive `getSession()` gate, same defensive `getSessionOrLoggedOut()`
  * fallback `TicketPanel.tsx` already uses for an identical purpose:
- * `/track/mine`'s own entry-point Group (including the link to this page)
+ * `/journeys`'s own entry-point Group (including the link to this page)
  * only ever renders for a visitor `getMyTrackedTrains()` has already
  * confirmed is logged in, so this page keeps that promise rather than
  * only discovering "actually, you're not logged in" reactively at submit
- * time -- e.g. a session that expired between loading /track/mine and
+ * time -- e.g. a session that expired between loading /journeys and
  * clicking through. `AutoOpenLoginPrompt` is reused as-is from the
- * sibling /track/mine route (relative import) rather than duplicated --
+ * sibling /journeys route (relative import) rather than duplicated --
  * it already takes arbitrary `children` and has no dependency on which
  * page renders it. */
 export default async function AddTicketPage() {
@@ -65,7 +65,7 @@ export default async function AddTicketPage() {
       <Text size="sm" c="dimmed">
         Save the ticket now; you can attach it to a tracked train afterwards, or we&apos;ll try to match it for you.
       </Text>
-      <TextLink href="/track/mine">Back to my trains &amp; tickets</TextLink>
+      <TextLink href="/journeys">Back to journeys</TextLink>
       {/* defaultOpen: this page's entire reason for existing is already
           stated by the Title above, so there's no reason to make a
           visitor click a button that repeats it. */}

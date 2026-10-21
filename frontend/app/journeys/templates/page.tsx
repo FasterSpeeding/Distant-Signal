@@ -32,8 +32,8 @@ export default async function JourneyTemplatesPage() {
 
   return (
     <Stack p="lg" gap="md">
-      <TextLink href="/track/mine" underline="always">
-        Back to my trains &amp; tickets
+      <TextLink href="/journeys" underline="always">
+        Back to journeys
       </TextLink>
       <Title order={1}>Your journey templates</Title>
       {templates.length === 0 && (

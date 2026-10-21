@@ -199,12 +199,12 @@ function departureMs(journey: HomeJourney): number {
  *   first departure is still to come. Soonest first: by first day, then
  *   departure time where known, then newest.
  * - Everything else (past, or not read when it should have been) is left
- *   to the Track page.
+ *   to the Journeys page.
  *
  * `details` maps journey id to its detail; a missing entry is a journey
  * that wasn't read or whose read failed. One that starts today with no
  * detail is listed as upcoming rather than dropped: its date says no more,
- * and the Track page has the rest. */
+ * and the Journeys page has the rest. */
 export function splitHomeJourneys(
   items: readonly JourneyListItem[],
   details: ReadonlyMap<number, JourneyDetail>,

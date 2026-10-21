@@ -833,11 +833,11 @@ describe('DashboardPage -- Your Tracked Trains section', () => {
     expect(screen.queryByRole('heading', { name: 'Tracked trains' })).not.toBeInTheDocument();
   });
 
-  it('populated list: section present with a "View all" link to /track/mine', async () => {
+  it('populated list: section present with a "View all" link to /journeys', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([item()]);
     renderWithMantine(await DashboardPage());
     expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
   });
 
   it('more than 5 tracked trains: only the first 5 (as returned) are rendered', async () => {
@@ -1403,11 +1403,11 @@ describe('DashboardPage -- Your Operators section', () => {
   });
 });
 
-// The home page's own copy of the /track/mine fix: a train another member
+// The home page's own copy of the /journeys fix: a train another member
 // shared into a group the caller belongs to is one of "their" trains for
 // the purposes of this section, and before this it was invisible here --
 // the only surfaces that showed it at all were /groups/{id} and
-// /track/mine. Mirrors app/track/mine/page.test.tsx's own
+// /journeys. Mirrors app/journeys/page.test.tsx's own
 // `group-shared trains` block, scoped to this page's condensed section.
 describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
   beforeEach(() => {
@@ -1442,7 +1442,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
 
     expect(screen.getByRole('heading', { name: 'Tracked trains' })).toBeInTheDocument();
     expect(screen.getByText(byVisibleText('PAD to RDG'))).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
   });
 
   // Task 1.5 (WCAG 2.5.3): `SharedTrainSummaryRow` pairs its title with
@@ -1559,7 +1559,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
    * on file for the sharer actually sends. `??` treats `''` as a usable
    * label, which would render "Shared by " with nothing after it. The
    * backend normalizes blanks away now; this guards the rows written before
-   * it did, exactly as /track/mine's and /groups/{id}'s own rows do. */
+   * it did, exactly as /journeys's and /groups/{id}'s own rows do. */
   it('a sharer whose name is blank rather than null is still credited as "a member"', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getSharedGroupTrains).mockResolvedValue([
@@ -1571,7 +1571,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.getByText('Shared by a member')).toBeInTheDocument();
   });
 
-  /** Same distinguishing suffix /track/mine and /groups/{id} render, on the
+  /** Same distinguishing suffix /journeys and /groups/{id} render, on the
    * home page's copy of the shared-train row: two sharers this app cannot
    * name are two different credits, not one repeated "a member". */
   it('credits two unnameable sharers distinguishably', async () => {
@@ -1619,7 +1619,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
   });
 
   /** The home page labels a shared row by ROUTE, deliberately, where
-   * /track/mine labels it with the sharer's `customName`: this page's own
+   * /journeys labels it with the sharer's `customName`: this page's own
    * rows label by route too, and the two halves of one list disagreeing
    * about what a heading even is would be worse than differing from a
    * sibling page. Pinned so a later "unify these two rows" refactor has to
@@ -1719,7 +1719,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
     expect(screen.getByText(byVisibleText('T5 to WOK'))).toBeInTheDocument();
     expect(screen.queryByText(byVisibleText('PAD to RDG'))).not.toBeInTheDocument();
     expect(screen.queryByText(/^from /)).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+    expect(screen.getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
   });
 
   it('never renders the same train twice when a shared row collides with one of the caller’s own', async () => {
@@ -1843,6 +1843,7 @@ describe('DashboardPage -- journey sections', () => {
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Upcoming journeys' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'New journey' })).not.toBeInTheDocument();
     expect(api.getMyJourneys).not.toHaveBeenCalled();
     expect(api.getJourney).not.toHaveBeenCalled();
   });
@@ -1871,7 +1872,7 @@ describe('DashboardPage -- journey sections', () => {
     const rows = within(upcoming)
       .getAllByRole('link')
       .map((link) => link.getAttribute('href'))
-      .filter((href) => href?.startsWith('/journeys/'));
+      .filter((href) => href?.startsWith('/journeys/') && href !== '/journeys/new');
     // Soonest first; this morning's finished journey is on neither list.
     expect(rows).toEqual(['/journeys/11', '/journeys/12']);
     expect(within(upcoming).getByText(/Departs 18:00/)).toBeInTheDocument();
@@ -1893,13 +1894,28 @@ describe('DashboardPage -- journey sections', () => {
     expect(screen.getByRole('region', { name: 'Upcoming journeys' })).toBeInTheDocument();
   });
 
-  it('logged in with no current or upcoming journeys: neither section, the page as before', async () => {
+  // DS-115: "New journey" lives in this section, so a logged-in visitor
+  // with nothing coming up still gets it, where the section would be.
+  it('logged in with no current or upcoming journeys: Upcoming journeys says so, and offers New journey', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
     mockJourneys([thisMorning]);
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Upcoming journeys' })).not.toBeInTheDocument();
+    const headings = screen.getAllByRole('heading').map((heading) => heading.textContent);
+    expect(headings.slice(0, 2)).toEqual(['Home', 'Upcoming journeys']);
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(upcoming).getByText('No upcoming journeys.')).toBeInTheDocument();
+    expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(within(upcoming).queryByRole('link', { name: 'View all' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Your lines', level: 2 })).toBeInTheDocument();
+  });
+
+  it('logged in with no journeys at all: still offers New journey', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    vi.mocked(api.getMyJourneys).mockResolvedValue([]);
+    renderWithMantine(await DashboardPage());
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
   });
 
   it("moves a journey's train out of Tracked trains, and keeps the trains tracked on their own", async () => {
@@ -1914,7 +1930,7 @@ describe('DashboardPage -- journey sections', () => {
     const section = heading.closest('div')?.parentElement as HTMLElement;
     expect(within(section).getAllByRole('link', { name: /WAT to WOK/ })).toHaveLength(1);
     expect(within(section).queryByRole('link', { name: /KGX to YRK/ })).not.toBeInTheDocument();
-    expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+    expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
   });
 
   it('a failing journeys fetch drops only the journey sections, and folds no trains away', async () => {
@@ -1926,6 +1942,11 @@ describe('DashboardPage -- journey sections', () => {
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /KGX to YRK/ })).toBeInTheDocument();
+    // "New journey" stays, and the section doesn't claim there are none.
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(upcoming).getByText("Couldn't load your journeys. Try again.")).toBeInTheDocument();
+    expect(within(upcoming).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
+    expect(within(upcoming).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
   });
 
   it('a failing detail read leaves a journey starting today in the upcoming list', async () => {

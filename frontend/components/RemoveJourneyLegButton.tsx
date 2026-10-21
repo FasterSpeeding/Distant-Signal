@@ -33,7 +33,7 @@ import { ConfirmActionButton } from './ConfirmActionButton';
  * `journeys::delete_leg`'s own doc comment explains that removing a
  * journey's LAST leg deletes the whole (now-empty) journey too, so
  * `/journeys/{journeyId}` would 404 on a plain `router.refresh()` --
- * this instead redirects to `/track/mine`, the same "closest surviving
+ * this instead redirects to `/journeys`, the same "closest surviving
  * list" target `DeleteTrainButton`'s own default `afterDelete="redirect"`
  * uses for an analogous "this page's own object is gone" case. When a
  * SIBLING leg remains, the journey survives and `router.refresh()` is
@@ -56,7 +56,7 @@ export function RemoveJourneyLegButton({
       request={() => fetch(`/api/Journeys/${journeyId}/legs/${legId}`, { method: 'DELETE' })}
       failure={['remove', 'this leg']}
       loginPrompt="Log in to remove this leg"
-      onSuccess={(router) => (isOnlyLeg ? router.push('/track/mine') : router.refresh())}
+      onSuccess={(router) => (isOnlyLeg ? router.push('/journeys') : router.refresh())}
     >
       {isOnlyLeg
         ? 'This is the only leg on this journey, so removing it deletes the whole journey. This cannot be undone.'

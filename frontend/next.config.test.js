@@ -95,4 +95,24 @@ describe('next.config.mjs redirects', () => {
       permanent: false,
     });
   });
+
+  it.each(['/track/mine', '/track/tickets'])(
+    'sends the old %s page to /journeys for good, in one hop',
+    async (path) => {
+      if (!nextConfig.redirects) throw new Error('next.config.mjs defines no redirects()');
+      const entries = await nextConfig.redirects();
+      expect(entries.filter((entry) => entry.source === path)).toEqual([
+        { source: path, destination: '/journeys', permanent: true },
+      ]);
+    },
+  );
+
+  it('leaves /track/mine/add-ticket and /journeys itself unredirected', async () => {
+    if (!nextConfig.redirects) throw new Error('next.config.mjs defines no redirects()');
+    const entries = await nextConfig.redirects();
+    const sources = entries.map((entry) => entry.source);
+    expect(sources).not.toContain('/track/mine/add-ticket');
+    expect(sources).not.toContain('/journeys');
+    expect(sources.some((source) => source.includes(':') || source.includes('*'))).toBe(false);
+  });
 });

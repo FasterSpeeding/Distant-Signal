@@ -25,8 +25,10 @@ export const DISALLOWED_PATHS: readonly string[] = [
   // `/journeys/shared/<token>` share links carry a secret token.
   // `/journeys/new` is re-allowed below.
   '/journeys/',
-  // "My Trains & Tickets" (per-user), and the old `/track/tickets` path
-  // that `next.config.mjs` redirects to it.
+  // The Journeys page itself (per-user), anchored so it adds nothing to
+  // the prefix above, and its old paths `/track/mine` and
+  // `/track/tickets`, which `next.config.mjs` redirects to it.
+  '/journeys$',
   '/track/mine',
   '/track/tickets',
   // `trackingId` is one user's own subscription id, not a public train.

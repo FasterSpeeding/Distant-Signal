@@ -448,7 +448,7 @@ function SharedTrainRow({
         {/* Was a raw `train.status` string literal (e.g. "en_route")
             appended to the subtitle text -- the one place on this page
             that disagreed with every other status badge in the app.
-            Same shared component `/` and `/track/mine` render off, so
+            Same shared component `/` and `/journeys` render off, so
             this card and those two pages can never drift on wording
             again (review §2.9). Now the Track list's one status badge
             (DS-114), so a shared train and the owner's own row read the

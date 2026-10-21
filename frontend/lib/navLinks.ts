@@ -21,34 +21,39 @@ export interface NavDestination {
   section?: readonly string[];
 }
 
-/** The one "Track" entry (round 2 decision, 12 Oct 2026). Tracking used to
- * be four nav entries for one task: "Track a journey" (`/journeys/new`),
- * "Trains" (`/trains`), "My trains & tickets" (`/track/mine`) and the
- * deep-linked `/track` form. Now `/track/mine` is the Track page: what you
- * are tracking, with "Track a journey", "Find a train", "Add a ticket" and
- * journey templates one tap away. The other pages keep their URLs (deep
- * links and pre-fill query params depend on them) and mark this entry as
- * the current section. */
-export const TRACK_DESTINATION: NavDestination = {
-  href: '/track/mine',
-  label: 'Track',
+/** The one journeys entry: "Journeys", `/journeys` (DS-115, 21 Oct 2026).
+ * It was "Track" on `/track/mine` (round 2, 12 Oct 2026), which had folded
+ * four tracking entries into one; `/track/mine` now redirects here
+ * (`next.config.mjs`). The page lists your journeys, upcoming then past,
+ * with "New journey", "Find a train", "Add a ticket" and journey templates
+ * one tap away. The other tracking pages keep their URLs (deep links and
+ * pre-fill query params depend on them) and mark this entry as the current
+ * section. */
+export const JOURNEYS_DESTINATION: NavDestination = {
+  href: '/journeys',
+  label: 'Journeys',
   section: ['/track', '/trains', '/journeys'],
 };
 
 /** Where a new journey (or a single train, its one-leg case) starts:
- * `JourneyCreationFlow` on `/journeys/new`. Linked from the Track page and
- * the planner; no longer a nav entry of its own. */
+ * `JourneyCreationFlow` on `/journeys/new`. Not a nav entry: it is reached
+ * from the "New journey" button on the Journeys page and at the top of the
+ * home page's "Upcoming journeys" (and from the planner's own copy). */
 export const TRACK_JOURNEY_HREF = '/journeys/new';
 
+/** The words on every button that opens `TRACK_JOURNEY_HREF`, which is
+ * also that page's h1 (docs/style-guide.md, "Tone"). */
+export const NEW_JOURNEY_LABEL = 'New journey';
+
 /** `/plan`: the trip planner. Planning needs no account, so it is in the
- * main bar for everyone, straight after Track. */
+ * main bar for everyone, straight after Journeys. */
 export const PLAN_JOURNEY_DESTINATION: NavDestination = { href: '/plan', label: 'Plan a journey' };
 
 /** Always visible to everyone, logged in or not. Rendered inline in the
  * bar at `md` and up, and in the drawer below it. Each label is the h1 of
  * the page it opens (docs/style-guide.md, "Tone"). */
 export const PRIMARY_NAV_DESTINATIONS: readonly NavDestination[] = [
-  TRACK_DESTINATION,
+  JOURNEYS_DESTINATION,
   PLAN_JOURNEY_DESTINATION,
   { href: '/status', label: 'Status', section: ['/network'] },
   { href: '/lines', label: 'Lines' },

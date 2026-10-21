@@ -44,7 +44,7 @@ export interface RenameTrainButtonHandle {
  *
  * `trigger`, when given, replaces the default `Button` -- see
  * `DeleteTrainButton.tsx`'s own doc comment on its matching `trigger` prop
- * for why (Task 3.6.7's `/track/mine` list-row overflow-kebab fix).
+ * for why (Task 3.6.7's `/journeys` list-row overflow-kebab fix).
  *
  * `ref` exposes `{ open: handleOpen }` -- same escape hatch, and the same
  * reason, as `DeleteTrainButton`'s own `ref` (see its doc comment): a

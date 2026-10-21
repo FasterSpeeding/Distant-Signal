@@ -24,8 +24,8 @@ export const metadata: Metadata = { title: 'Journey', robots: { index: false } }
  * status badge, owner-only actions, leg cards, connectors) lives in
  * `components/JourneyDetailView.tsx` (2026-09-23 unlisted-links plan, Task
  * 5) -- extracted so a later `/journeys/shared/[token]` page can reuse it
- * for an anonymous share-link viewer; only the "Back to my trains &
- * journeys" link below stays specific to this page, since that anonymous
+ * for an anonymous share-link viewer; only the "Back to journeys"
+ * link below stays specific to this page, since that anonymous
  * viewer has no "my trains" to go back to. */
 export default async function JourneyDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -78,10 +78,10 @@ export default async function JourneyDetailPage({ params }: { params: Promise<{ 
       {/* The way back out. This page is reached by a `router.push` from
           the create flow and had no breadcrumb at all, so closing the tab
           lost the journey unless the user had memorised `/journeys/169`
-          (2026-09-22 UX review, C1). `/track/mine` now lists journeys, so
+          (2026-09-22 UX review, C1). `/journeys` now lists journeys, so
           this link has a real destination. */}
-      <TextLink href="/track/mine" underline="always">
-        Back to my trains &amp; tickets
+      <TextLink href="/journeys" underline="always">
+        Back to journeys
       </TextLink>
       <JourneyDetailView journey={journey} fetchedAt={fetchedAt} origin={origin} />
     </Stack>

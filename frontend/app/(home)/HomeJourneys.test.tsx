@@ -159,7 +159,7 @@ describe('UpcomingJourneysSection', () => {
     return { item: journeyListItem(detail), detail: null, departure };
   }
 
-  it('lists each journey with its status, linking to it, and "View all" to the Track page', () => {
+  it('lists each journey with its status, linking to it, and "View all" to the Journeys page', () => {
     renderWithMantine(
       <UpcomingJourneysSection upcoming={[upcoming(1, null, '2026-09-20T09:00:00Z'), upcoming(2, 'Weekend away')]} />,
     );
@@ -172,13 +172,40 @@ describe('UpcomingJourneysSection', () => {
     expect(within(first).getByText('Planned')).toBeInTheDocument();
     const second = within(section).getByRole('link', { name: /Weekend away/ });
     expect(within(second).getByText('London Kings Cross (KGX) to York (YRK), 20 Sep 2026')).toBeInTheDocument();
-    expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/track/mine');
+    expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
+  });
+
+  it('offers New journey at the top of the section, as a button', () => {
+    renderWithMantine(<UpcomingJourneysSection upcoming={[upcoming(1)]} />);
+    const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+    const button = within(section).getByRole('link', { name: 'New journey' });
+    expect(button).toHaveAttribute('href', '/journeys/new');
+    expect(button).toHaveClass('mantine-Button-root');
+    // Above the list: it comes before the first journey's row.
+    const firstRow = within(section).getByRole('link', { name: /to York/ });
+    expect(button.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('with nothing upcoming, says so and still offers New journey, without View all', () => {
+    renderWithMantine(<UpcomingJourneysSection upcoming={[]} />);
+    const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(section).getByText('No upcoming journeys.')).toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: 'New journey' })).toHaveAttribute('href', '/journeys/new');
+    expect(within(section).queryByRole('link', { name: 'View all' })).not.toBeInTheDocument();
+  });
+
+  it('when the list could not be read, says that rather than "no upcoming journeys"', () => {
+    renderWithMantine(<UpcomingJourneysSection upcoming={[]} loadFailed />);
+    const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(section).getByText("Couldn't load your journeys. Try again.")).toBeInTheDocument();
+    expect(within(section).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: 'New journey' })).toBeInTheDocument();
   });
 
   it(`caps the list at ${MAX_UPCOMING_JOURNEYS} and says how many more there are`, () => {
     const many = Array.from({ length: MAX_UPCOMING_JOURNEYS + 2 }, (_, index) => upcoming(index + 1));
     renderWithMantine(<UpcomingJourneysSection upcoming={many} />);
     expect(screen.getAllByRole('link', { name: /to York/ })).toHaveLength(MAX_UPCOMING_JOURNEYS);
-    expect(screen.getByText('2 more upcoming journeys are on the Track page.')).toBeInTheDocument();
+    expect(screen.getByText('2 more upcoming journeys are on the Journeys page.')).toBeInTheDocument();
   });
 });
