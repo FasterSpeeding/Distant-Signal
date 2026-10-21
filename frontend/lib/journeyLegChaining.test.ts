@@ -7,6 +7,7 @@ import {
   journeyPriorDestinationCrs,
   journeyPriorDestinationName,
   legDepartureInstant,
+  legExpectedDepartureInstant,
 } from './journeyLegChaining';
 import type { JourneyDetail, JourneyLegDetail, JourneyStop, TrackedTrainState } from './types';
 
@@ -273,5 +274,32 @@ describe('journeyFirstLegStart', () => {
       departure: { date: '2026-09-22', time: '09:00' },
     });
     expect(journeyFirstLegStart(journey([]))).toBeNull();
+  });
+});
+
+describe('legExpectedDepartureInstant', () => {
+  it("prefers the origin's reported departure, then its estimate, then the timetable", () => {
+    const withStop = (overrides: Partial<JourneyStop>) =>
+      leg({
+        trackedTrainState: trackedState({
+          journeyStops: [stop('WAT', { publicDeparture: '2026-09-22T08:00:00Z', ...overrides })],
+        }),
+      });
+    expect(legExpectedDepartureInstant(withStop({}))).toBe('2026-09-22T08:00:00Z');
+    expect(legExpectedDepartureInstant(withStop({ estimatedDeparture: '2026-09-22T08:07:00Z' }))).toBe(
+      '2026-09-22T08:07:00Z',
+    );
+    expect(
+      legExpectedDepartureInstant(
+        withStop({ estimatedDeparture: '2026-09-22T08:07:00Z', actualDeparture: '2026-09-22T08:09:00Z' }),
+      ),
+    ).toBe('2026-09-22T08:09:00Z');
+  });
+
+  it("is an untracked leg's planned departure, and null with no stop list", () => {
+    expect(legExpectedDepartureInstant(leg({ kind: 'untracked', plannedDeparture: '2026-09-22T07:40:00Z' }))).toBe(
+      '2026-09-22T07:40:00Z',
+    );
+    expect(legExpectedDepartureInstant(leg({ trackedTrainState: trackedState({ journeyStops: null }) }))).toBeNull();
   });
 });

@@ -188,6 +188,10 @@ used, rather than as a literal in a component.
 ### Heading rules
 
 - Exactly one h1 per page, `<Title order={1}>` at full h1 size (34px).
+  One exception: the logged-in home page is a dashboard of equal
+  sections led by whichever journey sections apply, so no section can be
+  its title. Its h1, "Home", is visually hidden, and every section on it
+  ("Current journey", "Upcoming journeys", "Your lines", ...) is an h2.
 - Everything below the h1 uses **`SectionTitle`** (`components/SectionTitle.tsx`),
   which derives the size from the level so the two can't drift:
 
@@ -390,6 +394,21 @@ used, rather than as a literal in a component.
   (in the `(home)` route group, because a root `app/loading.tsx` would wrap
   every route), `/lines/[id]`, both train routes (`TrainPageSkeleton`) and
   `/track/mine`. Never add `app/loading.tsx`.
+- **Home journeys** (`app/(home)/HomeJourneys.tsx`, `lib/homeJourneys.ts`):
+  logged in, the home page leads with "Current journey" (a journey whose
+  first departure has passed and whose last arrival hasn't, live delays
+  and cancellations counted) and then "Upcoming journeys" (first departure
+  still to come, soonest first, five then "View all"). Each renders only
+  when it has a journey. The current journey is one `CardLink` with a 2px
+  grape border (`.currentJourneyCard`), the only such card on the page:
+  its name, its worst status (`JourneyStatusGroupBadge`), the leg under
+  way ("Now, leg 1 of 2") with its delay, and the next change or the
+  destination with the arrival ("York (YRK), arrive est. 12:12"). With
+  two under way at once, the soonest arriving is current and the rest are
+  rows under "Also in progress". Upcoming rows are the Track page's row
+  shape: name, preview line, "Departs 18:00" when known, status badge.
+  Trains tracked on their own (no journey) stay below the pins as
+  "Tracked trains"; a journey's trains are shown through the journey.
 - **Station accessibility** (`StationAccessibilitySection`): the section
   opens with its key facts as a definition list (`<dl class="keyFacts">`,
   term above value on a phone and beside it from `xs` up): step-free access
@@ -732,12 +751,12 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains (empty and searched), a train, Incidents, the
 plan form (Depart at and Arrive by), Account (logged in),
-Preferences (logged out, logged in and with a pride flag), a tracked train
+Preferences (logged out, logged in and with a pride flag), home logged in, a tracked train
 not in the timetable, a planned tracked train, a journey with an untracked
 walk, the Track page and a group with shared trains and journeys (all
 logged in) and the tram pages at 390 and 1366px, light and dark,
 plus the /lines filter bar's stuck and open states and the /incidents
-filters open: 116 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+filters open: 120 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
 stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 

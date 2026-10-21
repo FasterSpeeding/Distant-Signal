@@ -1,11 +1,13 @@
-import { Stack, Title, SimpleGrid, Text, Group } from '@mantine/core';
+import { Stack, Title, SimpleGrid, Text, Group, VisuallyHidden } from '@mantine/core';
 import { CardLink } from '@/components/CardLink';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import {
   ApiNotFoundError,
   getAllOperators,
+  getJourney,
   getLineStatusForMode,
+  getMyJourneys,
   getMyTrackedTrains,
   getPreferences,
   getSessionOrLoggedOut,
@@ -29,8 +31,12 @@ import { formatSampleSummary, representativeStatus } from '@/lib/sampleStats';
 import { loadPinnedTramLines } from '@/lib/transit';
 import { mergeSharedCustomLines, type MergedSharedCustomLine } from '@/lib/sharedCustomLines';
 import { mergeSharedTrains } from '@/lib/sharedTrains';
-import type { LineStatus, LineStatusReport, Preferences } from '@/lib/types';
+import { homeJourneyDetailIds, splitHomeJourneys } from '@/lib/homeJourneys';
+import { splitJourneyTrains } from '@/lib/journeyTrains';
+import { londonCalendarDay } from '@/lib/londonWallClock';
+import type { JourneyDetail, LineStatus, LineStatusReport, Preferences } from '@/lib/types';
 import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
+import { CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
 import { notGoodServiceSummary, RightNowModule } from './RightNowModule';
 import {
   SharedCustomLineSummaryRow,
@@ -151,7 +157,7 @@ export default async function DashboardPage() {
   // branch, which simply doesn't use it). Per
   // docs/superpowers/specs/2026-09-01-tracked-trains-home-page-design.md
   // Decision 3.
-  const [preferences, allReports, myTrackedTrains, sharedGroupTrains, sharedCustomLines, allOperators] =
+  const [preferences, allReports, myTrackedTrains, sharedGroupTrains, sharedCustomLines, allOperators, myJourneys] =
     await Promise.all([
       // Fails closed to "nothing pinned" -- the exact shape getPreferences
       // already returns for a 401 -- rather than being stale-served: this is
@@ -208,6 +214,12 @@ export default async function DashboardPage() {
       session.authenticated
         ? withStaleFallback('allOperators', () => getAllOperators()).catch(() => null)
         : Promise.resolve([]),
+      // The "Current journey" and "Upcoming journeys" sections. Gated like
+      // the operators catalogue (the anonymous branch shows neither), and
+      // per-user, so a failure is `null`: no journey sections, and the
+      // journeys' trains stay in "Tracked trains" (`splitJourneyTrains`
+      // folds nothing then), so nothing vanishes.
+      session.authenticated ? getMyJourneys().catch(() => null) : Promise.resolve(null),
     ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:
@@ -270,14 +282,27 @@ export default async function DashboardPage() {
     );
   }
 
-  // Logged-in branch: pinnedLineReports/pinnedStationEntries computation and
-  // rendering as before, plus the new Your Tracked Trains section below,
-  // reusing the `preferences`/`allReports`/`myTrackedTrains` already fetched
-  // concurrently above.
+  // Logged-in branch: the journey sections (current, upcoming), the pinned
+  // lines, stations and operators, then the trains tracked on their own,
+  // reusing what was fetched concurrently above.
   // The pinned set came out in whatever order `/Line/Mode/…/Status`
   // happened to return, which visibly differed between two captures minutes
   // apart. Worst first, then alphabetical: a dashboard should lead with
   // what needs attention, and must not reshuffle under the user.
+  // Every journey that could be under way or still to come today is read in
+  // full (`homeJourneyDetailIds`): the list row has no departure or arrival
+  // time. Started here, awaited below, so these reads overlap the pinned
+  // station and tram reads. A failed read leaves that journey to its list
+  // row (`splitHomeJourneys`).
+  const now = new Date();
+  const journeyItems = myJourneys ?? [];
+  const journeyDetailsPromise = Promise.all(
+    homeJourneyDetailIds(journeyItems, londonCalendarDay(now.toISOString())).map(async (id) => {
+      const detail = await getJourney(id).catch(() => null);
+      return detail === null ? null : ([id, detail] as const);
+    }),
+  );
+
   const pinnedLineReports = allReports
     .filter((report) => preferences.pinnedLines.includes(report.id) && !MERGED_TFL_LINE_IDS.includes(report.id))
     .sort((a, b) => {
@@ -352,10 +377,20 @@ export default async function DashboardPage() {
     }),
   );
 
+  const journeyDetails = new Map<number, JourneyDetail>(
+    (await journeyDetailsPromise).filter((entry): entry is readonly [number, JourneyDetail] => entry !== null),
+  );
+  const { current, alsoInProgress, upcoming } = splitHomeJourneys(journeyItems, journeyDetails, now);
+
   // null (not logged in) collapses to [] -- the same "hide entirely"
   // treatment a logged-in user with zero tracked trains gets (Decision 4 of
   // the design spec).
   const ownTrains = myTrackedTrains ?? [];
+  // "Tracked trains" lists only the trains tracked on their own: a train
+  // that is a leg of one of the caller's journeys is shown through that
+  // journey (above, or on the Track page once it's past), the same rule
+  // /track/mine applies (`splitJourneyTrains`).
+  const { standalone: standaloneTrains } = splitJourneyTrains(ownTrains, myJourneys);
   // De-duplicated per train and filtered against the caller's own rows --
   // see `mergeSharedTrains`' own doc comment for why both halves of that
   // are the frontend's job rather than the query's. Note the full own-train
@@ -383,7 +418,7 @@ export default async function DashboardPage() {
   // or more of their own trains therefore sees the shared ones via "View
   // all" (/track/mine, which caps neither half) rather than here.
   const trackedTrainRows: TrackedTrainRow[] = [
-    ...ownTrains.map((train): TrackedTrainRow => ({ kind: 'own', train })),
+    ...standaloneTrains.map((train): TrackedTrainRow => ({ kind: 'own', train })),
     ...sharedTrains.map((row): TrackedTrainRow => ({ kind: 'shared', row })),
   ].slice(0, 5);
 
@@ -436,6 +471,21 @@ export default async function DashboardPage() {
 
   return (
     <Stack p="lg" gap="xl">
+      {/* The logged-in home is a dashboard of equal sections, led by the
+          journey sections when there are any, so no one section can be the
+          page's title. Its h1 names the page for the outline and screen
+          readers, and every section below is an h2 (docs/style-guide.md,
+          Heading rules). */}
+      <VisuallyHidden>
+        <Title order={1}>Home</Title>
+      </VisuallyHidden>
+
+      {/* The journey under way now leads the page, then the journeys still
+          to come. Neither renders at all when empty: a user with no
+          journeys sees the page as it was. */}
+      {current !== null && <CurrentJourneySection current={current} alsoInProgress={alsoInProgress} now={now} />}
+      {upcoming.length > 0 && <UpcomingJourneysSection upcoming={upcoming} />}
+
       {/* When ALL THREE pinned sections are empty, the live "Right now" module
           is the only thing on this page with real content -- it leads,
           ahead of otherwise-empty prompts, rather than being buried below
@@ -445,7 +495,7 @@ export default async function DashboardPage() {
 
       <Stack gap="md">
         <Group justify="space-between">
-          <Title order={1}>Your lines</Title>
+          <SectionTitle>Your lines</SectionTitle>
           {pinnedLineCount > 0 && <TextLink href="/lines">Browse all lines</TextLink>}
         </Group>
         {pinnedLineCount === 0 ? (
@@ -601,10 +651,14 @@ export default async function DashboardPage() {
           not. */}
       {!allPinnedSectionsEmpty && pinnedLineCount === 0 && <RightNowModule summary={rightNow} />}
 
+      {/* Trains tracked on their own (no journey), and trains shared into the
+          caller's groups. Kept, below the pins rather than at the top: the
+          journey sections now carry what is happening today, and these stay
+          one click from the Track page's full list. */}
       {trackedTrainRows.length > 0 && (
         <Stack gap="md">
           <Group justify="space-between">
-            <SectionTitle>Your tracked trains</SectionTitle>
+            <SectionTitle>Tracked trains</SectionTitle>
             <TextLink href="/track/mine">View all</TextLink>
           </Group>
           <Stack gap="xs">

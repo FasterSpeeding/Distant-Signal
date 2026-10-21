@@ -121,12 +121,27 @@ function legDestinationStop(leg: JourneyLegDetail): JourneyStop | null {
  * `null` when not known. */
 export function legDepartureInstant(leg: JourneyLegDetail): string | null {
   if (isUntrackedLeg(leg)) return leg.plannedDeparture ?? null;
+  const stop = legOriginStop(leg);
+  return stop ? stopDisplayTime(stop) : null;
+}
+
+/** When one leg now leaves its own origin: a train's reported departure
+ * there, else its estimate, else the timetable (`legDepartureInstant`); an
+ * untracked leg's planned departure. The departure counterpart of
+ * `legExpectedArrivalInstant`, so a late-running first train keeps a
+ * journey upcoming until it actually goes. */
+export function legExpectedDepartureInstant(leg: JourneyLegDetail): string | null {
+  if (isUntrackedLeg(leg)) return leg.plannedDeparture ?? null;
+  const stop = legOriginStop(leg);
+  return stop ? (stop.actualDeparture ?? stop.estimatedDeparture ?? stopDisplayTime(stop)) : null;
+}
+
+function legOriginStop(leg: JourneyLegDetail): JourneyStop | null {
   const state = leg.trackedTrainState;
   const stops = state?.journeyStops ?? null;
   const origin = leg.originCrs ?? state?.pinOriginCrs ?? null;
   if (stops === null || origin === null) return null;
-  const stop = stops.find((candidate) => sameCrs(candidate.crs, origin));
-  return stop ? stopDisplayTime(stop) : null;
+  return stops.find((candidate) => sameCrs(candidate.crs, origin)) ?? null;
 }
 
 /** Whole minutes between one leg's expected arrival
