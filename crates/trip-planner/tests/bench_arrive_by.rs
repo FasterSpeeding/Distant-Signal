@@ -1035,3 +1035,88 @@ fn bench_staged_fixed_links_both_ways() {
         }
     }
 }
+
+/// DS-85: `/Trips/plan`'s options-mode `maxChanges` cap at 6, 8 and 10
+/// (RAPTOR rounds `max_changes + 2`: 8, 10, 12), with the fixed links both
+/// ways ([`link_indexes`]; `DS_BENCH_ALF` as there). Per cap: RAPTOR
+/// depart-after and the arrive-by rounds (`latest_departures_by_trips`),
+/// median and max over 10 pairs, and for how many pairs what a caller gets
+/// within the cap (the options' changes and arrivals; the latest departure)
+/// differs from the cap of 6.
+#[test]
+#[ignore = "benchmark; see the module doc"]
+fn bench_max_changes_cap() {
+    let (connections, _, interchange) = link_indexes();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut rng = Rng(0x0d85);
+    let pairs: Vec<(Vec<String>, Vec<String>)> = (0..10)
+        .map(|_| {
+            (
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+                vec![tiploc(HUBS + rng.next(STATIONS - HUBS))],
+            )
+        })
+        .collect();
+    let mut baseline: Vec<(usize, usize)> = Vec::new();
+    for max_changes in [6u32, 8, 10] {
+        let rounds = max_changes + 2;
+        let mut depart = Vec::new();
+        let mut arrive = Vec::new();
+        let mut gained = 0;
+        for (index, (from, to)) in pairs.iter().enumerate() {
+            let (time, found) = median(|| {
+                raptor_search_restricted(
+                    RaptorOptions {
+                        connections: &connections,
+                        interchange: &interchange,
+                        from_tiplocs: from,
+                        to_tiplocs: to,
+                        departure_min: 480,
+                        date,
+                        max_rounds: rounds,
+                    },
+                    None,
+                    None,
+                )
+                .iter()
+                .filter(|journey| journey.changes <= max_changes)
+                // What a caller is offered: (changes, arrival) per option.
+                .map(|journey| (journey.changes as usize) << 16 | journey.arrival_min as usize)
+                .fold(0usize, |hash, option| hash.wrapping_mul(31).wrapping_add(option))
+            });
+            depart.push(time);
+            let options = ArriveByOptions {
+                connections: &connections,
+                interchange: &interchange,
+                from_tiplocs: from,
+                waypoints: &[],
+                to_tiplocs: to,
+                vias: None,
+                arrive_by_min: 1080,
+                date,
+            };
+            let (time, latest) = median(|| {
+                let latest = trip_planner::latest_departures_by_trips(&options, None, None, rounds);
+                // The latest departure within the cap (non-decreasing).
+                latest[max_changes as usize].map_or(0, |minute| minute as usize + 1)
+            });
+            arrive.push(time);
+            if max_changes == 6 {
+                baseline.push((found, latest));
+            } else if (found, latest) != baseline[index] {
+                gained += 1;
+            }
+        }
+        let stats = |mut values: Vec<Duration>| {
+            values.sort();
+            (values[values.len() / 2], values[values.len() - 1])
+        };
+        let (depart_median, depart_max) = stats(depart);
+        let (arrive_median, arrive_max) = stats(arrive);
+        println!(
+            "maxChanges {max_changes:2} ({rounds:2} rounds): raptor depart median {depart_median:>8.1?} \
+             max {depart_max:>8.1?} | arriveBy rounds median {arrive_median:>8.1?} max {arrive_max:>8.1?} \
+             | pairs changed vs 6: {gained}/10"
+        );
+    }
+}
