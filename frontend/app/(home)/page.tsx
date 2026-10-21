@@ -404,14 +404,14 @@ export default async function DashboardPage() {
   // row with no attribution reads as one the caller tracked themselves,
   // which is exactly why each shared row carries its "from <group>"/
   // "Shared by <who>" tags. Interleaving is deliberately not attempted:
-  // `trackedAt` orders the caller's own half (and a shared train never
-  // exposes one -- spec §4's "Never shown" list), and re-sorting on
-  // `serviceDate`/`pinScheduledDeparture` would override exactly the
-  // ordering Decision 1 chose.
+  // the caller's own half comes in the backend's travel order and the
+  // shared half after it, as on /track/mine.
   //
-  // slice(0, 5) of an already trackedAt-DESC-ordered response is "5 most
-  // recently tracked" with no client-side re-sort needed (Decision 1/3) --
-  // the backend query is already ordered that way. The cap is on the
+  // slice(0, 5) of the already travel-ordered response (`GET /Train/mine`:
+  // still to come or running, soonest first, then travelled, most recent
+  // first; DS-112) is the caller's next five trains, with no client-side
+  // re-sort needed. It used to be the five most recently tracked
+  // (Decision 1/3). The cap is on the
   // section as a whole, not per half: Decision 1's whole point is that this
   // supplementary section must not out-compete the line-status overview
   // above it, and two five-row halves would be ten rows. A caller with five

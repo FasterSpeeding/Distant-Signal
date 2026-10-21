@@ -204,18 +204,14 @@ export default async function MyTrackedTrainsPage() {
             // tracked themselves.
             //
             // Own rows first, shared rows after, each half in the order
-            // its own endpoint returned. Interleaving would mean re-sorting
-            // the caller's own half on something other than `trackedAt`,
-            // and that ordering is a deliberate, reasoned choice of its own
-            // (`list_tracked_trains_for_user`'s doc comment: a train pinned
-            // a month out must not outrank one pinned five minutes ago for
-            // a service running right now). The obvious shared key --
-            // `serviceDate`/`pinScheduledDeparture` -- would override
-            // exactly that, and `trackedAt` itself can't be the merge key
-            // because a shared train deliberately never exposes one (spec
-            // §4's "Never shown" list). So: two halves, each honestly
-            // ordered, rather than one list ordered by something neither
-            // half chose.
+            // its own endpoint returned; the page sorts nothing itself.
+            // Journeys (above) and the caller's own trains come in travel
+            // order (`crates/api/src/data/travel_order.rs`: still to come
+            // or running, soonest first, then travelled, most recent
+            // first), which the API does so its 100-row cap keeps the ones
+            // that matter. Shared rows stay a half of their own after them,
+            // in `GET /public/groups/shared-trains`'s order, rather than being
+            // merged in, so the caller's own trains always lead.
             <Stack gap="xs">
               {standaloneTrains.map((train) => (
                 <TrackedTrainListRow key={train.id} train={train} tickets={ticketsByTrain.get(train.id) ?? []} />
