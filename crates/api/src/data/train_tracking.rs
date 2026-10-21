@@ -837,6 +837,14 @@ pub struct TrackedTrainState {
     /// ("unexpected null; try decoding as an Option") for exactly the
     /// subscriptions this whole redesign exists to create. See
     /// `get_by_tracking_id_returns_a_row_with_null_pins_for_an_nr_primary_subscription`.
+    ///
+    /// Read as `COALESCE(pin, trains.origin_crs)` (likewise the destination
+    /// and `pin_scheduled_departure`): the stored pin is a snapshot taken
+    /// when the subscription was created, and nothing rewrites it once the
+    /// shared `trains` row learns its timetable moments later. Without the
+    /// fallback every train tracked by UID or picked for a journey leg kept
+    /// a `NULL` origin for good and the home page and journey view labelled
+    /// it "Unknown station" (DS-111). A pin the user chose still wins.
     pub pin_origin_crs: Option<String>,
     pub pin_destination_crs: Option<String>,
     /// The pin's own scheduled departure, `None` for an NR-primary
@@ -1095,8 +1103,10 @@ impl crate::data::tracking_phase::PhaseRow for TrackedTrainState {
 // `a_resolution_with_no_known_train_uid_leaves_trains_id_null`'s own
 // updated assertions for the concrete, tested shape of that gap.
 const TRACKED_TRAIN_STATE_SELECT: &str = "\
-    SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
-           tt.pin_scheduled_departure, \
+    SELECT tt.id, tt.service_date, \
+           COALESCE(tt.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+           COALESCE(tt.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
+           COALESCE(tt.pin_scheduled_departure, tr.scheduled_departure) AS pin_scheduled_departure, \
            so.name AS pin_origin_name, sd.name AS pin_destination_name, \
            tt.resolution_status, tr.train_uid, tr.train_id, \
            tr.destination_crs AS schedule_destination_crs, ssd.name AS schedule_destination_name, \
@@ -1113,8 +1123,8 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
     FROM train_subscriptions tt \
     LEFT JOIN trains tr ON tr.id = tt.trains_id \
     LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
-    LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs)::bpchar \
-    LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)::bpchar \
+    LEFT JOIN stations so ON so.crs = UPPER(COALESCE(tt.pin_origin_crs, tr.origin_crs))::bpchar \
+    LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(tt.pin_destination_crs, tr.destination_crs))::bpchar \
     LEFT JOIN stations ssd ON ssd.crs = UPPER(tr.destination_crs)::bpchar";
 
 /// A user's own tracked-train list, lighter than `TrackedTrainState`
@@ -1296,9 +1306,13 @@ pub async fn list_tracked_trains_for_user(
     // mandatory. This feeds the home dashboard, `/track/mine`, and
     // `AttachTicketAction`'s `Select` -- three of F3's six sites.
     let rows = sqlx::query_as::<_, TrackedTrainListItem>(
-        "SELECT tt.id, tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, \
+        "SELECT tt.id, tt.service_date, \
+                COALESCE(tt.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+                COALESCE(tt.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
                 so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                tt.pin_scheduled_departure, tt.resolution_status, tr.train_uid, \
+                COALESCE(tt.pin_scheduled_departure, tr.scheduled_departure) \
+                    AS pin_scheduled_departure, \
+                tt.resolution_status, tr.train_uid, \
                 cs.status, cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
                 tr.id AS trains_id, tt.tracked_at, tt.custom_name, \
                 (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
@@ -1317,8 +1331,8 @@ pub async fn list_tracked_trains_for_user(
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(tt.pin_origin_crs)::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(tt.pin_destination_crs)::bpchar \
+         LEFT JOIN stations so ON so.crs = UPPER(COALESCE(tt.pin_origin_crs, tr.origin_crs))::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(tt.pin_destination_crs, tr.destination_crs))::bpchar \
          WHERE tt.user_id = $1 \
          ORDER BY tt.tracked_at DESC \
          LIMIT $2",
@@ -2112,7 +2126,10 @@ pub async fn list_tickets_for_user(
         "SELECT t.id, t.tracked_train_id, t.operator, t.ticket_type, t.origin_crs, t.destination_crs, \
                 so.name AS origin_name, sd.name AS destination_name, \
                 t.source, t.created_at, \
-                tt.service_date, tt.pin_origin_crs, tt.pin_destination_crs, tt.pin_scheduled_departure, \
+                tt.service_date, COALESCE(tt.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+                COALESCE(tt.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
+                COALESCE(tt.pin_scheduled_departure, tr.scheduled_departure) \
+                    AS pin_scheduled_departure, \
                 tt.resolution_status, tr.train_uid, \
                 cs.status, cs.delay_minutes, t.custom_name, \
                 tt.trains_id, tr.destination_crs AS schedule_destination_crs \
@@ -3945,6 +3962,136 @@ mod db_tests {
             .ok();
         sqlx::query("DELETE FROM trains WHERE id = $1")
             .bind(trains_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-111: a subscription created by UID (or a journey-leg pick) before
+    /// its shared `trains` row had a timetable keeps `NULL` pins for good,
+    /// because nothing rewrites them when the row learns its schedule. Every
+    /// such train read "Unknown station" on the home page and in the journey
+    /// view. The reads now fall back to the `trains` row's own route and
+    /// departure, while a pin the user chose still wins.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                null_pins_fall_back_to_the_shared_trains_route_once_it_is_known \
+                -- --ignored --test-threads=1`"]
+    async fn null_pins_fall_back_to_the_shared_trains_route_once_it_is_known() {
+        let pool = connect().await;
+        let user_id = "TEST-NULL-PIN-ROUTE-FALLBACK";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        sqlx::query(
+            "INSERT INTO stations (crs, name) VALUES ('ZQA', 'Zedbury Alpha'), \
+             ('ZQB', 'Zedbury Beta'), ('ZQC', 'Zedbury Gamma') \
+             ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed fixture stations");
+
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
+        let departure: DateTime<Utc> = "2026-09-06T14:25:00Z".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NULL-PIN-FALLBACK-UID",
+            service_date,
+        )
+        .await
+        .expect("seed a bare trains row with no schedule data yet");
+        let tracking_id = create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("create_subscription_for_train");
+        // The timetable arrives after the subscription, as in production
+        // (`enrich_shared_train`, or a later schedule match).
+        sqlx::query(
+            "UPDATE trains SET origin_crs = 'ZQA', destination_crs = 'zqb', \
+             scheduled_departure = $2 WHERE id = $1",
+        )
+        .bind(trains_id)
+        .bind(departure)
+        .execute(&pool)
+        .await
+        .expect("give the shared row its timetable");
+
+        // A second subscription whose user chose their own boarding point.
+        let pinned_trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-NULL-PIN-FALLBACK-PINNED",
+            service_date,
+        )
+        .await
+        .expect("seed a second trains row");
+        sqlx::query("UPDATE trains SET origin_crs = 'ZQA', destination_crs = 'ZQB' WHERE id = $1")
+            .bind(pinned_trains_id)
+            .execute(&pool)
+            .await
+            .expect("timetable for the pinned train");
+        let (pinned_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO train_subscriptions \
+                 (user_id, service_date, trains_id, pin_origin_crs, pin_scheduled_departure) \
+             VALUES ($1, $2, $3, 'ZQC', $4) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(service_date)
+        .bind(pinned_trains_id)
+        .bind(departure)
+        .fetch_one(&pool)
+        .await
+        .expect("insert a user-pinned subscription");
+
+        let items = list_tracked_trains_for_user(&pool, user_id)
+            .await
+            .expect("list tracked trains");
+        let item = items.iter().find(|i| i.id == tracking_id).expect("listed");
+        assert_eq!(item.pin_origin_crs.as_deref(), Some("ZQA"));
+        assert_eq!(item.pin_origin_name.as_deref(), Some("Zedbury Alpha"));
+        assert_eq!(item.pin_destination_crs.as_deref(), Some("zqb"));
+        assert_eq!(
+            item.pin_destination_name.as_deref(),
+            Some("Zedbury Beta"),
+            "the fallback CRS goes through the same UPPER() name join"
+        );
+        assert_eq!(item.pin_scheduled_departure, Some(departure));
+        let pinned = items.iter().find(|i| i.id == pinned_id).expect("listed");
+        assert_eq!(
+            pinned.pin_origin_crs.as_deref(),
+            Some("ZQC"),
+            "a pin the user chose is never replaced by the train's origin"
+        );
+        assert_eq!(pinned.pin_origin_name.as_deref(), Some("Zedbury Gamma"));
+
+        let state = get_by_tracking_id(&pool, tracking_id)
+            .await
+            .expect("read state")
+            .expect("row exists");
+        assert_eq!(state.pin_origin_crs.as_deref(), Some("ZQA"));
+        assert_eq!(state.pin_origin_name.as_deref(), Some("Zedbury Alpha"));
+        assert_eq!(state.pin_destination_name.as_deref(), Some("Zedbury Beta"));
+        assert_eq!(state.pin_scheduled_departure, Some(departure));
+
+        // The stored pins stay as they were: this is a read-time fallback.
+        let stored: (Option<String>,) =
+            sqlx::query_as("SELECT pin_origin_crs FROM train_subscriptions WHERE id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read stored pin");
+        assert_eq!(stored.0, None);
+
+        sqlx::query("DELETE FROM train_subscriptions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM trains WHERE id = ANY($1)")
+            .bind(vec![trains_id, pinned_trains_id])
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM stations WHERE crs IN ('ZQA', 'ZQB', 'ZQC')")
             .execute(&pool)
             .await
             .ok();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { trackedTrainDisplayName } from './trackingName';
+import { trackedTrainDisplayName, trackedTrainRouteLabel, UNIDENTIFIED_TRAIN_LABEL } from './trackingName';
 
 describe('trackedTrainDisplayName', () => {
   const base = {
@@ -48,5 +48,43 @@ describe('trackedTrainDisplayName', () => {
     expect(trackedTrainDisplayName({ ...base, customName: '' })).toBe(
       'London Kings Cross (KGX) to Edinburgh Waverley (EDB), 10 May 2026 · 14:32',
     );
+  });
+});
+
+// DS-111: a train tracked by UID before its timetable arrived has no route.
+// That is a normal state, so it is never labelled "Unknown station".
+describe('trackedTrainRouteLabel', () => {
+  const noRoute = {
+    pinOriginCrs: null,
+    pinOriginName: null,
+    pinDestinationCrs: null as string | null,
+    pinDestinationName: null as string | null,
+  };
+
+  it('uses the route when there is an origin', () => {
+    expect(
+      trackedTrainRouteLabel({ ...noRoute, pinOriginCrs: 'KGX', pinOriginName: 'London Kings Cross', trainUid: 'W1' }),
+    ).toBe('London Kings Cross (KGX)');
+  });
+
+  it('names the train by UID when there is no origin', () => {
+    expect(trackedTrainRouteLabel({ ...noRoute, trainUid: 'W12345' })).toBe('Train W12345');
+  });
+
+  it('keeps a known destination', () => {
+    expect(
+      trackedTrainRouteLabel({ ...noRoute, pinDestinationCrs: 'YRK', pinDestinationName: 'York', trainUid: 'W12345' }),
+    ).toBe('Train W12345 to York (YRK)');
+  });
+
+  it('says the train is not identified yet when there is neither a route nor a UID', () => {
+    expect(trackedTrainRouteLabel({ ...noRoute, trainUid: null })).toBe(UNIDENTIFIED_TRAIN_LABEL);
+    expect(trackedTrainRouteLabel(noRoute)).toBe('Train not identified yet');
+  });
+
+  it('feeds trackedTrainDisplayName, so the default name is never "Unknown station"', () => {
+    expect(
+      trackedTrainDisplayName({ ...noRoute, customName: null, serviceDate: '2026-10-21', trainUid: 'W12345' }),
+    ).toBe('Train W12345, 21 Oct 2026');
   });
 });

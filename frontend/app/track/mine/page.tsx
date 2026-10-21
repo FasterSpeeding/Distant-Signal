@@ -19,8 +19,7 @@ import { StatusRow } from '@/components/StatusRow';
 import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
 import { TrackedTrainStatusBadge } from '@/components/TrackedTrainStatusBadge';
 import { formatDate, formatTime } from '@/lib/dateFormat';
-import { routeLabel } from '@/lib/stationLabel';
-import { trackedTrainDisplayName } from '@/lib/trackingName';
+import { trackedTrainDisplayName, trackedTrainRouteLabel } from '@/lib/trackingName';
 import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
@@ -360,7 +359,7 @@ function TrackedTrainListRow({ train, tickets }: { train: TrackedTrainListItem; 
       ? `/train/${train.trainUid}/${train.serviceDate}`
       : `/train/by-id/${train.id}`;
 
-  const route = routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName);
+  const route = trackedTrainRouteLabel(train);
   const displayName = trackedTrainDisplayName(train);
   // `pinScheduledDeparture` is `null` for an NR-primary subscription whose
   // train has no schedule data yet -- degrade to a date-only label rather
@@ -464,6 +463,7 @@ function SharedTrainListRow({ row }: { row: MergedSharedTrain }) {
     pinOriginName: train.pinOriginName,
     pinDestinationCrs: train.pinDestinationCrs,
     pinDestinationName: train.pinDestinationName,
+    trainUid: train.trainUid,
     serviceDate: train.serviceDate,
     pinScheduledDeparture: train.pinScheduledDeparture,
   });

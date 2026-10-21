@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Group, Select, Text } from '@mantine/core';
 import { formatDate } from '@/lib/dateFormat';
-import { routeLabel } from '@/lib/stationLabel';
+import { trackedTrainRouteLabel } from '@/lib/trackingName';
 import type { TrackedTrainListItem } from '@/lib/types';
 import { ButtonSpinner } from '@/components/LoadingText';
 import { noOptionsFound } from '@/components/noOptionsFound';
@@ -66,7 +66,7 @@ export function AttachTicketAction({ ticketId, trains }: { ticketId: number; tra
 
   const options = trains.map((train) => ({
     value: String(train.id),
-    label: `${routeLabel(train.pinOriginCrs, train.pinOriginName, train.pinDestinationCrs, train.pinDestinationName)} (${formatDate(train.serviceDate)})`,
+    label: `${trackedTrainRouteLabel(train)} (${formatDate(train.serviceDate)})`,
   }));
 
   return (
