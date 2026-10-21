@@ -141,6 +141,18 @@ describe('ItineraryOption', () => {
     ).toBeInTheDocument();
   });
 
+  it("names a transfer's line when the planner knows it", () => {
+    const itinerary: TripPlanItinerary = {
+      legs: [
+        { kind: 'transfer', mode: 'TUBE', originCrs: 'VXH', destinationCrs: 'EUS', minutes: 22, line: 'Victoria' },
+      ],
+      changeCount: 0,
+      totalDurationMinutes: 22,
+    };
+    renderWithMantine(<ItineraryOption itinerary={itinerary} selected={false} onSelect={vi.fn()} />);
+    expect(screen.getByText(byVisibleText('Tube (Victoria line) VXH to EUS, 22 min'))).toBeInTheDocument();
+  });
+
   it('falls back to bare codes for an end whose name did not resolve, without mixing forms', () => {
     // Only EUS resolved -- per `codeRouteLabel`'s own "never mix" rule
     // (mirroring `routeLabel`'s), BOTH ends must render as bare codes

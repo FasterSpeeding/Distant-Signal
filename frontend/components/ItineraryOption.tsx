@@ -11,7 +11,7 @@ import type {
   TripPlanViaSatisfied,
   TripPlanWaypointSatisfied,
 } from '@/lib/types';
-import { transferModeLabel } from '@/lib/displayLabels';
+import { transferLabel } from '@/lib/displayLabels';
 import { StateBadge } from './StateBadge';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
@@ -35,7 +35,7 @@ function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string
     const arrival = (leg.publicArrival ?? leg.scheduledArrival).slice(0, 5);
     return `${departure} ${route} ${arrival}${liveNote(leg.live)}`;
   }
-  return `${transferModeLabel(leg.mode)} ${route}, ${leg.minutes} min`;
+  return `${transferLabel(leg.mode, leg.line)} ${route}, ${leg.minutes} min`;
 }
 
 /** A short live annotation for a train leg (`GET /Trips/plan`'s live

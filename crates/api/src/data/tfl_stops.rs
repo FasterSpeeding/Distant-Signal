@@ -3,15 +3,18 @@
 //! the stop search behind the untracked-leg form, the stop-id check of a
 //! saved leg, and the mapping from a National Rail station (CRS) to its
 //! Tube stop, which the planner's Tube transfers and
-//! `GET /tfl/stops/by-crs` use.
+//! `GET /tfl/stops/by-crs` use, and the line a planner transfer rides
+//! ([`attach_transfer_lines`]).
 //!
 //! The mapping is meant to be reused (a later card may derive Tube links
 //! between National Rail stations from it): [`stops_for_crs`] takes any set
 //! of CRS codes and modes and returns each code's stops, best first.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::LazyLock;
 
 use anyhow::Result;
+use common::supplementary_links::SupplementaryLink;
 use common::tfl_stops::{TflStopLine, search_key};
 use serde::Serialize;
 use sqlx::PgPool;
@@ -383,9 +386,170 @@ pub async fn attach_transfer_stops(pool: &PgPool, segments: &mut [SegmentResult]
     }
 }
 
+/// The curated links' lines (`reference-data/supplementary-fixed-links.csv`)
+/// by (mode, the two CRS codes in order): a link runs both ways.
+type CuratedLines = HashMap<(String, String, String), Vec<String>>;
+
+fn curated_lines(links: &[SupplementaryLink]) -> CuratedLines {
+    let mut out = CuratedLines::new();
+    for link in links {
+        let names = out
+            .entry(curated_key(&link.mode, &link.from_crs, &link.to_crs))
+            .or_default();
+        if !names.contains(&link.line) {
+            names.push(link.line.clone());
+        }
+    }
+    out
+}
+
+fn curated_key(mode: &str, a: &str, b: &str) -> (String, String, String) {
+    let (a, b) = (a.trim().to_ascii_uppercase(), b.trim().to_ascii_uppercase());
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    (mode.trim().to_ascii_uppercase(), a, b)
+}
+
+static CURATED_LINES: LazyLock<CuratedLines> =
+    LazyLock::new(|| curated_lines(&common::supplementary_links::supplementary_links()));
+
+/// The line a transfer rides, where it is known: the curated link's line
+/// for this mode and pair (when the CSV gives exactly one), else the one
+/// line the `TfL` stops at its two ends share. `None` when they share none
+/// or several (Euston and King's Cross St. Pancras: Northern and Victoria),
+/// and for a transfer with neither.
+fn transfer_line(
+    curated: &CuratedLines,
+    mode: &str,
+    ends: (Option<&str>, Option<&str>),
+    stops: (Option<&TflStopSummary>, Option<&TflStopSummary>),
+) -> Option<String> {
+    if let (Some(origin), Some(destination)) = ends
+        && let Some([line]) = curated
+            .get(&curated_key(mode, origin, destination))
+            .map(Vec::as_slice)
+    {
+        return Some(line.clone());
+    }
+    let (origin, destination) = (stops.0?, stops.1?);
+    let mut shared = origin
+        .lines
+        .iter()
+        .filter(|line| destination.lines.iter().any(|other| other.id == line.id));
+    match (shared.next(), shared.next()) {
+        (Some(line), None) => Some(line.name.clone()),
+        _ => None,
+    }
+}
+
+/// Fills `line` on every transfer leg of `segments` where
+/// [`transfer_line`] knows it. Run after [`attach_transfer_stops`], whose
+/// stops it reads.
+pub fn attach_transfer_lines(segments: &mut [SegmentResult]) {
+    for leg in segments
+        .iter_mut()
+        .flat_map(|segment| &mut segment.itineraries)
+        .flat_map(|itinerary| &mut itinerary.legs)
+    {
+        if let PlannedLeg::Transfer {
+            mode,
+            origin_crs,
+            destination_crs,
+            line,
+            origin_stop,
+            destination_stop,
+            ..
+        } = leg
+        {
+            *line = transfer_line(
+                &CURATED_LINES,
+                mode,
+                (origin_crs.as_deref(), destination_crs.as_deref()),
+                (origin_stop.as_deref(), destination_stop.as_deref()),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stop(id: &str, lines: &[&str]) -> TflStopSummary {
+        TflStopSummary {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            modes: vec!["tube".to_owned()],
+            lines: lines
+                .iter()
+                .map(|name| TflStopLine {
+                    id: name.to_ascii_lowercase(),
+                    name: (*name).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_checked_in_csv_names_vauxhall_to_victoria_both_ways() {
+        for (from, to) in [("VXH", "VIC"), ("vic", "vxh")] {
+            assert_eq!(
+                transfer_line(&CURATED_LINES, "TUBE", (Some(from), Some(to)), (None, None)),
+                Some("Victoria".to_owned())
+            );
+        }
+        // Another mode for the same pair is not that link.
+        assert_eq!(
+            transfer_line(
+                &CURATED_LINES,
+                "WALK",
+                (Some("VXH"), Some("VIC")),
+                (None, None)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_transfer_line_is_the_curated_one_else_the_one_line_both_stops_share() {
+        let parse = |rows: &str| {
+            curated_lines(&common::supplementary_links::parse_supplementary_links(
+                &format!(
+                    "from_crs,to_crs,mode,line,minutes,valid_from,valid_to,days_mask,source\n{rows}"
+                ),
+            ))
+        };
+        let curated = parse(
+            "AAA,BBB,TUBE,Curated,5,0000,2359,1111111,test\n\
+             CCC,DDD,TUBE,One,5,0000,2359,1111111,test\n\
+             CCC,DDD,TUBE,Two,5,0000,2359,1111111,test",
+        );
+        let euston = stop("EUS", &["Northern", "Victoria"]);
+        let vauxhall = stop("VXH", &["Victoria"]);
+        let kings_cross = stop("KGX", &["Circle", "Northern", "Victoria"]);
+        let bank = stop("BNK", &["Central"]);
+        let line = |ends: (&str, &str),
+                    stops: (Option<&TflStopSummary>, Option<&TflStopSummary>)| {
+            transfer_line(&curated, "TUBE", (Some(ends.0), Some(ends.1)), stops)
+        };
+        // The curated row wins over the stops.
+        assert_eq!(
+            line(("BBB", "AAA"), (Some(&euston), Some(&kings_cross))),
+            Some("Curated".to_owned())
+        );
+        // Two curated lines for the pair: the stops decide.
+        assert_eq!(
+            line(("CCC", "DDD"), (Some(&euston), Some(&vauxhall))),
+            Some("Victoria".to_owned())
+        );
+        assert_eq!(line(("CCC", "DDD"), (None, None)), None);
+        // Several shared lines, none, or a stop unknown: no line.
+        assert_eq!(
+            line(("EUS", "KGX"), (Some(&euston), Some(&kings_cross))),
+            None
+        );
+        assert_eq!(line(("EUS", "BNK"), (Some(&euston), Some(&bank))), None);
+        assert_eq!(line(("EUS", "VXH"), (Some(&euston), None)), None);
+    }
 
     #[test]
     fn modes_default_to_all_and_refuse_unknown_ones() {
@@ -547,6 +711,7 @@ mod db_tests {
             origin_crs: Some(from.to_owned()),
             destination_crs: Some(to.to_owned()),
             minutes: 12,
+            line: None,
             origin_stop: None,
             destination_stop: None,
         }
@@ -597,6 +762,13 @@ mod db_tests {
             legs[2].get("destinationStop").is_none(),
             "Z8C has none: {legs}"
         );
+        // Both stops serve only Testline: the leg names it. A walk, and a
+        // leg with one stop unknown, name none.
+        attach_transfer_lines(&mut segments);
+        let legs = serde_json::to_value(&segments[0].itineraries[0].legs).unwrap();
+        assert_eq!(legs[0]["line"], "Testline");
+        assert!(legs[1].get("line").is_none(), "{legs}");
+        assert!(legs[2].get("line").is_none(), "{legs}");
         cleanup(&pool).await;
     }
 }

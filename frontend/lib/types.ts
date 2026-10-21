@@ -1306,6 +1306,10 @@ export type TripPlanLeg =
       originCrs: string | null;
       destinationCrs: string | null;
       minutes: number;
+      /** The line ridden ("Victoria"), when known (2026-10-21): the
+       * curated link's line, else the one line both ends' TfL stops
+       * share. */
+      line?: string;
       /** For a `TUBE` or `METRO` transfer, the TfL stop at each end, when
        * known: what saving it as an untracked leg sends as the place and
        * its stop id. */

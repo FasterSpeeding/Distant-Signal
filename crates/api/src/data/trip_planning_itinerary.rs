@@ -159,6 +159,13 @@ pub enum PlannedLeg {
         origin_crs: Option<String>,
         destination_crs: Option<String>,
         minutes: i32,
+        /// The line ridden (`Victoria`), where it is known (additive,
+        /// 2026-10-21): the curated link's own line
+        /// (`reference-data/supplementary-fixed-links.csv`), else the one
+        /// line `originStop` and `destinationStop` share. Absent otherwise.
+        /// Filled in by `tfl_stops::attach_transfer_lines`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        line: Option<String>,
         /// For a `TUBE` or `METRO` transfer, the `TfL` stop at each end
         /// (`{id, name, modes, lines}`; additive, 2026-10-20, docs/superpowers/
         /// specs/2026-10-20-tfl-stop-lookup-design.md §5), so a client saving
@@ -337,6 +344,7 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
             origin_crs: crs_for_tiploc(interchange, &transfer.from_tiploc),
             destination_crs: crs_for_tiploc(interchange, &transfer.to_tiploc),
             minutes: transfer.minutes,
+            line: None,
             origin_stop: None,
             destination_stop: None,
         },
@@ -4196,6 +4204,7 @@ mod tests {
             origin_crs: None,
             destination_crs: None,
             minutes: 5,
+            line: None,
             origin_stop: None,
             destination_stop: None,
         };
