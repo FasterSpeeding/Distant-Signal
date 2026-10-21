@@ -89,7 +89,7 @@ export function TicketEntryForm({
   // collapsed-by-default behavior; only /track/mine/add-ticket passes
   // `defaultOpen` (a dedicated page whose entire reason for existing is
   // "add a ticket" has no competing content to protect the way
-  // /journeys's own trains list and unattached-tickets section do, so
+  // the Journeys page's own trains list and unattached-tickets section do, so
   // forcing a click through a button reading the identical words the
   // page's own heading already committed to would be friction with
   // nothing behind it).

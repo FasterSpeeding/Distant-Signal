@@ -3,15 +3,21 @@ import { splitByStatus, splitTravelOrdered } from './upcomingPast';
 
 const TODAY = '2026-10-21';
 
-/** A row as the cut-off reads it: its start day and whether it says it is over. */
+/** A row as the cut-off reads it: the api's `travelled` when sent, its
+ * start day and whether it says it is over. */
 interface Row {
   name: string;
+  travelled?: boolean;
   startDay: string;
   over: boolean;
 }
 
 function row(name: string, startDay: string, over = false): Row {
   return { name, startDay, over };
+}
+
+function travelledRow(name: string, travelled: boolean, startDay: string, over = false): Row {
+  return { name, travelled, startDay, over };
 }
 
 function split(rows: Row[]) {
@@ -54,6 +60,32 @@ describe('splitTravelOrdered', () => {
       past: ['a', 'b'],
     });
     expect(split([])).toEqual({ upcoming: [], past: [] });
+  });
+});
+
+describe("splitTravelOrdered with the api's travelled", () => {
+  it('splits by travelled alone, whatever the dates and statuses say', () => {
+    expect(
+      split([
+        // Yesterday's train still running after midnight: says over (a past
+        // day) but the api has it as not travelled.
+        travelledRow('overnight', false, '2026-10-20', true),
+        travelledRow('later', false, '2026-10-25'),
+        // Today's, arrived: not over by its own status, travelled by the api.
+        travelledRow('arrived', true, TODAY),
+        travelledRow('old', true, '2026-10-01', true),
+      ]),
+    ).toEqual({ upcoming: ['overnight', 'later'], past: ['arrived', 'old'] });
+  });
+
+  it('falls back to reading the order when any row lacks the field', () => {
+    expect(
+      split([travelledRow('a', false, '2026-10-20', true), row('b', '2026-10-25'), row('c', TODAY, true)]),
+    ).toEqual({ upcoming: ['a', 'b'], past: ['c'] });
+    expect(split([row('a', '2026-10-20', true), travelledRow('b', false, TODAY)])).toEqual({
+      upcoming: [],
+      past: ['a', 'b'],
+    });
   });
 });
 

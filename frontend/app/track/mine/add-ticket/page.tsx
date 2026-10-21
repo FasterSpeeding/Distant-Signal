@@ -25,7 +25,7 @@ export const metadata: Metadata = { title: 'Add a ticket', robots: { index: fals
  *
  * Proactive `getSession()` gate, same defensive `getSessionOrLoggedOut()`
  * fallback `TicketPanel.tsx` already uses for an identical purpose:
- * `/journeys`'s own entry-point Group (including the link to this page)
+ * the Journeys page's own entry-point Group (including the link to this page)
  * only ever renders for a visitor `getMyTrackedTrains()` has already
  * confirmed is logged in, so this page keeps that promise rather than
  * only discovering "actually, you're not logged in" reactively at submit

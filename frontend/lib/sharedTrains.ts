@@ -1,6 +1,6 @@
 import type { SharedGroupTrain } from './types';
 
-/** One row of `/journeys`'s shared-train half: the shared train itself,
+/** One row of the Journeys page's shared-train half: the shared train itself,
  * plus EVERY group the caller can see it through. */
 export interface MergedSharedTrain {
   train: SharedGroupTrain;

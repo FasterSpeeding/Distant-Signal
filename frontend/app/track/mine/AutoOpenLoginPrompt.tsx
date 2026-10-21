@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { LoginPromptModal } from '@/components/LoginPromptModal';
 
-/** `/journeys`'s own page must stay a Server Component (it directly
+/** The Journeys page (`app/journeys/page.tsx`) must stay a Server Component (it directly
  * awaits `getMyTrackedTrains()`/`getMyTickets()`), so it can't hold the
  * `useState` a controlled `LoginPromptModal` needs itself -- this small
  * sibling Client Component is the wrapper. See

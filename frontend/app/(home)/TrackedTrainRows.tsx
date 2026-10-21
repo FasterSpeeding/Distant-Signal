@@ -78,7 +78,7 @@ export type TrackedTrainRow = { kind: 'own'; train: TrackedTrainListItem } | { k
 /** A train another member shared into a group the caller belongs to,
  * rendered in the same list as the caller's own summary rows above.
  * Home-page-local sibling of `TrackedTrainSummaryRow` below, and a trimmed
- * mirror of /journeys's own `SharedTrainListRow` -- same tags, same
+ * mirror of the Journeys page's own `SharedTrainListRow` -- same tags, same
  * wording, same linking rule.
  *
  * Deliberately NOT `TrackedTrainSummaryRow` with extra props: the caller
@@ -94,7 +94,7 @@ export type TrackedTrainRow = { kind: 'own'; train: TrackedTrainListItem } | { k
  * `resolutionStatus === 'resolved' && trainUid`, because `trainUid` is
  * populated well before the status reaches `resolved` and
  * `/train/{uid}/{date}` is public and unscoped. Same reasoning
- * /journeys's shared row states at length. */
+ * the Journeys page's shared row states at length. */
 export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
   const { train, groupNames } = row;
   // `routeLabel`, not `trackedTrainDisplayName`: this page's own rows
@@ -143,12 +143,12 @@ export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
 
   // Whole-card link when there's somewhere to go, matching the own row
   // directly below; nothing inside the card is itself interactive, so
-  // there's no nested-<a> problem of the kind /journeys's richer row has
+  // there's no nested-<a> problem of the kind the Journeys page's richer row has
   // to work around.
   return href ? <CardLink href={href}>{content}</CardLink> : <Card {...tokens.card.static}>{content}</Card>;
 }
 
-// Home-page-local mirror of /journeys's own row shape
+// Home-page-local mirror of the Journeys page's own row shape
 // (frontend/app/journeys/page.tsx's TrackedTrainListRow) -- same fields,
 // same resolutionStatus-vs-status+delayMinutes branching. The badge itself
 // is shared (`TrackedTrainStatusBadge`, review §2.9) rather than
@@ -157,7 +157,7 @@ export function SharedTrainSummaryRow({ row }: { row: MergedSharedTrain }) {
 // status wording the way they used to.
 export function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem }) {
   // Canonical, shareable URL once resolved; the by-id detail route
-  // otherwise -- same logic as /journeys's own row. The
+  // otherwise -- same logic as the Journeys page's own row. The
   // resolved-with-null-trainUid fallback is defensive: the backend's own
   // resolution invariant means this shouldn't happen, but this component
   // doesn't assume it.
@@ -175,7 +175,7 @@ export function TrackedTrainSummaryRow({ train }: { train: TrackedTrainListItem 
         <Text size="sm" c="dimmed">
           {/* `pinScheduledDeparture` is `null` for an NR-primary
                 subscription whose train has no schedule data yet -- same
-                date-only degradation as /journeys's own row. */}
+                date-only degradation as the Journeys page's own row. */}
           {train.pinScheduledDeparture
             ? `${formatDate(train.serviceDate)} · ${formatTime(train.pinScheduledDeparture)}`
             : formatDate(train.serviceDate)}

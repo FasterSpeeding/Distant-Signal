@@ -1559,7 +1559,7 @@ describe('DashboardPage -- group-shared trains in Your Tracked Trains', () => {
    * on file for the sharer actually sends. `??` treats `''` as a usable
    * label, which would render "Shared by " with nothing after it. The
    * backend normalizes blanks away now; this guards the rows written before
-   * it did, exactly as /journeys's and /groups/{id}'s own rows do. */
+   * it did, exactly as the Journeys page's and /groups/{id}'s own rows do. */
   it('a sharer whose name is blank rather than null is still credited as "a member"', async () => {
     vi.mocked(api.getMyTrackedTrains).mockResolvedValue([]);
     vi.mocked(api.getSharedGroupTrains).mockResolvedValue([

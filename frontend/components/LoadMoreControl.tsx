@@ -27,7 +27,7 @@ import { Box, Button, Group, Stack, Text } from '@mantine/core';
  *
  * `endMessage` is per-caller so the copy can name what actually ran out
  * ("incidents", "scheduled departures"), matching the tone of this app's
- * other nothing-more-to-show states (e.g. `/journeys`'s empty state).
+ * other nothing-more-to-show states (e.g. the Journeys page's empty state).
  * Callers are expected to keep the shared "You've reached the end — …"
  * opening so the states read alike across pages.
  *

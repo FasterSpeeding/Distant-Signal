@@ -62,7 +62,7 @@ export type DeleteTrainButtonHandle = ConfirmActionButtonHandle;
  * otherwise unchanged.
  *
  * `hideTrigger` renders no button at all, and `ref` exposes `{ open }`
- * (`ConfirmActionButton`'s handle): `/journeys`'s row offers this as a
+ * (`ConfirmActionButton`'s handle): the Journeys page's row offers this as a
  * `Menu.Item` in an overflow kebab (Task 3.6.7) rather than a second
  * free-standing button. `TrackedTrainRowMenu` renders this component as a
  * sibling of `<Menu>`, never inside `<Menu.Dropdown>`: Mantine's `Popover`

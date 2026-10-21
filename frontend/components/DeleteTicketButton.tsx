@@ -16,7 +16,7 @@ import { ConfirmActionButton } from './ConfirmActionButton';
  * tracked train removes the entire subject of the page it's rendered on,
  * so navigating away is correct there. Deleting a *ticket* always happens
  * from inside a list of other things (a train's other tickets, or
- * `/journeys`'s other trains/tickets) that remain valid and worth
+ * the Journeys page's other trains/tickets) that remain valid and worth
  * showing afterwards -- `router.refresh()` is the same mechanism
  * `AttachTicketAction.tsx:41` and `PinToggle.tsx:99` already use for this
  * "mutate one row, stay on this page" shape. It re-runs the enclosing

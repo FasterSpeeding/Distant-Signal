@@ -6,15 +6,20 @@ import type { JourneyListItem, TrackedTrainListItem } from './types';
  * The rule is the one the home page and the api already share for "is this
  * journey over": its last leg has arrived (a reported arrival, else the
  * timetabled arrival plus any running delay, else plus
- * `TRAVEL_ARRIVAL_GRACE_MINUTES`) or every leg is finished. The api applies
+ * `TRAVEL_ARRIVAL_GRACE_MINUTES`; a cancelled last train once its departure
+ * has passed) or every leg is finished. The api applies
  * it in SQL (`travel_order::train_arrived_sql`) to order `GET
  * /Journeys/mine` and `GET /Train/mine`: everything still to come or under
  * way, soonest first, THEN everything travelled, most recent first. The
  * home page applies it to legs read in full (`lib/homeJourneys.ts`,
  * `legIsOver`).
  *
- * A list row carries no times, so this does not recompute the rule. It
- * finds where the api's order crosses over, from what each row does say:
+ * Each row says which side it is on: `travelled`, the api's own verdict
+ * by that rule, so Upcoming is `!travelled` and Past is `travelled`.
+ *
+ * An older api without the field gets a fallback. A list row carries no
+ * times, so the rule can't be recomputed; instead this finds where the
+ * api's order crosses over, from what each row does say:
  *
  * - a row that starts after today (London) has not been travelled, so it
  *   and every row before it are Upcoming;
@@ -33,20 +38,29 @@ export interface UpcomingPastSplit<T> {
 
 /** What the cut-off reads from one row. */
 interface TravelRow {
+  /** The api's `travelled`, when it sent one. */
+  travelled?: boolean | undefined;
   /** The London day the row's travel starts ("2026-10-21"). */
   startDay: string;
   /** The row says it is over (`TrackedRowStatus.finished`). */
   over: boolean;
 }
 
-/** Splits rows that come in the api's travel order (see above) at the
- * first row that is Past. Each half keeps the api's order. */
+/** Splits rows that come in the api's travel order (see above). With
+ * `travelled` on every row, by that alone; otherwise at the first row the
+ * fallback finds Past. Each half keeps the api's order. */
 export function splitTravelOrdered<T>(
   rows: readonly T[],
   read: (row: T) => TravelRow,
   today: string,
 ): UpcomingPastSplit<T> {
   const travel = rows.map(read);
+  if (travel.every((row) => row.travelled !== undefined)) {
+    return {
+      upcoming: rows.filter((_, index) => travel[index]?.travelled === false),
+      past: rows.filter((_, index) => travel[index]?.travelled === true),
+    };
+  }
   // The last row known to be still to come: nothing before it is Past.
   let lastUpcoming = -1;
   travel.forEach((row, index) => {
@@ -79,7 +93,11 @@ export function splitJourneyRows(
 ): UpcomingPastSplit<{ journey: JourneyListItem } & WithStatus> {
   return splitTravelOrdered(
     journeys.map((journey) => ({ journey, status: journeyRowStatus(journey, today) })),
-    ({ journey, status }) => ({ startDay: journey.firstServiceDate ?? journey.serviceDate, over: status.finished }),
+    ({ journey, status }) => ({
+      travelled: journey.travelled,
+      startDay: journey.firstServiceDate ?? journey.serviceDate,
+      over: status.finished,
+    }),
     today,
   );
 }
@@ -92,7 +110,7 @@ export function splitTrainRows(
 ): UpcomingPastSplit<{ train: TrackedTrainListItem } & WithStatus> {
   return splitTravelOrdered(
     trains.map((train) => ({ train, status: trackedTrainRowStatus(train, today) })),
-    ({ train, status }) => ({ startDay: train.serviceDate, over: status.finished }),
+    ({ train, status }) => ({ travelled: train.travelled, startDay: train.serviceDate, over: status.finished }),
     today,
   );
 }

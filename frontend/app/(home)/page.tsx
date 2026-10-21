@@ -150,7 +150,7 @@ export default async function DashboardPage() {
   // Concurrent, independent fetches -- getPreferences()/getMyTrackedTrains()
   // have no data dependency on each other or on line status.
   // getMyTrackedTrains()'s own null-on-401 return is the complete "not
-  // logged in" signal (mirroring /journeys's own established reasoning),
+  // logged in" signal (mirroring the Journeys page's own established reasoning),
   // so it's safe to fire unconditionally alongside the other two rather
   // than gating it on `session.authenticated` first -- same treatment
   // `preferences` already gets below (fetched even for the anonymous

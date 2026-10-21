@@ -1119,6 +1119,40 @@ describe('JourneysPage', () => {
         expect(screen.queryByRole('heading', { name: 'Past' })).toBeNull();
       });
 
+      // The api's own verdict, when it sends one (`travelled`): no
+      // guessing from dates, so a train still running after midnight stays
+      // upcoming, as on the home page.
+      it("splits by the api's travelled when every row has it", async () => {
+        vi.mocked(api.getMyTrackedTrains).mockResolvedValue([
+          // Yesterday's, still running: travelled false despite its past day.
+          train({ id: 8, serviceDate: '2026-08-30', pinOriginCrs: 'GLD', journeyIds: [], travelled: false }),
+          train({ id: 7, journeyIds: [], travelled: true }),
+        ]);
+        vi.mocked(api.getMyTickets).mockResolvedValue([]);
+        vi.mocked(api.getMyJourneys).mockResolvedValue([
+          journey({ id: 210, originCrs: 'YRK', destinationCrs: 'NCL', serviceDate: '2026-08-30', travelled: false }),
+          // Today's and still "en route", but the api has it as arrived.
+          journey({
+            id: 211,
+            serviceDate: '2026-08-31',
+            matchMode: 'auto',
+            trainSubscriptionId: 296,
+            resolutionStatus: 'resolved',
+            status: 'en_route',
+            travelled: true,
+          }),
+        ]);
+
+        renderWithMantine(await JourneysPage());
+
+        const upcoming = region('Upcoming');
+        const past = region('Past');
+        expect(within(upcoming).getByRole('link', { name: /YRK to NCL/ })).toHaveAttribute('href', '/journeys/210');
+        expect(within(upcoming).getByText(byVisibleText(/GLD to WOK/))).toBeInTheDocument();
+        expect(within(past).getByRole('link', { name: /KGX to EDB/ })).toHaveAttribute('href', '/journeys/211');
+        expect(within(past).getByText(byVisibleText(/WAT to WOK/))).toBeInTheDocument();
+      });
+
       it('places each shared train by its own status, after the caller’s own rows', async () => {
         vi.mocked(api.getMyTrackedTrains).mockResolvedValue([train({ journeyIds: [] })]);
         vi.mocked(api.getMyTickets).mockResolvedValue([]);

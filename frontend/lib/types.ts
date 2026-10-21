@@ -1121,6 +1121,13 @@ export interface TrackedTrainListItem extends ServiceModeFields, TrackingPhaseFi
    * empty for a train tracked on its own. Optional: absent from an older
    * backend. See `lib/journeyTrains.ts`. */
   journeyIds?: number[];
+  /** Whether the train is over by the api's travel-order rule
+   * (`travel_order::train_arrived_sql`): its actual arrival, else the
+   * timetable plus its delay, else the timetable plus
+   * `TRAVEL_ARRIVAL_GRACE_MINUTES`. Rows come still-to-come first, so the
+   * first `true` is where travelled rows begin. Optional: absent from an
+   * older backend (`lib/upcomingPast.ts` then reads the order instead). */
+  travelled?: boolean;
 }
 
 /** `common::TimeWindow` on the wire -- `crates/common/src/lib.rs`. Both
@@ -1191,6 +1198,14 @@ export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields
    * above. */
   finalArrivalDelayMinutes?: number | null;
   finalArrivalDelayProvisional?: boolean;
+  /** Whether the whole journey is over, by the rule that splits the
+   * api's travel order: its last leg has arrived (actual arrival, else
+   * timetable plus delay, else timetable plus
+   * `TRAVEL_ARRIVAL_GRACE_MINUTES`), a cancelled last train's departure
+   * has passed, or every leg is finished. Rows come still-to-come first.
+   * Optional: absent from an older backend (`lib/upcomingPast.ts` then
+   * reads the order instead). */
+  travelled?: boolean;
 }
 
 /** `GET /Journeys/{id}`'s per-leg `legSkip` field
