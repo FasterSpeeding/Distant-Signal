@@ -216,7 +216,7 @@ async fn handle(
         proxy.upload(&object, &contents).await;
     }
 
-    let mut url = format!("{}{}", proxy.upstream, uri.path());
+    let mut forward_to = format!("{}{}", proxy.upstream, uri.path());
     let mut query_string = uri.query().unwrap_or_default().to_string();
     let page_size = proxy.tamper().page_size;
     if uri.path() == list_path
@@ -225,11 +225,11 @@ async fn handle(
         query_string = format!("{query_string}&maxResults={size}");
     }
     if !query_string.is_empty() {
-        url = format!("{url}?{query_string}");
+        forward_to = format!("{forward_to}?{query_string}");
     }
     let upstream = proxy
         .http
-        .request(method.clone(), url)
+        .request(method.clone(), forward_to)
         .body(body)
         .send()
         .await
