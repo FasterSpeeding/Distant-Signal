@@ -25,6 +25,11 @@
 //!   passes an avoided station, its base connections in order with the
 //!   blocked ones marked. (`avoid`.)
 //!
+//! A fourth, [`Restrictions::with_allowed_uids`], keeps the searches to
+//! some trains only (journey alternatives' "same operator" search, mid-
+//! journey changes spec 2026-10-22 §17.7): every other train's connections
+//! are blocked, so it is never boarded.
+//!
 //! A blocked connection must also END the ride on that train: both searches
 //! decide "already aboard" by UID alone, so merely skipping the connection
 //! would let a passenger who boarded before the avoided station carry on
@@ -53,6 +58,8 @@ pub struct Restrictions {
     no_interchange: HashSet<String>,
     no_call: HashSet<String>,
     pass_legs: HashMap<String, Vec<PassLeg>>,
+    /// When set, only these trains (UIDs) may be ridden.
+    allowed_uids: Option<HashSet<String>>,
 }
 
 impl Restrictions {
@@ -91,11 +98,22 @@ impl Restrictions {
             no_interchange,
             no_call,
             pass_legs,
+            allowed_uids: None,
         }
     }
 
+    /// These restrictions, riding only the trains in `uids`.
+    #[must_use]
+    pub fn with_allowed_uids(mut self, uids: HashSet<String>) -> Self {
+        self.allowed_uids = Some(uids);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.no_interchange.is_empty() && self.no_call.is_empty() && self.pass_legs.is_empty()
+        self.no_interchange.is_empty()
+            && self.no_call.is_empty()
+            && self.pass_legs.is_empty()
+            && self.allowed_uids.is_none()
     }
 
     /// Whether a ride may start or end at `tiploc` (or a walk touch it).
@@ -112,6 +130,13 @@ impl Restrictions {
     /// also -- conservatively -- when it cannot be placed on the train's base
     /// order at all.
     pub fn blocks(&self, connection: &Connection) -> bool {
+        if self
+            .allowed_uids
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&connection.uid))
+        {
+            return true;
+        }
         let from = normalize_tiploc(&connection.from_tiploc);
         let to = normalize_tiploc(&connection.to_tiploc);
         if self.no_call.contains(from) || self.no_call.contains(to) {
@@ -179,6 +204,31 @@ mod tests {
         assert!(!r.blocks(&conn("U", "WVH", "COV")));
         assert!(!r.allows_interchange("BHAMNWS"));
         assert!(r.allows_interchange("COV"));
+    }
+
+    #[test]
+    fn allowed_uids_block_every_other_train() {
+        let r = Restrictions::default().with_allowed_uids(HashSet::from(["U".to_string()]));
+        assert!(!r.is_empty());
+        assert!(!r.blocks(&conn("U", "A", "B")));
+        assert!(r.blocks(&conn("V", "A", "B")));
+        assert!(r.allows_interchange("A"));
+    }
+
+    #[test]
+    fn allowed_uids_keep_both_searches_to_those_trains() {
+        // V is faster, U slower; only U allowed.
+        let connections = vec![timed("V", "A", "D", 10, 20), timed("U", "A", "D", 15, 40)];
+        let r = Restrictions::default().with_allowed_uids(HashSet::from(["U".to_string()]));
+        assert_eq!(
+            both(&connections, &r),
+            (vec!["U".to_string()], vec!["U".to_string()])
+        );
+        // An empty restriction changes nothing.
+        assert_eq!(
+            both(&connections, &Restrictions::default()),
+            (vec!["V".to_string()], vec!["V".to_string()])
+        );
     }
 
     #[test]
