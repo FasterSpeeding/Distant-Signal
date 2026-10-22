@@ -12,6 +12,11 @@
 //!    connections -- which calls still happen, and when. Pure.
 //! 3. [`build_overlay`]: every changed train's connections replaced, as a
 //!    `trip_planner::ConnectionOverlay`. Pure.
+//!    [`LiveSnapshot`] (2026-10-22, `in_search`): the same for every train
+//!    of the date TRUST knows to be cancelled or late, from its state alone
+//!    ([`snapshot_train_live`]), so the first search already runs on live
+//!    times; [`combined_overlay`] lets the per-train reads override it. See
+//!    docs/superpowers/specs/2026-10-22-trips-plan-in-search-live-design.md.
 //! 4. [`annotate`]: each planned train leg gets its [`LegLive`], its
 //!    timetable times restored, and each itinerary its `liveFeasible`. Pure.
 //! 5. [`fetch_train_lives`]: the batched reads behind (1). The re-planning
@@ -56,6 +61,18 @@ pub struct LiveConfig {
     pub lookback_minutes: i64,
     /// Most trains read per request, `TRIP_PLAN_LIVE_MAX_TRAINS` (60).
     pub max_trains: usize,
+    /// Search on live times from the first search, `TRIP_PLAN_LIVE_IN_SEARCH`
+    /// (default `true`): every train of the date that TRUST knows to be
+    /// cancelled, cut short, starting late or running late (fresh state) is
+    /// replaced in the very first search by the [`LiveSnapshot`], not only
+    /// the trains of a plan the re-plan loop has already found. `false` is
+    /// the 2026-09-28 behaviour: timetable first, then bounded re-plans.
+    pub in_search: bool,
+    /// How long one date's [`LiveSnapshot`] is reused before it is read
+    /// again, `TRIP_PLAN_LIVE_SNAPSHOT_TTL_SECONDS` (30). TRUST state is
+    /// written as movements arrive; 30 s keeps a plan within a minute of the
+    /// feed while the read and build run at most twice a minute per date.
+    pub snapshot_ttl_seconds: u64,
 }
 
 impl Default for LiveConfig {
@@ -68,6 +85,8 @@ impl Default for LiveConfig {
             horizon_minutes: 180,
             lookback_minutes: 120,
             max_trains: 60,
+            in_search: true,
+            snapshot_ttl_seconds: 30,
         }
     }
 }
@@ -104,6 +123,11 @@ impl LiveConfig {
             horizon_minutes: env_num("TRIP_PLAN_LIVE_HORIZON_MINUTES", default.horizon_minutes),
             lookback_minutes: env_num("TRIP_PLAN_LIVE_LOOKBACK_MINUTES", default.lookback_minutes),
             max_trains: env_num("TRIP_PLAN_LIVE_MAX_TRAINS", default.max_trains),
+            in_search: env_bool("TRIP_PLAN_LIVE_IN_SEARCH", default.in_search),
+            snapshot_ttl_seconds: env_num(
+                "TRIP_PLAN_LIVE_SNAPSHOT_TTL_SECONDS",
+                default.snapshot_ttl_seconds,
+            ),
         }
     }
 }
@@ -252,10 +276,6 @@ pub struct TrainLiveInput<'a> {
 ///   reported it at a later call (it ran on);
 /// - a `0006` change of origin at one of the calls removes the calls before
 ///   it, unless TRUST reported the train before it.
-#[expect(
-    clippy::too_many_lines,
-    reason = "long but linear; splitting it would scatter its shared state across helpers"
-)]
 pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
     let date = input.date;
     let mut live = TrainLive {
@@ -346,6 +366,21 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
         call_minutes.push((tiploc, sched_arr, sched_dep));
     }
 
+    apply_reasons(&mut live, &call_minutes, input.status, input.reasons);
+    live
+}
+
+/// The cancellation rules of [`train_live`] (see its doc), shared with the
+/// in-search snapshot ([`snapshot_train_live`]) so both read TRUST's
+/// cancellations alike. `call_minutes` is each call's normalized TIPLOC and
+/// booked working arrival and departure minutes; `live.last_reported_min`
+/// must already be set.
+fn apply_reasons(
+    live: &mut TrainLive,
+    call_minutes: &[(String, Option<u32>, Option<u32>)],
+    status: Option<&str>,
+    reasons: &[ReasonRow],
+) {
     let call_at = |tiploc: &str, prefer_departure: bool| -> Option<u32> {
         let wanted = normalize_tiploc(tiploc).to_ascii_uppercase();
         call_minutes
@@ -360,8 +395,8 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
             })
     };
 
-    let cancellation = input.reasons.iter().find(|r| r.msg_type == "0002");
-    let status_cancelled = input.status == Some("cancelled");
+    let cancellation = reasons.iter().find(|r| r.msg_type == "0002");
+    let status_cancelled = status == Some("cancelled");
     match cancellation {
         Some(reason) => {
             let partial = matches!(
@@ -379,7 +414,7 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
                     }
                 }
                 None => {
-                    live.whole_cancelled = if input.status.is_some() {
+                    live.whole_cancelled = if status.is_some() {
                         status_cancelled
                     } else {
                         true
@@ -394,8 +429,7 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
         }
         None => live.whole_cancelled = status_cancelled,
     }
-    if let Some(new_origin) = input
-        .reasons
+    if let Some(new_origin) = reasons
         .iter()
         .find(|r| r.msg_type == "0006")
         .and_then(|r| r.tiploc.as_deref())
@@ -406,7 +440,6 @@ pub fn train_live(input: TrainLiveInput<'_>) -> TrainLive {
             live.first_served_min = Some(new_origin);
         }
     }
-    live
 }
 
 impl TrainLive {
@@ -500,16 +533,9 @@ struct ChainCall {
     can_alight: bool,
 }
 
-/// The calls of one train's connections (`chain` sorted by departure, as the
-/// day array is), with [`TrainLive`] applied: which are still served, and
-/// their live times. Delays propagate forward from the last call with a
-/// known delay, never backward; a call before any known delay keeps its
-/// timetable time. Live times are made monotone along the train.
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "the value is clamped to >= 0 first, and minute values fit easily"
-)]
-pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint> {
+/// The calls of one train's connections (`chain` sorted by departure, as
+/// the day array is), each with its timetabled minutes.
+fn chain_calls(chain: &[&Connection]) -> Vec<ChainCall> {
     let mut calls: Vec<ChainCall> = Vec::new();
     for connection in chain {
         match calls.last_mut() {
@@ -541,7 +567,20 @@ pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint
             can_alight: connection.can_alight,
         });
     }
+    calls
+}
 
+/// The calls of one train's connections (`chain` sorted by departure, as the
+/// day array is), with [`TrainLive`] applied: which are still served, and
+/// their live times. Delays propagate forward from the last call with a
+/// known delay, never backward; a call before any known delay keeps its
+/// timetable time. Live times are made monotone along the train.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to >= 0 first, and minute values fit easily"
+)]
+pub fn evaluate_chain(chain: &[&Connection], live: &TrainLive) -> Vec<ChainPoint> {
+    let calls = chain_calls(chain);
     let mut carry: Option<i32> = None;
     let mut floor = 0u32;
     calls
@@ -684,6 +723,267 @@ pub fn build_overlay(
 }
 
 // ---------------------------------------------------------------------------
+// 3b. The in-search snapshot
+// ---------------------------------------------------------------------------
+
+/// One train's TRUST state as the in-search snapshot reads it: the
+/// `train_current_state` row (if any) and the `train_reasons` rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnapshotState {
+    pub status: Option<String>,
+    /// TRUST's running delay against the working timetable, minutes.
+    pub delay_minutes: Option<i32>,
+    pub updated_at: Option<DateTime<Utc>>,
+    /// The actual time of the movement TRUST last reported.
+    pub event_time: Option<DateTime<Utc>>,
+    pub reasons: Vec<ReasonRow>,
+}
+
+/// A train's live profile from its TRUST state alone -- what the in-search
+/// snapshot knows of every running train without the per-train reads
+/// (movements, boards) of [`fetch_train_lives`]. The same rules:
+///
+/// - the delay is TRUST's actual minus the working time; each call ahead
+///   of the last report gets `working + delay`, as a delay against its
+///   public time (the time the connections are planned on), never below
+///   it: early running is ignored, and a public time padded later than the
+///   working one absorbs that much of the delay;
+/// - it carries forward undiminished to the end of the train (no recovery
+///   is assumed: DS has no model for it, and the train page shows the same
+///   flat estimate), and only to calls after the one last reported
+///   (`event_time` less the delay is that call's booked working minute);
+///   calls already reached keep their timetable times;
+/// - a delay from a state older than `trust_max_age_minutes` is ignored;
+///   cancellations, cuts and changes of origin are facts and never go
+///   stale ([`apply_reasons`]).
+pub fn snapshot_train_live(
+    date: NaiveDate,
+    chain: &[&Connection],
+    state: &SnapshotState,
+    config: &LiveConfig,
+    now: DateTime<Utc>,
+) -> TrainLive {
+    let status = state.status.as_deref();
+    let fresh = state
+        .updated_at
+        .is_some_and(|at| now - at <= Duration::minutes(config.trust_max_age_minutes));
+    let delay = state
+        .delay_minutes
+        .filter(|delay| *delay > 0 && fresh && status == Some("en_route"));
+    let reported_min = match (status, state.event_time) {
+        (Some("en_route" | "completed"), Some(at)) => service_minute(date, at).and_then(|m| {
+            u32::try_from(i64::from(m) - i64::from(state.delay_minutes.unwrap_or(0))).ok()
+        }),
+        _ => None,
+    };
+    let mut live = TrainLive {
+        trust_observed_at: state.updated_at,
+        last_reported_min: reported_min,
+        ..TrainLive::default()
+    };
+    let calls = chain_calls(chain);
+    let mut call_minutes: Vec<(String, Option<u32>, Option<u32>)> = Vec::with_capacity(calls.len());
+    for call in &calls {
+        let tiploc = normalize_tiploc(&call.tiploc).to_ascii_uppercase();
+        let ahead = call
+            .work_arr
+            .or(call.work_dep)
+            .is_some_and(|minute| reported_min.is_none_or(|reported| minute > reported));
+        if let Some(delay) = delay.filter(|_| ahead) {
+            let shift = |public: Option<u32>, working: Option<u32>| {
+                public.zip(working).map(|(public, working)| {
+                    let late = i64::from(working) + i64::from(delay) - i64::from(public);
+                    i32::try_from(late.max(0)).unwrap_or(i32::MAX)
+                })
+            };
+            let index = live.facts.len();
+            live.facts.push(StopFact {
+                served: true,
+                dep_delay: shift(call.sched_dep, call.work_dep),
+                arr_delay: shift(call.sched_arr, call.work_arr),
+                ..StopFact::default()
+            });
+            for minute in [call.work_arr, call.work_dep].into_iter().flatten() {
+                live.index.entry((tiploc.clone(), minute)).or_insert(index);
+            }
+        }
+        call_minutes.push((tiploc, call.work_arr, call.work_dep));
+    }
+    apply_reasons(&mut live, &call_minutes, status, &state.reasons);
+    live
+}
+
+/// Every train of one service date that TRUST knows to be cancelled, cut
+/// short, starting late or (fresh state) running late, as replacement
+/// connections the searches walk from the very first plan
+/// ([`LiveConfig::in_search`]). Built once per date and shared by every
+/// request for `snapshot_ttl_seconds`; the cached day graph is never
+/// touched (the overlay is a [`ConnectionOverlay`], as for the re-plans).
+/// Only trains whose connections it changes are kept.
+#[derive(Debug, Default)]
+pub struct LiveSnapshot {
+    pub overlay: std::sync::Arc<ConnectionOverlay>,
+    pub lives: HashMap<String, TrainLive>,
+    /// The timetabled connections of every train in `lives`.
+    pub chains: HashMap<String, Vec<Connection>>,
+}
+
+impl LiveSnapshot {
+    /// Builds the snapshot of `states` (by train UID) on `date`'s day array.
+    /// One pass over `connections`.
+    pub fn build(
+        connections: &[Connection],
+        date: NaiveDate,
+        states: &HashMap<String, SnapshotState>,
+        config: &LiveConfig,
+        now: DateTime<Utc>,
+    ) -> Self {
+        let uids: HashSet<String> = states.keys().cloned().collect();
+        let mut chains = chains_for(connections, &uids);
+        let mut lives: HashMap<String, TrainLive> = HashMap::new();
+        for (uid, state) in states {
+            let Some(chain) = chains.get(uid) else {
+                continue;
+            };
+            let refs: Vec<&Connection> = chain.iter().collect();
+            lives.insert(
+                uid.clone(),
+                snapshot_train_live(date, &refs, state, config, now),
+            );
+        }
+        let (overlay, _) = build_overlay(&chains, &lives);
+        lives.retain(|uid, _| overlay.replaced_uids().contains(uid));
+        chains.retain(|uid, _| overlay.replaced_uids().contains(uid));
+        Self {
+            overlay: std::sync::Arc::new(overlay.indexed(connections)),
+            lives,
+            chains,
+        }
+    }
+
+    /// How many trains the snapshot changes.
+    pub fn trains(&self) -> usize {
+        self.lives.len()
+    }
+}
+
+/// The overlay a search runs on: every train read one by one
+/// ([`fetch_train_lives`]: movements, boards, skips) as `lives` says, and
+/// every other train the `snapshot` changes as it says. A train read one
+/// by one whose profile changes nothing is the timetable again, even if
+/// the snapshot had it late. Also returns how many timetabled connections
+/// it withdraws.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
+pub fn combined_overlay(
+    snapshot: Option<&LiveSnapshot>,
+    chains: &HashMap<String, Vec<Connection>>,
+    lives: &HashMap<String, TrainLive>,
+) -> (ConnectionOverlay, usize) {
+    let (precise, withdrawn) = build_overlay(chains, lives);
+    let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.overlay.is_empty()) else {
+        return (precise, withdrawn);
+    };
+    let kept = |uid: &str| !lives.contains_key(uid);
+    let mut replaced: Vec<String> = precise.replaced_uids().iter().cloned().collect();
+    replaced.extend(
+        snapshot
+            .overlay
+            .replaced_uids()
+            .iter()
+            .filter(|uid| kept(uid))
+            .cloned(),
+    );
+    let mut replacements = precise.replacements().to_vec();
+    replacements.extend(
+        snapshot
+            .overlay
+            .replacements()
+            .iter()
+            .filter(|connection| kept(&connection.uid))
+            .cloned(),
+    );
+    let snapshot_withdrawn: usize = snapshot
+        .chains
+        .iter()
+        .filter(|(uid, _)| kept(uid))
+        .map(|(_, chain)| chain.len())
+        .sum();
+    (
+        ConnectionOverlay::new(replaced, replacements),
+        withdrawn + snapshot_withdrawn,
+    )
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SnapshotStateRow {
+    trains_id: i64,
+    train_uid: String,
+    status: Option<String>,
+    delay_minutes: Option<i32>,
+    updated_at: Option<DateTime<Utc>>,
+    event_time: Option<DateTime<Utc>>,
+}
+
+/// Reads the TRUST state of every train on `date` the snapshot may change:
+/// cancelled, carrying a cancellation or change-of-origin reason, or en
+/// route late with a state updated within `trust_max_age_minutes`. Two
+/// queries, on the `trains (service_date)` index. Never writes.
+pub async fn fetch_snapshot_states(
+    pool: &PgPool,
+    date: NaiveDate,
+    config: &LiveConfig,
+    now: DateTime<Utc>,
+) -> anyhow::Result<HashMap<String, SnapshotState>> {
+    let rows: Vec<SnapshotStateRow> = sqlx::query_as(
+        "SELECT tr.id AS trains_id, tr.train_uid, cs.status, cs.delay_minutes, \
+                cs.updated_at, cs.event_time \
+         FROM trains tr \
+         LEFT JOIN train_current_state cs ON cs.trains_id = tr.id \
+         WHERE tr.service_date = $1 \
+           AND (cs.status = 'cancelled' \
+                OR (cs.status = 'en_route' AND cs.delay_minutes > 0 AND cs.updated_at >= $2) \
+                OR EXISTS (SELECT 1 FROM train_reasons r WHERE r.trains_id = tr.id))",
+    )
+    .bind(date)
+    .bind(now - Duration::minutes(config.trust_max_age_minutes))
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let ids: Vec<i64> = rows.iter().map(|row| row.trains_id).collect();
+    let reason_rows: Vec<ReasonDbRow> = sqlx::query_as(
+        "SELECT r.trains_id, r.msg_type, r.reason_code, r.canx_type, s.tiploc \
+         FROM train_reasons r \
+         LEFT JOIN stanox_crs s ON s.stanox = r.loc_stanox \
+         WHERE r.trains_id = ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    let mut reasons: HashMap<i64, Vec<ReasonRow>> = HashMap::new();
+    for row in reason_rows {
+        reasons.entry(row.trains_id).or_default().push(row.reason);
+    }
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let state = SnapshotState {
+                status: row.status,
+                delay_minutes: row.delay_minutes,
+                updated_at: row.updated_at,
+                event_time: row.event_time,
+                reasons: reasons.remove(&row.trains_id).unwrap_or_default(),
+            };
+            (row.train_uid, state)
+        })
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
 // 4. Annotation
 // ---------------------------------------------------------------------------
 
@@ -719,10 +1019,45 @@ pub struct LiveContext<'a> {
     pub now: DateTime<Utc>,
     pub config: &'a LiveConfig,
     pub interchange: &'a InterchangeData,
+    /// The trains read one by one ([`fetch_train_lives`]), and their
+    /// timetabled connections.
     pub chains: &'a HashMap<String, Vec<Connection>>,
     pub lives: &'a HashMap<String, TrainLive>,
+    /// The in-search snapshot, when the searches ran on one: what is known
+    /// of every other train.
+    pub snapshot: Option<&'a LiveSnapshot>,
     /// UIDs the searches saw replaced (their leg minutes are live times).
     pub overlaid: &'a HashSet<String>,
+    /// Which of `overlaid` the searches saw as read one by one (`lives`);
+    /// the rest as the snapshot had them.
+    pub overlaid_read: &'a HashSet<String>,
+}
+
+impl LiveContext<'_> {
+    fn chain(&self, uid: &str) -> Option<&Vec<Connection>> {
+        self.chains
+            .get(uid)
+            .or_else(|| self.snapshot?.chains.get(uid))
+    }
+
+    /// The best known profile: read one by one, else the snapshot's.
+    fn best_profile(&self, uid: &str) -> Option<&TrainLive> {
+        self.lives
+            .get(uid)
+            .or_else(|| self.snapshot?.lives.get(uid))
+    }
+
+    /// The profile the searches ran on for `uid`, when they saw it replaced.
+    fn searched_profile(&self, uid: &str) -> Option<&TrainLive> {
+        if !self.overlaid.contains(uid) {
+            return None;
+        }
+        if self.overlaid_read.contains(uid) {
+            self.lives.get(uid)
+        } else {
+            self.snapshot?.lives.get(uid)
+        }
+    }
 }
 
 /// Whether a leg booked to depart at `minute` is inside the live window.
@@ -906,29 +1241,42 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                         live,
                         ..
                     } => {
-                        let in_overlay = ctx.overlaid.contains(train_uid.as_str());
-                        let points = ctx.lives.get(train_uid.as_str()).and_then(|train_live| {
-                            let chain = ctx.chains.get(train_uid.as_str())?;
-                            let refs: Vec<&Connection> = chain.iter().collect();
-                            Some((train_live, evaluate_chain(&refs, train_live)))
-                        });
-                        let matched = points.as_ref().and_then(|(train_live, points)| {
-                            let pick = |tiploc: &str, minute: u32, departing: bool| {
-                                points.iter().find(|p| {
+                        let uid = train_uid.as_str();
+                        let searched = ctx.searched_profile(uid);
+                        let in_overlay = searched.is_some();
+                        let matched = ctx.best_profile(uid).zip(ctx.chain(uid)).and_then(
+                            |(train_live, chain)| {
+                                let refs: Vec<&Connection> = chain.iter().collect();
+                                let same = |p: &ChainPoint, tiploc: &str| {
                                     normalize_tiploc(&p.tiploc) == normalize_tiploc(tiploc)
-                                        && if departing {
-                                            (if in_overlay { p.live_dep } else { p.sched_dep })
-                                                == Some(minute)
-                                        } else {
-                                            (if in_overlay { p.live_arr } else { p.sched_arr })
-                                                == Some(minute)
-                                        }
-                                })
-                            };
-                            let board = pick(from_tiploc, *departure_min, true)?;
-                            let alight = pick(to_tiploc, *arrival_min, false)?;
-                            Some((*train_live, board.clone(), alight.clone()))
-                        });
+                                };
+                                // The leg's calls by their timetabled minutes:
+                                // its own, or, when the search ran on live
+                                // times, those of the calls it ran on.
+                                let (board_sched, alight_sched) = match searched {
+                                    Some(searched) => {
+                                        let points = evaluate_chain(&refs, searched);
+                                        let board = points.iter().find(|p| {
+                                            same(p, from_tiploc)
+                                                && p.live_dep == Some(*departure_min)
+                                        })?;
+                                        let alight = points.iter().find(|p| {
+                                            same(p, to_tiploc) && p.live_arr == Some(*arrival_min)
+                                        })?;
+                                        (board.sched_dep?, alight.sched_arr?)
+                                    }
+                                    None => (*departure_min, *arrival_min),
+                                };
+                                let points = evaluate_chain(&refs, train_live);
+                                let board = points.iter().find(|p| {
+                                    same(p, from_tiploc) && p.sched_dep == Some(board_sched)
+                                })?;
+                                let alight = points.iter().find(|p| {
+                                    same(p, to_tiploc) && p.sched_arr == Some(alight_sched)
+                                })?;
+                                Some((train_live, board.clone(), alight.clone()))
+                            },
+                        );
 
                         // The leg's own timetable and live minutes.
                         let (sched_dep, live_dep, live_arr) = match &matched {
@@ -1557,7 +1905,9 @@ mod tests {
                 interchange: &interchange,
                 chains: &chains,
                 lives: &lives,
+                snapshot: None,
                 overlaid: &HashSet::new(),
+                overlaid_read: &HashSet::new(),
             },
         );
         let invalidated = plan_invalidated(&segments, &interchange);
@@ -1663,7 +2013,9 @@ mod tests {
                     interchange: &interchange,
                     chains: &chains,
                     lives: &lives,
+                    snapshot: None,
                     overlaid: &HashSet::new(),
+                    overlaid_read: &HashSet::new(),
                 },
             );
             let invalidated = plan_invalidated(&segments, &interchange);
@@ -1722,5 +2074,239 @@ mod tests {
     fn service_minutes_round_trip_across_midnight() {
         assert_eq!(service_minute(date(), utc(1455)), Some(1455));
         assert_eq!(service_minute(date(), utc(0)), Some(0));
+    }
+
+    // -----------------------------------------------------------------------
+    // The in-search snapshot (2026-10-22)
+    // -----------------------------------------------------------------------
+
+    fn en_route(delay: i32, event_minute: Option<u32>) -> SnapshotState {
+        SnapshotState {
+            status: Some("en_route".to_string()),
+            delay_minutes: Some(delay),
+            updated_at: Some(utc(470)),
+            event_time: event_minute.map(utc),
+            reasons: Vec::new(),
+        }
+    }
+
+    fn snapshot_points(chain: &[Connection], state: &SnapshotState) -> Vec<ChainPoint> {
+        let refs: Vec<&Connection> = chain.iter().collect();
+        let live = snapshot_train_live(date(), &refs, state, &LiveConfig::default(), utc(475));
+        evaluate_chain(&refs, &live)
+    }
+
+    fn times(points: &[ChainPoint]) -> Vec<(Option<u32>, Option<u32>)> {
+        points.iter().map(|p| (p.live_arr, p.live_dep)).collect()
+    }
+
+    /// TRUST's delay is against the working time; the connections are on
+    /// public times. B's public arrival is padded two minutes after its
+    /// working one, so 5 late on the working timetable is 3 late on the
+    /// public one. The train last reported leaving A (08:05, 5 late), so A
+    /// keeps its timetable time.
+    #[test]
+    fn a_snapshot_delay_is_working_plus_delay_against_the_public_time_after_the_last_report() {
+        let mut chain = chain();
+        chain[0].working_arrival_min = 488;
+        let points = snapshot_points(&chain, &en_route(5, Some(485)));
+        assert_eq!(
+            times(&points),
+            [
+                (None, Some(480)),
+                (Some(493), Some(496)),
+                (Some(505), Some(506)),
+                (Some(515), None),
+            ]
+        );
+        assert_eq!(points[1].arr_delay, Some(3));
+        assert_eq!(points[1].dep_delay, Some(5));
+        // With no report yet, every call is ahead.
+        let points = snapshot_points(&chain, &en_route(5, None));
+        assert_eq!(points[0].live_dep, Some(485));
+    }
+
+    #[test]
+    fn early_running_and_stale_delays_change_nothing_but_cancellations_never_go_stale() {
+        let chain = chain();
+        let refs: Vec<&Connection> = chain.iter().collect();
+        let config = LiveConfig::default();
+        let early = snapshot_train_live(date(), &refs, &en_route(-4, None), &config, utc(475));
+        assert!(adjusted_connections("U1", &evaluate_chain(&refs, &early)).is_none());
+        let stale = snapshot_train_live(date(), &refs, &en_route(15, None), &config, utc(560));
+        assert!(adjusted_connections("U1", &evaluate_chain(&refs, &stale)).is_none());
+
+        let cancelled = SnapshotState {
+            status: Some("cancelled".to_string()),
+            updated_at: Some(utc(100)),
+            ..SnapshotState::default()
+        };
+        let live = snapshot_train_live(date(), &refs, &cancelled, &config, utc(560));
+        assert_eq!(
+            adjusted_connections("U1", &evaluate_chain(&refs, &live)),
+            Some(vec![])
+        );
+
+        // An EN ROUTE cancellation at C: the train terminates there.
+        let cut = SnapshotState {
+            reasons: vec![ReasonRow {
+                msg_type: "0002".to_string(),
+                reason_code: "TG".to_string(),
+                canx_type: Some("EN ROUTE".to_string()),
+                tiploc: Some("C".to_string()),
+            }],
+            ..en_route(0, None)
+        };
+        let live = snapshot_train_live(date(), &refs, &cut, &config, utc(475));
+        let points = evaluate_chain(&refs, &live);
+        assert_eq!(
+            points.iter().map(|p| p.served).collect::<Vec<_>>(),
+            [true, true, true, false]
+        );
+    }
+
+    fn snapshot_of(connections: &[Connection], states: &[(&str, SnapshotState)]) -> LiveSnapshot {
+        let states: HashMap<String, SnapshotState> = states
+            .iter()
+            .map(|(uid, state)| ((*uid).to_string(), state.clone()))
+            .collect();
+        LiveSnapshot::build(
+            connections,
+            date(),
+            &states,
+            &LiveConfig::default(),
+            utc(475),
+        )
+    }
+
+    #[test]
+    fn the_snapshot_keeps_only_the_trains_it_changes_and_a_train_read_one_by_one_wins() {
+        let connections = vec![
+            conn("U1", "A", "B", 480, 490),
+            conn("U2", "B", "C", 500, 520),
+            conn("U3", "B", "C", 510, 530),
+        ];
+        let snapshot = snapshot_of(
+            &connections,
+            &[("U1", en_route(12, None)), ("U2", en_route(0, None))],
+        );
+        assert_eq!(snapshot.trains(), 1);
+        assert!(snapshot.overlay.replaced_uids().contains("U1"));
+        assert_eq!(snapshot.overlay.replacements()[0].arrival_min, 502);
+
+        // Nothing read: the snapshot as it is.
+        let (overlay, withdrawn) =
+            combined_overlay(Some(&snapshot), &HashMap::new(), &HashMap::new());
+        assert_eq!(overlay.replacements(), snapshot.overlay.replacements());
+        assert_eq!(withdrawn, 1);
+
+        // U1 read one by one and on time (a fresh board says so): the
+        // timetable again, not the snapshot's 12 late.
+        let chains = chains_for(&connections, &HashSet::from(["U1".to_string()]));
+        let on_time = HashMap::from([(
+            "U1".to_string(),
+            profile(
+                &[stop("A", None, Some(480)), stop("B", Some(490), None)],
+                None,
+                &[],
+            ),
+        )]);
+        let (overlay, withdrawn) = combined_overlay(Some(&snapshot), &chains, &on_time);
+        assert!(overlay.is_empty(), "{overlay:?}");
+        assert_eq!(withdrawn, 0);
+    }
+
+    /// The search ran on the snapshot's view of U1 (12 late); the per-train
+    /// read then says 14. The leg's calls are found by the minutes it was
+    /// planned on, its times restored to the timetable's, and its live
+    /// status is the per-train read's.
+    #[test]
+    fn annotate_finds_a_leg_planned_on_the_snapshot_and_reports_the_better_read() {
+        let connections = vec![
+            conn("U1", "A", "B", 480, 490),
+            conn("U2", "B", "C", 510, 530),
+        ];
+        let snapshot = snapshot_of(&connections, &[("U1", en_route(12, None))]);
+        let mut interchange = InterchangeData {
+            modal_change: schedule_query::ModalChangeBuffer::default(),
+            change_time_by_tiploc: HashMap::new(),
+            tiploc_to_crs: HashMap::new(),
+            crs_to_tiplocs: HashMap::new(),
+            fixed_links_from_crs: HashMap::new(),
+        };
+        for (crs, tiploc) in [("AAA", "A"), ("BBB", "B"), ("CCC", "C")] {
+            interchange
+                .tiploc_to_crs
+                .insert(tiploc.to_string(), crs.to_string());
+            interchange
+                .crs_to_tiplocs
+                .insert(crs.to_string(), vec![tiploc.to_string()]);
+        }
+        let mut segments = crate::data::trip_planning_itinerary::plan_trip(
+            &crate::data::trip_planning_itinerary::TripPlanInput {
+                search: crate::data::trip_planning_itinerary::SegmentSearch {
+                    connections: &connections,
+                    interchange: &interchange,
+                    date: date(),
+                    results: "fastest",
+                    max_changes: 2,
+                    overlay: Some(&snapshot.overlay),
+                    restrictions: None,
+                },
+                passes: None,
+                avoid: &crate::data::trip_planning_itinerary::AvoidLists::default(),
+                origin_crs: "AAA",
+                waypoints: &[],
+                waypoint_codes: None,
+                destination_crs: "CCC",
+                vias: &[],
+                via_search: None,
+                time: crate::data::trip_planning_itinerary::TimeBound::DepartAfter(470),
+            },
+        )
+        .unwrap();
+        let PlannedLeg::Train { departure_min, .. } = &segments[0].itineraries[0].legs[0] else {
+            panic!("a train leg first");
+        };
+        assert_eq!(*departure_min, 492, "planned on the snapshot's minutes");
+
+        let mut stops = vec![stop("A", None, Some(480)), stop("B", Some(490), None)];
+        stops[0].board = Some(board("x", Some(14), false));
+        let lives = HashMap::from([("U1".to_string(), profile(&stops, None, &[]))]);
+        let chains = chains_for(&connections, &HashSet::from(["U1".to_string()]));
+        let config = LiveConfig::default();
+        annotate(
+            &mut segments,
+            &LiveContext {
+                date: date(),
+                now: utc(470),
+                config: &config,
+                interchange: &interchange,
+                chains: &chains,
+                lives: &lives,
+                snapshot: Some(&snapshot),
+                overlaid: snapshot.overlay.replaced_uids(),
+                overlaid_read: &HashSet::new(),
+            },
+        );
+        let itinerary = &segments[0].itineraries[0];
+        let PlannedLeg::Train {
+            live: Some(Some(live)),
+            departure_min,
+            arrival_min,
+            working_departure,
+            ..
+        } = &itinerary.legs[0]
+        else {
+            panic!("expected an annotated train leg: {:?}", itinerary.legs[0]);
+        };
+        assert_eq!(live.delay_minutes, Some(14));
+        assert_eq!((*departure_min, *arrival_min), (494, 504));
+        assert_eq!(
+            *working_departure,
+            NaiveTime::from_hms_opt(8, 0, 0).unwrap()
+        );
+        // 08:24 + 5 still makes the 08:30.
+        assert_eq!(itinerary.live_feasible, Some(true));
     }
 }

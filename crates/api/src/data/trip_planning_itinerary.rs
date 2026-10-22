@@ -744,8 +744,9 @@ pub struct SegmentResult {
     pub capped_by_max_changes: bool,
     /// Depart-after requests: minutes from service-day midnight this segment
     /// was searched from -- the caller's `departAfter` for the first
-    /// segment, the previous segment's earliest arrival plus the waypoint's
-    /// minimum change time for every later one, `None` when the previous
+    /// segment, the previous segment's earliest arrival (its live arrival,
+    /// when the live overlay applied) plus the waypoint's minimum change
+    /// time for every later one, `None` when the previous
     /// segment found nothing to chain from (so this one was not searched).
     /// May exceed 1440. Always `None` for an arrive-by request.
     pub depart_after_min: Option<u32>,
@@ -1675,18 +1676,7 @@ fn plan_trip_joint(input: &TripPlanInput<'_>) -> Result<Vec<SegmentResult>, Stri
     match input.time {
         TimeBound::DepartAfter(start) => {
             segments[0].depart_after_min = Some(start);
-            for index in 1..segments.len() {
-                let ready = (0..journeys.len())
-                    .map(|j| {
-                        let (previous, next) = (
-                            &segments[index - 1].itineraries[j],
-                            &segments[index].itineraries[j],
-                        );
-                        waypoint_ready_min(previous, next, interchange)
-                    })
-                    .min();
-                segments[index].depart_after_min = ready;
-            }
+            set_waypoint_ready_mins(&mut segments, interchange);
         }
         TimeBound::ArriveBy(deadline) => {
             segments[last - 1].arrive_by_min = Some(deadline);
@@ -1835,6 +1825,24 @@ pub fn waypoint_ready_min(
     } else {
         previous.arrival_min
             + waypoint_change_minutes(interchange, next.departure_tiploc.as_deref())
+    }
+}
+
+/// A joint plan's (each segment's itineraries aligned journey by journey,
+/// as [`plan_trip`] returns them) `depart_after_min` for every segment
+/// after the first: the earliest any journey can leave that waypoint
+/// ([`waypoint_ready_min`]); `None` when no journey was found. The live
+/// overlay calls it again once the legs carry live times, so a later
+/// segment's `departAfter` is the live arrival plus the change time.
+pub fn set_waypoint_ready_mins(segments: &mut [SegmentResult], interchange: &InterchangeData) {
+    for index in 1..segments.len() {
+        let ready = segments[index - 1]
+            .itineraries
+            .iter()
+            .zip(&segments[index].itineraries)
+            .map(|(previous, next)| waypoint_ready_min(previous, next, interchange))
+            .min();
+        segments[index].depart_after_min = ready;
     }
 }
 

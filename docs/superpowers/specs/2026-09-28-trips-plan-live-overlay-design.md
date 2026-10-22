@@ -182,7 +182,9 @@ exists for an incident, not as a rollout gate.
 
 * Delays are applied only to trains the overlay read (those in a candidate
   itinerary, plus the origin look-back). A late train elsewhere that would
-  newly make a connection possible is not discovered.
+  newly make a connection possible is not discovered. (Lifted 2026-10-22
+  by the in-search snapshot:
+  `2026-10-22-trips-plan-in-search-live-design.md`.)
 * No Darwin arrival forecast: LDBWS boards are departure boards, so the
   arrival delay at the alighting stop is TRUST-propagated or carried
   forward from the departure.

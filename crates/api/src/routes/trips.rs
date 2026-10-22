@@ -271,6 +271,116 @@ struct TripPlanParams {
 static LIVE_CONFIG: LazyLock<trip_plan_live::LiveConfig> =
     LazyLock::new(trip_plan_live::LiveConfig::from_env);
 
+/// [`LIVE_CONFIG`], with a test's [`set_in_search_for_tests`] applied.
+fn live_config() -> std::borrow::Cow<'static, trip_plan_live::LiveConfig> {
+    #[cfg(test)]
+    if let Some(in_search) = IN_SEARCH_OVERRIDE.with(std::cell::Cell::get) {
+        return std::borrow::Cow::Owned(trip_plan_live::LiveConfig {
+            in_search,
+            ..LIVE_CONFIG.clone()
+        });
+    }
+    std::borrow::Cow::Borrowed(&*LIVE_CONFIG)
+}
+
+#[cfg(test)]
+thread_local! {
+    static IN_SEARCH_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Sets [`trip_plan_live::LiveConfig::in_search`] on the current thread
+/// until the returned guard is dropped (as `pin_london_now_for_tests`).
+#[cfg(test)]
+#[must_use = "the override is lifted as soon as the guard is dropped"]
+fn set_in_search_for_tests(in_search: bool) -> InSearchOverride {
+    IN_SEARCH_OVERRIDE.with(|cell| cell.set(Some(in_search)));
+    InSearchOverride(())
+}
+
+#[cfg(test)]
+struct InSearchOverride(());
+
+#[cfg(test)]
+impl Drop for InSearchOverride {
+    fn drop(&mut self) {
+        IN_SEARCH_OVERRIDE.with(|cell| cell.set(None));
+    }
+}
+
+/// One date's in-search snapshot (`trip_plan_live::LiveSnapshot`), reused
+/// by every request on the same graph for `snapshot_ttl_seconds`.
+struct CachedSnapshot {
+    date: NaiveDate,
+    graph: std::sync::Weak<trip_planning::PlanningGraph>,
+    built: std::time::Instant,
+    snapshot: Arc<trip_plan_live::LiveSnapshot>,
+}
+
+/// The cached snapshots. Behind an async mutex held across the read and
+/// build, so concurrent requests for a stale date build it once.
+static LIVE_SNAPSHOTS: LazyLock<tokio::sync::Mutex<Vec<CachedSnapshot>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(Vec::new()));
+
+/// `date`'s in-search snapshot on `graph`: the cached one while it is
+/// younger than `snapshot_ttl_seconds` and built on this very graph, else
+/// read (two queries) and built (one pass over the day array, on the
+/// blocking pool) now.
+async fn live_snapshot(
+    app: &App,
+    graph: &Arc<trip_planning::PlanningGraph>,
+    date: NaiveDate,
+    config: &trip_plan_live::LiveConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<Arc<trip_plan_live::LiveSnapshot>> {
+    let ttl = std::time::Duration::from_secs(config.snapshot_ttl_seconds);
+    let mut cache = LIVE_SNAPSHOTS.lock().await;
+    cache.retain(|cached| cached.built.elapsed() < ttl && cached.graph.strong_count() > 0);
+    if let Some(cached) = cache.iter().find(|cached| {
+        cached.date == date
+            && cached
+                .graph
+                .upgrade()
+                .is_some_and(|cached| Arc::ptr_eq(&cached, graph))
+    }) {
+        return Ok(cached.snapshot.clone());
+    }
+    let started = std::time::Instant::now();
+    let states = trip_plan_live::fetch_snapshot_states(&app.database, date, config, now).await?;
+    let build_graph = graph.clone();
+    let build_config = config.clone();
+    let snapshot = Arc::new(
+        tokio::task::spawn_blocking(move || {
+            trip_plan_live::LiveSnapshot::build(
+                &build_graph.connections,
+                date,
+                &states,
+                &build_config,
+                now,
+            )
+        })
+        .await?,
+    );
+    metrics::histogram!(common::metrics::metric_name(
+        "api_trip_plan_live_snapshot_build_seconds"
+    ))
+    .record(started.elapsed().as_secs_f64());
+    metrics::gauge!(common::metrics::metric_name(
+        "api_trip_plan_live_snapshot_trains"
+    ))
+    .set(f64::from(
+        u32::try_from(snapshot.trains()).unwrap_or(u32::MAX),
+    ));
+    if !ttl.is_zero() {
+        cache.push(CachedSnapshot {
+            date,
+            graph: Arc::downgrade(graph),
+            built: std::time::Instant::now(),
+            snapshot: snapshot.clone(),
+        });
+    }
+    Ok(snapshot)
+}
+
 fn default_results() -> String {
     "fastest".to_string()
 }
@@ -593,6 +703,8 @@ async fn get_trip_plan(
                 "replans": summary.replans,
                 "trainsRead": summary.trains_read,
                 "adjustedTrains": summary.adjusted_trains,
+                "inSearch": summary.in_search,
+                "snapshotTrains": summary.snapshot_trains,
             }),
             Err(reason) => serde_json::json!({ "applied": false, "reason": reason }),
         }
@@ -807,6 +919,10 @@ async fn load_graph(
 
 /// Plans `inputs` on one service date's `graph`, from `time` on that
 /// date's clock: the searches, the live overlay and the leg details.
+#[expect(
+    clippy::too_many_lines,
+    reason = "long but linear: restrictions, the live snapshot, the plan, the overlay, leg details"
+)]
 async fn plan_on_date(
     app: &App,
     graph: &Arc<trip_planning::PlanningGraph>,
@@ -875,32 +991,81 @@ async fn plan_on_date(
         results: inputs.results.clone(),
         max_changes: inputs.max_changes,
     });
-    let mut segments = run_plan(graph.clone(), request.clone(), None, permit.clone())
-        .await?
-        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    // The live overlay: requested, switched on, and a service date with
+    // trains running now. `Ok(now)` when it applies.
+    let config = live_config();
+    let live_wanted: Option<Result<chrono::DateTime<chrono::Utc>, &'static str>> =
+        inputs.live_requested.then(|| {
+            let today = crate::routes::london_today();
+            if !config.enabled {
+                Err("disabled")
+            } else if date != today && Some(date) != today.pred_opt() {
+                Err("outsideLiveWindow")
+            } else {
+                Ok(crate::routes::london_now().with_timezone(&chrono::Utc))
+            }
+        });
+    // In-search (2026-10-22): the first search already runs on every
+    // delay and cancellation TRUST knows of today. A failed read only
+    // loses that: the re-plan loop below still runs.
+    let snapshot = match live_wanted {
+        Some(Ok(now)) if config.in_search => {
+            match live_snapshot(app, graph, date, &config, now).await {
+                Ok(snapshot) => Some(snapshot),
+                Err(err) => {
+                    tracing::warn!(error = ?err, "trip plan live snapshot failed; planning on the timetable first");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let first_overlay = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.overlay.clone())
+        .filter(|overlay| !overlay.is_empty());
+    let mut segments = run_plan(
+        graph.clone(),
+        request.clone(),
+        first_overlay.clone(),
+        permit.clone(),
+    )
+    .await?
+    .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
 
-    let live = if inputs.live_requested {
-        let config = &*LIVE_CONFIG;
-        let today = crate::routes::london_today();
-        Some(if !config.enabled {
-            Err("disabled")
-        } else if date != today && Some(date) != today.pred_opt() {
-            Err("outsideLiveWindow")
-        } else {
-            let now = crate::routes::london_now().with_timezone(&chrono::Utc);
-            match plan_live(app, graph, &request, permit, &segments, config, now).await {
+    let live = match live_wanted {
+        None => None,
+        Some(Err(reason)) => Some(Err(reason)),
+        Some(Ok(now)) => Some(
+            match plan_live(
+                app,
+                graph,
+                &request,
+                permit,
+                &segments,
+                snapshot.as_deref(),
+                &config,
+                now,
+            )
+            .await
+            {
                 Ok((live_segments, summary)) => {
                     segments = live_segments;
                     Ok(summary)
                 }
                 Err(err) => {
                     tracing::warn!(error = ?err, "trip plan live overlay failed; serving the timetable plan");
+                    if first_overlay.is_some() {
+                        // The first plan ran on live minutes and was never
+                        // annotated: plan on the timetable instead.
+                        segments = run_plan(graph.clone(), request.clone(), None, permit.clone())
+                            .await?
+                            .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+                    }
                     Err("unavailable")
                 }
-            }
-        })
-    } else {
-        None
+            },
+        ),
     };
 
     crate::data::trip_leg_details::attach_leg_details(&app.database, date, &mut segments)
@@ -926,6 +1091,8 @@ fn combine_live(
             replans: a.replans + b.replans,
             trains_read: a.trains_read + b.trains_read,
             adjusted_trains: a.adjusted_trains + b.adjusted_trains,
+            in_search: a.in_search || b.in_search,
+            snapshot_trains: a.snapshot_trains + b.snapshot_trains,
         })),
         (Some(Err(_)), Some(Ok(b))) => Some(Ok(b)),
         (first, _) => first,
@@ -1006,6 +1173,10 @@ struct LiveSummary {
     replans: u32,
     trains_read: usize,
     adjusted_trains: usize,
+    /// Whether the searches ran on the in-search snapshot.
+    in_search: bool,
+    /// How many trains the snapshot changed (0 without one).
+    snapshot_trains: usize,
 }
 
 /// The live overlay's bounded re-planning loop (design doc §4.4): read the
@@ -1018,28 +1189,45 @@ struct LiveSummary {
 /// annotated, not re-planned. Trains read after the last allowed re-plan
 /// are still annotated. Any read error aborts the overlay; the caller then
 /// serves the timetable plan.
+///
+/// `first` is the plan already made: on the timetable, or, with an
+/// in-search `snapshot` (2026-10-22), on the snapshot's overlay. Each later
+/// overlay is the snapshot with every train read one by one replacing the
+/// snapshot's view of it (`trip_plan_live::combined_overlay`), so the
+/// re-plans now only correct what the per-train reads (boards, actual
+/// times, skips) know better than TRUST's running state.
 #[expect(
     clippy::too_many_lines,
-    reason = "long but linear; splitting it would scatter its shared state across helpers"
+    clippy::too_many_arguments,
+    reason = "long but linear; splitting it would scatter its shared state across helpers; each argument is an independent input"
 )]
 async fn plan_live(
     app: &App,
     graph: &Arc<trip_planning::PlanningGraph>,
     request: &Arc<PlanRequest>,
     permit: &PlanPermit,
-    timetable: &[trip_planning_itinerary::SegmentResult],
+    first: &[trip_planning_itinerary::SegmentResult],
+    snapshot: Option<&trip_plan_live::LiveSnapshot>,
     config: &trip_plan_live::LiveConfig,
     now: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<(Vec<trip_planning_itinerary::SegmentResult>, LiveSummary)> {
     use std::collections::{HashMap, HashSet};
 
     let date = request.date;
-    let mut segments = timetable.to_vec();
+    let mut segments = first.to_vec();
     let mut lives: HashMap<String, trip_plan_live::TrainLive> = HashMap::new();
     let mut read: HashSet<String> = HashSet::new();
     let mut chains: HashMap<String, Vec<schedule_query::Connection>> = HashMap::new();
-    let mut overlay = Arc::new(trip_planner::ConnectionOverlay::default());
-    let mut withdrawn = 0usize;
+    // The overlay `segments` was planned on, and which of its trains it
+    // took from the per-train reads (none yet: the rest are the snapshot's).
+    let mut overlay = snapshot.map_or_else(
+        || Arc::new(trip_planner::ConnectionOverlay::default()),
+        |snapshot| snapshot.overlay.clone(),
+    );
+    let mut overlay_read: HashSet<String> = HashSet::new();
+    let mut withdrawn = snapshot.map_or(0, |snapshot| {
+        snapshot.chains.values().map(Vec::len).sum::<usize>()
+    });
     let mut replans = 0u32;
 
     // Trains booked to leave the origin in the hour before `departAfter`:
@@ -1088,7 +1276,7 @@ async fn plan_live(
         if replans >= config.max_replans_for(&request.results) {
             break;
         }
-        let (next, next_withdrawn) = trip_plan_live::build_overlay(&chains, &lives);
+        let (next, next_withdrawn) = trip_plan_live::combined_overlay(snapshot, &chains, &lives);
         if next.replaced_uids() == overlay.replaced_uids()
             && next.replacements() == overlay.replacements()
         {
@@ -1106,7 +1294,9 @@ async fn plan_live(
                 interchange: &graph.interchange,
                 chains: &chains,
                 lives: &lives,
+                snapshot,
                 overlaid: overlay.replaced_uids(),
+                overlaid_read: &overlay_read,
             },
         );
         let invalidated = trip_plan_live::plan_invalidated(&probe, &graph.interchange)
@@ -1122,7 +1312,15 @@ async fn plan_live(
         if !invalidated {
             break;
         }
-        overlay = Arc::new(next);
+        // Thousands of trains with a snapshot: indexed once, so the searches
+        // test a bit per connection instead of hashing its UID.
+        overlay = if snapshot.is_some() {
+            let graph = graph.clone();
+            Arc::new(tokio::task::spawn_blocking(move || next.indexed(&graph.connections)).await?)
+        } else {
+            Arc::new(next)
+        };
+        overlay_read = lives.keys().cloned().collect();
         withdrawn = next_withdrawn;
         segments = run_plan(
             graph.clone(),
@@ -1145,9 +1343,20 @@ async fn plan_live(
             interchange: &graph.interchange,
             chains: &chains,
             lives: &lives,
+            snapshot,
             overlaid: overlay.replaced_uids(),
+            overlaid_read: &overlay_read,
         },
     );
+    // A later waypoint segment can be left from the live arrival plus the
+    // change time, which is what its `departAfter` now says.
+    if depart_min.is_some()
+        && segments
+            .windows(2)
+            .all(|pair| pair[0].itineraries.len() == pair[1].itineraries.len())
+    {
+        trip_planning_itinerary::set_waypoint_ready_mins(&mut segments, &graph.interchange);
+    }
     metrics::counter!(common::metrics::metric_name(
         "api_trip_plan_live_replans_total"
     ))
@@ -1166,6 +1375,8 @@ async fn plan_live(
             replans,
             trains_read: read.len(),
             adjusted_trains: overlay.replaced_uids().len(),
+            in_search: snapshot.is_some(),
+            snapshot_trains: snapshot.map_or(0, trip_plan_live::LiveSnapshot::trains),
         },
     ))
 }
@@ -2400,6 +2611,8 @@ mod tests {
     reason = "test code: casts of small known test values"
 )]
 mod db_tests {
+    mod live_in_search;
+
     use axum::body::Body;
     use axum::http::Request;
     use serde_json::Value;
@@ -3688,18 +3901,27 @@ mod db_tests {
                 .is_none()
         );
 
-        let (status, live) = get(test_router(test_app(pool.clone())), uri("")).await;
-        assert_eq!(status, StatusCode::OK, "{live:?}");
-        assert_eq!(live["live"]["applied"], true, "{live:?}");
-        assert_eq!(live["live"]["replans"], 1, "{live:?}");
-        assert_eq!(live["live"]["adjustedTrains"], 1, "{live:?}");
-        assert_eq!(train_uids(&live, 0), ["TLVCANS"], "{live:?}");
-        let itinerary = &live["segments"][0]["itineraries"][0];
-        assert_eq!(itinerary["liveFeasible"], true);
-        // The replacement has no live record: an explicit null.
-        let leg = itinerary["legs"][0].as_object().unwrap();
-        assert!(leg.contains_key("live") && leg["live"].is_null(), "{leg:?}");
-        assert_eq!(leg["scheduledDeparture"], "10:05:00");
+        // In-search, the first search already knows; otherwise one re-plan.
+        for in_search in [true, false] {
+            let _mode = set_in_search_for_tests(in_search);
+            let (status, live) = get(test_router(test_app(pool.clone())), uri("")).await;
+            assert_eq!(status, StatusCode::OK, "{live:?}");
+            assert_eq!(live["live"]["applied"], true, "{live:?}");
+            assert_eq!(live["live"]["inSearch"], in_search, "{live:?}");
+            assert_eq!(live["live"]["replans"], u32::from(!in_search), "{live:?}");
+            // In-search, every train of the date TRUST changes counts (other
+            // tests' leftovers included); otherwise the one re-planned around.
+            if !in_search {
+                assert_eq!(live["live"]["adjustedTrains"], 1, "{live:?}");
+            }
+            assert_eq!(train_uids(&live, 0), ["TLVCANS"], "{live:?}");
+            let itinerary = &live["segments"][0]["itineraries"][0];
+            assert_eq!(itinerary["liveFeasible"], true);
+            // The replacement has no live record: an explicit null.
+            let leg = itinerary["legs"][0].as_object().unwrap();
+            assert!(leg.contains_key("live") && leg["live"].is_null(), "{leg:?}");
+            assert_eq!(leg["scheduledDeparture"], "10:05:00");
+        }
 
         cleanup_live(&pool, &uids, "TLVCAN").await;
     }
@@ -3796,25 +4018,29 @@ mod db_tests {
         assert_eq!(itinerary["totalDurationMinutes"], 57, "10:03 to 11:00");
 
         // Fresh: the 15-minute delay lands at 10:45, inside the 5-minute
-        // change onto the 10:40 -> re-planned onto the 11:00.
+        // change onto the 10:40 -> the 11:00: found by the first search
+        // in-search, by a re-plan otherwise.
         set_delay(15).await;
-        let (status, fresh) = get(test_router(test_app(pool.clone())), uri).await;
-        assert_eq!(status, StatusCode::OK, "{fresh:?}");
-        assert_eq!(fresh["live"]["replans"], 1, "{fresh:?}");
-        assert_eq!(train_uids(&fresh, 0), ["TLVDLY1", "TLVDLY3"], "{fresh:?}");
-        let itinerary = &fresh["segments"][0]["itineraries"][0];
-        let late = &itinerary["legs"][0];
-        assert_eq!(late["scheduledDeparture"], "10:00:00", "{late:?}");
-        assert_eq!(late["scheduledArrival"], "10:30:00", "{late:?}");
-        assert_eq!(late["live"]["status"], "Late", "{late:?}");
-        assert_eq!(late["live"]["delayMinutes"], 15, "{late:?}");
-        assert_eq!(late["live"]["arrivalDelayMinutes"], 15, "{late:?}");
-        assert_eq!(late["live"]["cancelled"], false);
-        assert!(late["live"]["interchangeFeasible"].is_null());
-        assert!(itinerary["legs"][1]["live"].is_null());
-        assert_eq!(itinerary["liveFeasible"], true);
-        // 10:15 live departure to 11:20 arrival.
-        assert_eq!(itinerary["totalDurationMinutes"], 65, "{itinerary:?}");
+        for in_search in [true, false] {
+            let _mode = set_in_search_for_tests(in_search);
+            let (status, fresh) = get(test_router(test_app(pool.clone())), uri.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{fresh:?}");
+            assert_eq!(fresh["live"]["replans"], u32::from(!in_search), "{fresh:?}");
+            assert_eq!(train_uids(&fresh, 0), ["TLVDLY1", "TLVDLY3"], "{fresh:?}");
+            let itinerary = &fresh["segments"][0]["itineraries"][0];
+            let late = &itinerary["legs"][0];
+            assert_eq!(late["scheduledDeparture"], "10:00:00", "{late:?}");
+            assert_eq!(late["scheduledArrival"], "10:30:00", "{late:?}");
+            assert_eq!(late["live"]["status"], "Late", "{late:?}");
+            assert_eq!(late["live"]["delayMinutes"], 15, "{late:?}");
+            assert_eq!(late["live"]["arrivalDelayMinutes"], 15, "{late:?}");
+            assert_eq!(late["live"]["cancelled"], false);
+            assert!(late["live"]["interchangeFeasible"].is_null());
+            assert!(itinerary["legs"][1]["live"].is_null());
+            assert_eq!(itinerary["liveFeasible"], true);
+            // 10:15 live departure to 11:20 arrival.
+            assert_eq!(itinerary["totalDurationMinutes"], 65, "{itinerary:?}");
+        }
 
         cleanup_live(&pool, &uids, "TLVDLY").await;
     }
@@ -5011,6 +5237,9 @@ mod db_tests {
         let uids = seed_arrive_by_network(&pool).await;
         seed_trust_state(&pool, "TAVF1", "en_route", Some(10), live_now()).await;
         let _now = crate::routes::pin_london_now_for_tests(live_now());
+        // The re-plan loop on its own; in-search, the first search already
+        // lands there (`live_in_search::arrive_by_searches_on_live_times`).
+        let _mode = set_in_search_for_tests(false);
 
         let (status, timetable) = get(
             test_router(test_app(pool.clone())),

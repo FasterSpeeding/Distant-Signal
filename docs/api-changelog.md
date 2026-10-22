@@ -3,6 +3,31 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-24: `/Trips/plan` searches on live times
+
+Additive fields; one count changes meaning. Design:
+`docs/superpowers/specs/2026-10-22-trips-plan-in-search-live-design.md`.
+
+- With live data applied (`live=true`, today's or yesterday's service
+  date), the search itself now runs on every train TRUST knows today to be
+  cancelled, cut short, starting late or running late, not only on the
+  trains of a plan already found. A later leg is therefore never planned
+  to leave before the earlier leg's live arrival plus the minimum change
+  time, and a late train can be offered where it now makes a connection
+  the timetable says it misses (its leg carries `live.delayMinutes`).
+  `live.replans` is usually `0` now.
+- Top-level `live` gains `inSearch` (bool: the search ran on that
+  snapshot) and `snapshotTrains` (how many trains it changed).
+  `adjustedTrains` now counts every train the final search saw changed,
+  the snapshot's included (hundreds on a busy day), not only the trains
+  re-planned around.
+- A waypoint plan's later `segments[].departAfter` is the previous
+  segment's live arrival plus the change time (was the timetabled arrival
+  whenever the change still worked and nothing was re-planned).
+- Train legs still serve `scheduled*`/`working*` as the timetable and the
+  live times under `live`; `totalDurationMinutes`, `journeys[].departure`
+  and `arrival` are live, as before.
+
 ## 2026-10-23: mid-journey changes and suggestions
 
 Additive; nothing existing changes meaning. Every new route is
