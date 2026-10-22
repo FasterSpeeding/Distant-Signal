@@ -951,7 +951,14 @@ export interface TrackedTrainState extends TrainJourneyState {
   // subscription also removes it from every one of those groups (the DB's
   // `group_trains.train_subscription_id ... ON DELETE CASCADE` already does
   // this automatically; this is purely so the UI can warn about it first).
+  // Since DS-124 it also counts groups the train's own journey is shared
+  // into, each group once.
   sharedGroupCount: number;
+  /** The owner's journeys this train belongs to, and of those the train's
+   * own (one-leg journeys bound to it), as on `TrackedTrainListItem`. Only
+   * on the owner's `GET /Train/{trackingId}`; absent from an older backend. */
+  journeyIds?: number[];
+  singleLegJourneyIds?: number[];
 }
 
 /** Exactly the fields `components/TrainJourney.tsx` reads -- notably NOT
@@ -1170,10 +1177,15 @@ export interface TrackedTrainListItem extends ServiceModeFields, TrackingPhaseFi
   // `DeleteTrainButton` off a `TrackedTrainListItem` match (`GET
   // /Train/mine`), not a `TrackedTrainState`.
   sharedGroupCount: number;
-  /** The caller's journeys this train belongs to (any leg, ascending);
-   * empty for a train tracked on its own. Optional: absent from an older
-   * backend. See `lib/journeyTrains.ts`. */
+  /** The caller's journeys this train belongs to (any leg, ascending).
+   * Since DS-124 every tracked train has one, a train tracked on its own
+   * included; empty only for a row an older api wrote. Optional: absent
+   * from an older backend. See `lib/journeyTrains.ts`. */
   journeyIds?: number[];
+  /** Of `journeyIds`, the train's own journeys: one-leg journeys bound to
+   * this train. "Stop tracking" deletes these; a train in any other journey
+   * stays tracked there. Optional: absent from an older backend. */
+  singleLegJourneyIds?: number[];
   /** Whether the train is over by the api's travel-order rule
    * (`travel_order::train_arrived_sql`): its actual arrival, else the
    * timetable plus its delay, else the timetable plus
@@ -2323,9 +2335,9 @@ export interface GroupJourney extends ServiceModeFields, TrackingPhaseFields, Om
 
 /** `GET /public/groups/shared-journeys`'s per-item shape
  * (`crates/api/src/data/groups.rs`'s `SharedJourney`): a `GroupJourney`
- * plus the group it was shared into. Not consumed by any page in this
- * phase (see this feature's plan, Judgment Call 4) -- kept for parity with
- * `SharedGroupTrain`. */
+ * plus the group it was shared into. The Journeys page lists these beside
+ * the caller's own rows (DS-124: a tracked train is shared as its one-leg
+ * journey). */
 export interface SharedGroupJourney extends GroupJourney {
   groupId: string;
   groupName: string;

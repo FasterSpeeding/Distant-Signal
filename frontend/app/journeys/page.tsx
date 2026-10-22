@@ -1,7 +1,13 @@
 import { Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
 import Link from 'next/link';
-import { getMyTrackedTrains, getMyTickets, getSharedGroupTrains, getMyJourneys } from '@/lib/api';
+import {
+  getMyTrackedTrains,
+  getMyTickets,
+  getSharedGroupJourneys,
+  getSharedGroupTrains,
+  getMyJourneys,
+} from '@/lib/api';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
 import { ButtonLink } from '@/components/ButtonLink';
@@ -20,12 +26,22 @@ import { TrackedTrainRowMenu } from '@/components/TrackedTrainRowMenu';
 import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatDate, formatTime, londonDayKey } from '@/lib/dateFormat';
 import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
-import { mergeSharedTrains, type MergedSharedTrain } from '@/lib/sharedTrains';
+import {
+  mergeSharedJourneys,
+  mergeSharedTrains,
+  type MergedSharedJourney,
+  type MergedSharedTrain,
+} from '@/lib/sharedTrains';
 import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { memberLabel, MEMBER_PLACEHOLDER_INLINE } from '@/lib/memberLabel';
-import { trackedTrainRowStatus, type TrackedRowStatus } from '@/lib/trackedRowStatus';
+import { groupJourneyRowStatus, trackedTrainRowStatus, type TrackedRowStatus } from '@/lib/trackedRowStatus';
 import { splitByStatus, splitJourneyRows, splitTrainRows } from '@/lib/upcomingPast';
-import { journeyDisplayName, journeyListItemNameInput, journeyPreviewLine } from '@/lib/journeyName';
+import {
+  groupJourneyNameInput,
+  journeyDisplayName,
+  journeyListItemNameInput,
+  journeyPreviewLine,
+} from '@/lib/journeyName';
 import type { DelayRepayEstimateResponse, TrackedTrainListItem, TicketListItem, JourneyListItem } from '@/lib/types';
 import type { Metadata } from 'next';
 
@@ -107,11 +123,15 @@ export const metadata: Metadata = {
  * for the same "auxiliary, don't lose the whole page over it" reason as
  * `getSharedGroupTrains()`. */
 export default async function JourneysPage() {
-  const [trains, tickets, sharedTrains, journeys] = await Promise.all([
+  const [trains, tickets, sharedTrains, journeys, sharedJourneyRows] = await Promise.all([
     getMyTrackedTrains(),
     getMyTickets(),
     getSharedGroupTrains().catch(() => null),
     getMyJourneys().catch(() => null),
+    // Journeys other members shared into the caller's groups. Since
+    // DS-124 a shared tracked train is its one-leg journey, so this is
+    // where most shares now arrive; auxiliary like the shared trains.
+    getSharedGroupJourneys().catch(() => null),
   ]);
 
   if (trains === null) {
@@ -147,6 +167,10 @@ export default async function JourneysPage() {
   // see `mergeSharedTrains`' own doc comment for why both halves of that
   // are the frontend's job rather than the query's.
   const shared = mergeSharedTrains(sharedTrains ?? [], new Set(trains.map((t) => t.id)));
+  const sharedJourneys = mergeSharedJourneys(
+    sharedJourneyRows ?? [],
+    new Set((journeys ?? []).map((journey) => journey.id)),
+  );
 
   // Split deliberately. `hasOwnContent` is the OLD `!nothingToShow`, and
   // still gates the reliability digest alone: that card is the caller's
@@ -181,7 +205,8 @@ export default async function JourneysPage() {
   // state would both be wrong and (since it's the branch that hides the
   // list) hide the very row C1 exists to add.
   const hasOwnContent = trains.length > 0 || unattachedTickets.length > 0;
-  const nothingToShow = !hasOwnContent && shared.length === 0 && journeyRows.length === 0;
+  const nothingToShow =
+    !hasOwnContent && shared.length === 0 && sharedJourneys.length === 0 && journeyRows.length === 0;
 
   // Two lists with one cut-off: Upcoming (still to come, or under way now)
   // and Past (travelled). Journeys and the caller's own lone trains come in
@@ -203,8 +228,17 @@ export default async function JourneysPage() {
     shared.map((row) => ({ row, status: trackedTrainRowStatus(row.train, today) })),
     (item) => item.status.finished,
   );
-  const upcomingCount = journeyItems.upcoming.length + trainItems.upcoming.length + sharedItems.upcoming.length;
-  const pastCount = journeyItems.past.length + trainItems.past.length + sharedItems.past.length;
+  const sharedJourneyItems = splitByStatus(
+    sharedJourneys.map((row) => ({ row, status: groupJourneyRowStatus(row.journey, today) })),
+    (item) => item.status.finished,
+  );
+  const upcomingCount =
+    journeyItems.upcoming.length +
+    trainItems.upcoming.length +
+    sharedItems.upcoming.length +
+    sharedJourneyItems.upcoming.length;
+  const pastCount =
+    journeyItems.past.length + trainItems.past.length + sharedItems.past.length + sharedJourneyItems.past.length;
 
   return (
     <Stack p="lg" gap="xl">
@@ -245,6 +279,9 @@ export default async function JourneysPage() {
               {sharedItems.upcoming.map(({ row, status }) => (
                 <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
               ))}
+              {sharedJourneyItems.upcoming.map(({ row, status }) => (
+                <SharedJourneyListRow key={row.journey.journeyId} row={row} status={status} />
+              ))}
             </Stack>
           )}
           {/* Below Upcoming and above Past (DS-115): the caller's own record
@@ -274,6 +311,9 @@ export default async function JourneysPage() {
               ))}
               {sharedItems.past.map(({ row, status }) => (
                 <SharedTrainListRow key={row.train.trainSubscriptionId} row={row} status={status} />
+              ))}
+              {sharedJourneyItems.past.map(({ row, status }) => (
+                <SharedJourneyListRow key={row.journey.journeyId} row={row} status={status} />
               ))}
             </Stack>
           )}
@@ -587,6 +627,50 @@ function SharedTrainListRow({ row, status }: { row: MergedSharedTrain; status: T
           ))}
           <Text size="sm" c="dimmed">
             Shared by {memberLabel(train.addedByName, train.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
+          </Text>
+        </Group>
+      </Stack>
+    </Card>
+  );
+}
+
+/** A journey another member shared into a group the caller belongs to:
+ * since DS-124 how a shared tracked train arrives, as its one-leg journey.
+ * Named and badged by the same rules as `/groups/{id}`'s shared journey
+ * rows (`groupJourneyNameInput`, `groupJourneyRowStatus`), tagged like
+ * `SharedTrainListRow`. Links to `/journeys/{id}`, which a member of a
+ * group it is shared into may read (`journeys::journey_readable_by`). */
+function SharedJourneyListRow({ row, status }: { row: MergedSharedJourney; status: TrackedRowStatus }) {
+  const { journey, groupNames } = row;
+  const name = groupJourneyNameInput(journey);
+  const preview = journeyPreviewLine(name);
+  return (
+    <Card withBorder>
+      <Stack gap={4}>
+        <StatusRow
+          align="flex-start"
+          title={
+            <Link href={`/journeys/${String(journey.journeyId)}`} data-card-link>
+              <Text fw={500} lineClamp={2} miw={0}>
+                {journeyDisplayName(name)}
+              </Text>
+            </Link>
+          }
+          trailing={<TrackedRowStatusBadge status={status} />}
+        />
+        {preview && (
+          <Text size="sm" c="dimmed">
+            {preview}
+          </Text>
+        )}
+        <Group gap="xs" wrap="wrap">
+          {groupNames.map((groupName) => (
+            <StateBadge key={groupName} tone="action">
+              From {groupName}
+            </StateBadge>
+          ))}
+          <Text size="sm" c="dimmed">
+            Shared by {memberLabel(journey.addedByName, journey.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
           </Text>
         </Group>
       </Stack>

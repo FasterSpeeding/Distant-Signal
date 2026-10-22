@@ -99,6 +99,13 @@ const nextConfig = {
         destination: '/journeys',
         permanent: true,
       },
+      // Train pushes linked to `/track/{id}`, a page that never existed,
+      // until 22 Oct 2026; this keeps the links already sent working.
+      {
+        source: '/track/:trackingId(\\d+)',
+        destination: '/train/by-id/:trackingId',
+        permanent: true,
+      },
       // The planner's own page is `/plan` (see app/plan/page.tsx for why a
       // route rather than a mode switch); this keeps the mode-switch URL
       // working for anyone who links to it. Not permanent, so the alias

@@ -131,6 +131,15 @@ describe('TrackedTrainByIdPage success path', () => {
     expect(screen.getByRole('button', { name: 'Stop tracking' })).toBeInTheDocument();
   });
 
+  // DS-124: a tracked train is a one-leg journey; the page links to it.
+  it('links to the train’s own journey', async () => {
+    vi.mocked(api.getTrackedTrainById).mockResolvedValue(
+      trackedTrainState({ resolutionStatus: 'pending', trainUid: null, journeyIds: [7], singleLegJourneyIds: [7] }),
+    );
+    await renderPage('42');
+    expect(screen.getByRole('link', { name: 'Open journey' })).toHaveAttribute('href', '/journeys/7');
+  });
+
   // Unresolved (no trainUid yet): there's no canonical uid/date URL to send
   // the visitor to, so this must keep rendering locally exactly as before.
   it('still renders locally, unredirected, for an unresolved train', async () => {
