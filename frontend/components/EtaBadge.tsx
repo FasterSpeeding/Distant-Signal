@@ -44,6 +44,25 @@ import { StateBadge } from './StateBadge';
  * an unmatched schedule genuinely has neither -- so the line degrades to
  * "Was due 14:34 (no arrival report received)" rather than fabricating a
  * station. */
+/** The badge words and tooltip for an estimate's source. An unknown
+ * value reads as the generic Network Rail estimate. `previous-working`
+ * (DS-127) is a predicted late start from the incoming train. */
+export function etaSourceText(etaSource: EtaSource): { label: string; tooltip: string } {
+  if (etaSource === 'darwin-estimated') {
+    return { label: 'Live departure board', tooltip: 'From the National Rail live board at the origin station' };
+  }
+  if (etaSource === 'previous-working') {
+    return {
+      label: 'Incoming train',
+      tooltip: 'Predicted from the train that forms this one, which is running late. An estimate only.',
+    };
+  }
+  return {
+    label: 'Estimate (Network Rail)',
+    tooltip: "From Network Rail train reports, carried forward from the train's last reported delay",
+  };
+}
+
 export function EtaBadge({
   etaNext,
   etaSource,
@@ -71,11 +90,7 @@ export function EtaBadge({
 
   if (!etaSource) return null;
 
-  const label = etaSource === 'darwin-estimated' ? 'Live departure board' : 'Estimate (Network Rail)';
-  const tooltip =
-    etaSource === 'darwin-estimated'
-      ? 'From the National Rail live board at the origin station'
-      : "From Network Rail train reports, carried forward from the train's last reported delay";
+  const { label, tooltip } = etaSourceText(etaSource);
 
   return (
     <Group gap={6} wrap="nowrap">

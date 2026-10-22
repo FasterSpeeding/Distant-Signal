@@ -1202,6 +1202,7 @@ async fn schedule_only_public_state(
         planned_platform: None,
         journey_stops: None,
         may_have_arrived: false,
+        predicted_start: None,
         operator_code: None,
         operator_name: None,
         cancelled: false,
@@ -1912,6 +1913,15 @@ pub(crate) async fn attach_journey_stops_batch(
     if buildable.is_empty() {
         return states;
     }
+    // Predicted late starts (DS-127), one batched read for every state.
+    let predictions = predicted_starts(
+        app,
+        buildable.iter().filter_map(|&index| {
+            let state = &states[index];
+            state.train_uid.clone().map(|uid| (uid, state.service_date))
+        }),
+    )
+    .await;
     let results = {
         let requests: Vec<crate::data::journey::JourneyStopsRequest<'_>> = buildable
             .iter()
@@ -1926,6 +1936,13 @@ pub(crate) async fn attach_journey_stops_batch(
                     skipped_stations: &state.schedule_skipped_stations,
                     platform: state.schedule_platform.as_deref(),
                     planned_platform: state.schedule_planned_platform.as_deref(),
+                    predicted_late_minutes: state
+                        .train_uid
+                        .as_ref()
+                        .and_then(|uid| predictions.get(&(uid.clone(), state.service_date)))
+                        .and_then(
+                            ds_store::trains::predicted_start::PredictedStart::estimate_minutes,
+                        ),
                 }
             })
             .collect();
@@ -1958,6 +1975,12 @@ pub(crate) async fn attach_journey_stops_batch(
                     state.status.take(),
                     stops.as_deref(),
                 );
+                state.predicted_start = state.train_uid.as_ref().and_then(|uid| {
+                    unsuperseded(
+                        predictions.get(&(uid.clone(), state.service_date)),
+                        stops.as_deref(),
+                    )
+                });
                 state.journey_stops = stops;
             }
             Err(err) => {
@@ -1966,6 +1989,38 @@ pub(crate) async fn attach_journey_stops_batch(
         }
     }
     states
+}
+
+/// The predicted late starts (DS-127) of `trains`, best effort: a failed
+/// read is logged and predicts nothing, never fails the request.
+async fn predicted_starts(
+    app: &App,
+    trains: impl Iterator<Item = (String, NaiveDate)>,
+) -> std::collections::HashMap<(String, NaiveDate), ds_store::trains::predicted_start::PredictedStart>
+{
+    let trains: Vec<(String, NaiveDate)> = trains.collect();
+    match ds_store::trains::predicted_start::predict_for_trains(&app.database, &trains, Utc::now())
+        .await
+    {
+        Ok(predictions) => predictions,
+        Err(err) => {
+            tracing::warn!(error = ?err, "could not predict late starts");
+            std::collections::HashMap::new()
+        }
+    }
+}
+
+/// `prediction`, unless the origin's own board already gives a time for
+/// this departure: Darwin's forecast supersedes ours (spec section 5).
+fn unsuperseded(
+    prediction: Option<&ds_store::trains::predicted_start::PredictedStart>,
+    stops: Option<&[crate::data::journey::JourneyStop]>,
+) -> Option<ds_store::trains::predicted_start::PredictedStart> {
+    let prediction = prediction?;
+    if stops.is_some_and(crate::data::journey::origin_board_has_time_estimate) {
+        return None;
+    }
+    Some(prediction.clone())
 }
 
 /// Public-route sibling of `attach_journey_stops`, for `PublicTrainState`.
@@ -1997,6 +2052,9 @@ async fn attach_journey_stops_public(
     app: &App,
     mut state: crate::data::trains::PublicTrainState,
 ) -> crate::data::trains::PublicTrainState {
+    let key = (state.train_uid.clone(), state.service_date);
+    let predictions = predicted_starts(app, std::iter::once(key.clone())).await;
+    let prediction = predictions.get(&key);
     match crate::data::journey::build_journey_stops(
         &app.database,
         state.trains_id,
@@ -2007,6 +2065,7 @@ async fn attach_journey_stops_public(
         &state.skipped_stations,
         state.platform.as_deref(),
         state.planned_platform.as_deref(),
+        prediction.and_then(ds_store::trains::predicted_start::PredictedStart::estimate_minutes),
     )
     .await
     {
@@ -2024,6 +2083,7 @@ async fn attach_journey_stops_public(
                 state.status.take(),
                 stops.as_deref(),
             );
+            state.predicted_start = unsuperseded(prediction, stops.as_deref());
             state.journey_stops = stops;
         }
         Err(err) => {
@@ -2367,6 +2427,7 @@ mod tests {
             trains_id: Some(1),
             journey_stops: None,
             may_have_arrived: false,
+            predicted_start: None,
             operator_code: None,
             operator_name: None,
             cancelled: false,

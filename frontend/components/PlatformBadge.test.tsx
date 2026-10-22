@@ -4,6 +4,49 @@ import { renderWithMantine } from '@/test/render';
 import { PlatformBadge } from './PlatformBadge';
 
 describe('PlatformBadge', () => {
+  // DS-127: a booked platform with nothing live is provisional, and says so
+  // in words (hidden text and tooltip), not by its dotted underline alone.
+  describe('a booked, not yet confirmed platform', () => {
+    it('shows the booked platform with a "booked, not confirmed" label', () => {
+      renderWithMantine(
+        <PlatformBadge
+          platform={null}
+          plannedPlatform={null}
+          platformChanged={false}
+          bookedPlatform="4"
+          platformBasis="booked"
+        />,
+      );
+      const badge = screen.getByText('Platform 4').closest('[data-platform-badge]');
+      expect(badge).toHaveAttribute('data-platform-basis', 'booked');
+      expect(badge).toHaveAttribute('title', 'Booked platform, not yet shown on station boards');
+      expect(badge).toHaveTextContent('Platform 4 (booked, not confirmed)');
+      expect(screen.getByText('Platform 4')).toHaveClass('platformBadge__booked');
+    });
+
+    it('renders nothing for a booked platform without the booked basis', () => {
+      renderWithMantine(
+        <PlatformBadge platform={null} plannedPlatform={null} platformChanged={false} bookedPlatform="4" />,
+      );
+      expect(screen.queryByText(/Platform/)).not.toBeInTheDocument();
+    });
+
+    it('prefers a live platform, marked as from a board', () => {
+      renderWithMantine(
+        <PlatformBadge
+          platform="5"
+          plannedPlatform="4"
+          platformChanged={true}
+          bookedPlatform="4"
+          platformBasis="board"
+        />,
+      );
+      const badge = screen.getByText('Platform 5 (changed from 4)').closest('[data-platform-badge]');
+      expect(badge).toHaveAttribute('data-platform-basis', 'board');
+      expect(badge).toHaveAttribute('data-platform-changed', 'true');
+    });
+  });
+
   it('renders nothing when no platform is known', () => {
     renderWithMantine(<PlatformBadge platform={null} plannedPlatform={null} platformChanged={false} />);
     expect(screen.queryByText(/Platform/)).not.toBeInTheDocument();

@@ -71,6 +71,7 @@ export function toJourneyState(train: PublicTrainState): TrainJourneyState {
     customName: null,
     journeyStops: train.journeyStops,
     mayHaveArrived: train.mayHaveArrived,
+    predictedStart: train.predictedStart ?? null,
     serviceMode: train.serviceMode,
     liveTracking: train.liveTracking,
     // Planned / not in the timetable (spec 2026-10-20 §3, §4), computed by

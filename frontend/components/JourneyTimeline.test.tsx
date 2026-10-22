@@ -164,6 +164,38 @@ describe('JourneyTimeline', () => {
     expect(screen.getByRole('columnheader', { name: 'Platform' })).toBeInTheDocument();
   });
 
+  // DS-127: a booked platform shows from the start, marked provisional.
+  it('shows the Platform column for a booked platform, as booked and not confirmed', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({ bookedPlatform: '4', platformBasis: 'booked', displayPlatform: '4' }),
+          stop({ crs: 'PAD', name: 'London Paddington' }),
+        ]}
+      />,
+    );
+    expect(screen.getByRole('columnheader', { name: 'Platform' })).toBeInTheDocument();
+    const badge = document.querySelector('[data-platform-basis="booked"]');
+    expect(spokenText(badge)).toBe('Platform 4 (booked, not confirmed)');
+  });
+
+  it('says when an estimated time is predicted from the incoming train', () => {
+    renderWithMantine(
+      <JourneyTimeline
+        stops={[
+          stop({
+            scheduledDeparture: '2026-10-22T09:00:00Z',
+            estimatedDeparture: '2026-10-22T09:07:00Z',
+            estimateSource: 'previous-working',
+          }),
+        ]}
+      />,
+    );
+    const cell = document.querySelector('[data-estimate-source="previous-working"]');
+    expect(cell).toHaveAttribute('title', 'Predicted from the incoming train');
+    expect(cell).toHaveTextContent(/est\. \d\d:\d\d, predicted from the incoming train/);
+  });
+
   // 2026-09-22 UX review finding I21/M21/2.10: a column that is empty on
   // every row reads as broken, not as "nothing to report" -- hide it
   // outright rather than rendering an always-blank header cell.

@@ -8,8 +8,10 @@ import {
   TableTh,
   TableTd,
   Text,
+  VisuallyHidden,
 } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
+import { changedFromPlatform } from '@/lib/platformLabel';
 import { DelayBadge } from './DelayBadge';
 import { PhoneLabel } from './PhoneLabel';
 import { PlatformBadge } from './PlatformBadge';
@@ -123,7 +125,10 @@ export function JourneyTimeline({
   // outright when NO row in this stop list has anything to show in it,
   // rather than rendering an always-empty header cell down every row.
   const showDelayColumn = stops.some((stop) => stop.delayMinutes !== null);
-  const showPlatformColumn = stops.some((stop) => stop.platform !== null);
+  // `displayPlatform` (DS-127) includes a booked, not yet confirmed
+  // platform, so the column shows from the start; an older response has
+  // only the live `platform`.
+  const showPlatformColumn = stops.some((stop) => (stop.displayPlatform ?? stop.platform) != null);
 
   // The leg's own destination row, if `legDestinationCrs` resolves to one
   // of these stops -- case-insensitive, matching `isSkippedOnLeg`'s own
@@ -435,8 +440,19 @@ function JourneyStopRow({
             // Visually distinguished from a confirmed actual time -- muted
             // and italic, with an explicit "est." prefix, never rendered
             // for a stop that already has a real reported time above.
-            <Text size="sm" c="dimmed" fs="italic">
+            <Text
+              size="sm"
+              c="dimmed"
+              fs="italic"
+              {...(stop.estimateSource === 'previous-working' && {
+                title: 'Predicted from the incoming train',
+                'data-estimate-source': 'previous-working',
+              })}
+            >
               est. {formatTime(estimated)}
+              {stop.estimateSource === 'previous-working' && (
+                <VisuallyHidden>, predicted from the incoming train</VisuallyHidden>
+              )}
             </Text>
           )
         )}
@@ -468,9 +484,11 @@ function JourneyStopRow({
         <TableTd>
           <PlatformBadge
             platform={stop.platform}
-            plannedPlatform={stop.plannedPlatform}
+            plannedPlatform={changedFromPlatform(stop)}
             platformChanged={stop.platformChanged}
             platformStatus={stop.platformStatus}
+            bookedPlatform={stop.bookedPlatform}
+            platformBasis={stop.platformBasis}
             compact
           />
         </TableTd>

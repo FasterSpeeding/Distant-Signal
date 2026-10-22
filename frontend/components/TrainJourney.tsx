@@ -9,6 +9,7 @@ import { ServiceModeBadge } from './ServiceModeBadge';
 import { isTimetableOnly, serviceNoun, TIMETABLE_ONLY_MESSAGE } from '@/lib/serviceMode';
 import type { TrainJourneyState } from '@/lib/types';
 import { StateBadge } from './StateBadge';
+import { PredictedStartNotice } from './PredictedStartNotice';
 
 /** Renders one train's journey through every state the backend can
  * return, per
@@ -105,6 +106,9 @@ export function TrainJourney({
   return (
     <Stack gap="sm">
       <StatusMessage state={state} suppressTrainUidHeading={suppressTrainUidHeading} />
+      {/* A predicted late start from the incoming train (DS-127): the api
+          sends one only before Network Rail reports this train. */}
+      <PredictedStartNotice prediction={state.predictedStart} />
       {/* A planned train (activated, not yet due to leave) has no movement
           to summarise: "No movement data reported yet" would only restate
           the waiting the planned copy deliberately holds back. */}

@@ -1202,6 +1202,9 @@ pub async fn fetch_train_lives(
             skipped_stations: &train.skipped_stations,
             platform: train.platform.as_deref(),
             planned_platform: train.planned_platform.as_deref(),
+            // Trip-plan legs show no pre-departure prediction (DS-127 is
+            // the tracked-train views).
+            predicted_late_minutes: None,
         })
         .collect();
     let built = crate::data::journey::build_journey_stops_batch(pool, &requests).await?;

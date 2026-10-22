@@ -13,7 +13,7 @@
 //! | `line_population` | `post_schedule_line_population` | `schedule::summaries::upsert_population_with_summaries` |
 //! | `network_departures` | `post_schedule_network_departures` | `schedule::upsert_schedule_network_departures` |
 //! | `publish_part` | the two chunked routes and `ScheduleChunkParams` | `schedule::SchedulePublishPart`, `schedule::upsert_*_publish_part`, `schedule::finish_*_without_rows` |
-//! | `services` | `post_schedule_services` | `schedule::services::replace_for_date` |
+//! | `services` | `post_schedule_services` | `schedule::services::replace_for_date`, then `schedule::turnarounds::replace_inferred_for_date` (no api route; best effort) |
 //! | `record_completed_publish`, `last_completed_publish` | `/schedule-reference-publishes` | `schedule::{insert,last_completed}_schedule_reference_publish` |
 //!
 //! The CIF-derived rows arrive as the JSON values the api's routes take and
@@ -33,7 +33,7 @@ use sqlx::PgPool;
 use super::{ChunkPart, DatedProduct, LinePopulation, PublishSink, SinkError};
 
 /// The `operation` labels this sink records.
-pub(crate) const OPERATIONS: [&str; 9] = [
+pub(crate) const OPERATIONS: [&str; 10] = [
     "stanox_crs",
     "tiploc_crs",
     "tiploc_locations",
@@ -42,6 +42,7 @@ pub(crate) const OPERATIONS: [&str; 9] = [
     "network_departures",
     "publish_part",
     "services",
+    "turnarounds",
     "publish_marker",
 ];
 
@@ -103,6 +104,28 @@ async fn timed<T>(
         started.elapsed(),
     );
     result
+}
+
+/// Rebuilds `service_date`'s inferred previous-working links
+/// (`ds_store::schedule::turnarounds`), recorded as the `turnarounds`
+/// operation. A failure is logged and counted, never returned: the links
+/// are a derived product, and the date's old ones stay until the next
+/// publish.
+async fn refresh_turnarounds(pool: &PgPool, service_date: chrono::NaiveDate) {
+    let result = timed("turnarounds", async {
+        ds_store::schedule::turnarounds::replace_inferred_for_date(pool, service_date)
+            .await
+            .map_err(db_error)
+    })
+    .await;
+    match result {
+        Ok(written) => {
+            tracing::info!(%service_date, written, "rebuilt previous-working links");
+        }
+        Err(err) => {
+            tracing::warn!(%service_date, error = %err, "could not rebuild previous-working links");
+        }
+    }
 }
 
 /// Reads JSON rows into `T` with its own `Deserialize`, as the api's `Json`
@@ -299,7 +322,13 @@ impl PublishSink for DbSink<'_> {
                     } else {
                         db_error(err)
                     }
-                })
+                })?;
+            // The date's calling points (published just before) and
+            // services are now in place: rebuild its previous-working
+            // links (DS-127). Best effort: a failure keeps the date's old
+            // links and never fails the services product.
+            refresh_turnarounds(&self.pool, service_date).await;
+            Ok(())
         })
         .await
     }

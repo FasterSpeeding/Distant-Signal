@@ -1,6 +1,57 @@
 # Pre-departure platform and delay prediction (2026-10-21)
 
-Status: design, research only; nothing here is built yet. Work log DS-123.
+Status: design. The user answered the open questions on 2026-10-22 (see
+"Decisions" below); phases 0 and 1 are being built under DS-127. Work log
+DS-123.
+
+## Decisions (2026-10-22)
+
+The user's answers to section 11. Where they differ from the text further
+down, these win.
+
+- **Q1, inferred previous working: yes.** The platform-sequence inference
+  (same operator, terminating at the same platform 2-60 min before our
+  departure) may be used and shown, always with a confidence level. Stated
+  timetable association links replace it in phase 2.
+- **Q2, notifications: yes, at high confidence only.** A predicted late
+  start sends a push only when its confidence is `high`; otherwise it is
+  display only. The push respects the user's notification settings (the
+  train's and journey's own switches, quiet settings and push
+  subscriptions) and is deduplicated with the existing delay pushes, so a
+  user never gets a "late start" push and then a delay push for the same
+  lateness. Because phase 1 has no association links, `high` is redefined
+  for inferred links from the 2026-10-20 check (section 3), conservatively:
+  - the incoming train has eaten all of the booked turnaround's slack
+    (excess ≥ 0, so the predicted late start is at least `TURN_MIN`);
+  - the excess is at most 15 min, below the point where the rule starts
+    over-predicting;
+  - the incoming train's delay comes from a live report (arrived at, or
+    running towards, our origin) that is at most 10 min old, one link
+    deep.
+  On 2026-10-20 the excess 0-15 buckets held 325 pairs, of which about 85%
+  started at least 3 min late; over the week in section 3a, 92%.
+  Operators whose band precision was poor that week (TL, CH) are capped at
+  medium, so they never push.
+- **Q3, new feeds: approved, subscriptions pending.** Darwin Push Port and
+  the LDBWS arrival boards are approved, but the RDM subscriptions wait on
+  the user (DS-126). Their ingests are not built now; they stay in phases
+  2-3.
+- **Q4, the incoming unit's arrival platform as "likely": the spec's
+  recommendation is taken.** It is shown only as a `changed` platform with
+  a "likely" qualifier. It needs the TRUST `platform` field kept by the
+  backlog consumer, so it is left out of phase 1 and follows with the
+  phase 2 association work.
+- **Q5, naming the incoming train: the spec's recommendation is taken.**
+  The wording says "the incoming train"; the provenance line links that
+  phrase to the incoming train's own page (the API returns its uid and
+  date). When the incoming train is cancelled, there is no prediction and
+  nothing is said about it.
+- **Q6, thresholds: the defaults.** Confidence cut-offs at 15 and 30 min of
+  excess, a 3-hour horizon, and `TURN_MIN` of 4 min.
+- **Q7, the compact booked style: a dotted underline.** A booked, not yet
+  confirmed platform shows with a dotted underline and the accessible label
+  "booked, not confirmed". A changed platform is highlighted (the existing
+  blue style, with the booked one beside it).
 
 ## The goal
 
@@ -22,6 +73,26 @@ ours will start late.
 
 Section 3 has prod measurements (aggregates only, taken read-only on
 2026-10-21) that size each idea. The recommendation is in section 9.
+
+## Phase 1 as built (DS-127)
+
+- `schedule_turnarounds`, rebuilt per date by schedule-reference after the
+  date's calling points and services (best effort); pruned by the
+  aggregator with the other schedule products.
+- The tracked-stop board lane in poller-ldbws (`trackedStops`, off by
+  default; its own 20-requests-a-cycle cap and 10 s budget), riding the
+  station-samples stream as `tracked-stop-boards/1` into
+  `tracked_stop_boards`; the api tries it before the general sample.
+- `platformBasis`, `displayPlatform`, `estimateSource` and the booked
+  comparison for `platformChanged` on `JourneyStop`; a nullable
+  `predictedStart` on the train states.
+- The high-confidence push in the notifier (on by default, 60 s; 0 turns
+  it off). It does not look at the origin board's `etd`: a Darwin time
+  for the departure supersedes the prediction on screen, but not a push
+  already sent.
+- Left out: the incoming unit's arrival platform (Q4), the first-seen
+  platform lead-time metric and the `etd` catch-up measurement (phase 0
+  leftovers), and everything in phases 2-3.
 
 ## 1. What DS has today
 
@@ -248,6 +319,95 @@ What the table shows:
 
 This is one weekday and one heuristic. Phase 0 repeats it over a week,
 and per operator.
+
+## 3a. Phase 0 results (2026-10-22, read-only, aggregates)
+
+**The late-start check over a week.** The section 3 rule, rerun for the
+seven service dates 2026-10-15 to 2026-10-21 (Thursday to Wednesday). The
+pairing is the same; the actuals are matched more strictly than on
+2026-10-20: the incoming train's arrival is the TRUST arrival whose
+planned time is its booked terminus arrival (±1 min), and our train's start
+is the TRUST departure whose planned time is its booked origin departure
+(±1 min). A train that terminated short or started elsewhere therefore
+drops out instead of adding noise, which is why the precision below is
+higher than the one-day figures.
+
+- **Coverage.** 147,650 passenger origins; 132,977 (90%) have a booked
+  platform; 103,416 pairs qualify (78% of those, 70% of all origins);
+  96,380 pairs have both actuals.
+- **Booked turnaround:** p10 6 min, p50 13 min, p90 33 min (unchanged).
+
+| Excess (min) | Pairs | Mean actual late start | Mean predicted (`TURN_MIN` 4) | Mean error, 4 | Mean error, 3 | Error if we assume on time | Late ≥ 3 min |
+|---|---|---|---|---|---|---|---|
+| ≤ -3 (absorbed) | 91,072 | 0.4 | 0.0 | 0.4 | 0.4 | 0.4 | 5% |
+| -3 to 0 | 3,062 | 2.9 | 2.8 | 1.7 | 1.8 | 2.9 | 48% |
+| 0 to 5 | 1,469 | 7.2 | 6.5 | 2.0 | 2.3 | 7.2 | 97% |
+| 5 to 15 | 614 | 13.6 | 13.1 | 2.9 | 3.2 | 13.6 | 95% |
+| 15 to 30 | 134 | 22.9 | 24.7 | 5.8 | 6.1 | 22.9 | 92% |
+| > 30 | 29 | 21.7 | 49.2 | 28.7 | 28.2 | 21.7 | 66% |
+
+- **`TURN_MIN` fit.** Over pairs with excess between -10 and 15 min
+  (35,127), the mean absolute error of `max(0, excess + k)` is 0.95, 0.87,
+  0.78, 0.69, **0.67**, 0.77, 1.01 min for k = 0..6. The mean signed error
+  at k = 4 is +0.39 min (a slight under-prediction). **`TURN_MIN` = 4
+  stands.**
+- **The high-confidence band** (excess 0 to 15 min, the user's 2026-10-22
+  definition): 2,776 pairs, 92% started at least 3 min late, mean actual
+  7.9 min, mean error of the prediction 2.1 min, and 92% within 5 min of
+  the prediction. Per day it ranged from 90% to 94% (170 to 479 pairs a
+  day; Sunday is the low).
+- **Recall.** Of the 7,877 late starts (≥ 3 min) among paired trains, 2,148
+  (27%) fell in the excess > 0 buckets and 3,961 (50%) had any predicted
+  lateness (excess > -4). The rest are late for reasons the incoming
+  train does not explain.
+- **Beyond 30 min** the rule is still wrong (predicted 49 against 22 real),
+  so the "show nothing" cut-off stands.
+
+**Per operator, the high-confidence band** (operators with at least 20
+pairs in the band):
+
+| Operator | Pairs (all) | Pairs in band | Late ≥ 3 min | Mean error (min) |
+|---|---|---|---|---|
+| AW | 3,477 | 191 | 86% | 1.8 |
+| CC | 1,811 | 48 | 98% | 1.5 |
+| EM | 2,617 | 51 | 96% | 2.4 |
+| GN | 1,913 | 63 | 98% | 1.8 |
+| GW | 6,094 | 185 | 85% | 2.4 |
+| HX | 952 | 20 | 95% | 2.1 |
+| LE | 5,819 | 71 | 90% | 2.7 |
+| LM | 4,979 | 116 | 98% | 1.9 |
+| LO | 8,448 | 182 | 98% | 2.1 |
+| ME | 3,740 | 71 | 85% | 1.3 |
+| NT | 12,521 | 421 | 93% | 1.7 |
+| SE | 8,406 | 225 | 98% | 2.1 |
+| SN | 7,864 | 333 | 97% | 1.5 |
+| SR | 9,344 | 212 | 95% | 1.5 |
+| SW | 7,564 | 213 | 92% | 3.4 |
+| TL | 3,013 | 206 | **69%** | 2.4 |
+| TP | 1,563 | 42 | 100% | 1.2 |
+| VT | 1,266 | 28 | 93% | 8.8 |
+| XC | 1,032 | 39 | 100% | 1.6 |
+| XR | 1,446 | 29 | 83% | 4.2 |
+
+Thameslink (TL) is the outlier: its through trains reverse and swap units
+in the core, and the platform sequence there often pairs the wrong unit.
+Chiltern (CH) had only 8 pairs in the band, at 50%. **Phase 1 caps both at
+medium confidence**, so neither ever sends a push, and lists them in one
+constant to revisit when phase 2's association links land.
+
+**Association links in the timetable file: not counted.** The local file
+named for this (`NLC20261009.xml.gz`) turned out to be the NLC location
+reference (TIPLOC, NLC, CRS and STANOX per location), not a CIF timetable,
+so it has no association (`AA`) records. No CIF extract is kept outside
+prod, and reading the delivered zip from the prod volume was not done
+(this measurement stays read-only against Postgres). The `NP` count is
+still open: it needs one CIF extract, which the user can supply, and
+phase 2 should start with it.
+
+**Not measured in this pass:** the first-seen platform lead-time histogram
+and how often the origin board's `etd` already shows the knock-on. Both
+need the poller to record something new (a metric or history it does
+not keep today), so they are left for a follow-up.
 
 ## 4. Getting the previous working
 

@@ -19,7 +19,7 @@ use crate::data::tiploc_locations::LocationInfo;
 
 // Moved to ds_store::trains::types (ingest architecture plan 1A.4)
 pub use ds_store::trains::types::{
-    JourneyStop, PlatformStatus, SkipSource, StopStatus, StopTimetable,
+    JourneyStop, PlatformBasis, PlatformStatus, SkipSource, StopStatus, StopTimetable,
 };
 use ds_store::trains::types::{RawCallingPoint, RawTimetable, tiploc_key};
 
@@ -327,6 +327,7 @@ pub async fn build_journey_stops(
     skipped_stations: &[String],
     platform: Option<&str>,
     planned_platform: Option<&str>,
+    predicted_late_minutes: Option<i32>,
 ) -> anyhow::Result<Option<Vec<JourneyStop>>> {
     let request = JourneyStopsRequest {
         trains_id,
@@ -337,6 +338,7 @@ pub async fn build_journey_stops(
         skipped_stations,
         platform,
         planned_platform,
+        predicted_late_minutes,
     };
     build_journey_stops_batch(pool, std::slice::from_ref(&request))
         .await?
@@ -356,6 +358,12 @@ pub struct JourneyStopsRequest<'a> {
     pub skipped_stations: &'a [String],
     pub platform: Option<&'a str>,
     pub planned_platform: Option<&'a str>,
+    /// A predicted late start from the incoming train (DS-127,
+    /// `ds_store::trains::predicted_start`), at medium or high confidence
+    /// only: used for the stop estimates while `current_delay_minutes` is
+    /// unknown and the origin's board shows no time of its own, labelled
+    /// `estimateSource: "previous-working"`.
+    pub predicted_late_minutes: Option<i32>,
 }
 
 /// [`build_journey_stops`] for several trains at once, one result per
@@ -478,7 +486,20 @@ pub async fn build_journey_stops_batch(
     departing_tiplocs.dedup();
     let board_rows =
         queries::station_samples_for_crs_or_tiplocs(pool, &stop_crs, &departing_tiplocs).await?;
-    let board_index = crate::data::stop_board::BoardIndex::new(&board_rows);
+    // The tracked-stop lane's boards for these trains (DS-127), tried
+    // before the general samples.
+    let tracked_rows = {
+        let mut trains: Vec<(String, NaiveDate)> = requests
+            .iter()
+            .zip(&built)
+            .filter(|(_, stops)| matches!(stops, Ok(Some(_))))
+            .map(|(request, _)| (request.train_uid.to_string(), request.service_date))
+            .collect();
+        trains.sort();
+        trains.dedup();
+        crate::data::stop_board::tracked_boards_for_trains(pool, &trains).await?
+    };
+    let board_index = crate::data::stop_board::BoardIndex::with_tracked(&board_rows, &tracked_rows);
     // The train's own RSID and operator, only when there is a board to
     // match against.
     let board_keys = if board_index.is_empty() {
@@ -514,15 +535,20 @@ pub async fn build_journey_stops_batch(
         // One board match per stop feeds both `board` and the platform
         // fields. Deliberately after `apply_origin_platform`: a live board
         // row is fresher than the origin's pin-time snapshot, so it wins.
-        crate::data::stop_board::apply_station_sample_board(
+        crate::data::stop_board::apply_station_sample_board_for_train(
             stops,
             &board_index,
             board_keys
                 .get(&(request.train_uid.to_string(), request.service_date))
                 .unwrap_or(&crate::data::stop_board::TrainBoardKeys::default()),
+            Some((request.train_uid, request.service_date)),
             now,
         );
-        apply_delay_estimates(stops, request.current_delay_minutes);
+        apply_platform_basis(stops);
+        match request.current_delay_minutes {
+            Some(delay) => apply_delay_estimates(stops, Some(delay)),
+            None => apply_predicted_start_estimates(stops, request.predicted_late_minutes),
+        }
     }
 
     Ok(built)
@@ -1205,6 +1231,97 @@ fn rejoin_split_dwells(
 /// timescale the rest of this module already reasons in.
 const MAY_HAVE_ARRIVED_THRESHOLD: Duration = Duration::minutes(15);
 
+/// Sets each stop's `platform_basis` and `display_platform`, and compares
+/// its live platform against the timetable's booked one for
+/// `platform_changed` (DS-127, spec section 6.2). Run after every platform
+/// overlay (`apply_origin_platform`, the board match).
+///
+/// - A live `platform` is shown, on basis `board`.
+/// - Else the `booked_platform`, on basis `booked`: provisional, nothing
+///   live has shown it.
+/// - `platform_changed`: against `booked_platform` when both are known
+///   ([`platforms_differ`]); otherwise the first-seen comparison the board
+///   overlay already made stays as it is.
+pub fn apply_platform_basis(stops: &mut [JourneyStop]) {
+    for stop in stops.iter_mut() {
+        let booked = stop
+            .booked_platform
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        if let (Some(live), Some(booked)) = (stop.platform.as_deref(), booked) {
+            stop.platform_changed = platforms_differ(live, booked);
+        }
+        (stop.platform_basis, stop.display_platform) = match (&stop.platform, booked) {
+            (Some(live), _) => (Some(PlatformBasis::Board), Some(live.clone())),
+            (None, Some(booked)) => (Some(PlatformBasis::Booked), Some(booked.to_string())),
+            (None, None) => (None, None),
+        };
+    }
+}
+
+/// Whether a live platform is a different platform from the booked one.
+/// Case and spaces are ignored, and so is a sub-platform letter on one side
+/// only: the timetable may book "4A" where the board shows "4" (or the
+/// reverse) for the same platform, which must not read as a change.
+pub fn platforms_differ(live: &str, booked: &str) -> bool {
+    let norm = |p: &str| -> String {
+        p.chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_uppercase()
+    };
+    let (live, booked) = (norm(live), norm(booked));
+    if live == booked {
+        return false;
+    }
+    let (short, long) = if live.len() <= booked.len() {
+        (&live, &booked)
+    } else {
+        (&booked, &live)
+    };
+    let same_with_suffix = !short.is_empty()
+        && long.starts_with(short.as_str())
+        && short.chars().last().is_some_and(|c| c.is_ascii_digit())
+        && long[short.len()..].chars().all(|c| c.is_ascii_alphabetic());
+    !same_with_suffix
+}
+
+/// Whether the origin's own board row gives a time estimate (`etd` is a
+/// clock time): Darwin's own forecast for this departure, which supersedes
+/// a predicted late start (spec section 5, "When to show it"). "On time"
+/// does not: Darwin often shows it until its own knock-on runs.
+pub fn origin_board_has_time_estimate(stops: &[JourneyStop]) -> bool {
+    stops
+        .iter()
+        .find(|stop| stop.kind == Some(schedule_query::CallingPointKind::Origin))
+        .and_then(|stop| stop.board.as_ref())
+        .is_some_and(|board| {
+            !board.is_cancelled
+                && chrono::NaiveTime::parse_from_str(&board.estimated, "%H:%M").is_ok()
+        })
+}
+
+/// The stop estimates from a predicted late start (DS-127): the same
+/// uniform propagation as [`apply_delay_estimates`], labelled
+/// `estimate_source = "previous-working"`, and only while the origin's
+/// board has no time of its own ([`origin_board_has_time_estimate`]).
+/// `None` leaves every estimate unset, as an unknown delay does.
+pub fn apply_predicted_start_estimates(stops: &mut [JourneyStop], late_minutes: Option<i32>) {
+    let Some(late_minutes) = late_minutes else {
+        return;
+    };
+    if origin_board_has_time_estimate(stops) {
+        return;
+    }
+    apply_delay_estimates(stops, Some(late_minutes));
+    for stop in stops.iter_mut() {
+        if stop.estimated_arrival.is_some() || stop.estimated_departure.is_some() {
+            stop.estimate_source = Some(ds_store::trains::predicted_start::BASIS);
+        }
+    }
+}
+
 /// Fills in `estimated_arrival`/`estimated_departure` for every stop that
 /// has no confirmed actual time yet, by propagating the train's current
 /// overall delay onto that stop's CIF-derived scheduled time -- the same
@@ -1256,8 +1373,11 @@ pub fn apply_delay_estimates(stops: &mut [JourneyStop], current_delay_minutes: O
 /// heuristic to safely infer from, so it stays silent rather than
 /// guessing -- same posture as `apply_delay_estimates` itself.
 pub fn may_have_arrived(stops: &[JourneyStop], now: DateTime<Utc>) -> bool {
+    // A predicted late start (DS-127) is not evidence the train ran: a
+    // train with no TRUST report at all never "may have arrived".
     stops
         .last()
+        .filter(|stop| stop.estimate_source.is_none())
         .and_then(|stop| stop.estimated_arrival)
         .is_some_and(|eta| now - eta > MAY_HAVE_ARRIVED_THRESHOLD)
 }
@@ -1361,6 +1481,7 @@ pub(crate) mod test_support {
             actual_departure: None,
             estimated_arrival: None,
             estimated_departure: None,
+            estimate_source: None,
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
@@ -1372,6 +1493,8 @@ pub(crate) mod test_support {
             platform_changed: false,
             platform_status: None,
             booked_platform: None,
+            platform_basis: None,
+            display_platform: None,
             live_status: None,
             late_minutes: None,
             board: None,
@@ -1400,6 +1523,7 @@ mod tests {
             actual_departure: None,
             estimated_arrival: None,
             estimated_departure: None,
+            estimate_source: None,
             last_event_type: None,
             variation_status: None,
             delay_minutes: None,
@@ -1411,6 +1535,8 @@ mod tests {
             platform_changed: false,
             platform_status: None,
             booked_platform: None,
+            platform_basis: None,
+            display_platform: None,
             live_status: None,
             late_minutes: None,
             board: None,
@@ -2350,6 +2476,152 @@ mod tests {
         };
 
         assert!(raw_calling_point_from_full_row(&row).is_none());
+    }
+
+    fn platform_stop(
+        live: Option<&str>,
+        booked: Option<&str>,
+        first_seen: Option<&str>,
+    ) -> JourneyStop {
+        JourneyStop {
+            platform: live.map(str::to_string),
+            planned_platform: first_seen.map(str::to_string),
+            platform_changed: live.is_some() && first_seen.is_some() && live != first_seen,
+            booked_platform: booked.map(str::to_string),
+            ..blank_stop()
+        }
+    }
+
+    #[test]
+    fn a_booked_platform_alone_is_shown_as_provisional() {
+        let mut stops = vec![platform_stop(None, Some("4"), None)];
+        apply_platform_basis(&mut stops);
+        assert_eq!(stops[0].platform_basis, Some(PlatformBasis::Booked));
+        assert_eq!(stops[0].display_platform.as_deref(), Some("4"));
+        assert_eq!(stops[0].platform, None);
+        assert!(!stops[0].platform_changed);
+        let json = serde_json::to_value(&stops[0]).unwrap();
+        assert_eq!(json["platformBasis"], "booked");
+        assert_eq!(json["displayPlatform"], "4");
+        assert_eq!(json["estimateSource"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_live_platform_is_compared_against_the_booked_one() {
+        // The poller first saw 9 (a change made before it looked): the
+        // first-seen comparison misses it, the booked one does not.
+        let mut stops = vec![platform_stop(Some("9"), Some("6"), Some("9"))];
+        apply_platform_basis(&mut stops);
+        assert!(stops[0].platform_changed);
+        assert_eq!(stops[0].platform_basis, Some(PlatformBasis::Board));
+        assert_eq!(stops[0].display_platform.as_deref(), Some("9"));
+
+        // The same platform as booked is no change, whatever was seen first.
+        let mut same = vec![platform_stop(Some("6"), Some("6"), Some("5"))];
+        apply_platform_basis(&mut same);
+        assert!(!same[0].platform_changed);
+    }
+
+    #[test]
+    fn without_a_booked_platform_the_first_seen_comparison_stays() {
+        let mut stops = vec![platform_stop(Some("9"), None, Some("6"))];
+        apply_platform_basis(&mut stops);
+        assert!(stops[0].platform_changed);
+        let mut none = vec![platform_stop(None, None, None)];
+        apply_platform_basis(&mut none);
+        assert_eq!(none[0].platform_basis, None);
+        assert_eq!(none[0].display_platform, None);
+    }
+
+    #[test]
+    fn a_sub_platform_letter_on_one_side_is_not_a_change() {
+        assert!(!platforms_differ("4", "4A"));
+        assert!(!platforms_differ("4a", "4"));
+        assert!(!platforms_differ(" 4 ", "4"));
+        assert!(platforms_differ("4", "5"));
+        assert!(platforms_differ("14", "4"));
+        assert!(platforms_differ("4A", "4B"));
+        assert!(platforms_differ("A", "AB"));
+    }
+
+    fn timed_stop(kind: schedule_query::CallingPointKind, at: &str) -> JourneyStop {
+        JourneyStop {
+            kind: Some(kind),
+            timetable: StopTimetable {
+                working_minute_arrival: Some(at.parse().unwrap()),
+                working_minute_departure: Some(at.parse().unwrap()),
+                ..StopTimetable::default()
+            },
+            ..blank_stop()
+        }
+    }
+
+    fn board(estimated: &str) -> crate::data::stop_board::StopBoard {
+        crate::data::stop_board::StopBoard {
+            delay_reason: None,
+            cancel_reason: None,
+            is_cancelled: false,
+            delay_minutes: None,
+            estimated: estimated.to_string(),
+            observed_at: "2026-09-09T09:58:00Z".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_predicted_late_start_fills_labelled_estimates_until_the_board_has_a_time() {
+        let mut stops = vec![
+            timed_stop(
+                schedule_query::CallingPointKind::Origin,
+                "2026-09-09T10:00:00Z",
+            ),
+            timed_stop(
+                schedule_query::CallingPointKind::Terminate,
+                "2026-09-09T10:30:00Z",
+            ),
+        ];
+        apply_predicted_start_estimates(&mut stops, Some(7));
+        assert_eq!(
+            stops[1].estimated_arrival,
+            Some("2026-09-09T10:37:00Z".parse().unwrap())
+        );
+        assert_eq!(stops[1].estimate_source, Some("previous-working"));
+        // Never read as "may have arrived": no TRUST report backs it.
+        assert!(!may_have_arrived(
+            &stops,
+            "2026-09-09T12:00:00Z".parse().unwrap()
+        ));
+
+        // "On time" on the origin board does not cancel the prediction ...
+        let mut on_time = stops.clone();
+        on_time[0].board = Some(board("On time"));
+        for stop in &mut on_time {
+            stop.estimated_arrival = None;
+            stop.estimated_departure = None;
+            stop.estimate_source = None;
+        }
+        apply_predicted_start_estimates(&mut on_time, Some(7));
+        assert_eq!(on_time[1].estimate_source, Some("previous-working"));
+
+        // ... but a time of Darwin's own does.
+        let mut timed = on_time.clone();
+        timed[0].board = Some(board("10:09"));
+        for stop in &mut timed {
+            stop.estimated_arrival = None;
+            stop.estimated_departure = None;
+            stop.estimate_source = None;
+        }
+        assert!(origin_board_has_time_estimate(&timed));
+        apply_predicted_start_estimates(&mut timed, Some(7));
+        assert_eq!(timed[1].estimated_arrival, None);
+        assert_eq!(timed[1].estimate_source, None);
+
+        // No prediction: nothing.
+        let mut none = vec![timed_stop(
+            schedule_query::CallingPointKind::Origin,
+            "2026-09-09T10:00:00Z",
+        )];
+        apply_predicted_start_estimates(&mut none, None);
+        assert_eq!(none[0].estimated_departure, None);
     }
 
     #[test]
@@ -3839,6 +4111,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -3965,6 +4238,7 @@ mod db_tests {
             skipped_stations: &[],
             platform: None,
             planned_platform: None,
+            predicted_late_minutes: None,
         };
         let requests = [
             request(a, "TEST-JRNB-A", Some(&cp_a)),
@@ -3986,6 +4260,7 @@ mod db_tests {
                 Some(json),
                 None,
                 &[],
+                None,
                 None,
                 None,
             )
@@ -4184,6 +4459,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -4323,6 +4599,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -4460,6 +4737,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -4557,6 +4835,7 @@ mod db_tests {
             None,
             None,
             &[],
+            None,
             None,
             None,
         )
@@ -4692,6 +4971,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -4748,6 +5028,7 @@ mod db_tests {
             None,
             None,
             &[],
+            None,
             None,
             None,
         )
@@ -4838,6 +5119,7 @@ mod db_tests {
             None,
             None,
             &[],
+            None,
             None,
             None,
         )
@@ -4981,6 +5263,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -5095,6 +5378,7 @@ mod db_tests {
             None,
             None,
             &[],
+            None,
             None,
             None,
         )
@@ -5218,6 +5502,7 @@ mod db_tests {
             None,
             None,
             &[],
+            None,
             None,
             None,
         )
@@ -5365,6 +5650,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -5497,6 +5783,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -5619,6 +5906,7 @@ mod db_tests {
             &[],
             None,
             None,
+            None,
         )
         .await
         .expect("build_journey_stops")
@@ -5737,6 +6025,7 @@ mod db_tests {
             Some(&calling_points),
             Some(6),
             &[],
+            None,
             None,
             None,
         )

@@ -1866,6 +1866,7 @@ mod tests {
             planned_platform: None,
             journey_stops: None,
             may_have_arrived: false,
+            predicted_start: None,
             operator_code: Some("LM".to_string()),
             operator_name: None,
             cancelled: false,

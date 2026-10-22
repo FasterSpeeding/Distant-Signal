@@ -25,3 +25,14 @@ export function platformLabel(facts: PlatformFacts): string {
 export function compactPlatformLabel(facts: PlatformFacts): string {
   return isPlatformChange(facts) ? `${facts.platform} (was ${facts.plannedPlatform})` : facts.platform;
 }
+
+/** The platform a changed platform is "changed from" (DS-127): the
+ * timetable's booked platform once the api compares against it (it sends
+ * `platformBasis`), else the first platform seen, as before. */
+export function changedFromPlatform(stop: {
+  plannedPlatform: string | null;
+  bookedPlatform?: string | null;
+  platformBasis?: string | null;
+}): string | null {
+  return stop.platformBasis !== undefined ? (stop.bookedPlatform ?? stop.plannedPlatform) : stop.plannedPlatform;
+}

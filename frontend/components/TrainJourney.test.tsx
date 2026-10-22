@@ -1093,6 +1093,39 @@ describe('TrainJourney: tracking phases', () => {
     expect(screen.getByText('Planned. The timetabled route is shown.')).toBeInTheDocument();
   });
 
+  // DS-127: a predicted late start shows with the planned state, as an
+  // estimate based on the incoming train.
+  it('planned with a predicted late start: says so, as an estimate', () => {
+    renderWithMantine(
+      <TrainJourney
+        state={baseState({
+          trainUid: 'W12345',
+          journeyStops: stops,
+          trackingPhase: 'planned',
+          firstReportExpectedAt: '2026-08-28T06:25:00Z',
+          predictedStart: {
+            lateMinutes: 7,
+            confidence: 'medium',
+            basis: 'previous-working',
+            computedAt: '2026-08-28T06:00:00Z',
+            previousWorking: {
+              trainUid: 'P12345',
+              serviceDate: '2026-08-28',
+              link: 'inferred',
+              status: 'en_route',
+              delayMinutes: 12,
+              observedAt: '2026-08-28T05:58:00Z',
+              bookedTurnaroundMinutes: 9,
+            },
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText('Planned')).toBeInTheDocument();
+    expect(screen.getByText('Expected to start about 7 min late')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'incoming train' })).toHaveAttribute('href', '/train/P12345/2026-08-28');
+  });
+
   it('planned and activated: no "No movement data" summary and no waiting caption', () => {
     renderWithMantine(
       <TrainJourney
