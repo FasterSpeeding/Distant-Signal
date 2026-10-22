@@ -2625,6 +2625,13 @@ notifier:
   # -- Recurring-journey materialization sweep cadence (spec §3.1) -- see
   # config.rs's own template_sweep_poll_interval_secs doc.
   templateSweepPollIntervalSecs: 3600
+  # -- Predicted-late-start check cadence (DS-127): a tracked train with
+  # no TRUST report yet, within 3 hours of departure, whose previous
+  # working's delay predicts a late start at high confidence and at least
+  # trainDelayThresholdMinutes, gets one push. It shares the delay pushes'
+  # state, so the delay push for the same lateness is not repeated. One
+  # small query a cycle. 0 turns it off (PREDICTED_START_POLL_INTERVAL_SECS).
+  predictedStartPollIntervalSecs: 60
   # -- 'auto'-mode leg commit-check lead time, minutes (spec §3.2 addendum)
   # -- see config.rs's own auto_commit_lead_minutes doc.
   autoCommitLeadMinutes: 120
