@@ -42,12 +42,23 @@
 //!
 //! **A search covers the whole train day of `date`** (2026-10-22): every
 //! service of that service date, its departures after midnight
-//! (`dayOffset: 1`) included, and never the previous date's late trains.
+//! (`dayOffset: 1`) included, and never the previous date's late trains
+//! unless `across_midnight=true` asks for them (see below).
 //! Times compare in train-day minutes (minutes past `date`'s midnight,
 //! over 1440 after it) on the public basis the rows show; `*_day_offset`
 //! puts a bound after midnight, and a `to` earlier than an explicit `from`
 //! runs past it. Results run in train-day order, so the after-midnight
 //! departures come last. See `resolve_window` and
+//! `queries::search_schedule_calling_point_departures`.
+//!
+//! **`across_midnight=true`** (2026-10-22) also returns the PREVIOUS
+//! service date's trains still running after its midnight (its
+//! `dayOffset >= 1` rows) whose departure falls inside the window on
+//! `date`'s clock, merged into train-day order -- `/Trips/plan`'s
+//! `acrossMidnight`, for the small hours. Every row carries its own
+//! `serviceDate` (the key of its `GET /Train/by-uid/{uid}/{date}`), and its
+//! day offsets count from that. `/trains` sends it when the date defaults
+//! to today; without it a search stays strictly `date`'s own services. See
 //! `queries::search_schedule_calling_point_departures`.
 //!
 //! **`stops_at` replaced the earlier single-valued `destination` filter**
@@ -292,8 +303,15 @@ struct TrainSearchParams {
     /// uppercased, empty entries dropped; a code that is not two letters or
     /// digits, or not a known operator (`tocs`), is a `400`. Same
     /// multi-value convention as `/incidents`' `operator` and the leg
-    /// candidates' `operator`.
+    /// candidates' `operator`. Known means in `tocs`, or running a train in
+    /// the published timetable on a date this search covers (2026-10-22;
+    /// see `check_known_operators`).
     operator: Option<String>,
+    /// Optional, `true` or `false` (2026-10-22): also the previous service
+    /// date's trains still running after its midnight, inside the window
+    /// on `date`'s clock (see this module's doc comment). Absent is
+    /// `false`: `date`'s own services only.
+    across_midnight: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
     /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
     /// rejected; zero, negative and unparseable values are a `400`.
@@ -309,6 +327,10 @@ pub fn router() -> Router {
         .route(
             "/trains/search/dates",
             axum::routing::get(get_trains_search_dates),
+        )
+        .route(
+            "/trains/search/operators",
+            axum::routing::get(get_trains_search_operators),
         )
         .route("/trains/resolve", axum::routing::get(get_trains_resolve))
 }
@@ -596,6 +618,30 @@ async fn get_trains_search_dates(
     })))
 }
 
+/// `GET /public/trains/search/operators` (2026-10-22) -- the operators
+/// `GET /public/trains/search`'s `operator` can name, for a client's
+/// operator picker.
+///
+/// `200 {"operators": [{"code", "name"}]}`, by code: every `tocs` operator
+/// with its name, then joined by each operator code the published
+/// timetable carries that `tocs` lacks, whose `name` is `null` (a client
+/// shows the code). The search itself checks a code against the dates it
+/// covers (see `check_known_operators`), so a code listed here can still
+/// match no train on a given date.
+async fn get_trains_search_operators(
+    State(app): State<App>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let operators = crate::data::reference::train_search_operators(&app.database)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(json!({
+        "operators": operators
+            .into_iter()
+            .map(|(code, name)| json!({"code": code, "name": name}))
+            .collect::<Vec<_>>(),
+    })))
+}
+
 /// Validates and uppercases a CRS code.
 fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)> {
     let trimmed = raw.trim();
@@ -775,11 +821,18 @@ fn parse_operators(raw: Option<&str>) -> Result<Option<Vec<String>>, (StatusCode
     Ok((!codes.is_empty()).then_some(codes))
 }
 
-/// A `400` naming every code in `codes` that is not a known operator
-/// (`tocs`): an unknown code would otherwise just match nothing, which
-/// reads as "no trains" rather than as the typo it is.
-async fn check_known_operators(app: &App, codes: &[String]) -> Result<(), (StatusCode, String)> {
-    let known = crate::data::reference::known_toc_codes(&app.database, codes)
+/// A `400` naming every code in `codes` that is not a known operator: an
+/// unknown code would otherwise just match nothing, which reads as "no
+/// trains" rather than as the typo it is. Known is in `tocs` OR running a
+/// train in the published timetable on one of `service_dates` (2026-10-22):
+/// `tocs` lacks some codes the timetable carries (`TW`, `QC`, `LF` on
+/// 2026-10-22), and their trains must stay filterable.
+async fn check_known_operators(
+    app: &App,
+    codes: &[String],
+    service_dates: &[chrono::NaiveDate],
+) -> Result<(), (StatusCode, String)> {
+    let known = crate::data::reference::known_operator_codes(&app.database, codes, service_dates)
         .await
         .map_err(internal_error)?;
     let unknown: Vec<&str> = codes
@@ -825,7 +878,8 @@ pub(crate) fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, Str
 
 /// Renders a keyset cursor for the wire: base64url-without-padding of
 /// `"HH:MM:SS|train_uid"`, plus `"|day_offset"` for a row after midnight
-/// (2026-10-22). No `origin_crs`: the station
+/// (2026-10-22), plus `"|p"` for a row of the previous service date (an
+/// `across_midnight` search's, whose day offset is always 1 or more). No `origin_crs`: the station
 /// being searched is the fixed equality filter for the whole query,
 /// not a value that varies within one page, so it carries no ordering
 /// information and doesn't belong in the cursor.
@@ -841,7 +895,9 @@ pub(crate) fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
     );
     // The working day offset, as a third part, only when it is not 0
     // (2026-10-22): a same-day cursor reads exactly as before.
-    if cursor.day_offset == 0 {
+    if cursor.previous_service_date {
+        URL_SAFE_NO_PAD.encode(format!("{base}|{}|p", cursor.day_offset))
+    } else if cursor.day_offset == 0 {
         URL_SAFE_NO_PAD.encode(base)
     } else {
         URL_SAFE_NO_PAD.encode(format!("{base}|{}", cursor.day_offset))
@@ -851,8 +907,19 @@ pub(crate) fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
 /// Inverse of `encode_cursor`. A malformed cursor is a `400`, never
 /// silently ignored -- ignoring it would restart the caller at page 1
 /// while their UI appended the result as page 2, duplicating every row.
+/// A previous-service-date cursor is one too: only the train search
+/// writes them (see `decode_search_cursor`).
 pub(crate) fn decode_cursor(
     raw: &str,
+) -> Result<CallingPointDepartureCursor, (StatusCode, String)> {
+    decode_search_cursor(raw, false)
+}
+
+/// [`decode_cursor`], also reading a previous-service-date cursor when
+/// `across_midnight` (the search that wrote it asked for those rows).
+fn decode_search_cursor(
+    raw: &str,
+    across_midnight: bool,
 ) -> Result<CallingPointDepartureCursor, (StatusCode, String)> {
     let invalid = || {
         (
@@ -862,7 +929,14 @@ pub(crate) fn decode_cursor(
     };
     let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| invalid())?;
     let decoded = String::from_utf8(bytes).map_err(|_| invalid())?;
-    let parts: Vec<&str> = decoded.split('|').collect();
+    let mut parts: Vec<&str> = decoded.split('|').collect();
+    let previous_service_date = parts.len() == 4 && parts.last() == Some(&"p");
+    if previous_service_date {
+        if !across_midnight {
+            return Err(invalid());
+        }
+        parts.pop();
+    }
     let (scheduled, train_uid, day_offset) = match parts.as_slice() {
         [scheduled, train_uid] => (*scheduled, *train_uid, 0),
         [scheduled, train_uid, day_offset] => (
@@ -882,6 +956,7 @@ pub(crate) fn decode_cursor(
         day_offset,
         scheduled,
         train_uid: (*train_uid).to_string(),
+        previous_service_date,
     })
 }
 
@@ -964,15 +1039,13 @@ async fn get_trains_search(
         )?,
     };
     let operators = parse_operators(params.operator.as_deref())?;
-    if let Some(codes) = &operators {
-        check_known_operators(&app, codes).await?;
-    }
+    let across_midnight = parse_across_midnight(params.across_midnight.as_deref())?;
     let limit = normalize_limit(params.limit.as_deref())?;
     let after = params
         .after
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .map(decode_cursor)
+        .map(|raw| decode_search_cursor(raw, across_midnight))
         .transpose()?;
 
     // `today` and `now` are deliberately read from ONE
@@ -996,6 +1069,14 @@ async fn get_trains_search(
         }
         None => today,
     };
+    // The service dates whose trains this search returns: `date`, and with
+    // `across_midnight` the day before.
+    let previous_date = service_date.pred_opt().filter(|_| across_midnight);
+    let service_dates: Vec<chrono::NaiveDate> =
+        previous_date.into_iter().chain([service_date]).collect();
+    if let Some(codes) = &operators {
+        check_known_operators(&app, codes, &service_dates).await?;
+    }
 
     // The `now`-forward floor is a DEFAULT, not a filter: it only ever
     // fills in for a lower bound the caller didn't supply at all. An
@@ -1035,6 +1116,7 @@ async fn get_trains_search(
         arrive_from: window.arrival_from.map(WindowBound::minutes),
         arrive_to: window.arrival_to.map(WindowBound::minutes),
         operators: operators.as_deref(),
+        across_midnight,
         after: after.as_ref(),
         limit,
     };
@@ -1083,14 +1165,22 @@ async fn get_trains_search(
         .iter()
         .map(|row| {
             let mut rendered = calling_point_departure_json(row, &station, &destination_names);
-            // `dayOffset`: days after `service_date` the departure from
-            // `station` falls on, the same convention as
+            // `dayOffset`: days after the row's service date the departure
+            // from `station` falls on, the same convention as
             // `/schedule-departures`' own `dayOffset` -- it moves the
             // departure's calendar day, never the service date, so the
-            // row's `GET /Train/by-uid/{uid}/{date}` stays the searched
-            // date. It is `scheduled`'s (the public departure, else the
-            // working one); `workingDayOffset` is `workingDeparture`'s.
+            // row's `GET /Train/by-uid/{uid}/{date}` stays its
+            // `serviceDate` (the searched date, or with `across_midnight`
+            // the day before). It is `scheduled`'s (the public departure,
+            // else the working one); `workingDayOffset` is
+            // `workingDeparture`'s.
             if let Some(object) = rendered.as_object_mut() {
+                object.insert(
+                    "serviceDate".to_string(),
+                    row.get("service_date")
+                        .cloned()
+                        .unwrap_or_else(|| json!(service_date)),
+                );
                 let working_day_offset = row.get("day_offset").and_then(Value::as_u64).unwrap_or(0);
                 let (_, day_offset) = crate::render::public_else_working(
                     row,
@@ -1111,9 +1201,7 @@ async fn get_trains_search(
         })
         .collect();
     crate::routes::schedule_rows::attach_origin_names(&mut results, &destination_names);
-    crate::routes::schedule_rows::attach_live(&app.database, service_date, &mut results).await;
-    crate::data::schedule_services::annotate_uid_rows(&app.database, service_date, &mut results)
-        .await;
+    let results = annotate_by_service_date(&app, results, service_date, previous_date).await;
     let mut body = json!({
         "results": results,
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
@@ -1122,6 +1210,10 @@ async fn get_trains_search(
         // every day offset resolved.
         "serviceDate": service_date,
         "window": window.to_json(),
+        // Additive (2026-10-22): whether the previous date's late trains
+        // were asked for, and every service date the rows can be of.
+        "acrossMidnight": across_midnight,
+        "serviceDates": service_dates,
     });
     // Additive (2026-10-08): whether `service_date`'s timetable is still
     // provisional -- once per response, since every row shares the date.
@@ -1130,6 +1222,62 @@ async fn get_trains_search(
             .insert_into(object);
     }
     Ok(Json(body))
+}
+
+/// `?across_midnight=`: absent, empty or `false` is off, `true` on (any
+/// case); anything else is a `400`, as `/Trips/plan`'s `acrossMidnight`.
+fn parse_across_midnight(raw: Option<&str>) -> Result<bool, (StatusCode, String)> {
+    match raw
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" | "false" => Ok(false),
+        "true" => Ok(true),
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            format!("across_midnight must be true or false, not '{other}'"),
+        )),
+    }
+}
+
+/// Attaches each row's live state and service mode, both read per service
+/// date: the rows of `previous_date` (an `across_midnight` search's, their
+/// `serviceDate` the day before) against that date, the rest against
+/// `service_date`. Row order is kept.
+async fn annotate_by_service_date(
+    app: &App,
+    results: Vec<Value>,
+    service_date: chrono::NaiveDate,
+    previous_date: Option<chrono::NaiveDate>,
+) -> Vec<Value> {
+    let previous_key = previous_date.map(|date| json!(date));
+    let is_previous = |row: &Value| {
+        previous_key
+            .as_ref()
+            .is_some_and(|key| row.get("serviceDate") == Some(key))
+    };
+    let flags: Vec<bool> = results.iter().map(is_previous).collect();
+    let (mut previous_rows, mut own_rows): (Vec<Value>, Vec<Value>) =
+        results.into_iter().partition(is_previous);
+    for (date, rows) in [
+        (Some(service_date), &mut own_rows),
+        (previous_date, &mut previous_rows),
+    ] {
+        let Some(date) = date else { continue };
+        if rows.is_empty() {
+            continue;
+        }
+        crate::routes::schedule_rows::attach_live(&app.database, date, rows).await;
+        crate::data::schedule_services::annotate_uid_rows(&app.database, date, rows).await;
+    }
+    let mut own = own_rows.into_iter();
+    let mut previous = previous_rows.into_iter();
+    flags
+        .into_iter()
+        .filter_map(|flag| if flag { previous.next() } else { own.next() })
+        .collect()
 }
 
 /// The four `stopsAt*` fields of a search row, present only when the
@@ -1287,6 +1435,7 @@ mod tests {
             day_offset: 1,
             scheduled: hm(0, 30),
             train_uid: "C12345".to_string(),
+            previous_service_date: false,
         };
         assert_eq!(decode_cursor(&encode_cursor(&cursor)), Ok(cursor));
 
@@ -1294,6 +1443,7 @@ mod tests {
             day_offset: 0,
             scheduled: hm(9, 0),
             train_uid: "C12345".to_string(),
+            previous_service_date: false,
         };
         let encoded = encode_cursor(&same_day);
         assert_eq!(encoded, URL_SAFE_NO_PAD.encode("09:00:00|C12345"));
@@ -1301,6 +1451,39 @@ mod tests {
 
         assert!(decode_cursor(&URL_SAFE_NO_PAD.encode("00:30:00|C12345|x")).is_err());
         assert!(decode_cursor(&URL_SAFE_NO_PAD.encode("00:30:00|C12345|0")).is_err());
+    }
+
+    #[test]
+    fn a_previous_service_date_cursor_reads_back_only_across_midnight() {
+        let cursor = CallingPointDepartureCursor {
+            day_offset: 1,
+            scheduled: hm(0, 40),
+            train_uid: "C12345".to_string(),
+            previous_service_date: true,
+        };
+        let encoded = encode_cursor(&cursor);
+        assert_eq!(encoded, URL_SAFE_NO_PAD.encode("00:40:00|C12345|1|p"));
+        assert_eq!(decode_search_cursor(&encoded, true), Ok(cursor));
+        // A search without `across_midnight`, and the leg candidates,
+        // never wrote one.
+        assert!(decode_search_cursor(&encoded, false).is_err());
+        assert!(decode_cursor(&encoded).is_err());
+        // Its day offset is still 1 or more.
+        assert!(
+            decode_search_cursor(&URL_SAFE_NO_PAD.encode("00:40:00|C12345|0|p"), true).is_err()
+        );
+        assert!(
+            decode_search_cursor(&URL_SAFE_NO_PAD.encode("00:40:00|C12345|1|q"), true).is_err()
+        );
+    }
+
+    #[test]
+    fn across_midnight_is_true_or_false() {
+        assert_eq!(parse_across_midnight(None), Ok(false));
+        assert_eq!(parse_across_midnight(Some(" ")), Ok(false));
+        assert_eq!(parse_across_midnight(Some("False")), Ok(false));
+        assert_eq!(parse_across_midnight(Some("TRUE")), Ok(true));
+        assert!(parse_across_midnight(Some("1")).is_err());
     }
 }
 
@@ -3328,6 +3511,218 @@ mod db_tests {
         assert_eq!(uids(&body), ["MNEA01", "MNMO01"]);
 
         delete_days(&pool, &[date, next]).await;
+    }
+
+    /// One `schedule_services` row: `uid` on `date`, run by `operator`.
+    async fn insert_service(pool: &PgPool, date: chrono::NaiveDate, uid: &str, operator: &str) {
+        sqlx::query(
+            "INSERT INTO schedule_services (service_date, uid, mode, stp, operator_atoc) \
+             VALUES ($1, $2, 'train', 'P', $3)",
+        )
+        .bind(date)
+        .bind(uid)
+        .bind(operator)
+        .execute(pool)
+        .await
+        .expect("seed schedule_services");
+    }
+
+    async fn delete_services(pool: &PgPool, dates: &[chrono::NaiveDate]) {
+        for &date in dates {
+            crate::test_support::assert_synthetic_date(date);
+            sqlx::query("DELETE FROM schedule_services WHERE service_date = $1")
+                .bind(date)
+                .execute(pool)
+                .await
+                .expect("cleanup fixture-day schedule_services rows");
+        }
+    }
+
+    /// A code `tocs` lacks is still filterable when the timetable runs a
+    /// train under it on the searched date (2026-10-22): from
+    /// `schedule_services`, or, for a date it holds nothing for, from the
+    /// departures themselves.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_operator_filter_accepts_a_timetable_only_code() {
+        let (pool, _guards) = connect().await;
+        set_fixture_tocs(&pool, true).await;
+        let date = crate::routes::london_today() + chrono::Duration::days(2);
+        let other = date + chrono::Duration::days(1);
+        delete_days(&pool, &[date, other]).await;
+        delete_services(&pool, &[date, other]).await;
+        for row in [
+            ("OPQ301", t(9, 0, 0), 0, None, Some("Q3")),
+            ("OPQ701", t(10, 0, 0), 0, None, Some("Q7")),
+            ("OPQ801", t(11, 0, 0), 0, None, Some("Q8")),
+        ] {
+            insert_departure(&pool, date, "ZOF", row).await;
+        }
+        insert_departure(
+            &pool,
+            other,
+            "ZOF",
+            ("OPQ302", t(9, 0, 0), 0, None, Some("Q3")),
+        )
+        .await;
+        let search = |on: chrono::NaiveDate, query: &str| {
+            format!("/trains/search?station=ZOF&date={on}&{query}")
+        };
+
+        // No `schedule_services` rows for `date`: the departures say Q7 runs.
+        let (status, body) = get(&pool, &search(date, "operator=Q7")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["OPQ701"]);
+
+        // With them, they do; a `tocs` code mixes in.
+        insert_service(&pool, date, "OPQ701", "Q7").await;
+        insert_service(&pool, date, "OPQ801", "Q8").await;
+        let (status, body) = get(&pool, &search(date, "operator=q8,Q3,Q7")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["OPQ301", "OPQ701", "OPQ801"]);
+
+        // A code neither knows is still a 400.
+        let (status, body) = get(&pool, &search(date, "operator=Q7,Q5")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, "operator Q5 is not a known train operator code");
+
+        // Known is per searched date: no Q7 train runs on `other`.
+        let (status, body) = get(&pool, &search(other, "operator=Q7")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, "operator Q7 is not a known train operator code");
+
+        // The operator list: `tocs` named, the timetable's extras by code.
+        let (status, body) = get(&pool, "/trains/search/operators").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        let operators = json["operators"].as_array().unwrap();
+        for expected in [
+            serde_json::json!({"code": "Q3", "name": "Fixture Rail"}),
+            serde_json::json!({"code": "Q7", "name": null}),
+            serde_json::json!({"code": "Q8", "name": null}),
+        ] {
+            assert!(operators.contains(&expected), "{expected} in {body}");
+        }
+        let codes: Vec<&str> = operators
+            .iter()
+            .map(|o| o["code"].as_str().unwrap())
+            .collect();
+        assert!(codes.windows(2).all(|pair| pair[0] < pair[1]), "{codes:?}");
+
+        delete_services(&pool, &[date, other]).await;
+        set_fixture_tocs(&pool, false).await;
+        delete_days(&pool, &[date, other]).await;
+    }
+
+    /// `across_midnight` (2026-10-22): at 00:30 London, a search with the
+    /// date left to default also finds yesterday's 00:40 train, labelled
+    /// with its own service date; an explicit date without the param stays
+    /// that date's own trains.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_across_midnight_adds_yesterdays_late_trains() {
+        let (pool, _guards) = connect().await;
+        // 00:30 BST on the day after the pinned date.
+        let _clock = crate::routes::pin_london_now_for_tests(
+            "2099-08-14T23:30:00Z".parse().expect("valid instant"),
+        );
+        let today = crate::routes::london_today();
+        let yesterday = today.pred_opt().unwrap();
+        assert_eq!(crate::routes::london_now().time(), t(0, 30, 0));
+        delete_days(&pool, &[yesterday, today]).await;
+        for row in [
+            ("AMPV23", t(23, 0, 0), 0, Some(t(23, 0, 0)), None),
+            // Left before now.
+            ("AMPV20", t(0, 20, 0), 1, Some(t(0, 20, 0)), None),
+            ("AMPV40", t(0, 40, 0), 1, Some(t(0, 40, 0)), None),
+            ("AMPV55", t(0, 55, 0), 1, None, None),
+        ] {
+            insert_departure(&pool, yesterday, "ZAM", row).await;
+        }
+        for row in [
+            ("AMTD45", t(0, 45, 0), 0, None, None),
+            ("AMTD06", t(6, 0, 0), 0, None, None),
+        ] {
+            insert_departure(&pool, today, "ZAM", row).await;
+        }
+
+        // The date defaults to today; `/trains` asks for yesterday's late
+        // trains too. Merged in time order, each row with its own date.
+        let (status, body) = get(&pool, "/trains/search?station=ZAM&across_midnight=true").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["AMPV40", "AMTD45", "AMPV55", "AMTD06"]);
+        let rows = results(&body);
+        assert_eq!(rows[0]["serviceDate"], yesterday.to_string());
+        assert_eq!(rows[0]["scheduled"], "00:40");
+        assert_eq!(rows[0]["dayOffset"], 1);
+        assert_eq!(rows[1]["serviceDate"], today.to_string());
+        assert_eq!(rows[1]["dayOffset"], 0);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["serviceDate"], today.to_string());
+        assert_eq!(json["acrossMidnight"], true);
+        assert_eq!(
+            json["serviceDates"],
+            serde_json::json!([yesterday.to_string(), today.to_string()])
+        );
+
+        // Page by page, the cursor crossing between the two dates.
+        let mut seen = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..6 {
+            let query = match &after {
+                Some(cursor) => {
+                    format!(
+                        "/trains/search?station=ZAM&across_midnight=true&limit=1&after={cursor}"
+                    )
+                }
+                None => "/trains/search?station=ZAM&across_midnight=true&limit=1".to_string(),
+            };
+            let (status, body) = get(&pool, &query).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            seen.extend(uids(&body));
+            after = next_cursor(&body);
+            if after.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, ["AMPV40", "AMTD45", "AMPV55", "AMTD06"]);
+
+        // An explicit date is that date's own trains only.
+        let (status, body) = get(&pool, &format!("/trains/search?station=ZAM&date={today}")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["AMTD45", "AMTD06"]);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["acrossMidnight"], false);
+        assert_eq!(json["serviceDates"], serde_json::json!([today.to_string()]));
+        assert!(
+            results(&body)
+                .iter()
+                .all(|row| row["serviceDate"] == today.to_string())
+        );
+
+        // As is a defaulted date without the param (the API's default).
+        let (_, body) = get(&pool, "/trains/search?station=ZAM").await;
+        assert_eq!(uids(&body), ["AMTD45", "AMTD06"]);
+
+        // An explicit date that asks for more gets it.
+        let (_, body) = get(
+            &pool,
+            &format!("/trains/search?station=ZAM&date={today}&across_midnight=true&to=00:50"),
+        )
+        .await;
+        assert_eq!(uids(&body), ["AMPV40", "AMTD45"]);
+
+        // A previous-date cursor means nothing to a search without it.
+        let cursor = URL_SAFE_NO_PAD.encode("00:40:00|AMPV40|1|p");
+        let (status, _) = get(&pool, &format!("/trains/search?station=ZAM&after={cursor}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) = get(&pool, "/trains/search?station=ZAM&across_midnight=yes").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, "across_midnight must be true or false, not 'yes'");
+
+        delete_days(&pool, &[yesterday, today]).await;
     }
 
     #[tokio::test]

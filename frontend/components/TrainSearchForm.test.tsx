@@ -102,6 +102,7 @@ function searchBody(
     destinationArrival?: string | null;
     operator?: string | null;
     dayOffset?: number;
+    serviceDate?: string;
   }[],
   nextCursor: string | null = null,
 ) {
@@ -246,7 +247,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
   });
 
   it('includes the selected date in the search request', async () => {
@@ -331,7 +332,7 @@ describe('TrainSearchForm', () => {
 
     await clickSearch();
 
-    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
   });
 
   it('shows an accessible "no matches" option instead of hiding the listbox when a search matches nothing', () => {
@@ -364,7 +365,7 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(searchCallUrl(fetchMock)).toBe(
-        '/api/trains/search?station=MAN&origin=EUS&stops_at=OXF&from=09%3A00&to=12%3A00',
+        '/api/trains/search?station=MAN&origin=EUS&stops_at=OXF&from=09%3A00&to=12%3A00&across_midnight=true',
       ),
     );
   });
@@ -429,7 +430,9 @@ describe('TrainSearchForm', () => {
       // Only the cleared field's param is dropped; the other survives.
       await clickSearch();
 
-      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&to=12%3A00'));
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&to=12%3A00&across_midnight=true'),
+      );
     });
 
     it('offers a clear button only on the time filters that have a value', async () => {
@@ -490,7 +493,7 @@ describe('TrainSearchForm', () => {
 
       await clickSearch();
 
-      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
     });
 
     it('refuses to search on a half-entered time rather than quietly dropping the filter', async () => {
@@ -526,7 +529,7 @@ describe('TrainSearchForm', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Clear earliest departure' }));
 
       await clickSearch();
-      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
     });
 
     it('forgets a half-entered arrival time once Stops at removes the field', async () => {
@@ -564,7 +567,9 @@ describe('TrainSearchForm', () => {
       expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled();
 
       await clickSearch();
-      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'));
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG&across_midnight=true'),
+      );
     });
 
     it('does not let the picker or clear button submit the form', async () => {
@@ -975,7 +980,9 @@ describe('TrainSearchForm', () => {
       fireEvent.click(screen.getByRole('option', { name: 'GW · Great Western Railway' }));
       fireEvent.click(screen.getByRole('option', { name: 'SW · South Western Railway' }));
 
-      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&operator=GW%2CSW'));
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&operator=GW%2CSW&across_midnight=true'),
+      );
       expect(screen.getByTestId('list-filter-count')).toHaveTextContent('1');
     });
 
@@ -987,7 +994,7 @@ describe('TrainSearchForm', () => {
       );
       await awaitMountSettled();
 
-      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&operator=SW%2CGW');
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&operator=SW%2CGW&across_midnight=true');
     });
 
     it('clears with the other filters', async () => {
@@ -999,7 +1006,7 @@ describe('TrainSearchForm', () => {
       openFiltersIfCompact();
       fireEvent.click(screen.getByRole('button', { name: /^Clear filters/ }));
 
-      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
     });
   });
 
@@ -1088,6 +1095,78 @@ describe('TrainSearchForm', () => {
       expect(late.closest('li')).toHaveTextContent('+1');
       // Still the searched date's train.
       expect(late).toHaveAttribute('href', expect.stringContaining('2026-10-23'));
+    });
+
+    it("lists yesterday's trains still running first, under and labelled with their service date", async () => {
+      // 23:30 UTC on Fri 23 Oct is 00:30 on Sat 24 Oct in London (BST).
+      vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+      vi.setSystemTime(new Date('2026-10-23T23:30:00Z'));
+      const rows = [
+        {
+          uid: 'C30001',
+          scheduled: '00:40',
+          stationCrs: 'MAN',
+          originCrs: 'EUS',
+          destinationCrs: 'OXF',
+          dayOffset: 1,
+          serviceDate: '2026-10-23',
+        },
+        {
+          uid: 'C30002',
+          scheduled: '00:45',
+          stationCrs: 'MAN',
+          originCrs: 'EUS',
+          destinationCrs: 'WAT',
+          dayOffset: 0,
+          serviceDate: '2026-10-24',
+        },
+      ];
+      const fetchMock = mockFetchByUrl({ search: () => new Response(searchBody(rows), { status: 200 }) });
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" />);
+      await clickSearch();
+
+      // No date picked: yesterday's late trains are asked for too.
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true');
+      const previous = await screen.findByRole('list', { name: 'Still running from Fri 23 Oct' });
+      const late = within(previous).getByRole('link', { name: /^00:40 \(next day\) to OXF/ });
+      expect(late.closest('li')).toHaveTextContent('Fri 23 Oct service');
+      expect(late.closest('li')).toHaveTextContent('+1');
+      // Its own date's train page.
+      expect(late).toHaveAttribute('href', '/train/C30001/2026-10-23');
+
+      const today = screen.getByRole('list', { name: 'Trains' });
+      const own = within(today).getByRole('link', { name: rowName('00:45', 'WAT') });
+      expect(own).toHaveAttribute('href', '/train/C30002/2026-10-24');
+      expect(own.closest('li')).not.toHaveTextContent('service');
+    });
+
+    it('keeps a picked date to its own trains', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialDate="2026-10-23" />);
+      await awaitMountSettled();
+
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&date=2026-10-23');
+      expect(screen.queryByRole('list', { name: /^Still running/ })).not.toBeInTheDocument();
+    });
+
+    it('offers an operator the timetable carries with no name, by its code', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(
+        <TrainSearchForm
+          initialStation="MAN"
+          initialOperator="TW,ZZ"
+          operatorNames={{ SW: 'South Western Railway' }}
+          unnamedOperatorCodes={['TW']}
+        />,
+      );
+      // `TW` is kept from the link (a known code); `ZZ` is not.
+      return waitFor(() =>
+        expect(searchCallUrl(vi.mocked(fetch) as ReturnType<typeof vi.fn>)).toBe(
+          '/api/trains/search?station=MAN&operator=TW&across_midnight=true',
+        ),
+      );
     });
   });
 
@@ -1226,8 +1305,8 @@ describe('TrainSearchForm', () => {
     // Index 0 is the mount-time search (`initialStation="MAN"` is a valid
     // CRS); index 1 is "Load more".
     expect(urls).toHaveLength(2);
-    expect(urls[0]).toBe('/api/trains/search?station=MAN');
-    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
+    expect(urls[0]).toBe('/api/trains/search?station=MAN&across_midnight=true');
+    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1&across_midnight=true');
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument());
   });
@@ -1254,9 +1333,9 @@ describe('TrainSearchForm', () => {
     // Index 0 is the mount-time search; indices 1/2 the two "Load more"
     // presses.
     expect(urls).toHaveLength(3);
-    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1');
+    expect(urls[1]).toBe('/api/trains/search?station=MAN&after=CURSOR1&across_midnight=true');
     expect(urls[2], 'the second Load more must use the cursor from the SECOND response').toBe(
-      '/api/trains/search?station=MAN&after=CURSOR2',
+      '/api/trains/search?station=MAN&after=CURSOR2&across_midnight=true',
     );
     expect(screen.getAllByRole('link', { name: rowName('11:40', 'WAT') })).toHaveLength(1);
   });
@@ -1281,7 +1360,7 @@ describe('TrainSearchForm', () => {
     // filters (the changes land before or after the mount search; either
     // way the rows on screen are from the search that has them).
     expect(searchCallUrl(fetchMock)).toBe(
-      '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&to=12%3A00&after=CURSOR1',
+      '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&to=12%3A00&after=CURSOR1&across_midnight=true',
     );
   });
 
@@ -1361,7 +1440,9 @@ describe('TrainSearchForm', () => {
     });
     await clickSearch();
 
-    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG'));
+    await waitFor(() =>
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&stops_at=RDG&across_midnight=true'),
+    );
   });
 
   it('does not render the arrival-time filter until a station is entered in Stops at', async () => {
@@ -1395,7 +1476,7 @@ describe('TrainSearchForm', () => {
 
     await waitFor(() =>
       expect(searchCallUrl(fetchMock)).toBe(
-        '/api/trains/search?station=MAN&stops_at=WAT&arrival_from=09%3A00&arrival_to=09%3A30',
+        '/api/trains/search?station=MAN&stops_at=WAT&arrival_from=09%3A00&arrival_to=09%3A30&across_midnight=true',
       ),
     );
   });
@@ -1411,7 +1492,7 @@ describe('TrainSearchForm', () => {
     });
     await clickSearch();
 
-    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&across_midnight=true'));
   });
 
   // docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md
@@ -1483,7 +1564,9 @@ describe('TrainSearchForm', () => {
       renderWithMantine(<TrainSearchForm initialStation="MAN" initialOrigin="EUS" initialFrom="09:00" />);
 
       await waitFor(() => expect(searchCallUrls(fetchMock)).toHaveLength(1));
-      expect(searchCallUrls(fetchMock)[0]).toBe('/api/trains/search?station=MAN&origin=EUS&from=09%3A00');
+      expect(searchCallUrls(fetchMock)[0]).toBe(
+        '/api/trains/search?station=MAN&origin=EUS&from=09%3A00&across_midnight=true',
+      );
       expect(await screen.findByRole('link', { name: rowName('08:22', 'WAT') })).toBeInTheDocument();
       // The mount effect itself must not touch the URL -- only an explicit
       // Search press does (see the `router.replace` test above).

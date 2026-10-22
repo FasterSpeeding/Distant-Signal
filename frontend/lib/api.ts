@@ -35,6 +35,7 @@ import type {
   LineDirection,
   TrainSearchPage,
   TrainSearchDates,
+  TrainSearchOperator,
   TrackedTrainListItem,
   TrackedTrainTicket,
   DelayRepayEstimateResponse,
@@ -803,6 +804,17 @@ export async function getTrainSearchDates(): Promise<TrainSearchDates> {
   return fetchJson<TrainSearchDates>(`${baseUrl()}/public/trains/search/dates`, {
     next: { revalidate: TRAIN_SEARCH_DATES_REVALIDATE_SECONDS },
   });
+}
+
+/** `GET /public/trains/search/operators` -- every operator code the train
+ * search's `operator` filter takes: the operator reference list's, named,
+ * and any other the published timetable carries, unnamed. Cached like
+ * `getAllTocs`, which it extends. */
+export async function getTrainSearchOperators(): Promise<TrainSearchOperator[]> {
+  const body = await fetchJson<{ operators: TrainSearchOperator[] }>(`${baseUrl()}/public/trains/search/operators`, {
+    next: { revalidate: 3600 },
+  });
+  return body.operators;
 }
 
 /** `init` is optional and additive so existing call sites are unchanged.

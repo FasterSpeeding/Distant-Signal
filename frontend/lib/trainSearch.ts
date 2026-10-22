@@ -66,6 +66,24 @@ export function parseOperatorParam(raw: string | null | undefined, known?: Reado
   return codes;
 }
 
+/** The Operator field's options: each named operator as "SW · South
+ * Western Railway", by name, then each code with no name on its own
+ * ("TW"), by code -- a code the timetable carries that the operator list
+ * does not name, still a filter a visitor can pick. */
+export function operatorChoices(
+  names: Readonly<Record<string, string>>,
+  unnamedCodes: readonly string[],
+): { value: string; label: string }[] {
+  const named = Object.entries(names)
+    .sort(([, a], [, b]) => a.localeCompare(b))
+    .map(([code, name]) => ({ value: code, label: `${code} · ${name}` }));
+  const unnamed = [...new Set(unnamedCodes)]
+    .filter((code) => !(code in names))
+    .sort()
+    .map((code) => ({ value: code, label: code }));
+  return [...named, ...unnamed];
+}
+
 /** `?*_day_offset=`: `1` is the morning after the searched date, and
  * anything else (absent, `0`, junk) the date itself. */
 export function parseNextDayParam(raw: string | null | undefined): boolean {
@@ -117,6 +135,39 @@ export function splitAtMidnight<Row extends Pick<TrainSearchResult, 'dayOffset'>
   const index = rows.findIndex((row) => (row.dayOffset ?? 0) >= 1);
   if (index === -1) return { sameDay: [...rows], afterMidnight: [] };
   return { sameDay: rows.slice(0, index), afterMidnight: rows.slice(index) };
+}
+
+/** `"YYYY-MM-DD"` as "Wed 21 Oct". */
+export function serviceDateLabel(serviceDate: string): string {
+  // Noon UTC is the same calendar day in London all year.
+  return formatWeekdayShortDate(`${serviceDate}T12:00:00Z`);
+}
+
+/** The API query `/trains` sends for the search `query` (the filters, as
+ * the address bar carries them): with no date picked, the date defaults to
+ * today and the previous date's trains still running after its midnight
+ * are asked for too (`across_midnight=true`), so a search at 00:30 finds
+ * yesterday's 00:40. A picked date is that date's own trains only. */
+export function apiSearchQuery(query: string): string {
+  const params = new URLSearchParams(query);
+  if (!params.get('date')) params.set('across_midnight', 'true');
+  return params.toString();
+}
+
+/** A search's rows in the three lists `/trains` shows: the previous
+ * date's trains still running after its midnight (an `across_midnight`
+ * search's, their `serviceDate` before `searchedDate`), then the searched
+ * date's own, split at its midnight (`splitAtMidnight`). Order within each
+ * list is kept. */
+export function splitSearchRows<Row extends Pick<TrainSearchResult, 'dayOffset' | 'serviceDate'>>(
+  rows: readonly Row[],
+  searchedDate: string,
+): { previousDay: Row[]; sameDay: Row[]; afterMidnight: Row[] } {
+  const isPrevious = (row: Row) => row.serviceDate !== undefined && row.serviceDate < searchedDate;
+  return {
+    previousDay: rows.filter(isPrevious),
+    ...splitAtMidnight(rows.filter((row) => !isPrevious(row))),
+  };
 }
 
 /** The track button's noun for a search row. */

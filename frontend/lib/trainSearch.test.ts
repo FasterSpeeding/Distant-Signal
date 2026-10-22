@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  apiSearchQuery,
   clockMinutes,
   nextDateLabel,
+  operatorChoices,
   parseNextDayParam,
   parseOperatorParam,
+  serviceDateLabel,
   splitAtMidnight,
+  splitSearchRows,
   upperBoundNextDay,
 } from './trainSearch';
 
@@ -70,5 +74,50 @@ describe('nextDateLabel', () => {
     expect(nextDateLabel('2026-10-23')).toBe('Sat 24 Oct');
     expect(nextDateLabel('2026-10-31')).toBe('Sun 1 Nov');
     expect(nextDateLabel('2026-10-24')).toBe('Sun 25 Oct');
+  });
+});
+
+describe('apiSearchQuery', () => {
+  it("asks for yesterday's late trains only when no date is picked", () => {
+    expect(apiSearchQuery('station=MAN&from=00%3A15')).toBe('station=MAN&from=00%3A15&across_midnight=true');
+    expect(apiSearchQuery('station=MAN&date=')).toBe('station=MAN&date=&across_midnight=true');
+    expect(apiSearchQuery('station=MAN&date=2026-10-23')).toBe('station=MAN&date=2026-10-23');
+  });
+});
+
+describe('splitSearchRows', () => {
+  it("puts the previous date's rows first, then splits the searched date's at its midnight", () => {
+    const rows = [
+      { uid: 'A', dayOffset: 1, serviceDate: '2026-10-23' },
+      { uid: 'B', dayOffset: 0, serviceDate: '2026-10-24' },
+      { uid: 'C', dayOffset: 1, serviceDate: '2026-10-23' },
+      { uid: 'D', dayOffset: 1, serviceDate: '2026-10-24' },
+      // An older backend sends no `serviceDate`: the searched date's.
+      { uid: 'E', dayOffset: 1 },
+    ];
+    const split = splitSearchRows(rows, '2026-10-24');
+    expect(split.previousDay.map((row) => row.uid)).toEqual(['A', 'C']);
+    expect(split.sameDay.map((row) => row.uid)).toEqual(['B']);
+    expect(split.afterMidnight.map((row) => row.uid)).toEqual(['D', 'E']);
+  });
+});
+
+describe('serviceDateLabel', () => {
+  it('names the date itself', () => {
+    expect(serviceDateLabel('2026-10-23')).toBe('Fri 23 Oct');
+    expect(serviceDateLabel('2026-10-25')).toBe('Sun 25 Oct');
+  });
+});
+
+describe('operatorChoices', () => {
+  it('lists named operators by name, then unnamed codes by code', () => {
+    expect(
+      operatorChoices({ SW: 'South Western Railway', GW: 'Great Western Railway' }, ['TW', 'QC', 'SW', 'TW']),
+    ).toEqual([
+      { value: 'GW', label: 'GW · Great Western Railway' },
+      { value: 'SW', label: 'SW · South Western Railway' },
+      { value: 'QC', label: 'QC' },
+      { value: 'TW', label: 'TW' },
+    ]);
   });
 });

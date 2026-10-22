@@ -754,10 +754,16 @@ pub use ds_store::schedule::ScheduleDestinationDeparturesRow;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallingPointDepartureCursor {
     /// The row's working `day_offset` (0 for a cursor written before
-    /// 2026-10-22, which carried none).
+    /// 2026-10-22, which carried none), counted from the row's own service
+    /// date.
     pub day_offset: i16,
     pub scheduled: chrono::NaiveTime,
     pub train_uid: String,
+    /// The row is of the service date BEFORE the searched one: a train
+    /// still running after that date's midnight, which only an
+    /// `across_midnight` train search returns (2026-10-22). Always `false`
+    /// for the journey-leg candidates.
+    pub previous_service_date: bool,
 }
 
 /// One page of calling-point-search results.
@@ -1048,6 +1054,11 @@ pub struct CallingPointSearch<'a> {
     /// ATOC codes: the row's `operator_atoc` must be one of them. `None` is
     /// no filter; an empty slice matches nothing.
     pub operators: Option<&'a [String]>,
+    /// Also the PREVIOUS service date's trains still running after its
+    /// midnight (2026-10-22): its `day_offset >= 1` rows whose departure,
+    /// on `service_date`'s clock, falls inside the bounds. See
+    /// [`search_schedule_calling_point_departures`].
+    pub across_midnight: bool,
     pub after: Option<&'a CallingPointDepartureCursor>,
     pub limit: i64,
 }
@@ -1072,7 +1083,12 @@ pub fn train_day_minutes(time: chrono::NaiveTime, day_offset: u32) -> i32 {
 /// for [`search_schedule_calling_point_departures`]' index range to still
 /// reach it, in minutes. The range is on the working `scheduled` (the
 /// index column) and the filter on the public time, so the range is
-/// widened by this much either side. Real gaps are a minute or two.
+/// widened by this much either side. Measured on production on 2026-10-22
+/// over every row with a public departure (9.15M, service dates 2026-10-14
+/// to 2026-11-19): the public time is never LATER than the working one, at
+/// most 28 minutes earlier, and only 32 rows differ by more than 15. An
+/// hour leaves twice the worst gap seen; a gap past it would hide that one
+/// call from a window ending within the hour after its working time.
 const PUBLIC_WORKING_SLACK_MINUTES: i32 = 60;
 
 /// The SQL of [`search_schedule_calling_point_departures`], for one of its
@@ -1266,6 +1282,176 @@ fn minute_of_day(minutes: i32) -> chrono::NaiveTime {
     chrono::NaiveTime::from_hms_opt(minutes / 60, minutes % 60, 0).unwrap_or(chrono::NaiveTime::MIN)
 }
 
+/// One result row. The `stop_*` columns describe the intermediate call
+/// `stops_at` matched on; all `None` when `stops_at` is unset or
+/// matched the true terminus instead.
+#[derive(sqlx::FromRow)]
+struct CallingPointRow {
+    train_uid: String,
+    destination_crs: String,
+    true_origin_crs: Option<String>,
+    scheduled: chrono::NaiveTime,
+    destination_arrival: Option<chrono::NaiveTime>,
+    destination_arrival_day_offset: i16,
+    operator_atoc: Option<String>,
+    /// The CIF Train Identity (`BS` headcode, e.g. `"1S00"`); NULL for
+    /// a blank one and for rows published before the column.
+    headcode: Option<String>,
+    public_departure: Option<chrono::NaiveTime>,
+    public_destination_arrival: Option<chrono::NaiveTime>,
+    day_offset: i16,
+    stop_scheduled: Option<chrono::NaiveTime>,
+    stop_day_offset: Option<i16>,
+    stop_arrival: Option<chrono::NaiveTime>,
+    stop_public_arrival: Option<chrono::NaiveTime>,
+}
+
+/// A keyset position in one service date's stream of
+/// [`search_schedule_calling_point_departures`]: rows strictly after
+/// `(day_offset, scheduled, train_uid)`, in that stream's own day offsets.
+#[derive(Debug, Clone)]
+struct StreamKeyset {
+    day_offset: i16,
+    scheduled: chrono::NaiveTime,
+    train_uid: String,
+}
+
+/// Where a page cursor puts each stream of an `across_midnight` search.
+/// The merged order is `(day offset on the searched date's clock, working
+/// time, previous date first, train_uid)` ([`merge_key`]). In the stream
+/// the cursor's row came from, it is that row's own position. In the other
+/// one it is a whole `(day, time)` boundary: with an empty `train_uid`
+/// (every uid sorts after it) the searched date's rows at the cursor's
+/// time all still follow a previous-date cursor; one second later (times
+/// are whole seconds) the previous date's rows at that time all precede a
+/// searched-date cursor.
+fn stream_keyset(cursor: &CallingPointDepartureCursor, previous_stream: bool) -> StreamKeyset {
+    if cursor.previous_service_date == previous_stream {
+        return StreamKeyset {
+            day_offset: cursor.day_offset,
+            scheduled: cursor.scheduled,
+            train_uid: cursor.train_uid.clone(),
+        };
+    }
+    if previous_stream {
+        // A searched-date cursor, in the previous date's stream: just
+        // after its `(day, time)`, a day later on that date's clock.
+        let next_second = cursor.scheduled + chrono::Duration::seconds(1);
+        let wrapped = next_second < cursor.scheduled;
+        StreamKeyset {
+            day_offset: cursor.day_offset + 1 + i16::from(wrapped),
+            scheduled: next_second,
+            train_uid: String::new(),
+        }
+    } else {
+        // A previous-date cursor, in the searched date's stream: at its
+        // `(day, time)`, a day earlier on this date's clock.
+        StreamKeyset {
+            day_offset: cursor.day_offset - 1,
+            scheduled: cursor.scheduled,
+            train_uid: String::new(),
+        }
+    }
+}
+
+/// A row's place in the merged order, before its `train_uid`: see
+/// [`stream_keyset`].
+fn merge_key(previous: bool, row: &CallingPointRow) -> (i16, chrono::NaiveTime, bool) {
+    (
+        row.day_offset - i16::from(previous),
+        row.scheduled,
+        !previous,
+    )
+}
+
+/// One service date's part of [`search_schedule_calling_point_departures`]:
+/// its bounds already on that date's own train-day clock.
+struct DateSearch<'a> {
+    station_crs: &'a str,
+    service_date: chrono::NaiveDate,
+    true_origin_crs: Option<&'a str>,
+    stops_at: Option<&'a str>,
+    operators: Option<&'a [String]>,
+    depart_from: i32,
+    depart_to: Option<i32>,
+    arrive_from: Option<i32>,
+    arrive_to: Option<i32>,
+    keyset: Option<StreamKeyset>,
+    /// Whether to read the rows before the date's midnight at all.
+    same_day_band: bool,
+    fetch: i64,
+}
+
+/// The first `fetch` rows of one service date after `keyset`, in train-day
+/// order: its same-day band, then its later one (see
+/// [`calling_point_search_sql`]).
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "a band holds at most `fetch` rows, an i64 page size"
+)]
+async fn search_one_service_date(
+    pool: &PgPool,
+    search: &DateSearch<'_>,
+) -> Result<Vec<CallingPointRow>> {
+    // Two bands, in train-day order: the departures on the service date
+    // itself, then those after its midnight (`day_offset >= 1`). The same-
+    // day band is the cheap one (see `calling_point_search_sql`) and fills
+    // almost every page; the later band only runs once it runs out, on a
+    // search's last page, or for a window that starts after midnight. A
+    // band no departure in the window can fall in is skipped: the public
+    // time sits within `PUBLIC_WORKING_SLACK_MINUTES` of the working one.
+    let slack = PUBLIC_WORKING_SLACK_MINUTES;
+    let keyset = search.keyset.as_ref();
+    let cursor_day = keyset.map_or(0, |cursor| cursor.day_offset);
+    let mut rows: Vec<CallingPointRow> = Vec::new();
+    for later_days in [false, true] {
+        let wanted = search.fetch - rows.len() as i64;
+        if wanted <= 0 {
+            break;
+        }
+        let in_window = if later_days {
+            search.depart_to.is_none_or(|to| to + slack >= 1440)
+        } else {
+            search.same_day_band && cursor_day == 0 && search.depart_from - slack < 1440
+        };
+        if !in_window {
+            continue;
+        }
+        // The same-day band's working-time range (`$13`, `$14`).
+        let range_start = minute_of_day(search.depart_from - slack);
+        let range_end = search
+            .depart_to
+            .map(|to| to + slack + 1)
+            .filter(|end| *end < 1440)
+            .map(minute_of_day);
+        let sql: &str = if later_days {
+            &LATER_DAYS_SEARCH_SQL
+        } else {
+            &SAME_DAY_SEARCH_SQL
+        };
+        let band: Vec<CallingPointRow> = sqlx::query_as(sql)
+            .bind(search.service_date)
+            .bind(search.station_crs)
+            .bind(search.depart_from)
+            .bind(search.true_origin_crs)
+            .bind(search.stops_at)
+            .bind(search.depart_to)
+            .bind(search.arrive_from)
+            .bind(search.arrive_to)
+            .bind(keyset.map(|c| c.scheduled))
+            .bind(keyset.map(|c| c.train_uid.as_str()))
+            .bind(wanted)
+            .bind(keyset.map(|c| c.day_offset))
+            .bind(range_start)
+            .bind(range_end)
+            .bind(search.operators)
+            .fetch_all(pool)
+            .await?;
+        rows.extend(band);
+    }
+    Ok(rows)
+}
+
 /// The calling-point-first train search's one read: a bounded index range
 /// scan over `schedule_destination_departures_calling_point_idx`, with a
 /// keyset cursor. Replaces `search_schedule_destination_departures`
@@ -1291,7 +1477,20 @@ fn minute_of_day(minutes: i32) -> chrono::NaiveTime {
 /// time (the index's key, and the cursor's), so a service date's
 /// after-midnight departures come last instead of first. Every row is of
 /// `service_date`'s own services: the search covers that whole train day,
-/// and never the previous date's trains still running after midnight.
+/// and never the previous date's trains still running after midnight --
+/// unless `across_midnight` asks for them.
+///
+/// **`across_midnight`** (2026-10-22) adds the previous service date's
+/// rows after its midnight (`day_offset >= 1`) whose departure, read on
+/// `service_date`'s clock (train-day minutes less 1440), falls inside the
+/// same bounds -- the trains still running in the small hours of
+/// `service_date` that belong to the day before, as `/Trips/plan`'s
+/// `acrossMidnight` merges two dates' trains. Each date is read on its own
+/// (the same bands, the same plan) and the two merged in train-day order
+/// on `service_date`'s clock; each row's `service_date` key says which
+/// date it is of, and its day offsets count from that date. The cursor
+/// records which date its row came from, so a page boundary falls cleanly
+/// between the two (see `stream_keyset`).
 ///
 /// `operators`, when given, keeps the rows whose `operator_atoc` is one
 /// of those ATOC codes ("any of"; a row with no operator never matches).
@@ -1463,30 +1662,6 @@ pub async fn search_schedule_calling_point_departures(
     pool: &PgPool,
     search: &CallingPointSearch<'_>,
 ) -> Result<Option<CallingPointDeparturePage>> {
-    /// One result row. The `stop_*` columns describe the intermediate call
-    /// `stops_at` matched on; all `None` when `stops_at` is unset or
-    /// matched the true terminus instead.
-    #[derive(sqlx::FromRow)]
-    struct Row {
-        train_uid: String,
-        destination_crs: String,
-        true_origin_crs: Option<String>,
-        scheduled: chrono::NaiveTime,
-        destination_arrival: Option<chrono::NaiveTime>,
-        destination_arrival_day_offset: i16,
-        operator_atoc: Option<String>,
-        /// The CIF Train Identity (`BS` headcode, e.g. `"1S00"`); NULL for
-        /// a blank one and for rows published before the column.
-        headcode: Option<String>,
-        public_departure: Option<chrono::NaiveTime>,
-        public_destination_arrival: Option<chrono::NaiveTime>,
-        day_offset: i16,
-        stop_scheduled: Option<chrono::NaiveTime>,
-        stop_day_offset: Option<i16>,
-        stop_arrival: Option<chrono::NaiveTime>,
-        stop_public_arrival: Option<chrono::NaiveTime>,
-    }
-
     let CallingPointSearch {
         station_crs,
         service_date,
@@ -1497,65 +1672,60 @@ pub async fn search_schedule_calling_point_departures(
         arrive_from,
         arrive_to,
         operators,
+        across_midnight,
         after,
         limit,
     } = *search;
     let fetch = limit.saturating_add(1);
 
-    // Two bands, in train-day order: the departures on the service date
-    // itself, then those after its midnight (`day_offset >= 1`). The same-
-    // day band is the cheap one (see `calling_point_search_sql`) and fills
-    // almost every page; the later band only runs once it runs out, on a
-    // search's last page, or for a window that starts after midnight. A
-    // band no departure in the window can fall in is skipped: the public
-    // time sits within `PUBLIC_WORKING_SLACK_MINUTES` of the working one.
-    let slack = PUBLIC_WORKING_SLACK_MINUTES;
-    let cursor_day = after.map_or(0, |cursor| cursor.day_offset);
-    let mut rows: Vec<Row> = Vec::new();
-    for later_days in [false, true] {
-        let wanted = fetch - rows.len() as i64;
-        if wanted <= 0 {
-            break;
-        }
-        let in_window = if later_days {
-            depart_to.is_none_or(|to| to + slack >= 1440)
-        } else {
-            cursor_day == 0 && depart_from - slack < 1440
+    // One stream of rows per service date searched, each in its own
+    // train-day order, merged below.
+    let previous_date = service_date.pred_opt().filter(|_| across_midnight);
+    let mut rows: Vec<(bool, CallingPointRow)> = Vec::new();
+    for previous in [false, true] {
+        let date = match (previous, previous_date) {
+            (false, _) => service_date,
+            (true, Some(previous_date)) => previous_date,
+            (true, None) => continue,
         };
-        if !in_window {
-            continue;
-        }
-        // The same-day band's working-time range (`$13`, `$14`).
-        let range_start = minute_of_day(depart_from - slack);
-        let range_end = depart_to
-            .map(|to| to + slack + 1)
-            .filter(|end| *end < 1440)
-            .map(minute_of_day);
-        let sql: &str = if later_days {
-            &LATER_DAYS_SEARCH_SQL
-        } else {
-            &SAME_DAY_SEARCH_SQL
-        };
-        let band: Vec<Row> = sqlx::query_as(sql)
-            .bind(service_date)
-            .bind(station_crs)
-            .bind(depart_from)
-            .bind(true_origin_crs)
-            .bind(stops_at)
-            .bind(depart_to)
-            .bind(arrive_from)
-            .bind(arrive_to)
-            .bind(after.map(|c| c.scheduled))
-            .bind(after.map(|c| c.train_uid.as_str()))
-            .bind(wanted)
-            .bind(after.map(|c| c.day_offset))
-            .bind(range_start)
-            .bind(range_end)
-            .bind(operators)
-            .fetch_all(pool)
-            .await?;
-        rows.extend(band);
+        // The previous date's clock runs a day ahead of the searched
+        // date's: its train-day minute 1440 + m is the searched date's m.
+        let shift = if previous { 1440 } else { 0 };
+        let stream = search_one_service_date(
+            pool,
+            &DateSearch {
+                station_crs,
+                service_date: date,
+                true_origin_crs,
+                stops_at,
+                operators,
+                depart_from: depart_from + shift,
+                depart_to: depart_to.map(|to| to + shift),
+                arrive_from: arrive_from.map(|from| from + shift),
+                arrive_to: arrive_to.map(|to| to + shift),
+                keyset: after.map(|cursor| stream_keyset(cursor, previous)),
+                // The previous date contributes only its rows after its
+                // midnight: a working departure before it is never after
+                // the searched date's midnight, since a public time is
+                // never later than its working one (measured 2026-10-22).
+                same_day_band: !previous,
+                fetch,
+            },
+        )
+        .await?;
+        rows.extend(stream.into_iter().map(|row| (previous, row)));
     }
+
+    // Merged in train-day order on the searched date's clock: a previous-
+    // date row's day offset counts one day less, and at the same working
+    // time the previous date's train comes first. Each stream is already
+    // in this order (`stream_keyset` relies on it).
+    rows.sort_by(|(a_previous, a), (b_previous, b)| {
+        merge_key(*a_previous, a)
+            .cmp(&merge_key(*b_previous, b))
+            .then_with(|| a.train_uid.cmp(&b.train_uid))
+    });
+    rows.truncate(usize::try_from(fetch).unwrap_or(usize::MAX));
 
     if rows.is_empty() {
         if !schedule_destination_departures_published_for(pool, service_date).await? {
@@ -1575,11 +1745,14 @@ pub async fn search_schedule_calling_point_departures(
     };
 
     let next_cursor = if has_more {
-        page_rows.last().map(|row| CallingPointDepartureCursor {
-            day_offset: row.day_offset,
-            scheduled: row.scheduled,
-            train_uid: row.train_uid.clone(),
-        })
+        page_rows
+            .last()
+            .map(|(previous, row)| CallingPointDepartureCursor {
+                day_offset: row.day_offset,
+                scheduled: row.scheduled,
+                train_uid: row.train_uid.clone(),
+                previous_service_date: *previous,
+            })
     } else {
         None
     };
@@ -1587,9 +1760,17 @@ pub async fn search_schedule_calling_point_departures(
     let hms = |t: chrono::NaiveTime| t.format("%H:%M:%S").to_string();
     let departures = page_rows
         .iter()
-        .map(|row| {
+        .map(|(previous, row)| {
             let mut json = serde_json::json!({
                 "uid": row.train_uid,
+                // The row's own service date: the searched one, or the day
+                // before for an `across_midnight` row. Every day offset on
+                // the row counts from it.
+                "service_date": if *previous {
+                    previous_date.unwrap_or(service_date)
+                } else {
+                    service_date
+                },
                 "day_offset": row.day_offset,
                 "destination_crs": row.destination_crs,
                 "true_origin_crs": row.true_origin_crs,
@@ -1961,6 +2142,7 @@ pub async fn search_journey_leg_candidates(
                     day_offset: 0,
                     scheduled: *scheduled,
                     train_uid: train_uid.clone(),
+                    previous_service_date: false,
                 }
             })
     } else {
@@ -6106,6 +6288,7 @@ mod schedule_destination_departures_query_tests {
                 arrive_from: arrive_from.map(minutes),
                 arrive_to: arrive_to.map(minutes),
                 operators: None,
+                across_midnight: false,
                 after,
                 limit,
             },
@@ -6229,6 +6412,7 @@ mod schedule_destination_departures_query_tests {
                 "public_departure": null,
                 "public_destination_arrival": null,
                 "day_offset": 0,
+                "service_date": date,
             }),
             "element shape is exactly what render::calling_point_departure_json reads"
         );

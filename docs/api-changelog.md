@@ -3,6 +3,46 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: train search across midnight, and every timetable operator
+
+`GET /public/trains/search`, plus a new `GET /public/trains/search/operators`.
+All additive: a request that worked before returns what it did, apart from
+one `400` that becomes a `200` (the operator bullet). DS-MCP's
+`search_trains` needs no change; it can pass `across_midnight` through to
+see yesterday's late trains.
+
+- **`across_midnight=true`** (`true`/`false`, any case, absent `false`;
+  anything else is a `400`): also return the PREVIOUS service date's
+  trains still running after its midnight (its `dayOffset: 1` rows) whose
+  departure falls inside the window on `date`'s clock. At 00:30 with the
+  `now` default, a search for today also lists yesterday's 00:40. They are
+  merged in time order with `date`'s own rows. Without the parameter a
+  search is `date`'s own services only, as before. `/trains` sends it when
+  no date is picked.
+- **New per-row `serviceDate`** (`"YYYY-MM-DD"`): the row's own service
+  date, the key of its `GET /Train/by-uid/{uid}/{serviceDate}`. It is
+  `date` for every row unless `across_midnight` added the row, when it is
+  the day before. A row's `dayOffset`, `workingDayOffset` and
+  `stopsAt*DayOffset` count from its own `serviceDate`, so yesterday's
+  00:40 is `dayOffset: 1`.
+- **New top-level `acrossMidnight`** (bool, as asked) and
+  **`serviceDates`** (every date the rows can be of, earliest first). The
+  top-level `serviceDate` stays the date searched.
+- **`nextCursor`** gains a fourth part for a row of the previous date. It
+  is still opaque; such a cursor is a `400` on a search without
+  `across_midnight`.
+- **`operator`: known now also means in the published timetable.** A code
+  is accepted when it is in the operator reference list (`tocs`) or names
+  the operator of a train in the timetable on a date the search covers
+  (`date`, and the day before with `across_midnight`). On 2026-10-22 the
+  timetable carried `TW`, `QC` and `LF`, which the reference list lacks,
+  so their trains could not be filtered; now they can. A code in neither
+  is still a `400`.
+- **`GET /public/trains/search/operators`**: `200 {"operators": [{"code",
+  "name"}]}`, sorted by code. Every reference-list operator with its name,
+  plus each other code the published timetable carries with `name: null`
+  (show the code).
+
 ## 2026-10-23: train search operator filter and the whole train day
 
 `GET /public/trains/search`. New parameters and fields are additive; a

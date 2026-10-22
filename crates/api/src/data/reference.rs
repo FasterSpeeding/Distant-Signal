@@ -275,18 +275,57 @@ pub async fn get_all_tocs(pool: &PgPool) -> Result<Vec<Suggestion>> {
     Ok(rows)
 }
 
-/// Which of `codes` are a `tocs` row's ATOC code: one primary-key lookup
-/// per code, for validating an operator filter.
-pub async fn known_toc_codes(
+/// Which of `codes` are a known operator for a train search over
+/// `service_dates`: a `tocs` row's ATOC code, or the `BX` operator of a
+/// schedule running on one of those dates (2026-10-22: the timetable
+/// carries codes `tocs` lacks, and their trains must stay filterable).
+///
+/// The timetable side reads `schedule_services` (one row per schedule and
+/// date, under its `(service_date, uid)` key: a date is ~25,000 rows,
+/// 12 ms on production on 2026-10-22). Only for dates it holds no rows for
+/// at all does it fall back to `schedule_destination_departures`, whose
+/// date is ~270,000 rows with no operator index (~0.4 s for a code that
+/// is absent there).
+pub async fn known_operator_codes(
     pool: &PgPool,
     codes: &[String],
+    service_dates: &[chrono::NaiveDate],
 ) -> Result<std::collections::HashSet<String>> {
-    let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT atoc_code::text FROM tocs WHERE atoc_code = ANY($1::text[])")
-            .bind(codes)
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT code FROM unnest($1::text[]) AS code \
+         WHERE EXISTS (SELECT 1 FROM tocs WHERE atoc_code::text = code) \
+            OR EXISTS (SELECT 1 FROM schedule_services \
+                        WHERE service_date = ANY($2::date[]) AND operator_atoc = code) \
+            OR EXISTS (SELECT 1 FROM schedule_destination_departures d \
+                        WHERE d.operator_atoc = code \
+                          AND d.service_date = ANY(ARRAY( \
+                              SELECT day FROM unnest($2::date[]) AS day \
+                               WHERE NOT EXISTS (SELECT 1 FROM schedule_services s \
+                                                  WHERE s.service_date = day))))",
+    )
+    .bind(codes)
+    .bind(service_dates)
+    .fetch_all(pool)
+    .await?;
     Ok(rows.into_iter().map(|(code,)| code).collect())
+}
+
+/// Every operator a train search can filter on: each `tocs` ATOC code with
+/// its name, and each `BX` operator code of the published timetable
+/// (`schedule_services`, every date it holds) that `tocs` lacks, with no
+/// name. Sorted by code. Backs `GET /public/trains/search/operators`.
+pub async fn train_search_operators(pool: &PgPool) -> Result<Vec<(String, Option<String>)>> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT atoc_code::text AS code, name FROM tocs \
+         UNION \
+         SELECT DISTINCT s.operator_atoc, NULL::text FROM schedule_services s \
+          WHERE s.operator_atoc IS NOT NULL \
+            AND NOT EXISTS (SELECT 1 FROM tocs t WHERE t.atoc_code::text = s.operator_atoc) \
+         ORDER BY code",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 /// Top-level `stations.accessibility` keys considered "accessibility or
