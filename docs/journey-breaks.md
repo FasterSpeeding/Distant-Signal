@@ -17,8 +17,8 @@ Runbook for mid-journey changes (design:
 - **The notifier** (`crates/notifier/src/break_notices.rs`) reads open
   breaks with suggestions every `notifier.journeyBreaksPollIntervalSecs`
   (15) and pushes one notice per break, again only when it gets worse. A
-  notice is that train's push: the train's own delay or cancel push stays
-  quiet for it.
+  notice is that train's push: the train's own delay, cancel or predicted
+  late start push stays quiet for it.
 
 ## The kill switch
 
