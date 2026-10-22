@@ -33,9 +33,9 @@ use crate::data::groups::{self, RemoveMemberOutcome};
 /// one, and `every_users_fk_table_is_exported` (a DB-gated test) fails if a
 /// new table referencing `users(id)` is added without being added here and
 /// to [`export_account`]. Child tables with no direct `users` FK
-/// (`journey_legs`, `journey_template_legs`,
-/// `journey_template_skipped_dates`) are exported nested under their
-/// parents.
+/// (`journey_legs`, `journey_revisions` and their `journey_revision_legs`,
+/// `journey_template_legs`, `journey_template_skipped_dates`) are exported
+/// nested under their parents.
 pub const USER_KEYED_TABLES: &[&str] = &[
     "custom_line_group_grants",
     "custom_lines",
@@ -47,11 +47,13 @@ pub const USER_KEYED_TABLES: &[&str] = &[
     "group_members",
     "group_trains",
     "groups",
+    "journey_breaks",
     "journey_idempotency_keys",
     "journey_leg_notification_state",
     "journey_templates",
     "journeys",
     "line_notification_state",
+    "notification_preferences",
     "pinned_lines",
     "pinned_operators",
     "pinned_stations",
@@ -166,7 +168,14 @@ pub struct AccountExport {
     pub custom_line_group_grants: Value,
     pub tracked_trains: Value,
     pub tickets: Value,
+    /// Each journey with its legs and its plan revisions (the booked plan
+    /// and every change since, each with its legs).
     pub journeys: Value,
+    /// Every time one of the user's journeys stopped working, with the
+    /// alternatives suggested and what the user did.
+    pub journey_breaks: Value,
+    /// The suggestion push opt-out (absent row: on).
+    pub notification_preferences: Value,
     pub journey_templates: Value,
     pub group_memberships: Value,
     pub group_shared_trains: Value,
@@ -284,10 +293,27 @@ pub async fn export_account(pool: &PgPool, user_id: &str) -> Result<Option<Accou
         .await?,
         journeys: rows(
             pool,
-            "SELECT to_jsonb(j) || jsonb_build_object('legs', ( \
-                 SELECT COALESCE(jsonb_agg(to_jsonb(l) ORDER BY l.leg_order), '[]'::jsonb) \
-                 FROM journey_legs l WHERE l.journey_id = j.id)) \
+            "SELECT to_jsonb(j) || jsonb_build_object( \
+                 'legs', (SELECT COALESCE(jsonb_agg(to_jsonb(l) ORDER BY l.leg_order), '[]'::jsonb) \
+                          FROM journey_legs l WHERE l.journey_id = j.id), \
+                 'revisions', (SELECT COALESCE(jsonb_agg(to_jsonb(r) || jsonb_build_object( \
+                                   'legs', (SELECT COALESCE(jsonb_agg(to_jsonb(rl) ORDER BY rl.position), '[]'::jsonb) \
+                                            FROM journey_revision_legs rl WHERE rl.revision_id = r.id)) \
+                               ORDER BY r.revision_no), '[]'::jsonb) \
+                          FROM journey_revisions r WHERE r.journey_id = j.id)) \
              FROM journeys j WHERE user_id = $1 ORDER BY id",
+            user_id,
+        )
+        .await?,
+        journey_breaks: rows(
+            pool,
+            "SELECT to_jsonb(b) FROM journey_breaks b WHERE user_id = $1 ORDER BY id",
+            user_id,
+        )
+        .await?,
+        notification_preferences: rows(
+            pool,
+            "SELECT to_jsonb(p) FROM notification_preferences p WHERE user_id = $1",
             user_id,
         )
         .await?,
@@ -523,6 +549,11 @@ pub(crate) mod db_tests {
         let leg = format!("(SELECT id FROM journey_legs WHERE journey_id = {journey} LIMIT 1)");
         exec(pool, &format!("INSERT INTO journey_leg_notification_state (user_id, journey_leg_id, last_notified_skipped, last_notified_at) VALUES ($1, {leg}, false, NOW())"), u).await;
         exec(pool, &format!("INSERT INTO unlisted_links (token_hash, resource_type, resource_id, created_by) VALUES ('tok-' || $1, 'journey', {journey}::text, $1)"), u).await;
+        // Mid-journey changes: a booked revision, a break and the opt-out.
+        exec(pool, &format!("INSERT INTO journey_revisions (journey_id, revision_no, reason, actor, is_compensation_baseline) VALUES ({journey}, 1, 'booked', 'owner', TRUE)"), &[]).await;
+        exec(pool, &format!("INSERT INTO journey_revision_legs (revision_id, position, kind, service_date) VALUES ((SELECT id FROM journey_revisions WHERE journey_id = {journey}), 1, 'train', CURRENT_DATE)"), &[]).await;
+        exec(pool, &format!("INSERT INTO journey_breaks (journey_id, user_id, cause, fault, severity, break_position, fingerprint) VALUES ({journey}, $1, 'user_missed', 'user', 1, 1, 'f')"), u).await;
+        exec(pool, "INSERT INTO notification_preferences (user_id, journey_suggestions) VALUES ($1, FALSE)", u).await;
         // Delegated access: a grant, a pending consent confirmation, a
         // delegated delete and an itinerary Idempotency-Key.
         exec(pool, "INSERT INTO delegated_grants (user_id, client, client_display_name, scopes) VALUES ($1, 'ds-mcp', 'Assistant', '{journeys:read}')", u).await;

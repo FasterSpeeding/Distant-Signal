@@ -3,6 +3,18 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: mid-journey changes and suggestions
+
+Additive; nothing existing changes meaning. Every new route is
+cookie-only (a delegated client gets `401`/`403` as for any route outside
+its list). Design:
+`docs/superpowers/specs/2026-10-22-mid-journey-changes-design.md`.
+
+- **Account export** (`GET /public/account/export`) gains
+  `journeyBreaks` and `notificationPreferences`, and each of `journeys`
+  gains `revisions` (its booked plan and every change since, each with its
+  `legs`).
+
 ## 2026-10-22: a tracked train is a one-leg journey
 
 Every route stays; the fields below are additive. Two behaviours change.
