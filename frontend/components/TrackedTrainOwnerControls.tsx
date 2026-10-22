@@ -2,6 +2,7 @@ import { RenameTrainButton } from './RenameTrainButton';
 import { DeleteTrainButton } from './DeleteTrainButton';
 import { AddToGroupButton } from './AddToGroupButton';
 import { trackedTrainDisplayName } from '@/lib/trackingName';
+import { TextLink } from './TextLink';
 
 /** The Rename/Delete button pair shown wherever a visitor is looking at a
  * tracked train they own -- shared here rather than reimplemented on both
@@ -27,8 +28,12 @@ import { trackedTrainDisplayName } from '@/lib/trackingName';
  * `pin*`/`serviceDate` fields `trackedTrainDisplayName` reads), so no
  * adapter is required for either caller.
  *
- * `journeyIds` (only on a `TrackedTrainListItem`) tells `DeleteTrainButton`
- * the train is part of a journey (its `inJourney`).
+ * `journeyIds` and `singleLegJourneyIds` (DS-124) tell `DeleteTrainButton`
+ * whether stopping tracking deletes the train's own one-leg journey
+ * (`deletesJourney`) and whether another journey keeps the train
+ * (`inJourney`), and give the "Open journey" link: the train's own journey,
+ * else the first journey it is in. From an older backend with no
+ * `singleLegJourneyIds`, any journey keeps the train, as before.
  *
  * `afterDelete` passes straight through to `DeleteTrainButton` -- see that
  * component's own doc comment for why it's a plain optional prop (default
@@ -61,11 +66,21 @@ export function TrackedTrainOwnerControls({
     pinScheduledDeparture?: string | null;
     sharedGroupCount: number;
     journeyIds?: number[] | undefined;
+    singleLegJourneyIds?: number[] | undefined;
   };
   afterDelete?: 'redirect' | 'refresh' | undefined;
 }) {
+  const journeyIds = train.journeyIds ?? [];
+  const ownJourneyIds = train.singleLegJourneyIds;
+  const keptBy = ownJourneyIds === undefined ? journeyIds : journeyIds.filter((id) => !ownJourneyIds.includes(id));
+  const journeyId = ownJourneyIds?.[0] ?? journeyIds[0];
   return (
     <>
+      {journeyId !== undefined && (
+        <TextLink href={`/journeys/${String(journeyId)}`} size="sm">
+          Open journey
+        </TextLink>
+      )}
       <RenameTrainButton
         trackingId={train.id}
         customName={train.customName}
@@ -76,7 +91,8 @@ export function TrackedTrainOwnerControls({
         trackingId={train.id}
         sharedGroupCount={train.sharedGroupCount}
         afterDelete={afterDelete}
-        inJourney={(train.journeyIds?.length ?? 0) > 0}
+        inJourney={keptBy.length > 0}
+        deletesJourney={(ownJourneyIds?.length ?? 0) > 0}
       />
     </>
   );

@@ -1,7 +1,10 @@
 # Tracked trains as one-leg journeys (2026-10-21)
 
-Status: design, awaiting sign-off on §9 before implementation. Work log
-DS-124.
+Status: signed off 2026-10-22 (decisions in §9). Phase 1 (expand) is
+built; phases 2 and 3 are not. Work log DS-124.
+
+The sign-off changed one recommendation: group shares move to journeys
+now (§3, §5, §7), not in a later project.
 
 The decision, from the user: "Track this train" makes a real one-leg
 journey in the database, so trains and journeys are one model everywhere:
@@ -96,19 +99,19 @@ So the migration converts one row in production.
 
 | Area | After |
 |---|---|
-| `tracked_standalone` | Phase 1 stops writing it but still reads it in the keep rule, for rows old pods write during the rollout. Phase 2 stops reading it. Phase 3 drops the column. |
+| `tracked_standalone` | Phase 1 stops reading and writing it. The keep rule is "another leg uses it" from phase 1 (a change from the first draft, which kept reading the flag until phase 2): every flagged row with no leg is converted, so the flag only mattered for a row that was also a leg's (0 in production), and decision 2 says such a train goes when its leg does. The migration leaves the flag as it was, for a code rollback. Phase 3 drops the column. |
 | `journeyIds` on `GET /Train/mine` | Same meaning. Once Phase 2 is out it is never empty. A new additive field, `singleLegJourneyIds`, lists the train's own journeys: the ones "Stop tracking" deletes. |
-| Dedup | `create_subscription_for_train` stays idempotent per `(user, trains_id)`. `POST /Train/by-uid/.../track` on a train a leg already uses creates no new journey. It returns the existing subscription and the journey of its first leg (see §9, Q2). A pin that later resolves onto a train the user already tracks stays its own one-leg journey. Its rows still fold through `journeyIds`, and notifications are still one per user (see §9, Q3). |
+| Dedup | `create_subscription_for_train` stays idempotent per `(user, trains_id)`. `POST /Train/by-uid/.../track` on a train a leg already uses creates no new journey. It returns the existing subscription and the journey of its first leg (§9, decision 2). A pin that later resolves onto a train the user already tracks stays its own one-leg journey. Its rows still fold through `journeyIds`, and notifications are still one per user (§9, decision 3). |
 | Change train | No change: the old subscription moves its tickets and shares to the new one and is deleted unless another leg uses it. Before Phase 2, `tracked_standalone` also keeps it. |
 | Remove leg | No change. Removing the only leg deletes the journey and releases the train, so removing a train from its own journey stops tracking it. |
 | Delete journey (web or delegated) | No change: legs cascade, and each leg's train is released. |
 | Stop tracking (`DELETE /Train/{id}`) | **Changed.** Deletes the train's own journeys through the `delete_journey` path, which also writes template skip tombstones. The train is then released: deleted, with its tickets and shares, unless a leg of a multi-leg journey still uses it. Then it stays, and the modal names that journey. Status codes stay `204` / `404`. A legless row from the rollout window is deleted directly, as today. |
-| Group shares | `group_trains` stays keyed on the subscription and keeps working. Sharing at track time (`TrackDestinationModal`) still writes `group_trains`. Moving one-leg shares to `group_journeys` is a separate decision (§9, Q5). |
+| Group shares | **Move to journeys (decision 5).** `group_journeys` (it exists since 2026-09-22, with `journey_readable_by` letting members open a shared journey) is the one way to share a tracked train. The migration moves every `group_trains` row whose train has a one-leg journey of its own onto that journey (`group_journeys`, keeping `added_by`/`added_at`) and deletes the moved row. `POST /groups/{id}/trains` becomes a wrapper that shares the train's own journey, and `DELETE /groups/{id}/trains/{trackingId}` removes those journey shares as well as any `group_trains` row. A train with no journey of its own (one only a multi-leg journey uses, or a rollout-window row) is still shared as a `group_trains` row: group pages keep listing those until phase 2 decides them (§9). Sharing at track time now shares the new journey (`POST /groups/{id}/journeys`). `sharedGroupCount` counts groups through both tables, each group once. |
 | Tickets | No change (`tracked_train_tickets.tracked_train_id` is the subscription). Attach by `trackingId` is unchanged. |
-| Delegated save, list and delete | No change to the routes. `GET /Journeys/mine` also lists the converted trains (one row in production). Converted journeys are `created_via = 'web'`, so a delegated delete refuses them (`404`), as for any web-made journey. Converted journeys don't count toward the daily save cap. |
+| Delegated save, list and delete | No change to the routes. `GET /Journeys/mine` also lists the converted trains (one row in production). Converted journeys are `created_via = 'web'`, so a delegated delete refuses them (`404`), as for any web-made journey. Converted journeys don't count toward the daily save cap. A delegated delete already refuses a journey shared into a group (`409 journey_shared`, reading `group_journeys`), so a moved share protects its journey the same way. |
 | Retention | No change. A one-leg journey and its train share a date, so `prune_past_travel` removes both in one transaction. |
-| Account export | `journeys` gains the converted journeys. `tracked_trains` keeps every subscription, but loses the `tracked_standalone` key in Phase 3 (noted in the API changelog). |
-| Notifications | Train delay and cancellation: no change (one per user per train). Leg-level alerts start for converted trains: station skip, through `list_committed_legs_for_today`, per leg, when the leg has an origin and destination. Every web-tracked train already gets these. The "unmatched" alert covers only auto-matched legs, so converted legs (manual) never get it. Converting never puts a train in two legs, so it adds no duplicate skip alerts. Copy is unchanged: a one-leg journey already uses the plain tracked-train wording (`journey_leg_for_train_subscription`, `total_legs == 1`). |
+| Account export | `journeys` gains the converted journeys, and `group_shared_journeys` the moved shares (`group_shared_trains` loses them). `tracked_trains` keeps every subscription, but loses the `tracked_standalone` key in phase 3 (noted in the API changelog). The migration's bookkeeping tables are not exported: they hold nothing the export does not already have, and cascade with the user's journeys on account deletion. |
+| Notifications | Train delay and cancellation: no change (one per user per train). Leg-level alerts start for converted trains: station skip, through `list_committed_legs_for_today`, per leg, when the leg has an origin and destination. Every web-tracked train already gets these. The "unmatched" alert covers only auto-matched legs, so converted legs (manual) never get it. Converting never puts a train in two legs, so it adds no duplicate skip alerts. Copy is unchanged: a one-leg journey already uses the plain tracked-train wording (`journey_leg_for_train_subscription`, `total_legs == 1`). **Group members:** the notifier sends nothing to group members today, for a shared train or a shared journey; moving shares changes no push. Pushing to members would be a new feature (§9). |
 
 ## 4. API compatibility
 
@@ -121,9 +124,12 @@ Every route stays. All shape changes are additive.
 | `GET /Train/mine` | Gains `singleLegJourneyIds: number[]`. `journeyIds` is unchanged. |
 | `GET /Train/{id}` | Gains `journeyIds` and `singleLegJourneyIds`, so the by-id page can link to the journey. |
 | `DELETE /Train/{id}` | New meaning (§3), same status codes. |
-| `POST /Train/{id}/name` | Still renames the subscription. Whether it also renames the train's own journey is §9, Q4. |
+| `POST /Train/{id}/name` | Still renames the subscription, and now also renames the train's own one-leg journeys in the same transaction (§9, decision 4). |
 | `/Train/{id}/tickets/*`, `/Train/tickets/*` | No change. |
-| `/Journeys/*`, `/groups/*` | No change. |
+| `POST /groups/{id}/trains` | Wrapper: shares the train's own journey (`group_journeys`), else, for a train with none, writes `group_trains` as before. Same body, same `204` / `404`. |
+| `DELETE /groups/{id}/trains/{trackingId}` | Also removes the group's shares of the train's own journeys, by the same sharer-or-manager rule. `404` only when neither table had a row. |
+| `GET /groups/{id}/trains`, `GET /groups/shared-trains` | Unchanged shape; list only the remaining `group_trains` rows. A moved share is listed by `GET /groups/{id}/journeys` and `GET /groups/shared-journeys`, which the Journeys page now reads too. |
+| `/Journeys/*`, other `/groups/*` | No change. |
 
 **What DS-MCP calls** (from `src/ds/client.ts`, `src/ds/delegatedClient.ts`
 and `src/tools/*`), and the effect of each:
@@ -143,80 +149,43 @@ needs no change. The API changelog entry says so.
 
 ## 5. Migration
 
-### 5.1 Conversion (Phase 1, `2026102xxxxxxx_standalone_tracks_to_journeys.sql`)
+### 5.1 Conversion and share move (phase 1, `20261022090000_tracked_trains_as_journeys.sql`)
 
-```sql
-SET LOCAL lock_timeout = '5s';
-
--- Which journeys this migration made, for the rollback in 5.3.
--- Dropped in Phase 3.
-CREATE TABLE IF NOT EXISTS standalone_track_conversions (
-    journey_id            BIGINT PRIMARY KEY REFERENCES journeys(id) ON DELETE CASCADE,
-    train_subscription_id BIGINT NOT NULL UNIQUE
-                          REFERENCES train_subscriptions(id) ON DELETE CASCADE,
-    converted_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-DO $$
-DECLARE converted INT;
-BEGIN
-  LOOP
-    WITH batch AS (
-      SELECT nextval(pg_get_serial_sequence('journeys', 'id')) AS journey_id,
-             ts.id, ts.user_id, ts.custom_name, ts.tracked_at, ts.service_date,
-             COALESCE(ts.pin_origin_crs, tr.origin_crs) AS origin_crs,
-             COALESCE(ts.pin_destination_crs, tr.destination_crs) AS destination_crs
-      FROM train_subscriptions ts
-      LEFT JOIN trains tr ON tr.id = ts.trains_id
-      WHERE NOT EXISTS (SELECT 1 FROM journey_legs jl WHERE jl.train_subscription_id = ts.id)
-      ORDER BY ts.id
-      LIMIT 500
-      FOR UPDATE OF ts
-    ), j AS (
-      INSERT INTO journeys (id, user_id, custom_name, created_at, updated_at)
-      SELECT journey_id, user_id, custom_name, tracked_at, tracked_at FROM batch
-    ), l AS (
-      INSERT INTO journey_legs (journey_id, leg_order, origin_crs, destination_crs,
-                                service_date, train_subscription_id, match_mode)
-      SELECT journey_id, 1, origin_crs, destination_crs, service_date, id, 'manual' FROM batch
-    )
-    INSERT INTO standalone_track_conversions (journey_id, train_subscription_id)
-    SELECT journey_id, id FROM batch;
-    GET DIAGNOSTICS converted = ROW_COUNT;
-    EXIT WHEN converted = 0;
-  END LOOP;
-END $$;
-```
-
-- **What it converts:** every subscription no leg uses. Since DS-93,
-  that set is exactly the trains tracked on their own. A row that is
-  standalone and also in a leg (0 in production) gets no second journey
-  (§9, Q2).
-- **Ids:** the journey id is taken from the sequence before the insert,
-  so the leg and the mapping row match it exactly. That avoids the
+- **Bookkeeping:** `standalone_track_conversions (journey_id, train_subscription_id,
+  converted_at)` and `group_train_share_moves (group_id, train_subscription_id,
+  journey_id, added_by, added_at, created_share, moved_at)`, for the rollback
+  script. Both cascade with their journey, subscription or group, have no
+  service grants (`db-grants.yaml`) and go in phase 3.
+- **Conversion:** a `DO` loop of 500-row batches. Each batch takes
+  subscriptions no leg uses, draws each journey id from the sequence
+  first, then inserts the journey (`created_at` the track time, the
+  subscription's `custom_name`), its one leg (`leg_order` 1, the pin's ends
+  else the train's, the service date, `match_mode` `manual`) and the
+  bookkeeping row in one statement. Drawing the id first avoids the
   `RETURNING` problem the 2026-09-22 migration solved with a scratch
-  column. Subscription ids, ticket and share rows and notification state
-  are not touched.
-- **Idempotent:** each batch picks only subscriptions with no leg, and a
-  converted row has one. A rerun, or the Phase 2 catch-up, converts only
-  what is still legless.
-- **Batched:** 500 rows per statement inside the migration's one
-  transaction. That bounds each statement's work and memory under
-  `MIGRATION_STATEMENT_TIMEOUT_SECS`. For production (1 row) it is one
-  batch. A database too large for one transaction would move this loop
-  into a `ds-migrate` subcommand, as `backfill-trains` did. That is not
-  needed here.
-- **Defaults:** `created_via` defaults to `'web'` and `kind` to
-  `'train'`. `journeys.created_at` is the track time, so lists keep their
-  order. The journey's `custom_name` is copied from the subscription.
-- **Grants:** the mapping table goes in `db-grants.yaml` with no service
-  role. Only the migrator touches it, and `gen-db-grants.py check` must
-  pass.
+  column. `created_via` defaults to `'web'`, `kind` to `'train'`.
+- **Share move:** each `group_trains` row whose train has a one-leg
+  journey of its owner's (the oldest, if several) becomes a
+  `group_journeys` row on it, with the same `added_by` and `added_at`,
+  unless the journey is already shared into that group; the move is
+  recorded (with whether it made the journey share) and the row deleted.
+- **Ids:** subscription ids, tickets, notification state and every
+  remaining `group_trains` row are untouched. Only journeys get new ids.
+- **Idempotent and rerunnable:** `CREATE ... IF NOT EXISTS`, and each step
+  only picks what is left (a legless subscription, a `group_trains` row).
+  Phase 2 reruns the same statements as its catch-up; the DB test runs the
+  file twice.
+- **Locks:** `lock_timeout` 5 s; the statements take row locks on the rows
+  they write and `group_trains` rows they delete. No table rewrite.
 
 ### 5.2 Catch-up (Phase 2) and contract (Phase 3)
 
-During the Phase 1 rollout, old pods can still write legless standalone
-rows. Phase 2 ships a data-only migration that runs the same loop again.
+The api Deployment is `Recreate`, but the migrate hook Job runs while the
+old pods still serve, so an old pod can still write a legless standalone
+row (or a `group_trains` share) after the migration. Phase 1 code handles
+both: "Stop tracking" deletes a legless row outright, and the share
+wrapper and lists still read `group_trains`. Phase 2 ships a data-only
+migration that runs the same statements again.
 Phase 3 has a `-- contract:` header: it drops
 `train_subscriptions.tracked_standalone` and `standalone_track_conversions`.
 It ships at least one release after the last binary that read them
@@ -231,14 +200,15 @@ It ships at least one release after the last binary that read them
   The one visible difference: old "Stop tracking" on a converted train
   only clears the flag (today's DS-93 behaviour for a train in a
   journey), so the user deletes the journey instead.
-- **Data** (before Phase 3 only): a reviewed script,
-  `scripts/rollback-standalone-track-conversion.sql`, deletes the journeys
-  listed in `standalone_track_conversions` that still have exactly that
-  one leg, bound to the same subscription, together with their
-  `unlisted_links` rows. Group journey shares cascade. The subscriptions
-  stay (the FK is on the leg), and their `tracked_standalone` is still
-  set. The script is tested against a fixture like the existing
-  `scripts/test-remediate-*.sh`.
+- **Data** (before phase 3 only): `scripts/rollback-tracked-trains-as-journeys.sql`,
+  run as the owner with `psql --single-transaction`. It puts each moved
+  share back in `group_trains` (and removes the journey share the move
+  made), then deletes each converted journey that still has exactly its
+  one leg on the same train, with its share links. The subscriptions stay,
+  with `tracked_standalone` as it was. The DB test
+  `tracked_trains_as_journeys_migration_converts_and_rolls_back` runs the
+  migration, a rerun and this script on fixtures in a rolled-back
+  transaction.
 - **After Phase 3** the conversion cannot be undone. That is why the
   contract step waits a release.
 
@@ -247,21 +217,32 @@ It ships at least one release after the last binary that read them
 One row converts into one journey for one user. That train is in the
 past and not shared, so the retention sweep removes both together. Users
 see one more row in `/journeys` (Past), where the train was already
-listed. DS-MCP's list for that user gains one past journey. Nothing else
-changes.
+listed. DS-MCP's list for that user gains one past journey.
+
+Both `group_trains` rows (checked read-only on 2026-10-22) are on trains
+with a one-leg journey of their own, and neither journey is already shared
+into the same group, so both move: the two shares show under the groups'
+journeys instead of their trains, and members open them at
+`/journeys/{id}`.
 
 ## 6. Frontend
 
-- **"Track this train" and the track form:** no change. They already
-  send `POST /Journeys` and go to `/journeys/{id}`.
+- **"Track this train" and the track form:** they already send
+  `POST /Journeys` and go to `/journeys/{id}`. Sharing into a group at
+  track time now shares the new journey (`POST /groups/{id}/journeys`).
 - **Train pages** (`/train/[uid]/[date]`, `/train/by-id/[trackingId]`):
   - "Stop tracking" copy comes from `singleLegJourneyIds` and
     `journeyIds`. With only the train's own journey it reads "Stop
-    tracking this train? Its journey is deleted too", plus the group
-    warning. With a multi-leg journey it says the train stays in that
+    tracking this train?" with "Its journey is deleted too.", plus the
+    group warning. With a multi-leg journey it says the train stays in that
     journey. This fixes today's "Stop tracking" doing nothing.
   - An "Open journey" link to the train's own journey.
-  - The by-id page stays. Redirecting it to the journey is §9, Q6.
+  - The by-id page stays (§9, decision 6).
+- **`/journeys`, shared** (phase 1): journeys other members shared into
+  the caller's groups are listed beside the shared trains, one row per
+  journey with a "From <group>" tag per group, linking to
+  `/journeys/{id}`. Without this, shares moved onto journeys would have
+  dropped off the page.
 - **`/journeys` and home** (Phase 2, once no legless rows remain):
   - Remove the lone-train path: `splitJourneyTrains`'s `standalone`
     output, `splitTrainRows`, `homeJourneys`' `HomeLoneTrain`,
@@ -277,31 +258,38 @@ changes.
   name first). That is what web-tracked trains already show. The old
   lone-train label ("HH:MM Origin to Destination") disappears with the
   lone-train path. The departure time is already on the row. Rename
-  mirroring is §9, Q4.
+  mirroring: §9, decision 4.
 
 ## 7. Phasing (expand, then contract)
 
-1. **Phase 1, expand plus behaviour.**
-   - Migration 5.1.
-   - The wrappers for both track routes.
-   - The new "Stop tracking" semantics.
-   - Additive `journeyId`, `singleLegJourneyIds` and `journeyIds` fields.
-   - Stop writing `tracked_standalone`. The keep rule still reads it.
-   - Train-page copy and the journey link.
+1. **Phase 1, expand plus behaviour (built).**
+   - Migration `20261022090000` (§5.1) and the rollback script.
+   - The two track routes as journey wrappers, with `journeyId`.
+   - "Stop tracking" deletes the train's own journeys.
+   - The keep rule without `tracked_standalone`; nothing writes the flag.
+   - Train renames mirrored onto the train's own journeys.
+   - `singleLegJourneyIds` on `GET /Train/mine`, `journeyIds` and
+     `singleLegJourneyIds` on the owner's `GET /Train/{id}`, and
+     `sharedGroupCount` over both share tables.
+   - Group shares: the move, the `/groups/{id}/trains` wrappers, track-time
+     sharing of the new journey, and the Journeys page listing journeys
+     shared with the caller.
+   - Train pages: "Open journey", and the "Stop tracking" copy.
    - API changelog entry.
 2. **Phase 2, settle.**
-   - Catch-up migration.
-   - Remove every read of `tracked_standalone`, so the keep rule is
-     "another leg uses it".
-   - Remove the frontend lone-train path.
-   - The daily retention run logs a warning, and a metric counts it,
-     for any legless subscription. It should never find one.
-3. **Phase 3, contract.** Drop the column and the mapping table, with the
-   changelog note for the export.
-
-Phases 1 to 3 are three merges, each deployed before the next. Step B
-builds all three on one branch as separate commits, so each can be
-merged and deployed in turn.
+   - Catch-up migration: the same statements again.
+   - Frontend: remove the lone-train path (`splitJourneyTrains`'
+     `standalone` output, `splitTrainRows`, `homeJourneys`' lone-train
+     helpers), and home's `GET /Train/mine` fetch if nothing else needs it.
+   - Decide the `group_trains` rows left (trains only a multi-leg journey
+     uses, §9).
+   - The daily retention run logs, and counts in a metric, any subscription
+     no leg uses. It should find none.
+3. **Phase 3, contract.** One migration with a `-- contract:` header drops
+   `tracked_standalone`, `standalone_track_conversions` and
+   `group_train_share_moves` (and `group_trains`, if phase 2 empties it),
+   at least one release after the last binary that read them. Changelog
+   note for the export.
 
 ## 8. Risks
 
@@ -323,62 +311,63 @@ merged and deployed in turn.
   CTEs satisfying the leg and mapping foreign keys at the end of the
   statement. A DB test covers this, and the test reruns the migration.
 
-## 9. Open questions for the user
+## 9. Decisions (signed off 2026-10-22) and open questions
 
-1. **Stop tracking deletes the train's own journey.** That includes a
-   one-leg journey the user named or got from a template, and its shares
-   (with a clear modal). Recommended: yes. That is what "one model" means,
-   and it fixes today's no-op button.
-2. **Tracking a train already in a journey,** through the old by-uid
-   route. Recommended: return the existing subscription and create no
-   second journey (idempotent, as today). The train then stops being
-   tracked if it is removed from that journey. Production has 0 such
-   rows. The alternative is a separate one-leg journey, which shows the
-   train twice.
-3. **A pin that resolves onto a train already tracked** stays a separate
-   one-leg journey. Recommended: accept (rare, 0 in production, one push
-   per user either way). The alternative, merging at resolution time, is
-   larger and can surprise the user.
-4. **Names.** Recommended: renaming the train (`POST /Train/{id}/name`)
-   also renames its own journeys. Renaming a journey does not touch the
-   train. The conversion copies the train's name to the journey (0 named
-   rows in production).
-5. **Group shares of a one-leg journey.** Recommended: keep `group_trains`
-   in this project. Moving one-leg shares (and track-time sharing) to
-   `group_journeys` would be a separate change.
-6. **`/train/by-id/{id}`.** Recommended: keep it as the live train view
-   and link to the journey. The alternative is to redirect it to the
-   train's own journey.
-7. **Phasing.** Recommended: three deploys (§7). The alternative is to
-   fold Phase 2 into Phase 1 and accept that rows written by old pods
-   during the rollout show as lone trains until Phase 3's catch-up.
+Decisions:
 
-## 10. Tests (step B)
+1. "Stop tracking" deletes the train's own one-leg journeys, including
+   named or template-made ones and their shares. A multi-leg journey that
+   uses the train keeps it.
+2. The by-uid track route returns the existing subscription and journey
+   when a leg already uses the train; no second journey.
+3. A pin that later resolves onto an already-tracked train stays a
+   separate journey.
+4. Renaming a train renames its own one-leg journeys, one way only.
+5. Group shares move to journeys now, with the old train routes kept as
+   wrappers and `group_trains` readable until the contract phase.
+6. `/train/by-id/{id}` stays and links to the journey.
+7. Three deploys: expand, settle, contract.
 
-- **Migration (DB tests):**
-  - Converts legless rows with their fields, ids and mapping.
-  - Leaves rows that have a leg alone.
-  - A rerun is a no-op.
-  - Batches past 500 rows.
-  - Checked under `scripts/test-postgres-roles.py`, as superuser and per
-    service.
-- **Rollback script:** tested against a fixture.
-- **Wrapper routes:**
-  - Each creates a one-leg journey and returns `journeyId`.
-  - by-uid is idempotent when a leg already uses the train.
-  - Caps.
-- **Stop tracking:**
-  - Own journey only.
-  - Own journey plus a multi-leg journey.
-  - Template occurrence (tombstone).
-  - Legless rollout row.
-  - Shares and tickets cascade.
-- **Keep rule** without the flag (Phase 2). The DS-93 tests updated.
-- **`GET /Train/mine` and `GET /Train/{id}`:** the new fields.
-- **Frontend:** vitest for the stop-tracking copy, the journey link, and
-  the removed lone-train paths (home and `/journeys`).
-- **Checks:**
-  - `cargo fmt`, `clippy -D warnings`.
-  - `check-migration-order.py`, `gen-db-grants.py check`.
-  - Frontend lint, `tsc`, vitest and build.
-  - The API changelog entry.
+Open:
+
+1. **Shares of a train only a multi-leg journey uses** (none in
+   production). Sharing the train is not sharing its whole journey, which
+   would show the other legs. Phase 1 keeps these in `group_trains`.
+   Options for phase 2: keep `group_trains` for this case only; refuse
+   such a share (`409`, "share the journey instead"); or make the train a
+   one-leg journey of its own when shared.
+2. **Pushes to group members.** No member gets a push for a shared train
+   today, and none does for a shared journey. Moving shares keeps that. If
+   members should be told about delays on a shared journey, that is a new
+   feature with its own opt-in.
+3. **The shared trains list routes** (`GET /groups/{id}/trains`,
+   `GET /groups/shared-trains`) keep listing only `group_trains` rows. An
+   older client that reads only them no longer sees moved shares. Only the
+   web app reads them, and it reads the journey lists too.
+
+## 10. Tests (phase 1, as built)
+
+- **Migration and rollback** (`tracked_trains_as_journeys_migration_converts_and_rolls_back`,
+  as the schema owner): a legless train becomes a one-leg journey with its
+  name, ends and date; its share moves with its `added_at`; a train a
+  multi-leg journey uses gets no journey and keeps its `group_trains`
+  share; a rerun converts nothing; the rollback script restores the shares
+  and removes the journeys, leaving the flags. Batching is not exercised
+  past one batch.
+- **Track routes:** by-uid twice returns one subscription and one one-leg
+  journey, with `journeyId` (`post_track_by_uid_called_twice_returns_the_same_subscription`);
+  the data function's own test checks the leg and the no-second-journey
+  rule, and the train rename reaching the journey.
+- **Stop tracking:** own journey with a journey share, a `group_trains`
+  share and a ticket all go; another user's id is refused; a legless row
+  is deleted; a two-leg journey keeps the train (data and route tests).
+- **DS-93 tests** rewritten for the model: "tracked on its own" is a
+  one-leg journey, listed under it (`singleLegJourneyIds`), never as a
+  lone row.
+- **Groups:** sharing a train with a journey of its own shares the journey,
+  counts once, and unsharing removes it (`add_train_to_group_shares_the_trains_own_journey`).
+- **Frontend (vitest):** the "Stop tracking" copy, "Open journey" on the
+  by-id page, track-time sharing of the journey, and shared journeys on
+  `/journeys` (merged per journey, the caller's own left out).
+- Template tombstones on "Stop tracking" reuse `delete_journey`'s
+  function and are not tested again.

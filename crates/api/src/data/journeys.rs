@@ -41,8 +41,8 @@ pub async fn journey_owner(pool: &PgPool, journey_id: i64) -> anyhow::Result<Opt
 /// One `journey_legs` row, scoped to a caller's ownership of its parent
 /// journey -- folds the ownership check directly into the `WHERE`/`JOIN`
 /// (this codebase's established convention, e.g.
-/// `train_tracking::delete_tracked_train`'s `WHERE id = $1 AND user_id =
-/// $2`) rather than a separate `journey_owner` lookup followed by an
+/// `train_tracking::rename_tracked_train`'s `WHERE id = $2 AND user_id =
+/// $3`) rather than a separate `journey_owner` lookup followed by an
 /// unscoped read. Backs both `GET .../candidates` (reads the window/CRS
 /// fields to search with, Task 9) and `POST .../train` (confirms ownership
 /// before writing, Task 7).
@@ -493,6 +493,33 @@ pub async fn create_journey_with_known_train_leg(
     // via `/Train/{trackingId}`/`GET /Train/mine`, but never linked from
     // any journey). Wrapping the whole sequence rolls that back as well.
     let mut tx = pool.begin().await?;
+    let created = insert_known_train_journey(
+        &mut tx,
+        user_id,
+        custom_name,
+        trains_id,
+        service_date,
+        origin_crs_override,
+        destination_crs_override,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(created)
+}
+
+/// The body of [`create_journey_with_known_train_leg`] on the caller's
+/// transaction: the journey, the user's subscription for the train (made
+/// or reused) and the leg binding them. Returns `(journey_id, leg_id,
+/// tracking_id)`.
+async fn insert_known_train_journey(
+    tx: &mut sqlx::PgConnection,
+    user_id: &str,
+    custom_name: Option<&str>,
+    trains_id: i64,
+    service_date: NaiveDate,
+    origin_crs_override: Option<&str>,
+    destination_crs_override: Option<&str>,
+) -> anyhow::Result<(i64, i64, i64)> {
     let journey_id = insert_journey(&mut *tx, user_id, custom_name).await?;
     let tracking_id =
         crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
@@ -524,8 +551,141 @@ pub async fn create_journey_with_known_train_leg(
         false,
     )
     .await?;
-    tx.commit().await?;
     Ok((journey_id, leg_id, tracking_id))
+}
+
+/// What [`track_known_train_on_its_own`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrainTrackedOnItsOwn {
+    pub journey_id: i64,
+    pub tracking_id: i64,
+    /// `false` when a journey of the user's already used their
+    /// subscription for the train, which is handed back instead.
+    pub created: bool,
+}
+
+/// "Track this train" for a known train through the old
+/// `POST /Train/by-uid/{uid}/{date}/track` (DS-124): a one-leg journey,
+/// as `POST /Journeys` makes, unless one of the user's journeys already
+/// has a leg on their subscription for this train. Then that subscription
+/// and the first such journey come back and nothing is made, so the route
+/// stays idempotent and never lists one train as two journeys.
+///
+/// Holds the `(user_id, trains_id)` lock `create_subscription_for_train`
+/// takes for the lookup and the insert, so two concurrent calls make one
+/// journey between them.
+pub async fn track_known_train_on_its_own(
+    pool: &PgPool,
+    user_id: &str,
+    trains_id: i64,
+    service_date: NaiveDate,
+) -> anyhow::Result<TrainTrackedOnItsOwn> {
+    let mut tx = pool.begin().await?;
+    common::pg::lock_user_train_subscription(&mut tx, user_id, trains_id).await?;
+    let existing: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT ts.id, MIN(jl.journey_id) \
+         FROM train_subscriptions ts \
+         JOIN journey_legs jl ON jl.train_subscription_id = ts.id \
+         JOIN journeys j ON j.id = jl.journey_id AND j.user_id = ts.user_id \
+         WHERE ts.user_id = $1 AND ts.trains_id = $2 \
+         GROUP BY ts.id ORDER BY ts.id LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(trains_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((tracking_id, journey_id)) = existing {
+        tx.commit().await?;
+        return Ok(TrainTrackedOnItsOwn {
+            journey_id,
+            tracking_id,
+            created: false,
+        });
+    }
+    let (journey_id, _, tracking_id) =
+        insert_known_train_journey(&mut tx, user_id, None, trains_id, service_date, None, None)
+            .await?;
+    tx.commit().await?;
+    Ok(TrainTrackedOnItsOwn {
+        journey_id,
+        tracking_id,
+        created: true,
+    })
+}
+
+/// "Stop tracking" a train (`DELETE /Train/{trackingId}`, DS-124): deletes
+/// the train's own journeys (the caller's one-leg journeys whose leg is
+/// bound to this subscription), each as `DELETE /Journeys/{id}` does
+/// (template occurrence tombstones, then [`delete_journey_row_releasing_trains`]),
+/// which also releases the train. It stays only while a leg of another
+/// journey (a multi-leg one) still uses it, and is kept for that journey.
+/// A row no leg uses at all (written by an older binary during a rollout)
+/// is deleted outright. Group shares of the deleted journeys, its tickets,
+/// remaining `group_trains` shares and notification state go with them
+/// (`ON DELETE CASCADE`).
+///
+/// Returns `false` when no subscription with that id is the caller's (the
+/// route's `404`), `true` otherwise, whether or not the row itself went.
+/// Locks the journeys first, then the `(user_id, trains_id)` pair, the
+/// order [`delete_journey`] takes them in.
+pub async fn stop_tracking_train(
+    pool: &PgPool,
+    tracking_id: i64,
+    user_id: &str,
+) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let owned: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1 AND user_id = $2")
+            .bind(tracking_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((trains_id,)) = owned else {
+        return Ok(false);
+    };
+    // Every journey of the caller's with a leg on the train, locked as an
+    // add-leg path locks its journey; then, of those, the ones that still
+    // have that one leg alone. A leg added concurrently either committed
+    // before the lock (the journey is multi-leg now and kept) or waits
+    // and then finds no journey.
+    sqlx::query(
+        "SELECT j.id FROM journeys j \
+         WHERE j.user_id = $2 AND j.id IN ( \
+             SELECT jl.journey_id FROM journey_legs jl WHERE jl.train_subscription_id = $1) \
+         ORDER BY j.id FOR UPDATE",
+    )
+    .bind(tracking_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    let own_journeys: Vec<i64> = sqlx::query_scalar(concat!(
+        "SELECT jl.journey_id FROM journey_legs jl \
+         JOIN journeys j ON j.id = jl.journey_id AND j.user_id = $2 \
+         WHERE jl.train_subscription_id = $1 AND ",
+        crate::data::train_tracking::only_leg_of_its_journey_sql!(),
+        " ORDER BY jl.journey_id"
+    ))
+    .bind(tracking_id)
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for journey_id in own_journeys {
+        record_template_occurrence_skips(&mut tx, journey_id).await?;
+        delete_journey_row_releasing_trains(&mut tx, journey_id, user_id).await?;
+    }
+    if let Some(trains_id) = trains_id {
+        common::pg::lock_user_train_subscription(&mut tx, user_id, trains_id).await?;
+    }
+    sqlx::query(
+        "DELETE FROM train_subscriptions ts WHERE ts.id = $1 AND ts.user_id = $2 \
+           AND NOT EXISTS (SELECT 1 FROM journey_legs jl WHERE jl.train_subscription_id = ts.id)",
+    )
+    .bind(tracking_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Adds a direct, already-known-train leg to an EXISTING journey (Phase 2,
@@ -1620,25 +1780,30 @@ async fn set_leg_train_subscription_locked(
 /// Cleanup of a subscription a leg just stopped using, `old_id` (DS-93):
 /// "Change train" (`move_to` is the leg's new subscription), "Remove leg"
 /// ([`delete_leg`]) and deleting a whole journey
-/// ([`delete_journey_row_releasing_trains`]), both with `move_to` `None`. Deletes it unless it is still
-/// wanted: another leg (any journey) still references it, or the user
-/// tracks it on its own (`tracked_standalone`, set by the standalone track
-/// routes, `train_tracking::create_standalone_*`).
+/// ([`delete_journey_row_releasing_trains`]), both with `move_to` `None`. Deletes it unless
+/// another leg (any journey) still references it.
+///
+/// Since DS-124 a train tracked on its own is a one-leg journey of its
+/// own, so a leg referencing the row is the only reason to keep it. DS-93's
+/// `tracked_standalone` (a row tracked on its own besides its legs) is no
+/// longer read or written: the tracked-trains-as-journeys migration
+/// (`20261022090000`) made every such row a journey of its own. The flag
+/// stays as it was for a code rollback until phase 3 drops the column.
 ///
 /// With `move_to`, what the user attached moves there first: its tickets,
-/// and its group shares (a share the new subscription already has is kept
-/// once). Without one, they go with the row (`ON DELETE CASCADE`), the
-/// same as `DELETE /Train/{trackingId}` (`train_tracking::
-/// delete_tracked_train`). Its notification state always goes with it,
-/// which is right: that was the old train's.
+/// and its remaining `group_trains` shares (a share the new subscription
+/// already has is kept once; a share of the train's journey stays on the
+/// journey, which keeps the leg). Without one, they go with the row (`ON
+/// DELETE CASCADE`). Its notification state always goes with it, which is
+/// right: that was the old train's.
 ///
 /// Takes the `(user_id, trains_id)` lock `create_subscription_for_train`
 /// takes (`common::pg::lock_user_train_subscription`, also taken by the
 /// notifier's copy) before deciding, so a concurrent "Track this train" or
 /// leg bind that is about to hand back this same row either finishes first
-/// (and is seen here: referenced, or standalone) or waits and then creates
-/// a fresh row. A pin with no train yet (`trains_id` NULL) is never handed
-/// back by that lookup, so it needs no lock.
+/// (and is seen here as referenced) or waits and then creates a fresh row.
+/// A pin with no train yet (`trains_id` NULL) is never handed back by that
+/// lookup, so it needs no lock.
 async fn release_leg_subscription(
     conn: &mut sqlx::PgConnection,
     user_id: &str,
@@ -1658,8 +1823,7 @@ async fn release_leg_subscription(
         common::pg::lock_user_train_subscription(&mut *conn, user_id, trains_id).await?;
     }
     let keep: Option<(bool,)> = sqlx::query_as(
-        "SELECT ts.tracked_standalone \
-                OR EXISTS (SELECT 1 FROM journey_legs jl WHERE jl.train_subscription_id = ts.id) \
+        "SELECT EXISTS (SELECT 1 FROM journey_legs jl WHERE jl.train_subscription_id = ts.id) \
          FROM train_subscriptions ts WHERE ts.id = $1 AND ts.user_id = $2 FOR UPDATE",
     )
     .bind(old_id)
@@ -3670,8 +3834,8 @@ mod db_tests {
         .expect("read the notifier's subscriber pick")
     }
 
-    /// `GET /Train/mine` rows shown as trains tracked on their own (no
-    /// journey folds them in).
+    /// `GET /Train/mine` rows no journey folds in. Since DS-124 every
+    /// tracked train has a journey, so this is always empty.
     async fn standalone_listed(pool: &PgPool, user_id: &str) -> Vec<i64> {
         crate::data::train_tracking::list_tracked_trains_for_user(pool, user_id)
             .await
@@ -3680,6 +3844,41 @@ mod db_tests {
             .filter(|row| row.journey_ids.is_empty())
             .map(|row| row.id)
             .collect()
+    }
+
+    /// `singleLegJourneyIds` of `tracking_id`'s `GET /Train/mine` row: the
+    /// train's own journeys, which "Stop tracking" deletes. `None` when
+    /// the train is not listed.
+    async fn own_journeys_listed(
+        pool: &PgPool,
+        user_id: &str,
+        tracking_id: i64,
+    ) -> Option<Vec<i64>> {
+        crate::data::train_tracking::list_tracked_trains_for_user(pool, user_id)
+            .await
+            .expect("list tracked trains")
+            .into_iter()
+            .find(|row| row.id == tracking_id)
+            .map(|row| row.single_leg_journey_ids)
+    }
+
+    /// "Track this train" on the web (`POST /Journeys`, a `knownTrain`
+    /// leg) on the fixture date: a one-leg journey of the train's own,
+    /// sharing the user's row for the train. Returns `(journey_id,
+    /// tracking_id)`.
+    async fn track_on_its_own(pool: &PgPool, trains_id: i64, user_id: &str) -> (i64, i64) {
+        let (journey_id, _, tracking_id) = create_journey_with_known_train_leg(
+            pool,
+            user_id,
+            None,
+            trains_id,
+            "2026-09-22".parse().unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("track the train on its own");
+        (journey_id, tracking_id)
     }
 
     /// What [`change_train_fixture`] made.
@@ -3867,10 +4066,10 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
-    /// DS-93: a train the user also tracks on its own ("Track this train",
-    /// which hands back the leg's own row for the same train) survives the
-    /// leg's "Change train", still listed and still pushing; the new train
-    /// pushes on the leg's subscription.
+    /// DS-93, DS-124: a train the user also tracks on its own ("Track this
+    /// train", a one-leg journey of its own sharing the leg's row) survives
+    /// the leg's "Change train", still listed under its own journey and
+    /// still pushing; the new train pushes on the leg's subscription.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 change_train_ -- --ignored --test-threads=1`"]
@@ -3888,14 +4087,7 @@ mod db_tests {
             "TEST-TRAIN-DS93-KEEP-OLD",
             "TEST-TRAIN-DS93-KEEP-NEW",
             |old_trains_id, old_tracking_id| async move {
-                let standalone =
-                    crate::data::train_tracking::create_standalone_subscription_for_train(
-                        pool_ref,
-                        old_trains_id,
-                        user_id,
-                    )
-                    .await
-                    .expect("track the leg's train on its own too");
+                let (_, standalone) = track_on_its_own(pool_ref, old_trains_id, user_id).await;
                 assert_eq!(standalone, old_tracking_id, "one row serves both");
             },
         )
@@ -3903,10 +4095,13 @@ mod db_tests {
 
         assert!(subscription_exists(&pool, changed.old_tracking_id).await);
         assert!(notifications_enabled_of(&pool, changed.old_tracking_id).await);
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
         assert_eq!(
-            standalone_listed(&pool, user_id).await,
-            vec![changed.old_tracking_id],
-            "the train tracked on its own stays in GET /Train/mine, once"
+            own_journeys_listed(&pool, user_id, changed.old_tracking_id)
+                .await
+                .map(|journeys| journeys.len()),
+            Some(1),
+            "the train tracked on its own stays in GET /Train/mine, under its own journey"
         );
         assert_eq!(
             pushed_subscription(&pool, changed.old_trains_id, user_id).await,
@@ -3921,11 +4116,12 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
-    /// DS-93: a pin tracked on its own that resolved to the leg's train is
-    /// a second row (the dedup case of `TrackedTrainListItem::journey_ids`
-    /// and the notifier's one push per user per train). "Change train"
-    /// deletes the leg's own row and leaves the pin, which then stands on
-    /// its own again and takes over that train's push.
+    /// DS-93: a pin tracked on its own (a one-leg journey of its own since
+    /// DS-124) that resolved to the leg's train is a second row (the dedup
+    /// case of `TrackedTrainListItem::journey_ids` and the notifier's one
+    /// push per user per train). "Change train" deletes the leg's own row
+    /// and leaves the pin, which keeps its journey and takes over that
+    /// train's push.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 change_train_ -- --ignored --test-threads=1`"]
@@ -3936,8 +4132,8 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
         seed_user(&pool, user_id).await;
 
-        let pin =
-            crate::data::train_tracking::create_standalone_pin(&pool, &fixture_pin("WAT"), user_id)
+        let (pin_journey, _, pin) =
+            create_journey_with_pin_leg(&pool, user_id, None, &fixture_pin("WAT"))
                 .await
                 .expect("track a pin on its own");
         let pool_ref = &pool;
@@ -3961,7 +4157,11 @@ mod db_tests {
         .await;
 
         assert!(!subscription_exists(&pool, changed.old_tracking_id).await);
-        assert_eq!(standalone_listed(&pool, user_id).await, vec![pin]);
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
+        assert_eq!(
+            own_journeys_listed(&pool, user_id, pin).await,
+            Some(vec![pin_journey])
+        );
         assert_eq!(
             pushed_subscription(&pool, changed.old_trains_id, user_id).await,
             Some(pin)
@@ -4068,7 +4268,7 @@ mod db_tests {
     }
 
     /// DS-93: removing a leg keeps a train the user also tracks on its own,
-    /// still pushing; it then shows on its own in `GET /Train/mine`.
+    /// still pushing, under its own journey (DS-124).
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 delete_leg_ -- --ignored --test-threads=1`"]
@@ -4087,11 +4287,7 @@ mod db_tests {
                 .fetch_one(&pool)
                 .await
                 .expect("read trains_id");
-        let standalone = crate::data::train_tracking::create_standalone_subscription_for_train(
-            &pool, trains_id, user_id,
-        )
-        .await
-        .expect("track it on its own too");
+        let (own_journey, standalone) = track_on_its_own(&pool, trains_id, user_id).await;
         assert_eq!(standalone, tracking_id);
 
         delete_leg(&pool, journey_id, leg_id, user_id)
@@ -4100,7 +4296,11 @@ mod db_tests {
             .expect("leg is the caller's");
 
         assert!(notifications_enabled_of(&pool, tracking_id).await);
-        assert_eq!(standalone_listed(&pool, user_id).await, vec![tracking_id]);
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
+        assert_eq!(
+            own_journeys_listed(&pool, user_id, tracking_id).await,
+            Some(vec![own_journey])
+        );
         assert_eq!(
             pushed_subscription(&pool, trains_id, user_id).await,
             Some(tracking_id)
@@ -4109,9 +4309,9 @@ mod db_tests {
         cleanup_user(&pool, user_id).await;
     }
 
-    /// DS-93: "Stop tracking" (`DELETE /Train/{trackingId}`) on a train a
-    /// leg also uses only stops tracking it on its own: the leg keeps it.
-    /// Removing the leg afterwards then drops it.
+    /// DS-124: "Stop tracking" (`DELETE /Train/{trackingId}`) deletes the
+    /// train's own journey, but a multi-leg journey's leg keeps the train.
+    /// Removing that leg afterwards then drops it.
     #[tokio::test]
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 delete_leg_ -- --ignored --test-threads=1`"]
@@ -4124,22 +4324,26 @@ mod db_tests {
 
         let (journey_id, leg_id, tracking_id) =
             bound_leg(&pool, user_id, "TEST-TRAIN-DS93-DELETE-LEG-UNTRACK").await;
+        add_window_leg(&pool, journey_id, user_id).await;
         let trains_id: i64 =
             sqlx::query_scalar("SELECT trains_id FROM train_subscriptions WHERE id = $1")
                 .bind(tracking_id)
                 .fetch_one(&pool)
                 .await
                 .expect("read trains_id");
-        crate::data::train_tracking::create_standalone_subscription_for_train(
-            &pool, trains_id, user_id,
-        )
-        .await
-        .expect("track it on its own too");
+        let (own_journey, _) = track_on_its_own(&pool, trains_id, user_id).await;
 
         assert!(
-            crate::data::train_tracking::delete_tracked_train(&pool, tracking_id, user_id)
+            stop_tracking_train(&pool, tracking_id, user_id)
                 .await
                 .expect("stop tracking it")
+        );
+        assert!(
+            get_journey_summary(&pool, own_journey)
+                .await
+                .expect("read journey")
+                .is_none(),
+            "the train's own journey goes"
         );
         let leg = get_owned_leg(&pool, journey_id, leg_id, user_id)
             .await
@@ -4148,12 +4352,13 @@ mod db_tests {
         assert_eq!(
             leg.train_subscription_id,
             Some(tracking_id),
-            "the leg keeps it"
+            "the two-leg journey's leg keeps it"
         );
         assert_eq!(leg.match_mode, "manual");
-        assert!(
-            standalone_listed(&pool, user_id).await.is_empty(),
-            "folded into the journey, not on its own"
+        assert_eq!(
+            own_journeys_listed(&pool, user_id, tracking_id).await,
+            Some(vec![]),
+            "listed under the two-leg journey only"
         );
         assert_eq!(
             pushed_subscription(&pool, trains_id, user_id).await,
@@ -4169,6 +4374,430 @@ mod db_tests {
         assert_eq!(pushed_subscription(&pool, trains_id, user_id).await, None);
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-124: "Stop tracking" a train tracked on its own deletes its
+    /// journey and the train, with the journey's group share, the train's
+    /// ticket and a remaining `group_trains` share. Someone else's train
+    /// is a `false` (the route's 404). A row no leg uses (an older
+    /// binary's, written during a rollout) is deleted outright.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                stop_tracking_ -- --ignored --test-threads=1`"]
+    async fn stop_tracking_deletes_the_trains_own_journey() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-DS124-STOP-TRACKING";
+        let other_id = "TEST-DS124-STOP-TRACKING-OTHER";
+        let group_id = "TEST-DS124-STOP-TRACKING-GROUP";
+        for user in [user_id, other_id] {
+            cleanup_user(&pool, user).await;
+            seed_user(&pool, user).await;
+        }
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .expect("clear the fixture group");
+        sqlx::query("INSERT INTO groups (id, name, created_by) VALUES ($1, 'DS-124', $2)")
+            .bind(group_id)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed group");
+
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-TRAIN-DS124-STOP",
+            "2026-09-22".parse().unwrap(),
+        )
+        .await
+        .expect("seed train");
+        let (journey_id, tracking_id) = track_on_its_own(&pool, trains_id, user_id).await;
+        sqlx::query(
+            "INSERT INTO group_journeys (group_id, journey_id, added_by) VALUES ($1, $2, $3)",
+        )
+        .bind(group_id)
+        .bind(journey_id)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("share the journey");
+        sqlx::query(
+            "INSERT INTO group_trains (group_id, train_subscription_id, added_by) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(group_id)
+        .bind(tracking_id)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("share the train the old way");
+        sqlx::query(
+            "INSERT INTO tracked_train_tickets (tracked_train_id, user_id) VALUES ($1, $2)",
+        )
+        .bind(tracking_id)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("attach a ticket");
+
+        assert!(
+            !stop_tracking_train(&pool, tracking_id, other_id)
+                .await
+                .expect("someone else's stop")
+        );
+        assert!(subscription_exists(&pool, tracking_id).await);
+
+        assert!(
+            stop_tracking_train(&pool, tracking_id, user_id)
+                .await
+                .expect("stop tracking")
+        );
+        assert!(!subscription_exists(&pool, tracking_id).await);
+        assert!(
+            get_journey_summary(&pool, journey_id)
+                .await
+                .expect("read journey")
+                .is_none()
+        );
+        for (table, column) in [
+            ("group_journeys", "group_id"),
+            ("group_trains", "group_id"),
+            ("tracked_train_tickets", "user_id"),
+        ] {
+            let left: i64 =
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {column} = $1"))
+                    .bind(if column == "group_id" {
+                        group_id
+                    } else {
+                        user_id
+                    })
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count leftovers");
+            assert_eq!(left, 0, "{table} rows go with the train");
+        }
+
+        let legless =
+            crate::data::train_tracking::create_subscription_for_train(&pool, trains_id, user_id)
+                .await
+                .expect("a row no leg uses");
+        assert!(
+            stop_tracking_train(&pool, legless, user_id)
+                .await
+                .expect("stop tracking the legless row")
+        );
+        assert!(!subscription_exists(&pool, legless).await);
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .expect("clear the fixture group");
+        for user in [user_id, other_id] {
+            cleanup_user(&pool, user).await;
+        }
+    }
+
+    /// DS-124: the old `POST /Train/by-uid/.../track` makes a one-leg
+    /// journey, and on a train one of the user's journeys already has,
+    /// hands that subscription and journey back without a second journey.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                track_known_train_on_its_own -- --ignored --test-threads=1`"]
+    async fn track_known_train_on_its_own_makes_one_journey() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let user_id = "TEST-DS124-TRACK-ON-ITS-OWN";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-TRAIN-DS124-OWN", service_date)
+                .await
+                .expect("seed train");
+
+        let first = track_known_train_on_its_own(&pool, user_id, trains_id, service_date)
+            .await
+            .expect("track");
+        assert!(first.created);
+        let legs = list_legs_for_journey(&pool, first.journey_id)
+            .await
+            .expect("list legs");
+        assert_eq!(legs.len(), 1);
+        assert_eq!(legs[0].train_subscription_id, Some(first.tracking_id));
+        assert_eq!(legs[0].match_mode, "manual");
+
+        let again = track_known_train_on_its_own(&pool, user_id, trains_id, service_date)
+            .await
+            .expect("track again");
+        assert_eq!(
+            again,
+            TrainTrackedOnItsOwn {
+                created: false,
+                ..first
+            }
+        );
+        let journeys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM journeys WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count journeys");
+        assert_eq!(journeys, 1, "no second journey for the same train");
+
+        // Renaming the train renames its own journey.
+        assert!(
+            crate::data::train_tracking::rename_tracked_train(
+                &pool,
+                first.tracking_id,
+                user_id,
+                Some("Commute")
+            )
+            .await
+            .expect("rename the train")
+        );
+        let summary = get_journey_summary(&pool, first.journey_id)
+            .await
+            .expect("read journey")
+            .expect("journey exists");
+        assert_eq!(summary.custom_name.as_deref(), Some("Commute"));
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// DS-124, migration `20261022090000`: a subscription no leg uses
+    /// becomes a one-leg journey of its own (name, ends, date, bound,
+    /// `manual`), its `group_trains` share moves onto that journey, a share
+    /// of a train only a multi-leg journey uses stays, and a rerun changes
+    /// nothing. Then `scripts/rollback-tracked-trains-as-journeys.sql`
+    /// puts it all back. Runs as the schema owner (the migrator's role),
+    /// in a transaction it rolls back.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                tracked_trains_as_journeys_migration -- --ignored --test-threads=1`"]
+    async fn tracked_trains_as_journeys_migration_converts_and_rolls_back() {
+        const MIGRATION: &str = include_str!(
+            "../../../ds-store/migrations/20261022090000_tracked_trains_as_journeys.sql"
+        );
+        const ROLLBACK: &str =
+            include_str!("../../../../scripts/rollback-tracked-trains-as-journeys.sql");
+        let pool = connect().await;
+        let owner = ds_store::test_support::schedule_fixture_pool(&pool).await;
+        let mut tx = owner.begin().await.expect("begin");
+        let user_id = "TEST-DS124-MIGRATION";
+        let group_id = "TEST-DS124-MIGRATION-GROUP";
+        let service_date: NaiveDate = "2026-09-22".parse().unwrap();
+
+        sqlx::query("INSERT INTO users (id, name) VALUES ($1, $1)")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO groups (id, name, created_by) VALUES ($1, 'DS-124', $2)")
+            .bind(group_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .expect("seed group");
+        let mut subscriptions = Vec::new();
+        for (uid, name) in [
+            ("TEST-TRAIN-DS124-MIG-ALONE", Some("Commute")),
+            ("TEST-TRAIN-DS124-MIG-SHARED", None),
+            ("TEST-TRAIN-DS124-MIG-LEG", None),
+        ] {
+            let id: i64 = sqlx::query_scalar(
+                "WITH tr AS ( \
+                     INSERT INTO trains (train_uid, service_date, origin_crs, destination_crs) \
+                     VALUES ($1, $2, 'WAT', 'RDG') RETURNING id) \
+                 INSERT INTO train_subscriptions \
+                     (user_id, trains_id, service_date, pin_destination_crs, custom_name, \
+                      tracked_standalone, resolution_status) \
+                 SELECT $3, tr.id, $2, 'GLD', $4, TRUE, 'resolved' FROM tr RETURNING id",
+            )
+            .bind(uid)
+            .bind(service_date)
+            .bind(user_id)
+            .bind(name)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("seed subscription");
+            subscriptions.push(id);
+        }
+        let [alone, shared, on_leg] = subscriptions[..] else {
+            unreachable!("three subscriptions seeded");
+        };
+        let two_leg_journey: i64 =
+            sqlx::query_scalar("INSERT INTO journeys (user_id) VALUES ($1) RETURNING id")
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("seed journey");
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                 (journey_id, leg_order, service_date, train_subscription_id, match_mode) \
+             VALUES ($1, 1, $2, $3, 'manual'), ($1, 2, $2, NULL, 'unmatched')",
+        )
+        .bind(two_leg_journey)
+        .bind(service_date)
+        .bind(on_leg)
+        .execute(&mut *tx)
+        .await
+        .expect("seed legs");
+        sqlx::query(
+            "INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at) \
+             VALUES ($1, $2, $3, '2026-09-20T10:00:00Z'), ($1, $4, $3, '2026-09-20T11:00:00Z')",
+        )
+        .bind(group_id)
+        .bind(shared)
+        .bind(user_id)
+        .bind(on_leg)
+        .execute(&mut *tx)
+        .await
+        .expect("seed shares");
+
+        sqlx::raw_sql(MIGRATION)
+            .execute(&mut *tx)
+            .await
+            .expect("run the migration");
+
+        let own_journey = |tracking_id: i64| {
+            sqlx::query_as::<
+                _,
+                (
+                    i64,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    NaiveDate,
+                    String,
+                ),
+            >(
+                "SELECT j.id, j.custom_name, jl.origin_crs, jl.destination_crs, jl.service_date, \
+                        jl.match_mode \
+                 FROM journeys j JOIN journey_legs jl ON jl.journey_id = j.id \
+                 WHERE jl.train_subscription_id = $1 \
+                   AND (SELECT COUNT(*) FROM journey_legs o WHERE o.journey_id = j.id) = 1",
+            )
+            .bind(tracking_id)
+        };
+        let (alone_journey, name, origin, destination, date, mode) = own_journey(alone)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the lone train has a journey of its own");
+        assert_eq!(name.as_deref(), Some("Commute"));
+        assert_eq!(origin.as_deref(), Some("WAT"), "the train's origin");
+        assert_eq!(
+            destination.as_deref(),
+            Some("GLD"),
+            "the pinned destination"
+        );
+        assert_eq!((date, mode.as_str()), (service_date, "manual"));
+        let (shared_journey, ..) = own_journey(shared)
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the shared train has a journey of its own");
+        assert!(
+            own_journey(on_leg)
+                .fetch_optional(&mut *tx)
+                .await
+                .expect("read")
+                .is_none(),
+            "a train a leg uses gets no second journey"
+        );
+        let journey_shares: Vec<(i64, DateTime<Utc>)> =
+            sqlx::query_as("SELECT journey_id, added_at FROM group_journeys WHERE group_id = $1")
+                .bind(group_id)
+                .fetch_all(&mut *tx)
+                .await
+                .expect("read journey shares");
+        assert_eq!(
+            journey_shares,
+            vec![(shared_journey, "2026-09-20T10:00:00Z".parse().unwrap())],
+            "the share moved onto the train's journey, keeping when it was made"
+        );
+        let train_shares: Vec<i64> = sqlx::query_scalar(
+            "SELECT train_subscription_id FROM group_trains WHERE group_id = $1",
+        )
+        .bind(group_id)
+        .fetch_all(&mut *tx)
+        .await
+        .expect("read train shares");
+        assert_eq!(
+            train_shares,
+            vec![on_leg],
+            "a multi-leg journey's train stays shared"
+        );
+
+        async fn journeys_after(tx: &mut sqlx::PgConnection) -> i64 {
+            sqlx::query_scalar("SELECT COUNT(*) FROM journeys WHERE user_id = $1")
+                .bind("TEST-DS124-MIGRATION")
+                .fetch_one(tx)
+                .await
+                .expect("count journeys")
+        }
+        assert_eq!(journeys_after(&mut tx).await, 3);
+        sqlx::raw_sql(MIGRATION)
+            .execute(&mut *tx)
+            .await
+            .expect("rerun the migration");
+        assert_eq!(
+            journeys_after(&mut tx).await,
+            3,
+            "a rerun converts nothing twice"
+        );
+
+        sqlx::raw_sql(ROLLBACK)
+            .execute(&mut *tx)
+            .await
+            .expect("run the rollback");
+        assert_eq!(
+            journeys_after(&mut tx).await,
+            1,
+            "only the two-leg journey is left"
+        );
+        assert!(
+            sqlx::query_scalar::<_, i64>("SELECT id FROM journeys WHERE id = ANY($1)")
+                .bind(vec![alone_journey, shared_journey])
+                .fetch_optional(&mut *tx)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        let mut train_shares: Vec<i64> = sqlx::query_scalar(
+            "SELECT train_subscription_id FROM group_trains WHERE group_id = $1",
+        )
+        .bind(group_id)
+        .fetch_all(&mut *tx)
+        .await
+        .expect("read train shares");
+        train_shares.sort_unstable();
+        assert_eq!(
+            train_shares,
+            vec![shared, on_leg],
+            "the share is back on the train"
+        );
+        let journey_shares: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM group_journeys WHERE group_id = $1")
+                .bind(group_id)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("count journey shares");
+        assert_eq!(journey_shares, 0);
+        let standalone: Vec<bool> = sqlx::query_scalar(
+            "SELECT tracked_standalone FROM train_subscriptions WHERE id = ANY($1) ORDER BY id",
+        )
+        .bind(vec![alone, shared])
+        .fetch_all(&mut *tx)
+        .await
+        .expect("read flags");
+        assert_eq!(
+            standalone,
+            vec![true, true],
+            "the subscriptions stay as they were"
+        );
+
+        tx.rollback().await.expect("roll back the fixture");
     }
 
     /// DS-93: deleting a whole journey releases every leg's train as
@@ -4245,13 +4874,7 @@ mod db_tests {
                 .fetch_one(&pool)
                 .await
                 .expect("read trains_id");
-        crate::data::train_tracking::create_standalone_subscription_for_train(
-            &pool,
-            standalone_trains_id,
-            user_id,
-        )
-        .await
-        .expect("track it on its own too");
+        let (own_journey, _) = track_on_its_own(&pool, standalone_trains_id, user_id).await;
 
         assert!(
             delete_journey(&pool, journey_a, user_id)
@@ -4292,7 +4915,11 @@ mod db_tests {
                 .expect("delete journey C")
         );
         assert!(notifications_enabled_of(&pool, standalone).await);
-        assert_eq!(standalone_listed(&pool, user_id).await, vec![standalone]);
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
+        assert_eq!(
+            own_journeys_listed(&pool, user_id, standalone).await,
+            Some(vec![own_journey])
+        );
 
         sqlx::query("DELETE FROM groups WHERE id = $1")
             .bind(group_id)
@@ -4480,9 +5107,8 @@ mod db_tests {
             first_again, first_sub,
             "two legs share the first train's row"
         );
-        crate::data::train_tracking::create_standalone_subscription_for_train(&pool, own, user_id)
-            .await
-            .expect("track it on its own too");
+        let (own_journey, own_again) = track_on_its_own(&pool, own, user_id).await;
+        assert_eq!(own_again, own_sub, "the train's own journey shares the row");
 
         let pending_pin_leg = add_window_leg(&pool, journey_id, user_id).await;
         let pending_pin =
@@ -4525,7 +5151,7 @@ mod db_tests {
         assert_eq!(legs.len(), 9);
         assert!(
             standalone_listed(&pool, user_id).await.is_empty(),
-            "every train is folded into the journey before the delete"
+            "every train is folded into a journey before the delete"
         );
 
         assert!(
@@ -4539,7 +5165,11 @@ mod db_tests {
                 "subscription {tracking_id}, used only by this journey, is released"
             );
         }
-        assert_eq!(standalone_listed(&pool, user_id).await, vec![own_sub]);
+        assert!(standalone_listed(&pool, user_id).await.is_empty());
+        assert_eq!(
+            own_journeys_listed(&pool, user_id, own_sub).await,
+            Some(vec![own_journey])
+        );
         assert!(notifications_enabled_of(&pool, own_sub).await);
         assert_eq!(
             pushed_subscription(&pool, own, user_id).await,

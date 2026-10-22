@@ -124,15 +124,10 @@ export function TrackThisTrainButton({
             // Deliberately swallowed.
           }
         }
-        if (groupId !== null && result.trackingId !== null) {
+        if (groupId !== null) {
           // Best-effort, same posture as the ticket-attach block above.
-          // `result.trackingId` is always non-null here -- `knownTrain`
-          // mode always binds a train immediately -- but the check keeps
-          // this call site honest against `CreateJourneyResponse`'s wider
-          // (window-mode-inclusive) type. Still shares into the group via
-          // the EXISTING group_trains table, unchanged -- journey-level
-          // sharing is Phase 4 (see this plan's own Non-goals).
-          await shareTrackedTrainToGroup(groupId, result.trackingId);
+          // Shares the train's new one-leg journey (DS-124).
+          await shareTrackedTrainToGroup(groupId, result.journeyId);
         }
         router.push(`/journeys/${result.journeyId}`);
         return;

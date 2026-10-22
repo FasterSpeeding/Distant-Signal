@@ -138,4 +138,14 @@ describe('DeleteTrainButton', () => {
     expect(screen.queryByText('This cannot be undone.')).toBeNull();
     expect(screen.queryByText(/shared in 2 groups/)).toBeNull();
   });
+
+  // DS-124: stopping tracking deletes the train's own one-leg journey.
+  it("says the train's own journey goes too", async () => {
+    renderWithMantine(<DeleteTrainButton trackingId={42} sharedGroupCount={1} deletesJourney />);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Confirm stop tracking' }));
+    expect(screen.getByText('Its journey is deleted too.')).toBeInTheDocument();
+    expect(screen.getByText('This cannot be undone.')).toBeInTheDocument();
+    expect(screen.getByText(/shared in 1 group/)).toBeInTheDocument();
+  });
 });

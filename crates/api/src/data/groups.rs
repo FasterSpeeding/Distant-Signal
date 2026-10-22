@@ -920,6 +920,15 @@ pub async fn consume_invite_link(pool: &PgPool, token: &str, user_id: &str) -> R
 /// transaction without blocking the owner from renaming/updating it
 /// elsewhere, and it's exactly the lock this INSERT's own FK check takes a
 /// moment later anyway, so the two are self-compatible.
+///
+/// **Shares the train's journey (DS-124).** A train tracked on its own is
+/// a one-leg journey, and sharing it shares that journey
+/// (`group_journeys`, the oldest of the train's own journeys if there are
+/// several), so group pages list it with the journeys and members open it
+/// at `/journeys/{id}`. Only a train with no journey of its own (one a
+/// multi-leg journey uses, or a row an older binary wrote during a
+/// rollout) is still shared as a `group_trains` row, which the group
+/// pages keep listing until the contract phase.
 pub async fn add_train_to_group(
     pool: &PgPool,
     group_id: &str,
@@ -939,16 +948,40 @@ pub async fn add_train_to_group(
         return Ok(false);
     }
 
-    sqlx::query(
-        "INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at) \
-         VALUES ($1, $2, $3, NOW()) \
-         ON CONFLICT (group_id, train_subscription_id) DO NOTHING",
-    )
-    .bind(group_id)
+    let own_journey: Option<i64> = sqlx::query_scalar(concat!(
+        "SELECT j.id FROM journeys j \
+         JOIN journey_legs jl ON jl.journey_id = j.id \
+         WHERE jl.train_subscription_id = $1 AND j.user_id = $2 AND ",
+        crate::data::train_tracking::only_leg_of_its_journey_sql!(),
+        " ORDER BY j.id LIMIT 1 FOR KEY SHARE OF j"
+    ))
     .bind(train_subscription_id)
     .bind(user_id)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+    if let Some(journey_id) = own_journey {
+        sqlx::query(
+            "INSERT INTO group_journeys (group_id, journey_id, added_by, added_at) \
+             VALUES ($1, $2, $3, NOW()) \
+             ON CONFLICT (group_id, journey_id) DO NOTHING",
+        )
+        .bind(group_id)
+        .bind(journey_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO group_trains (group_id, train_subscription_id, added_by, added_at) \
+             VALUES ($1, $2, $3, NOW()) \
+             ON CONFLICT (group_id, train_subscription_id) DO NOTHING",
+        )
+        .bind(group_id)
+        .bind(train_subscription_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(true)
 }
@@ -1014,6 +1047,11 @@ pub async fn add_journey_to_group(
 /// admin/owner"). Returns `false` if no matching row was deleted (unknown
 /// id, or a non-manager targeting someone else's shared train) -- the
 /// route maps that to `404`.
+///
+/// Since DS-124 a train is shared through its own journey
+/// ([`add_train_to_group`]), so this also removes the group's shares of
+/// the train's own journeys (one-leg journeys bound to it), under the same
+/// sharer-or-manager rule.
 pub async fn remove_train_from_group(
     pool: &PgPool,
     group_id: &str,
@@ -1021,24 +1059,37 @@ pub async fn remove_train_from_group(
     user_id: &str,
     caller_can_manage: bool,
 ) -> Result<bool> {
-    let result = if caller_can_manage {
-        sqlx::query("DELETE FROM group_trains WHERE group_id = $1 AND train_subscription_id = $2")
-            .bind(group_id)
-            .bind(train_subscription_id)
-            .execute(pool)
-            .await?
-    } else {
-        sqlx::query(
-            "DELETE FROM group_trains \
-             WHERE group_id = $1 AND train_subscription_id = $2 AND added_by = $3",
-        )
-        .bind(group_id)
-        .bind(train_subscription_id)
-        .bind(user_id)
-        .execute(pool)
-        .await?
-    };
-    Ok(result.rows_affected() > 0)
+    let mut tx = pool.begin().await?;
+    let trains = sqlx::query(
+        "DELETE FROM group_trains \
+         WHERE group_id = $1 AND train_subscription_id = $2 AND ($4 OR added_by = $3)",
+    )
+    .bind(group_id)
+    .bind(train_subscription_id)
+    .bind(user_id)
+    .bind(caller_can_manage)
+    .execute(&mut *tx)
+    .await?;
+    let journeys = sqlx::query(concat!(
+        "DELETE FROM group_journeys gj \
+         WHERE gj.group_id = $1 AND ($4 OR gj.added_by = $3) \
+           AND gj.journey_id IN ( \
+               SELECT jl.journey_id FROM journey_legs jl \
+               JOIN journeys j ON j.id = jl.journey_id \
+               JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+                    AND ts.user_id = j.user_id \
+               WHERE jl.train_subscription_id = $2 AND ",
+        crate::data::train_tracking::only_leg_of_its_journey_sql!(),
+        ")"
+    ))
+    .bind(group_id)
+    .bind(train_subscription_id)
+    .bind(user_id)
+    .bind(caller_can_manage)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(trains.rows_affected() + journeys.rows_affected() > 0)
 }
 
 /// Removes a shared journey from a group. `caller_can_manage` should be
@@ -4112,6 +4163,109 @@ mod db_tests {
             .await
             .ok();
         cleanup(&pool, &["TEST-GROUPS-LISTTRAINS-OWNER"]).await;
+    }
+
+    /// DS-124: sharing a train that has a one-leg journey of its own
+    /// shares that journey (listed with the group's journeys, not its
+    /// trains), and unsharing the train removes that share. The train's
+    /// tracked-train row counts the group once.
+    #[tokio::test]
+    #[ignore = "requires a live database; see the plan's Global Constraints for the \
+                DATABASE_URL incantation, then run with `cargo test -p api \
+                add_train_to_group_shares_the_trains_own_journey -- --ignored --test-threads=1`"]
+    async fn add_train_to_group_shares_the_trains_own_journey() {
+        let pool = connect().await;
+        let owner = "TEST-GROUPS-DS124-OWNER";
+        let member = "TEST-GROUPS-DS124-MEMBER";
+        seed_user(&pool, owner).await;
+        seed_user(&pool, member).await;
+        let group_id = create_group(&pool, "DS-124", owner)
+            .await
+            .expect("create group");
+        let tracking_id = seed_train_subscription(&pool, owner).await;
+        let journey_id: i64 =
+            sqlx::query_scalar("INSERT INTO journeys (user_id) VALUES ($1) RETURNING id")
+                .bind(owner)
+                .fetch_one(&pool)
+                .await
+                .expect("seed journey");
+        sqlx::query(
+            "INSERT INTO journey_legs \
+                 (journey_id, leg_order, service_date, train_subscription_id, match_mode) \
+             VALUES ($1, 1, CURRENT_DATE, $2, 'manual')",
+        )
+        .bind(journey_id)
+        .bind(tracking_id)
+        .execute(&pool)
+        .await
+        .expect("the train's own journey");
+
+        assert!(
+            !add_train_to_group(&pool, &group_id, tracking_id, member)
+                .await
+                .expect("someone else's train")
+        );
+        assert!(
+            add_train_to_group(&pool, &group_id, tracking_id, owner)
+                .await
+                .expect("share")
+        );
+        assert!(
+            list_group_trains(&pool, &group_id)
+                .await
+                .expect("list trains")
+                .is_empty()
+        );
+        let journeys = list_group_journeys(&pool, &group_id)
+            .await
+            .expect("list journeys");
+        assert_eq!(
+            journeys.iter().map(|j| j.journey_id).collect::<Vec<_>>(),
+            vec![journey_id]
+        );
+        let listed = crate::data::train_tracking::list_tracked_trains_for_user(&pool, owner)
+            .await
+            .expect("list tracked trains");
+        let row = listed
+            .iter()
+            .find(|row| row.id == tracking_id)
+            .expect("listed");
+        assert_eq!(row.shared_group_count, 1);
+        assert_eq!(row.single_leg_journey_ids, vec![journey_id]);
+
+        assert!(
+            !remove_train_from_group(&pool, &group_id, tracking_id, member, false)
+                .await
+                .expect("a plain member who did not share it")
+        );
+        assert!(
+            remove_train_from_group(&pool, &group_id, tracking_id, owner, false)
+                .await
+                .expect("unshare")
+        );
+        assert!(
+            list_group_journeys(&pool, &group_id)
+                .await
+                .expect("list journeys")
+                .is_empty()
+        );
+
+        sqlx::query("DELETE FROM journeys WHERE id = $1")
+            .bind(journey_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM train_subscriptions WHERE id = $1")
+            .bind(tracking_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .ok();
+        cleanup(&pool, &[owner, member]).await;
     }
 
     async fn seed_journey(pool: &PgPool, user_id: &str) -> i64 {

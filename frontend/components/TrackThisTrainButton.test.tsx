@@ -234,7 +234,7 @@ describe('TrackThisTrainButton', () => {
             }),
           );
         }
-        if (url.endsWith('/api/groups/grp-1/trains')) return Promise.resolve(new Response(null, { status: 204 }));
+        if (url.endsWith('/api/groups/grp-1/journeys')) return Promise.resolve(new Response(null, { status: 204 }));
         throw new Error(`unexpected fetch for ${url}`);
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -251,17 +251,17 @@ describe('TrackThisTrainButton', () => {
       });
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
-          '/api/groups/grp-1/trains',
-          expect.objectContaining({ method: 'POST', body: JSON.stringify({ trainSubscriptionId: 42 }) }),
+          '/api/groups/grp-1/journeys',
+          expect.objectContaining({ method: 'POST', body: JSON.stringify({ journeyId: 99 }) }),
         );
       });
       await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/journeys/99'));
 
       // The share call must happen strictly after the track call, not
-      // before/concurrently -- the share body needs the real trackingId the
+      // before/concurrently -- the share body needs the real journeyId the
       // track call returns.
       const urls = fetchMock.mock.calls.map((args: unknown[]) => String(args[0]));
-      expect(urls.indexOf('/api/Journeys')).toBeLessThan(urls.indexOf('/api/groups/grp-1/trains'));
+      expect(urls.indexOf('/api/Journeys')).toBeLessThan(urls.indexOf('/api/groups/grp-1/journeys'));
     });
 
     it('a group-share failure still navigates, without showing a track-failed error', async () => {
@@ -274,7 +274,7 @@ describe('TrackThisTrainButton', () => {
             }),
           );
         }
-        if (url.endsWith('/groups/grp-1/trains')) return Promise.reject(new Error('network blip'));
+        if (url.endsWith('/groups/grp-1/journeys')) return Promise.reject(new Error('network blip'));
         throw new Error(`unexpected fetch for ${url}`);
       });
       vi.stubGlobal('fetch', fetchMock);
