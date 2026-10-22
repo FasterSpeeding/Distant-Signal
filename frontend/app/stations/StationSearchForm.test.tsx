@@ -390,4 +390,168 @@ describe('StationSearchForm', () => {
       expect(screen.getByRole('button', { name: 'Use my location' })).toBeEnabled();
     });
   });
+
+  describe('Tube, DLR, tram and transit stops (DS-134)', () => {
+    const uxbridge = {
+      id: '940GZZLUUXB',
+      name: 'Uxbridge',
+      modes: ['tube'],
+      lines: [
+        { id: 'metropolitan', name: 'Metropolitan' },
+        { id: 'piccadilly', name: 'Piccadilly' },
+      ],
+    };
+    const eustonTube = {
+      id: '940GZZLUEUS',
+      name: 'Euston',
+      modes: ['tube'],
+      lines: [{ id: 'northern', name: 'Northern' }],
+    };
+
+    /** Answers each backend path the merged search and the stop panel call. */
+    function routeFetch(routes: {
+      stations?: unknown[];
+      tflStops?: unknown[];
+      networks?: unknown[];
+      transitStops?: unknown[];
+      railCrs?: Record<string, string[]>;
+    }) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+          if (url.startsWith('/api/stations')) return json(routes.stations ?? []);
+          if (url.startsWith('/api/tfl/stops/rail-crs')) return json(routes.railCrs ?? {});
+          if (url.startsWith('/api/tfl/stops')) return json(routes.tflStops ?? []);
+          if (url.startsWith('/api/transit/networks')) return json({ networks: routes.networks ?? [] });
+          if (/^\/api\/transit\/[^/]+\/stops/.test(url)) return json({ stops: routes.transitStops ?? [] });
+          return new Response('not found', { status: 404 });
+        }),
+      );
+    }
+
+    async function search(value: string) {
+      const input = screen.getByRole('combobox', { name: 'Station name or code' });
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      return input;
+    }
+
+    it('lists an Underground-only stop with its mode and lines, and picking it fills its name', async () => {
+      routeFetch({ tflStops: [uxbridge] });
+      renderWithProvider();
+      const input = await search('uxbridge');
+
+      const option = await screen.findByRole('option', {
+        name: 'Uxbridge · Tube: Metropolitan, Piccadilly',
+        hidden: true,
+      });
+      fireEvent.click(option);
+
+      expect(input).toHaveValue('Uxbridge');
+    });
+
+    it('shows a picked Tube stop on the page, with its line status links, instead of a station page', async () => {
+      routeFetch({ tflStops: [uxbridge] });
+      renderWithProvider();
+      await search('uxbridge');
+      fireEvent.click(
+        await screen.findByRole('option', { name: 'Uxbridge · Tube: Metropolitan, Piccadilly', hidden: true }),
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+      });
+
+      expect(pushMock).not.toHaveBeenCalled();
+      expect(screen.getByRole('heading', { name: 'Uxbridge' })).toBeInTheDocument();
+      expect(screen.getByText('Underground')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Metropolitan' })).toHaveAttribute('href', '/lines/tfl-metropolitan');
+      expect(screen.getByRole('link', { name: 'Piccadilly' })).toHaveAttribute('href', '/lines/tfl-piccadilly');
+      expect(screen.queryByText(/National Rail station here/)).not.toBeInTheDocument();
+    });
+
+    it('typing a Tube-only stop name and pressing Look up also shows it', async () => {
+      routeFetch({ tflStops: [uxbridge] });
+      renderWithProvider();
+      await search('Uxbridge');
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+      });
+
+      expect(pushMock).not.toHaveBeenCalled();
+      expect(screen.getByRole('heading', { name: 'Uxbridge' })).toBeInTheDocument();
+    });
+
+    it('a typed name shared by a station and a Tube stop goes to the station', async () => {
+      routeFetch({ stations: [{ code: 'EUS', name: 'Euston' }], tflStops: [eustonTube] });
+      renderWithProvider();
+      await search('Euston');
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Look up|Looking up/ }));
+      });
+
+      expect(pushMock).toHaveBeenCalledWith('/stations/EUS');
+      await act(async () => {
+        resolveNavigation();
+      });
+    });
+
+    it('a picked Tube stop that shares a station name stays the Tube stop, and links its station', async () => {
+      routeFetch({
+        stations: [{ code: 'EUS', name: 'Euston' }],
+        tflStops: [eustonTube],
+        railCrs: { '940GZZLUEUS': ['EUS'] },
+      });
+      renderWithProvider();
+      await search('Euston');
+      expect(await screen.findByRole('option', { name: 'EUS · Euston', hidden: true })).toBeInTheDocument();
+      fireEvent.click(await screen.findByRole('option', { name: 'Euston · Tube: Northern', hidden: true }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+      });
+
+      expect(pushMock).not.toHaveBeenCalled();
+      expect(await screen.findByRole('link', { name: 'Euston (EUS)' })).toHaveAttribute('href', '/stations/EUS');
+    });
+
+    it('editing the field after picking a Tube stop hides its panel', async () => {
+      routeFetch({ tflStops: [uxbridge] });
+      renderWithProvider();
+      const input = await search('Uxbridge');
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+      });
+      expect(screen.getByRole('heading', { name: 'Uxbridge' })).toBeInTheDocument();
+
+      fireEvent.change(input, { target: { value: 'Woking' } });
+
+      expect(screen.queryByRole('heading', { name: 'Uxbridge' })).not.toBeInTheDocument();
+    });
+
+    it("goes to a served transit network's stop page", async () => {
+      routeFetch({
+        networks: [{ id: 'metrolink', name: 'Metrolink', mode: 'tram' }],
+        transitStops: [{ id: '9400ZZMAALT', name: 'Altrincham', lat: null, lon: null, lines: [], railLinks: [] }],
+      });
+      renderWithProvider();
+      await search('altrin');
+      fireEvent.click(await screen.findByRole('option', { name: 'Altrincham · Metrolink tram stop', hidden: true }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Look up|Looking up/ }));
+      });
+
+      expect(pushMock).toHaveBeenCalledWith('/transit/metrolink/stops/9400ZZMAALT');
+      await act(async () => {
+        resolveNavigation();
+      });
+    });
+  });
 });

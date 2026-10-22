@@ -67,13 +67,14 @@ export function suggestionAutocompleteProps(
     /** What picking a suggestion writes into the field: its bare `code`
      * (every station and operator picker), or its `name` (a place field,
      * such as an untracked leg's TfL stop, whose code is kept beside it
-     * via `onOptionSubmit`). */
+     * via `onOptionSubmit`). A suggestion with a `place` (a TfL or transit
+     * stop in `/stations`' search) always writes its name. */
     fill?: 'code' | 'name';
   },
 ): Pick<AutocompleteProps, 'data' | 'filter' | 'renderOption'> {
   return {
     data: withNoMatchPlaceholder(
-      suggestions.map((s) => ({ value: s.code, label: fill === 'name' ? s.name : s.code })),
+      suggestions.map((s) => ({ value: s.code, label: fill === 'name' || s.place ? s.name : s.code })),
       noMatchMessage,
       { active: query.trim().length > 0 && !loading },
     ),
@@ -89,7 +90,9 @@ export function suggestionAutocompleteProps(
       if (placeholder) return placeholder;
       const match = suggestions.find((s) => s.code === option.value);
       if (!match) return option.value;
-      if (fill === 'name') return match.detail ? `${match.name} · ${match.detail}` : match.name;
+      // A stop that is not a National Rail station (`place`) has no CRS to
+      // show: its name and mode, and its name is what picking it writes.
+      if (fill === 'name' || match.place) return match.detail ? `${match.name} · ${match.detail}` : match.name;
       return suggestionOptionLabel(match);
     },
   };

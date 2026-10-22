@@ -4,13 +4,15 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Alert, Autocomplete, Button, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { useMounted } from '@mantine/hooks';
-import { searchNearbyStations, searchStations } from '@/lib/suggestions';
+import { searchNearbyStations } from '@/lib/suggestions';
+import { searchStationsAndStops } from '@/lib/stationSearch';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import type { NearbyStation } from '@/lib/types';
+import type { NearbyStation, Suggestion, TflStop } from '@/lib/types';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 import { NearbyStationList } from './NearbyStationList';
+import { TflStopPanel } from './TflStopPanel';
 
 /** The "near me" lookup's own state machine -- mirrors the shape
  * `IncidentSearchForm.tsx`'s `Results` type already establishes (one
@@ -40,7 +42,13 @@ const GEOLOCATION_PERMISSION_DENIED = 1;
 export function StationSearchForm() {
   const router = useRouter();
   const [crs, setCrs] = useState('');
-  const { suggestions, loading } = useSuggestions(crs, searchStations);
+  const { suggestions, loading } = useSuggestions(crs, searchStationsAndStops);
+  // The dropdown row last picked, while the field still shows what picking
+  // it wrote: "Euston" the Tube stop and "Euston" the station share a
+  // name, so the text alone can't say which was meant.
+  const [picked, setPicked] = useState<Suggestion | null>(null);
+  // A picked TfL stop has no page to go to: it shows here instead.
+  const [tflStop, setTflStop] = useState<TflStop | null>(null);
   const [isPending, startTransition] = useTransition();
   const [nearby, setNearby] = useState<NearbyState>({ status: 'idle' });
   // `navigator.geolocation` doesn't exist during SSR (no `navigator` at
@@ -69,9 +77,36 @@ export function StationSearchForm() {
     });
   }
 
+  /** Where a search result leads: a station's page, a transit stop's page,
+   * or, for a TfL stop, the panel below the form. */
+  function open(suggestion: Suggestion) {
+    const place = suggestion.place;
+    if (!place) {
+      goToStation(suggestion.code);
+    } else if (place.kind === 'tfl') {
+      setTflStop(place.stop);
+    } else {
+      startTransition(() => {
+        router.push(`/transit/${encodeURIComponent(place.network)}/stops/${encodeURIComponent(place.stopId)}`);
+      });
+    }
+  }
+
+  function handleChange(value: string) {
+    setCrs(value);
+    setTflStop(null);
+    // Picking writes the row's code (a station) or name (a stop) into the
+    // field; any other text is a new search.
+    setPicked((current) => (current && (current.place ? current.name : current.code) === value ? current : null));
+  }
+
   function handleSearch() {
     const trimmed = crs.trim();
     if (!trimmed) return;
+    if (picked) {
+      open(picked);
+      return;
+    }
     // Clicking "Look up" (rather than picking a dropdown option) used to
     // navigate using the raw typed text uppercased, as if it were always
     // already a CRS code -- so a typed station name only ever worked by
@@ -81,8 +116,9 @@ export function StationSearchForm() {
     // the raw text if nothing matched at all (e.g. a network hiccup).
     const exactCode = suggestions.find((s) => s.code.toLowerCase() === trimmed.toLowerCase());
     const exactName = suggestions.find((s) => s.name.toLowerCase() === trimmed.toLowerCase());
-    const target = exactCode?.code ?? exactName?.code ?? suggestions[0]?.code ?? trimmed.toUpperCase();
-    goToStation(target);
+    const target = exactCode ?? exactName ?? suggestions[0];
+    if (target) open(target);
+    else goToStation(trimmed.toUpperCase());
   }
 
   // Only ever invoked from the "Use my location" button's own `onClick` --
@@ -111,7 +147,8 @@ export function StationSearchForm() {
           label="Station name or code"
           placeholder="e.g. Woking or WOK"
           value={crs}
-          onChange={setCrs}
+          onChange={handleChange}
+          onOptionSubmit={(code) => setPicked(suggestions.find((s) => s.code === code) ?? null)}
           {...suggestionAutocompleteProps(suggestions, {
             query: crs,
             loading,
@@ -126,6 +163,7 @@ export function StationSearchForm() {
           {isPending ? 'Looking up' : 'Look up'}
         </Button>
       </Group>
+      {tflStop && <TflStopPanel stop={tflStop} />}
       {isPending && (
         // Several seconds of a static, disabled button is not enough
         // feedback for where the user is actually looking — this mirrors
