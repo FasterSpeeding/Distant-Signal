@@ -11,6 +11,52 @@ use sqlx::PgPool;
 
 use crate::data::delay_repay_rules;
 
+/// SQL: `journey_legs jl` is its journey's only leg. A journey with one
+/// leg bound to a subscription is that train's own journey (DS-124): what
+/// "Track this train" makes, what "Stop tracking" deletes and what sharing
+/// a train shares.
+macro_rules! only_leg_of_its_journey_sql {
+    () => {
+        "NOT EXISTS (SELECT 1 FROM journey_legs other \
+                     WHERE other.journey_id = jl.journey_id AND other.id <> jl.id)"
+    };
+}
+pub(crate) use only_leg_of_its_journey_sql;
+
+/// SQL, for a `train_subscriptions tt` row: how many groups it is shared
+/// into, through a remaining `group_trains` row or through one of its own
+/// journeys (`group_journeys`), each group once (DS-124).
+macro_rules! shared_group_count_sql {
+    () => {
+        concat!(
+            "(SELECT COUNT(DISTINCT s.group_id) FROM ( \
+                 SELECT gt.group_id FROM group_trains gt WHERE gt.train_subscription_id = tt.id \
+                 UNION ALL \
+                 SELECT gj.group_id FROM group_journeys gj \
+                 JOIN journey_legs jl ON jl.journey_id = gj.journey_id \
+                 WHERE jl.train_subscription_id = tt.id AND ",
+            only_leg_of_its_journey_sql!(),
+            ") s)"
+        )
+    };
+}
+
+/// SQL, for a `train_subscriptions tt` row: its owner's one-leg journeys
+/// bound to it, ascending, as a `bigint[]` (DS-124).
+macro_rules! single_leg_journey_ids_sql {
+    () => {
+        concat!(
+            "(SELECT COALESCE(array_agg(jl.journey_id ORDER BY jl.journey_id), \
+                              '{}'::bigint[]) \
+              FROM journey_legs jl \
+              JOIN journeys j ON j.id = jl.journey_id AND j.user_id = tt.user_id \
+              WHERE jl.train_subscription_id = tt.id AND ",
+            only_leg_of_its_journey_sql!(),
+            ")"
+        )
+    };
+}
+
 /// A pin more than this far in the past is almost certainly a stale
 /// frontend view (the user was looking at a departure board snapshot from
 /// much earlier) rather than a real tracking request -- reject it rather
@@ -472,53 +518,6 @@ where
     Ok(row.0)
 }
 
-/// [`create_pin`] for a train the user tracks on its own (`POST
-/// /Train/track`): the row is marked `tracked_standalone`, so a journey
-/// leg's "Change train" never drops it (DS-93,
-/// `journeys::set_leg_train_subscription`).
-pub async fn create_standalone_pin(
-    pool: &PgPool,
-    pin: &TrackPinRequest,
-    user_id: &str,
-) -> anyhow::Result<i64> {
-    let mut tx = pool.begin().await?;
-    let tracking_id = create_pin(&mut *tx, pin, user_id).await?;
-    mark_tracked_standalone(&mut tx, tracking_id).await?;
-    tx.commit().await?;
-    Ok(tracking_id)
-}
-
-/// [`create_subscription_for_train`] for a train the user tracks on its own
-/// (`POST /Train/by-uid/{uid}/{date}/track`). That function hands back the
-/// user's existing row for the train, which may be a journey leg's; either
-/// way the row is now also tracked on its own, so it is marked
-/// `tracked_standalone` and survives that leg's "Change train" (DS-93).
-pub async fn create_standalone_subscription_for_train(
-    pool: &PgPool,
-    trains_id: i64,
-    user_id: &str,
-) -> anyhow::Result<i64> {
-    let mut tx = pool.begin().await?;
-    let tracking_id = create_subscription_for_train(&mut *tx, trains_id, user_id).await?;
-    mark_tracked_standalone(&mut tx, tracking_id).await?;
-    tx.commit().await?;
-    Ok(tracking_id)
-}
-
-async fn mark_tracked_standalone(
-    conn: &mut sqlx::PgConnection,
-    tracking_id: i64,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        "UPDATE train_subscriptions SET tracked_standalone = TRUE \
-         WHERE id = $1 AND NOT tracked_standalone",
-    )
-    .bind(tracking_id)
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
 /// Every allowed value of `tracked_train_tickets.source` -- kept in one
 /// place (this constant, not repeated string literals) so this app-layer
 /// check and the migration's own CHECK constraint (Task 1) can't silently
@@ -942,7 +941,26 @@ pub struct TrackedTrainState {
     /// potentially-many-row list) into an N+1. Exists so the frontend's
     /// delete-confirmation modal (`DeleteTrainButton`) can warn "this train
     /// is shared in N group(s)" without a second round-trip.
+    ///
+    /// Since DS-124 a train is shared through its own journey
+    /// (`group_journeys` on a one-leg journey bound to this subscription)
+    /// as well as through a remaining `group_trains` row: this counts the
+    /// distinct groups across both ([`shared_group_count_sql!`]).
     pub shared_group_count: i64,
+    /// The caller's journeys this train belongs to (any leg), and of
+    /// those, the train's own: one-leg journeys whose leg is bound to this
+    /// subscription, which "Stop tracking" deletes (DS-124). Filled only by
+    /// the owner's `GET /Train/{trackingId}` (`attach_journey_ids`), never
+    /// on a journey's or a group's view of the train, which must not show
+    /// the owner's other journeys; absent from the JSON otherwise.
+    /// Additive (2026-10-22).
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journey_ids: Option<Vec<i64>>,
+    /// See `journey_ids`.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_leg_journey_ids: Option<Vec<i64>>,
     /// The shared `trains` row's own surrogate key, needed to read
     /// `train_movement_events` for this train's live overlay -- internal
     /// plumbing for `routes::train`'s journey-stops attachment, never sent
@@ -1102,7 +1120,8 @@ impl crate::data::tracking_phase::PhaseRow for TrackedTrainState {
 // `schedule_calling_points`) -- see
 // `a_resolution_with_no_known_train_uid_leaves_trains_id_null`'s own
 // updated assertions for the concrete, tested shape of that gap.
-const TRACKED_TRAIN_STATE_SELECT: &str = "\
+const TRACKED_TRAIN_STATE_SELECT: &str = concat!(
+    "\
     SELECT tt.id, tt.service_date, \
            COALESCE(tt.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
            COALESCE(tt.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
@@ -1118,14 +1137,16 @@ const TRACKED_TRAIN_STATE_SELECT: &str = "\
            cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
            cs.next_calling_point, cs.eta_next, cs.eta_source, \
            tt.custom_name, \
-           (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
-               AS shared_group_count \
+           ",
+    shared_group_count_sql!(),
+    " AS shared_group_count \
     FROM train_subscriptions tt \
     LEFT JOIN trains tr ON tr.id = tt.trains_id \
     LEFT JOIN train_current_state cs ON cs.trains_id = tt.trains_id \
     LEFT JOIN stations so ON so.crs = UPPER(COALESCE(tt.pin_origin_crs, tr.origin_crs))::bpchar \
     LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(tt.pin_destination_crs, tr.destination_crs))::bpchar \
-    LEFT JOIN stations ssd ON ssd.crs = UPPER(tr.destination_crs)::bpchar";
+    LEFT JOIN stations ssd ON ssd.crs = UPPER(tr.destination_crs)::bpchar"
+);
 
 /// A user's own tracked-train list, lighter than `TrackedTrainState`
 /// (Decision 1 of the design spec) -- excludes live movement detail
@@ -1216,6 +1237,12 @@ pub struct TrackedTrainListItem {
     /// folds these rows into their journey instead of listing them as
     /// standalone tracked trains. Additive (2026-10-20).
     pub journey_ids: Vec<i64>,
+    /// Of `journey_ids`, the train's own journeys: the caller's one-leg
+    /// journeys whose leg is bound to this subscription itself. "Stop
+    /// tracking" (`DELETE /Train/{trackingId}`) deletes these; a train in
+    /// any other of `journey_ids` stays tracked there (DS-124). Additive
+    /// (2026-10-22).
+    pub single_leg_journey_ids: Vec<i64>,
     /// Whether the train is over, by the rule that splits this list's
     /// travel order (`travel_order`): `completed`, or it has actually
     /// reached its destination. Rows come still-to-come first, so the first
@@ -1302,8 +1329,7 @@ static LIST_TRACKED_TRAINS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
                 tt.resolution_status, tr.train_uid, \
                 cs.status, cs.delay_minutes, cs.delay_minutes AS working_delay_minutes, \
                 tr.id AS trains_id, tt.tracked_at, tt.custom_name, \
-                (SELECT COUNT(*) FROM group_trains gt WHERE gt.train_subscription_id = tt.id) \
-                    AS shared_group_count, \
+                {shared_group_count} AS shared_group_count, \
                 (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) \
                     AS timetable_on_row, \
                 (SELECT COALESCE(array_agg(DISTINCT jl.journey_id ORDER BY jl.journey_id), \
@@ -1315,6 +1341,7 @@ static LIST_TRACKED_TRAINS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
                         SELECT ts2.id FROM train_subscriptions ts2 \
                         WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)) \
                     AS journey_ids, \
+                {single_leg_journey_ids} AS single_leg_journey_ids, \
                 k.travelled \
          FROM train_subscriptions tt \
          LEFT JOIN trains tr ON tr.id = tt.trains_id \
@@ -1338,6 +1365,8 @@ static LIST_TRACKED_TRAINS_SQL: std::sync::LazyLock<String> = std::sync::LazyLoc
             "cs.delay_minutes",
         ),
         order = order_by_sql("k.travelled", "k.departs_at"),
+        shared_group_count = shared_group_count_sql!(),
+        single_leg_journey_ids = single_leg_journey_ids_sql!(),
     )
 });
 
@@ -1426,111 +1455,82 @@ pub async fn get_by_tracking_ids(
     Ok(rows.into_iter().map(|row| (row.id, row)).collect())
 }
 
-/// Deletes a tracked train by id, scoped to the caller's ownership -- the
-/// check is folded directly into the `WHERE` clause
-/// (`WHERE id = $1 AND user_id = $2`), the same shape
-/// `custom_lines::delete_custom_line` uses, rather than a separate
-/// `tracked_train_owner` lookup followed by an unscoped delete. Unlike
-/// `delete_custom_line` (which also has to clean up a `pinned_lines` row
-/// with no FK of its own), nothing else needs deleting here: every other
-/// row that references a `tracked_trains` id --
-/// `train_movement_events`, `train_current_state` (both
-/// `crates/ds-store/migrations/20260828120000_train_tracking.sql`), and
-/// `tracked_train_tickets` (`crates/ds-store/migrations/20260829090000_journey_ticket_tracking.sql`)
-/// -- is declared `ON DELETE CASCADE`, so a single `DELETE FROM
-/// tracked_trains` here is sufficient; Postgres does the rest inside the
-/// same statement's transaction. Returns `true` if a row was deleted,
-/// `false` if no tracked train with that id belongs to this caller
-/// (doesn't exist, or belongs to someone else -- indistinguishable at this
-/// layer, same as every other ownership check in this file; the route
-/// handler maps `false` to `404`, never `403`).
-///
-/// **A train a journey leg uses (DS-93).** One row can be both a leg's
-/// train and a train the user tracks on its own (`create_subscription_for_train`
-/// is idempotent per `(user_id, trains_id)`). Deleting it used to unbind
-/// the leg (`journey_legs.train_subscription_id ... ON DELETE SET NULL`,
-/// with `match_mode` reset to `'unmatched'` to match: 2026-09-26 review,
-/// Low finding 13). Now, while any leg uses the row, this only clears
-/// `tracked_standalone`: the user stops tracking it on its own and the leg
-/// keeps its train, tickets and shares; the row goes once no leg uses it
-/// (`journeys::delete_leg`, or a "Change train"). Still `true`, so the
-/// route answers `204` either way. Takes the `(user_id, trains_id)` lock
-/// `create_subscription_for_train` takes, so a leg bind racing this delete
-/// either lands first (and the row is kept) or waits and makes a new row.
-pub async fn delete_tracked_train(pool: &PgPool, id: i64, user_id: &str) -> anyhow::Result<bool> {
-    let mut tx = pool.begin().await?;
-
-    let owned: Option<(Option<i64>,)> =
-        sqlx::query_as("SELECT trains_id FROM train_subscriptions WHERE id = $1 AND user_id = $2")
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let Some((trains_id,)) = owned else {
-        return Ok(false);
-    };
-    if let Some(trains_id) = trains_id {
-        common::pg::lock_user_train_subscription(&mut tx, user_id, trains_id).await?;
-    }
-    let (leg_uses_it,): (bool,) = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM journey_legs WHERE train_subscription_id = $1)",
-    )
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
-    if leg_uses_it {
-        let result = sqlx::query(
-            "UPDATE train_subscriptions SET tracked_standalone = FALSE \
-             WHERE id = $1 AND user_id = $2",
-        )
-        .bind(id)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        return Ok(result.rows_affected() > 0);
-    }
-
-    let result = sqlx::query("DELETE FROM train_subscriptions WHERE id = $1 AND user_id = $2")
-        .bind(id)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-    let deleted = result.rows_affected() > 0;
-
-    tx.commit().await?;
-    Ok(deleted)
-}
-
 /// Renames (or clears, if `custom_name` is `None`) a tracked train's
-/// display name, scoped to the caller's ownership -- same
-/// `WHERE id = $1 AND user_id = $2` shape as [`delete_tracked_train`]
-/// immediately above, folded directly into the `UPDATE` rather than a
-/// separate ownership lookup first. Returns `true` if a row was updated,
-/// `false` if no tracked train with that id belongs to this caller
-/// (doesn't exist, or belongs to someone else -- indistinguishable at this
-/// layer, same as every other ownership check in this file; the route
-/// handler maps `false` to `404`, never `403`). The caller
-/// (`crate::routes::train::post_tracked_train_name`) is responsible for
-/// having already run `custom_name` through [`validate_custom_name`] --
-/// this function does no validation of its own, matching
-/// `attach_ticket_to_tracked_train`'s own "route validates, data layer
-/// writes" division of responsibility.
+/// display name, scoped to the caller's ownership (`WHERE id = $1 AND
+/// user_id = $2`, folded into the `UPDATE`). Returns `true` if a row was
+/// updated, `false` if no tracked train with that id belongs to this
+/// caller (doesn't exist, or belongs to someone else; the route maps
+/// `false` to `404`, never `403`). The caller
+/// (`crate::routes::train::post_tracked_train_name`) has already run
+/// `custom_name` through [`validate_custom_name`].
+///
+/// The train's own journeys (one-leg journeys bound to it, DS-124) take
+/// the same name in the same transaction: the journey is what the lists
+/// show, so a name given on the train page must show there. One way only:
+/// renaming a journey leaves its train's name alone.
 pub async fn rename_tracked_train(
     pool: &PgPool,
     id: i64,
     user_id: &str,
     custom_name: Option<&str>,
 ) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
     let result = sqlx::query(
         "UPDATE train_subscriptions SET custom_name = $1 WHERE id = $2 AND user_id = $3",
     )
     .bind(custom_name)
     .bind(id)
     .bind(user_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(result.rows_affected() > 0)
+    if result.rows_affected() == 0 {
+        return Ok(false);
+    }
+    sqlx::query(concat!(
+        "UPDATE journeys j SET custom_name = $1, updated_at = NOW() \
+         FROM journey_legs jl \
+         WHERE jl.journey_id = j.id AND jl.train_subscription_id = $2 AND j.user_id = $3 \
+           AND j.custom_name IS DISTINCT FROM $1 AND ",
+        only_leg_of_its_journey_sql!()
+    ))
+    .bind(custom_name)
+    .bind(id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Fills [`TrackedTrainState::journey_ids`] and
+/// [`TrackedTrainState::single_leg_journey_ids`] for the owner's own view
+/// of the train (`GET /Train/{trackingId}`), by the rules of
+/// `GET /Train/mine`'s `journeyIds` and `singleLegJourneyIds`.
+pub async fn attach_journey_ids(
+    pool: &PgPool,
+    state: &mut TrackedTrainState,
+    user_id: &str,
+) -> anyhow::Result<()> {
+    let (journey_ids, single_leg_journey_ids): (Vec<i64>, Vec<i64>) = sqlx::query_as(concat!(
+        "SELECT (SELECT COALESCE(array_agg(DISTINCT jl.journey_id ORDER BY jl.journey_id), \
+                                 '{}'::bigint[]) \
+                 FROM journey_legs jl \
+                 JOIN journeys j ON j.id = jl.journey_id AND j.user_id = tt.user_id \
+                 WHERE jl.train_subscription_id = tt.id \
+                    OR jl.train_subscription_id IN ( \
+                        SELECT ts2.id FROM train_subscriptions ts2 \
+                        WHERE ts2.user_id = tt.user_id AND ts2.trains_id = tt.trains_id)), ",
+        single_leg_journey_ids_sql!(),
+        " FROM train_subscriptions tt WHERE tt.id = $1 AND tt.user_id = $2"
+    ))
+    .bind(state.id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default();
+    state.journey_ids = Some(journey_ids);
+    state.single_leg_journey_ids = Some(single_leg_journey_ids);
+    Ok(())
 }
 
 #[cfg(test)]

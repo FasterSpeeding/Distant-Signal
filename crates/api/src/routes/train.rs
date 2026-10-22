@@ -141,6 +141,9 @@ pub fn router() -> Router {
 struct TrackPinResponse {
     tracking_id: i64,
     resolution_status: &'static str,
+    /// The one-leg journey the pin now belongs to (DS-124). Additive
+    /// (2026-10-22).
+    journey_id: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -673,10 +676,14 @@ async fn post_track(
 ) -> Result<Json<TrackPinResponse>, (StatusCode, String)> {
     train_tracking::validate_pin(&pin, Utc::now()).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
     enforce_pin_cap(&app, &user.id).await?;
+    super::journeys::enforce_journey_cap(&app, &user.id).await?;
 
-    let tracking_id = train_tracking::create_standalone_pin(&app.database, &pin, &user.id)
-        .await
-        .map_err(internal_error("create tracking pin"))?;
+    // A train tracked on its own is a one-leg journey (DS-124): the same
+    // write as `POST /Journeys` with a `pin` leg.
+    let (journey_id, _, tracking_id) =
+        crate::data::journeys::create_journey_with_pin_leg(&app.database, &user.id, None, &pin)
+            .await
+            .map_err(internal_error("create tracking pin"))?;
 
     // Best-effort schedule-first match, attempted synchronously in the
     // same request (Decision 3 of
@@ -761,6 +768,7 @@ async fn post_track(
     Ok(Json(TrackPinResponse {
         tracking_id,
         resolution_status,
+        journey_id,
     }))
 }
 
@@ -821,7 +829,10 @@ async fn get_by_tracking_id(
         .await
         .map_err(internal_error("read tracked train state"))?;
     match state {
-        Some(state) => {
+        Some(mut state) => {
+            train_tracking::attach_journey_ids(&app.database, &mut state, &user.id)
+                .await
+                .map_err(internal_error("read tracked train journeys"))?;
             let state =
                 crate::data::train_operator::attach_to_tracked_state(&app.database, state).await;
             let state = crate::data::schedule_services::attach_one(&app.database, state).await;
@@ -843,19 +854,18 @@ async fn get_by_tracking_id(
 /// `DELETE /Train/{trackingId}` -- mirrors `lines.rs`'s `delete_line`
 /// (same `AuthenticatedUser` + 404-for-unknown-or-not-yours shape, same
 /// `204 No Content` on success), on the same path shape `GET
-/// /Train/{trackingId}` (`get_by_tracking_id`, above) already uses. The
-/// ownership check is folded into `train_tracking::delete_tracked_train`'s
-/// own `WHERE id = $1 AND user_id = $2`, rather than a separate
-/// `tracked_train_owner` lookup followed by an unscoped delete -- see that
-/// function's doc comment for why nothing else needs deleting here
-/// (`train_movement_events`/`train_current_state`/`tracked_train_tickets`
-/// all cascade).
+/// /Train/{trackingId}` (`get_by_tracking_id`, above) already uses.
+///
+/// "Stop tracking" (DS-124): deletes the train's own one-leg journeys,
+/// and with them the train unless a multi-leg journey still uses it
+/// (`journeys::stop_tracking_train`, whose `WHERE ... AND user_id = $2`
+/// is the ownership check).
 async fn delete_tracked_train(
     State(app): State<App>,
     user: AuthenticatedUser,
     Path(tracking_id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let deleted = train_tracking::delete_tracked_train(&app.database, tracking_id, &user.id)
+    let deleted = crate::data::journeys::stop_tracking_train(&app.database, tracking_id, &user.id)
         .await
         .map_err(internal_error("delete tracked train"))?;
     if !deleted {
@@ -1251,6 +1261,10 @@ async fn schedule_only_public_state(
 #[serde(rename_all = "camelCase")]
 struct TrackByUidResponse {
     tracking_id: i64,
+    /// The train's journey (DS-124): the new one-leg journey, or, when one
+    /// of the caller's journeys already had the train, the first of those.
+    /// Additive (2026-10-22).
+    journey_id: i64,
 }
 
 /// `POST /Train/by-uid/{train_uid}/{date}/track` -- the NR-primary tracking
@@ -1328,20 +1342,29 @@ async fn post_track_by_uid(
             }
         }
     }
+    if !already_tracked {
+        super::journeys::enforce_journey_cap(&app, &user.id).await?;
+    }
     let trains_id = crate::data::trains::find_or_create_train(&app.database, &train_uid, date)
         .await
         .map_err(internal_error("find or create train"))?;
-    let tracking_id = train_tracking::create_standalone_subscription_for_train(
+    // A train tracked on its own is a one-leg journey (DS-124), unless one
+    // of the caller's journeys already has it: then that one comes back.
+    let tracked = crate::data::journeys::track_known_train_on_its_own(
         &app.database,
-        trains_id,
         &user.id,
+        trains_id,
+        date,
     )
     .await
     .map_err(internal_error("create subscription"))?;
 
-    enrich_shared_train(&app, tracking_id, trains_id, &train_uid, date).await;
+    enrich_shared_train(&app, tracked.tracking_id, trains_id, &train_uid, date).await;
 
-    Ok(Json(TrackByUidResponse { tracking_id }))
+    Ok(Json(TrackByUidResponse {
+        tracking_id: tracked.tracking_id,
+        journey_id: tracked.journey_id,
+    }))
 }
 
 /// Best-effort enrichment of the shared `trains` row a brand-new NR-primary
@@ -2339,6 +2362,8 @@ mod tests {
             eta_source: Some("darwin-estimated".to_string()),
             custom_name: None,
             shared_group_count: 0,
+            journey_ids: None,
+            single_leg_journey_ids: None,
             trains_id: Some(1),
             journey_stops: None,
             may_have_arrived: false,
@@ -4062,11 +4087,11 @@ mod db_tests {
         cleanup_user(&pool, "TEST-DELETE-REAL-OWNER").await;
     }
 
-    /// DS-93: stopping tracking a train a journey leg also uses keeps the
-    /// leg's train. The row stays (no longer tracked on its own) and the
-    /// leg keeps it and its `match_mode`; it used to be deleted, which
-    /// unbound the leg (2026-09-26 review, Low finding 13, reset the leg's
-    /// `match_mode` to match).
+    /// DS-93, DS-124: stopping tracking a train a multi-leg journey's leg
+    /// uses keeps the leg's train. The row stays and the leg keeps it and
+    /// its `match_mode`; it used to be deleted, which unbound the leg
+    /// (2026-09-26 review, Low finding 13, reset the leg's `match_mode` to
+    /// match). Only the train's own one-leg journeys go.
     #[tokio::test]
     #[ignore = "requires a live database; see the plan's Global Constraints for the \
                 DATABASE_URL incantation, then run with `cargo test -p api \
@@ -4102,12 +4127,14 @@ mod db_tests {
         .fetch_one(&pool)
         .await
         .expect("seed fixture journey leg bound to the tracked train");
-
-        sqlx::query("UPDATE train_subscriptions SET tracked_standalone = TRUE WHERE id = $1")
-            .bind(tracking_id)
-            .execute(&pool)
-            .await
-            .expect("the train is also tracked on its own");
+        sqlx::query(
+            "INSERT INTO journey_legs (journey_id, leg_order, service_date) VALUES ($1, 2, $2)",
+        )
+        .bind(journey_id)
+        .bind("2026-07-13".parse::<chrono::NaiveDate>().unwrap())
+        .execute(&pool)
+        .await
+        .expect("a second leg: the journey is not the train's own");
 
         let router = test_router(test_app(pool.clone()));
         let (status, _body) = delete_request(router, tracking_id, Some(&owner_token)).await;
@@ -4126,13 +4153,6 @@ mod db_tests {
             "the leg keeps its train"
         );
         assert_eq!(match_mode, "manual");
-        let standalone: bool =
-            sqlx::query_scalar("SELECT tracked_standalone FROM train_subscriptions WHERE id = $1")
-                .bind(tracking_id)
-                .fetch_one(&pool)
-                .await
-                .expect("the row is kept");
-        assert!(!standalone, "no longer tracked on its own");
 
         sqlx::query("DELETE FROM journeys WHERE id = $1")
             .bind(journey_id)
@@ -5849,6 +5869,29 @@ mod db_tests {
                 .await
                 .expect("count the subscription row");
         assert_eq!(row_count, 1, "exactly one row must exist after two calls");
+
+        // DS-124: the train is a one-leg journey, made once and handed back.
+        let first_journey_id = body1.get("journeyId").and_then(Value::as_i64);
+        assert!(first_journey_id.is_some(), "journeyId present: {body1:?}");
+        assert_eq!(
+            body2.get("journeyId").and_then(Value::as_i64),
+            first_journey_id
+        );
+        let (journeys, legs): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(DISTINCT j.id), COUNT(jl.id) FROM journeys j \
+             JOIN journey_legs jl ON jl.journey_id = j.id \
+             WHERE j.user_id = $1 AND jl.train_subscription_id = $2",
+        )
+        .bind("TEST-TRACK-BY-UID-TWICE")
+        .bind(first_tracking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count the train's journeys");
+        assert_eq!(
+            (journeys, legs),
+            (1, 1),
+            "one one-leg journey after two calls"
+        );
 
         cleanup_user(&pool, "TEST-TRACK-BY-UID-TWICE").await;
         cleanup_public_train(&pool, "ZTU004").await;

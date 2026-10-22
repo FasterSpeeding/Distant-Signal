@@ -353,6 +353,8 @@ mod tests {
             eta_source: None,
             custom_name: None,
             shared_group_count: 0,
+            journey_ids: None,
+            single_leg_journey_ids: None,
             trains_id,
             journey_stops: stops,
             may_have_arrived: false,
