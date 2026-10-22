@@ -113,6 +113,19 @@ describe('next.config.mjs redirects', () => {
     const sources = entries.map((entry) => entry.source);
     expect(sources).not.toContain('/track/mine/add-ticket');
     expect(sources).not.toContain('/journeys');
-    expect(sources.some((source) => source.includes(':') || source.includes('*'))).toBe(false);
+    // The one parameterised source, for links sent before 22 Oct 2026, takes
+    // digits only, so it can't catch `/track/mine` or anything under it.
+    const parameterised = sources.filter((source) => source.includes(':') || source.includes('*'));
+    expect(parameterised).toEqual(['/track/:trackingId(\\d+)']);
+  });
+
+  it('sends the old numeric /track/{id} push links to the train page', async () => {
+    if (!nextConfig.redirects) throw new Error('next.config.mjs defines no redirects()');
+    const entries = await nextConfig.redirects();
+    expect(entries).toContainEqual({
+      source: '/track/:trackingId(\\d+)',
+      destination: '/train/by-id/:trackingId',
+      permanent: true,
+    });
   });
 });
