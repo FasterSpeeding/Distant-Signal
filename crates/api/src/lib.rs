@@ -34,6 +34,7 @@ pub mod app;
 pub mod auth;
 pub mod data;
 pub mod edge;
+pub mod journey_break_sweep;
 pub use ds_store::migrate;
 pub mod rate_limit;
 pub mod readiness;

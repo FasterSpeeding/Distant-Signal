@@ -1170,11 +1170,19 @@ async fn plan_live(
     ))
 }
 
+/// The break sweep's own planning slot (mid-journey changes spec
+/// 2026-10-22 §5.3): one search at a time, waited for rather than shed, so
+/// the sweep never takes a [`PLAN_SLOTS`] permit from a user's request.
+static SWEEP_PLAN_SLOTS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(1));
+
 /// Whose slot a journey re-plan holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReplanSlot {
     /// A user's request: one of [`PLAN_SLOTS`], a 503 when none is free.
     Request,
+    /// The break sweep: [`SWEEP_PLAN_SLOTS`], waited for.
+    Sweep,
 }
 
 /// One search for a journey's alternatives (`plan_for_journey`).
@@ -1208,6 +1216,12 @@ pub(crate) async fn plan_for_journey(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "too many trip plans are being computed right now; please retry in a moment"
                     .to_string(),
+            )
+        })?,
+        ReplanSlot::Sweep => SWEEP_PLAN_SLOTS.acquire().await.map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the sweep's planning slot is closed".to_string(),
             )
         })?,
     };

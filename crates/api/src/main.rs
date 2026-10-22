@@ -615,16 +615,20 @@ where
 /// lock only for the one run, so the writer's 10-minute loop is never kept
 /// off it.
 fn spawn_background_loops(app: &App, shutdown: &api::shutdown::ShutdownSignal) -> BackgroundLoops {
+    // The journey break sweep plans with the api's own graph cache, so it
+    // runs here whatever API_BACKGROUND_LOOPS says (the ingest-writer
+    // cannot run it).
+    let break_sweep = spawn_journey_break_sweep(app, shutdown);
     if !app.config.background_loops {
         tracing::info!(
             "API_BACKGROUND_LOOPS is false: the api runs no background loops \
              (the ingest-writer and the api-maintenance CronJob run them)"
         );
-        return BackgroundLoops::default();
+        return BackgroundLoops(break_sweep.into_iter().collect());
     }
     let runner = api_loop_runner(app);
     let session = std::sync::Arc::clone(runner.session());
-    let mut tasks = Vec::new();
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = break_sweep.into_iter().collect();
     // The periodic sweeps, until shutdown; then the lock session is closed.
     tasks.push(tokio::spawn(
         runner
@@ -666,6 +670,39 @@ fn spawn_background_loops(app: &App, shutdown: &api::shutdown::ShutdownSignal) -
         }
     }));
     BackgroundLoops(tasks)
+}
+
+/// The journey break sweep (`api::journey_break_sweep`), when
+/// `JOURNEY_BREAKS_ENABLED`: its own runner and lock session (a session
+/// remembers the locks it holds, so two runners must not share one),
+/// stopped by the shutdown signal like the others.
+fn spawn_journey_break_sweep(
+    app: &App,
+    shutdown: &api::shutdown::ShutdownSignal,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let config = api::journey_break_sweep::SweepConfig::from_env();
+    tracing::info!(
+        enabled = config.enabled,
+        interval_secs = config.interval_secs,
+        "journey break sweep (JOURNEY_BREAKS_ENABLED)"
+    );
+    if !config.enabled {
+        return None;
+    }
+    let pool = app.database.clone();
+    let mut runner = ds_store::loops::LoopRunner::new(
+        pool.clone(),
+        ds_store::loops::LockSession::from_pool(pool),
+    );
+    if let Err(err) = runner.register(api::journey_break_sweep::loop_spec(app.clone(), &config)) {
+        tracing::error!(error = ?err, "journey break sweep not started");
+        return None;
+    }
+    Some(tokio::spawn(
+        runner
+            .spawn(BACKGROUND_LOOP_STALL_AFTER)
+            .run_until(shutdown.triggered()),
+    ))
 }
 
 /// The tasks [`spawn_background_loops`] started; each ends once the

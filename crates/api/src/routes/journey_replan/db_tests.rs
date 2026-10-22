@@ -683,3 +683,82 @@ async fn a_cancelled_train_opens_a_break_on_read_and_it_recovers() {
         .expect("break");
     assert_eq!(status, "recovered");
 }
+
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+async fn the_sweep_opens_a_break_plans_it_and_ends_it_once_recovered() {
+    use chrono::TimeZone;
+    let _now = pin_now();
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+    let (journey_id, leg_id) = create_journey(&router, &token).await;
+    let app = crate::test_support::inert_app(pool.clone());
+    let now = chrono::Utc.with_ymd_and_hms(2099, 5, 5, 8, 30, 0).unwrap();
+
+    // Nothing broken: nothing written.
+    let swept = crate::journey_break_sweep::run_sweep(&app, now)
+        .await
+        .expect("sweep");
+    assert!(swept.journeys >= 1, "{swept:?}");
+    assert_eq!(swept.breaks, 0);
+
+    exec(
+        &pool,
+        &format!(
+            "INSERT INTO train_current_state (trains_id, status) \
+             SELECT id, 'cancelled' FROM trains WHERE service_date = '{DATE}' AND train_uid = 'RP0001'"
+        ),
+    )
+    .await;
+    let swept = crate::journey_break_sweep::run_sweep(&app, now)
+        .await
+        .expect("sweep");
+    assert_eq!((swept.breaks, swept.planned), (1, 1), "{swept:?}");
+    let row = crate::data::journey_breaks::open_break(&pool, journey_id)
+        .await
+        .expect("read")
+        .expect("open break");
+    assert_eq!(row.cause, "cancelled");
+    assert_eq!(row.trigger_leg_id, Some(leg_id));
+    let suggestions = row.suggestions.expect("planned");
+    assert!(
+        suggestions["suggestions"]
+            .as_array()
+            .is_some_and(|s| !s.is_empty()),
+        "{suggestions}"
+    );
+    assert_eq!(suggestions["trigger"]["legId"], leg_id);
+
+    // Seen again unchanged: confirmed, not planned again.
+    let swept = crate::journey_break_sweep::run_sweep(&app, now)
+        .await
+        .expect("sweep");
+    assert_eq!((swept.breaks, swept.planned), (1, 0), "{swept:?}");
+    let row = crate::data::journey_breaks::open_break(&pool, journey_id)
+        .await
+        .expect("read")
+        .expect("open break");
+    assert_eq!(row.confirmations, 2);
+
+    exec(
+        &pool,
+        &format!(
+            "UPDATE train_current_state SET status = 'awaiting_activation' WHERE trains_id IN \
+             (SELECT id FROM trains WHERE service_date = '{DATE}' AND train_uid = 'RP0001')"
+        ),
+    )
+    .await;
+    let swept = crate::journey_break_sweep::run_sweep(&app, now)
+        .await
+        .expect("sweep");
+    assert_eq!(swept.recovered, 1, "{swept:?}");
+    assert!(
+        crate::data::journey_breaks::open_break(&pool, journey_id)
+            .await
+            .expect("read")
+            .is_none()
+    );
+}

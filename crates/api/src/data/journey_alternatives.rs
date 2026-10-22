@@ -19,9 +19,18 @@ use crate::data::journeys::{ItineraryLeg, UntrackedLeg};
 use crate::data::trip_plan_live;
 use crate::data::trip_planning_itinerary::{PlannedItinerary, PlannedLeg};
 
-/// Suggestions older than this are stale (§5.4,
-/// `JOURNEY_BREAKS_SUGGESTIONS_MAX_AGE_SECS`).
-pub const SUGGESTIONS_MAX_AGE: Duration = Duration::seconds(120);
+/// Suggestions older than this are stale (§5.4): 120 seconds, or
+/// `JOURNEY_BREAKS_SUGGESTIONS_MAX_AGE_SECS` (chart
+/// `api.journeyBreaks.suggestionsMaxAgeSecs`).
+pub fn suggestions_max_age() -> Duration {
+    static MAX_AGE: std::sync::LazyLock<Duration> = std::sync::LazyLock::new(|| {
+        Duration::seconds(trip_plan_live::env_num(
+            "JOURNEY_BREAKS_SUGGESTIONS_MAX_AGE_SECS",
+            120_i64,
+        ))
+    });
+    *MAX_AGE
+}
 
 /// Suggestions whose first train leaves within this of now are stale.
 pub const FIRST_TRAIN_DUE_WITHIN: Duration = Duration::minutes(2);
@@ -213,7 +222,7 @@ impl SuggestionSet {
     /// inputs, too old, or the first one's first train is about to leave.
     pub fn is_stale(&self, fingerprint: &str, now: DateTime<Utc>) -> bool {
         self.fingerprint != fingerprint
-            || now - self.generated_at > SUGGESTIONS_MAX_AGE
+            || now - self.generated_at > suggestions_max_age()
             || self
                 .suggestions
                 .first()

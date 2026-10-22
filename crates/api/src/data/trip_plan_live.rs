@@ -108,7 +108,7 @@ impl LiveConfig {
     }
 }
 
-fn env_bool(name: &str, default: bool) -> bool {
+pub(crate) fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Err(_) => default,
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -122,7 +122,10 @@ fn env_bool(name: &str, default: bool) -> bool {
     }
 }
 
-fn env_num<T: std::str::FromStr + std::fmt::Display + Copy>(name: &str, default: T) -> T {
+pub(crate) fn env_num<T: std::str::FromStr + std::fmt::Display + Copy>(
+    name: &str,
+    default: T,
+) -> T {
     match std::env::var(name) {
         Err(_) => default,
         Ok(raw) => raw.trim().parse().unwrap_or_else(|_| {

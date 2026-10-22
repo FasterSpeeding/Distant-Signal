@@ -349,6 +349,7 @@ pub(crate) async fn plan_suggestions(
     let started = std::time::Instant::now();
     let trigger_label = match slot {
         ReplanSlot::Request => "request",
+        ReplanSlot::Sweep => "sweep",
     };
     let now = analysis.now;
     let legs = &analysis.legs;
@@ -958,7 +959,7 @@ impl BreakResponse {
 
 /// Plans `row`'s suggestions now and stores them on it (raising its
 /// severity to what they show, §6.2). Returns the updated row.
-async fn replan_break(
+pub(crate) async fn replan_break(
     app: &App,
     row: &BreakRow,
     analysis: &Analysis,

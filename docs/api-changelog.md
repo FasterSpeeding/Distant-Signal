@@ -70,6 +70,12 @@ its list). Design:
 - **For ds-mcp.** Nothing to change. `get_my_journey` may show
   `openBreak` ("connection at York missed"); every new route is
   cookie-only, so it cannot accept or replace.
+- **Suggestion pushes** (behind `api.journeyBreaks.enabled`, off by
+  default): the api's break sweep opens breaks without a page read and
+  plans their suggestions; the notifier pushes one notice per break,
+  linking to `/journeys/{id}?break={breakId}&src=push`. Opening that link
+  calls `GET /Journeys/{id}/breaks/current?src=push`, which counts it as
+  opened from the push. Runbook: `docs/journey-breaks.md`.
 
 ## 2026-10-22: each change in a journey, judged on live times
 
