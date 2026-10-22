@@ -25,6 +25,12 @@ describe('EtaBadge', () => {
     expect(badgeTextTransform(screen.getByText('Live departure board'))).toBe('none');
   });
 
+  it('names a predicted late start from the incoming train as its own source', () => {
+    renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="previous-working" />);
+    expect(screen.getByText('Incoming train')).toBeInTheDocument();
+    expect(screen.queryByText('Estimate (Network Rail)')).not.toBeInTheDocument();
+  });
+
   it('shows a distinct badge for a trust-propagated ETA', () => {
     renderWithMantine(<EtaBadge etaNext="2026-08-28T18:41:00Z" etaSource="trust-propagated" />);
     expect(badgeTextTransform(screen.getByText('Estimate (Network Rail)'))).toBe('none');

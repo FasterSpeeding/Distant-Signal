@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { Box, Flex, Stack, Text, Tooltip, UnstyledButton } from '@mantine/core';
 import { formatTime } from '@/lib/dateFormat';
+import { changedFromPlatform } from '@/lib/platformLabel';
 import { journeyStopLabel, resolvedStopLabel, type JourneyEndpointNames } from './JourneyTimeline';
 import { PlatformBadge } from './PlatformBadge';
 import { DELAY_TONE_COLOR } from './DelayBadge';
@@ -659,9 +660,11 @@ function JourneyProgressNode({
             layout gap reserved for it. */}
         <PlatformBadge
           platform={stop.platform}
-          plannedPlatform={stop.plannedPlatform}
+          plannedPlatform={changedFromPlatform(stop)}
           platformChanged={stop.platformChanged}
           platformStatus={stop.platformStatus}
+          bookedPlatform={stop.bookedPlatform}
+          platformBasis={stop.platformBasis}
         />
       </Box>
     );

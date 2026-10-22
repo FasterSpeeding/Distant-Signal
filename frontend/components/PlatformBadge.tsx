@@ -1,6 +1,6 @@
 import { Badge, VisuallyHidden } from '@mantine/core';
 import { compactPlatformLabel, isPlatformChange, platformLabel } from '@/lib/platformLabel';
-import type { PlatformStatus } from '@/lib/types';
+import type { PlatformBasis, PlatformStatus } from '@/lib/types';
 import { PhoneLabel } from './PhoneLabel';
 
 /** A small colour+text badge naming a calling point's Darwin/LDBWS
@@ -43,26 +43,60 @@ import { PhoneLabel } from './PhoneLabel';
  * Any other status (including one this client doesn't know yet) renders
  * as a normal platform.
  *
+ * A stop with no live `platform` but a timetable `bookedPlatform` on
+ * `platformBasis` `booked` (DS-127) shows that booked platform as
+ * provisional: a grey outline badge with the number underlined in dots,
+ * the tooltip "Booked platform, not yet shown on station boards", and a
+ * visually hidden " (booked, not confirmed)" so a screen reader hears it
+ * too ("Platform 4 (booked, not confirmed)"). `data-platform-basis`
+ * marks it for tests.
+ *
  * `compact` (under a "Platform" column header, `JourneyTimeline`) shows
  * the short form below `sm`: "4", or "9 (was 6)" for a change, so the
  * change is still in words. Screen readers keep the full label
  * (`PhoneLabel`). `data-platform-badge` opts the badge out of Mantine's
  * ellipsis (`app/globals.css`): it is never cut short, whatever its
  * width. */
+/** The booked badge's tooltip (DS-127). */
+export const BOOKED_PLATFORM_TOOLTIP = 'Booked platform, not yet shown on station boards';
+
 export function PlatformBadge({
   platform,
   plannedPlatform,
   platformChanged,
   platformStatus = null,
+  bookedPlatform = null,
+  platformBasis = null,
   compact = false,
 }: {
   platform: string | null;
   plannedPlatform: string | null;
   platformChanged: boolean;
   platformStatus?: PlatformStatus | null | undefined;
+  bookedPlatform?: string | null | undefined;
+  platformBasis?: PlatformBasis | null | undefined;
   compact?: boolean;
 }) {
-  if (platform === null) return null;
+  if (platform === null) {
+    if (platformBasis !== 'booked' || !bookedPlatform) return null;
+    const full = `Platform ${bookedPlatform}`;
+    return (
+      <Badge
+        color="gray"
+        variant="outline"
+        tt="none"
+        data-platform-badge
+        data-platform-changed={false}
+        data-platform-basis="booked"
+        title={BOOKED_PLATFORM_TOOLTIP}
+      >
+        <span className="platformBadge__booked">
+          {compact ? <PhoneLabel full={full} compact={bookedPlatform} /> : full}
+        </span>
+        <VisuallyHidden> (booked, not confirmed)</VisuallyHidden>
+      </Badge>
+    );
+  }
 
   const facts = { platform, plannedPlatform, platformChanged };
   const changed = isPlatformChange(facts);
@@ -93,6 +127,7 @@ export function PlatformBadge({
       tt="none"
       data-platform-badge
       data-platform-changed={changed}
+      data-platform-basis="board"
     >
       {label}
     </Badge>

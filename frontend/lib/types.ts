@@ -642,7 +642,9 @@ export interface UntrackedLegFields {
   destinationStopId?: string | null;
 }
 export type JourneyStatus = 'awaiting_activation' | 'en_route' | 'cancelled' | 'completed';
-export type EtaSource = 'trust-propagated' | 'darwin-estimated';
+// `previous-working`: a predicted late start from the incoming train
+// (`predictedStart`, DS-127). Render any other value as a generic estimate.
+export type EtaSource = 'trust-propagated' | 'darwin-estimated' | 'previous-working';
 
 export type ScheduleCallingPointKind = 'Origin' | 'Intermediate' | 'Terminate';
 
@@ -710,6 +712,42 @@ export type SkipSource = 'Darwin' | 'Trust' | 'Both';
 // will. More values may be added later; render any other value as
 // `active`.
 export type PlatformStatus = 'active' | 'cancelled';
+
+// `JourneyStop.platformBasis` (DS-127): what `displayPlatform` rests on.
+// `booked`: only the timetable's platform is known, so it is provisional
+// ("booked, not confirmed"). `board`: a live departure board shows it (not
+// a confirmation: boards show the booked platform until it changes).
+// `confirmed` is reserved and not served yet. Render any other value as
+// `board`.
+export type PlatformBasis = 'booked' | 'board' | 'confirmed';
+
+/** `predictedStart.confidence`. `low` comes without a number. */
+export type PredictionConfidence = 'high' | 'medium' | 'low';
+
+/** The train a prediction rests on: its previous working, whose unit forms
+ * this train (`predictedStart.previousWorking`). */
+export interface PreviousWorking {
+  trainUid: string;
+  serviceDate: string; // YYYY-MM-DD
+  // `inferred` from the timetable's platform sequence; `association` later.
+  link: string;
+  status: JourneyStatus | null;
+  delayMinutes: number | null;
+  observedAt: string | null; // RFC3339
+  bookedTurnaroundMinutes: number;
+}
+
+/** A predicted late start for a train TRUST has not reported yet (DS-127,
+ * `ds_store::trains::predicted_start`): from its previous working's delay
+ * and the booked turnaround. Only ever an estimate: `lateMinutes` is
+ * `null` at `low` confidence, which says "may start late" and no number. */
+export interface PredictedStart {
+  lateMinutes: number | null;
+  confidence: PredictionConfidence;
+  basis: string; // 'previous-working'
+  computedAt: string; // RFC3339
+  previousWorking: PreviousWorking;
+}
 
 /** One subsequent calling point of a live departure-board row
  * (`GET /public/stations/{crs}/departures`'s `callingPoints`, from LDBWS
@@ -780,10 +818,11 @@ export interface JourneyStop {
   // conditions as `platform` above, or when no platform has been observed
   // more than once yet.
   plannedPlatform: string | null;
-  // `true` only when both `platform` and `plannedPlatform` are known AND
-  // differ -- the non-colour signal to pair with any colour change when
-  // showing a changed platform (WCAG 1.4.1). Always `false` when either is
-  // `null` -- there is nothing to have changed.
+  // Whether the live `platform` differs from the one the stop was meant to
+  // use: the timetable's `bookedPlatform` whenever both are known (DS-127),
+  // else `plannedPlatform` (the first platform seen). The non-colour signal
+  // to pair with any colour change (WCAG 1.4.1). Always `false` without a
+  // live `platform`.
   platformChanged: boolean;
   // Whether the train still calls at `platform`: `null` exactly when
   // `platform` is. Optional so a response from an API that predates the
@@ -791,12 +830,21 @@ export interface JourneyStop {
   platformStatus?: PlatformStatus | null;
   // The TIMETABLED platform from the CIF schedule itself (independent of
   // Darwin) -- see `crates/api/src/data/journey.rs`'s
-  // `JourneyStop::booked_platform`. Deliberately separate from
-  // `plannedPlatform` (Darwin's earliest-observed reconstruction) and never
-  // part of `platformChanged`. `null` when the CIF field is blank or the
-  // schedule row predates it. Optional only so older fixtures stay valid;
-  // the API always sends it.
+  // `JourneyStop::booked_platform`. Separate from `plannedPlatform`
+  // (Darwin's earliest-observed reconstruction); since DS-127 it is what
+  // `platformChanged` compares against when both are known. `null` when the
+  // CIF field is blank or the schedule row predates it. Optional only so
+  // older fixtures stay valid; the API always sends it.
   bookedPlatform?: string | null;
+  // What `displayPlatform` rests on (DS-127): `booked` marks a provisional
+  // platform. Optional: older responses lack it.
+  platformBasis?: PlatformBasis | null;
+  // The platform to show: the live `platform` when known, else
+  // `bookedPlatform` (DS-127). Optional: older responses lack it.
+  displayPlatform?: string | null;
+  // `previous-working` when `estimated*` come from a predicted late start
+  // (DS-127), else `null`. Optional: older responses lack it.
+  estimateSource?: EtaSource | null;
   // LDBWS-style live status of this stop
   // (`crates/api/src/data/stop_live_status.rs` has the mapping table).
   // `null` only from an older backend. Optional so older fixtures stay valid.
@@ -979,6 +1027,9 @@ export interface TrainJourneyState extends ServiceModeFields, TrackingPhaseField
   // `may_have_arrived`. Always `false` when there are no `journeyStops` to
   // compute it from.
   mayHaveArrived: boolean;
+  // A predicted late start from the incoming train, before TRUST reports
+  // this one (DS-127). Optional: older responses and fixtures lack it.
+  predictedStart?: PredictedStart | null;
   // The operating company's ATOC code (e.g. "SW") from the CIF schedule,
   // and its display name from the TOC reference table
   // (`crates/api/src/data/train_operator.rs`). `null` when no single code is
@@ -1054,6 +1105,8 @@ export interface PublicTrainState extends ServiceModeFields, TimetableCertaintyF
   // See `TrainJourneyState.mayHaveArrived`'s own doc comment -- same
   // contract.
   mayHaveArrived: boolean;
+  // See `TrainJourneyState.predictedStart`.
+  predictedStart?: PredictedStart | null;
   // See `TrainJourneyState.operatorCode`.
   operatorCode?: string | null;
   operatorName?: string | null;
