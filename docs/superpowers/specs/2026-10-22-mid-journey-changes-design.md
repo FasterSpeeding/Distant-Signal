@@ -1036,7 +1036,7 @@ least a third of opened breaks accepted, over the first month.
 
 ## 17. Ranking alternatives
 
-Status: research and proposal, awaiting the user's answers in §17.10.
+Status: decided 2026-10-22 (see the end of §17.10).
 Work log DS-129. Replaces the single rule in §5.6 ("rejoins first, then
 arrival, then changes, then same operator"), which the user rejected:
 which alternative is best depends on the ticket, on why the journey
@@ -1357,6 +1357,16 @@ the `suggestions` JSON.
 9. **Push names the Recommended train** ("Next LNER train 10:04, arrives
    12:31") rather than a count of options? Recommended: yes when a
    Recommended exists with `Covered` fit; the count otherwise.
+
+
+**Decided 2026-10-22.** The user accepted every recommendation above: one
+Recommended option plus up to two badged picks, each with a ticket-fit
+badge, flagging rather than hiding what the ticket may not cover; a
+travel preference setting defaulting to Automatic; capturing fare class
+and the printed route now and ingesting the fares feed's route files
+after that; and the remaining defaults (no-ticket ranking, no delay-fault
+input, the starting weights, Fastest at 15+ min earlier, and the push
+naming the Recommended train only when it is usually covered).
 
 ### 17.11 Sources
 
