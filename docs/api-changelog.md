@@ -3,6 +3,40 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-22: a tracked train is a one-leg journey
+
+Every route stays; the fields below are additive. Two behaviours change.
+Design: `docs/superpowers/specs/2026-10-21-tracked-trains-as-journeys-design.md`.
+
+- **A train tracked on its own is a journey.** `POST /Train/track` and
+  `POST /Train/by-uid/{uid}/{date}/track` now make a one-leg journey, as
+  `POST /Journeys` does, and return its `journeyId` beside `trackingId`.
+  By-uid on a train one of your journeys already has makes nothing and
+  returns that subscription and journey. Both now also hit the journey cap
+  (`400`, 1000 journeys). Existing trains tracked on their own became
+  one-leg journeys in migration `20261022090000` (their tracking ids are
+  unchanged), so they now appear in `GET /Journeys/mine`.
+- **`DELETE /Train/{trackingId}` ("Stop tracking")** deletes the train's
+  own one-leg journeys, and the train with them unless a multi-leg journey
+  still uses it. Still `204` / `404`.
+- `GET /Train/mine` rows gain `singleLegJourneyIds` (the train's own
+  journeys, which "Stop tracking" deletes). `journeyIds` is no longer
+  empty for a train tracked on its own. The owner's `GET /Train/{trackingId}`
+  gains `journeyIds` and `singleLegJourneyIds`. `sharedGroupCount` now
+  counts groups the train's own journey is shared into too.
+- `POST /Train/{trackingId}/name` also renames the train's own journeys.
+- **Group shares are journey shares.** `POST /groups/{id}/trains` shares
+  the train's own journey (`group_journeys`); only a train with none is
+  still shared as a train. `DELETE /groups/{id}/trains/{trackingId}` also
+  removes those journey shares. Existing train shares moved onto their
+  journeys, so `GET /groups/{id}/trains` and `GET /groups/shared-trains`
+  list fewer rows and `GET /groups/{id}/journeys` and
+  `GET /groups/shared-journeys` more.
+- **For ds-mcp.** Nothing to change: it calls none of the `/Train/*`
+  tracking or `/groups/*` routes. `list_my_journeys` may list a few more
+  one-leg journeys (one in production). Those are web-made, so a delegated
+  delete refuses them (`404`) as before.
+
 ## 2026-10-21: a Tube stop's station, and editing a journey leg's search
 
 Additive; nothing existing changes meaning.
