@@ -187,6 +187,10 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with DATABASE_URL=... cargo test -p ds-store \
                 turnarounds -- --ignored --test-threads=1"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture-heavy scenario, read top to bottom"
+    )]
     async fn infers_the_previous_working_from_the_platform_sequence() {
         let pool = pool().await;
         let (d0, d1) = (day(9), day(10));

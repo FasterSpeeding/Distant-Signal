@@ -50,6 +50,10 @@ mod db_tests {
     #[tokio::test]
     #[ignore = "requires a live database; run with DATABASE_URL=... cargo test -p ds-store \
                 tracked_stop_targets -- --ignored --test-threads=1"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fixture-heavy scenario, read top to bottom"
+    )]
     async fn the_view_lists_each_tracked_stop_with_a_departure() {
         let pool = crate::test_support::connect().await;
         let now = Utc::now();
