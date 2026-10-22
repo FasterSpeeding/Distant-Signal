@@ -118,25 +118,40 @@ export async function resolvePriorOriginCrs(
   return match?.code ?? null;
 }
 
-/** When the CURRENT last leg's train is timetabled to reach that leg's
- * destination, in Europe/London time: what the "Add a leg" dialog
- * pre-fills a next leg's service date and earliest departure from, the
- * same way `journeyPriorDestinationCrs` pre-fills its origin. A leg that
- * arrives after midnight lands on the next day's date.
+/** When the CURRENT last leg's train reaches that leg's destination, in
+ * Europe/London time: what the "Add a leg" dialog pre-fills a next leg's
+ * service date and earliest departure from, the same way
+ * `journeyPriorDestinationCrs` pre-fills its origin. A leg that arrives
+ * after midnight lands on the next day's date.
  *
- * The time is the PUBLIC (passenger timetable) arrival at that stop,
- * falling back to the working one only when the API sent no public times
- * at all (`stopDisplayArrival`). Deliberately the timetabled time, not a
- * live estimate or actual: the next train is chosen from the timetable
- * too. The stop is looked for after the leg's own origin, so a route that
+ * The live arrival (2026-10-22), so a late train never pre-fills a next
+ * leg the traveller can no longer catch: the reported arrival when there
+ * is one, else the later of the estimate and the timetable (early running
+ * is ignored -- a train due early may still arrive on time), else the
+ * PUBLIC (passenger timetable) arrival, falling back to the working one
+ * only when the API sent no public times at all (`stopDisplayArrival`).
+ * The stop is looked for after the leg's own origin, so a route that
  * calls at the same station twice picks the call this leg gets off at.
  *
  * `null` (the dialog keeps its usual defaults) when there is no last leg
  * or its arrival isn't known (`legArrivalInstant`). */
 export function journeyPriorArrival(journey: JourneyDetail): LondonDateTime | null {
   const lastLeg = journey.legs.at(-1) ?? null;
-  const arrival = lastLeg === null ? null : legArrivalInstant(lastLeg);
+  const arrival = lastLeg === null ? null : legLiveArrivalInstant(lastLeg);
   return arrival === null ? null : londonDateTime(arrival);
+}
+
+/** `journeyPriorArrival`'s instant for one leg: reported, else the later
+ * of estimated and timetabled, else timetabled. */
+function legLiveArrivalInstant(leg: JourneyLegDetail): string | null {
+  const timetabled = legArrivalInstant(leg);
+  if (isUntrackedLeg(leg)) return timetabled;
+  const stop = legDestinationStop(leg);
+  if (stop?.actualArrival) return stop.actualArrival;
+  const estimated = stop?.estimatedArrival ?? null;
+  if (estimated === null) return timetabled;
+  if (timetabled === null) return estimated;
+  return dayjs(estimated).isAfter(dayjs(timetabled)) ? estimated : timetabled;
 }
 
 /** When one leg is timetabled to reach its own destination, as an

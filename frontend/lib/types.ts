@@ -1814,6 +1814,10 @@ export interface TripPlanResponse extends TimetableCertaintyFields {
     replans?: number;
     trainsRead?: number;
     adjustedTrains?: number;
+    /** The search itself ran on today's live delays and cancellations. */
+    inSearch?: boolean;
+    /** How many trains those changed. */
+    snapshotTrains?: number;
   };
 }
 

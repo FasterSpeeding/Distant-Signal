@@ -147,13 +147,38 @@ describe('journeyPriorArrival', () => {
     const j = matchedJourney([
       stop('WAT', { kind: 'Origin', publicDeparture: '2026-09-22T09:00:00Z' }),
       stop('CLJ', {
-        // BST: 09:07Z is 10:07 in London. The working and estimated times
-        // are ignored.
+        // BST: 09:07Z is 10:07 in London. The working time is ignored.
         publicArrival: '2026-09-22T09:07:00Z',
         scheduledArrival: '2026-09-22T09:06:00Z',
-        estimatedArrival: '2026-09-22T09:20:00Z',
       }),
       stop('WOK', { kind: 'Terminate', publicArrival: '2026-09-22T09:30:00Z' }),
+    ]);
+    expect(journeyPriorArrival(j)).toEqual({ date: '2026-09-22', time: '10:07' });
+  });
+
+  it("reads a late train's estimated or actual arrival instead", () => {
+    const late = (overrides: Partial<JourneyStop>) =>
+      matchedJourney([
+        stop('WAT', { kind: 'Origin', publicDeparture: '2026-09-22T09:00:00Z' }),
+        stop('CLJ', { kind: 'Terminate', publicArrival: '2026-09-22T09:07:00Z', ...overrides }),
+      ]);
+    expect(journeyPriorArrival(late({ estimatedArrival: '2026-09-22T09:20:00Z' }))).toEqual({
+      date: '2026-09-22',
+      time: '10:20',
+    });
+    expect(
+      journeyPriorArrival(late({ estimatedArrival: '2026-09-22T09:20:00Z', actualArrival: '2026-09-22T09:24:00Z' })),
+    ).toEqual({ date: '2026-09-22', time: '10:24' });
+  });
+
+  it('ignores early running: the timetabled arrival stays the floor', () => {
+    const j = matchedJourney([
+      stop('WAT', { kind: 'Origin', publicDeparture: '2026-09-22T09:00:00Z' }),
+      stop('CLJ', {
+        kind: 'Terminate',
+        publicArrival: '2026-09-22T09:07:00Z',
+        estimatedArrival: '2026-09-22T09:04:00Z',
+      }),
     ]);
     expect(journeyPriorArrival(j)).toEqual({ date: '2026-09-22', time: '10:07' });
   });

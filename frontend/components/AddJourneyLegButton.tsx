@@ -57,9 +57,10 @@ type LegMode = NewJourneyLegRequest['mode'];
  * typed full name resolves to its station's code.
  *
  * The service date and earliest departure are pre-filled the same way from
- * `priorArrival` (the previous leg's timetabled arrival at its destination,
- * `journeyPriorArrival`), so the window starts at the moment the traveller
- * gets off the last train. Exactly that time, with no interchange margin
+ * `priorArrival` (the previous leg's arrival at its destination, live when
+ * the train is reported or running late, `journeyPriorArrival`), so the
+ * window starts at the moment the traveller really gets off the last
+ * train. Exactly that time, with no interchange margin
  * added: the journey payload carries no minimum connection time, and an
  * "at or after" bound that is a few minutes early only offers a train or
  * two more, where a guessed margin could hide the one the traveller wants.
