@@ -91,8 +91,10 @@ describe('CurrentJourneyCard', () => {
     const link = screen.getByRole('link');
     expect(link).toHaveAttribute('href', '/journeys/7');
     expect(within(link).getByText('London Kings Cross (KGX) to Edinburgh (EDB), 17 Sep 2026')).toBeInTheDocument();
-    // The journey's worst status, then the leg's own delay in minutes.
-    expect(within(link).getByText('Delayed')).toBeInTheDocument();
+    // The whole journey's status (judged at the final destination, as on
+    // the journey page: the change at York still works), then the leg's
+    // own delay in minutes.
+    expect(within(link).getByText('On time')).toBeInTheDocument();
     expect(within(link).getByText('12 min late')).toBeInTheDocument();
     expect(within(link).getByText('Now, leg 1 of 2')).toBeInTheDocument();
     expect(within(link).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
@@ -111,9 +113,27 @@ describe('CurrentJourneyCard', () => {
         now={new Date('2026-09-17T10:00:00Z')}
       />,
     );
-    const [headline, leg] = screen.getAllByText(/^(Cancelled|On time)$/);
-    expect(headline).toHaveTextContent('Cancelled');
+    const [headline, leg] = screen.getAllByText(/^(Part cancelled|On time)$/);
+    expect(headline).toHaveTextContent('Part cancelled');
     expect(leg).toHaveTextContent('On time');
+  });
+
+  it('headlines a connection the api says is missed or tight', () => {
+    const withConnection = (state: 'missed' | 'atRisk') => {
+      const base = journey();
+      const legs = base.detail.legs.map((l, i) =>
+        i === 1 ? { ...l, connection: { gapMinutes: 8, minimumChangeMinutes: state === 'missed' ? 10 : 7, state } } : l,
+      );
+      return { ...base, detail: { ...base.detail, legs } };
+    };
+    const { unmount } = renderWithMantine(
+      <CurrentJourneyCard journey={withConnection('missed')} now={new Date('2026-09-17T10:00:00Z')} />,
+    );
+    expect(screen.getByText('Connection missed')).toBeInTheDocument();
+    expect(screen.getByText('12 min late')).toBeInTheDocument();
+    unmount();
+    renderWithMantine(<CurrentJourneyCard journey={withConnection('atRisk')} now={new Date('2026-09-17T10:00:00Z')} />);
+    expect(screen.getByText('Tight connection')).toBeInTheDocument();
   });
 
   it('on the last leg, gives the destination and arrival instead of a change', () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   connectionGapMinutes,
+  connectionText,
   journeyCanAddLeg,
   journeyFirstLegStart,
   journeyPriorArrival,
@@ -408,5 +409,52 @@ describe('legExpectedDepartureInstant', () => {
       '2026-09-22T07:40:00Z',
     );
     expect(legExpectedDepartureInstant(leg({ trackedTrainState: trackedState({ journeyStops: null }) }))).toBeNull();
+  });
+});
+
+describe('connectionText: the connector between two legs', () => {
+  const train = leg({
+    id: 1,
+    trackedTrainState: trackedState({
+      journeyStops: [
+        stop('WAT', { publicDeparture: '2026-09-22T09:00:00Z' }),
+        stop('CLJ', { publicArrival: '2026-09-22T09:10:00Z' }),
+      ],
+    }),
+  });
+  const onward = (connection?: JourneyLegDetail['connection']) =>
+    leg({
+      id: 2,
+      originCrs: 'CLJ',
+      destinationCrs: 'RDG',
+      trackedTrainState: trackedState({
+        journeyStops: [
+          stop('CLJ', { publicDeparture: '2026-09-22T09:20:00Z' }),
+          stop('RDG', { publicArrival: '2026-09-22T10:00:00Z' }),
+        ],
+      }),
+      ...(connection === undefined ? {} : { connection }),
+    });
+
+  it("names the station's minimum change time from the api", () => {
+    expect(connectionText(train, onward({ gapMinutes: 8, minimumChangeMinutes: 5, state: 'ok' }))).toBe(
+      '8 min to change (needs 5)',
+    );
+    expect(connectionText(train, onward({ gapMinutes: 6, minimumChangeMinutes: 5, state: 'atRisk' }))).toBe(
+      '6 min to change, tight (needs 5)',
+    );
+    expect(connectionText(train, onward({ gapMinutes: 3, minimumChangeMinutes: 5, state: 'missed' }))).toBe(
+      '3 min to change, not enough (needs 5)',
+    );
+    expect(connectionText(train, onward({ gapMinutes: -2, minimumChangeMinutes: 5, state: 'missed' }))).toBe(
+      'The next leg leaves before this one arrives',
+    );
+    expect(
+      connectionText(train, onward({ gapMinutes: null, minimumChangeMinutes: null, state: 'unknown' })),
+    ).toBeNull();
+  });
+
+  it("falls back to the page's own gap when the api sent no connection", () => {
+    expect(connectionText(train, onward())).toBe('10 min to change');
   });
 });

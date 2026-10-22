@@ -3,6 +3,34 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-22: each change in a journey, judged on live times
+
+Additive. Design: `docs/superpowers/specs/2026-10-22-mid-journey-changes-design.md`,
+Phase 0.
+
+- `GET /Journeys/{id}` (and the share-link read) gains `connection` on
+  every leg: `null` on the first leg, and on every later one
+  `{gapMinutes, minimumChangeMinutes, state}`, the change onto that leg
+  from the one before. `gapMinutes` is from the previous leg's expected
+  arrival (reported, else estimated, else timetabled) to this leg's
+  expected departure, so a late next train is credited; negative when it
+  leaves first. `minimumChangeMinutes` is the station's minimum change
+  time, a fixed link's minutes plus that when the change is between two
+  stations, or 0 staying on one train; `null` when not known or when the
+  leg is a walk or a Tube ride. `state` is `ok`, `atRisk` (delays leave
+  under 3 minutes to spare, or a change booked below the minimum is no
+  worse), `missed` or `unknown` (a time unknown, a train cancelled at
+  either end, a station with no interchange, or two stations with no
+  link). The field is absent when the api couldn't work it out; a client
+  should then fall back to its own check. Delegated readers see it too.
+- **"Change train" on any train leg.** `GET .../legs/{legId}/candidates`
+  and `POST .../legs/{legId}/train` already served legs that were never
+  window-searched (pinned, "I know the train", planner-saved); the web
+  page now offers it on them, sending a search made from the leg's
+  stations, date and booked departure. Nothing changed in the api.
+- **For ds-mcp.** Nothing to change. A `GET /Journeys/{id}` read carries
+  the new field; showing a missed or tight change is optional.
+
 ## 2026-10-22: a tracked train is a one-leg journey
 
 Every route stays; the fields below are additive. Two behaviours change.

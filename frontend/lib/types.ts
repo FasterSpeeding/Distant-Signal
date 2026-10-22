@@ -1264,6 +1264,30 @@ export interface JourneyLegDetail extends UntrackedLegFields {
   windowSearched: boolean;
   trackedTrainState: TrackedTrainState | null;
   legSkip: LegSkipStatus | null;
+  /** The change onto this leg from the one before, judged by the api on
+   * live times with the station's minimum change time
+   * (`crates/api/src/data/journey_feasibility.rs`). `null` on the first
+   * leg; absent when the api couldn't work it out (or predates it), when
+   * `lib/journeyStatus.ts` falls back to its own gap check. */
+  connection?: LegConnection | null;
+}
+
+/** How a change between two legs stands: `ok`, `atRisk` (little time left
+ * once delays are counted), `missed` (the next leg leaves before the
+ * traveller can reach it) or `unknown` (not judged: a time is unknown, a
+ * train is cancelled, or the change can't be measured). */
+export type ConnectionState = 'ok' | 'atRisk' | 'missed' | 'unknown';
+
+/** `JourneyLegDetail.connection`. */
+export interface LegConnection {
+  /** Minutes from the previous leg's expected arrival to this leg's
+   * expected departure; negative when this one leaves first. */
+  gapMinutes: number | null;
+  /** The time the change needs (the station's minimum change time, a
+   * walk between stations plus that, or 0 on the same train). `null` when
+   * not known, or when this leg is a walk or a Tube ride. */
+  minimumChangeMinutes: number | null;
+  state: ConnectionState;
 }
 
 /** `GET /Journeys/{id}`'s full response. */

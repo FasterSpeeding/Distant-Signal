@@ -487,7 +487,27 @@ describe('homeJourneyStatusGroup', () => {
       trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', { status: 'en_route', delayMinutes: 0 }),
       trainLeg(2, YRK, EDB, '2026-09-17T11:20:00Z', '2026-09-17T13:30:00Z', { status: 'cancelled' }),
     ]);
-    expect(homeJourneyStatusGroup({ item: journeyListItem(detail), detail, departure: null })).toBe('severe');
+    expect(homeJourneyStatusGroup({ item: journeyListItem(detail), detail, departure: null })).toBe('partCancelled');
+  });
+
+  it("shows a missed connection the api found, as the journey page's badge does", () => {
+    const detail = journeyDetail(1, [
+      trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z', { status: 'en_route', delayMinutes: 0 }),
+      {
+        ...trainLeg(2, YRK, EDB, '2026-09-17T11:20:00Z', '2026-09-17T13:30:00Z', { status: 'awaiting_activation' }),
+        connection: { gapMinutes: 3, minimumChangeMinutes: 5, state: 'missed' },
+      },
+    ]);
+    expect(homeJourneyStatusGroup({ item: journeyListItem(detail), detail, departure: null })).toBe('connectionMissed');
+    const atRisk = {
+      ...detail,
+      legs: detail.legs.map((leg, i) =>
+        i === 1 ? { ...leg, connection: { gapMinutes: 6, minimumChangeMinutes: 5, state: 'atRisk' as const } } : leg,
+      ),
+    };
+    expect(homeJourneyStatusGroup({ item: journeyListItem(atRisk), detail: atRisk, departure: null })).toBe(
+      'connectionAtRisk',
+    );
   });
 
   it("falls back to the list row's status when not read in full", () => {
