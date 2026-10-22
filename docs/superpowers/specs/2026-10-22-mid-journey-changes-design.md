@@ -47,7 +47,8 @@ Builds on:
 Contents: §1 what exists today, §2 problem and user stories, §3 decisions,
 §4 data model, §5 feasibility engine, §6 auto-suggest notifications, §7
 API, §8 UX, §9 Delay Repay, §10 migrations and backfill, §11 edge cases,
-§12 phasing, §13 risks, §14 open questions, §15 tests, §16 metrics.
+§12 phasing, §13 risks, §14 open questions, §15 tests, §16 metrics,
+§17 ranking alternatives.
 
 ## 1. What exists today
 
@@ -571,9 +572,9 @@ From the break point:
      last train leg's destination, or the station an untracked last leg
      starts from), `results=options`, `maxChanges` = the original's
      changes plus 1, capped at `MAX_CHANGES_LIMIT`.
-- **Ranking**: rejoins first, then by arrival at the destination, then
-  changes, then same operator as the replaced leg (for ticket validity,
-  §11). At most 3 shown, 6 stored.
+- **Ranking**: context-aware, by ticket, break cause and the user's
+  preference, shown as a Recommended pick plus badged "best for X"
+  picks (§17). At most 3 cards shown, up to 9 stored.
 - **Overnight**: when nothing arrives before the last train, plan with
   `dayOffset=1` / `acrossMidnight` (`trip_plan_overnight.rs`) and say so.
 
@@ -891,7 +892,7 @@ nothing existing is dropped.
 | **Travelled legs** | Frozen: never replaced, never offered "I missed this train". The break position is always after the last travelled leg. |
 | **User aboard a part-cancelled train** | Planned from its last served stop; `fate = part_cancelled`. |
 | **Overnight** | Service dates today and yesterday are swept, as the overlay already reads. Suggestions may cross midnight (§5.6). An open break expires at 04:00 London time after the journey's last service date. |
-| **Tickets** | Recorded in each snapshot (`ticket_ids`), moved to the new train (§4.4), never cascaded away. Advance tickets are train-specific: on an operator-fault break the copy says the ticket is usually valid on the next reasonable train; on a user-fault break it warns (§8.3). DS never says a ticket *is* valid. |
+| **Tickets** | Recorded in each snapshot (`ticket_ids`), moved to the new train (§4.4), never cascaded away. Advance tickets are train-specific: on an operator-fault break the copy says the ticket is usually valid on the next reasonable train; on a user-fault break it warns (§8.3). Ticket fit per alternative is §17.3. DS never says a ticket *is* valid. |
 | **Groups** | Members see the break banner and history read-only on the shared journey; no accept, no push. The owner's accept is what they see next. |
 | **Shared links** (`unlisted_links`) | Show the current plan; history hidden by default (§14 Q10). |
 | **Templates** | A replacement applies to that day's journey only; the template is untouched. Template materialise writes revision 1. |
@@ -1032,3 +1033,347 @@ read from `journey_breaks` timestamps with one documented SQL query in
 the runbook, aggregates only, no per-user data leaves the database.
 Success for Phase 2: at least half of notified breaks opened, and at
 least a third of opened breaks accepted, over the first month.
+
+## 17. Ranking alternatives
+
+Status: research and proposal, awaiting the user's answers in §17.10.
+Work log DS-129. Replaces the single rule in §5.6 ("rejoins first, then
+arrival, then changes, then same operator"), which the user rejected:
+which alternative is best depends on the ticket, on why the journey
+broke and on what the traveller cares about. This section sets out the
+rules that decide it (§17.1), what DS knows today (§17.2), a ranking
+model (§17.3 to §17.6), the data it needs (§17.7), phasing (§17.8) and
+the decisions needed (§17.10). Sources are in §17.11; condition numbers
+are from the National Rail Conditions of Travel (NRCoT) in force from 1
+April 2026.
+
+### 17.1 What decides it in GB rail
+
+A ticket restricts travel along five independent axes. An alternative is
+"on your ticket" only if it passes all five, and disruption rules relax
+some of them in defined cases.
+
+| Axis | Where it comes from | Examples |
+|---|---|---|
+| **Train** | Train-specific fares (NRCoT 12.1; the Advance terms: "valid ONLY on the date and train service(s) shown") | Advance |
+| **Operator** | The route printed on the ticket naming a train company (NRCoT 12.1, 13.1); in the data, a route whose route-data records list TOCs that must (`T`) or must not (`X`) be used (RSPS5047 §6.12.3) | "LNER ONLY", "NOT AVANTI" |
+| **Route** | The route printed on the ticket (NRCoT 13.1). With no route shown: any direct train, or a route the National Routeing Guide permits (13.1.1, 13.1.2). Route data: stations that must all (`A`) or any (`I`) be passed, or must not be (`E`), and required or barred modes (`L`, `N`) | "ANY PERMITTED", "VIA BIRMINGHAM", "NOT VIA LONDON" |
+| **Time** | Off-Peak and Super Off-Peak time restrictions (restriction codes in the fares data) | Wrong-time travel is charged the difference to the cheapest valid fare (9.5.1), but 9.5.1 does not cover Advance |
+| **Date and break** | Validity dates (11.1; a ticket expiring during a delayed journey stays valid, 11.2); break of journey (16; Advance does not allow it) | |
+
+What the rules allow when things go wrong:
+
+| Situation | Train-specific (Advance) | Operator-restricted ("X only") | Any permitted (Off-Peak, Anytime) | Season |
+|---|---|---|---|---|
+| **A connection missed because an earlier train was late or cancelled** | The next train of the operator(s) the ticket was valid on, without penalty (9.4). The Advance terms say "the next available train(s) to complete your journey". The reservation does not carry over. | Next train permitted by the ticket, so that operator's (the "Changing trains" guidance: "board the next train to your destination, as permitted by your ticket") | Next train by any permitted route and operator | As any permitted, within the season's stations and route |
+| **The booked train cancelled** | Up to two trains before or after on the same operator (28.3). Under the industry ticket acceptance policy, also any participating operator from 2 hours before to 2 hours after the cancelled train, for cancellations only, with a ticket bought before it was due to leave. | As Advance's 28.3 and acceptance rules, plus any later train of that operator | Any permitted train | Any permitted train |
+| **Disruption stops the journey** | Any train company will, "where it reasonably can", provide alternative means of travel (28.2). Declared ticket acceptance (other operators, the Underground, buses, sometimes lifting Advance restrictions) is published per incident on the National Rail disruption pages. | Same | Same | Same |
+| **Delay of more than 60 minutes expected** | May travel on a later date with comparable restrictions (28.4) | Same | Same | Same |
+| **The passenger misses the train themselves** | "If you miss the first train on which you are booked for any reason, a new ticket must be purchased" (Advance terms); off the booked itinerary "you will be treated as if no Ticket were held unless the circumstances of clause 9.4 apply" (9.5.1) | Next permitted train of that operator, inside time restrictions | Next permitted train, inside time restrictions; wrong-time travel is charged the difference (9.5.1) | Any permitted train |
+
+**Fault: railway or passenger, not operator or Network Rail.** None of
+these rights depends on which part of the railway caused the delay.
+9.4 applies to any delayed or cancelled connecting train; Delay Repay
+is owed for a 60-minute delay "regardless of fault" (32.1). The
+distinction that changes what a ticket allows is whether the
+*passenger* caused the miss. That is exactly the `fault` this design
+already records (`operator` meaning "the railway", or `user`, §4.2). So
+the TRUST delay attribution codes are **not needed for ranking**, and
+DS should not ingest them for this purpose. "Any reasonable route" is
+wording from declared ticket acceptance notices, not a general right
+that a fault code unlocks.
+
+**Railcards** do not change which trains a ticket is valid on; they
+change the price. They are not a ranking input.
+
+### 17.2 What DS knows today
+
+At `origin/main` e98f1c8a.
+
+| Input | Today | Gap |
+|---|---|---|
+| **Ticket type** | `tracked_train_tickets.ticket_type`, free text (`crates/ds-store/migrations/20260829090000_journey_ticket_tracking.sql`). Extraction (`crates/api/src/data/ticket_extraction.rs`) is regex only: `.pkpass` `auxiliaryFields` "ticketType", PDF `TICKET_TYPE_KEYWORDS` ("Advance Single", "Off-Peak Day Return", "Anytime Day Single", "Season", ...). `delay_repay_rules::ticket_kind` reduces it to `Single`/`Return`/`Unknown`. | No structured fare class. Advance versus flexible is distinguished nowhere. |
+| **Ticket operator** | `operator`, free text (`.pkpass` `organizationName`, or a retailer marker in PDFs), mapped by `scheme_for` / `rule_for_text`. | It is the retailer or issuing operator, not the route's operator restriction. |
+| **Route, restriction code, reservation, class, validity dates** | Not captured. The migration's audit header lists the only allowed columns; it forbids price, barcode or ITSO data, passenger name and the file. | All missing. None of them is in a forbidden category. |
+| **Booked train for an Advance** | Implied: a ticket hangs off the subscription it was attached to (`tracked_train_id`), and §4 records `ticket_ids` per revision leg. | Enough for "your booked train". |
+| **Each leg's operator** | CIF `operator_atoc` on `schedule_destination_departures`, `schedule_services`; `data::train_operator` derives it per train; `PlannedLeg::Train.operator` is filled after a search by `trip_leg_details::attach_leg_details`. | `schedule_query::Connection` has no operator, so the planners cannot filter or prefer by operator. |
+| **Planner options** | `GET /Trips/plan` (`TripPlanParams`, `crates/api/src/routes/trips.rs`): `via`, `avoid`, `avoidStop`, `avoidChange`, `waypoints`, `maxChanges` (default 2, limit 6), `results=fastest` (CSA) or `options` (RAPTOR Pareto set over arrival and changes, `build_pareto_set`). `trip_planner::Restrictions` covers stations only. | No operator filter, no transfer-mode filter. |
+| **Transfers** | `PlannedLeg::Transfer { mode, minutes, line }`, modes `WALK`, `TUBE`, `METRO`, `BUS` from fixed links and `reference-data/supplementary-fixed-links.csv`. | Enough to count Tube and walk transfers and minutes. |
+| **User settings** | Pins only (`pinned_lines`, `pinned_stations`, `pinned_operators`); appearance and push in the browser or `push_subscriptions`. | No travel preference of any kind. |
+| **Fault and disruption** | §4.2's `cause` and `fault`. `train_reasons` holds TRUST 0002/0006 reason codes; `reference-data/delay-attribution-reasons.tsv` has a category column that no code reads. LDBWS `delayReason`/`cancelReason` text per stop. | Enough (§17.1). No ticket acceptance data. |
+| **Crowding** | None. Darwin loading and formation come only through Push Port, not ingested (DS-126 is the subscription request). | Not available. |
+| **Fares and routeing data** | None ingested. | §17.7. |
+
+### 17.3 The model
+
+Three pure steps, in a new `crates/api/src/data/alternative_ranking.rs`
+(no I/O, unit-tested with tables):
+
+**1. Ticket constraint.** From the tickets on the replaced legs (the
+revision's `ticket_ids`):
+
+```rust
+enum TicketConstraint {
+    TrainSpecific { operators: Vec<Atoc>, booked: Vec<TrainRef> }, // Advance
+    OperatorOnly { operators: Vec<Atoc> },          // "X ONLY", T entries
+    Route { via_all: Vec<Crs>, via_any: Vec<Crs>, not_via: Vec<Crs>,
+            not_operators: Vec<Atoc> },             // A, I, E, X entries
+    AnyPermitted { time_restricted: bool },         // Off-Peak, Anytime, season
+    Unknown,                                        // no ticket, or unparsed
+}
+```
+
+`operators` for an Advance comes from its route ("LNER ONLY") when known,
+else the booked train's `operator_atoc`. Several tickets on one journey
+(split tickets) give one constraint per covered segment; an alternative
+is judged per segment.
+
+**2. Entitlement.** From the break (§4.2):
+
+| Entitlement | From |
+|---|---|
+| `MissedConnection` | `connection_missed`, `part_cancelled`, `skipped_stop`, and `user_missed` with a late inbound |
+| `Cancelled { booked_departure }` | `cancelled` |
+| `PassengerFault` | `user_missed` with the inbound in time |
+| `Choice` | `user_choice` (no break) |
+| `DeclaredAcceptance { operators, modes }` | later, §17.7 |
+
+**3. Ticket fit per alternative.** `ticket_fit(constraint, entitlement,
+itinerary) -> Fit`, applied to every train leg of the alternative:
+
+| Fit | Meaning | Badge |
+|---|---|---|
+| `Covered` | The rules in §17.1 cover it (for example, 9.4's next train of the Advance's operator) | "Usually covered by your ticket" (gray) |
+| `CoveredIfCancelled` | Only under the ticket acceptance policy's 2-hour window or 28.3's two trains | "Accepted when your train is cancelled" (gray) |
+| `Check` | DS cannot tell (unknown ticket, or a route DS cannot check) | "Check your ticket" (yellow) |
+| `LikelyNewTicket` | Outside every rule DS knows (another operator on an Advance with no cancellation; any train after a passenger-fault miss on an Advance; a station the route excludes) | "May need a new ticket" (yellow) |
+
+DS never says a ticket *is* valid (§11), and never hides an option for
+fit alone, unless the user chose "Only trains on my ticket" (§17.5).
+Every fit badge explains itself on tap, citing the rule in plain words
+("Your ticket lets you take the next LNER train when a connection is
+missed.").
+
+### 17.4 Signals and the Recommended pick
+
+Per alternative, computed from the itinerary and its live overlay:
+
+| Signal | Source |
+|---|---|
+| `fit` | §17.3 |
+| `arrival` | live arrival at the final destination (`LegLive`) |
+| `changes` | `changeCount` |
+| `transfer_burden` | number of `TUBE`/`BUS`/`METRO` transfers and total `WALK` minutes |
+| `rejoins` | keeps a later booked leg (§5.5) |
+| `slack` | the tightest change's slack after MSN (§5.1); a 1-minute change is worth less than a 6-minute one |
+| `same_operator` | every train leg run by the replaced leg's operator |
+| `crowding` | reserved, not used until loading data exists |
+
+**Recommended** is the lowest generalised cost, in minutes:
+
+```
+cost = arrival_minutes
+     + change_weight   * changes            (default 10)
+     + transfer_weight * tube_or_bus_transfers (default 10) + walk_minutes
+     + slack_penalty   (10 when slack < AT_RISK_SLACK_MINUTES)
+     + fit_penalty     (Covered 0, CoveredIfCancelled 0, Check 15,
+                        LikelyNewTicket 90)
+     - rejoin_bonus    (15)
+```
+
+A generalised cost rather than a lexicographic sort, because a strict
+order is what produces "1 minute faster with two more changes" or "the
+same operator two hours later". The weights are the preference profile
+(§17.5); defaults are a starting point, tuned from which pick users
+accept (§17.9).
+
+### 17.5 Defaults per context
+
+| Ticket | Break | Recommended | Other picks shown | Flagged |
+|---|---|---|---|---|
+| **Advance** | Missed connection (railway) | The next train of the ticket's operator to the destination, by the ticket's route (9.4); `fit_penalty` makes other operators lose unless the user prefers otherwise | "Fastest" when another operator arrives at least 15 minutes earlier | Other operators: "May need a new ticket" |
+| **Advance** | Booked train cancelled | Earliest arrival among the same operator's trains up to two before or after (28.3) and participating operators within 2 hours either side (acceptance policy) | "Same operator" if Recommended is another operator | Outside the window: "May need a new ticket" |
+| **Advance** | Passenger fault | Fastest, under a banner: "Your Advance ticket is only valid on the train you missed. You'll likely need a new ticket." | "Fewest changes" | Every option `LikelyNewTicket`, so none is singled out |
+| **Operator only** ("X ONLY") | Any railway break | Fastest on that operator | "Fastest" on any operator if 15 minutes or more earlier | Other operators: "May need a new ticket", unless declared acceptance |
+| **Route restricted** ("VIA X", "NOT VIA Y") | Any railway break | Fastest whose calling points satisfy the route (checked on the itinerary's stations; the planner already takes `via` and `avoid`) | "Fastest" if it breaks the route | Route breakers: "May need a new ticket" |
+| **Any permitted** (Off-Peak, Anytime) | Any railway break | Lowest cost; operator is irrelevant | "Fewest changes", "No Tube" when they differ | Nothing (DS cannot check the routeing guide, §17.7) |
+| **Season** | Any | As any permitted, between the season's stations | As any permitted | A leg outside the season's stations: "Check your ticket" |
+| **Unknown** (no ticket) | Railway break | Lowest cost with `same_operator` as a 5-minute bonus, so a same-operator train wins ties | Always a "Same operator" pick when it differs, so an Advance holder can find it | Nothing; one line "Add your ticket to see which trains it covers" |
+| **Unknown** | Passenger fault | Lowest cost | "Same operator" | One line: "If you have an Advance ticket, you'll likely need a new one." |
+| **Any** | `user_choice` | The user's preference profile only | "Fastest", "Fewest changes" | As a passenger-initiated change: Advance shows "May need a new ticket" |
+
+### 17.6 Presentation: picks with badges, not one list
+
+The sheet in §8.3 shows **up to three cards**: Recommended first, then
+the other picks for this context, each card carrying every pick it wins
+(one itinerary can be "Fastest" and "Same operator" at once, then it is
+one card with two badges). "More options" lists the rest by Recommended
+cost. Pick badges are gray (informational); fit badges as in §17.3.
+
+```
+Connection at York missed
+Your Advance ticket lets you take the next LNER train.
+
+[ Recommended  Same operator  Usually covered by your ticket ]
+  10:04 York to Edinburgh, direct   arrives 12:31  +12 min   [Take this one]
+[ Fastest  May need a new ticket ]
+  09:58 York to Edinburgh, direct   arrives 12:10            [Take this one]
+[ Fewest changes ] ...
+More options
+```
+
+The pick set:
+
+| Pick | Rule | Shown when |
+|---|---|---|
+| Recommended | lowest cost (§17.4) | always |
+| Fastest | earliest arrival | it is not Recommended |
+| Fewest changes | fewest changes, then earliest arrival | fewer changes than Recommended |
+| Same operator | earliest arrival with `same_operator` | it is not Recommended and the ticket is Advance, operator-only or unknown |
+| No Tube | lowest cost with no `TUBE`/`BUS` transfer | Recommended has one |
+| Keeps your later trains | the best rejoin (§5.5) | it is not Recommended |
+
+At most three cards are shown, chosen in the order above. The push
+(§6.4) names Recommended in context: "Next LNER train 10:04, arrives
+12:31." The accept metric gains a `pick` label (§17.9).
+
+### 17.7 Ticket data, preference and planner fit
+
+**Ticket fields to capture** (new nullable columns on
+`tracked_train_tickets`, each added to the audit header's allowed list
+in the same migration):
+
+| Field | Why | How |
+|---|---|---|
+| `fare_class`: `advance`, `off_peak`, `super_off_peak`, `anytime`, `season`, `other`, `unknown` | The constraint kind | Derived from `ticket_type` text on save, shown as a select the user confirms |
+| `route_text` | The operator and route restriction, as printed ("ANY PERMITTED", "LNER ONLY", "NOT VIA LONDON") | Extraction where the pass or PDF has a route line; a free text field with common choices |
+| `route_operators`, `route_not_operators`, `route_via`, `route_not_via` | Parsed constraint, so ranking needs no text parsing | Parsed from `route_text` by a small grammar (ONLY, NOT, VIA, NOT VIA, operator names via `rule_for_text`); later from the route data (below) |
+| `restriction_code` | Off-Peak time restriction, shown as text in the fit explanation | Optional, as printed |
+
+Not captured: railcard (not a ranking input), seat and coach, price,
+booking reference.
+
+**Preference setting.** One setting on `/account/preferences`, in a new
+`travel_preferences (user_id, alternative_priority, ...)` row (or
+alongside §4.1's `notification_preferences`, which is per user too):
+
+> When suggesting other trains, put first: **Automatic, based on my
+> ticket** (default) / Fastest / Fewest changes / Fewest Tube and bus
+> transfers / Only trains on my ticket
+
+Each choice is a weight profile for §17.4 ("Only trains on my ticket"
+hides `LikelyNewTicket` options and keeps `Check` ones). The picks
+already let the user override it per break without a setting.
+
+**Planner fit and cost.** The `options` Pareto set (arrival, changes)
+already contains Fastest and Fewest changes. It does **not** contain
+"Same operator" or "No Tube" when those are slower without being
+simpler, so they need constrained searches:
+
+1. Add an operator id to `schedule_query::Connection` (a `u16` index into
+   the TOC list, filled at graph build from `operator_atoc` as
+   `attach_leg_details` already does per train), and an
+   `allowed_operators` / `barred_operators` set to
+   `trip_planner::Restrictions`, honoured by CSA. About 2 bytes per
+   connection on a roughly 100 MB graph.
+2. Add a `barred_transfer_modes` set for "No Tube", applied where fixed
+   links are expanded.
+3. Route-restricted tickets pass their `via` and `not_via` to the
+   existing `via` and `avoid` parameters.
+
+Per break: the existing RAPTOR options run (0.5 to 1.3 s) and rejoin
+CSA, plus at most three constrained CSA runs (80 to 150 ms each, the
+"two trains before or after" window being CSA with `departAfter` stepped
+to the window start). About 0.5 s more per break, inside the sweep's own
+`SWEEP_PLAN_SLOTS` (§5.3). Stored suggestions grow from 6 to up to 9
+(the Pareto set plus the constrained picks), with the picks and fit in
+the `suggestions` JSON.
+
+**Feeds.**
+
+| Data | Need | Effort |
+|---|---|---|
+| None new | Phases R0 to R2 (§17.8) use ticket text, `operator_atoc` and the planner | |
+| Route data: the fares feed's route file (RSPS5045, `.RTE`: route codes and the descriptions printed on tickets) and the Routeing Guide feed's routes file (RSPS5047 §6.12: per route code, `A`/`I`/`E` stations, `T`/`X` operators, `L`/`N` modes) | Turn the printed route into a structured constraint without hand-parsing, for every route in the country | Small: two fixed-format files, a parser in `ds-migrate` or a reference-data job, one table, refreshed with each feed release. About 2 to 3 days. Available through the Rail Data Marketplace. |
+| The full Routeing Guide (maps, routeing points, permitted routes, easements, station distances) | Only to warn that a re-route is not permitted on an Any Permitted ticket | Large: a permitted-route engine, weeks. During disruption 9.4 and 28.2 mostly cover re-routes anyway. **Not recommended.** |
+| Flows, fares and restriction files (`.FFL`, `.RST`) | Prices and time restrictions | Not needed for ranking; prices are out of scope (audit header). |
+| Declared ticket acceptance | `DeclaredAcceptance` entitlement | Acceptance is published as prose per incident. Show "Ticket acceptance is in place" with the incident's text where DS has the incident; ranking on it needs structured data that is not published. Later. |
+| Darwin loading | `crowding` | Push Port (DS-126); later. |
+| TRUST delay attribution | Not needed (§17.1) | None |
+
+### 17.8 Phasing
+
+| Phase | Content | Lands with |
+|---|---|---|
+| **R0** | `alternative_ranking` module; `Unknown` and `fare_class` guessed from `ticket_type` text (Advance, Off-Peak, Anytime, Season keywords); picks Fastest, Fewest changes, Same operator (from the Pareto set and `PlannedLeg::Train.operator` only), No Tube; fit badges; the cost model with default weights | Phase 1 (the sheet) |
+| **R1** | Operator id on connections and the operator and transfer-mode restrictions; constrained searches for Same operator and No Tube; the Advance cancelled window (28.3, acceptance policy); push copy naming Recommended | Phase 2 (sweep) |
+| **R2** | Ticket fields and extraction (§17.7), parsed route constraint, the preference setting, "Only trains on my ticket" | after Phase 2 |
+| **R3** | Route data from the fares and Routeing Guide feeds | when R2 shows route text is commonly entered |
+| **R4** | Declared acceptance text, crowding | with DS-126 and incident ingest |
+
+### 17.9 Tests and metrics
+
+- Table tests for `ticket_fit` covering every row of §17.1's second table
+  and §17.5, including split tickets and an unknown ticket.
+- Cost tests: "1 minute faster, two more changes" loses; "same operator,
+  2 hours later" loses to a covered other-operator train in the
+  cancellation window.
+- Pick tests: one itinerary winning several picks becomes one card; at
+  most three cards.
+- Planner tests for the operator and transfer-mode restrictions in CSA,
+  and a parity test that an empty restriction changes nothing.
+- `api_journey_replan_accepted_total` gains `pick` (recommended, fastest,
+  fewest_changes, same_operator, no_tube, rejoin, more) and `fit`; the
+  weights are re-tuned from it after a month.
+
+### 17.10 Open questions for the user
+
+1. **One Recommended pick plus badged alternatives, rather than one
+   ranked list or picks with no recommendation?** Recommended: yes, at
+   most three cards.
+2. **With no ticket on the journey,** recommend by cost with a small
+   same-operator preference and always show a "Same operator" pick?
+   Recommended: yes, plus the prompt to add a ticket.
+3. **Flag, never hide, options DS thinks the ticket does not cover**,
+   except under "Only trains on my ticket"? Recommended: yes; DS's
+   ticket knowledge is partial and the user may buy a new ticket.
+4. **A global preference setting** (Automatic, Fastest, Fewest changes,
+   Fewest transfers, Only on my ticket) with per-break picks as the
+   override? Recommended: yes, default Automatic.
+5. **Capture `fare_class` and the printed route** (and optionally the
+   restriction code) on tickets, extending the audit header's allowed
+   list? Recommended: yes; none is price, barcode, ITSO, name or file
+   data.
+6. **Ingest the route data from the fares and Routeing Guide feeds** (R3,
+   2 to 3 days), but not the full Routeing Guide? Recommended: yes to the
+   route files once R2 is in use; no to the full guide.
+7. **Drop delay attribution as a ranking input**, since passenger rights
+   turn on railway versus passenger fault, which §4.2 already has?
+   Recommended: yes.
+8. **Starting weights** (a change worth 10 minutes, a Tube or bus
+   transfer 10, "may need a new ticket" 90, "Fastest" shown when 15
+   minutes earlier)? Recommended: start with these, tune from the `pick`
+   metric.
+9. **Push names the Recommended train** ("Next LNER train 10:04, arrives
+   12:31") rather than a count of options? Recommended: yes when a
+   Recommended exists with `Covered` fit; the count otherwise.
+
+### 17.11 Sources
+
+- National Rail Conditions of Travel, from 1 April 2026: conditions 9.4,
+  9.5, 11, 12, 13, 16, 28, 32.
+  <https://assets.nationalrail.co.uk/e8xgegruud3g/217USO6GPDMxJmB4YAJLRi/f103a3edc5f39a0a27832dbeeb53863e/National_Rail_Conditions_of_Travel_2026.pdf>
+- National Rail, Advance tickets terms and conditions.
+  <https://www.nationalrail.co.uk/tickets-railcards-and-offers/ticket-types/advance-tickets/advance-tickets-terms-and-conditions/>
+- National Rail, Changing trains.
+  <https://www.nationalrail.co.uk/travel-information/changing-trains/>
+- National Rail, Ticket acceptance between participating Train Operators.
+  <https://www.nationalrail.co.uk/help-and-assistance/ticket-acceptance/>
+- National Rail, Routeing guide.
+  <https://www.nationalrail.co.uk/travel-information/routeing-guide/>
+- Rail Delivery Group, RSPS5047 National Routeing Guide Data Feed
+  Specification (§6.12 Routes file).
+  <https://www.raildeliverygroup.com/files/Publications/services/rsp/RSPS504702-00NationalRoutingGuideDataFeedSpecification.pdf>
+- Rail Delivery Group, RSPS5045 Fares and Associated Data Feed Interface
+  Specification.
+  <https://www.raildeliverygroup.com/files/Publications/services/rsp/RSPS504502-00FaresandAssociatedDataFeedInterfaceSpecification.pdf>
