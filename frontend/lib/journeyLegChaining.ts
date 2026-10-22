@@ -220,10 +220,11 @@ export function connectionGapMinutes(leg: JourneyLegDetail, next: JourneyLegDeta
 
 /** The connector's words for the change from `leg` onto `next`: "8 min to
  * change (needs 5)", "3 min to change, not enough (needs 5)", or, without
- * the api's `connection`, the plain gap. `null` when no gap is known. */
+ * the api's `connection` (or when it couldn't measure the gap), the page's
+ * own plain gap. `null` when no gap is known. */
 export function connectionText(leg: JourneyLegDetail, next: JourneyLegDetail): string | null {
   const connection = next.connection;
-  const gap = connection === undefined ? connectionGapMinutes(leg, next) : (connection?.gapMinutes ?? null);
+  const gap = connection?.gapMinutes ?? connectionGapMinutes(leg, next);
   if (gap === null) return null;
   if (gap < 0) return 'The next leg leaves before this one arrives';
   const needs = connection?.minimumChangeMinutes ?? null;

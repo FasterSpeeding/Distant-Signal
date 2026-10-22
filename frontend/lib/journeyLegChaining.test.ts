@@ -449,9 +449,12 @@ describe('connectionText: the connector between two legs', () => {
     expect(connectionText(train, onward({ gapMinutes: -2, minimumChangeMinutes: 5, state: 'missed' }))).toBe(
       'The next leg leaves before this one arrives',
     );
-    expect(
-      connectionText(train, onward({ gapMinutes: null, minimumChangeMinutes: null, state: 'unknown' })),
-    ).toBeNull();
+  });
+
+  it("falls back to the page's own gap when the api couldn't measure one", () => {
+    expect(connectionText(train, onward({ gapMinutes: null, minimumChangeMinutes: null, state: 'unknown' }))).toBe(
+      '10 min to change',
+    );
   });
 
   it("falls back to the page's own gap when the api sent no connection", () => {
