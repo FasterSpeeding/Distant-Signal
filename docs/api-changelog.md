@@ -3,6 +3,29 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: a train leg with no stations of its own names its train's route
+
+Values only; no request or response shape changes. DS-MCP needs no change.
+
+- A train leg saved for a train whose timetable was not known yet stored
+  no stations: its `originCrs`/`destinationCrs` stayed `null` for good,
+  and so did every name read from them. Wherever a train leg's ends are
+  served, a `null` stored end now falls back to the leg's train pin, else
+  its train's own origin or destination, as `GET /Train/mine` already
+  does. An end the leg stored still wins. This covers each leg of
+  `GET /Journeys/{journeyId}` and `GET /Journeys/shared/{token}`
+  (`originCrs`, `originName`, `destinationCrs`, `destinationName`), the
+  current leg's ends and `firstOriginCrs`/`firstOriginName`/
+  `lastDestinationCrs`/`lastDestinationName` of `GET /Journeys/mine`, and
+  `firstOriginCrs`/`firstOriginName`/`lastDestinationCrs`/
+  `lastDestinationName` of a group's and a member's shared journeys.
+  `GET /Journeys/mine`'s travel order reads the same ends.
+- An untracked leg with a `TfL` stop but no place serves the stop's name
+  as `originPlace`/`destinationPlace` (and as the names above). Saving
+  such a leg already names a blank place after its stop.
+- A new train leg on a subscription with no pins stores its train's
+  route, when the train knows it, rather than nothing.
+
 ## 2026-10-23: train search across midnight, and every timetable operator
 
 `GET /public/trains/search`, plus a new `GET /public/trains/search/operators`.
