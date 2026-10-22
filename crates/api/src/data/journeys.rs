@@ -22,33 +22,9 @@ use common::TimeWindow;
 use serde::Serialize;
 use sqlx::PgPool;
 
-/// A leg's station end, for [`leg_crs_sql`] and [`leg_place_sql`].
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum LegEnd {
-    Origin,
-    Destination,
-}
-
-/// SQL for a leg's effective station code at `end`: the leg's own code,
-/// else its subscription's pin, else its shared `trains` row's route
-/// (DS-144). `leg`, `sub` and `train` are the query's aliases for
-/// `journey_legs`, a `LEFT JOIN`ed `train_subscriptions` on the leg's
-/// `train_subscription_id`, and a `LEFT JOIN`ed `trains` on that row's
-/// `trains_id`.
-///
-/// A train leg picked before its train had a timetable stored no code at
-/// all: the leg copies the subscription's pins, which are copied from a
-/// `trains` row the route had only just minted by UID, and nothing
-/// rewrites either once the timetable arrives. Every journey read named
-/// such a journey "Unknown station". The tracked-train reads already fall
-/// back the same way (DS-111); a code the leg stored still wins.
-pub(crate) fn leg_crs_sql(end: LegEnd, leg: &str, sub: &str, train: &str) -> String {
-    let column = match end {
-        LegEnd::Origin => "origin_crs",
-        LegEnd::Destination => "destination_crs",
-    };
-    format!("COALESCE({leg}.{column}, {sub}.pin_{column}, {train}.{column})")
-}
+// The leg's effective station code: `ds_store::trains::leg_crs_sql`
+// (DS-144), shared with the notifier.
+pub(crate) use ds_store::trains::{LegEnd, leg_crs_sql};
 
 /// SQL for a leg's effective place name at `end`: an untracked leg's own
 /// place, else the name of the `TfL` stop it was picked from (DS-144). The

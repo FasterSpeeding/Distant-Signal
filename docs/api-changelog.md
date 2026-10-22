@@ -25,6 +25,12 @@ Values only; no request or response shape changes. DS-MCP needs no change.
   such a leg already names a blank place after its stop.
 - A new train leg on a subscription with no pins stores its train's
   route, when the train knows it, rather than nothing.
+- The stored values follow: when a train's route arrives (schedule
+  matching, or the enrichment after tracking it), its legs' missing
+  stations and its subscriptions' missing pins are filled on the same
+  write, and a migration fills the rows saved before this release. A
+  station or pin already set is never changed. Push notifications name
+  such a leg by its route too.
 
 ## 2026-10-23: train search across midnight, and every timetable operator
 
