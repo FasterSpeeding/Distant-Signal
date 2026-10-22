@@ -1085,6 +1085,8 @@ mod db_tests {
         .await
         .expect("newer");
         assert_eq!(newer, 1);
+        // The owner's fixture pool holds one connection.
+        drop(conn);
         let (crs, platform): (String, String) = sqlx::query_as(
             "SELECT crs, departures->0->>'platform' FROM tracked_stop_boards \
              WHERE train_uid = 'TSB0001'",
