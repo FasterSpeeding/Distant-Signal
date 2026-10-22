@@ -1,3 +1,4 @@
+import { Fragment, useId } from 'react';
 import { Alert, Text } from '@mantine/core';
 import { LoadMoreControl } from './LoadMoreControl';
 import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
@@ -5,7 +6,13 @@ import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { LoadingText } from '@/components/LoadingText';
 import { searchRowDetails, searchRowHeadcode, searchRowSummary, searchRowTime } from '@/lib/searchRow';
-import { resolvedDate, trackNoun, type TrainSearchResults as TrainSearchResultsState } from '@/lib/trainSearch';
+import {
+  nextDateLabel,
+  resolvedDate,
+  splitAtMidnight,
+  trackNoun,
+  type TrainSearchResults as TrainSearchResultsState,
+} from '@/lib/trainSearch';
 
 /** The train search's results: a prompt, loading, an error, an
  * unpublished timetable, no matches, or the rows with their "Load more"
@@ -32,6 +39,7 @@ export function TrainSearchResults({
   operatorLookup: ReadonlyMap<string, string> | undefined;
   attachTicketId: number | undefined;
 }) {
+  const afterMidnightHeadingId = useId();
   if (!stationValid) {
     return (
       <Text size="sm" c="dimmed">
@@ -76,6 +84,7 @@ export function TrainSearchResults({
   // once here from `results.date`, never from live `dateValue`. See
   // `resolvedDate`'s own doc comment.
   const displayDate = resolvedDate(results.date);
+  const { sameDay: sameDayRows, afterMidnight: afterMidnightRows } = splitAtMidnight(results.rows);
   return (
     <>
       <ProvisionalTimetableNote provisional={results.provisional} />
@@ -116,34 +125,50 @@ export function TrainSearchResults({
        * row's actions slot: the destination is the link to the train's
        * page, so the button is never nested in a link. On a phone the
        * actions wrap onto a line of their own under the destination. */}
-      <ServiceRowList
-        aria-label="Trains"
-        data-train-results
-        data-list-pending={pending || undefined}
-        aria-busy={pending}
-      >
-        {results.rows.map((row) => (
-          <ServiceRow
-            key={`${row.uid}-${row.scheduled ?? ''}`}
-            train={searchRowSummary(row)}
-            date={displayDate}
-            timeOverride={searchRowTime(row)}
-            dayOffset={row.dayOffset}
-            details={
-              [searchRowDetails(row, operatorLookup), searchRowHeadcode(row)].filter(Boolean).join(' · ') || undefined
-            }
-            actions={
-              <TrackThisTrainButton
-                uid={row.uid}
-                date={displayDate}
-                {...(attachTicketId === undefined ? {} : { attachTicketId })}
-                size="xs"
-                noun={trackNoun(row)}
-              />
-            }
-          />
-        ))}
-      </ServiceRowList>
+      {/* A date's whole train day: its trains leaving after midnight come
+       * last (train-day order), in a list of their own under the next
+       * date, each still marked "+1" and still linking to the searched
+       * date's train page (its service date). */}
+      {[sameDayRows, afterMidnightRows].map((rows, part) =>
+        rows.length === 0 ? null : (
+          <Fragment key={part}>
+            {part === 1 && (
+              <Text size="sm" fw={600} id={afterMidnightHeadingId} data-after-midnight>
+                After midnight, {nextDateLabel(displayDate)}
+              </Text>
+            )}
+            <ServiceRowList
+              {...(part === 0 ? { 'aria-label': 'Trains' } : { 'aria-labelledby': afterMidnightHeadingId })}
+              data-train-results
+              data-list-pending={pending || undefined}
+              aria-busy={pending}
+            >
+              {rows.map((row) => (
+                <ServiceRow
+                  key={`${row.uid}-${row.scheduled ?? ''}`}
+                  train={searchRowSummary(row)}
+                  date={displayDate}
+                  timeOverride={searchRowTime(row)}
+                  dayOffset={row.dayOffset}
+                  details={
+                    [searchRowDetails(row, operatorLookup), searchRowHeadcode(row)].filter(Boolean).join(' · ') ||
+                    undefined
+                  }
+                  actions={
+                    <TrackThisTrainButton
+                      uid={row.uid}
+                      date={displayDate}
+                      {...(attachTicketId === undefined ? {} : { attachTicketId })}
+                      size="xs"
+                      noun={trackNoun(row)}
+                    />
+                  }
+                />
+              ))}
+            </ServiceRowList>
+          </Fragment>
+        ),
+      )}
       <LoadMoreControl
         hasMore={results.nextCursor !== null}
         loading={loadingMore}

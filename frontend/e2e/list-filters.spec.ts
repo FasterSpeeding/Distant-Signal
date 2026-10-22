@@ -136,6 +136,29 @@ test.describe('/trains', () => {
     await expect(page.getByRole('combobox', { name: 'Station' })).toHaveValue(REAL_STATION_CRS);
     await expect(page.getByTestId('list-filter-count')).toHaveText('1');
   });
+
+  // The seed's ZFX trains on 2099-01-05 (e2e/fixtures/seed.sql): c2c at
+  // 22:30 and at 00:30 after midnight, and one with no operator at 23:00.
+  test('filters by operator, across midnight into the rest of the train day', async ({ page }) => {
+    await page.goto('/trains?station=ZFX&date=2099-01-05&from=22:00&to=01:30&operator=CC');
+    const evening = page.getByRole('list', { name: 'Trains' });
+    await expect(evening.getByRole('link', { name: /^22:30 to / })).toBeVisible();
+    const afterMidnight = page.getByRole('list', { name: 'After midnight, Tue 6 Jan' });
+    await expect(afterMidnight.getByRole('link', { name: /^00:30 \(next day\) to / })).toBeVisible();
+    await expect(page.getByRole('link', { name: /^23:00 to / })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Filters' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Filters' });
+    // The picked operator's pill (its option in the closed list is hidden).
+    await expect(dialog.getByText('CC · c2c').first()).toBeVisible();
+    // 01:30 is before 22:00, so it can only be the next morning.
+    await expect(dialog.getByRole('checkbox', { name: 'Next day, Tue 6 Jan' }).nth(1)).toBeChecked();
+
+    // Without the operator, the 23:00 joins them.
+    await dialog.getByRole('combobox', { name: 'Operator (optional)' }).press('Backspace');
+    await expect(page).not.toHaveURL(/[?&]operator=/);
+    await expect(page.getByRole('link', { name: /^23:00 to / })).toBeVisible();
+  });
 });
 
 test.describe('search-only lists', () => {

@@ -46,7 +46,7 @@ export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPT
  *
  * Query params mirror `/track`'s own convention: `?station=` pre-fills the
  * required search key, `?origin=`/`?stops_at=`/`?date=`/`?from=`/`?to=`/
- * `?arrival_from=`/`?arrival_to=` pre-fill the optional filters (so a
+ * `?arrival_from=`/`?arrival_to=`, their `?*_day_offset=`s and `?operator=` pre-fill the optional filters (so a
  * filtered search is a shareable link, and so this /trains history entry's
  * own URL can restore what was last searched -- see
  * docs/superpowers/specs/2026-09-22-train-search-state-persistence-design.md),
@@ -64,6 +64,11 @@ export default async function TrainsPage({
     to?: string | string[];
     arrival_from?: string | string[];
     arrival_to?: string | string[];
+    from_day_offset?: string | string[];
+    to_day_offset?: string | string[];
+    arrival_from_day_offset?: string | string[];
+    arrival_to_day_offset?: string | string[];
+    operator?: string | string[];
     ticketId?: string | string[];
   }>;
 }) {
@@ -76,6 +81,11 @@ export default async function TrainsPage({
     to,
     arrival_from: arrivalFrom,
     arrival_to: arrivalTo,
+    from_day_offset: fromDayOffset,
+    to_day_offset: toDayOffset,
+    arrival_from_day_offset: arrivalFromDayOffset,
+    arrival_to_day_offset: arrivalToDayOffset,
+    operator,
     ticketId,
   } = await searchParams;
   // Next.js supplies a `string[]` for a repeated query param -- fall back
@@ -94,6 +104,9 @@ export default async function TrainsPage({
   const toParam = Array.isArray(to) ? to[0] : to;
   const arrivalFromParam = Array.isArray(arrivalFrom) ? arrivalFrom[0] : arrivalFrom;
   const arrivalToParam = Array.isArray(arrivalTo) ? arrivalTo[0] : arrivalTo;
+  // The four `*_day_offset`s (`1`: that time is after midnight) and
+  // `operator` (comma-separated codes, read tolerantly by the form).
+  const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
   const ticketIdParam = Array.isArray(ticketId) ? ticketId[0] : ticketId;
   const attachTicketId = ticketIdParam && /^\d+$/.test(ticketIdParam) ? Number(ticketIdParam) : undefined;
   // Names each result row's operator, from the same hour-cached TOC list
@@ -127,6 +140,11 @@ export default async function TrainsPage({
         initialTo={toParam}
         initialArrivalFrom={arrivalFromParam}
         initialArrivalTo={arrivalToParam}
+        initialFromDayOffset={first(fromDayOffset)}
+        initialToDayOffset={first(toDayOffset)}
+        initialArrivalFromDayOffset={first(arrivalFromDayOffset)}
+        initialArrivalToDayOffset={first(arrivalToDayOffset)}
+        initialOperator={first(operator)}
         attachTicketId={attachTicketId}
         operatorNames={operatorNames}
         searchDates={searchDates}

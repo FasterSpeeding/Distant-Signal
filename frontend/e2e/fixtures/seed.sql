@@ -633,3 +633,18 @@ FROM (VALUES
   ('E2EMJ3', 1, 'E2EMJB', 'terminate', '10:40', NULL)
 ) AS t (uid, seq, tiploc, kind, arr, dep)
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- The train finder's operator filter and train day (list-filters.spec.ts):
+-- at a station nothing else uses (ZFX), on the seed's 2099-01-05, two c2c
+-- departures either side of midnight -- the 00:30 is still 2099-01-05's
+-- train (day_offset 1) -- and one with no operator.
+-- ---------------------------------------------------------------------
+INSERT INTO schedule_destination_departures
+  (service_date, destination_crs, scheduled, train_uid, origin_crs, true_origin_crs,
+   day_offset, public_departure, operator_atoc)
+VALUES
+  ('2099-01-05', 'KGX', '22:30', 'W61001', 'ZFX', 'ZFX', 0, '22:30', 'CC'),
+  ('2099-01-05', 'KGX', '23:00', 'W61002', 'ZFX', 'ZFX', 0, '23:00', NULL),
+  ('2099-01-05', 'KGX', '00:30', 'W61003', 'ZFX', 'ZFX', 1, '00:30', 'CC')
+ON CONFLICT DO NOTHING;
