@@ -163,7 +163,10 @@ pub enum PlannedLeg {
         /// 2026-10-21): the curated link's own line
         /// (`reference-data/supplementary-fixed-links.csv`), else the one
         /// line `originStop` and `destinationStop` share. Absent otherwise.
-        /// Filled in by `tfl_stops::attach_transfer_lines`.
+        /// Filled in by `tfl_stops::attach_transfer_lines`. Two transfers
+        /// that are one ride on one line, carrying on the same way through
+        /// the stop between them (Euston to Victoria, Victoria to Vauxhall),
+        /// are served as one leg (2026-10-22, `tfl_stops::merge_transfer_rides`).
         #[serde(skip_serializing_if = "Option::is_none")]
         line: Option<String>,
         /// For a `TUBE` or `METRO` transfer, the `TfL` stop at each end

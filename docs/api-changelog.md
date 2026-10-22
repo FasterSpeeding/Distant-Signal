@@ -77,6 +77,26 @@ its list). Design:
   calls `GET /Journeys/{id}/breaks/current?src=push`, which counts it as
   opened from the push. Runbook: `docs/journey-breaks.md`.
 
+## 2026-10-22: one Tube leg for a ride through a station
+
+`GET /Trips/plan`: two `transfer` legs in a row that are one ride (the
+same `mode` and `line`, the `TfL` stop one ends at is the stop the next
+starts from, and the ride carries on the same way through it rather than
+doubling back) are now served as ONE `transfer` leg, from the first leg's
+`originCrs`/`originStop` to the last one's `destinationCrs`/
+`destinationStop`, with their `minutes` added. A leg into a requested via
+is never merged. Euston to Victoria then Victoria to Vauxhall, both
+southbound on the Victoria line, is one `Victoria` leg, Euston to
+Vauxhall; the Northern line to Euston then the Victoria line on stays two
+legs. A client sees fewer legs, never different times.
+
+The curated Vauxhall-Victoria `TUBE` link is now 14 minutes (19 off-peak
+and Sundays; was 11 and 16): at 11, Euston-Victoria plus
+Victoria-Vauxhall came in under the feed's own 22-minute Euston-Vauxhall
+link, and plans from Milton Keynes to Vauxhall split one Victoria line ride
+at Victoria. Euston, King's Cross and St Pancras to Vauxhall take the
+direct link again; Vauxhall to Victoria alone plans 3 minutes longer.
+
 ## 2026-10-22: each change in a journey, judged on live times
 
 Additive. Design: `docs/superpowers/specs/2026-10-22-mid-journey-changes-design.md`,
