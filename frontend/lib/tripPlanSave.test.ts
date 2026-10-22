@@ -73,6 +73,75 @@ describe('itineraryLegsForSaving', () => {
     ]);
   });
 
+  it('saves a merged Tube ride as one leg, and times transfers in a row one after another', () => {
+    const victoria = (originCrs: string, destinationCrs: string, minutes: number, line: string): TripPlanLeg => ({
+      kind: 'transfer',
+      mode: 'TUBE',
+      originCrs,
+      destinationCrs,
+      minutes,
+      line,
+      originStop: { id: `940GZZLU${originCrs}`, name: originCrs, modes: ['tube'], lines: [] },
+      destinationStop: { id: `940GZZLU${destinationCrs}`, name: destinationCrs, modes: ['tube'], lines: [] },
+    });
+    // Euston to Vauxhall, one Victoria line ride the planner served as one
+    // leg (DS-139): one untracked leg with both stops.
+    const merged = itineraryLegsForSaving(
+      [itinerary([train('T1', 'MKC', 'EUS', '09:00:00', '09:50:00'), victoria('EUS', 'VXH', 22, 'Victoria')])],
+      nameFor,
+    );
+    expect(merged[1]).toEqual({
+      kind: 'untracked',
+      transitMode: 'tube',
+      originName: 'EUS',
+      destinationName: 'VXH',
+      lineName: 'Victoria line',
+      originStopId: '940GZZLUEUS',
+      destinationStopId: '940GZZLUVXH',
+      plannedDeparture: '2026-10-21T08:50:00.000Z',
+      plannedArrival: '2026-10-21T09:12:00.000Z',
+    });
+    // The Northern line to Euston, then the Victoria line: two legs, the
+    // second starting when the first ends.
+    const twoLines = itineraryLegsForSaving(
+      [
+        itinerary([
+          train('T1', 'BTN', 'CHX', '09:00:00', '09:50:00'),
+          victoria('CHX', 'EUS', 18, 'Northern'),
+          victoria('EUS', 'VXH', 22, 'Victoria'),
+        ]),
+      ],
+      nameFor,
+    );
+    expect(twoLines.slice(1)).toMatchObject([
+      {
+        lineName: 'Northern line',
+        plannedDeparture: '2026-10-21T08:50:00.000Z',
+        plannedArrival: '2026-10-21T09:08:00.000Z',
+      },
+      {
+        lineName: 'Victoria line',
+        plannedDeparture: '2026-10-21T09:08:00.000Z',
+        plannedArrival: '2026-10-21T09:30:00.000Z',
+      },
+    ]);
+    // With no train before them, they end when the next train leaves.
+    const beforeTrain = itineraryLegsForSaving(
+      [
+        itinerary([
+          victoria('CHX', 'EUS', 18, 'Northern'),
+          victoria('EUS', 'VXH', 22, 'Victoria'),
+          train('T2', 'VXH', 'WOK', '10:00:00', '10:30:00'),
+        ]),
+      ],
+      nameFor,
+    );
+    expect(beforeTrain.slice(0, 2)).toMatchObject([
+      { plannedDeparture: '2026-10-21T08:20:00.000Z', plannedArrival: '2026-10-21T08:38:00.000Z' },
+      { plannedDeparture: '2026-10-21T08:38:00.000Z', plannedArrival: '2026-10-21T09:00:00.000Z' },
+    ]);
+  });
+
   it('falls back to working times: back from the first train, and after midnight by its day offset', () => {
     const legs = itineraryLegsForSaving(
       [

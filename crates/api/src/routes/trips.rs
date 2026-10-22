@@ -1073,6 +1073,7 @@ async fn plan_on_date(
         .map_err(internal_error("attach trip leg details"))?;
     crate::data::tfl_stops::attach_transfer_stops(&app.database, &mut segments).await;
     crate::data::tfl_stops::attach_transfer_lines(&mut segments);
+    crate::data::tfl_stops::merge_transfer_rides(&app.database, &mut segments).await;
     Ok(DatePlan {
         request,
         segments,

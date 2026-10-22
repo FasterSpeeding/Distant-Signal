@@ -1325,13 +1325,147 @@ mod supplementary_link_tests {
                 .iter()
                 .map(|link| (link.to_crs.as_str(), link.minutes))
                 .collect();
-        assert_eq!(from_vxh, [("EUS", 22), ("VIC", 11)]);
+        assert_eq!(from_vxh, [("EUS", 22), ("VIC", 14)]);
         let to_vxh =
             schedule_query::fixed_link_between(&data, "VIC", "VXH", wednesday, 600).unwrap();
-        assert_eq!((to_vxh.mode.as_str(), to_vxh.minutes), ("TUBE", 11));
+        assert_eq!((to_vxh.mode.as_str(), to_vxh.minutes), ("TUBE", 14));
         // Evenings, the ALF's +5 convention.
         let evening = schedule_query::fixed_link_between(&data, "VXH", "VIC", wednesday, 20 * 60);
-        assert_eq!(evening.map(|link| link.minutes), Some(16));
+        assert_eq!(evening.map(|link| link.minutes), Some(19));
+    }
+
+    /// One `TUBE` row each way-agnostic (`index_fixed_links_both_ways`).
+    fn tube(from: &str, to: &str, minutes: i32, window: (&str, &str)) -> (String, FixedLink) {
+        (
+            from.to_string(),
+            FixedLink {
+                mode: "TUBE".to_string(),
+                to_crs: to.to_string(),
+                minutes,
+                valid_from: window.0.to_string(),
+                valid_to: window.1.to_string(),
+                days_mask: "1111110".to_string(),
+            },
+        )
+    }
+
+    /// Milton Keynes Central to Vauxhall: a train into Euston arriving at
+    /// `arrival`, then the Tube. `curated` stands in for the CSV's
+    /// Vauxhall-Victoria rows; the ALF rows are its Euston-Vauxhall link
+    /// (real, 22 and 27 minutes) and a Euston-Victoria one whose minutes
+    /// are not in the repository: the CSV's header puts the ALF's
+    /// Euston/King's Cross/St Pancras links 10 to 13 minutes longer to
+    /// Vauxhall than to Victoria, so Euston-Victoria is 9 to 12 (14 to 17
+    /// evenings).
+    fn mkc_to_vxh(
+        eus_vic: (i32, i32),
+        curated: impl Iterator<Item = (String, FixedLink)>,
+        arrival: u32,
+    ) -> Vec<String> {
+        let rows = vec![
+            tube("EUS", "VXH", 22, ("0700", "1900")),
+            tube("EUS", "VXH", 27, ("1901", "2359")),
+            tube("EUS", "VIC", eus_vic.0, ("0700", "1900")),
+            tube("EUS", "VIC", eus_vic.1, ("1901", "2359")),
+        ];
+        let tiplocs = [
+            ("MKNSCEN", "MKC"),
+            ("EUSTON", "EUS"),
+            ("VICTRIC", "VIC"),
+            ("VAUXHLM", "VXH"),
+        ];
+        let data = InterchangeData {
+            tiploc_to_crs: tiplocs
+                .iter()
+                .map(|(t, c)| ((*t).to_string(), (*c).to_string()))
+                .collect(),
+            crs_to_tiplocs: tiplocs
+                .iter()
+                .map(|(t, c)| ((*c).to_string(), vec![(*t).to_string()]))
+                .collect(),
+            fixed_links_from_crs: schedule_query::index_fixed_links_both_ways(
+                rows.into_iter().chain(curated),
+            ),
+            ..InterchangeData::default()
+        };
+        let connections = vec![Connection {
+            uid: "LM1".to_string(),
+            from_tiploc: "MKNSCEN".to_string(),
+            to_tiploc: "EUSTON".to_string(),
+            departure_min: arrival - 35,
+            arrival_min: arrival,
+            working_departure_min: arrival - 35,
+            working_arrival_min: arrival,
+            can_board: true,
+            can_alight: true,
+        }];
+        let journey = trip_planner::scan_connections(trip_planner::ScanOptions {
+            connections: &connections,
+            interchange: &data,
+            from_tiplocs: &["MKNSCEN".to_string()],
+            to_tiplocs: &["VAUXHLM".to_string()],
+            departure_min: arrival - 40,
+            // Wednesday 21 October 2026.
+            date: NaiveDate::from_ymd_opt(2026, 10, 21).unwrap(),
+        })
+        .unwrap();
+        journey
+            .legs
+            .iter()
+            .map(|leg| match leg {
+                trip_planner::JourneyLeg::Train(train) => train.uid.clone(),
+                trip_planner::JourneyLeg::Transfer(link) => format!(
+                    "{} {} {}-{}",
+                    link.mode, link.minutes, link.from_tiploc, link.to_tiploc
+                ),
+            })
+            .collect()
+    }
+
+    /// The bug (DS-139): with Vauxhall-Victoria at 11 minutes, Euston to
+    /// Victoria (10) and on to Vauxhall (11) is 21 minutes, a minute under
+    /// the ALF's own 22-minute Euston-Vauxhall link, so the plan split one
+    /// Victoria line ride into two Tube legs at Victoria. Chained links pay
+    /// no change at the station between them, and each ALF time already
+    /// includes getting in and out at both ends; 11 was the extra minutes
+    /// of riding on past Victoria, not a ride that starts there.
+    #[test]
+    fn eleven_minutes_from_victoria_split_the_euston_vauxhall_ride() {
+        let old = [
+            tube("VXH", "VIC", 11, ("0700", "1900")),
+            tube("VXH", "VIC", 16, ("1901", "2359")),
+        ];
+        assert_eq!(
+            mkc_to_vxh((10, 15), old.clone().into_iter(), 600),
+            ["LM1", "TUBE 10 EUSTON-VICTRIC", "TUBE 11 VICTRIC-VAUXHLM"]
+        );
+        // Evenings the direct link's +5 is less than the chain's +10.
+        assert_eq!(
+            mkc_to_vxh((10, 15), old.into_iter(), 20 * 60),
+            ["LM1", "TUBE 27 EUSTON-VAUXHLM"]
+        );
+    }
+
+    /// The checked-in rows: for every Euston-Victoria time the CSV's
+    /// calibration allows, Euston to Vauxhall is the one Victoria line
+    /// link, peak and evening.
+    #[test]
+    fn the_checked_in_victoria_vauxhall_link_never_beats_euston_vauxhall() {
+        let curated = common::supplementary_links::supplementary_links();
+        for eus_vic in 9..=12 {
+            for arrival in [600, 20 * 60] {
+                let direct = if arrival == 600 { 22 } else { 27 };
+                assert_eq!(
+                    mkc_to_vxh(
+                        (eus_vic, eus_vic + 5),
+                        supplementary_link_rows(&curated),
+                        arrival
+                    ),
+                    ["LM1".to_string(), format!("TUBE {direct} EUSTON-VAUXHLM")],
+                    "Euston-Victoria {eus_vic}, arriving {arrival}"
+                );
+            }
+        }
     }
 }
 

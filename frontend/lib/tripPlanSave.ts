@@ -99,9 +99,9 @@ function trainInstant(leg: TrainLeg, end: 'departure' | 'arrival'): dayjs.Dayjs 
  * `trainLegsForTracking` (lib/tripPlan.ts) would pick (a train ridden
  * through a waypoint stays one leg), with each Tube, walk, bus or ferry transfer between them as an
  * untracked leg. A transfer starts when the train before it arrives (the
- * planner walks straight off it; public time, else working) and lasts its
- * minutes; one with no train
- * before it ends when the next train leaves. A transfer with neither, or a
+ * planner walks straight off it; public time, else working), or when the
+ * transfer before it ends, and lasts its minutes; one with no train
+ * before it ends when the next train leaves (less any transfers after it). A transfer with neither, or a
  * change within a station, is left out. */
 export function itineraryLegsForSaving(
   itineraries: TripPlanItinerary[],
@@ -147,15 +147,20 @@ export function itineraryLegsForSaving(
     }
     const untracked = transferAsUntracked(leg, nameFor);
     if (untracked === null) return;
-    const before = sequence
-      .slice(0, index)
-      .reverse()
-      .find((l): l is TrainLeg => l.kind === 'train');
-    const after = sequence.slice(index + 1).find((l): l is TrainLeg => l.kind === 'train');
+    const beforeIndex = sequence.findLastIndex((l, i) => i < index && l.kind === 'train');
+    const afterIndex = sequence.findIndex((l, i) => i > index && l.kind === 'train');
+    const before = beforeIndex >= 0 ? (sequence[beforeIndex] as TrainLeg) : undefined;
+    const after = afterIndex >= 0 ? (sequence[afterIndex] as TrainLeg) : undefined;
     const minutes = Math.max(leg.minutes, 0);
+    // Transfers in a row (the Northern line, then the Victoria line) follow
+    // one another: each starts when the one before it ends.
+    const transferMinutes = (from: number, to: number) =>
+      sequence.slice(from, to).reduce((sum, l) => sum + (l.kind === 'transfer' ? Math.max(l.minutes, 0) : 0), 0);
     let departure: dayjs.Dayjs | null = null;
-    if (before) departure = trainInstant(before, 'arrival');
-    else if (after) departure = trainInstant(after, 'departure')?.subtract(minutes, 'minute') ?? null;
+    if (before)
+      departure = trainInstant(before, 'arrival')?.add(transferMinutes(beforeIndex + 1, index), 'minute') ?? null;
+    else if (after)
+      departure = trainInstant(after, 'departure')?.subtract(transferMinutes(index, afterIndex), 'minute') ?? null;
     if (departure === null) return;
     legs.push({
       kind: 'untracked',
