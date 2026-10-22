@@ -317,6 +317,22 @@ async fn owned_leg_order_at(
     Ok(AddLegOutcome::Added(target_order))
 }
 
+/// Locks journey `journey_id` (`FOR UPDATE`) if `user_id` owns it; a
+/// missing or someone else's journey locks nothing (the caller's own
+/// ownership check then reports it).
+async fn lock_owned_journey(
+    tx: &mut sqlx::PgConnection,
+    journey_id: i64,
+    user_id: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("SELECT id FROM journeys WHERE id = $1 AND user_id = $2 FOR UPDATE")
+        .bind(journey_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
 /// How many legs one journey may have. Same value as
 /// `journey_templates::MAX_LEGS_PER_TEMPLATE`, deliberately: a template
 /// materializes 1:1 into a journey's legs, so the two caps answer the same
@@ -435,6 +451,7 @@ pub async fn create_journey_with_pin_leg(
         false,
     )
     .await?;
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok((journey_id, leg_id, tracking_id))
 }
@@ -551,6 +568,7 @@ async fn insert_known_train_journey(
         false,
     )
     .await?;
+    crate::data::journey_revisions::record_plan_change(&mut *tx, journey_id, Utc::now()).await?;
     Ok((journey_id, leg_id, tracking_id))
 }
 
@@ -807,6 +825,7 @@ pub async fn add_known_train_leg_to_journey_at(
         false,
     )
     .await?;
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok(AddLegOutcome::Added((leg_id, tracking_id)))
 }
@@ -1050,6 +1069,7 @@ pub async fn create_journey_with_window_leg(
         true,
     )
     .await?;
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok((journey_id, leg_id))
 }
@@ -1136,6 +1156,7 @@ pub async fn add_window_leg_to_journey_at(
         true,
     )
     .await?;
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok(AddLegOutcome::Added(leg_id))
 }
@@ -1537,6 +1558,7 @@ pub async fn create_journey_with_untracked_leg(
     let mut tx = pool.begin().await?;
     let journey_id = insert_journey(&mut *tx, user_id, custom_name).await?;
     let leg_id = insert_untracked_leg(&mut *tx, journey_id, 1, leg).await?;
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok((journey_id, leg_id))
 }
@@ -1571,6 +1593,7 @@ pub async fn add_untracked_leg_to_journey_at(
             AddLegOutcome::NoSuchLeg => return Ok(AddLegOutcome::NoSuchLeg),
         };
     let leg_id = insert_untracked_leg(&mut *tx, journey_id, next_leg_order, leg).await?;
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok(AddLegOutcome::Added(leg_id))
 }
@@ -1598,6 +1621,9 @@ pub async fn update_untracked_leg(
     leg: &UntrackedLeg,
 ) -> anyhow::Result<UpdateUntrackedOutcome> {
     let mut tx = pool.begin().await?;
+    // The journey row first, as every other leg write takes it, so the
+    // revision written below never waits on it while holding the leg.
+    lock_owned_journey(&mut tx, journey_id, user_id).await?;
     let kind: Option<(String,)> = sqlx::query_as(
         "SELECT jl.kind FROM journey_legs jl JOIN journeys j ON j.id = jl.journey_id \
          WHERE jl.id = $1 AND jl.journey_id = $2 AND j.user_id = $3 FOR UPDATE OF jl",
@@ -1632,6 +1658,7 @@ pub async fn update_untracked_leg(
     .bind(&leg.destination_stop_id)
     .execute(&mut *tx)
     .await?;
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok(UpdateUntrackedOutcome::Updated)
 }
@@ -1692,6 +1719,7 @@ pub async fn set_leg_train_subscription(
     )
     .await?;
     if updated {
+        crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
         tx.commit().await?;
     } else {
         tx.rollback().await?;
@@ -1735,6 +1763,9 @@ async fn set_leg_train_subscription_locked(
     // returns `Ok(false)`, which the route maps to `404` -- same "no such
     // leg, or not this caller's" posture as every other failure mode
     // here, never leaking whether the subscription id itself exists.
+    // The journey row is locked first, as `delete_leg` locks it, so the
+    // revision this change writes never waits on it while holding the leg.
+    lock_owned_journey(&mut *tx, journey_id, user_id).await?;
     let owned: Option<(Option<i64>,)> = sqlx::query_as(
         "SELECT jl.train_subscription_id FROM journey_legs jl \
          JOIN journeys j ON j.id = jl.journey_id \
@@ -1967,6 +1998,7 @@ pub async fn create_subscription_and_bind_leg_with_search(
             return Ok(None);
         }
     }
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     tx.commit().await?;
     Ok(Some(tracking_id))
 }
@@ -2084,6 +2116,9 @@ pub async fn delete_leg(
     }
     if let Some(train_subscription_id) = train_subscription_id {
         release_leg_subscription(&mut tx, user_id, train_subscription_id, None).await?;
+    }
+    if !journey_also_deleted {
+        crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
     }
 
     tx.commit().await?;
@@ -2957,6 +2992,7 @@ pub async fn create_journey_from_itinerary(
         .await?;
         created.push((leg_id, Some(tracking_id)));
     }
+    crate::data::journey_revisions::record_plan_change(&mut *tx, journey_id, Utc::now()).await?;
     Ok((journey_id, created))
 }
 

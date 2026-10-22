@@ -689,6 +689,9 @@ pub async fn materialize_template(
     .bind(service_date)
     .execute(&mut *tx)
     .await?;
+    // Revision 1, the booked plan (mid-journey changes spec §4.3); its legs
+    // have no train yet and are refreshed as trains are picked.
+    crate::data::journey_revisions::record_plan_change(&mut tx, journey_id, Utc::now()).await?;
 
     tx.commit().await?;
 
