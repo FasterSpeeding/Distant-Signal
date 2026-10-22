@@ -2851,10 +2851,15 @@ export interface TrainSearchResult extends ServiceModeFields {
   destinationArrivalDayOffset: number;
   publicDestinationArrival?: string | null;
   workingDestinationArrival?: string | null;
-  /** Days after the searched date (the service date) the departure from
-   * `stationCrs` falls on. Moves the calendar day only, never the service
-   * date, so a row's link keeps the searched date. Absent from an older
-   * backend: read as 0. */
+  /** The row's service date, `"YYYY-MM-DD"`: the searched date, or with
+   * `across_midnight` the day before (a train of that date still running
+   * after its midnight). The row's train page and every day offset on it
+   * are of this date. Absent from an older backend: the searched date. */
+  serviceDate?: string;
+  /** Days after the row's service date the departure from `stationCrs`
+   * falls on. Moves the calendar day only, never the service date, so a
+   * row's link keeps its service date. Absent from an older backend: read
+   * as 0. */
   dayOffset?: number;
   /** The operating ATOC code, `null` when unknown. */
   operator?: string | null;
@@ -2896,6 +2901,20 @@ export interface TrainSearchPage extends TimetableCertaintyFields {
     arrivalFrom: { time: string; dayOffset: number } | null;
     arrivalTo: { time: string; dayOffset: number } | null;
   };
+  /** Whether the search asked for the previous date's late trains too
+   * (`across_midnight=true`). Absent from an older backend. */
+  acrossMidnight?: boolean;
+  /** Every service date the rows can be of, earliest first. Absent from an
+   * older backend. */
+  serviceDates?: string[];
+}
+
+/** One `GET /public/trains/search/operators` entry: an ATOC code the
+ * search's `operator` takes, with its name, `null` for a code the
+ * timetable carries that the operator reference list does not name. */
+export interface TrainSearchOperator {
+  code: string;
+  name: string | null;
 }
 
 /** `GET /public/trains/search/dates` (`crates/api/src/routes/trains.rs`'s

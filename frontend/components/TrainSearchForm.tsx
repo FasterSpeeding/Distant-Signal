@@ -19,7 +19,9 @@ import { useLiveSearch } from '@/lib/useLiveSearch';
 import { paramValue, useInitialSearchParams } from '@/lib/useInitialSearchParams';
 import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
 import {
+  apiSearchQuery,
   hasRows,
+  operatorChoices,
   nextDateLabel,
   parseNextDayParam,
   parseOperatorParam,
@@ -143,7 +145,9 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  *
  * `operatorNames` (ATOC code to name, from the page's TOC list, as on
  * `StationTimetable`) names each result row's operator; without it the
- * row's details line carries no operator.
+ * row's details line carries no operator. `unnamedOperatorCodes` are the
+ * other codes the timetable carries (`GET /public/trains/search/operators`
+ * entries with no name): offered by code, so every train stays filterable.
  *
  * `searchDates` (`GET /public/trains/search/dates`, read by the page on the
  * server) bounds the date picker to what the search accepts; `null` or
@@ -165,6 +169,7 @@ export function TrainSearchForm({
   initialOperator: initialOperatorProp = '',
   attachTicketId,
   operatorNames,
+  unnamedOperatorCodes,
   searchDates,
 }: {
   initialStation?: string | undefined;
@@ -185,6 +190,7 @@ export function TrainSearchForm({
   initialOperator?: string | undefined;
   attachTicketId?: number | undefined;
   operatorNames?: Readonly<Record<string, string>> | undefined;
+  unnamedOperatorCodes?: readonly string[] | undefined;
   searchDates?: TrainSearchDates | null | undefined;
 }) {
   // Seeded from the address bar, not the server props: see
@@ -211,16 +217,17 @@ export function TrainSearchForm({
     [operatorNames],
   );
   /** The Operator field's options, by name: "SW · South Western Railway",
-   * as on `/incidents`. */
+   * as on `/incidents`, then any code the timetable carries with no name,
+   * by code. */
   const operatorOptions = useMemo(
-    () =>
-      Object.entries(operatorNames ?? {})
-        .sort(([, a], [, b]) => a.localeCompare(b))
-        .map(([code, name]) => ({ value: code, label: `${code} · ${name}` })),
-    [operatorNames],
+    () => operatorChoices(operatorNames ?? {}, unnamedOperatorCodes ?? []),
+    [operatorNames, unnamedOperatorCodes],
   );
   const [operators, setOperators] = useState<string[]>(() =>
-    parseOperatorParam(initialOperator, new Set(Object.keys(operatorNames ?? {}))),
+    parseOperatorParam(
+      initialOperator,
+      new Set([...Object.keys(operatorNames ?? {}), ...(unnamedOperatorCodes ?? [])]),
+    ),
   );
   const [fromNextDay, setFromNextDay] = useState(() => parseNextDayParam(initialFromDayOffset));
   const [toNextDay, setToNextDay] = useState(() => parseNextDayParam(initialToDayOffset));
@@ -387,7 +394,7 @@ export function TrainSearchForm({
     // A function, not `signal.aborted` inline: it changes across the awaits.
     const superseded = () => signal.aborted;
     try {
-      const response = await fetch(`/api/trains/search?${searched}`, { signal });
+      const response = await fetch(`/api/trains/search?${apiSearchQuery(searched)}`, { signal });
       if (superseded()) return;
       if (response.status === 404) {
         setResults('unpublished');
@@ -460,7 +467,7 @@ export function TrainSearchForm({
         params.delete('date');
       }
       params.set('after', results.nextCursor);
-      const response = await fetch(`/api/trains/search?${params.toString()}`);
+      const response = await fetch(`/api/trains/search?${apiSearchQuery(params.toString())}`);
       if (!response.ok) {
         // The cursor is kept, not nulled: this page just failed to load, and
         // the reader gets a named error plus a working retry rather than a

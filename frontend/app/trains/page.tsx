@@ -1,7 +1,7 @@
 import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { TrainSearchForm } from '@/components/TrainSearchForm';
-import { getAllTocs, getTrainSearchDates } from '@/lib/api';
+import { getAllTocs, getTrainSearchDates, getTrainSearchOperators } from '@/lib/api';
 import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
 
 /** Per-page Open Graph/Twitter/`<title>` metadata, in the same four-field
@@ -117,11 +117,18 @@ export default async function TrainsPage({
   // (`getTrainSearchDates`, cached for a few minutes). Fetched alongside
   // the TOC list; a failure leaves `null`, and the form falls back to a
   // week either side of today.
-  const [tocs, searchDates] = await Promise.all([
+  // The Operator field also offers the codes the timetable carries that
+  // the TOC list does not name (`getTrainSearchOperators`, by code), so
+  // every train stays filterable; if that read fails, the TOC list alone.
+  const [tocs, searchDates, searchOperators] = await Promise.all([
     getAllTocs().catch(() => []),
     getTrainSearchDates().catch(() => null),
+    getTrainSearchOperators().catch(() => []),
   ]);
   const operatorNames = tocs.length > 0 ? Object.fromEntries(tocs.map((toc) => [toc.code, toc.name])) : undefined;
+  const unnamedOperatorCodes = searchOperators
+    .filter((operator) => operator.name === null && !(operatorNames && operator.code in operatorNames))
+    .map((operator) => operator.code);
 
   return (
     <Stack p="lg" gap="md">
@@ -147,6 +154,7 @@ export default async function TrainsPage({
         initialOperator={first(operator)}
         attachTicketId={attachTicketId}
         operatorNames={operatorNames}
+        unnamedOperatorCodes={unnamedOperatorCodes}
         searchDates={searchDates}
       />
     </Stack>

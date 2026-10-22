@@ -16,6 +16,7 @@ vi.mock('@/lib/api', async () => {
   return {
     ...actual,
     getAllTocs: vi.fn(async () => []),
+    getTrainSearchOperators: vi.fn(async () => []),
     getTrainSearchDates: vi.fn(async () => {
       throw new Error('not stubbed');
     }),

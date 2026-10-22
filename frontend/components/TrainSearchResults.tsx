@@ -5,11 +5,13 @@ import { ProvisionalTimetableNote } from './ProvisionalTimetableNote';
 import { ServiceRow, ServiceRowList } from './ServiceRow';
 import { TrackThisTrainButton } from './TrackThisTrainButton';
 import { LoadingText } from '@/components/LoadingText';
+import type { TrainSearchResult } from '@/lib/types';
 import { searchRowDetails, searchRowHeadcode, searchRowSummary, searchRowTime } from '@/lib/searchRow';
 import {
   nextDateLabel,
   resolvedDate,
-  splitAtMidnight,
+  serviceDateLabel,
+  splitSearchRows,
   trackNoun,
   type TrainSearchResults as TrainSearchResultsState,
 } from '@/lib/trainSearch';
@@ -40,6 +42,7 @@ export function TrainSearchResults({
   attachTicketId: number | undefined;
 }) {
   const afterMidnightHeadingId = useId();
+  const previousDayHeadingId = useId();
   if (!stationValid) {
     return (
       <Text size="sm" c="dimmed">
@@ -84,7 +87,38 @@ export function TrainSearchResults({
   // once here from `results.date`, never from live `dateValue`. See
   // `resolvedDate`'s own doc comment.
   const displayDate = resolvedDate(results.date);
-  const { sameDay: sameDayRows, afterMidnight: afterMidnightRows } = splitAtMidnight(results.rows);
+  const { previousDay, sameDay, afterMidnight } = splitSearchRows(results.rows, displayDate);
+  // The previous date's trains still running after its midnight (a search
+  // with no date picked asks for them; see `apiSearchQuery`), labelled
+  // with their own service date, then the searched date's.
+  const previousDate = previousDay[0]?.serviceDate;
+  const lists: {
+    key: 'previous-day' | 'same-day' | 'after-midnight';
+    rows: TrainSearchResult[];
+    /** The list's heading and its id; `null` for the searched date's own
+     * trains, the list named just "Trains". */
+    heading: { text: string; id: string; marker: Record<string, boolean> } | null;
+  }[] = [
+    {
+      key: 'previous-day',
+      rows: previousDay,
+      heading: {
+        text: previousDate ? `Still running from ${serviceDateLabel(previousDate)}` : 'Still running',
+        id: previousDayHeadingId,
+        marker: { 'data-previous-day': true },
+      },
+    },
+    { key: 'same-day', rows: sameDay, heading: null },
+    {
+      key: 'after-midnight',
+      rows: afterMidnight,
+      heading: {
+        text: `After midnight, ${nextDateLabel(displayDate)}`,
+        id: afterMidnightHeadingId,
+        marker: { 'data-after-midnight': true },
+      },
+    },
+  ];
   return (
     <>
       <ProvisionalTimetableNote provisional={results.provisional} />
@@ -128,17 +162,20 @@ export function TrainSearchResults({
       {/* A date's whole train day: its trains leaving after midnight come
        * last (train-day order), in a list of their own under the next
        * date, each still marked "+1" and still linking to the searched
-       * date's train page (its service date). */}
-      {[sameDayRows, afterMidnightRows].map((rows, part) =>
+       * date's train page (its service date). Before them all, any of the
+       * previous date's trains still running (`serviceDate` the day
+       * before), under that date, each marked "+1" against it, named as
+       * its service, and linking to that date's train page. */}
+      {lists.map(({ key, rows, heading }) =>
         rows.length === 0 ? null : (
-          <Fragment key={part}>
-            {part === 1 && (
-              <Text size="sm" fw={600} id={afterMidnightHeadingId} data-after-midnight>
-                After midnight, {nextDateLabel(displayDate)}
+          <Fragment key={key}>
+            {heading && (
+              <Text size="sm" fw={600} id={heading.id} {...heading.marker}>
+                {heading.text}
               </Text>
             )}
             <ServiceRowList
-              {...(part === 0 ? { 'aria-label': 'Trains' } : { 'aria-labelledby': afterMidnightHeadingId })}
+              {...(heading ? { 'aria-labelledby': heading.id } : { 'aria-label': 'Trains' })}
               data-train-results
               data-list-pending={pending || undefined}
               aria-busy={pending}
@@ -147,17 +184,24 @@ export function TrainSearchResults({
                 <ServiceRow
                   key={`${row.uid}-${row.scheduled ?? ''}`}
                   train={searchRowSummary(row)}
-                  date={displayDate}
+                  date={row.serviceDate ?? displayDate}
                   timeOverride={searchRowTime(row)}
                   dayOffset={row.dayOffset}
                   details={
-                    [searchRowDetails(row, operatorLookup), searchRowHeadcode(row)].filter(Boolean).join(' · ') ||
-                    undefined
+                    [
+                      key === 'previous-day' && row.serviceDate
+                        ? `${serviceDateLabel(row.serviceDate)} service`
+                        : undefined,
+                      searchRowDetails(row, operatorLookup),
+                      searchRowHeadcode(row),
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || undefined
                   }
                   actions={
                     <TrackThisTrainButton
                       uid={row.uid}
-                      date={displayDate}
+                      date={row.serviceDate ?? displayDate}
                       {...(attachTicketId === undefined ? {} : { attachTicketId })}
                       size="xs"
                       noun={trackNoun(row)}
