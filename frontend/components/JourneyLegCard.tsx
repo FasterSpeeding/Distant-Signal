@@ -13,7 +13,7 @@ import { isUntrackedLeg } from '@/lib/untrackedLeg';
 import { legRouteAndTime } from '@/lib/journeyLegLabel';
 import { formatDate } from '@/lib/dateFormat';
 import { routeLabel } from '@/lib/stationLabel';
-import type { LegSearch } from '@/lib/legSearch';
+import { legSearchPrefill, type LegSearch } from '@/lib/legSearch';
 import type { JourneyLegDetail } from '@/lib/types';
 
 /** Decorative "needs attention" glyph for the open-leg card (review
@@ -117,13 +117,15 @@ function windowSummary(
  *   `crates/api/src/routes/journeys.rs::delete_journey_leg` -- that route
  *   has never cared what created the leg or whether it carries a window,
  *   so gating the BUTTON on `hasWindow` was a frontend-only restriction
- *   with no backend reason behind it), and "Change train" is offered
- *   ADDITIONALLY whenever the leg has a persisted window
- *   (`departAfter`/`departBefore`/`arriveAfter`/`arriveBefore` -- any
- *   non-null), revealing the SAME `JourneyLegCandidates` component,
- *   re-scoped to this leg (its own persisted window drives what the
- *   backend searches -- see
- *   `crates/api/src/routes/journeys.rs::get_leg_candidates`).
+ *   with no backend reason behind it), and "Change train", on every
+ *   train leg, revealing the SAME `LegTrainPicker` (candidates and "Edit
+ *   search"), re-scoped to this leg: a window-searched leg searches its
+ *   own persisted window (`crates/api/src/routes/journeys.rs::get_leg_candidates`);
+ *   a pinned, "I know the train" or planner-saved leg, which has none,
+ *   starts from a search made from its stations, date and timetabled
+ *   departure (`legSearchPrefill`, mid-journey changes spec 2026-10-22
+ *   Phase 0). Until then those legs had no way to pick another train
+ *   except removing the leg and adding a new one.
  *
  *   Before this fix, the two actions were rendered as a ternary
  *   (`hasWindow ? <ChangeTrain> : <RemoveLeg>`): a leg with NO window got
@@ -131,9 +133,7 @@ function windowSummary(
  *   since most legs are created via the time-window search flow -- a leg
  *   WITH a window got "Change train" but no way to remove it outright,
  *   leaving most legs on most journeys with no delete affordance at all.
- *   Both actions are now independently gated on their own real
- *   precondition (owner; `hasWindow` for "Change train" only), never on
- *   each other.
+ *   Both actions are now gated on the owner alone, never on each other.
  *
  * Every action lives in the card's OWN title row, top-right -- 2026-09-22
  * UX review finding I14/2.4's own recommendation: "actions live at the
@@ -313,19 +313,13 @@ export function JourneyLegCard({
           {/* `isOwner` is Phase 4's sharing gate -- a shared-group viewer
               sees the leg but must not be offered "Change train"/"Remove
               leg", either of which the API would reject anyway. Below
-              that, the two actions are INDEPENDENT, not an either/or:
-              "Remove leg" is always available to the owner, and "Change
-              train" is available ADDITIONALLY whenever `hasWindow` (the
-              leg has something to re-search). See this component's own
-              doc comment for why this used to be a `hasWindow ? ... : ...`
-              ternary, and why that was a real gap. */}
+              that, both actions are always available to the owner, on
+              every train leg (mid-journey phase 0). */}
           {isOwner && (
             <Group gap="xs">
-              {hasWindow && (
-                <Button size="xs" variant="default" onClick={() => setChangingTrain((c) => !c)}>
-                  {changingTrain ? 'Cancel' : 'Change train'}
-                </Button>
-              )}
+              <Button size="xs" variant="default" onClick={() => setChangingTrain((c) => !c)}>
+                {changingTrain ? 'Cancel' : 'Change train'}
+              </Button>
               <RemoveJourneyLegButton journeyId={journeyId} legId={leg.id} isOnlyLeg={isOnlyLeg} />
             </Group>
           )}
@@ -336,11 +330,14 @@ export function JourneyLegCard({
           legDestinationCrs={leg.destinationCrs}
           suppressTrainUidHeading
         />
-        {hasWindow && isOwner && changingTrain && (
+        {isOwner && changingTrain && (
           <LegTrainPicker
             journeyId={journeyId}
             leg={leg}
-            criteria={windowSummary(leg)}
+            // A leg never window-searched has no search of its own: one is
+            // made from what it knows (`legSearchPrefill`).
+            initialSearch={hasWindow ? null : legSearchPrefill(leg)}
+            criteria={hasWindow ? windowSummary(leg) : null}
             onPicked={() => {
               setChangingTrain(false);
               router.refresh();
@@ -364,15 +361,21 @@ function LegTrainPicker({
   journeyId,
   leg,
   criteria,
+  initialSearch = null,
   onPicked,
 }: {
   journeyId: number;
   leg: JourneyLegDetail;
   criteria: string | null;
+  /** A search to start from instead of the leg's stored one: "Change
+   * train" on a leg that was never window-searched (`legSearchPrefill`).
+   * Like an edited search, it is saved to the leg with the pick. */
+  initialSearch?: LegSearch | null;
   onPicked: () => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [search, setSearch] = useState<LegSearch | null>(null);
+  const [search, setSearch] = useState<LegSearch | null>(initialSearch);
+  const edited = search !== null && search !== initialSearch;
   const shownCriteria = search ? windowSummary(search) : criteria;
 
   if (editing) {
@@ -394,8 +397,8 @@ function LegTrainPicker({
         <Stack gap={2}>
           {search && (
             <Text size="sm" fw={600}>
-              New search: {routeLabel(search.originCrs, null, search.destinationCrs, null)},{' '}
-              {formatDate(search.serviceDate)}
+              {edited ? 'New search' : 'Other trains'}:{' '}
+              {routeLabel(search.originCrs, null, search.destinationCrs, null)}, {formatDate(search.serviceDate)}
             </Text>
           )}
           {shownCriteria && (

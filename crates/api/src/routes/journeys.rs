@@ -3284,6 +3284,133 @@ mod db_tests {
         cleanup_user(&pool, "TEST-ROUTE-EDIT-SEARCH").await;
     }
 
+    /// Mid-journey phase 0: "Change train" works on a leg that was never
+    /// window-searched (here an "I know the train" leg). The page sends a
+    /// search prefilled from the leg; the candidates route takes it and the
+    /// pick saves it with the new train, on the same leg.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                change_train_on_a_known_train_leg -- --ignored --test-threads=1`"]
+    async fn change_train_on_a_known_train_leg_searches_and_picks_in_place() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let token = seed_session(&pool, "TEST-ROUTE-CHANGE-KNOWN").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "A44445", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let leg_id = created["legId"].as_i64().expect("legId present");
+        let (_, detail) = request(
+            router.clone(),
+            format!("/Journeys/{journey_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(detail["legs"][0]["windowSearched"], false, "{detail:?}");
+
+        let (status, body) = request(
+            router.clone(),
+            format!(
+                "/Journeys/{journey_id}/legs/{leg_id}/candidates\
+                 ?origin=WAT&destination=RDG&serviceDate=2026-09-22&departAfter=08:00"
+            ),
+            Some(&token),
+        )
+        .await;
+        // Searched (an empty fixture day may have no schedule: 404), never
+        // refused for the kind of leg it is.
+        assert!(
+            status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+            "{status}: {body:?}"
+        );
+
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs/{leg_id}/train"),
+            Some(&token),
+            serde_json::json!({
+                "trainUid": "A44446",
+                "serviceDate": "2026-09-22",
+                "search": {
+                    "originCrs": "WAT",
+                    "destinationCrs": "RDG",
+                    "departWindow": { "after": "08:00" }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "change train: {body:?}");
+
+        let (_, detail) = request(router, format!("/Journeys/{journey_id}"), Some(&token)).await;
+        let leg = &detail["legs"][0];
+        assert_eq!(leg["id"], leg_id, "{detail:?}");
+        assert_eq!(leg["trackedTrainState"]["trainUid"], "A44446", "{detail:?}");
+        assert_eq!(leg["windowSearched"], true, "{detail:?}");
+
+        cleanup_user(&pool, "TEST-ROUTE-CHANGE-KNOWN").await;
+    }
+
+    /// `connection` on `GET /Journeys/{id}`: `null` on the first leg, an
+    /// object on every later one -- here `unknown`, as neither fixture
+    /// train has a timetable to judge the change by.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api \
+                get_journey_serves_a_connection -- --ignored --test-threads=1`"]
+    async fn get_journey_serves_a_connection_on_every_leg_after_the_first() {
+        let pool = connect().await;
+        let _trains = crate::test_support::fixture_trains_cleanup(&pool).await;
+        let token = seed_session(&pool, "TEST-ROUTE-CONNECTION").await;
+        let router = test_router(test_app(pool.clone()));
+
+        let (_, created) = post_json(
+            router.clone(),
+            "/Journeys".to_string(),
+            Some(&token),
+            serde_json::json!({
+                "leg": { "mode": "knownTrain", "trainUid": "A44447", "serviceDate": "2026-09-22" }
+            }),
+        )
+        .await;
+        let journey_id = created["journeyId"].as_i64().expect("journeyId present");
+        let (status, body) = post_json(
+            router.clone(),
+            format!("/Journeys/{journey_id}/legs"),
+            Some(&token),
+            serde_json::json!({
+                "mode": "knownTrain",
+                "trainUid": "A44448",
+                "serviceDate": "2026-09-22"
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add leg: {body:?}");
+
+        let (status, detail) =
+            request(router, format!("/Journeys/{journey_id}"), Some(&token)).await;
+        assert_eq!(status, StatusCode::OK, "{detail:?}");
+        let legs = detail["legs"].as_array().expect("legs");
+        assert_eq!(legs.len(), 2);
+        assert!(legs[0]["connection"].is_null(), "{detail:?}");
+        assert!(
+            legs[0]
+                .as_object()
+                .is_some_and(|leg| leg.contains_key("connection")),
+            "the first leg says null, not absent: {detail:?}"
+        );
+        assert_eq!(legs[1]["connection"]["state"], "unknown", "{detail:?}");
+        assert!(legs[1]["connection"]["gapMinutes"].is_null(), "{detail:?}");
+
+        cleanup_user(&pool, "TEST-ROUTE-CONNECTION").await;
+    }
+
     /// Signal Box Audit 2026-09-25 Low finding #1: before
     /// `journeys::validate_train_uid` existed, `post_leg_train` fed a bare
     /// caller-typed `trainUid` straight into `trains::find_or_create_train`,

@@ -1,3 +1,4 @@
+import { legDepartureInstant, londonDateTime } from './journeyLegChaining';
 import type { JourneyLegDetail } from './types';
 
 /** A train leg's window search, as "Edit search" on a journey leg holds it
@@ -49,6 +50,33 @@ export function legSearchDraftFromLeg(
     departBefore: hhmm(leg.departBefore),
     arriveAfter: hhmm(leg.arriveAfter),
     arriveBefore: hhmm(leg.arriveBefore),
+  };
+}
+
+/** "Change train" on a leg that was never window-searched (a pinned
+ * train, "I know the train", a leg saved from the planner): a search made
+ * from what the leg knows -- its stations (else its train's pin, else the
+ * train's own route), its date, and trains from its train's timetabled
+ * departure on. Every later train that day is listed, and "Edit search"
+ * changes any of it. `null` for a window-searched leg (its own stored
+ * search is used) or when the leg's stations aren't known. With no
+ * departure time that day, the search starts at midnight. */
+export function legSearchPrefill(leg: JourneyLegDetail): LegSearch | null {
+  if (leg.windowSearched) return null;
+  const state = leg.trackedTrainState;
+  const origin = leg.originCrs ?? state?.pinOriginCrs ?? state?.journeyStops?.[0]?.crs ?? null;
+  const destination = leg.destinationCrs ?? state?.pinDestinationCrs ?? state?.scheduleDestinationCrs ?? null;
+  if (!origin || !destination) return null;
+  const departure = legDepartureInstant(leg);
+  const london = departure === null ? null : londonDateTime(departure);
+  return {
+    originCrs: origin.toUpperCase(),
+    destinationCrs: destination.toUpperCase(),
+    serviceDate: leg.serviceDate,
+    departAfter: london !== null && london.date === leg.serviceDate ? london.time : '00:00',
+    departBefore: null,
+    arriveAfter: null,
+    arriveBefore: null,
   };
 }
 
