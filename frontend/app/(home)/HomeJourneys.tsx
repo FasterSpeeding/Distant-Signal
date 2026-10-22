@@ -106,7 +106,10 @@ function LegStatus({ leg, headline }: { leg: JourneyLegDetail; headline: Journey
  * The whole card links to the journey page. */
 export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { detail: JourneyDetail }; now: Date }) {
   const { detail } = journey;
-  const name = journeyNameInputFromLegs(detail.customName, detail.legs);
+  const name = journeyNameInputFromLegs(
+    detail.customName,
+    detail.legs.map((leg) => ({ ...leg, trainUid: leg.trackedTrainState?.trainUid ?? null })),
+  );
   const preview = journeyPreviewLine(name);
   const headline = homeJourneyStatusGroup(journey);
   const leg = currentLeg(detail, now);

@@ -153,6 +153,39 @@ describe('JourneyDetailPage', () => {
     expect(screen.queryByText('Tracked journey')).not.toBeInTheDocument();
   });
 
+  // DS-144: a train leg saved before its train had a timetable has no
+  // station on either end. The heading names its train, never
+  // "Unknown station".
+  it('names a journey with no stations by its train in the <h1>', async () => {
+    const routeless = trackedState({
+      pinOriginCrs: null,
+      pinDestinationCrs: null,
+      scheduleDestinationCrs: null,
+      scheduleDestinationName: null,
+      journeyStops: [],
+      trainUid: 'W12345',
+      status: null,
+    });
+    vi.mocked(api.getJourney).mockResolvedValue(
+      baseJourney({
+        legs: [matchedLeg({ originCrs: null, destinationCrs: null, trackedTrainState: routeless })],
+      }),
+    );
+    await renderPage();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Train W12345, 22 Sep 2026$/);
+    expect(screen.queryByText(/Unknown station/)).not.toBeInTheDocument();
+  });
+
+  it('names a journey with no stations and no train by its date in the <h1>', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(
+      baseJourney({
+        legs: [matchedLeg({ originCrs: null, destinationCrs: null, matchMode: 'unmatched', trackedTrainState: null })],
+      }),
+    );
+    await renderPage();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Journey on 22 Sep 2026$/);
+  });
+
   it('still honours a real custom name when one is set', async () => {
     vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ customName: "Trip to Grandma's" }));
     await renderPage();

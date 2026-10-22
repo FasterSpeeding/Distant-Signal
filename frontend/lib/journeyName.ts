@@ -21,7 +21,14 @@ import type { GroupJourney, JourneyListItem } from './types';
  * rail leg or not. A leg end with a name but no station code (an untracked
  * Tube or bus leg, say) is named by its name alone. Cancelled and
  * unresolved legs name the journey like any other; the status chip, not
- * the name, says what is wrong. */
+ * the name, says what is wrong.
+ *
+ * A journey with no origin to name is never "Unknown station" (DS-144): a
+ * train leg saved before its train had a timetable is a normal state, not
+ * a missing station. It is named by its first train ("Train W12345, 17 Sep
+ * 2026", "Train W12345 to York (YRK), 17 Sep 2026") when that is known,
+ * else "Journey on 17 Sep 2026", as `trackedTrainRouteLabel` names a
+ * tracked train (DS-111). */
 
 /** One end of the journey: a station code, the name resolved for it, or
  * both. */
@@ -41,6 +48,9 @@ export interface JourneyNameInput {
   /** The first leg's service date ("YYYY-MM-DD"), `null` with no legs. */
   serviceDate: string | null | undefined;
   legCount: number;
+  /** The first leg's train, which names a journey with no origin to name
+   * ("Train W12345"). Absent where the payload has none. */
+  trainUid?: string | null | undefined;
 }
 
 /** The leg fields a name reads: shared by every leg shape on the wire. */
@@ -52,9 +62,15 @@ export interface JourneyNameLeg {
   /** Absent on a template's legs: a template has no day of its own, so
    * its name is the route alone. */
   serviceDate?: string | null;
+  /** The leg's train, when the surface knows it. */
+  trainUid?: string | null;
 }
 
 export const NO_LEGS_JOURNEY_NAME = 'Journey with no legs yet';
+
+/** What a journey with no origin and no train to name is called, before
+ * its date: "Journey on 17 Sep 2026". */
+export const UNNAMED_JOURNEY_LABEL = 'Journey';
 
 /** Adapts an ordered leg list (journey detail, share page) to a name
  * input. Legs are assumed in `leg_order`, as every endpoint returns them. */
@@ -70,6 +86,7 @@ export function journeyNameInputFromLegs(
     destination: { crs: last?.destinationCrs, name: last?.destinationName },
     serviceDate: first?.serviceDate ?? null,
     legCount: legs.length,
+    trainUid: first?.trainUid ?? null,
   };
 }
 
@@ -107,6 +124,9 @@ export function groupJourneyNameInput(journey: GroupJourney): JourneyNameInput {
       : { crs: journey.pinDestinationCrs, name: journey.pinDestinationName },
     serviceDate: journey.serviceDate,
     legCount: journey.legCount,
+    // The row's train is its first TRAIN leg's, which is the first leg
+    // only for certain on a one-leg journey.
+    trainUid: journey.legCount === 1 ? journey.trainUid : null,
   };
 }
 
@@ -117,16 +137,22 @@ function endLabel(end: JourneyEnd): string | null {
 
 /** "London Kings Cross (KGX) to York (YRK)", the journey's whole route.
  * Station-coded ends go through `routeLabel`, so both ends degrade to bare
- * codes together; an end with only a name (no code) is shown by name. */
+ * codes together; an end with only a name (no code) is shown by name. With
+ * no origin, the first train stands in for it ("Train W12345 to York
+ * (YRK)"), else "Journey"; never "Unknown station" (DS-144). */
 export function journeyRouteLabel(input: JourneyNameInput): string {
   if (input.legCount === 0) return NO_LEGS_JOURNEY_NAME;
   const { origin, destination } = input;
-  const nameOnlyEnd = (!origin.crs && !!origin.name?.trim()) || (!destination.crs && !!destination.name?.trim());
-  if (!nameOnlyEnd) return routeLabel(origin.crs, origin.name, destination.crs, destination.name);
   const from = endLabel(origin);
   const to = endLabel(destination);
-  if (from && to) return `${from} to ${to}`;
-  return routeLabel(origin.crs, from, destination.crs, to);
+  if (!from) {
+    const subject = input.trainUid ? `Train ${input.trainUid}` : UNNAMED_JOURNEY_LABEL;
+    return to ? `${subject} to ${to}` : subject;
+  }
+  if (!to) return from;
+  const nameOnlyEnd = !origin.crs || !destination.crs;
+  if (!nameOnlyEnd) return routeLabel(origin.crs, origin.name, destination.crs, destination.name);
+  return `${from} to ${to}`;
 }
 
 /** "17 Sep 2026", the first leg's date, or `null` with no legs. */
@@ -139,11 +165,13 @@ export function journeyLegCountLabel(input: JourneyNameInput): string | null {
   return input.legCount > 1 ? `${input.legCount} legs` : null;
 }
 
-/** The route and date together: "Origin to Destination, 17 Sep 2026". */
+/** The route and date together: "Origin to Destination, 17 Sep 2026", or
+ * "Journey on 17 Sep 2026" with nothing else to name it by. */
 export function journeyDefaultName(input: JourneyNameInput): string {
   const route = journeyRouteLabel(input);
   const date = journeyDateLabel(input);
-  return date ? `${route}, ${date}` : route;
+  if (!date) return route;
+  return route === UNNAMED_JOURNEY_LABEL ? `${route} on ${date}` : `${route}, ${date}`;
 }
 
 /** The journey's name: its custom name if set, otherwise
