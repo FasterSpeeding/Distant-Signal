@@ -665,6 +665,30 @@ struct CreateJourneyResponse {
     resolution_status: Option<&'static str>,
 }
 
+/// 400 once `user_id` has [`journeys::MAX_JOURNEYS_PER_USER`] hand-made
+/// journeys. Every route that makes a journey checks it: `POST /Journeys`
+/// and, since a train tracked on its own is a journey (DS-124), the two
+/// old track routes in `routes::train`.
+pub(crate) async fn enforce_journey_cap(
+    app: &App,
+    user_id: &str,
+) -> Result<(), (StatusCode, String)> {
+    let owned = journeys::count_manual_journeys_for_user(&app.database, user_id)
+        .await
+        .map_err(internal_error("count journeys"))?;
+    if owned >= journeys::MAX_JOURNEYS_PER_USER {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "You already have {} journeys, which is the maximum. Delete some old ones to make \
+                 room for a new one.",
+                journeys::MAX_JOURNEYS_PER_USER
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "long but linear; splitting it would scatter its shared state across helpers"
@@ -696,19 +720,7 @@ async fn post_journey(
     // accepted "a concurrent burst can land a few over" race) as
     // `routes::lines`'s custom-line cap; see `journeys::MAX_JOURNEYS_PER_USER`
     // for the value and why template-materialized journeys don't count.
-    let owned = journeys::count_manual_journeys_for_user(&app.database, &user.id)
-        .await
-        .map_err(internal_error("count journeys"))?;
-    if owned >= journeys::MAX_JOURNEYS_PER_USER {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "You already have {} journeys, which is the maximum. Delete some old ones to make \
-                 room for a new one.",
-                journeys::MAX_JOURNEYS_PER_USER
-            ),
-        ));
-    }
+    enforce_journey_cap(&app, &user.id).await?;
     match body.leg {
         CreateJourneyLegRequest::Pin {
             origin_crs,

@@ -464,11 +464,9 @@ export function TrackTrainForm({
             // Deliberately swallowed -- see this block's own comment above.
           }
         }
-        if (groupId !== null && result.trackingId !== null) {
-          // Still shares the underlying train_subscriptions row via the
-          // EXISTING group_trains table, unchanged -- journey-level
-          // sharing is Phase 4 (see this plan's own Non-goals).
-          await shareTrackedTrainToGroup(groupId, result.trackingId);
+        if (groupId !== null) {
+          // Shares the train's new one-leg journey (DS-124).
+          await shareTrackedTrainToGroup(groupId, result.journeyId);
         }
         if (onCreated) {
           onCreated(result);
