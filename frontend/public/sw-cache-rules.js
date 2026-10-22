@@ -73,12 +73,34 @@ function sameOriginNotificationUrl(url, origin) {
   return resolved.origin === origin ? resolved.href : null;
 }
 
+/**
+ * Whether a window open at `clientUrl` already shows the page a
+ * notification's `url` opens: the same pathname, whatever the query or
+ * hash. A suggestion push links to `/journeys/42?break=7&src=push#break`;
+ * a tab already on `/journeys/42` shows the in-app banner instead (mid-
+ * journey changes spec 2026-10-22 §6.4).
+ * @param {string} clientUrl
+ * @param {unknown} url
+ * @param {string} origin - `self.location.origin`
+ * @returns {boolean}
+ */
+function showsNotificationPage(clientUrl, url, origin) {
+  const target = sameOriginNotificationUrl(url, origin);
+  if (target === null) return false;
+  try {
+    return new URL(clientUrl).pathname === new URL(target).pathname;
+  } catch {
+    return false;
+  }
+}
+
 if (typeof self !== 'undefined') {
   self.isCacheable = isCacheable;
   self.parsePushPayload = parsePushPayload;
   self.sameOriginNotificationUrl = sameOriginNotificationUrl;
+  self.showsNotificationPage = showsNotificationPage;
 }
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- TypeScript assumes CommonJS `module.exports` always exists; kept as a runtime guard
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isCacheable, parsePushPayload, sameOriginNotificationUrl };
+  module.exports = { isCacheable, parsePushPayload, sameOriginNotificationUrl, showsNotificationPage };
 }

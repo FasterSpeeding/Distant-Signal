@@ -18,6 +18,7 @@ interface WorkerGlobalScope {
   isCacheable: typeof import('../public/sw-cache-rules.js').isCacheable;
   parsePushPayload: typeof import('../public/sw-cache-rules.js').parsePushPayload;
   sameOriginNotificationUrl: typeof import('../public/sw-cache-rules.js').sameOriginNotificationUrl;
+  showsNotificationPage: typeof import('../public/sw-cache-rules.js').showsNotificationPage;
 
   readonly clients: Clients;
   readonly registration: ServiceWorkerRegistration;

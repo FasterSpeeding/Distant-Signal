@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import cacheRules from './sw-cache-rules.js';
 
-const { isCacheable, parsePushPayload, sameOriginNotificationUrl } = cacheRules;
+const { isCacheable, parsePushPayload, sameOriginNotificationUrl, showsNotificationPage } = cacheRules;
 
 describe('isCacheable', () => {
   it.each([
@@ -79,5 +79,23 @@ describe('sameOriginNotificationUrl', () => {
   it('falls back to the site root for a missing or non-string url', () => {
     expect(sameOriginNotificationUrl(undefined, origin)).toBe('https://ds.example/');
     expect(sameOriginNotificationUrl(42, origin)).toBe('https://ds.example/');
+  });
+});
+
+describe('showsNotificationPage', () => {
+  const origin = 'https://ds.example';
+
+  it('matches the page whatever the push adds as a query or hash', () => {
+    expect(showsNotificationPage('https://ds.example/journeys/42', '/journeys/42?break=7&src=push#break', origin)).toBe(
+      true,
+    );
+    expect(showsNotificationPage('https://ds.example/journeys/42?x=1', '/journeys/42', origin)).toBe(true);
+  });
+
+  it('does not match another page or another site', () => {
+    expect(showsNotificationPage('https://ds.example/journeys/43', '/journeys/42', origin)).toBe(false);
+    expect(showsNotificationPage('https://ds.example/journeys/42', 'https://evil.example/journeys/42', origin)).toBe(
+      false,
+    );
   });
 });

@@ -161,7 +161,11 @@ self.addEventListener('push', (event) => {
       // existing 30s poll, so a push notification on top of an
       // already-visible, already-fresh tab would be redundant.
       const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      const alreadyFocused = clientList.some((client) => client.focused && new URL(client.url).pathname === url);
+      // By pathname, so a link with a query or hash (a suggestion push's
+      // `?break=..&src=push`) still matches the page a focused tab shows.
+      const alreadyFocused = clientList.some(
+        (client) => client.focused && self.showsNotificationPage(client.url, url, self.location.origin),
+      );
       if (alreadyFocused) {
         return;
       }
