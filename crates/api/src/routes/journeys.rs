@@ -25,7 +25,10 @@ use serde::{Deserialize, Serialize};
 use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
 use crate::auth::delegated::{DelegatedOrSessionUser, DeleteScope, ReadScope};
-use crate::data::{journeys, leg_validation, schedule_matching, train_tracking, unlisted_links};
+use crate::data::{
+    journey_feasibility, journeys, leg_validation, schedule_matching, train_tracking,
+    unlisted_links,
+};
 use crate::routes::journey_itinerary::RouteError;
 
 /// The `resource_type` discriminator this file passes to every
@@ -1366,6 +1369,17 @@ struct JourneyLegDetailResponse {
     /// text and on a train leg.
     origin_stop_id: Option<String>,
     destination_stop_id: Option<String>,
+    /// The change onto this leg from the one before, judged server-side on
+    /// live times with the station's minimum change time (spec 2026-10-22
+    /// §5.1, `data::journey_feasibility`). `null` on the first leg; absent
+    /// altogether when it couldn't be worked out (the frontend then falls
+    /// back to its own gap check). Additive, 2026-10-22.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[expect(
+        clippy::option_option,
+        reason = "absent (not worked out) and null (the first leg) differ on the wire"
+    )]
+    connection: Option<Option<journey_feasibility::LegConnection>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1726,8 +1740,17 @@ async fn build_journey_detail_response(
         leg_states[index] = Some(state);
     }
 
+    // Absent on every leg when it couldn't be worked out.
+    let connections: Vec<Option<Option<journey_feasibility::LegConnection>>> =
+        match journey_connections_for(app, &leg_rows, &leg_states, now).await {
+            Some(list) => list.into_iter().map(Some).collect(),
+            None => leg_rows.iter().map(|_| None).collect(),
+        };
+
     let mut legs = Vec::with_capacity(leg_rows.len());
-    for (leg, tracked_train_state) in leg_rows.into_iter().zip(leg_states) {
+    for ((leg, tracked_train_state), connection) in
+        leg_rows.into_iter().zip(leg_states).zip(connections)
+    {
         // Low finding #5 (2026-09-25 review): `TrackedTrainState` is reused
         // verbatim here for BOTH the owner's own read and every non-owner
         // read this function serves -- a fellow group member
@@ -1804,6 +1827,7 @@ async fn build_journey_detail_response(
             untracked_status,
             origin_stop_id: leg.origin_stop_id,
             destination_stop_id: leg.destination_stop_id,
+            connection,
         });
     }
 
@@ -1835,6 +1859,52 @@ async fn build_journey_detail_response(
         is_owner,
         share_link,
     })
+}
+
+/// Every leg's `connection` (`journey_feasibility::journey_connections`):
+/// a train leg's stations are its own, else its train's pin, else the
+/// train's own route, as the frontend's connector reads them. `None` when
+/// they couldn't be worked out.
+async fn journey_connections_for(
+    app: &App,
+    leg_rows: &[journeys::JourneyLegWithNamesRow],
+    leg_states: &[Option<train_tracking::TrackedTrainState>],
+    now: DateTime<Utc>,
+) -> Option<Vec<Option<journey_feasibility::LegConnection>>> {
+    let inputs: Vec<journey_feasibility::LegInput<'_>> = leg_rows
+        .iter()
+        .zip(leg_states)
+        .map(|(leg, state)| {
+            if leg.kind == journeys::LEG_KIND_UNTRACKED {
+                return journey_feasibility::LegInput::Untracked {
+                    departure: leg.planned_departure,
+                    arrival: leg.planned_arrival,
+                };
+            }
+            let state = state.as_ref();
+            let stops = state.and_then(|s| s.journey_stops.as_deref());
+            journey_feasibility::LegInput::Train {
+                board_crs: leg
+                    .origin_crs
+                    .as_deref()
+                    .or_else(|| state.and_then(|s| s.pin_origin_crs.as_deref()))
+                    .or_else(|| stops.and_then(|stops| stops.first()?.crs.as_deref())),
+                alight_crs: leg
+                    .destination_crs
+                    .as_deref()
+                    .or_else(|| state.and_then(|s| s.pin_destination_crs.as_deref()))
+                    .or_else(|| state.and_then(|s| s.schedule_destination_crs.as_deref())),
+                train: state.and_then(|s| {
+                    Some(journey_feasibility::TrainInput {
+                        uid: s.train_uid.as_deref()?,
+                        date: s.service_date,
+                        stops: s.journey_stops.as_deref()?,
+                    })
+                }),
+            }
+        })
+        .collect();
+    journey_feasibility::journey_connections(&app.database, &inputs, now).await
 }
 
 /// `#[serde(deny_unknown_fields)]` is load-bearing here, not decorative --
