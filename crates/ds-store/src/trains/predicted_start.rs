@@ -593,7 +593,10 @@ mod db_tests {
     #[ignore = "requires a live database; run with DATABASE_URL=... cargo test -p ds-store \
                 predicted_start -- --ignored --test-threads=1"]
     async fn predict_for_trains_reads_the_link_and_both_states() {
-        let pool = crate::test_support::connect().await;
+        let reader = crate::test_support::connect().await;
+        // Fixtures through the owner when set: the api role only reads
+        // these tables.
+        let pool = crate::test_support::schedule_fixture_pool(&reader).await;
         let date = NaiveDate::from_ymd_opt(2099, 7, 11).expect("date");
         for table in ["schedule_turnarounds", "schedule_services"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE service_date = $1"))
@@ -645,7 +648,7 @@ mod db_tests {
 
         let key = ("PST0001".to_string(), date);
         let predictions = predict_for_trains(
-            &pool,
+            &reader,
             &[key.clone(), ("NOLINK1".to_string(), date)],
             Utc::now(),
         )

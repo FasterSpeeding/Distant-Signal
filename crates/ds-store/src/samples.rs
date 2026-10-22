@@ -1051,7 +1051,9 @@ mod db_tests {
     #[ignore = "requires a live database; run with `cargo test -p ds-store \
                 upsert_tracked_stop_boards -- --ignored --test-threads=1`"]
     async fn upsert_tracked_stop_boards_keeps_the_latest_board_per_stop() {
-        let pool = test_pool().await;
+        // The writer's table: through the owner when set (a per-service run
+        // as the api role only reads it).
+        let pool = crate::test_support::schedule_fixture_pool(&test_pool().await).await;
         sqlx::query("DELETE FROM tracked_stop_boards WHERE train_uid = 'TSB0001'")
             .execute(&pool)
             .await

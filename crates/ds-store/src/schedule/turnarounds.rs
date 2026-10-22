@@ -112,8 +112,10 @@ pub async fn replace_inferred_for_date(pool: &PgPool, service_date: NaiveDate) -
 mod db_tests {
     use super::*;
 
+    /// The owner's pool when set (the rebuild is schedule-reference's
+    /// write; a per-service run as the api role may not make it).
     async fn pool() -> PgPool {
-        crate::test_support::connect().await
+        crate::test_support::schedule_fixture_pool(&crate::test_support::connect().await).await
     }
 
     /// Fixture dates in 2099 (`test_support::assert_synthetic_date`), so
