@@ -3,7 +3,7 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
-## 2026-10-24: `/Trips/plan` searches on live times
+## 2026-10-23: `/Trips/plan` searches on live times
 
 Additive fields; one count changes meaning. Design:
 `docs/superpowers/specs/2026-10-22-trips-plan-in-search-live-design.md`.
