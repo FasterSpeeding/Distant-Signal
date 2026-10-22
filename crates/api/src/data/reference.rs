@@ -275,6 +275,20 @@ pub async fn get_all_tocs(pool: &PgPool) -> Result<Vec<Suggestion>> {
     Ok(rows)
 }
 
+/// Which of `codes` are a `tocs` row's ATOC code: one primary-key lookup
+/// per code, for validating an operator filter.
+pub async fn known_toc_codes(
+    pool: &PgPool,
+    codes: &[String],
+) -> Result<std::collections::HashSet<String>> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT atoc_code::text FROM tocs WHERE atoc_code = ANY($1::text[])")
+            .bind(codes)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(code,)| code).collect())
+}
+
 /// Top-level `stations.accessibility` keys considered "accessibility or
 /// amenities" data for the station page's facilities section -- see
 /// docs/superpowers/specs/2026-09-12-station-accessibility-design.md

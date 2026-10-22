@@ -732,7 +732,11 @@ pub use ds_store::schedule::ScheduleDestinationDeparturesRow;
 
 /// An opaque-to-the-caller position in one station's ordered results: the
 /// last row of the page just returned. The next page is everything
-/// strictly after it under `ORDER BY scheduled, train_uid`.
+/// strictly after it under `ORDER BY day_offset, scheduled, train_uid`
+/// (the train-day order, 2026-10-22: a service date's after-midnight
+/// departures sort after its evening ones, not before its first ones).
+/// The journey-leg candidate search still orders by `scheduled, train_uid`
+/// alone and ignores `day_offset`.
 ///
 /// Two components, not three like the destination-keyed predecessor this
 /// replaces: `origin_crs` (the calling point / station being searched) is
@@ -749,6 +753,9 @@ pub use ds_store::schedule::ScheduleDestinationDeparturesRow;
 /// through that parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallingPointDepartureCursor {
+    /// The row's working `day_offset` (0 for a cursor written before
+    /// 2026-10-22, which carried none).
+    pub day_offset: i16,
     pub scheduled: chrono::NaiveTime,
     pub train_uid: String,
 }
@@ -1022,6 +1029,243 @@ pub async fn schedule_destination_departures_date_range(
     Ok(earliest.zip(latest))
 }
 
+/// The inputs of [`search_schedule_calling_point_departures`].
+#[derive(Debug, Clone, Copy)]
+pub struct CallingPointSearch<'a> {
+    /// The searched calling point (`origin_crs`).
+    pub station_crs: &'a str,
+    pub service_date: chrono::NaiveDate,
+    /// Inclusive lower bound on the departure from `station_crs`, in
+    /// train-day minutes (see [`train_day_minutes`]).
+    pub depart_from: i32,
+    /// Inclusive upper bound on that departure, in train-day minutes.
+    pub depart_to: Option<i32>,
+    pub true_origin_crs: Option<&'a str>,
+    pub stops_at: Option<&'a str>,
+    /// Inclusive bounds on the arrival at `stops_at`, in train-day minutes.
+    pub arrive_from: Option<i32>,
+    pub arrive_to: Option<i32>,
+    /// ATOC codes: the row's `operator_atoc` must be one of them. `None` is
+    /// no filter; an empty slice matches nothing.
+    pub operators: Option<&'a [String]>,
+    pub after: Option<&'a CallingPointDepartureCursor>,
+    pub limit: i64,
+}
+
+/// Minutes past the service date's midnight, `day_offset * 1440` plus the
+/// clock time's minutes: "train-day minutes", over 1440 after midnight.
+/// The same scale as the trip planner's minutes (`/Trips/plan`'s
+/// `dayOffset`).
+#[must_use]
+pub fn train_day_minutes(time: chrono::NaiveTime, day_offset: u32) -> i32 {
+    use chrono::Timelike as _;
+    // At most 1 * 1440 + 1439: no truncation.
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "a day offset of 0 or 1 and a clock minute fit an i32"
+    )]
+    let minutes = (day_offset * 1440 + time.hour() * 60 + time.minute()) as i32;
+    minutes
+}
+
+/// How far a call's public (GBTT) time may sit from its working (WTT) one
+/// for [`search_schedule_calling_point_departures`]' index range to still
+/// reach it, in minutes. The range is on the working `scheduled` (the
+/// index column) and the filter on the public time, so the range is
+/// widened by this much either side. Real gaps are a minute or two.
+const PUBLIC_WORKING_SLACK_MINUTES: i32 = 60;
+
+/// The SQL of [`search_schedule_calling_point_departures`], for one of its
+/// two day bands: the rows whose working departure is on the service date
+/// itself (`later_days == false`), or after its midnight. See that
+/// function for why there are two.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one SQL statement, most of it the query text itself"
+)]
+fn calling_point_search_sql(later_days: bool) -> String {
+    // `MOD(a - b + 36h, 24h) - 12h`: the signed gap from clock time `b` to
+    // clock time `a`, taken the short way round midnight (the rule
+    // `render::public_else_working` and `nearest_day_offset` date a time
+    // by). In seconds.
+    let gap = |a: &str, b: &str| {
+        format!("(MOD(EXTRACT(EPOCH FROM {a}) - EXTRACT(EPOCH FROM {b}) + 129600, 86400) - 43200)")
+    };
+    // A call's departure in train-day seconds: its working one, moved to
+    // its public one when it has one. Floored to train-day minutes, as
+    // `scheduled` (`HH:MM`) is shown.
+    let departure_min = |t: &str| {
+        format!(
+            "FLOOR(({t}.day_offset * 86400 + EXTRACT(EPOCH FROM {t}.scheduled) \
+             + COALESCE({gap}, 0)) / 60)",
+            gap = gap(&format!("{t}.public_departure"), &format!("{t}.scheduled")),
+        )
+    };
+    // An intermediate call's arrival: the working one dated from the
+    // call's own departure, moved to the public one when there is one;
+    // NULL when the call has neither.
+    let stop_arrival_min = |s: &str| {
+        let working = format!("COALESCE({s}.calling_point_arrival, {s}.scheduled)");
+        format!(
+            "CASE WHEN {s}.calling_point_arrival IS NULL \
+                   AND {s}.public_calling_point_arrival IS NULL THEN NULL \
+             ELSE FLOOR(({s}.day_offset * 86400 + EXTRACT(EPOCH FROM {s}.scheduled) \
+                  + {to_working} + COALESCE({to_public}, 0)) / 60) END",
+            to_working = gap(&working, &format!("{s}.scheduled")),
+            to_public = gap(&format!("{s}.public_calling_point_arrival"), &working),
+        )
+    };
+    // The terminus's arrival, likewise (its day offset is stored).
+    let terminus_arrival_min = format!(
+        "CASE WHEN main.destination_arrival IS NULL AND main.public_destination_arrival IS NULL \
+              THEN NULL \
+         ELSE FLOOR((main.destination_arrival_day_offset * 86400 \
+              + EXTRACT(EPOCH FROM COALESCE(main.destination_arrival, main.public_destination_arrival)) \
+              + COALESCE({to_public}, 0)) / 60) END",
+        to_public = gap(
+            "main.public_destination_arrival",
+            "main.destination_arrival"
+        ),
+    );
+    // The outer `LEFT JOIN LATERAL` runs only on the page's rows (at most
+    // `limit + 1`), and only when `stops_at` is set (`$5 IS NOT NULL` is a
+    // one-time filter): it picks the EARLIEST call at `stops_at` that
+    // satisfies the SAME predicate as the second `EXISTS` -- later in the
+    // journey by `(day_offset, scheduled)`, alightable, inside the optional
+    // arrival bounds. That predicate is the one the filter accepted the row
+    // on, so the arrival reported is always of a call the filter matched.
+    // When it finds none, the row matched on the true terminus (which has
+    // no row of its own here), and the caller reports the terminus arrival.
+    // Keep the lateral's predicate and the second `EXISTS` identical. (A
+    // single-level `LEFT JOIN LATERAL` with the filter folded into it was
+    // tried first: equivalent results, but Postgres's generic plan for it
+    // drops the ordered index scan for a bitmap scan plus a sort of every
+    // row at the station, even with no `stops_at`.)
+    let main_departure = departure_min("main");
+    let stop_arrival = stop_arrival_min("stop");
+    let lateral_arrival = stop_arrival_min("s");
+    // The day band. The same-day band keeps the plan this query has always
+    // had: an ordered range scan of `schedule_destination_departures_
+    // calling_point_idx` (service_date, origin_crs, scheduled, train_uid)
+    // that stops at `LIMIT` -- `day_offset = 0` is a constant, so ordering
+    // by it costs nothing -- narrowed to the working times that can hold a
+    // public time inside the window ($13, $14). The later band sorts its
+    // (few) rows.
+    let (band, keyset) = if later_days {
+        (
+            "main.day_offset >= 1",
+            "($9::time IS NULL \
+              OR (main.day_offset, main.scheduled, main.train_uid) > ($12::int2, $9, $10))",
+        )
+    } else {
+        (
+            "main.day_offset = 0 \
+              AND main.scheduled >= $13::time \
+              AND ($14::time IS NULL OR main.scheduled < $14)",
+            "($9::time IS NULL OR (main.scheduled, main.train_uid) > ($9, $10))",
+        )
+    };
+    format!(
+        r"
+            SELECT page.*,
+                   stop.scheduled AS stop_scheduled, stop.day_offset AS stop_day_offset,
+                   stop.calling_point_arrival AS stop_arrival,
+                   stop.public_calling_point_arrival AS stop_public_arrival
+            FROM (
+            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
+                   main.headcode, main.public_departure, main.public_destination_arrival, main.day_offset
+            FROM schedule_destination_departures main
+            WHERE main.service_date = $1
+              AND main.origin_crs = $2
+              -- A set-down-only row is somewhere to get off, never a train
+              -- to catch (migration 20261001170000; NULL = older row).
+              AND main.can_board IS NOT FALSE
+              AND {band}
+              AND {main_departure} >= $3::int4
+              AND ($6::int4 IS NULL OR {main_departure} <= $6)
+              AND ($4::text IS NULL OR main.true_origin_crs = $4)
+              AND ($15::text[] IS NULL OR main.operator_atoc = ANY($15))
+              AND (
+                    $5::text IS NULL
+                    -- The true terminus: arrival-only, so it has no row of
+                    -- its own here and is reachable ONLY as this column.
+                    OR main.destination_crs = $5
+                    OR EXISTS (
+                        SELECT 1
+                        FROM schedule_destination_departures stop
+                        WHERE stop.service_date = $1
+                          AND stop.train_uid = main.train_uid
+                          AND stop.origin_crs = $5
+                          AND stop.can_alight IS NOT FALSE
+                          -- A call at the calling point `stops_at` named --
+                          -- same station this result row is anchored at, or
+                          -- a different one -- counts only if it comes
+                          -- LATER: otherwise it is not reachable from the
+                          -- searched calling point at all (2026-09-22:
+                          -- this used to be gated to the same-station case
+                          -- only -- see the design doc's superseded
+                          -- 2026-09-17 addendum -- but `stops at X` now
+                          -- means `later than the search origin` for every
+                          -- X, not just a same-station loop match).
+                          AND (stop.day_offset, stop.scheduled)
+                              > (main.day_offset, main.scheduled)
+                    )
+              )
+              AND (
+                    ($7::int4 IS NULL AND $8::int4 IS NULL)
+                    OR (
+                        main.destination_crs = $5
+                        AND ($7::int4 IS NULL OR {terminus_arrival_min} >= $7)
+                        AND ($8::int4 IS NULL OR {terminus_arrival_min} <= $8)
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM schedule_destination_departures stop
+                        WHERE stop.service_date = $1
+                          AND stop.train_uid = main.train_uid
+                          AND stop.origin_crs = $5
+                          AND stop.can_alight IS NOT FALSE
+                          AND (stop.day_offset, stop.scheduled)
+                              > (main.day_offset, main.scheduled)
+                          AND ($7::int4 IS NULL OR {stop_arrival} >= $7)
+                          AND ($8::int4 IS NULL OR {stop_arrival} <= $8)
+                    )
+              )
+              AND {keyset}
+            ORDER BY main.day_offset, main.scheduled, main.train_uid
+            LIMIT $11
+            ) page
+            LEFT JOIN LATERAL (
+                SELECT s.scheduled, s.day_offset, s.calling_point_arrival, s.public_calling_point_arrival
+                FROM schedule_destination_departures s
+                WHERE $5::text IS NOT NULL
+                  AND s.service_date = $1
+                  AND s.train_uid = page.train_uid
+                  AND s.origin_crs = $5
+                  AND s.can_alight IS NOT FALSE
+                  AND (s.day_offset, s.scheduled) > (page.day_offset, page.scheduled)
+                  AND ($7::int4 IS NULL OR {lateral_arrival} >= $7)
+                  AND ($8::int4 IS NULL OR {lateral_arrival} <= $8)
+                ORDER BY s.day_offset, s.scheduled
+                LIMIT 1
+            ) stop ON TRUE
+            ORDER BY page.day_offset, page.scheduled, page.train_uid
+            "
+    )
+}
+
+/// [`calling_point_search_sql`] for each band, built once.
+static SAME_DAY_SEARCH_SQL: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| calling_point_search_sql(false));
+static LATER_DAYS_SEARCH_SQL: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| calling_point_search_sql(true));
+
+/// The clock time `minutes` past midnight names, for a minute in a day.
+fn minute_of_day(minutes: i32) -> chrono::NaiveTime {
+    let minutes = u32::try_from(minutes.clamp(0, 1439)).unwrap_or(0);
+    chrono::NaiveTime::from_hms_opt(minutes / 60, minutes % 60, 0).unwrap_or(chrono::NaiveTime::MIN)
+}
+
 /// The calling-point-first train search's one read: a bounded index range
 /// scan over `schedule_destination_departures_calling_point_idx`, with a
 /// keyset cursor. Replaces `search_schedule_destination_departures`
@@ -1034,12 +1278,23 @@ pub async fn schedule_destination_departures_date_range(
 /// key, only a new leading index. `true_origin_crs` is an optional filter
 /// layered on top, independent of `station_crs`.
 ///
-/// `scheduled_from` is an INCLUSIVE lower bound: the caller's explicit
-/// `from` when one was given, or its own `now`-forward default otherwise
-/// (see `crates/api/src/routes/trains.rs`'s own doc comment for that
-/// default's rules) -- either way, a single already-resolved value with no
-/// further flooring done by this function. `to_time` is an INCLUSIVE upper
-/// bound. Both carry the exact same reasoning as the predecessor query.
+/// **Times are train-day minutes on the public basis** (2026-10-22).
+/// `depart_from` (inclusive) is the caller's explicit lower bound, or its
+/// own `now`-forward default (see `crates/api/src/routes/trains.rs`'s own
+/// doc comment for that default's rules), already resolved; `depart_to` is
+/// an inclusive upper bound. Each is minutes past `service_date`'s midnight
+/// ([`train_day_minutes`]), so 01:30 after midnight is 1530 and a window
+/// from 22:00 to 01:30 is `1320..=1530`. A row is compared by the time it
+/// is shown at -- its public departure, else its working one, floored to
+/// the minute and dated by its own `day_offset` -- and the results run in
+/// train-day order, `(day_offset, scheduled, train_uid)` on the working
+/// time (the index's key, and the cursor's), so a service date's
+/// after-midnight departures come last instead of first. Every row is of
+/// `service_date`'s own services: the search covers that whole train day,
+/// and never the previous date's trains still running after midnight.
+///
+/// `operators`, when given, keeps the rows whose `operator_atoc` is one
+/// of those ATOC codes ("any of"; a row with no operator never matches).
 ///
 /// **`stops_at`: "calls at this station LATER in the journey than the
 /// searched calling point" (a plain membership test with an ordering
@@ -1120,12 +1375,9 @@ pub async fn schedule_destination_departures_date_range(
 ///    the other under `>`), it just is not backed by the same uniqueness
 ///    guarantee.
 ///
-///    This is also the only part of this query that reads `day_offset` at
-///    all: `scheduled_from`/`to_time`, the `ORDER BY` and the keyset
-///    cursor are all still plain wall-clock comparisons on `scheduled`,
-///    exactly as they were. Deliberate -- widening them is a separate
-///    question about how a midnight-crossing rail day should paginate --
-///    but do not read this rule as evidence that they follow suit.
+///    The ordering test is not the only place `day_offset` is read: the
+///    time bounds, the `ORDER BY` and the keyset cursor are all in
+///    train-day order too (2026-10-22).
 ///
 /// 2. ADMITTING the true terminus closes the gap this filter shipped with
 ///    and its design note flagged ("a `stops_at` value naming a schedule's
@@ -1172,10 +1424,12 @@ pub async fn schedule_destination_departures_date_range(
 /// terminus branch matches it deliberately rather than inventing a
 /// "NULL passes" rule for one branch only.
 ///
-/// Day offsets are deliberately not consulted by either ARRIVAL
-/// comparison (unlike item 1's ordering test, which needs them): these are
-/// wall-clock bounds on a `TIME` column, matching how the original
-/// `calling_point_arrival` bound has always behaved.
+/// Both are compared in train-day minutes on the public basis, like the
+/// departure bounds: the public arrival, else the working one, dated from
+/// the call's own departure (an intermediate call) or the stored
+/// `destination_arrival_day_offset` (the terminus). Until 2026-10-22 they
+/// were wall-clock bounds on the working `TIME`, so a bound could not
+/// reach an arrival after midnight.
 ///
 /// The route layer (not this function) rejects either bound being set
 /// without `stops_at` also being set -- this function applies whatever it
@@ -1192,32 +1446,22 @@ pub async fn schedule_destination_departures_date_range(
 ///
 /// **With `stops_at` set, every row also carries the arrival at the call
 /// `stops_at` matched on** (2026-10-08): `stops_at_arrival` (public,
-/// `"HH:MM:SS"`) and `stops_at_working_arrival` (WTT, the time the arrival
-/// bounds compare), each with a `*_day_offset` counted from
+/// `"HH:MM:SS"`; the arrival bounds compare it, or the WTT one where it is
+/// missing) and `stops_at_working_arrival` (WTT), each with a `*_day_offset` counted from
 /// `service_date`; a time and its offset are `null` together when the call
 /// has no such time stored. The call is the EARLIEST one the filter
-/// accepts -- see the comment above the SQL. Without `stops_at` the keys
+/// accepts -- see `calling_point_search_sql`. Without `stops_at` the keys
 /// are absent.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "each argument is an independent input from the single caller; a struct would only wrap them; limit is a validated page size, far below usize::MAX and i64::MAX; long but linear; splitting it would scatter its shared state across helpers"
+    reason = "limit is a validated page size, far below usize::MAX and i64::MAX; long but linear; splitting it would scatter its shared state across helpers"
 )]
 pub async fn search_schedule_calling_point_departures(
     pool: &PgPool,
-    station_crs: &str,
-    service_date: chrono::NaiveDate,
-    scheduled_from: chrono::NaiveTime,
-    true_origin_crs: Option<&str>,
-    stops_at: Option<&str>,
-    to_time: Option<chrono::NaiveTime>,
-    stop_arrival_from: Option<chrono::NaiveTime>,
-    stop_arrival_to: Option<chrono::NaiveTime>,
-    after: Option<&CallingPointDepartureCursor>,
-    limit: i64,
+    search: &CallingPointSearch<'_>,
 ) -> Result<Option<CallingPointDeparturePage>> {
     /// One result row. The `stop_*` columns describe the intermediate call
     /// `stops_at` matched on; all `None` when `stops_at` is unset or
@@ -1243,128 +1487,75 @@ pub async fn search_schedule_calling_point_departures(
         stop_public_arrival: Option<chrono::NaiveTime>,
     }
 
+    let CallingPointSearch {
+        station_crs,
+        service_date,
+        depart_from,
+        depart_to,
+        true_origin_crs,
+        stops_at,
+        arrive_from,
+        arrive_to,
+        operators,
+        after,
+        limit,
+    } = *search;
     let fetch = limit.saturating_add(1);
 
-    // The inner query is the search exactly as it was before the `stops_at`
-    // arrival was added (2026-10-08), so its plan -- an ordered range scan
-    // of the calling-point index that stops at `LIMIT` -- is unchanged. The
-    // outer `LEFT JOIN LATERAL` runs only on that page's rows (at most
-    // `limit + 1`), and only when `stops_at` is set (`$5 IS NOT NULL` is a
-    // one-time filter): it picks the EARLIEST call at `stops_at` that
-    // satisfies the SAME predicate as the second `EXISTS` below -- later in
-    // the journey by `(day_offset, scheduled)`, alightable, inside the
-    // optional arrival bounds. That predicate is the one the filter
-    // accepted the row on, so the arrival reported is always of a call the
-    // filter matched. When it finds none, the row matched on the true
-    // terminus (which has no row of its own here), and the caller reports
-    // the terminus arrival. The terminus is every schedule's last call, so
-    // "`stop`, else the terminus" is the earliest qualifying call for a
-    // train calling at `stops_at` twice, too. Keep the lateral's predicate
-    // and the second `EXISTS` identical.
-    //
-    // (A single-level `LEFT JOIN LATERAL` with the filter folded into it was
-    // tried first: equivalent results, but Postgres's generic plan for it
-    // drops the ordered index scan for a bitmap scan plus a sort of every
-    // row at the station, even with no `stops_at`.)
-    let rows: Vec<Row> = sqlx::query_as(
-        r#"
-            SELECT page.*,
-                   stop.scheduled AS stop_scheduled, stop.day_offset AS stop_day_offset,
-                   stop.calling_point_arrival AS stop_arrival,
-                   stop.public_calling_point_arrival AS stop_public_arrival
-            FROM (
-            SELECT main.train_uid, main.destination_crs, main.true_origin_crs, main.scheduled, main.destination_arrival, main.destination_arrival_day_offset, main.operator_atoc,
-                   main.headcode, main.public_departure, main.public_destination_arrival, main.day_offset
-            FROM schedule_destination_departures main
-            WHERE main.service_date = $1
-              AND main.origin_crs = $2
-              -- A set-down-only row is somewhere to get off, never a train
-              -- to catch (migration 20261001170000; NULL = older row).
-              AND main.can_board IS NOT FALSE
-              AND main.scheduled >= $3
-              AND ($4::text IS NULL OR main.true_origin_crs = $4)
-              AND ($6::time IS NULL OR main.scheduled <= $6)
-              AND (
-                    $5::text IS NULL
-                    -- The true terminus: arrival-only, so it has no row of
-                    -- its own here and is reachable ONLY as this column.
-                    OR main.destination_crs = $5
-                    OR EXISTS (
-                        SELECT 1
-                        FROM schedule_destination_departures stop
-                        WHERE stop.service_date = $1
-                          AND stop.train_uid = main.train_uid
-                          AND stop.origin_crs = $5
-                          AND stop.can_alight IS NOT FALSE
-                          -- A call at the calling point `stops_at` named --
-                          -- same station this result row is anchored at, or
-                          -- a different one -- counts only if it comes
-                          -- LATER: otherwise it is not reachable from the
-                          -- searched calling point at all (2026-09-22:
-                          -- this used to be gated to the same-station case
-                          -- only -- see the design doc's superseded
-                          -- 2026-09-17 addendum -- but "stops at X" now
-                          -- means "later than the search origin" for every
-                          -- X, not just a same-station loop match).
-                          AND (stop.day_offset, stop.scheduled)
-                              > (main.day_offset, main.scheduled)
-                    )
-              )
-              AND (
-                    ($7::time IS NULL AND $8::time IS NULL)
-                    OR (
-                        main.destination_crs = $5
-                        AND ($7::time IS NULL OR main.destination_arrival >= $7)
-                        AND ($8::time IS NULL OR main.destination_arrival <= $8)
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                        FROM schedule_destination_departures stop
-                        WHERE stop.service_date = $1
-                          AND stop.train_uid = main.train_uid
-                          AND stop.origin_crs = $5
-                          AND stop.can_alight IS NOT FALSE
-                          AND (stop.day_offset, stop.scheduled)
-                              > (main.day_offset, main.scheduled)
-                          AND ($7::time IS NULL OR stop.calling_point_arrival >= $7)
-                          AND ($8::time IS NULL OR stop.calling_point_arrival <= $8)
-                    )
-              )
-              AND ($9::time IS NULL
-                   OR (main.scheduled, main.train_uid) > ($9, $10))
-            ORDER BY main.scheduled, main.train_uid
-            LIMIT $11
-            ) page
-            LEFT JOIN LATERAL (
-                SELECT s.scheduled, s.day_offset, s.calling_point_arrival, s.public_calling_point_arrival
-                FROM schedule_destination_departures s
-                WHERE $5::text IS NOT NULL
-                  AND s.service_date = $1
-                  AND s.train_uid = page.train_uid
-                  AND s.origin_crs = $5
-                  AND s.can_alight IS NOT FALSE
-                  AND (s.day_offset, s.scheduled) > (page.day_offset, page.scheduled)
-                  AND ($7::time IS NULL OR s.calling_point_arrival >= $7)
-                  AND ($8::time IS NULL OR s.calling_point_arrival <= $8)
-                ORDER BY s.day_offset, s.scheduled
-                LIMIT 1
-            ) stop ON TRUE
-            ORDER BY page.scheduled, page.train_uid
-            "#,
-    )
-    .bind(service_date)
-    .bind(station_crs)
-    .bind(scheduled_from)
-    .bind(true_origin_crs)
-    .bind(stops_at)
-    .bind(to_time)
-    .bind(stop_arrival_from)
-    .bind(stop_arrival_to)
-    .bind(after.map(|c| c.scheduled))
-    .bind(after.map(|c| c.train_uid.as_str()))
-    .bind(fetch)
-    .fetch_all(pool)
-    .await?;
+    // Two bands, in train-day order: the departures on the service date
+    // itself, then those after its midnight (`day_offset >= 1`). The same-
+    // day band is the cheap one (see `calling_point_search_sql`) and fills
+    // almost every page; the later band only runs once it runs out, on a
+    // search's last page, or for a window that starts after midnight. A
+    // band no departure in the window can fall in is skipped: the public
+    // time sits within `PUBLIC_WORKING_SLACK_MINUTES` of the working one.
+    let slack = PUBLIC_WORKING_SLACK_MINUTES;
+    let cursor_day = after.map_or(0, |cursor| cursor.day_offset);
+    let mut rows: Vec<Row> = Vec::new();
+    for later_days in [false, true] {
+        let wanted = fetch - rows.len() as i64;
+        if wanted <= 0 {
+            break;
+        }
+        let in_window = if later_days {
+            depart_to.is_none_or(|to| to + slack >= 1440)
+        } else {
+            cursor_day == 0 && depart_from - slack < 1440
+        };
+        if !in_window {
+            continue;
+        }
+        // The same-day band's working-time range (`$13`, `$14`).
+        let range_start = minute_of_day(depart_from - slack);
+        let range_end = depart_to
+            .map(|to| to + slack + 1)
+            .filter(|end| *end < 1440)
+            .map(minute_of_day);
+        let sql: &str = if later_days {
+            &LATER_DAYS_SEARCH_SQL
+        } else {
+            &SAME_DAY_SEARCH_SQL
+        };
+        let band: Vec<Row> = sqlx::query_as(sql)
+            .bind(service_date)
+            .bind(station_crs)
+            .bind(depart_from)
+            .bind(true_origin_crs)
+            .bind(stops_at)
+            .bind(depart_to)
+            .bind(arrive_from)
+            .bind(arrive_to)
+            .bind(after.map(|c| c.scheduled))
+            .bind(after.map(|c| c.train_uid.as_str()))
+            .bind(wanted)
+            .bind(after.map(|c| c.day_offset))
+            .bind(range_start)
+            .bind(range_end)
+            .bind(operators)
+            .fetch_all(pool)
+            .await?;
+        rows.extend(band);
+    }
 
     if rows.is_empty() {
         if !schedule_destination_departures_published_for(pool, service_date).await? {
@@ -1385,6 +1576,7 @@ pub async fn search_schedule_calling_point_departures(
 
     let next_cursor = if has_more {
         page_rows.last().map(|row| CallingPointDepartureCursor {
+            day_offset: row.day_offset,
             scheduled: row.scheduled,
             train_uid: row.train_uid.clone(),
         })
@@ -1545,7 +1737,7 @@ fn nearest_day_offset(
 /// shape to carry over. `depart_after`/`depart_before` bound
 /// `main.scheduled` (the departure at `origin_crs`, both now genuinely
 /// optional, unlike `search_schedule_calling_point_departures`'s
-/// mandatory `scheduled_from` -- that function's caller always supplies a
+/// mandatory `depart_from` -- that function's caller always supplies a
 /// concrete floor, either an explicit `from` or a `now`-forward default;
 /// a journey-leg window search has no such default to fall back on).
 /// `arrive_after`/`arrive_before` bound the arrival at `destination_crs`,
@@ -1766,6 +1958,7 @@ pub async fn search_journey_leg_candidates(
             .last()
             .map(|(train_uid, _, _, scheduled, _, _, _, _, _, _, _, _, _)| {
                 CallingPointDepartureCursor {
+                    day_offset: 0,
                     scheduled: *scheduled,
                     train_uid: train_uid.clone(),
                 }
@@ -5880,6 +6073,46 @@ mod schedule_destination_departures_query_tests {
         chrono::NaiveTime::MIN
     }
 
+    /// [`search_schedule_calling_point_departures`] with every time bound a
+    /// clock time on the service date itself (day offset 0), positionally:
+    /// the shape these tests were written against.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the positional shape the tests were written against"
+    )]
+    async fn search_same_day(
+        pool: &PgPool,
+        station_crs: &str,
+        service_date: chrono::NaiveDate,
+        depart_from: chrono::NaiveTime,
+        true_origin_crs: Option<&str>,
+        stops_at: Option<&str>,
+        depart_to: Option<chrono::NaiveTime>,
+        arrive_from: Option<chrono::NaiveTime>,
+        arrive_to: Option<chrono::NaiveTime>,
+        after: Option<&CallingPointDepartureCursor>,
+        limit: i64,
+    ) -> Result<Option<CallingPointDeparturePage>> {
+        let minutes = |time: chrono::NaiveTime| train_day_minutes(time, 0);
+        search_schedule_calling_point_departures(
+            pool,
+            &CallingPointSearch {
+                station_crs,
+                service_date,
+                depart_from: minutes(depart_from),
+                depart_to: depart_to.map(minutes),
+                true_origin_crs,
+                stops_at,
+                arrive_from: arrive_from.map(minutes),
+                arrive_to: arrive_to.map(minutes),
+                operators: None,
+                after,
+                limit,
+            },
+        )
+        .await
+    }
+
     /// Three trains all callable-at "RDG" (the new required search key),
     /// to two different destinations, from two different true origins --
     /// exactly what's needed to prove `origin`/`destination` are
@@ -5938,7 +6171,7 @@ mod schedule_destination_departures_query_tests {
         let date = fixture_date(21);
         delete_day(&pool, date).await;
 
-        let result = search_schedule_calling_point_departures(
+        let result = search_same_day(
             &pool,
             "RDG",
             date,
@@ -5964,7 +6197,7 @@ mod schedule_destination_departures_query_tests {
         let date = fixture_date(22);
         seed_calling_point(&pool, date).await;
 
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -6025,7 +6258,7 @@ mod schedule_destination_departures_query_tests {
         .await
         .expect("seed two-station fixture");
 
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -6056,7 +6289,7 @@ mod schedule_destination_departures_query_tests {
         let date = fixture_date(24);
         seed_calling_point(&pool, date).await;
 
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -6190,7 +6423,7 @@ mod schedule_destination_departures_query_tests {
         let date = fixture_date(26);
         seed_stops_at(&pool, date).await;
 
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -6230,7 +6463,7 @@ mod schedule_destination_departures_query_tests {
         let date = fixture_date_feb(3);
         seed_stops_at(&pool, date).await;
 
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -6424,7 +6657,7 @@ mod schedule_destination_departures_query_tests {
         stop_arrival_from: Option<chrono::NaiveTime>,
         stop_arrival_to: Option<chrono::NaiveTime>,
     ) -> CallingPointDeparturePage {
-        search_schedule_calling_point_departures(
+        search_same_day(
             pool,
             station_crs,
             date,
@@ -6503,7 +6736,7 @@ mod schedule_destination_departures_query_tests {
         let date = fixture_date_feb(10);
         seed_loop(&pool, date).await;
 
-        let first = search_schedule_calling_point_departures(
+        let first = search_same_day(
             &pool,
             "WAT",
             date,
@@ -6528,7 +6761,7 @@ mod schedule_destination_departures_query_tests {
         );
         let cursor = first.next_cursor.expect("a second page exists");
 
-        let second = search_schedule_calling_point_departures(
+        let second = search_same_day(
             &pool,
             "WAT",
             date,
@@ -6874,7 +7107,7 @@ mod schedule_destination_departures_query_tests {
         seed_calling_point(&pool, date).await;
 
         // No fixture row calls at this station.
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -6931,7 +7164,7 @@ mod schedule_destination_departures_query_tests {
         .await
         .expect("seed a stale day");
 
-        let result = search_schedule_calling_point_departures(
+        let result = search_same_day(
             &pool,
             "RDG",
             date,
@@ -6964,7 +7197,7 @@ mod schedule_destination_departures_query_tests {
 
         // Lower bound 10:05 is inclusive and matches exactly; upper bound
         // 12:00 excludes the 18:40 row.
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -7059,7 +7292,7 @@ mod schedule_destination_departures_query_tests {
         .await
         .expect("seed fixture");
 
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -7116,7 +7349,7 @@ mod schedule_destination_departures_query_tests {
         .await
         .expect("seed fixture");
 
-        let page = search_schedule_calling_point_departures(
+        let page = search_same_day(
             &pool,
             "RDG",
             date,
@@ -7167,7 +7400,7 @@ mod schedule_destination_departures_query_tests {
         let mut seen: Vec<String> = Vec::new();
         let mut cursor: Option<CallingPointDepartureCursor> = None;
         for _ in 0..5 {
-            let page = search_schedule_calling_point_departures(
+            let page = search_same_day(
                 &pool,
                 "RDG",
                 date,

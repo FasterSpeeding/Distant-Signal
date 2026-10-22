@@ -31,16 +31,24 @@
 //! require `stops_at` to be set at all (a `400` otherwise -- see
 //! `TrainSearchParams::arrival_from`'s own doc comment and
 //! docs/superpowers/specs/2026-09-09-stops-at-search-filter-design.md).
-//! There is deliberately NO operator filter here: a row now genuinely
-//! carries an operator when its schedule has one (a schedule's `BX`
-//! record's ATOC code is decoded into `operator_atoc` -- see
-//! `schedule_query::records::BasicSchedule::operator_atoc` -- and read
-//! through onto every row this query emits, `render::calling_point_departure_json`'s
-//! `"operator"` key), but this route doesn't offer a query-param filter on
-//! it, unlike `GET /Journeys/{journeyId}/legs/{legId}/candidates`
-//! (`routes::journeys::get_leg_candidates`), which does -- see this plan's
-//! own Scope Boundaries (2026-09-24 journey-leg-operator-filter plan) for
-//! why a filter was added there and not here.
+//! `operator` (2026-10-22) is a comma-separated list of ATOC codes, "any
+//! of": a row carries its schedule's operator when it has one (a
+//! schedule's `BX` record's ATOC code, decoded into `operator_atoc` -- see
+//! `schedule_query::records::BasicSchedule::operator_atoc` -- and rendered
+//! as `render::calling_point_departure_json`'s `"operator"` key). It
+//! follows `GET /Journeys/{journeyId}/legs/{legId}/candidates`'
+//! (`routes::journeys::get_leg_candidates`) filter, plus a `400` for a code
+//! that is not a known operator.
+//!
+//! **A search covers the whole train day of `date`** (2026-10-22): every
+//! service of that service date, its departures after midnight
+//! (`dayOffset: 1`) included, and never the previous date's late trains.
+//! Times compare in train-day minutes (minutes past `date`'s midnight,
+//! over 1440 after it) on the public basis the rows show; `*_day_offset`
+//! puts a bound after midnight, and a `to` earlier than an explicit `from`
+//! runs past it. Results run in train-day order, so the after-midnight
+//! departures come last. See `resolve_window` and
+//! `queries::search_schedule_calling_point_departures`.
 //!
 //! **`stops_at` replaced the earlier single-valued `destination` filter**
 //! (the schedule's TRUE final calling point) -- see
@@ -227,18 +235,23 @@ struct TrainSearchParams {
     /// single optional `String` field; the `axum_extra`/`serde_html_form`
     /// dependency the multi-valued shape needed no longer applies here.
     stops_at: Option<String>,
-    /// Optional, `"HH:MM"`, inclusive lower bound on scheduled departure.
-    /// Always honored exactly as given -- including a value already in the
+    /// Optional, `"HH:MM"`, inclusive lower bound on the departure from
+    /// `station` -- its public time, else its working one, as each row's
+    /// `scheduled` shows it (2026-10-22: the working time until then), in
+    /// train-day minutes with `from_day_offset`. Always honored exactly as given -- including a value already in the
     /// past relative to `now` today -- because an explicit bound is a
     /// deliberate request, not something to silently re-floor. The
     /// `now`-forward default (see this module's own doc comment) only
     /// fills in when `from` is omitted entirely AND the resolved `date` is
-    /// today; see `scheduled_from`'s computation in `get_trains_search`.
+    /// today; see `default_from` and `resolve_window` in `get_trains_search`.
     from: Option<String>,
-    /// Optional, `"HH:MM"`, inclusive upper bound.
+    /// Optional, `"HH:MM"`, inclusive upper bound, as `from`; see
+    /// `to_day_offset` for one after midnight.
     to: Option<String>,
     /// Optional, `"HH:MM"`, inclusive lower bound on the time the train
-    /// ARRIVES at `stops_at`'s named calling point -- a SEPARATE filter
+    /// ARRIVES at `stops_at`'s named calling point (its public arrival,
+    /// else its working one, in train-day minutes with
+    /// `arrival_from_day_offset`, 2026-10-22) -- a SEPARATE filter
     /// from `from`/`to` above, which stay scoped to `station`. Requires
     /// `stops_at` to be set; see this route's own validation below for why
     /// an arrival-time filter with no calling point to arrive at 400s
@@ -254,6 +267,33 @@ struct TrainSearchParams {
     /// Optional, `"HH:MM"`, inclusive upper bound. Same `stops_at`-set
     /// requirement as `arrival_from`.
     arrival_to: Option<String>,
+    /// Optional, `0` or `1` (2026-10-22): the day `from` is on, counted
+    /// from `date` -- `1` is after `date`'s midnight, still on `date`'s
+    /// trains (`date=FRI&from=00:30&from_day_offset=1` is "from 00:30 on
+    /// Saturday morning"), the same convention as `/Trips/plan`'s
+    /// `dayOffset`. Absent is `0`. Needs `from`. See `resolve_window`.
+    from_day_offset: Option<String>,
+    /// Optional, `0` or `1` (2026-10-22): the day `to` is on, as
+    /// `from_day_offset`. Absent, it is inferred: `1` when `to` is earlier
+    /// in the day than an explicit `from` (`from=22:00&to=01:30` runs past
+    /// midnight), else `0`. Needs `to`.
+    to_day_offset: Option<String>,
+    /// Optional, `0` or `1` (2026-10-22): the day `arrival_from` is on, as
+    /// `from_day_offset`. Absent is `0`. Needs `arrival_from`.
+    arrival_from_day_offset: Option<String>,
+    /// Optional, `0` or `1` (2026-10-22): the day `arrival_to` is on.
+    /// Absent, it is inferred like `to_day_offset`'s, against
+    /// `arrival_from` when given, else an explicit `from`. Needs
+    /// `arrival_to`.
+    arrival_to_day_offset: Option<String>,
+    /// Optional (2026-10-22). Comma-separated ATOC operator codes, e.g.
+    /// `operator=SW,GW`: only trains run by one of them (the schedule's
+    /// CIF `BX` operator, each row's `operator`). Codes are trimmed and
+    /// uppercased, empty entries dropped; a code that is not two letters or
+    /// digits, or not a known operator (`tocs`), is a `400`. Same
+    /// multi-value convention as `/incidents`' `operator` and the leg
+    /// candidates' `operator`.
+    operator: Option<String>,
     /// Optional page size, 1..=`MAX_SEARCH_LIMIT`, defaulting to
     /// `DEFAULT_SEARCH_LIMIT`. Values above the maximum are clamped, not
     /// rejected; zero, negative and unparseable values are a `400`.
@@ -568,6 +608,201 @@ fn normalize_crs(label: &str, raw: &str) -> Result<String, (StatusCode, String)>
     Ok(trimmed.to_ascii_uppercase())
 }
 
+/// The four `"HH:MM"` bounds of a search, as given.
+#[derive(Debug, Clone, Copy, Default)]
+struct WindowTimes {
+    from: Option<chrono::NaiveTime>,
+    to: Option<chrono::NaiveTime>,
+    arrival_from: Option<chrono::NaiveTime>,
+    arrival_to: Option<chrono::NaiveTime>,
+}
+
+/// The four `*_day_offset` parameters, as given (`None` when absent).
+#[derive(Debug, Clone, Copy, Default)]
+struct WindowDayOffsets {
+    from: Option<u32>,
+    to: Option<u32>,
+    arrival_from: Option<u32>,
+    arrival_to: Option<u32>,
+}
+
+/// One end of the search window: a clock time on day `day_offset` of the
+/// train day (0 the service date, 1 the morning after).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowBound {
+    time: chrono::NaiveTime,
+    day_offset: u32,
+}
+
+impl WindowBound {
+    /// Train-day minutes (`queries::train_day_minutes`).
+    fn minutes(self) -> i32 {
+        queries::train_day_minutes(self.time, self.day_offset)
+    }
+
+    /// `{"time": "HH:MM", "dayOffset": n}`, `/Trips/plan`'s echo shape.
+    fn to_json(self) -> Value {
+        json!({
+            "time": self.time.format("%H:%M").to_string(),
+            "dayOffset": self.day_offset,
+        })
+    }
+}
+
+/// The search window, every bound resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Window {
+    from: WindowBound,
+    to: Option<WindowBound>,
+    arrival_from: Option<WindowBound>,
+    arrival_to: Option<WindowBound>,
+}
+
+impl Window {
+    /// The response's `window`: `from`/`to` bound the departure from
+    /// `station`, `arrivalFrom`/`arrivalTo` the arrival at `stops_at`;
+    /// `null` where unbounded.
+    fn to_json(self) -> Value {
+        json!({
+            "from": self.from.to_json(),
+            "to": self.to.map(WindowBound::to_json),
+            "arrivalFrom": self.arrival_from.map(WindowBound::to_json),
+            "arrivalTo": self.arrival_to.map(WindowBound::to_json),
+        })
+    }
+}
+
+/// Resolves the search window. `from` is the explicit one, else
+/// `default_from` (the `now` default, or midnight), on day `0` unless
+/// `from_day_offset` says otherwise. An upper bound with no day offset of
+/// its own runs past midnight when it is earlier in the day than its lower
+/// bound -- `to` against an explicit `from`, `arrival_to` against
+/// `arrival_from`, else an explicit `from` -- because read on the same day
+/// it would match nothing: "from 22:00 to 01:30" means 01:30 the next
+/// morning. Never against the `now` default: at 15:00, `to=09:00` stays an
+/// already-passed window rather than turning into tomorrow morning. An
+/// explicit offset always wins, even one that makes the window empty.
+fn resolve_window(
+    times: WindowTimes,
+    offsets: WindowDayOffsets,
+    default_from: chrono::NaiveTime,
+) -> Window {
+    let bound = |time, day_offset: Option<u32>| WindowBound {
+        time,
+        day_offset: day_offset.unwrap_or(0),
+    };
+    // An upper bound's day: its own, else the day that puts it at or after
+    // `lower` (train-day minutes), when there is one to compare with.
+    let upper = |time: chrono::NaiveTime, day_offset: Option<u32>, lower: Option<i32>| {
+        let day_offset = day_offset.unwrap_or_else(|| {
+            u32::from(lower.is_some_and(|lower| queries::train_day_minutes(time, 0) < lower))
+        });
+        WindowBound { time, day_offset }
+    };
+    let explicit_from = times.from.map(|time| bound(time, offsets.from));
+    let from = explicit_from.unwrap_or_else(|| bound(default_from, None));
+    let explicit_from_minutes = explicit_from.map(WindowBound::minutes);
+    let arrival_from = times
+        .arrival_from
+        .map(|time| bound(time, offsets.arrival_from));
+    Window {
+        from,
+        to: times
+            .to
+            .map(|time| upper(time, offsets.to, explicit_from_minutes)),
+        arrival_from,
+        arrival_to: times.arrival_to.map(|time| {
+            upper(
+                time,
+                offsets.arrival_to,
+                arrival_from
+                    .map(WindowBound::minutes)
+                    .or(explicit_from_minutes),
+            )
+        }),
+    }
+}
+
+/// Parses one `*_day_offset`: absent or empty is `None`, `0` and `1` are
+/// themselves, anything else is a `400`; so is an offset for a time that
+/// was not given (`time_label` names it), as `/Trips/plan`'s `dayOffset`.
+#[expect(
+    clippy::ref_option,
+    reason = "callers hold the Option by reference in a struct field"
+)]
+fn parse_day_offset(
+    label: &str,
+    raw: &Option<String>,
+    time_label: &str,
+    time: Option<chrono::NaiveTime>,
+) -> Result<Option<u32>, (StatusCode, String)> {
+    let Some(raw) = non_empty(raw) else {
+        return Ok(None);
+    };
+    let day_offset = match raw {
+        "0" => 0,
+        "1" => 1,
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("{label} must be 0 or 1, not '{raw}'"),
+            ));
+        }
+    };
+    if time.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{label} needs {time_label}"),
+        ));
+    }
+    Ok(Some(day_offset))
+}
+
+/// Parses `operator=`: comma-separated ATOC codes, trimmed, uppercased and
+/// deduplicated, empty entries dropped. `None` when nothing is left (no
+/// filter). A malformed code is a `400`.
+fn parse_operators(raw: Option<&str>) -> Result<Option<Vec<String>>, (StatusCode, String)> {
+    let mut codes: Vec<String> = Vec::new();
+    for entry in raw.unwrap_or_default().split(',') {
+        if entry.trim().is_empty() {
+            continue;
+        }
+        let code = normalize_operator(entry)?;
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
+    }
+    Ok((!codes.is_empty()).then_some(codes))
+}
+
+/// A `400` naming every code in `codes` that is not a known operator
+/// (`tocs`): an unknown code would otherwise just match nothing, which
+/// reads as "no trains" rather than as the typo it is.
+async fn check_known_operators(app: &App, codes: &[String]) -> Result<(), (StatusCode, String)> {
+    let known = crate::data::reference::known_toc_codes(&app.database, codes)
+        .await
+        .map_err(internal_error)?;
+    let unknown: Vec<&str> = codes
+        .iter()
+        .filter(|code| !known.contains(*code))
+        .map(String::as_str)
+        .collect();
+    match unknown.as_slice() {
+        [] => Ok(()),
+        [code] => Err((
+            StatusCode::BAD_REQUEST,
+            format!("operator {code} is not a known train operator code"),
+        )),
+        codes => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "operators {} are not known train operator codes",
+                codes.join(", ")
+            ),
+        )),
+    }
+}
+
 /// Parses and bounds the page size.
 pub(crate) fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, String)> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -589,8 +824,9 @@ pub(crate) fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, Str
 }
 
 /// Renders a keyset cursor for the wire: base64url-without-padding of
-/// `"HH:MM:SS|train_uid"`. Two parts, not three: `origin_crs` (the station
-/// being searched) is now the fixed equality filter for the whole query,
+/// `"HH:MM:SS|train_uid"`, plus `"|day_offset"` for a row after midnight
+/// (2026-10-22). No `origin_crs`: the station
+/// being searched is the fixed equality filter for the whole query,
 /// not a value that varies within one page, so it carries no ordering
 /// information and doesn't belong in the cursor.
 ///
@@ -598,11 +834,18 @@ pub(crate) fn normalize_limit(raw: Option<&str>) -> Result<i64, (StatusCode, Str
 /// posture for other cursors in this codebase. Not signed: the cursor names
 /// a public timetable row on an unauthenticated route.
 pub(crate) fn encode_cursor(cursor: &CallingPointDepartureCursor) -> String {
-    URL_SAFE_NO_PAD.encode(format!(
+    let base = format!(
         "{}|{}",
         cursor.scheduled.format("%H:%M:%S"),
         cursor.train_uid
-    ))
+    );
+    // The working day offset, as a third part, only when it is not 0
+    // (2026-10-22): a same-day cursor reads exactly as before.
+    if cursor.day_offset == 0 {
+        URL_SAFE_NO_PAD.encode(base)
+    } else {
+        URL_SAFE_NO_PAD.encode(format!("{base}|{}", cursor.day_offset))
+    }
 }
 
 /// Inverse of `encode_cursor`. A malformed cursor is a `400`, never
@@ -620,12 +863,23 @@ pub(crate) fn decode_cursor(
     let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| invalid())?;
     let decoded = String::from_utf8(bytes).map_err(|_| invalid())?;
     let parts: Vec<&str> = decoded.split('|').collect();
-    let [scheduled, train_uid] = parts.as_slice() else {
-        return Err(invalid());
+    let (scheduled, train_uid, day_offset) = match parts.as_slice() {
+        [scheduled, train_uid] => (*scheduled, *train_uid, 0),
+        [scheduled, train_uid, day_offset] => (
+            *scheduled,
+            *train_uid,
+            day_offset
+                .parse::<i16>()
+                .ok()
+                .filter(|offset| (1..=7).contains(offset))
+                .ok_or_else(invalid)?,
+        ),
+        _ => return Err(invalid()),
     };
     let scheduled =
         chrono::NaiveTime::parse_from_str(scheduled, "%H:%M:%S").map_err(|_| invalid())?;
     Ok(CallingPointDepartureCursor {
+        day_offset,
         scheduled,
         train_uid: (*train_uid).to_string(),
     })
@@ -688,6 +942,31 @@ async fn get_trains_search(
             "arrival_from and arrival_to require stops_at to be set".to_string(),
         ));
     }
+    let day_offsets = WindowDayOffsets {
+        from: parse_day_offset(
+            "from_day_offset",
+            &params.from_day_offset,
+            "from",
+            from_time,
+        )?,
+        to: parse_day_offset("to_day_offset", &params.to_day_offset, "to", to_time)?,
+        arrival_from: parse_day_offset(
+            "arrival_from_day_offset",
+            &params.arrival_from_day_offset,
+            "arrival_from",
+            arrival_from_time,
+        )?,
+        arrival_to: parse_day_offset(
+            "arrival_to_day_offset",
+            &params.arrival_to_day_offset,
+            "arrival_to",
+            arrival_to_time,
+        )?,
+    };
+    let operators = parse_operators(params.operator.as_deref())?;
+    if let Some(codes) = &operators {
+        check_known_operators(&app, codes).await?;
+    }
     let limit = normalize_limit(params.limit.as_deref())?;
     let after = params
         .after
@@ -730,27 +1009,38 @@ async fn get_trains_search(
     // no "now" to be forward of, and applying today's clock time to a
     // different date's rows would silently and incorrectly filter them by
     // the wrong day's clock. See the design doc's §5.
-    let scheduled_from = match from_time {
-        Some(from) => from,
-        None if service_date == today => now,
-        None => chrono::NaiveTime::MIN,
+    let default_from = if service_date == today {
+        now
+    } else {
+        chrono::NaiveTime::MIN
     };
+    let window = resolve_window(
+        WindowTimes {
+            from: from_time,
+            to: to_time,
+            arrival_from: arrival_from_time,
+            arrival_to: arrival_to_time,
+        },
+        day_offsets,
+        default_from,
+    );
 
-    let Some(page) = queries::search_schedule_calling_point_departures(
-        &app.database,
-        &station,
+    let search = queries::CallingPointSearch {
+        station_crs: &station,
         service_date,
-        scheduled_from,
-        origin.as_deref(),
-        stops_at.as_deref(),
-        to_time,
-        arrival_from_time,
-        arrival_to_time,
-        after.as_ref(),
+        depart_from: window.from.minutes(),
+        depart_to: window.to.map(WindowBound::minutes),
+        true_origin_crs: origin.as_deref(),
+        stops_at: stops_at.as_deref(),
+        arrive_from: window.arrival_from.map(WindowBound::minutes),
+        arrive_to: window.arrival_to.map(WindowBound::minutes),
+        operators: operators.as_deref(),
+        after: after.as_ref(),
         limit,
-    )
-    .await
-    .map_err(internal_error)?
+    };
+    let Some(page) = queries::search_schedule_calling_point_departures(&app.database, &search)
+        .await
+        .map_err(internal_error)?
     else {
         let day_description = if service_date == today {
             "today".to_string()
@@ -827,6 +1117,11 @@ async fn get_trains_search(
     let mut body = json!({
         "results": results,
         "nextCursor": page.next_cursor.as_ref().map(encode_cursor),
+        // Additive (2026-10-22): the train day searched, and the time
+        // window as applied -- `from` filled in with the `now` default,
+        // every day offset resolved.
+        "serviceDate": service_date,
+        "window": window.to_json(),
     });
     // Additive (2026-10-08): whether `service_date`'s timetable is still
     // provisional -- once per response, since every row shares the date.
@@ -846,8 +1141,8 @@ async fn get_trains_search(
 /// * `stopsAtArrivalDayOffset`: days after the service date (the searched
 ///   `date`) that `stopsAtArrival` falls on.
 /// * `stopsAtWorkingArrival`/`stopsAtWorkingArrivalDayOffset`: the same for
-///   the working (WTT) arrival, the time `arrival_from`/`arrival_to`
-///   compare.
+///   the working (WTT) arrival. `arrival_from`/`arrival_to` compare the
+///   public arrival, else this one (2026-10-22).
 ///
 /// A time and its offset are `null` together when the call has no such
 /// time stored (a public time before the schedule's next publish).
@@ -886,6 +1181,127 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         "query failed".to_string(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hm(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    fn at(h: u32, m: u32, day_offset: u32) -> WindowBound {
+        WindowBound {
+            time: hm(h, m),
+            day_offset,
+        }
+    }
+
+    #[test]
+    fn a_to_earlier_than_an_explicit_from_runs_past_midnight() {
+        let window = resolve_window(
+            WindowTimes {
+                from: Some(hm(22, 0)),
+                to: Some(hm(1, 30)),
+                ..WindowTimes::default()
+            },
+            WindowDayOffsets::default(),
+            hm(0, 0),
+        );
+        assert_eq!(window.from, at(22, 0, 0));
+        assert_eq!(window.to, Some(at(1, 30, 1)));
+        assert_eq!(window.to.unwrap().minutes(), 1530);
+    }
+
+    #[test]
+    fn the_now_default_never_moves_to_onto_the_next_day() {
+        let window = resolve_window(
+            WindowTimes {
+                to: Some(hm(9, 0)),
+                ..WindowTimes::default()
+            },
+            WindowDayOffsets::default(),
+            hm(15, 0),
+        );
+        assert_eq!(window.from, at(15, 0, 0));
+        assert_eq!(window.to, Some(at(9, 0, 0)));
+    }
+
+    #[test]
+    fn explicit_day_offsets_win() {
+        let window = resolve_window(
+            WindowTimes {
+                from: Some(hm(0, 15)),
+                to: Some(hm(0, 10)),
+                ..WindowTimes::default()
+            },
+            WindowDayOffsets {
+                from: Some(1),
+                to: Some(0),
+                ..WindowDayOffsets::default()
+            },
+            hm(0, 0),
+        );
+        assert_eq!(window.from, at(0, 15, 1));
+        assert_eq!(window.to, Some(at(0, 10, 0)));
+    }
+
+    #[test]
+    fn arrival_to_wraps_against_arrival_from_else_an_explicit_from() {
+        let times = WindowTimes {
+            from: Some(hm(23, 0)),
+            arrival_to: Some(hm(0, 45)),
+            ..WindowTimes::default()
+        };
+        let window = resolve_window(times, WindowDayOffsets::default(), hm(0, 0));
+        assert_eq!(window.arrival_from, None);
+        assert_eq!(window.arrival_to, Some(at(0, 45, 1)));
+
+        let window = resolve_window(
+            WindowTimes {
+                arrival_from: Some(hm(0, 30)),
+                ..times
+            },
+            WindowDayOffsets::default(),
+            hm(0, 0),
+        );
+        assert_eq!(window.arrival_from, Some(at(0, 30, 0)));
+        assert_eq!(window.arrival_to, Some(at(0, 45, 0)));
+    }
+
+    #[test]
+    fn operators_are_trimmed_uppercased_and_deduplicated() {
+        assert_eq!(parse_operators(None), Ok(None));
+        assert_eq!(parse_operators(Some(" , ,")), Ok(None));
+        assert_eq!(
+            parse_operators(Some("sw, GW,,Sw")),
+            Ok(Some(vec!["SW".to_string(), "GW".to_string()]))
+        );
+        assert!(parse_operators(Some("SW,SWR")).is_err());
+    }
+
+    #[test]
+    fn a_cursor_keeps_its_day_offset_and_an_old_one_reads_as_day_zero() {
+        let cursor = CallingPointDepartureCursor {
+            day_offset: 1,
+            scheduled: hm(0, 30),
+            train_uid: "C12345".to_string(),
+        };
+        assert_eq!(decode_cursor(&encode_cursor(&cursor)), Ok(cursor));
+
+        let same_day = CallingPointDepartureCursor {
+            day_offset: 0,
+            scheduled: hm(9, 0),
+            train_uid: "C12345".to_string(),
+        };
+        let encoded = encode_cursor(&same_day);
+        assert_eq!(encoded, URL_SAFE_NO_PAD.encode("09:00:00|C12345"));
+        assert_eq!(decode_cursor(&encoded), Ok(same_day));
+
+        assert!(decode_cursor(&URL_SAFE_NO_PAD.encode("00:30:00|C12345|x")).is_err());
+        assert!(decode_cursor(&URL_SAFE_NO_PAD.encode("00:30:00|C12345|0")).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -2084,14 +2500,14 @@ mod db_tests {
     #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
                 trains_search -- --ignored --test-threads=1`"]
     async fn trains_search_uses_from_as_a_plain_bound_with_no_now_floor_on_a_non_today_date() {
-        // Coverage for `scheduled_from`'s `Some(from) => from` arm on a
+        // Coverage for an explicit `from` (`resolve_window`) on a
         // non-today date specifically --
         // `trains_search_applies_now_forward_only_when_date_is_today` above
         // only exercises the `None` arm (no `from` supplied at all) for a
         // non-today date. This test supplies `from` explicitly alongside a
         // non-today `date` and proves it is used as a PLAIN inclusive lower
         // bound with NO `now` floor applied at all, per this route's own
-        // doc comment on `scheduled_from` in `get_trains_search` -- today's
+        // doc comment on `default_from` in `get_trains_search` -- today's
         // clock is irrelevant to every OTHER date, explicit `from` or not.
         let (pool, _guards) = connect().await;
         let today = crate::routes::london_today();
@@ -2622,7 +3038,9 @@ mod db_tests {
         )
         .await;
         let uids: Vec<&str> = rows.iter().map(|r| r["uid"].as_str().unwrap()).collect();
-        assert_eq!(uids, ["T54004"]);
+        // T54002's 00:19 arrival is the next morning, so after 10:30 in
+        // train-day minutes (2026-10-22; a wall-clock bound dropped it).
+        assert_eq!(uids, ["T54004", "T54002"]);
         assert_eq!(stops_at_fields(&rows[0]), arrival("10:40", 0, "10:40", 0));
 
         // The true terminus: its destination arrival.
@@ -2673,6 +3091,269 @@ mod db_tests {
         }
 
         delete_days(&pool, &[date]).await;
+    }
+
+    // --- Operator filter and the train day (2026-10-22) ------------------------
+
+    /// One departure-bearing row for the operator and train-day tests:
+    /// `(uid, working departure, its day offset, public departure,
+    /// operator)` at `station` on `date`.
+    async fn insert_departure(
+        pool: &PgPool,
+        date: chrono::NaiveDate,
+        station: &str,
+        row: (
+            &str,
+            chrono::NaiveTime,
+            i16,
+            Option<chrono::NaiveTime>,
+            Option<&str>,
+        ),
+    ) {
+        let (uid, scheduled, day_offset, public_departure, operator) = row;
+        sqlx::query(
+            "INSERT INTO schedule_destination_departures \
+                (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                 day_offset, public_departure, operator_atoc) \
+             VALUES ($1, 'WAT', $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(date)
+        .bind(scheduled)
+        .bind(uid)
+        .bind(station)
+        .bind(day_offset)
+        .bind(public_departure)
+        .bind(operator)
+        .execute(pool)
+        .await
+        .expect("seed a departure");
+    }
+
+    fn uids(body: &str) -> Vec<String> {
+        results(body)
+            .iter()
+            .map(|r| r["uid"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// The fixture operators: two known codes, and two that are not.
+    const FIXTURE_TOCS: [(&str, &str); 2] = [("Q3", "Fixture Rail"), ("Q4", "Fixture Trains")];
+    const UNKNOWN_TOCS: [&str; 2] = ["Q5", "Q6"];
+
+    async fn set_fixture_tocs(pool: &PgPool, present: bool) {
+        for code in FIXTURE_TOCS
+            .iter()
+            .map(|(code, _)| *code)
+            .chain(UNKNOWN_TOCS)
+        {
+            sqlx::query("DELETE FROM tocs WHERE atoc_code = $1")
+                .bind(code)
+                .execute(pool)
+                .await
+                .expect("clear a fixture toc");
+        }
+        if present {
+            for (code, name) in FIXTURE_TOCS {
+                sqlx::query("INSERT INTO tocs (atoc_code, name, legal_name) VALUES ($1, $2, $2)")
+                    .bind(code)
+                    .bind(name)
+                    .execute(pool)
+                    .await
+                    .expect("seed a fixture toc");
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_operator_filter_keeps_the_named_operators_and_400s_an_unknown_one() {
+        let (pool, _guards) = connect().await;
+        set_fixture_tocs(&pool, true).await;
+        let date = crate::routes::london_today() + chrono::Duration::days(2);
+        delete_days(&pool, &[date]).await;
+        for row in [
+            ("OPQ301", t(9, 0, 0), 0, None, Some("Q3")),
+            ("OPQ401", t(10, 0, 0), 0, None, Some("Q4")),
+            ("OPNONE", t(11, 0, 0), 0, None, None),
+            ("OPQ302", t(12, 0, 0), 0, None, Some("Q3")),
+        ] {
+            insert_departure(&pool, date, "ZOF", row).await;
+        }
+        let search = |query: &str| format!("/trains/search?station=ZOF&date={date}&{query}");
+
+        // One operator.
+        let (status, body) = get(&pool, &search("operator=Q3")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["OPQ301", "OPQ302"]);
+
+        // Several, any of them: trimmed, uppercased, repeats and empty
+        // entries ignored.
+        let (status, body) = get(&pool, &search("operator=q3,%20Q4,,Q3")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["OPQ301", "OPQ401", "OPQ302"]);
+
+        // Nothing but separators is no filter at all.
+        let (status, body) = get(&pool, &search("operator=,%20,")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body).len(), 4);
+
+        // An unknown code is a 400 naming it, not an empty result.
+        let (status, body) = get(&pool, &search("operator=Q3,Q5")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, "operator Q5 is not a known train operator code");
+        let (status, body) = get(&pool, &search("operator=Q5,q6")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, "operators Q5, Q6 are not known train operator codes");
+
+        // A malformed one too.
+        let (status, body) = get(&pool, &search("operator=Q33")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("operator"), "{body}");
+
+        // The plural is a typo, not a second filter.
+        let (status, _) = get(&pool, &search("operators=Q3")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        set_fixture_tocs(&pool, false).await;
+        delete_days(&pool, &[date]).await;
+    }
+
+    /// Two consecutive fixture service dates at `ZMN`: `date`'s evening and
+    /// after-midnight departures, and `date + 1`'s own early ones.
+    async fn seed_train_day(pool: &PgPool) -> (chrono::NaiveDate, chrono::NaiveDate) {
+        let date = crate::routes::london_today() + chrono::Duration::days(2);
+        let next = date + chrono::Duration::days(1);
+        delete_days(pool, &[date, next]).await;
+        for row in [
+            // Public 22:00, working 21:59H: shown, and searched, at 22:00.
+            ("MNPB01", t(21, 59, 30), 0, Some(t(22, 0, 0)), None),
+            ("MNEV01", t(22, 30, 0), 0, Some(t(22, 30, 0)), None),
+            // `date`'s own trains, departing after its midnight.
+            ("MNPM01", t(0, 30, 0), 1, Some(t(0, 30, 0)), None),
+            ("MNLT01", t(1, 45, 0), 1, None, None),
+        ] {
+            insert_departure(pool, date, "ZMN", row).await;
+        }
+        for row in [
+            ("MNEA01", t(0, 20, 0), 0, None, None),
+            ("MNMO01", t(6, 0, 0), 0, None, None),
+        ] {
+            insert_departure(pool, next, "ZMN", row).await;
+        }
+        (date, next)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_covers_the_whole_train_day_past_midnight() {
+        let (pool, _guards) = connect().await;
+        let (date, next) = seed_train_day(&pool).await;
+        let search = |query: &str| format!("/trains/search?station=ZMN&date={date}&{query}");
+
+        // The whole train day, in train-day order: after-midnight last.
+        let (status, body) = get(&pool, &search("from=00:00")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["MNPB01", "MNEV01", "MNPM01", "MNLT01"]);
+        let rows = results(&body);
+        assert_eq!(rows[2]["scheduled"], "00:30");
+        assert_eq!(rows[2]["dayOffset"], 1);
+        assert_eq!(rows[1]["dayOffset"], 0);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["serviceDate"], date.to_string());
+
+        // A window across midnight: `to` earlier than `from` is the next
+        // morning, and the echo says so.
+        let (status, body) = get(&pool, &search("from=22:00&to=01:30")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["MNPB01", "MNEV01", "MNPM01"]);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            json["window"],
+            serde_json::json!({
+                "from": {"time": "22:00", "dayOffset": 0},
+                "to": {"time": "01:30", "dayOffset": 1},
+                "arrivalFrom": null,
+                "arrivalTo": null,
+            })
+        );
+
+        // The same window, spelled out.
+        let (_, explicit) = get(&pool, &search("from=22:00&to=01:30&to_day_offset=1")).await;
+        assert_eq!(uids(&explicit), uids(&body));
+
+        // An explicit offset wins, even one that leaves nothing.
+        let (status, body) = get(&pool, &search("from=22:00&to=01:30&to_day_offset=0")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(uids(&body).is_empty());
+
+        // A window that starts after midnight.
+        let (status, body) = get(&pool, &search("from=00:15&from_day_offset=1")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["MNPM01", "MNLT01"]);
+
+        // Compared on the public time: 21:59H working is 22:00 public.
+        let (_, body) = get(&pool, &search("from=22:00&to=22:00")).await;
+        assert_eq!(uids(&body), ["MNPB01"]);
+        let (_, body) = get(&pool, &search("from=21:00&to=21:59")).await;
+        assert!(uids(&body).is_empty());
+
+        // Pages run across midnight, one row at a time.
+        let mut seen = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..6 {
+            let query = match &after {
+                Some(cursor) => search(&format!("from=21:00&limit=1&after={cursor}")),
+                None => search("from=21:00&limit=1"),
+            };
+            let (status, body) = get(&pool, &query).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            seen.extend(uids(&body));
+            after = next_cursor(&body);
+            if after.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen, ["MNPB01", "MNEV01", "MNPM01", "MNLT01"]);
+
+        // The next date's search is ITS train day: its own 00:20 service,
+        // never `date`'s 00:30 one.
+        let (status, body) = get(
+            &pool,
+            &format!("/trains/search?station=ZMN&date={next}&from=00:00"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uids(&body), ["MNEA01", "MNMO01"]);
+
+        delete_days(&pool, &[date, next]).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                trains_search -- --ignored --test-threads=1`"]
+    async fn trains_search_rejects_a_malformed_or_unanchored_day_offset() {
+        let (pool, _guards) = connect().await;
+        for (query, expected) in [
+            (
+                "from=00:30&from_day_offset=2",
+                "from_day_offset must be 0 or 1, not '2'",
+            ),
+            ("to_day_offset=1", "to_day_offset needs to"),
+            (
+                "stops_at=WAT&arrival_to_day_offset=1",
+                "arrival_to_day_offset needs arrival_to",
+            ),
+            (
+                "stops_at=WAT&arrival_from=01:00&arrival_from_day_offset=yes",
+                "arrival_from_day_offset must be 0 or 1, not 'yes'",
+            ),
+        ] {
+            let (status, body) = get(&pool, &format!("/trains/search?station=ZRB&{query}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+            assert_eq!(body, expected, "{query}");
+        }
     }
 
     // --- GET /trains/resolve --------------------------------------------------
@@ -3264,25 +3945,26 @@ mod db_tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         let rows = results(&body);
         let uids: Vec<&str> = rows.iter().map(|r| r["uid"].as_str().unwrap()).collect();
-        assert_eq!(uids, ["SRLVNX", "SRLVLV", "SRLVCX", "SRLVNO"]);
+        // Train-day order: the post-midnight call comes last.
+        assert_eq!(uids, ["SRLVLV", "SRLVCX", "SRLVNO", "SRLVNX"]);
 
         // Post-midnight: the call is the next calendar day.
-        assert_eq!(rows[0]["dayOffset"], 1, "{}", rows[0]);
-        assert_eq!(rows[1]["dayOffset"], 0, "{}", rows[1]);
+        assert_eq!(rows[3]["dayOffset"], 1, "{}", rows[3]);
+        assert_eq!(rows[0]["dayOffset"], 0, "{}", rows[0]);
 
         // Origin name, from the true origin.
-        assert_eq!(rows[0]["originCrs"], "ZSO");
-        assert_eq!(rows[0]["originName"], "Zed Origin");
-        assert!(rows[2]["originName"].is_null(), "no origin: {}", rows[2]);
+        assert_eq!(rows[3]["originCrs"], "ZSO");
+        assert_eq!(rows[3]["originName"], "Zed Origin");
+        assert!(rows[1]["originName"].is_null(), "no origin: {}", rows[1]);
         assert!(
-            rows[3]["originName"].is_null(),
+            rows[2]["originName"].is_null(),
             "unknown station: {}",
-            rows[3]
+            rows[2]
         );
 
         // Live state, the line summary's object.
         assert_eq!(
-            rows[1]["live"],
+            rows[0]["live"],
             serde_json::json!({
                 "status": "en_route",
                 "delayMinutes": 4,
@@ -3291,9 +3973,9 @@ mod db_tests {
                 "lastReportedLocation": "Reading",
             }),
         );
-        assert_eq!(rows[2]["live"]["cancelled"], true, "{}", rows[2]);
-        assert_eq!(rows[2]["live"]["status"], "cancelled");
-        for row in [&rows[0], &rows[3]] {
+        assert_eq!(rows[1]["live"]["cancelled"], true, "{}", rows[1]);
+        assert_eq!(rows[1]["live"]["status"], "cancelled");
+        for row in [&rows[2], &rows[3]] {
             let object = row.as_object().unwrap();
             assert!(
                 object.contains_key("live") && row["live"].is_null(),
@@ -3301,7 +3983,8 @@ mod db_tests {
             );
         }
 
-        // Paged: the fields ride the same keyset pages.
+        // Paged: the fields ride the same keyset pages, into the
+        // post-midnight band.
         let (_, first) = get(&pool, "/trains/search?station=ZSL&from=00:00&limit=2").await;
         assert_eq!(results(&first).len(), 2);
         let cursor = next_cursor(&first).expect("a second page");
@@ -3312,10 +3995,10 @@ mod db_tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{second}");
         let second = results(&second);
-        assert_eq!(second[0]["uid"], "SRLVCX");
-        assert_eq!(second[0]["live"]["cancelled"], true);
-        assert_eq!(second[1]["uid"], "SRLVNO");
-        assert!(second[1]["live"].is_null());
+        assert_eq!(second[0]["uid"], "SRLVNO");
+        assert!(second[0]["live"].is_null());
+        assert_eq!(second[1]["uid"], "SRLVNX");
+        assert_eq!(second[1]["dayOffset"], 1);
 
         clear_live_fixtures(&pool).await;
     }
