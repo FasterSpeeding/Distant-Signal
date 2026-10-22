@@ -108,6 +108,8 @@ pub fn router() -> Router {
             "/Journeys/{journey_id}/share-link/extend",
             axum::routing::post(extend_journey_share_link),
         )
+        // Mid-journey changes (spec 2026-10-22 §7), cookie-only.
+        .merge(super::journey_replan::router())
 }
 
 /// Three mutually-exclusive leg-creation shapes, discriminated by an
@@ -1300,6 +1302,11 @@ struct JourneyDetailResponse {
     /// showing them at all to a fellow group member who can only ever get a
     /// 404 is its own bug. See this plan's final-review findings (I1).
     is_owner: bool,
+    /// Mid-journey changes (additive, 2026-10-23): `openBreak`,
+    /// `revisionCount` and, for the owner, `suggestionsMuted`. See
+    /// `journey_replan::DetailExtras`.
+    #[serde(flatten)]
+    replan: super::journey_replan::DetailExtras,
     /// The journey's currently-active unlisted share link, if any --
     /// `Some` only when `is_owner` is `true` (see `build_journey_detail_response`).
     /// A non-owner (a fellow group member, or a visitor who reached this
@@ -1392,6 +1399,10 @@ struct JourneyLegDetailResponse {
         reason = "absent (not worked out) and null (the first leg) differ on the wire"
     )]
     connection: Option<Option<journey_feasibility::LegConnection>>,
+    /// The legs of the plan before the latest change that this leg
+    /// replaced (additive, 2026-10-23); empty for a leg the latest change
+    /// kept or for a journey never changed.
+    replaces_leg_ids: Vec<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1753,11 +1764,16 @@ async fn build_journey_detail_response(
     }
 
     // Absent on every leg when it couldn't be worked out.
-    let connections: Vec<Option<Option<journey_feasibility::LegConnection>>> =
-        match journey_connections_for(app, &leg_rows, &leg_states, now).await {
-            Some(list) => list.into_iter().map(Some).collect(),
-            None => leg_rows.iter().map(|_| None).collect(),
-        };
+    let timings = journey_feasibility::journey_timings(
+        &app.database,
+        &leg_inputs(&leg_rows, &leg_states),
+        now,
+    )
+    .await;
+    let connections: Vec<Option<Option<journey_feasibility::LegConnection>>> = match &timings {
+        Some(timings) => timings.connections.iter().cloned().map(Some).collect(),
+        None => leg_rows.iter().map(|_| None).collect(),
+    };
 
     let mut legs = Vec::with_capacity(leg_rows.len());
     for ((leg, tracked_train_state), connection) in
@@ -1840,7 +1856,41 @@ async fn build_journey_detail_response(
             origin_stop_id: leg.origin_stop_id,
             destination_stop_id: leg.destination_stop_id,
             connection,
+            replaces_leg_ids: Vec::new(),
         });
+    }
+
+    // Mid-journey changes: the open break (opened or ended here for the
+    // owner, judged on the same timings as `connection`) and the revisions.
+    let detail_legs: Vec<super::journey_replan::DetailLeg> = legs
+        .iter()
+        .map(|leg| super::journey_replan::DetailLeg {
+            id: leg.id,
+            is_train: leg.kind == journeys::LEG_KIND_TRAIN && leg.tracked_train_state.is_some(),
+            trains_id: leg.tracked_train_state.as_ref().and_then(|s| s.trains_id),
+            cancelled: leg
+                .tracked_train_state
+                .as_ref()
+                .is_some_and(|s| s.status.as_deref() == Some("cancelled")),
+            skipped: leg
+                .leg_skip
+                .as_ref()
+                .is_some_and(|skip| skip.origin_skipped || skip.destination_skipped),
+        })
+        .collect();
+    let replan = super::journey_replan::detail_extras(
+        app,
+        journey_id,
+        is_owner.then_some(summary.user_id.as_str()),
+        &detail_legs,
+        timings.as_ref(),
+        now,
+    )
+    .await;
+    for leg in &mut legs {
+        if let Some(replaced) = replan.replaces.get(&leg.id) {
+            leg.replaces_leg_ids.clone_from(replaced);
+        }
     }
 
     // Only an owner ever sees a live, usable token here -- a non-owner
@@ -1869,21 +1919,20 @@ async fn build_journey_detail_response(
         created_via: is_owner.then_some(summary.created_via),
         legs,
         is_owner,
+        replan,
         share_link,
     })
 }
 
-/// Every leg's `connection` (`journey_feasibility::journey_connections`):
-/// a train leg's stations are its own, else its train's pin, else the
-/// train's own route, as the frontend's connector reads them. `None` when
-/// they couldn't be worked out.
-async fn journey_connections_for(
-    app: &App,
-    leg_rows: &[journeys::JourneyLegWithNamesRow],
-    leg_states: &[Option<train_tracking::TrackedTrainState>],
-    now: DateTime<Utc>,
-) -> Option<Vec<Option<journey_feasibility::LegConnection>>> {
-    let inputs: Vec<journey_feasibility::LegInput<'_>> = leg_rows
+/// Every leg as `journey_feasibility` judges it (each leg's `connection`,
+/// and the mid-journey break logic): a train leg's stations are its own,
+/// else its train's pin, else the train's own route, as the frontend's
+/// connector reads them.
+pub(crate) fn leg_inputs<'a>(
+    leg_rows: &'a [journeys::JourneyLegWithNamesRow],
+    leg_states: &'a [Option<train_tracking::TrackedTrainState>],
+) -> Vec<journey_feasibility::LegInput<'a>> {
+    leg_rows
         .iter()
         .zip(leg_states)
         .map(|(leg, state)| {
@@ -1915,8 +1964,7 @@ async fn journey_connections_for(
                 }),
             }
         })
-        .collect();
-    journey_feasibility::journey_connections(&app.database, &inputs, now).await
+        .collect()
 }
 
 /// `#[serde(deny_unknown_fields)]` is load-bearing here, not decorative --

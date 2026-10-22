@@ -18,6 +18,7 @@ pub mod history_retention;
 pub mod incidents;
 pub mod island_of_ireland;
 pub mod journey_itinerary;
+pub mod journey_replan;
 pub mod journey_templates;
 pub mod journeys;
 #[cfg(test)]

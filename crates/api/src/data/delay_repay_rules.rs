@@ -266,6 +266,13 @@ fn rule_for_text(operator: &str) -> Option<&'static OperatorRule> {
         .find(|rule| rule.spellings.iter().any(|s| lower.contains(s)))
 }
 
+/// The ATOC code of the operator a ticket's free-text `operator` names,
+/// when it is one [`OPERATORS`] lists (journey alternatives' ticket fit,
+/// mid-journey changes spec 2026-10-22 §17.3).
+pub fn atoc_for_operator_text(operator: &str) -> Option<&'static str> {
+    rule_for_text(operator).map(|rule| rule.atoc)
+}
+
 /// The scheme for a ticket: its own free-text `operator` when that names a
 /// known operator, else the train's ATOC code from the CIF schedule
 /// (`atoc_code`, `TrackedTrainState::operator_code`), else DR15 when the

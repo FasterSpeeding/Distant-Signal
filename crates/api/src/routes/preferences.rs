@@ -31,6 +31,48 @@ pub fn router() -> Router {
             "/preferences/pinned-operators",
             axum::routing::put(put_pinned_operators),
         )
+        .route(
+            "/preferences/notifications",
+            axum::routing::get(get_notification_preferences).put(put_notification_preferences),
+        )
+}
+
+/// `GET`/`PUT /public/preferences/notifications`: the user's push
+/// preferences beyond the browser's own permission (mid-journey changes
+/// spec 2026-10-22 §6.5). `journeySuggestions`: push suggested trains when
+/// one of their journeys breaks (on unless turned off).
+#[derive(Debug, serde::Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NotificationPreferences {
+    journey_suggestions: bool,
+}
+
+async fn get_notification_preferences(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+) -> Result<Json<NotificationPreferences>, (StatusCode, String)> {
+    let journey_suggestions =
+        crate::data::journey_breaks::journey_suggestions_enabled(&app.database, &user.id)
+            .await
+            .map_err(internal_error)?;
+    Ok(Json(NotificationPreferences {
+        journey_suggestions,
+    }))
+}
+
+async fn put_notification_preferences(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Json(body): Json<NotificationPreferences>,
+) -> Result<Json<NotificationPreferences>, (StatusCode, String)> {
+    crate::data::journey_breaks::set_journey_suggestions(
+        &app.database,
+        &user.id,
+        body.journey_suggestions,
+    )
+    .await
+    .map_err(internal_error)?;
+    Ok(Json(body))
 }
 
 #[derive(Debug, Serialize)]

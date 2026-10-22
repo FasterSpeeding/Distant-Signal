@@ -20,6 +20,7 @@
 //! `POST /Journeys/itinerary` builds them.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::data::journey_revisions::{self, RevisionMeta};
@@ -42,6 +43,23 @@ pub struct Replacement<'a> {
     /// superseded plan).
     pub trigger_fate: &'a str,
     pub now: DateTime<Utc>,
+    /// An `Idempotency-Key` and the request's hash: a repeat answers with
+    /// the first response (`journey_idempotency_keys`).
+    pub idempotency: Option<(&'a str, &'a str)>,
+}
+
+/// What a replacement answers (`POST .../replan/accept`, `.../replace`,
+/// `.../revert`), and what an `Idempotency-Key` replays.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceResponse {
+    pub journey_id: i64,
+    /// The revision now current (1 when revision 1 was refreshed).
+    pub revision_no: i32,
+    pub new_leg_ids: Vec<i64>,
+    /// The revision an Undo goes back to; `None` when the change refreshed
+    /// the booked plan (nothing to undo to).
+    pub undo_revision_no: Option<i32>,
 }
 
 /// What [`replace`] did.
@@ -55,11 +73,14 @@ pub enum Replaced {
     Travelled,
     /// The journey would have more than [`MAX_LEGS_PER_JOURNEY`] legs.
     AtCap,
+    /// The same `Idempotency-Key` with a different request.
+    IdempotencyConflict,
+    /// The same `Idempotency-Key` and request: its first response.
+    Replay(serde_json::Value),
     Done {
         /// The revision written; `None` when revision 1 was refreshed.
         revision_id: Option<i64>,
-        revision_no: i32,
-        new_leg_ids: Vec<i64>,
+        response: ReplaceResponse,
     },
 }
 
@@ -86,8 +107,20 @@ pub async fn replace(pool: &PgPool, replacement: &Replacement<'_>) -> anyhow::Re
         ref meta,
         trigger_fate,
         now,
+        idempotency,
     } = *replacement;
     let mut tx = pool.begin().await?;
+    if let Some((key, hash)) = idempotency {
+        match crate::data::delegated::claim_idempotency_key(&mut tx, user_id, key, hash).await? {
+            crate::data::delegated::IdempotencyClaim::Fresh => {}
+            crate::data::delegated::IdempotencyClaim::Replay(response) => {
+                return Ok(Replaced::Replay(response));
+            }
+            crate::data::delegated::IdempotencyClaim::Conflict => {
+                return Ok(Replaced::IdempotencyConflict);
+            }
+        }
+    }
     let owned: Option<(i64,)> =
         sqlx::query_as("SELECT id FROM journeys WHERE id = $1 AND user_id = $2 FOR UPDATE")
             .bind(journey_id)
@@ -206,6 +239,12 @@ pub async fn replace(pool: &PgPool, replacement: &Replacement<'_>) -> anyhow::Re
         journeys::release_leg_subscription(&mut tx, user_id, old, move_to, true).await?;
     }
 
+    let previous_no: Option<(i32,)> =
+        sqlx::query_as("SELECT MAX(revision_no) FROM journey_revisions WHERE journey_id = $1")
+            .bind(journey_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let previous_no = previous_no.map(|(no,)| no);
     let (revision_id, revision_no) = if let Some(position) = trigger_position {
         let id = journey_revisions::append_revision(
             &mut tx,
@@ -233,12 +272,47 @@ pub async fn replace(pool: &PgPool, replacement: &Replacement<'_>) -> anyhow::Re
         .bind(journey_id)
         .execute(&mut *tx)
         .await?;
+    let response = ReplaceResponse {
+        journey_id,
+        revision_no,
+        new_leg_ids,
+        undo_revision_no: revision_id.and(previous_no),
+    };
+    if let Some((key, _)) = idempotency {
+        crate::data::delegated::record_idempotent_response(
+            &mut tx,
+            user_id,
+            key,
+            &serde_json::to_value(&response)?,
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(Replaced::Done {
         revision_id,
-        revision_no,
-        new_leg_ids,
+        response,
     })
+}
+
+/// The stored response of an earlier request with the same
+/// `Idempotency-Key` and body, if any (an accept retried after it went
+/// through).
+pub async fn replay(
+    pool: &PgPool,
+    user_id: &str,
+    key: &str,
+    request_hash: &str,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let row: Option<(Option<serde_json::Value>,)> = sqlx::query_as(
+        "SELECT response FROM journey_idempotency_keys \
+         WHERE user_id = $1 AND idempotency_key = $2 AND request_hash = $3",
+    )
+    .bind(user_id)
+    .bind(key)
+    .bind(request_hash)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(response,)| response))
 }
 
 /// Of `candidates` (new subscriptions), the first whose train has the same

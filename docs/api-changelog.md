@@ -10,10 +10,66 @@ cookie-only (a delegated client gets `401`/`403` as for any route outside
 its list). Design:
 `docs/superpowers/specs/2026-10-22-mid-journey-changes-design.md`.
 
+- **`GET /Journeys/{id}`** gains `openBreak` (`null`, or `{id, cause,
+  fault, severity, triggerLegId, detectedAt, suggestionsReady, stale,
+  stationName, destinationName, suggestionCount, firstArrival}`: the
+  journey stopped working, `cause` one of `cancelled`, `part_cancelled`,
+  `connection_missed`, `user_missed`, `skipped_stop`), `revisionCount` (1
+  while only the booked plan exists), `suggestionsMuted` (owner only) and
+  per leg `replacesLegIds` (the previous plan's legs this one replaced,
+  usually `[]`). Delegated readers see them too. For the owner the read
+  itself opens a break when a train is cancelled or cut short, a stop is
+  skipped or a change no longer works on live times (`connection.state`
+  `missed`), and ends one the plan has recovered from.
+- **`GET /Journeys/mine`** rows gain `openBreakId`.
+- **New, cookie-only, owner-only** (404 for someone else's journey):
+  - `GET /Journeys/{id}/legs/{legId}/alternatives?cause=missed|cancelled|connection|choice`:
+    ranked alternatives from one train leg (a suggestion set: `fromLegId`,
+    `originCrs`, `destinationCrs`, `bookedArrival`, `hint`, `trigger`,
+    `fingerprint`, `suggestions[]` of `{id, departure, arrival,
+    changeCount, delayMinutes, throughLegId, rejoinsLegId, legs, fit,
+    fitLabel, fitReason, picks, pickLabels, card}`; cards first, at most
+    three: Recommended, then up to two badged picks).
+  - `POST /Journeys/{id}/legs/{legId}/missed`: "I missed this train". Opens
+    a `user_missed` break (fault `operator` when the change onto the leg no
+    longer worked on live times, else `user`), plans at once and answers
+    the break with its suggestions. `409 leg_travelled` on a travelled leg.
+  - `GET /Journeys/{id}/breaks/current[?src=push]`: the open break with its
+    stored suggestions and `stale`; stamps when it was first opened. 404
+    when none is open.
+  - `POST /Journeys/{id}/replan/preview` `{breakId}` (or `{fromLegId}` for a
+    free choice): plans again now and stores the result on the break.
+  - `POST /Journeys/{id}/replan/accept` `{breakId, suggestionId,
+    fingerprint}`, optional `Idempotency-Key`: takes a suggestion. Answers
+    `{journeyId, revisionNo, newLegIds, undoRevisionNo}`; `409
+    suggestion_stale` with the fresh `break` when that option no longer
+    works.
+  - `POST /Journeys/{id}/legs/{legId}/replace` `{cause, legs, throughLegId?}`
+    (legs as `POST /Journeys/itinerary` takes them), optional
+    `Idempotency-Key`: the general replacement. Before the journey starts,
+    with no break, it updates the booked plan (`undoRevisionNo: null`).
+  - `POST /Journeys/{id}/breaks/{breakId}/dismiss` `{reason: willMakeIt |
+    notTravelling | other}`: 204.
+  - `GET /Journeys/{id}/revisions`: every plan, newest first, with its legs
+    (booked public times, ticket ids, `fate`) and `canRevert`.
+  - `POST /Journeys/{id}/revisions/{no}/revert`: back to an earlier plan
+    (the Undo), written as a new revision; `409 revision_gone` once it no
+    longer works.
+  - `PUT /Journeys/{id}/suggestions-muted` `{muted}`: 204.
+  - `GET`/`PUT /public/preferences/notifications` `{journeySuggestions}`.
+- A replacement never deletes a ticket: tickets on a replaced train move
+  to the new train of the same operator (else the first new train), or are
+  kept as standalone tickets.
+- The planning routes (`alternatives`, `missed`, `replan/preview`,
+  `replan/accept`) share `/Trips/plan`'s rate limit and planning slots
+  (`503` when busy).
 - **Account export** (`GET /public/account/export`) gains
   `journeyBreaks` and `notificationPreferences`, and each of `journeys`
   gains `revisions` (its booked plan and every change since, each with its
   `legs`).
+- **For ds-mcp.** Nothing to change. `get_my_journey` may show
+  `openBreak` ("connection at York missed"); every new route is
+  cookie-only, so it cannot accept or replace.
 
 ## 2026-10-22: each change in a journey, judged on live times
 

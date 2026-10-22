@@ -32,7 +32,11 @@ pub const MAX_SUGGESTIONS: usize = 9;
 /// One leg of an alternative: a train to track, or a Tube ride, bus or
 /// walk saved as an untracked leg (as `POST /Journeys/itinerary` takes it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SuggestionLeg {
     Train {
         train_uid: String,
@@ -118,7 +122,10 @@ impl Suggestion {
 
     /// The legs to save, resolved by `resolve_train` (train UID and date to
     /// the shared `trains` row id).
-    pub fn itinerary_legs(&self, trains_ids: &HashMap<(String, NaiveDate), i64>) -> Option<Vec<ItineraryLeg>> {
+    pub fn itinerary_legs(
+        &self,
+        trains_ids: &HashMap<(String, NaiveDate), i64>,
+    ) -> Option<Vec<ItineraryLeg>> {
         self.legs
             .iter()
             .map(|leg| match leg {
@@ -158,6 +165,21 @@ impl Suggestion {
     }
 }
 
+/// The train whose leg no longer works, as the sheet and the push name it
+/// ("the 10:16 to Charing Cross").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerTrain {
+    pub leg_id: i64,
+    /// Its timetabled departure from the leg's boarding station.
+    pub departure: Option<DateTime<Utc>>,
+    pub origin_name: Option<String>,
+    /// The leg's own alighting station.
+    pub destination_name: Option<String>,
+    /// The train's own destination (what a train is named by).
+    pub train_destination_name: Option<String>,
+}
+
 /// The alternatives for one break point, as served and stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,6 +198,9 @@ pub struct SuggestionSet {
     pub booked_arrival: Option<DateTime<Utc>>,
     /// The sheet's one-line ticket hint (§17.5).
     pub hint: Option<String>,
+    /// The leg's train, when it is a train leg.
+    #[serde(default)]
+    pub trigger: Option<TriggerTrain>,
     /// Cards first, then the rest by cost.
     pub suggestions: Vec<Suggestion>,
     /// Set by the route on read: stored suggestions that need a re-plan.
@@ -257,11 +282,13 @@ pub async fn station_names(pool: &PgPool, codes: &[String]) -> HashMap<String, S
     .bind(codes)
     .fetch_all(pool)
     .await
-    .map(|rows| rows.into_iter().collect())
-    .unwrap_or_else(|err| {
-        tracing::warn!(error = ?err, "could not read station names for alternatives");
-        HashMap::new()
-    })
+    .map_or_else(
+        |err| {
+            tracing::warn!(error = ?err, "could not read station names for alternatives");
+            HashMap::new()
+        },
+        |rows| rows.into_iter().collect(),
+    )
 }
 
 /// Operator names by ATOC code (best effort).
@@ -275,17 +302,23 @@ pub async fn operator_names(pool: &PgPool, codes: &[String]) -> HashMap<String, 
     .bind(codes)
     .fetch_all(pool)
     .await
-    .map(|rows| rows.into_iter().collect())
-    .unwrap_or_else(|err| {
-        tracing::warn!(error = ?err, "could not read operator names for alternatives");
-        HashMap::new()
-    })
+    .map_or_else(
+        |err| {
+            tracing::warn!(error = ?err, "could not read operator names for alternatives");
+            HashMap::new()
+        },
+        |rows| rows.into_iter().collect(),
+    )
 }
 
 /// An itinerary's legs as [`SuggestionLeg`]s, `None` when a train leg's
 /// times cannot be placed. A transfer starts when the train before it
 /// arrives (else ends when the next leaves) and lasts its minutes; a change
 /// within one station is left out, as the web planner saves it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match over the two leg kinds, each mapped field by field"
+)]
 fn suggestion_legs(
     planned: &Planned,
     names: &HashMap<String, String>,
@@ -333,7 +366,8 @@ fn suggestion_legs(
                 }?;
                 let leg_live = live.as_ref().and_then(|l| l.as_deref());
                 let name = |crs: &Option<String>| {
-                    crs.as_ref().and_then(|code| names.get(code.trim()).cloned())
+                    crs.as_ref()
+                        .and_then(|code| names.get(code.trim()).cloned())
                 };
                 out.push(SuggestionLeg::Train {
                     train_uid: train_uid.clone(),
@@ -452,6 +486,10 @@ pub struct SetInputs {
     pub destination_crs: String,
     pub depart_after: DateTime<Utc>,
     pub booked_arrival: Option<DateTime<Utc>>,
+    pub trigger: Option<TriggerTrain>,
+    /// The train being replaced (UID, date): never offered as its own
+    /// alternative.
+    pub exclude_train: Option<(String, NaiveDate)>,
     pub context: Context,
     pub now: DateTime<Utc>,
 }
@@ -459,6 +497,10 @@ pub struct SetInputs {
 /// Ranks `plans` into a [`SuggestionSet`]: duplicates (the same trains)
 /// dropped, options that leave before `depart_after` or are cancelled on
 /// live times dropped, at most [`MAX_SUGGESTIONS`] kept, cards first.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "callers always use the default hasher"
+)]
 pub fn build_set(
     plans: Vec<Planned>,
     inputs: &SetInputs,
@@ -485,7 +527,13 @@ pub fn build_set(
                 SuggestionLeg::Untracked { .. } => None,
             })
             .collect();
-        if key.is_empty() || seen.contains(&key) {
+        if key.is_empty()
+            || seen.contains(&key)
+            || inputs
+                .exclude_train
+                .as_ref()
+                .is_some_and(|excluded| key.first() == Some(excluded))
+        {
             continue;
         }
         let Some(candidate) = candidate(&planned, &legs) else {
@@ -546,6 +594,7 @@ pub fn build_set(
         depart_after: inputs.depart_after,
         booked_arrival: inputs.booked_arrival,
         hint: ranking.hint.map(str::to_string),
+        trigger: inputs.trigger.clone(),
         suggestions,
         stale: false,
     }

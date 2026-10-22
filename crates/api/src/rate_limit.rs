@@ -208,7 +208,7 @@ pub fn classify(method: &Method, path: &str) -> Option<LimitClass> {
     if path == "/public/auth/login" || path == "/public/auth/callback" {
         return Some(LimitClass::Login);
     }
-    if path == "/Trips/plan" {
+    if path == "/Trips/plan" || is_journey_replan(path) {
         return Some(LimitClass::TripPlan);
     }
     if path.starts_with("/Train/by-uid/") {
@@ -218,6 +218,17 @@ pub fn classify(method: &Method, path: &str) -> Option<LimitClass> {
         return Some(LimitClass::PublicWrite);
     }
     None
+}
+
+/// A mid-journey route that runs the planner (spec 2026-10-22 §7): the
+/// alternatives, "I missed this train" and the re-plan preview cost what a
+/// `/Trips/plan` does, so they share its budget.
+fn is_journey_replan(path: &str) -> bool {
+    path.starts_with("/Journeys/")
+        && (path.ends_with("/alternatives")
+            || path.ends_with("/missed")
+            || path.ends_with("/replan/preview")
+            || path.ends_with("/replan/accept"))
 }
 
 /// Rate-limit settings, from the environment.

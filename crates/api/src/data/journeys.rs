@@ -1802,8 +1802,14 @@ async fn set_leg_train_subscription_locked(
     if let Some(old_id) = old_train_subscription_id
         && old_id != train_subscription_id
     {
-        release_leg_subscription(&mut *tx, user_id, old_id, Some(train_subscription_id), false)
-            .await?;
+        release_leg_subscription(
+            &mut *tx,
+            user_id,
+            old_id,
+            Some(train_subscription_id),
+            false,
+        )
+        .await?;
     }
 
     Ok(true)
@@ -2454,6 +2460,10 @@ pub struct JourneyListItem {
     pub final_working_delay_minutes: Option<i32>,
     #[serde(skip_serializing)]
     pub final_status: Option<String>,
+    /// The journey's open break (mid-journey changes spec 2026-10-22 §7),
+    /// `None` when it works. Additive, 2026-10-23.
+    #[sqlx(skip)]
+    pub open_break_id: Option<i64>,
 }
 
 /// One journey's final arrival, for [`apply_public_delays`]: the last
@@ -2803,6 +2813,17 @@ pub async fn list_journeys_for_user(
         }
     }
     crate::data::tracking_phase::attach(pool, &mut rows, now).await;
+    let ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
+    let open: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT journey_id, id FROM journey_breaks WHERE journey_id = ANY($1) AND status = 'open'",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    let open: std::collections::HashMap<i64, i64> = open.into_iter().collect();
+    for row in &mut rows {
+        row.open_break_id = open.get(&row.id).copied();
+    }
     Ok(rows)
 }
 

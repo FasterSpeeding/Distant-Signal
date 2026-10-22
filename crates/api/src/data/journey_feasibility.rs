@@ -424,6 +424,51 @@ pub async fn journey_connections(
     if legs.len() < 2 {
         return Some(legs.iter().map(|_| None).collect());
     }
+    journey_timings(pool, legs, now)
+        .await
+        .map(|timings| timings.connections)
+}
+
+/// A journey's legs judged on live times: each leg's [`LegTiming`], each
+/// change's [`LegConnection`] (`None` for the first leg), and the
+/// interchange data they were judged with. What `GET /Journeys/{id}`'s
+/// `connection` and the mid-journey break logic (§5.3) both read.
+#[derive(Debug, Clone)]
+pub struct JourneyTimings {
+    pub timings: Vec<LegTiming>,
+    pub connections: Vec<Option<LegConnection>>,
+    pub interchange: Arc<InterchangeData>,
+}
+
+impl JourneyTimings {
+    /// The minutes a change onto train leg `next` needs when arriving from
+    /// `from_crs` (`None`: from a place, after a walk or a Tube ride) on
+    /// another train: the station's minimum change time, or a fixed link
+    /// plus that between two stations. `None` when it can't be judged.
+    pub fn change_minutes(
+        &self,
+        from_crs: Option<&str>,
+        at: DateTime<Utc>,
+        next: &TrainLegTiming,
+    ) -> Option<u32> {
+        let ready = Ready {
+            at,
+            sched_at: at,
+            crs: from_crs.map(str::to_ascii_uppercase),
+            train: None,
+            served: true,
+        };
+        required_change(&ready, next, &self.interchange)
+    }
+}
+
+/// [`JourneyTimings`] for a journey, `None` when the interchange data
+/// failed to load. See [`journey_connections`] for the live window.
+pub async fn journey_timings(
+    pool: &PgPool,
+    legs: &[LegInput<'_>],
+    now: DateTime<Utc>,
+) -> Option<JourneyTimings> {
     let interchange = match interchange_data(pool).await {
         Ok(data) => data,
         Err(err) => {
@@ -496,7 +541,12 @@ pub async fn journey_connections(
             (LegInput::Train { .. }, None) => LegTiming::Unknown,
         })
         .collect();
-    Some(evaluate_connections(&timings, &interchange))
+    let connections = evaluate_connections(&timings, &interchange);
+    Some(JourneyTimings {
+        timings,
+        connections,
+        interchange,
+    })
 }
 
 #[cfg(test)]

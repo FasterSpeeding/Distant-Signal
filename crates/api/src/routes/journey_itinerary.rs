@@ -80,7 +80,7 @@ struct ItineraryRequest {
 /// the only fields (`a_train_leg_hashes_as_it_did_before_untracked_legs`).
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ItineraryLegRequest {
+pub(crate) struct ItineraryLegRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     train_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,7 +242,7 @@ pub(crate) async fn post_itinerary(
 
 /// A validated leg, before a train leg's `trains` row is resolved.
 #[derive(Debug)]
-enum ValidLeg {
+pub(crate) enum ValidLeg {
     Train {
         train_uid: String,
         service_date: NaiveDate,
@@ -292,7 +292,7 @@ fn validate(
     Ok((request, custom_name, legs))
 }
 
-fn validate_leg(
+pub(crate) fn validate_leg(
     leg: &ItineraryLegRequest,
     london_today: NaiveDate,
 ) -> Result<ValidLeg, RouteError> {
@@ -377,7 +377,7 @@ fn validate_leg(
 /// message starts "Leg N: ", N counting every leg of the itinerary
 /// (1-based). Runs after the idempotency claim, like the caps, so a replay
 /// still gets its first answer.
-async fn check_legs_call(app: &App, legs: &[ValidLeg]) -> Result<(), RouteError> {
+pub(crate) async fn check_legs_call(app: &App, legs: &[ValidLeg]) -> Result<(), RouteError> {
     for (index, leg) in legs.iter().enumerate() {
         let ValidLeg::Train {
             train_uid,
@@ -434,6 +434,57 @@ fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, RouteError> {
         ));
     }
     Ok(Some(key.to_string()))
+}
+
+/// Each validated leg ready to save: a train leg's shared `trains` row
+/// found or created, an untracked leg's `TfL` stops checked. Shared with
+/// `POST /Journeys/{id}/legs/{legId}/replace`.
+pub(crate) async fn resolve_legs(
+    app: &App,
+    legs: &[ValidLeg],
+) -> Result<Vec<journeys::ItineraryLeg>, RouteError> {
+    let mut resolved = Vec::with_capacity(legs.len());
+    for leg in legs {
+        match leg {
+            ValidLeg::Untracked {
+                leg,
+                origin_stop_id,
+                destination_stop_id,
+            } => {
+                let leg = journeys::attach_untracked_stops(
+                    &app.database,
+                    leg.clone(),
+                    origin_stop_id.as_deref(),
+                    destination_stop_id.as_deref(),
+                )
+                .await
+                .map_err(internal("check untracked leg stops"))?
+                .map_err(invalid)?;
+                resolved.push(journeys::ItineraryLeg::Untracked(leg));
+            }
+            ValidLeg::Train {
+                train_uid,
+                service_date,
+                origin_crs,
+                destination_crs,
+            } => {
+                let trains_id = crate::data::trains::find_or_create_train(
+                    &app.database,
+                    train_uid,
+                    *service_date,
+                )
+                .await
+                .map_err(internal("find or create train"))?;
+                resolved.push(journeys::ItineraryLeg::Train {
+                    trains_id,
+                    service_date: *service_date,
+                    origin_crs: origin_crs.clone(),
+                    destination_crs: destination_crs.clone(),
+                });
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 #[expect(
@@ -565,46 +616,7 @@ async fn save_itinerary(
     }
 
     check_legs_call(app, &legs).await?;
-
-    let mut resolved = Vec::with_capacity(legs.len());
-    for leg in &legs {
-        let ValidLeg::Train {
-            train_uid,
-            service_date,
-            origin_crs,
-            destination_crs,
-        } = leg
-        else {
-            if let ValidLeg::Untracked {
-                leg,
-                origin_stop_id,
-                destination_stop_id,
-            } = leg
-            {
-                let leg = journeys::attach_untracked_stops(
-                    &app.database,
-                    leg.clone(),
-                    origin_stop_id.as_deref(),
-                    destination_stop_id.as_deref(),
-                )
-                .await
-                .map_err(internal("check untracked leg stops"))?
-                .map_err(invalid)?;
-                resolved.push(journeys::ItineraryLeg::Untracked(leg));
-            }
-            continue;
-        };
-        let trains_id =
-            crate::data::trains::find_or_create_train(&app.database, train_uid, *service_date)
-                .await
-                .map_err(internal("find or create train"))?;
-        resolved.push(journeys::ItineraryLeg::Train {
-            trains_id,
-            service_date: *service_date,
-            origin_crs: origin_crs.clone(),
-            destination_crs: destination_crs.clone(),
-        });
-    }
+    let resolved = resolve_legs(app, &legs).await?;
     let created_via = client
         .as_ref()
         .map_or_else(|| "web".to_string(), |client| client.name.clone());

@@ -161,13 +161,15 @@ pub enum Upserted {
 
 /// Opens a break for `journey_id`, or updates the open one: cause, fault,
 /// trigger and fingerprint follow the latest detection; the severity only
-/// ever rises; `confirmations` counts consecutive detections with the
-/// same fingerprint (§11: two sweeps before a push, unless cancelled).
+/// ever rises; with `confirm` (the sweep, not a page read),
+/// `confirmations` counts consecutive detections with the same fingerprint
+/// (§11: two sweeps before a push, unless cancelled).
 pub async fn upsert_open(
     pool: &PgPool,
     journey_id: i64,
     user_id: &str,
     detected: &Detected,
+    confirm: bool,
 ) -> anyhow::Result<(BreakRow, Upserted)> {
     let mut tx = pool.begin().await?;
     let existing: Option<BreakRow> = sqlx::query_as(&format!(
@@ -210,8 +212,9 @@ pub async fn upsert_open(
                 "UPDATE journey_breaks SET cause = $2, fault = $3, \
                      severity = GREATEST(severity, $4), trigger_leg_id = $5, \
                      trigger_trains_id = $6, break_position = $7, fingerprint = $8, \
-                     confirmations = CASE WHEN fingerprint = $8 \
-                                          THEN LEAST(confirmations + 1, 100) ELSE 1 END \
+                     confirmations = CASE WHEN fingerprint <> $8 THEN 1 \
+                                          WHEN $9 THEN LEAST(confirmations + 1, 100) \
+                                          ELSE confirmations END \
                  WHERE id = $1 RETURNING {BREAK_COLUMNS}"
             ))
             .bind(row.id)
@@ -222,11 +225,20 @@ pub async fn upsert_open(
             .bind(detected.trigger_trains_id)
             .bind(detected.break_position)
             .bind(&detected.fingerprint)
+            .bind(confirm)
             .fetch_one(&mut *tx)
             .await?
         }
     };
     tx.commit().await?;
+    if outcome == Upserted::New {
+        metrics::counter!(
+            common::metrics::metric_name("api_journey_breaks_detected_total"),
+            "cause" => detected.cause.as_str(),
+            "fault" => detected.fault
+        )
+        .increment(1);
+    }
     Ok((row, outcome))
 }
 
@@ -350,14 +362,13 @@ pub async fn set_suggestions_muted(
     user_id: &str,
     muted: bool,
 ) -> anyhow::Result<bool> {
-    let result = sqlx::query(
-        "UPDATE journeys SET suggestions_muted = $3 WHERE id = $1 AND user_id = $2",
-    )
-    .bind(journey_id)
-    .bind(user_id)
-    .bind(muted)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("UPDATE journeys SET suggestions_muted = $3 WHERE id = $1 AND user_id = $2")
+            .bind(journey_id)
+            .bind(user_id)
+            .bind(muted)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -428,6 +439,121 @@ pub async fn expire_finished(pool: &PgPool) -> anyhow::Result<u64> {
     Ok(result.rows_affected())
 }
 
+/// What detection needs to know about one leg besides its timing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one leg, read field by field"
+)]
+pub struct LegFacts {
+    pub leg_id: i64,
+    pub is_train: bool,
+    pub trains_id: Option<i64>,
+    /// The whole train is cancelled (TRUST `cancelled`).
+    pub whole_cancelled: bool,
+    /// The train no longer calls at the leg's boarding or alighting stop
+    /// (the departure board says so).
+    pub skipped: bool,
+    /// Already travelled: frozen, never a break (§11).
+    pub travelled: bool,
+}
+
+/// A break found by [`detect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Detection {
+    pub cause: Cause,
+    /// Index of the first leg that no longer works.
+    pub index: usize,
+    pub trigger_leg_id: i64,
+    pub trigger_trains_id: Option<i64>,
+}
+
+/// The first leg, after the travelled ones, that no longer works (§4.2):
+/// a cancelled train, a train cut short or starting late so it misses the
+/// leg's stops, a skipped stop, or a connection onto it missed on live
+/// times and minimum change times. Pure. "At risk" is not a break.
+pub fn detect(
+    legs: &[LegFacts],
+    timings: &[crate::data::journey_feasibility::LegTiming],
+    connections: &[Option<crate::data::journey_feasibility::LegConnection>],
+) -> Option<Detection> {
+    use crate::data::journey_feasibility::{ConnectionState, LegTiming};
+    for (index, leg) in legs.iter().enumerate() {
+        if leg.travelled || !leg.is_train {
+            continue;
+        }
+        let served = match timings.get(index) {
+            Some(LegTiming::Train(timing)) => timing.served,
+            _ => true,
+        };
+        let cause = if leg.whole_cancelled {
+            Some(Cause::Cancelled)
+        } else if !served {
+            Some(Cause::PartCancelled)
+        } else if leg.skipped {
+            Some(Cause::SkippedStop)
+        } else if connections
+            .get(index)
+            .and_then(Option::as_ref)
+            .is_some_and(|c| c.state == ConnectionState::Missed)
+        {
+            Some(Cause::ConnectionMissed)
+        } else {
+            None
+        };
+        if let Some(cause) = cause {
+            return Some(Detection {
+                cause,
+                index,
+                trigger_leg_id: leg.leg_id,
+                trigger_trains_id: leg.trains_id,
+            });
+        }
+    }
+    None
+}
+
+/// Who missed a train the traveller marked missed (§4.2, §14 Q5: the data
+/// decides): the railway when the change onto it no longer worked on live
+/// times, else the traveller.
+pub fn user_missed_fault(
+    connection_onto: Option<&crate::data::journey_feasibility::LegConnection>,
+) -> &'static str {
+    use crate::data::journey_feasibility::ConnectionState;
+    if connection_onto.is_some_and(|c| c.state == ConnectionState::Missed) {
+        "operator"
+    } else {
+        "user"
+    }
+}
+
+/// A break's fingerprint (§5.4): its position and cause, and the live
+/// departure and arrival minute of every train leg from it on. Planned
+/// suggestions are stale once it changes.
+pub fn fingerprint(
+    cause: Cause,
+    index: usize,
+    timings: &[crate::data::journey_feasibility::LegTiming],
+) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let mut text = format!("{index}|{}", cause.as_str());
+    for timing in timings.iter().skip(index) {
+        if let crate::data::journey_feasibility::LegTiming::Train(t) = timing {
+            let _ = write!(
+                text,
+                "|{}:{}:{}:{}",
+                t.uid,
+                t.live_dep.timestamp() / 60,
+                t.live_arr.timestamp() / 60,
+                t.served
+            );
+        }
+    }
+    let digest = Sha256::digest(text.as_bytes());
+    format!("{digest:x}")[..16].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +566,139 @@ mod tests {
         assert_eq!(severity(Cause::PartCancelled, Some(Some(5))), 2);
         assert_eq!(severity(Cause::Cancelled, Some(Some(5))), 3);
         assert_eq!(severity(Cause::Cancelled, Some(None)), 4);
+    }
+
+    fn timing(
+        uid: &str,
+        dep: i64,
+        arr: i64,
+        served: bool,
+    ) -> crate::data::journey_feasibility::LegTiming {
+        use chrono::TimeZone;
+        let at = |m: i64| {
+            Utc.with_ymd_and_hms(2026, 10, 22, 8, 0, 0).unwrap() + chrono::Duration::minutes(m)
+        };
+        crate::data::journey_feasibility::LegTiming::Train(
+            crate::data::journey_feasibility::TrainLegTiming {
+                uid: uid.to_string(),
+                date: chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap(),
+                board_crs: "KGX".to_string(),
+                board_tiploc: "KNGX".to_string(),
+                alight_crs: "YRK".to_string(),
+                sched_dep: at(dep),
+                live_dep: at(dep),
+                sched_arr: at(arr),
+                live_arr: at(arr),
+                served,
+            },
+        )
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the shape `connections` takes, so call sites read as data"
+    )]
+    fn connection(
+        state: crate::data::journey_feasibility::ConnectionState,
+    ) -> Option<crate::data::journey_feasibility::LegConnection> {
+        Some(crate::data::journey_feasibility::LegConnection {
+            gap_minutes: Some(-3),
+            minimum_change_minutes: Some(5),
+            state,
+        })
+    }
+
+    fn facts(leg_id: i64) -> LegFacts {
+        LegFacts {
+            leg_id,
+            is_train: true,
+            trains_id: Some(leg_id * 10),
+            ..LegFacts::default()
+        }
+    }
+
+    #[test]
+    fn detection_finds_the_first_leg_that_no_longer_works() {
+        use crate::data::journey_feasibility::ConnectionState;
+        let timings = vec![timing("A", 0, 60, true), timing("B", 62, 120, true)];
+        // A missed connection onto leg 2.
+        let found = detect(
+            &[facts(1), facts(2)],
+            &timings,
+            &[None, connection(ConnectionState::Missed)],
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                found.cause,
+                found.index,
+                found.trigger_leg_id,
+                found.trigger_trains_id
+            ),
+            (Cause::ConnectionMissed, 1, 2, Some(20))
+        );
+        // At risk is not a break.
+        assert_eq!(
+            detect(
+                &[facts(1), facts(2)],
+                &timings,
+                &[None, connection(ConnectionState::AtRisk)]
+            ),
+            None
+        );
+        // A cancelled first leg comes first; a travelled one never counts.
+        let mut cancelled = facts(1);
+        cancelled.whole_cancelled = true;
+        assert_eq!(
+            detect(&[cancelled.clone(), facts(2)], &timings, &[None, None]).map(|d| d.cause),
+            Some(Cause::Cancelled)
+        );
+        cancelled.travelled = true;
+        assert_eq!(
+            detect(&[cancelled, facts(2)], &timings, &[None, None]),
+            None
+        );
+        // Cut short so it misses the leg's stops; a skipped stop.
+        let cut = vec![timing("A", 0, 60, false)];
+        assert_eq!(
+            detect(&[facts(1)], &cut, &[None]).map(|d| d.cause),
+            Some(Cause::PartCancelled)
+        );
+        let mut skipped = facts(1);
+        skipped.skipped = true;
+        assert_eq!(
+            detect(&[skipped], &timings, &[None]).map(|d| d.cause),
+            Some(Cause::SkippedStop)
+        );
+    }
+
+    #[test]
+    fn the_data_decides_who_missed_the_train() {
+        use crate::data::journey_feasibility::ConnectionState;
+        assert_eq!(
+            user_missed_fault(connection(ConnectionState::Missed).as_ref()),
+            "operator"
+        );
+        assert_eq!(
+            user_missed_fault(connection(ConnectionState::Ok).as_ref()),
+            "user"
+        );
+        assert_eq!(user_missed_fault(None), "user");
+    }
+
+    #[test]
+    fn the_fingerprint_follows_live_times_from_the_break_on() {
+        let before = vec![timing("A", 0, 60, true), timing("B", 62, 120, true)];
+        let mut later_first = before.clone();
+        later_first[0] = timing("A", 5, 65, true);
+        let mut later_second = before.clone();
+        later_second[1] = timing("B", 70, 128, true);
+        let base = fingerprint(Cause::ConnectionMissed, 1, &before);
+        assert_eq!(base.len(), 16);
+        // Leg 1 is before the break: no change.
+        assert_eq!(fingerprint(Cause::ConnectionMissed, 1, &later_first), base);
+        assert_ne!(fingerprint(Cause::ConnectionMissed, 1, &later_second), base);
+        assert_ne!(fingerprint(Cause::Cancelled, 1, &before), base);
     }
 
     #[test]

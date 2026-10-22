@@ -529,6 +529,7 @@ async fn get_trip_plan(
         results: params.results.clone(),
         max_changes,
         live_requested,
+        allowed_uids: None,
     };
     // `acrossMidnight` (2026-10-20): the next service date's trains too,
     // from the same clock time, merged in (`data::trip_plan_overnight`).
@@ -729,6 +730,9 @@ struct DateInputs {
     results: String,
     max_changes: u32,
     live_requested: bool,
+    /// Ride only these trains (a journey alternative's "same operator"
+    /// search, `plan_for_journey`); `None` for `/Trips/plan`.
+    allowed_uids: Option<Arc<std::collections::HashSet<String>>>,
 }
 
 /// One service date's finished plan: searched, live-checked (when asked)
@@ -847,6 +851,15 @@ async fn plan_on_date(
         })?
         .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
         (restrictions.map(Arc::new), via_search.map(Arc::new))
+    };
+    let restrictions = match &inputs.allowed_uids {
+        None => restrictions,
+        Some(uids) => Some(Arc::new(
+            restrictions
+                .map(|r| (*r).clone())
+                .unwrap_or_default()
+                .with_allowed_uids((**uids).clone()),
+        )),
     };
     let request = Arc::new(PlanRequest {
         date,
@@ -1154,6 +1167,87 @@ async fn plan_live(
             trains_read: read.len(),
             adjusted_trains: overlay.replaced_uids().len(),
         },
+    ))
+}
+
+/// Whose slot a journey re-plan holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplanSlot {
+    /// A user's request: one of [`PLAN_SLOTS`], a 503 when none is free.
+    Request,
+}
+
+/// One search for a journey's alternatives (`plan_for_journey`).
+#[derive(Debug, Clone)]
+pub(crate) struct ReplanQuery {
+    pub origin: String,
+    pub destination: String,
+    pub date: NaiveDate,
+    /// Minutes from `date`'s midnight (may exceed 1440).
+    pub depart_after_min: u32,
+    /// `fastest` (CSA) or `options` (RAPTOR's Pareto set).
+    pub results: &'static str,
+    pub max_changes: u32,
+    /// Ride only these trains, when set.
+    pub allowed_uids: Option<Arc<std::collections::HashSet<String>>>,
+}
+
+/// Plans one of a journey's alternative searches exactly as
+/// `GET /Trips/plan` would (`live=true`, same graph cache, overlay and leg
+/// details), holding `slot`. `Ok(None)` when no timetable is published for
+/// the date. The itineraries carry their live times (`departure_min`,
+/// `arrival_min`) and each train leg its `live`.
+pub(crate) async fn plan_for_journey(
+    app: &App,
+    query: &ReplanQuery,
+    slot: ReplanSlot,
+) -> Result<Option<Vec<trip_planning_itinerary::PlannedItinerary>>, (StatusCode, String)> {
+    let permit = match slot {
+        ReplanSlot::Request => PLAN_SLOTS.try_acquire().map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "too many trip plans are being computed right now; please retry in a moment"
+                    .to_string(),
+            )
+        })?,
+    };
+    let permit = Arc::new(permit);
+    let marker = trip_planning::latest_schedule_publish(&app.database)
+        .await
+        .map_err(internal_error("read the latest schedule publish"))?;
+    let Some(graph) = load_graph(app, query.date, marker).await? else {
+        return Ok(None);
+    };
+    let inputs = DateInputs {
+        origin: query.origin.clone(),
+        destination: query.destination.clone(),
+        waypoints: Vec::new(),
+        waypoint_codes: None,
+        avoid: trip_planning_itinerary::AvoidLists::default(),
+        vias: Vec::new(),
+        via_codes: Vec::new(),
+        results: query.results.to_string(),
+        max_changes: query
+            .max_changes
+            .min(trip_planning_itinerary::MAX_CHANGES_LIMIT),
+        live_requested: true,
+        allowed_uids: query.allowed_uids.clone(),
+    };
+    let plan = plan_on_date(
+        app,
+        &graph,
+        &inputs,
+        query.date,
+        trip_planning_itinerary::TimeBound::DepartAfter(query.depart_after_min),
+        &permit,
+    )
+    .await?;
+    Ok(Some(
+        plan.segments
+            .into_iter()
+            .next()
+            .map(|segment| segment.itineraries)
+            .unwrap_or_default(),
     ))
 }
 
