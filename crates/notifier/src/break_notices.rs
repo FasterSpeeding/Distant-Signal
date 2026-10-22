@@ -71,7 +71,7 @@ pub(crate) async fn breaks_to_notify(pool: &PgPool) -> anyhow::Result<Vec<BreakN
          LEFT JOIN journey_legs jl ON jl.id = b.trigger_leg_id \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         WHERE b.status = 'open' AND b.suggestions IS NOT NULL \
+         WHERE b.status = 'open' AND b.suggestions IS NOT NULL AND b.cause <> 'user_missed' \
            AND (b.notified_severity IS NULL OR b.severity > b.notified_severity) \
          ORDER BY b.detected_at, b.id \
          LIMIT 200",
@@ -82,8 +82,10 @@ pub(crate) async fn breaks_to_notify(pool: &PgPool) -> anyhow::Result<Vec<BreakN
 
 /// Whether an open, notifiable break owns tracked train
 /// `tracked_train_id`'s push: one of the user's journeys has a leg on that
-/// subscription and an open break whose push is not opted out. The train
-/// path then stays quiet; the break notice says more (§6.3).
+/// subscription and an open break, with suggestions planned, whose push is
+/// not opted out. The train path then stays quiet; the break notice says
+/// more (§6.3). A break the api could not plan for yet owns nothing, so a
+/// planning failure never silences the train.
 pub(crate) async fn break_owns_train(
     pool: &PgPool,
     user_id: &str,
@@ -96,6 +98,7 @@ pub(crate) async fn break_owns_train(
              JOIN journey_legs jl ON jl.journey_id = b.journey_id \
              LEFT JOIN notification_preferences p ON p.user_id = b.user_id \
              WHERE b.user_id = $1 AND b.status = 'open' AND b.cause <> 'user_missed' \
+               AND b.suggestions IS NOT NULL \
                AND jl.train_subscription_id = $2 \
                AND NOT j.suggestions_muted AND COALESCE(p.journey_suggestions, TRUE))",
     )
@@ -351,8 +354,34 @@ pub(crate) fn enabled() -> bool {
     ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The (break, result) pairs already counted, so a suppression a break
+/// keeps meeting every cycle (opened, unconfirmed, opted out) is counted
+/// once, not every 15 seconds. Cleared when it grows large; a recount after
+/// that is harmless.
+/// A counted (break, severity, result).
+type Counted = std::collections::HashSet<(i64, i16, &'static str)>;
+
+static COUNTED: std::sync::LazyLock<std::sync::Mutex<Counted>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Counted::new()));
+
+fn count_once(row: &BreakNoticeRow, decision: BreakDecision) {
+    let mut counted = COUNTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if counted.len() > 10_000 {
+        counted.clear();
+    }
+    if counted.insert((row.id, row.severity, decision.label())) {
+        metrics::counter!(
+            common::metrics::metric_name("notifier_journey_break_notice_total"),
+            "result" => decision.label()
+        )
+        .increment(1);
+    }
+}
+
 /// One cycle (§6.3): decide every notifiable open break and enqueue the
-/// notices, counting each decision in
+/// notices, counting each decision once per break and severity in
 /// `notifier_journey_break_notice_total{result}`. A delivered notice is
 /// recorded by the push queue's worker (`Delivered::JourneyBreak`).
 pub(crate) async fn run_break_notice_cycle(
@@ -366,11 +395,7 @@ pub(crate) async fn run_break_notice_cycle(
     }
     for row in breaks_to_notify(pool).await? {
         let decision = decide_break_notice(&row, now);
-        metrics::counter!(
-            common::metrics::metric_name("notifier_journey_break_notice_total"),
-            "result" => decision.label()
-        )
-        .increment(1);
+        count_once(&row, decision);
         if decision != BreakDecision::Send {
             tracing::debug!(
                 break_id = row.id,
