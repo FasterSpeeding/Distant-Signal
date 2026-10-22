@@ -550,7 +550,16 @@ export interface Suggestion {
   /** A TfL stop's modes and lines (`Tube: Northern, Victoria`), shown after
    * its name in the dropdown (`searchTflStops`). */
   detail?: string;
+  /** Only on `/stations`' merged search (`searchStationsAndStops`): a stop
+   * that is not a National Rail station, and where picking it leads. Its
+   * `code` is then a key (`tfl:940GZZLUUXB`), never a CRS. */
+  place?: StationPlace;
 }
+
+/** A non-National Rail stop in `/stations`' search: a TfL Tube, DLR or tram
+ * stop (no page of its own yet), or a served transit network's stop
+ * (`/transit/{network}/stops/{stopId}`). */
+export type StationPlace = { kind: 'tfl'; stop: TflStop } | { kind: 'transit'; network: string; stopId: string };
 
 /** One line at a TfL stop. */
 export interface TflStopLine {

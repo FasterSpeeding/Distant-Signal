@@ -176,6 +176,20 @@ the field). Picking a stop fills the place name and the stop id; editing
 the text afterwards drops the id. Free text stays allowed. Other modes
 keep the plain text inputs.
 
+Addendum (DS-134): `/stations`' search (`lib/stationSearch.ts`) also
+lists TfL stops (`GET /tfl/stops`) and every served transit network's
+stops (`GET /transit/{network}/stops`) after the National Rail stations,
+merged by match quality and labelled by mode (`Uxbridge · Tube:
+Metropolitan, Piccadilly`, `Altrincham · Metrolink tram stop`), so a stop
+with no National Rail station turns up. Picking a transit stop opens its
+`/transit` page; picking a TfL stop shows a panel on `/stations` with its
+modes, its lines' status links (`/lines/tfl-{line}`) and the National Rail
+station it serves, if any (`/tfl/stops/rail-crs`), since a TfL stop has no
+page or board of its own. Both lists are empty until their data is on
+(`pollers.tfl.stops.enabled`, `api.transitNetworks`), so the search is
+unchanged until then. The planner and the train pickers keep National
+Rail only.
+
 ## 7. Attribution
 
 TfL's terms ask for "Powered by TfL Open Data" (already in the footer and

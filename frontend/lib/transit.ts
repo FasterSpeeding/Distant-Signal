@@ -2,12 +2,9 @@ import { notFound } from 'next/navigation';
 import { ApiNotFoundError, getTransitNetwork } from './api';
 import type { TransitLine, TransitLineStatus } from './types';
 
-/** A network or line path segment (`metrolink`, `blue`): the api's grammar,
- * checked before asking it so a malformed URL 404s at once. */
-export const TRANSIT_ID = /^[a-z0-9-]{1,32}$/;
-
-/** A station's ATCO code (`9400ZZMAPIC`). */
-export const TRANSIT_STOP_ID = /^[A-Z0-9]{1,16}$/;
+// In their own module so a Client Component (`lib/stationSearch.ts`) can
+// check ids without pulling in this module's server-only `./api`.
+export { TRANSIT_ID, TRANSIT_STOP_ID } from './transitIds';
 
 /** The caption every scheduled board and timetable carries: the times are
  * the published timetable, not live tram times (transit spec §2). */
