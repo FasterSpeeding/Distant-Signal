@@ -74,6 +74,26 @@ ours will start late.
 Section 3 has prod measurements (aggregates only, taken read-only on
 2026-10-21) that size each idea. The recommendation is in section 9.
 
+## Phase 1 as built (DS-127)
+
+- `schedule_turnarounds`, rebuilt per date by schedule-reference after the
+  date's calling points and services (best effort); pruned by the
+  aggregator with the other schedule products.
+- The tracked-stop board lane in poller-ldbws (`trackedStops`, off by
+  default; its own 20-requests-a-cycle cap and 10 s budget), riding the
+  station-samples stream as `tracked-stop-boards/1` into
+  `tracked_stop_boards`; the api tries it before the general sample.
+- `platformBasis`, `displayPlatform`, `estimateSource` and the booked
+  comparison for `platformChanged` on `JourneyStop`; a nullable
+  `predictedStart` on the train states.
+- The high-confidence push in the notifier (on by default, 60 s; 0 turns
+  it off). It does not look at the origin board's `etd`: a Darwin time
+  for the departure supersedes the prediction on screen, but not a push
+  already sent.
+- Left out: the incoming unit's arrival platform (Q4), the first-seen
+  platform lead-time metric and the `etd` catch-up measurement (phase 0
+  leftovers), and everything in phases 2-3.
+
 ## 1. What DS has today
 
 ### 1.1 Timetable (CIF)
