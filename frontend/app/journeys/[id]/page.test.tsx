@@ -531,3 +531,62 @@ describe('JourneyDetailPage: untracked legs', () => {
     expect(screen.getAllByText('In progress (not live tracked)').length).toBeGreaterThanOrEqual(2);
   });
 });
+
+/** Mid-journey changes spec 2026-10-22 §6.4: the break push opens
+ * `/journeys/{id}?break={breakId}&src=push`. */
+describe('JourneyDetailPage break deep link', () => {
+  const openBreak = {
+    id: 5,
+    cause: 'connection_missed' as const,
+    fault: 'operator' as const,
+    severity: 3 as const,
+    triggerLegId: 1,
+    detectedAt: '2026-09-22T17:00:00Z',
+    suggestionsReady: true,
+    stale: false,
+    stationName: 'York',
+    destinationName: 'Edinburgh',
+    suggestionCount: 2,
+    firstArrival: '2026-09-22T19:12:00Z',
+  };
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    // Never answers: these tests only check what was asked for.
+    fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function renderWithQuery(query: Record<string, string>) {
+    return renderWithMantine(
+      await JourneyDetailPage({ params: Promise.resolve({ id: '167' }), searchParams: Promise.resolve(query) }),
+    );
+  }
+
+  it("opens the owner's open break, saying it came from the push", async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: true, openBreak }));
+    await renderWithQuery({ break: '5', src: 'push' });
+    expect(screen.getByText('Loading trains')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/167/breaks/current?src=push', { method: 'GET' });
+  });
+
+  it('only shows the banner for another break id', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: true, openBreak }));
+    await renderWithQuery({ break: '4', src: 'push' });
+    expect(screen.getByText('Connection at York missed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'See options' })).toBeInTheDocument();
+    expect(screen.queryByText('Loading trains')).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('never opens it for someone who is not the owner', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: false, openBreak }));
+    await renderWithQuery({ break: '5', src: 'push' });
+    expect(screen.getByText('Connection at York missed')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'See options' })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

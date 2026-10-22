@@ -2,6 +2,7 @@ import { Box, Group, Stack, Text } from '@mantine/core';
 import { ButtonLink } from '@/components/ButtonLink';
 import { CardLink } from '@/components/CardLink';
 import { DelayBadge } from '@/components/DelayBadge';
+import { JourneyBreakBanner } from '@/components/JourneyBreakBanner';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
 import { SectionTitle } from '@/components/SectionTitle';
 import { StatusRow } from '@/components/StatusRow';
@@ -304,6 +305,17 @@ export function CurrentJourneySection({
     <Stack component="section" aria-labelledby="current-journey-heading" gap="md">
       <SectionTitle id="current-journey-heading">Current journey</SectionTitle>
       {isLoneTrain(current) ? <CurrentTrainCard entry={current} /> : <CurrentJourneyCard journey={current} now={now} />}
+      {/* An open break (spec 2026-10-22 §8.1), under the card: the card is
+          one link, so the alert's "See options" can't sit inside it. */}
+      {!isLoneTrain(current) && current.detail.openBreak && (
+        <JourneyBreakBanner
+          journeyId={current.detail.id}
+          openBreak={current.detail.openBreak}
+          legs={current.detail.legs}
+          isOwner={current.detail.isOwner}
+          suggestionsMuted={current.detail.suggestionsMuted ?? false}
+        />
+      )}
       {alsoInProgress.length > 0 && (
         <Stack gap="xs">
           <SectionTitle order={3}>Also in progress</SectionTitle>

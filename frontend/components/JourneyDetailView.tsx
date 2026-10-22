@@ -2,6 +2,9 @@ import { Group, Stack, Text, Title } from '@mantine/core';
 import { AddJourneyLegButton } from './AddJourneyLegButton';
 import { DeleteJourneyButton } from './DeleteJourneyButton';
 import { JourneyLegCard } from './JourneyLegCard';
+import { JourneyBreakBanner } from './JourneyBreakBanner';
+import { EarlierPlans } from './EarlierPlans';
+import { missableLegId } from '@/lib/journeyBreak';
 import { JourneyStatusBadge } from './JourneyStatusBadge';
 import { LastUpdated } from './LastUpdated';
 import { SaveAsTemplateButton } from './SaveAsTemplateButton';
@@ -134,10 +137,16 @@ export function JourneyDetailView({
   journey,
   fetchedAt,
   origin,
+  openBreakOnLoad = false,
+  fromPush = false,
 }: {
   journey: JourneyDetail;
   fetchedAt: string;
   origin: string;
+  /** Open the open break's suggestions at once (the push deep link). */
+  openBreakOnLoad?: boolean;
+  /** The page was opened from the break's push notification. */
+  fromPush?: boolean;
 }) {
   // Review §2.5/M16: "Add a leg" used to be offered at the same visual
   // weight as the status badge even while the CURRENT leg still needs a
@@ -155,6 +164,10 @@ export function JourneyDetailView({
   const canAddLeg = journeyCanAddLeg(journey);
   const multiLeg = journey.legs.length > 1;
   const name = journeyNameInput(journey);
+  // Mid-journey changes (spec 2026-10-22 §8.2): which leg can be missed,
+  // and the open break, for the owner's leg actions.
+  const openBreak = journey.openBreak ?? null;
+  const missable = journey.isOwner ? missableLegId(journey.legs, new Date(fetchedAt)) : null;
 
   return (
     <>
@@ -237,6 +250,17 @@ export function JourneyDetailView({
         </Text>
       )}
       <LastUpdated timestamp={fetchedAt} label="Data as of" />
+      {openBreak && (
+        <JourneyBreakBanner
+          journeyId={journey.id}
+          openBreak={openBreak}
+          legs={journey.legs}
+          isOwner={journey.isOwner}
+          suggestionsMuted={journey.suggestionsMuted ?? false}
+          initialOpen={openBreakOnLoad}
+          fromPush={fromPush}
+        />
+      )}
       {journey.legs.map((leg, index) => (
         // 2026-09-22 UX review finding I12/2.6: "the journey is not drawn
         // as a chain" -- two cards with a bare 16px gap and no
@@ -259,10 +283,17 @@ export function JourneyDetailView({
             leg={leg}
             isOwner={journey.isOwner}
             isOnlyLeg={journey.legs.length === 1}
+            replan={{
+              missable: leg.id === missable,
+              openBreakId: openBreak?.id ?? null,
+              isBreakTrigger: openBreak?.triggerLegId === leg.id,
+              suggestionsMuted: journey.suggestionsMuted ?? false,
+            }}
           />
           {index < journey.legs.length - 1 && <LegConnector leg={leg} next={journey.legs[index + 1] ?? null} />}
         </Stack>
       ))}
+      {journey.isOwner && <EarlierPlans journeyId={journey.id} revisionCount={journey.revisionCount ?? 1} />}
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
@@ -15,6 +15,14 @@ import { loneTrainLeg, MAX_UPCOMING_JOURNEYS, type HomeJourney, type HomeLoneTra
 import { trackedTrainRowStatus } from '@/lib/trackedRowStatus';
 import type { JourneyDetail, TrackedTrainListItem } from '@/lib/types';
 import { CurrentJourneyCard, CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
+import { openBreakSummary } from '@/test/replanFixtures';
+
+// The open-break banner's "See options" sheet is a client component.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => '/',
+  useSearchParams: () => new URLSearchParams(''),
+}));
 
 const KGX: [string, string] = ['KGX', 'London Kings Cross'];
 const YRK: [string, string] = ['YRK', 'York'];
@@ -199,6 +207,26 @@ describe('CurrentJourneySection', () => {
     expect(within(section).getByRole('heading', { name: 'Current journey', level: 2 })).toBeInTheDocument();
     expect(within(section).getByRole('heading', { name: 'Also in progress', level: 3 })).toBeInTheDocument();
     expect(within(section).getByRole('link', { name: /Second trip/ })).toHaveAttribute('href', '/journeys/8');
+  });
+
+  it('shows an open break under the current journey, with its options for the owner', () => {
+    const current = journey();
+    current.detail.openBreak = openBreakSummary({ triggerLegId: 2 });
+    renderWithMantine(
+      <CurrentJourneySection current={current} alsoInProgress={[]} now={new Date('2026-09-17T10:00:00Z')} />,
+    );
+    const banner = screen.getByRole('region', { name: 'Connection at York missed' });
+    expect(banner).toHaveTextContent('3 other ways to Edinburgh. First arrives 11:12.');
+    expect(within(banner).getByRole('button', { name: 'See options' })).toBeInTheDocument();
+    // Not inside the card's link.
+    expect(banner.closest('a')).toBeNull();
+  });
+
+  it('shows no break banner without an open break', () => {
+    renderWithMantine(
+      <CurrentJourneySection current={journey()} alsoInProgress={[]} now={new Date('2026-09-17T10:00:00Z')} />,
+    );
+    expect(screen.queryByRole('button', { name: 'See options' })).not.toBeInTheDocument();
   });
 
   it('has no "Also in progress" list with one journey under way', () => {

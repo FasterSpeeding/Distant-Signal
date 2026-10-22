@@ -1218,6 +1218,9 @@ export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields
    * Optional: absent from an older backend (`lib/upcomingPast.ts` then
    * reads the order instead). */
   travelled?: boolean;
+  /** The journey's open break (mid-journey changes spec 2026-10-22 §7),
+   * `null` with none. Optional: absent from an older backend. */
+  openBreakId?: number | null;
 }
 
 /** `GET /Journeys/{id}`'s per-leg `legSkip` field
@@ -1270,6 +1273,9 @@ export interface JourneyLegDetail extends UntrackedLegFields {
    * leg; absent when the api couldn't work it out (or predates it), when
    * `lib/journeyStatus.ts` falls back to its own gap check. */
   connection?: LegConnection | null;
+  /** The legs of the previous plan this leg replaced (mid-journey changes
+   * spec 2026-10-22 §7). Usually empty; absent from an older backend. */
+  replacesLegIds?: number[];
 }
 
 /** How a change between two legs stands: `ok`, `atRisk` (little time left
@@ -1311,6 +1317,212 @@ export interface JourneyDetail {
    * reached this journey via the share link itself). See `JourneyShareLink`
    * and `ShareJourneyLinkButton.tsx`. */
   shareLink: JourneyShareLink | null;
+  /** The journey's open break, shown to everyone who can read the journey
+   * (only the owner may act on it). `null` with none; absent from an older
+   * backend. */
+  openBreak?: OpenBreakSummary | null;
+  /** How many plans the journey has had: 1 is only the booked plan. */
+  revisionCount?: number;
+  /** Whether the owner muted suggestions for this journey (owner only). */
+  suggestionsMuted?: boolean;
+}
+
+/* Mid-journey changes (docs/superpowers/specs/2026-10-22-mid-journey-changes-design.md
+ * §7, §8, §17.6): breaks, suggestions and the plan's revisions. */
+
+/** Why a plan broke. */
+export type BreakCause = 'cancelled' | 'part_cancelled' | 'connection_missed' | 'user_missed' | 'skipped_stop';
+
+/** Whose doing the break was. */
+export type BreakFault = 'operator' | 'user' | 'unknown';
+
+/** `JourneyDetail.openBreak`. */
+export interface OpenBreakSummary {
+  id: number;
+  cause: BreakCause;
+  fault: BreakFault;
+  severity: 1 | 2 | 3 | 4;
+  triggerLegId: number | null;
+  detectedAt: string;
+  suggestionsReady: boolean;
+  stale: boolean;
+  /** The station where it broke (the change, or the skipped stop). */
+  stationName: string | null;
+  /** Where the journey is going. */
+  destinationName: string | null;
+  suggestionCount: number;
+  /** The earliest arrival among the suggestions. */
+  firstArrival: string | null;
+}
+
+/** What the planner was asked: `cause` of `GET .../alternatives`. */
+export type AlternativesCause = 'missed' | 'cancelled' | 'connection' | 'choice';
+
+/** How a suggestion fits the traveller's ticket. */
+export type SuggestionFit = 'covered' | 'coveredIfCancelled' | 'check' | 'likelyNewTicket';
+
+/** Why a suggestion is one of the picked cards. */
+export type SuggestionPick = 'recommended' | 'fastest' | 'fewestChanges' | 'sameOperator' | 'noTube' | 'rejoin';
+
+/** One leg of a suggestion: a train, or a Tube ride, bus or walk. */
+export type ReplanSuggestionLeg =
+  | {
+      kind: 'train';
+      trainUid: string;
+      serviceDate: string;
+      originCrs: string | null;
+      originName: string | null;
+      destinationCrs: string | null;
+      destinationName: string | null;
+      departure: string;
+      arrival: string;
+      scheduledDeparture: string;
+      scheduledArrival: string;
+      operator: string | null;
+      operatorName: string | null;
+      platform: string | null;
+      cancelled: boolean;
+    }
+  | {
+      kind: 'untracked';
+      transitMode: string;
+      originName: string | null;
+      destinationName: string | null;
+      lineName: string | null;
+      originStopId: string | null;
+      destinationStopId: string | null;
+      plannedDeparture: string;
+      plannedArrival: string;
+    };
+
+/** One way to carry on. */
+export interface ReplanSuggestion {
+  /** "s1": unique within its set. */
+  id: string;
+  departure: string;
+  arrival: string;
+  changeCount: number;
+  /** Minutes later than the booked arrival (negative is earlier). */
+  delayMinutes: number | null;
+  /** The first leg of the plan this replaces. */
+  throughLegId: number;
+  /** The later leg of the plan this joins back onto, if any. */
+  rejoinsLegId: number | null;
+  legs: ReplanSuggestionLeg[];
+  cost: number;
+  fit: SuggestionFit | null;
+  /** The fit badge's words ("Usually covered by your ticket"). */
+  fitLabel: string | null;
+  /** Why, in a sentence, shown on tap. */
+  fitReason: string | null;
+  picks: SuggestionPick[];
+  /** The pick badges' words ("Recommended", "Fastest"). */
+  pickLabels: string[];
+  /** One of the (at most three) cards; otherwise under "More options". */
+  card: boolean;
+}
+
+/** The leg a set of suggestions starts from. */
+export interface SuggestionTrigger {
+  legId: number;
+  departure: string | null;
+  originName: string | null;
+  destinationName: string | null;
+  trainDestinationName: string | null;
+}
+
+/** A set of suggestions: cards first, then the rest, by cost. */
+export interface SuggestionSet {
+  generatedAt: string;
+  fingerprint: string;
+  fromLegId: number;
+  originCrs: string;
+  originName: string | null;
+  destinationCrs: string;
+  destinationName: string | null;
+  departAfter: string;
+  bookedArrival: string | null;
+  /** A one-line note under the list. */
+  hint: string | null;
+  trigger: SuggestionTrigger | null;
+  suggestions: ReplanSuggestion[];
+  stale: boolean;
+}
+
+/** A break, with its stored (or fresh) suggestions. */
+export interface BreakResponse {
+  id: number;
+  journeyId: number;
+  cause: BreakCause;
+  fault: BreakFault;
+  severity: number;
+  status: string;
+  triggerLegId: number | null;
+  detectedAt: string;
+  openedVia: 'push' | 'in_app' | null;
+  faultNote: string | null;
+  suggestions: SuggestionSet | null;
+  stale: boolean;
+}
+
+/** The answer to accepting a suggestion, replacing legs or reverting. */
+export interface ReplanResult {
+  journeyId: number;
+  revisionNo: number;
+  newLegIds: number[];
+  /** The revision Undo goes back to, `null` when there is none. */
+  undoRevisionNo: number | null;
+}
+
+/** What became of a leg of an earlier plan. */
+export type RevisionLegFate = 'planned' | 'travelled' | 'missed' | 'cancelled' | 'part_cancelled' | 'not_used';
+
+/** One leg of a revision. */
+export interface RevisionLeg {
+  position: number;
+  sourceLegId: number | null;
+  kind: 'train' | 'untracked';
+  trainUid: string | null;
+  serviceDate: string | null;
+  atocCode: string | null;
+  originCrs: string | null;
+  originName: string | null;
+  destinationCrs: string | null;
+  destinationName: string | null;
+  bookedDeparture: string | null;
+  bookedArrival: string | null;
+  transitMode: string | null;
+  originPlace: string | null;
+  destinationPlace: string | null;
+  lineName: string | null;
+  plannedDeparture: string | null;
+  plannedArrival: string | null;
+  ticketIds: number[];
+  fate: RevisionLegFate;
+}
+
+/** One plan the journey has had. */
+export interface Revision {
+  revisionNo: number;
+  createdAt: string;
+  reason: 'booked' | 'replace' | 'auto_shift' | 'revert';
+  cause: string | null;
+  fault: string | null;
+  breakId: number | null;
+  actor: string;
+  isCompensationBaseline: boolean;
+  canRevert: boolean;
+  legs: RevisionLeg[];
+}
+
+/** `GET /Journeys/{id}/revisions`, newest first. */
+export interface RevisionsResponse {
+  revisions: Revision[];
+}
+
+/** `GET`/`PUT /preferences/notifications`. */
+export interface NotificationPreferences {
+  journeySuggestions: boolean;
 }
 
 /** One leg of a `GET /Trips/plan` itinerary

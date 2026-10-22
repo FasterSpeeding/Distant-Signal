@@ -8,6 +8,7 @@ import { JourneyLegCandidates } from './JourneyLegCandidates';
 import { LegSearchForm } from './LegSearchForm';
 import { TextLink } from './TextLink';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
+import { LegReplanActions, type LegReplanContext } from './LegReplanActions';
 import { UntrackedLegCard } from './UntrackedLegCard';
 import { isUntrackedLeg } from '@/lib/untrackedLeg';
 import { legRouteAndTime } from '@/lib/journeyLegLabel';
@@ -144,6 +145,7 @@ export function JourneyLegCard({
   leg,
   isOwner,
   isOnlyLeg,
+  replan,
 }: {
   journeyId: number;
   leg: JourneyLegDetail;
@@ -154,6 +156,8 @@ export function JourneyLegCard({
    * instead of refresh) when removing this leg also removes the whole
    * journey. See that component's own doc comment. */
   isOnlyLeg: boolean;
+  /** Mid-journey actions ("I missed this train", "Find another way"). */
+  replan?: LegReplanContext | undefined;
 }) {
   const router = useRouter();
   const [changingTrain, setChangingTrain] = useState(false);
@@ -317,6 +321,7 @@ export function JourneyLegCard({
               every train leg (mid-journey phase 0). */}
           {isOwner && (
             <Group gap="xs">
+              {replan && <LegReplanActions journeyId={journeyId} leg={leg} context={replan} />}
               <Button size="xs" variant="default" onClick={() => setChangingTrain((c) => !c)}>
                 {changingTrain ? 'Cancel' : 'Change train'}
               </Button>

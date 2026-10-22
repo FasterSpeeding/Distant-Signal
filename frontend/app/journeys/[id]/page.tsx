@@ -27,8 +27,17 @@ export const metadata: Metadata = { title: 'Journey', robots: { index: false } }
  * for an anonymous share-link viewer; only the "Back to journeys"
  * link below stays specific to this page, since that anonymous
  * viewer has no "my trains" to go back to. */
-export default async function JourneyDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function JourneyDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  /** The break push's deep link: `?break={breakId}&src=push` (mid-journey
+   * changes spec 2026-10-22 §6.4). */
+  searchParams?: Promise<{ break?: string | string[]; src?: string | string[] }>;
+}) {
   const { id } = await params;
+  const query = (await searchParams) ?? {};
   if (!/^\d+$/.test(id)) {
     notFound();
   }
@@ -83,7 +92,15 @@ export default async function JourneyDetailPage({ params }: { params: Promise<{ 
       <TextLink href="/journeys" underline="always">
         Back to journeys
       </TextLink>
-      <JourneyDetailView journey={journey} fetchedAt={fetchedAt} origin={origin} />
+      <JourneyDetailView
+        journey={journey}
+        fetchedAt={fetchedAt}
+        origin={origin}
+        // The deep link opens the suggestions only on the owner's own,
+        // still open break; an old link just shows the page.
+        openBreakOnLoad={journey.isOwner && journey.openBreak != null && query.break === String(journey.openBreak.id)}
+        fromPush={query.src === 'push'}
+      />
     </Stack>
   );
 }

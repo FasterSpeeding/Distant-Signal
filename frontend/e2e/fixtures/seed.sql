@@ -603,3 +603,33 @@ VALUES
   (900001, 2, 'MKC', 'PBO', '2026-09-17', '10:00', 'unmatched'),
   (900001, 3, 'PBO', 'KGX', '2026-09-17', '12:00', 'unmatched')
 ON CONFLICT (journey_id, leg_order) DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- Three trains TOMORROW for the mid-journey changes flow
+-- (journey-mid-change.spec.ts: "I missed this train", take another, Undo),
+-- which needs trains still to run. Made-up codes (ZMA, ZMB) and TIPLOCs in
+-- `stanox_crs` only, as the /plan fixture above, so no other page changes.
+--   E2EMJ1  ZMA 09:00 -> ZMB 09:40
+--   E2EMJ2  ZMA 09:30 -> ZMB 10:10
+--   E2EMJ3  ZMA 10:00 -> ZMB 10:40
+-- ---------------------------------------------------------------------
+INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence)
+VALUES
+  ('E2EMJ-ZMA', 'ZMA', 'E2EMJA', 'Fixture Halt', 1),
+  ('E2EMJ-ZMB', 'ZMB', 'E2EMJB', 'Fixture Parkway', 1)
+ON CONFLICT (stanox) DO NOTHING;
+
+INSERT INTO schedule_calling_points_full
+  (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure,
+   public_arrival, public_departure, day_offset, can_board, can_alight)
+SELECT CURRENT_DATE + 1, uid, seq, tiploc, kind, arr::time, dep::time, arr::time, dep::time, 0,
+       TRUE, TRUE
+FROM (VALUES
+  ('E2EMJ1', 0, 'E2EMJA', 'origin', NULL, '09:00'),
+  ('E2EMJ1', 1, 'E2EMJB', 'terminate', '09:40', NULL),
+  ('E2EMJ2', 0, 'E2EMJA', 'origin', NULL, '09:30'),
+  ('E2EMJ2', 1, 'E2EMJB', 'terminate', '10:10', NULL),
+  ('E2EMJ3', 0, 'E2EMJA', 'origin', NULL, '10:00'),
+  ('E2EMJ3', 1, 'E2EMJB', 'terminate', '10:40', NULL)
+) AS t (uid, seq, tiploc, kind, arr, dep)
+ON CONFLICT DO NOTHING;

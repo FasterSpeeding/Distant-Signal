@@ -1,4 +1,5 @@
 import { Group } from '@mantine/core';
+import { JourneySuggestionsToggle } from '@/components/JourneySuggestionsToggle';
 import { NotificationsToggle } from '@/components/NotificationsToggle';
 import { PreferencesSection } from './PreferencesSection';
 
@@ -14,6 +15,7 @@ export function NotificationsSection() {
       <Group>
         <NotificationsToggle />
       </Group>
+      <JourneySuggestionsToggle />
     </PreferencesSection>
   );
 }
