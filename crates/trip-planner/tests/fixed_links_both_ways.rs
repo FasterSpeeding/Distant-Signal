@@ -251,3 +251,57 @@ fn a_pair_with_no_link_either_way_plans_as_before() {
     assert_eq!(before.0, ["SW0", "WALK 1 WATRLMN-WATRLOE", "SE3"]);
     assert_eq!(after, before);
 }
+
+/// DS-139: Euston to Vauxhall with a Victoria-Vauxhall link beside the
+/// direct one. Chained links pay no change at the stop between them, so
+/// the chain wins whenever its minutes add up to less: at the curated 11
+/// minutes and a 10-minute Euston-Victoria link that is 21 against the
+/// direct 22, and every search splits the one Victoria line ride at
+/// Victoria. At the corrected 14 (25), all three take the direct link.
+#[test]
+fn a_chain_of_links_wins_only_when_its_minutes_add_up_to_less() {
+    for (vic_vxh, expected) in [
+        (
+            11,
+            vec!["TUBE 10 EUSTON-VICTRIC", "TUBE 11 VICTRIC-VAUXHLM"],
+        ),
+        (14, vec!["TUBE 22 EUSTON-VAUXHLM"]),
+    ] {
+        let mut rows = alf_rows();
+        rows.push(row("TUBE", "EUS", "VIC", 10, ("0700", "1900"), "1111110"));
+        rows.push(row(
+            "TUBE",
+            "VXH",
+            "VIC",
+            vic_vxh,
+            ("0700", "1900"),
+            "1111110",
+        ));
+        let mut ic = interchange(index_fixed_links_both_ways(rows));
+        ic.tiploc_to_crs
+            .insert("VICTRIC".to_string(), "VIC".to_string());
+        ic.crs_to_tiplocs
+            .insert("VIC".to_string(), vec!["VICTRIC".to_string()]);
+        let (csa, raptor, arrival) = plan(&ic, "EUSTON", "VAUXHLM");
+        assert_eq!(csa, expected, "Victoria-Vauxhall {vic_vxh}");
+        assert_eq!(raptor, expected, "Victoria-Vauxhall {vic_vxh}");
+        assert_eq!(arrival, if vic_vxh == 11 { 621 } else { 622 });
+        let connections = network();
+        let journey = scan_connections_arrive_by(
+            ArriveByOptions {
+                connections: &connections,
+                interchange: &ic,
+                from_tiplocs: &["EUSTON".to_string()],
+                waypoints: &[],
+                to_tiplocs: &["VAUXHLM".to_string()],
+                vias: None,
+                arrive_by_min: 630,
+                date: date(),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(describe(&journey.legs), expected, "arrive-by, {vic_vxh}");
+    }
+}

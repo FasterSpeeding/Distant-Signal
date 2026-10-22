@@ -570,6 +570,176 @@ pub fn attach_transfer_lines(segments: &mut [SegmentResult]) {
     }
 }
 
+/// The three `TfL` stops of a ride through: `first`'s origin, the stop
+/// `first` ends and `second` starts at, and `second`'s destination. `Some`
+/// only for two transfers on the same mode and the same known line that
+/// meet at one stop and do not end where they started.
+fn through_stops<'a>(first: &'a PlannedLeg, second: &'a PlannedLeg) -> Option<[&'a str; 3]> {
+    let (
+        PlannedLeg::Transfer {
+            mode: first_mode,
+            line: Some(first_line),
+            origin_stop: Some(from),
+            destination_stop: Some(via),
+            ..
+        },
+        PlannedLeg::Transfer {
+            mode: second_mode,
+            line: Some(second_line),
+            origin_stop: Some(via_again),
+            destination_stop: Some(to),
+            ..
+        },
+    ) = (first, second)
+    else {
+        return None;
+    };
+    (first_mode.eq_ignore_ascii_case(second_mode)
+        && first_line == second_line
+        && via.id == via_again.id
+        && from.id != via.id
+        && via.id != to.id
+        && from.id != to.id)
+        .then_some([from.id.as_str(), via.id.as_str(), to.id.as_str()])
+}
+
+/// Whether a ride from `from` through `via` to `to` carries on the same
+/// way at `via`, by the stops' positions (`(latitude, longitude)`): it
+/// turns through less than a right angle there. DS has no `TfL` line
+/// sequences, so this stands in for "the same train runs on": a ride that
+/// doubles back (Euston to Victoria, then Victoria back to King's Cross)
+/// is a change of train, and so, conservatively, is one that turns
+/// sharply. Positions on a local flat projection, which is exact enough
+/// across London.
+fn carries_on(from: (f64, f64), via: (f64, f64), to: (f64, f64)) -> bool {
+    let east_scale = via.0.to_radians().cos();
+    let step = |a: (f64, f64), b: (f64, f64)| ((b.0 - a.0), (b.1 - a.1) * east_scale);
+    let (inbound, outbound) = (step(from, via), step(via, to));
+    inbound.0 * outbound.0 + inbound.1 * outbound.1 > 0.0
+}
+
+/// Merges, within each itinerary of `segments`, consecutive transfers that
+/// are one ride (DS-139): the same mode and line ([`through_stops`]),
+/// carrying on the same way ([`carries_on`]) through a stop where no via
+/// was satisfied. The merged leg runs from the first one's origin to the
+/// last one's destination, with their minutes added. `positions` gives
+/// each `TfL` stop's `(latitude, longitude)`; a stop without one is never
+/// ridden through. Returns the stops a merge would need positions for when
+/// `positions` is `None` (and changes nothing then).
+fn merge_rides_through(
+    segments: &mut [SegmentResult],
+    positions: Option<&HashMap<String, (f64, f64)>>,
+) -> Vec<String> {
+    let mut wanted = Vec::new();
+    for itinerary in segments.iter_mut().flat_map(|s| &mut s.itineraries) {
+        // Legs a via was satisfied by walking into: their end is a stop the
+        // traveller asked to pass, so the leg stays whole.
+        let via_walks: Vec<usize> = itinerary
+            .via_satisfied_by
+            .iter()
+            .filter(|via| via.how == "walk")
+            .map(|via| via.leg)
+            .collect();
+        // The judgement for each junction is made on the original legs: the
+        // stop before the junction, it, and the stop after.
+        let through: Vec<bool> = itinerary
+            .legs
+            .windows(2)
+            .enumerate()
+            .map(|(index, pair)| {
+                let Some(stops) = through_stops(&pair[0], &pair[1]) else {
+                    return false;
+                };
+                if via_walks.contains(&index) {
+                    return false;
+                }
+                let Some(positions) = positions else {
+                    wanted.extend(stops.iter().map(|stop| (*stop).to_owned()));
+                    return false;
+                };
+                match stops.map(|stop| positions.get(stop)) {
+                    [Some(from), Some(via), Some(to)] => carries_on(*from, *via, *to),
+                    _ => false,
+                }
+            })
+            .collect();
+        if !through.contains(&true) {
+            continue;
+        }
+        let mut merged: Vec<PlannedLeg> = Vec::with_capacity(itinerary.legs.len());
+        // Each original leg's index in `merged`.
+        let mut new_index = Vec::with_capacity(itinerary.legs.len());
+        for (index, leg) in std::mem::take(&mut itinerary.legs).into_iter().enumerate() {
+            let last = merged.len().saturating_sub(1);
+            if index > 0
+                && through[index - 1]
+                && let Some(PlannedLeg::Transfer {
+                    destination_crs,
+                    destination_stop,
+                    minutes,
+                    ..
+                }) = merged.last_mut()
+                && let PlannedLeg::Transfer {
+                    destination_crs: next_crs,
+                    destination_stop: next_stop,
+                    minutes: next_minutes,
+                    ..
+                } = &leg
+            {
+                destination_crs.clone_from(next_crs);
+                destination_stop.clone_from(next_stop);
+                *minutes += next_minutes;
+                new_index.push(last);
+                continue;
+            }
+            new_index.push(merged.len());
+            merged.push(leg);
+        }
+        itinerary.legs = merged;
+        for via in &mut itinerary.via_satisfied_by {
+            if let Some(&index) = new_index.get(via.leg) {
+                via.leg = index;
+            }
+        }
+    }
+    wanted
+}
+
+/// A `tfl_stops` row's id, latitude and longitude.
+type StopPosition = (String, Option<f64>, Option<f64>);
+
+/// Merges the `TfL` transfers of `segments` that are one ride through a
+/// stop ([`merge_rides_through`]): Euston to Victoria then Victoria to
+/// Vauxhall, both southbound on the Victoria line, is one leg, Euston to
+/// Vauxhall. Run after [`attach_transfer_lines`]. Best effort: reads the
+/// stops' positions only when some pair of legs could merge, and on a
+/// database error leaves the legs as they are.
+pub async fn merge_transfer_rides(pool: &PgPool, segments: &mut [SegmentResult]) {
+    let mut ids = merge_rides_through(segments, None);
+    if ids.is_empty() {
+        return;
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    let rows: Result<Vec<StopPosition>, sqlx::Error> = sqlx::query_as(
+        "SELECT stop_id, latitude, longitude FROM tfl_stops WHERE stop_id = ANY($1::text[])",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await;
+    let positions: HashMap<String, (f64, f64)> = match rows {
+        Ok(rows) => rows
+            .into_iter()
+            .filter_map(|(id, lat, lon)| Some((id, (lat?, lon?))))
+            .collect(),
+        Err(err) => {
+            tracing::warn!(error = ?err, "TfL stop positions for merging transfers failed; serving them unmerged");
+            return;
+        }
+    };
+    merge_rides_through(segments, Some(&positions));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +819,211 @@ mod tests {
         );
         assert_eq!(line(("EUS", "BNK"), (Some(&euston), Some(&bank))), None);
         assert_eq!(line(("EUS", "VXH"), (Some(&euston), None)), None);
+    }
+
+    /// A `TUBE` transfer between two `TfL` stops (`tube_leg`'s ids are the
+    /// stops' `NaPTAN` ids without `940GZZLU`) on `line`.
+    fn tube_leg(from: &str, to: &str, line: Option<&str>, minutes: i32) -> PlannedLeg {
+        PlannedLeg::Transfer {
+            mode: "TUBE".to_owned(),
+            origin_crs: Some(from.to_owned()),
+            destination_crs: Some(to.to_owned()),
+            minutes,
+            line: line.map(str::to_owned),
+            origin_stop: Some(Box::new(stop(from, &[]))),
+            destination_stop: Some(Box::new(stop(to, &[]))),
+        }
+    }
+
+    fn segment(legs: Vec<PlannedLeg>, vias: &[(usize, &'static str)]) -> SegmentResult {
+        SegmentResult {
+            origin_crs: "MKC".to_owned(),
+            destination_crs: "VXH".to_owned(),
+            itineraries: vec![crate::data::trip_planning_itinerary::PlannedItinerary {
+                legs,
+                change_count: 0,
+                total_duration_minutes: 60,
+                exceeds_recommended_changes: None,
+                departure_min: 0,
+                arrival_min: 60,
+                arrival_tiploc: None,
+                departure_tiploc: None,
+                live_feasible: None,
+                continues_previous_train: false,
+                via_satisfied_by: vias
+                    .iter()
+                    .map(
+                        |(leg, how)| crate::data::trip_planning_itinerary::ViaSatisfied {
+                            crs: "VIA".to_owned(),
+                            matched_crs: None,
+                            segment: 0,
+                            leg: *leg,
+                            how,
+                        },
+                    )
+                    .collect(),
+            }],
+            capped_by_max_changes: false,
+            depart_after_min: None,
+            arrive_by_min: None,
+            no_result_reason: None,
+        }
+    }
+
+    /// The `TfL` stops' positions (`tfl_stops.latitude`/`longitude`).
+    fn positions() -> HashMap<String, (f64, f64)> {
+        [
+            ("EUS", (51.528_136, -0.133_899)),
+            ("VIC", (51.496_359, -0.143_102)),
+            ("VXH", (51.485_743, -0.124_204)),
+            ("KGX", (51.530_312, -0.123_859)),
+            ("CHX", (51.507_819, -0.125_565)),
+        ]
+        .into_iter()
+        .map(|(id, at)| (id.to_owned(), at))
+        .collect()
+    }
+
+    /// `MODE minutes FROM-TO line` per transfer leg, after merging.
+    fn merged(mut segments: Vec<SegmentResult>) -> (Vec<String>, Vec<usize>) {
+        // The first pass, with no positions, only names the stops it needs.
+        let before = segments[0].itineraries[0].legs.len();
+        merge_rides_through(&mut segments, None);
+        assert_eq!(segments[0].itineraries[0].legs.len(), before);
+        merge_rides_through(&mut segments, Some(&positions()));
+        let itinerary = &segments[0].itineraries[0];
+        let legs = itinerary
+            .legs
+            .iter()
+            .map(|leg| match leg {
+                PlannedLeg::Transfer {
+                    mode,
+                    minutes,
+                    line,
+                    origin_stop,
+                    destination_stop,
+                    ..
+                } => format!(
+                    "{mode} {minutes} {}-{} {}",
+                    origin_stop.as_ref().unwrap().id,
+                    destination_stop.as_ref().unwrap().id,
+                    line.as_deref().unwrap_or("-"),
+                ),
+                PlannedLeg::Train { .. } => "train".to_owned(),
+            })
+            .collect();
+        (
+            legs,
+            itinerary.via_satisfied_by.iter().map(|v| v.leg).collect(),
+        )
+    }
+
+    #[test]
+    fn one_victoria_line_ride_through_victoria_is_one_leg() {
+        // Euston to Victoria to Vauxhall: southbound throughout.
+        let (legs, _) = merged(vec![segment(
+            vec![
+                tube_leg("EUS", "VIC", Some("Victoria"), 10),
+                tube_leg("VIC", "VXH", Some("Victoria"), 14),
+            ],
+            &[],
+        )]);
+        assert_eq!(legs, ["TUBE 24 EUS-VXH Victoria"]);
+        // And northbound.
+        let (legs, _) = merged(vec![segment(
+            vec![
+                tube_leg("VXH", "VIC", Some("Victoria"), 14),
+                tube_leg("VIC", "EUS", Some("Victoria"), 10),
+            ],
+            &[],
+        )]);
+        assert_eq!(legs, ["TUBE 24 VXH-EUS Victoria"]);
+    }
+
+    #[test]
+    fn a_change_of_line_or_direction_stays_two_legs() {
+        let two = |first: PlannedLeg, second: PlannedLeg| {
+            merged(vec![segment(vec![first, second], &[])]).0
+        };
+        // Northern line to Euston, then the Victoria line on.
+        assert_eq!(
+            two(
+                tube_leg("CHX", "EUS", Some("Northern"), 18),
+                tube_leg("EUS", "VXH", Some("Victoria"), 22)
+            ),
+            ["TUBE 18 CHX-EUS Northern", "TUBE 22 EUS-VXH Victoria"]
+        );
+        // The Victoria line south to Victoria, then back north past Euston
+        // to King's Cross: the same line, but doubling back.
+        assert_eq!(
+            two(
+                tube_leg("EUS", "VIC", Some("Victoria"), 10),
+                tube_leg("VIC", "KGX", Some("Victoria"), 12)
+            ),
+            ["TUBE 10 EUS-VIC Victoria", "TUBE 12 VIC-KGX Victoria"]
+        );
+        // A line unknown on either leg, or a walk.
+        assert_eq!(
+            two(
+                tube_leg("EUS", "VIC", None, 10),
+                tube_leg("VIC", "VXH", Some("Victoria"), 14)
+            ),
+            ["TUBE 10 EUS-VIC -", "TUBE 14 VIC-VXH Victoria"]
+        );
+        let mut walk = tube_leg("VIC", "VXH", Some("Victoria"), 14);
+        if let PlannedLeg::Transfer { mode, .. } = &mut walk {
+            "WALK".clone_into(mode);
+        }
+        assert_eq!(
+            two(tube_leg("EUS", "VIC", Some("Victoria"), 10), walk),
+            ["TUBE 10 EUS-VIC Victoria", "WALK 14 VIC-VXH Victoria"]
+        );
+    }
+
+    #[test]
+    fn a_stop_with_no_position_or_a_via_walked_into_is_not_ridden_through() {
+        let (legs, _) = merged(vec![segment(
+            vec![
+                tube_leg("EUS", "PIM", Some("Victoria"), 10),
+                tube_leg("PIM", "VXH", Some("Victoria"), 14),
+            ],
+            &[],
+        )]);
+        assert_eq!(legs.len(), 2, "{legs:?}");
+        // `?via=VIC`, satisfied by the leg into Victoria.
+        let (legs, vias) = merged(vec![segment(
+            vec![
+                tube_leg("EUS", "VIC", Some("Victoria"), 10),
+                tube_leg("VIC", "VXH", Some("Victoria"), 14),
+            ],
+            &[(0, "walk")],
+        )]);
+        assert_eq!(legs.len(), 2, "{legs:?}");
+        assert_eq!(vias, [0]);
+    }
+
+    #[test]
+    fn legs_after_a_merge_keep_their_vias() {
+        // A three-stop ride after another leg, then one more leg: the vias
+        // satisfied by the legs move with them.
+        let (legs, vias) = merged(vec![segment(
+            vec![
+                tube_leg("CHX", "EUS", Some("Northern"), 18),
+                tube_leg("EUS", "VIC", Some("Victoria"), 10),
+                tube_leg("VIC", "VXH", Some("Victoria"), 14),
+                tube_leg("VXH", "VIC", Some("Victoria"), 14),
+            ],
+            &[(0, "walk"), (2, "walk"), (3, "walk")],
+        )]);
+        assert_eq!(
+            legs,
+            [
+                "TUBE 18 CHX-EUS Northern",
+                "TUBE 24 EUS-VXH Victoria",
+                "TUBE 14 VXH-VIC Victoria"
+            ]
+        );
+        assert_eq!(vias, [0, 1, 2]);
     }
 
     #[test]
@@ -937,6 +1312,84 @@ mod db_tests {
         assert_eq!(legs[0]["line"], "Testline");
         assert!(legs[1].get("line").is_none(), "{legs}");
         assert!(legs[2].get("line").is_none(), "{legs}");
+        cleanup(&pool).await;
+    }
+
+    /// DS-139: two Testline legs in a straight line through TESTC (south-
+    /// west, then south-west again) are served as one, by the stops'
+    /// positions in `tfl_stops`; back the way they came, they stay two.
+    #[tokio::test]
+    #[ignore = "requires a live database (DATABASE_URL)"]
+    async fn a_ride_through_a_stop_is_merged_by_the_stops_positions() {
+        let pool = connect().await;
+        seed(&pool).await;
+        let stops = stops_by_id(
+            &pool,
+            &[
+                "940GZZTESTA".to_owned(),
+                "940GZZTESTC".to_owned(),
+                "940GZZTESTD".to_owned(),
+            ],
+        )
+        .await
+        .unwrap();
+        let leg = |from: &str, to: &str| match transfer("TUBE", "Z8A", "Z8B") {
+            PlannedLeg::Transfer {
+                mode,
+                origin_crs,
+                destination_crs,
+                minutes,
+                ..
+            } => PlannedLeg::Transfer {
+                mode,
+                origin_crs,
+                destination_crs,
+                minutes,
+                line: Some("Testline".to_owned()),
+                origin_stop: Some(Box::new(stops[from].clone())),
+                destination_stop: Some(Box::new(stops[to].clone())),
+            },
+            PlannedLeg::Train { .. } => unreachable!(),
+        };
+        let itinerary = |legs: Vec<PlannedLeg>| SegmentResult {
+            origin_crs: "Z8A".to_owned(),
+            destination_crs: "Z8C".to_owned(),
+            itineraries: vec![crate::data::trip_planning_itinerary::PlannedItinerary {
+                legs,
+                change_count: 0,
+                total_duration_minutes: 24,
+                exceeds_recommended_changes: None,
+                departure_min: 0,
+                arrival_min: 24,
+                arrival_tiploc: None,
+                departure_tiploc: None,
+                live_feasible: None,
+                continues_previous_train: false,
+                via_satisfied_by: Vec::new(),
+            }],
+            capped_by_max_changes: false,
+            depart_after_min: None,
+            arrive_by_min: None,
+            no_result_reason: None,
+        };
+        let mut segments = vec![
+            itinerary(vec![
+                leg("940GZZTESTA", "940GZZTESTC"),
+                leg("940GZZTESTC", "940GZZTESTD"),
+            ]),
+            itinerary(vec![
+                leg("940GZZTESTD", "940GZZTESTC"),
+                leg("940GZZTESTC", "940GZZTESTD"),
+            ]),
+        ];
+        merge_transfer_rides(&pool, &mut segments).await;
+        let through = serde_json::to_value(&segments[0].itineraries[0].legs).unwrap();
+        assert_eq!(through.as_array().unwrap().len(), 1, "{through}");
+        assert_eq!(through[0]["minutes"], 24);
+        assert_eq!(through[0]["originStop"]["id"], "940GZZTESTA");
+        assert_eq!(through[0]["destinationStop"]["id"], "940GZZTESTD");
+        assert_eq!(through[0]["line"], "Testline");
+        assert_eq!(segments[1].itineraries[0].legs.len(), 2);
         cleanup(&pool).await;
     }
 }
