@@ -972,6 +972,14 @@ replaces that train's own push (3); a global opt-out plus a per-journey
 mute, no quiet hours yet (4); the data decides fault when the user marks
 a train missed (5); and 6 to 13 as recommended.
 
+Also decided: phase 0 starts now and phases 1 and later after the
+one-leg-journeys change (DS-124) lands; suggestions warn "check your
+ticket" when an alternative may not be valid on it (a hint only, no fares
+data); the push states what happened and the next option ("You'll miss
+the 10:16 to Charing Cross. Next: 10:31, arrive 10:52. Tap to switch.").
+How alternatives are ranked is still open: the user wants it to depend
+on context (ticket validity, speed, changes), pending research.
+
 ## 15. Tests
 
 - **Pure engine** (`journey_feasibility`): MSN at a station, `NoInterchange`,
