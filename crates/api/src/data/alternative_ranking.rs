@@ -22,7 +22,7 @@
 //! reason.
 
 use chrono::{DateTime, Duration, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A ticket's fare class, guessed from its free-text type (§17.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -153,7 +153,7 @@ pub fn entitlement(
 }
 
 /// How well one alternative fits the ticket (§17.3, step 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Fit {
     Covered,
@@ -207,7 +207,7 @@ pub struct Candidate {
 }
 
 /// One of the badged picks (§17.6), in display order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Pick {
     Recommended,
