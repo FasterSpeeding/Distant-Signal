@@ -1,4 +1,5 @@
-import { nowInLondon } from '@/lib/londonWallClock';
+import { formatWeekdayShortDate } from '@/lib/dateFormat';
+import { addCalendarDays, nowInLondon } from '@/lib/londonWallClock';
 import type { ServiceModeFields, TrainSearchResult } from '@/lib/types';
 
 /** The train search's filter patterns and result state, for
@@ -39,7 +40,84 @@ export const TRAIN_URL_PARAMS = [
   'to',
   'arrival_from',
   'arrival_to',
+  'from_day_offset',
+  'to_day_offset',
+  'arrival_from_day_offset',
+  'arrival_to_day_offset',
+  'operator',
 ] as const;
+
+/** A two-character ATOC operator code, as `operator=` takes them. */
+const OPERATOR_CODE = /^[A-Z0-9]{2}$/;
+
+/** `?operator=` read tolerantly: comma-separated, trimmed, uppercased, with
+ * repeats and anything that is not a code dropped and, given the known
+ * operators, codes not among them dropped too, so a stale or hand-edited
+ * link narrows to what can still be searched rather than failing with a
+ * `400`. */
+export function parseOperatorParam(raw: string | null | undefined, known?: ReadonlySet<string>): string[] {
+  const codes: string[] = [];
+  for (const entry of (raw ?? '').split(',')) {
+    const code = entry.trim().toUpperCase();
+    if (!OPERATOR_CODE.test(code) || codes.includes(code)) continue;
+    if (known && known.size > 0 && !known.has(code)) continue;
+    codes.push(code);
+  }
+  return codes;
+}
+
+/** `?*_day_offset=`: `1` is the morning after the searched date, and
+ * anything else (absent, `0`, junk) the date itself. */
+export function parseNextDayParam(raw: string | null | undefined): boolean {
+  return raw?.trim() === '1';
+}
+
+/** `"HH:MM"` as minutes past midnight, `null` for anything else. */
+export function clockMinutes(time: string): number | null {
+  const trimmed = time.trim();
+  if (!TIME_PATTERN.test(trimmed)) return null;
+  const [hours, minutes] = trimmed.split(':').map(Number);
+  return (hours ?? 0) * 60 + (minutes ?? 0);
+}
+
+/** Whether a time window's upper bound (Latest departure, Latest arrival)
+ * falls after the searched date's midnight. It does when the visitor says
+ * so (`ownNextDay`), and it must when it is earlier than its lower bound:
+ * "from 22:00 to 01:30" can only mean 01:30 the next morning. `implied`
+ * marks that second case, where the choice is not the visitor's to make.
+ * The API applies the same rule to a bound sent without its day
+ * (`crates/api/src/routes/trains.rs`, `resolve_window`). */
+export function upperBoundNextDay(
+  upper: string,
+  ownNextDay: boolean,
+  lower: string,
+  lowerNextDay: boolean,
+): { nextDay: boolean; implied: boolean } {
+  const upperMinutes = clockMinutes(upper);
+  const lowerMinutes = clockMinutes(lower);
+  const implied =
+    upperMinutes !== null && lowerMinutes !== null && upperMinutes < lowerMinutes + (lowerNextDay ? 1440 : 0);
+  return { nextDay: ownNextDay || implied, implied };
+}
+
+/** The day after `searchedDate` (`"YYYY-MM-DD"`), as "Sat 24 Oct": the
+ * calendar day a time after its midnight falls on. */
+export function nextDateLabel(searchedDate: string): string {
+  // Noon UTC is the same calendar day in London all year.
+  return formatWeekdayShortDate(`${addCalendarDays(searchedDate, 1)}T12:00:00Z`);
+}
+
+/** A search's rows split at the searched date's midnight: those leaving on
+ * the date itself, then those leaving after its midnight (`dayOffset` 1 or
+ * more). The API returns them in train-day order, so the split is one
+ * index. */
+export function splitAtMidnight<Row extends Pick<TrainSearchResult, 'dayOffset'>>(
+  rows: readonly Row[],
+): { sameDay: Row[]; afterMidnight: Row[] } {
+  const index = rows.findIndex((row) => (row.dayOffset ?? 0) >= 1);
+  if (index === -1) return { sameDay: [...rows], afterMidnight: [] };
+  return { sameDay: rows.slice(0, index), afterMidnight: rows.slice(index) };
+}
 
 /** The track button's noun for a search row. */
 export function trackNoun(row: ServiceModeFields): 'train' | 'bus' | 'ferry' {

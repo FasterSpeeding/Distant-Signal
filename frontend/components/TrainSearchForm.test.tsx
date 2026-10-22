@@ -101,6 +101,7 @@ function searchBody(
     destinationName?: string | null;
     destinationArrival?: string | null;
     operator?: string | null;
+    dayOffset?: number;
   }[],
   nextCursor: string | null = null,
 ) {
@@ -958,11 +959,136 @@ describe('TrainSearchForm', () => {
     expect(screen.getByRole('link', { name: 'Track it manually' })).toHaveAttribute('href', '/track');
   });
 
-  it('renders no operator filter at all', () => {
-    vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<TrainSearchForm />);
+  describe('operator filter', () => {
+    const OPERATORS = { SW: 'South Western Railway', GW: 'Great Western Railway' };
 
-    expect(screen.queryByLabelText(/Operator/i)).not.toBeInTheDocument();
+    it('offers the operators by name and searches any of the ones picked', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" operatorNames={OPERATORS} />);
+      await awaitMountSettled();
+
+      fireEvent.click(panelCombobox('Operator (optional)'));
+      const options = screen.getAllByRole('option').map((option) => option.textContent);
+      // By name, code first, as on /incidents.
+      expect(options).toEqual(['GW · Great Western Railway', 'SW · South Western Railway']);
+      fireEvent.click(screen.getByRole('option', { name: 'GW · Great Western Railway' }));
+      fireEvent.click(screen.getByRole('option', { name: 'SW · South Western Railway' }));
+
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&operator=GW%2CSW'));
+      expect(screen.getByTestId('list-filter-count')).toHaveTextContent('1');
+    });
+
+    it('reads ?operator= tolerantly, dropping codes it does not know', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(
+        <TrainSearchForm initialStation="MAN" initialOperator=" sw,XX,,gw,SW,toolong" operatorNames={OPERATORS} />,
+      );
+      await awaitMountSettled();
+
+      expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&operator=SW%2CGW');
+    });
+
+    it('clears with the other filters', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialOperator="SW" operatorNames={OPERATORS} />);
+      await awaitMountSettled();
+
+      openFiltersIfCompact();
+      fireEvent.click(screen.getByRole('button', { name: /^Clear filters/ }));
+
+      await waitFor(() => expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN'));
+    });
+  });
+
+  describe('times after midnight', () => {
+    /** The "Next day" box under each time field, in field order. */
+    function nextDayBoxes(): HTMLElement[] {
+      return screen.getAllByRole('checkbox', { name: /^Next day, Sat 24 Oct/ });
+    }
+
+    it('shows a Next day box, naming the next date, once a time is set', async () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialDate="2026-10-23" />);
+      await awaitMountSettled();
+
+      openFiltersIfCompact();
+      expect(screen.queryByRole('checkbox', { name: /^Next day/ })).not.toBeInTheDocument();
+      fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '00:30' } });
+      expect(nextDayBoxes()).toHaveLength(1);
+    });
+
+    it('sends an earliest time after midnight as from_day_offset=1', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialDate="2026-10-23" />);
+      await awaitMountSettled();
+
+      fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '00:30' } });
+      fireEvent.click(nextDayBoxes()[0]!);
+
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe(
+          '/api/trains/search?station=MAN&date=2026-10-23&from=00%3A30&from_day_offset=1',
+        ),
+      );
+    });
+
+    it('ticks and locks the latest time after midnight when it is earlier than the earliest', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialDate="2026-10-23" />);
+      await awaitMountSettled();
+
+      fireEvent.change(panelField('Earliest departure (optional)'), { target: { value: '22:00' } });
+      fireEvent.change(panelField('Latest departure (optional)'), { target: { value: '01:30' } });
+
+      const [fromBox, toBox] = nextDayBoxes();
+      expect(fromBox).not.toBeChecked();
+      expect(toBox).toBeChecked();
+      expect(toBox).toBeDisabled();
+      expect(screen.getByText('Earlier than the earliest departure, so after midnight.')).toBeInTheDocument();
+      // The API reads "to before from" the same way, so the box the visitor
+      // did not tick stays out of the query.
+      await waitFor(() =>
+        expect(searchCallUrl(fetchMock)).toBe('/api/trains/search?station=MAN&date=2026-10-23&from=22%3A00&to=01%3A30'),
+      );
+    });
+
+    it('restores a ticked box from the URL', async () => {
+      const fetchMock = mockFetchByUrl();
+      vi.stubGlobal('fetch', fetchMock);
+      renderWithMantine(
+        <TrainSearchForm initialStation="MAN" initialDate="2026-10-23" initialTo="06:00" initialToDayOffset="1" />,
+      );
+      await awaitMountSettled();
+
+      expect(searchCallUrl(fetchMock)).toBe(
+        '/api/trains/search?station=MAN&date=2026-10-23&to=06%3A00&to_day_offset=1',
+      );
+      openFiltersIfCompact();
+      expect(nextDayBoxes()[0]).toBeChecked();
+    });
+
+    it('lists the trains leaving after midnight under the next date, marked +1', async () => {
+      const rows = [
+        { uid: 'C20001', scheduled: '23:40', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'WAT', dayOffset: 0 },
+        { uid: 'C20002', scheduled: '00:30', stationCrs: 'MAN', originCrs: 'EUS', destinationCrs: 'OXF', dayOffset: 1 },
+      ];
+      vi.stubGlobal('fetch', mockFetchByUrl({ search: () => new Response(searchBody(rows), { status: 200 }) }));
+      renderWithMantine(<TrainSearchForm initialStation="MAN" initialDate="2026-10-23" />);
+      await awaitMountSettled();
+
+      const evening = screen.getByRole('list', { name: 'Trains' });
+      expect(within(evening).getByRole('link', { name: rowName('23:40', 'WAT') })).toBeInTheDocument();
+      const afterMidnight = screen.getByRole('list', { name: 'After midnight, Sat 24 Oct' });
+      const late = within(afterMidnight).getByRole('link', { name: /^00:30 \(next day\) to OXF/ });
+      expect(late.closest('li')).toHaveTextContent('+1');
+      // Still the searched date's train.
+      expect(late).toHaveAttribute('href', expect.stringContaining('2026-10-23'));
+    });
   });
 
   it('does not offer Load more when the response has no nextCursor', async () => {

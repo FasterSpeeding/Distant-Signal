@@ -2883,6 +2883,19 @@ export interface TrainSearchResult extends ServiceModeFields {
 export interface TrainSearchPage extends TimetableCertaintyFields {
   results: TrainSearchResult[];
   nextCursor: string | null;
+  /** The service date searched, `"YYYY-MM-DD"`: the whole train day of it,
+   * its after-midnight departures (`dayOffset` 1) included. Absent from an
+   * older backend. */
+  serviceDate?: string;
+  /** The time window as applied, each bound `{time, dayOffset}` (`from`
+   * holds the "from now" default when none was given), `null` where
+   * unbounded. Absent from an older backend. */
+  window?: {
+    from: { time: string; dayOffset: number };
+    to: { time: string; dayOffset: number } | null;
+    arrivalFrom: { time: string; dayOffset: number } | null;
+    arrivalTo: { time: string; dayOffset: number } | null;
+  };
 }
 
 /** `GET /public/trains/search/dates` (`crates/api/src/routes/trains.rs`'s

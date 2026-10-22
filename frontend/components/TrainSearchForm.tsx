@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useMemo, useState, type SubmitEvent } from 'react';
-import { Autocomplete, Button, Group, Loader, Stack, Text, VisuallyHidden } from '@mantine/core';
+import { Autocomplete, Button, Checkbox, Group, Loader, MultiSelect, Stack, Text, VisuallyHidden } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { PICKER_DATE_FORMAT } from '@/lib/dateFormat';
 import { nowInLondon } from '@/lib/londonWallClock';
@@ -9,6 +9,7 @@ import { TextLink } from './TextLink';
 import { TimeFilterInput } from './TimeFilterInput';
 import { TrainSearchResults } from './TrainSearchResults';
 import { ListFilterBar, SearchIcon, type ListNoun } from './ListFilterBar';
+import { noOptionsFound } from './noOptionsFound';
 import type { TrainSearchDates, TrainSearchPage } from '@/lib/types';
 import { searchDateBounds, searchDateDescription } from '@/lib/searchDates';
 import { searchStations } from '@/lib/suggestions';
@@ -19,12 +20,49 @@ import { paramValue, useInitialSearchParams } from '@/lib/useInitialSearchParams
 import { replaceUrlParams, useUrlFilterSync } from '@/lib/useUrlFilterSync';
 import {
   hasRows,
+  nextDateLabel,
+  parseNextDayParam,
+  parseOperatorParam,
   TIME_PATTERN,
   TRAIN_URL_PARAMS,
+  upperBoundNextDay,
   type TrainSearchResults as TrainSearchResultsState,
 } from '@/lib/trainSearch';
 
 const TRAIN_NOUN: ListNoun = { one: 'train', other: 'trains' };
+
+/** The "Next day" box under a time filter: the time is on the morning after
+ * the searched date, still on that date's trains (`*_day_offset=1`).
+ * `implied` ticks and locks it, for an upper bound earlier than its lower
+ * one, which can only be after midnight. Shown only once the time is
+ * filled in. */
+function NextDayCheckbox({
+  time,
+  label,
+  checked,
+  implied = false,
+  impliedReason,
+  onChange,
+}: {
+  time: string;
+  label: string;
+  checked: boolean;
+  implied?: boolean;
+  impliedReason?: string;
+  onChange: (checked: boolean) => void;
+}) {
+  if (!TIME_PATTERN.test(time.trim())) return null;
+  return (
+    <Checkbox
+      size="xs"
+      label={label}
+      description={implied ? impliedReason : undefined}
+      checked={checked}
+      disabled={implied}
+      onChange={(event) => onChange(event.currentTarget.checked)}
+    />
+  );
+}
 
 const CRS_PATTERN = /^[A-Za-z]{3}$/;
 /** Calling-point-first, whole-network train search -- the `/trains` page's
@@ -49,16 +87,24 @@ const CRS_PATTERN = /^[A-Za-z]{3}$/;
  * `/track`'s manual-entry form remains the honest fallback for exactly
  * those gaps, and this component links to it explicitly.
  *
- * Filter set, and why it stops here: Station is required (it is the
- * server-side search key). Origin, Stops at, Date and an "Earliest
- * departure"/"Latest departure" time range are all optional. There is no
- * Operator filter (a non-goal for now): rows do carry the schedule's
- * `operator` (ATOC code, `null` when unknown), which the result rows show,
- * but the search itself is not keyed on it. Date defaults to today and is
+ * Filter set: Station is required (it is the server-side search key).
+ * Origin, Stops at, Operator, Date and an "Earliest departure"/"Latest
+ * departure" time range are all optional. Operator (2026-10-22) is the
+ * incident search's multi-select over the page's operator list, sent as
+ * `operator=SW,GW` ("any of"); a code in the URL that is not on that list
+ * is dropped rather than searched (`parseOperatorParam`). Date defaults to today and is
  * bounded to a roughly week-either-side window
  * (`crates/api/src/routes/trains.rs::SEARCH_WINDOW_FORWARD_DAYS`/
  * `SEARCH_WINDOW_BACKWARD_DAYS`) -- see
  * docs/superpowers/specs/2026-09-09-trains-search-multi-day-design.md.
+ *
+ * A date's search is its whole train day (2026-10-22): its trains that
+ * leave after midnight come last, marked "+1". Each time filter has a
+ * "Next day" box under it, for a time after the date's midnight; a latest
+ * time earlier than its earliest one ("from 22:00 to 01:30") is after
+ * midnight by necessity, so its box is ticked and locked
+ * (`upperBoundNextDay`). Only a box the visitor ticked goes in the query
+ * (`*_day_offset=1`); the API infers the locked case the same way.
  *
  * "Earliest departure"/"Latest departure" are deliberately NOT named
  * "From"/"To": that wording collided with the separate "Departing from"
@@ -112,6 +158,11 @@ export function TrainSearchForm({
   initialTo: initialToProp = '',
   initialArrivalFrom: initialArrivalFromProp = '',
   initialArrivalTo: initialArrivalToProp = '',
+  initialFromDayOffset: initialFromDayOffsetProp = '',
+  initialToDayOffset: initialToDayOffsetProp = '',
+  initialArrivalFromDayOffset: initialArrivalFromDayOffsetProp = '',
+  initialArrivalToDayOffset: initialArrivalToDayOffsetProp = '',
+  initialOperator: initialOperatorProp = '',
   attachTicketId,
   operatorNames,
   searchDates,
@@ -124,6 +175,14 @@ export function TrainSearchForm({
   initialTo?: string | undefined;
   initialArrivalFrom?: string | undefined;
   initialArrivalTo?: string | undefined;
+  /** `?from_day_offset=` and its three siblings: `1` ticks that time's
+   * "Next day" box. */
+  initialFromDayOffset?: string | undefined;
+  initialToDayOffset?: string | undefined;
+  initialArrivalFromDayOffset?: string | undefined;
+  initialArrivalToDayOffset?: string | undefined;
+  /** `?operator=`, comma-separated ATOC codes. */
+  initialOperator?: string | undefined;
   attachTicketId?: number | undefined;
   operatorNames?: Readonly<Record<string, string>> | undefined;
   searchDates?: TrainSearchDates | null | undefined;
@@ -142,10 +201,31 @@ export function TrainSearchForm({
   const initialTo = seed('to', initialToProp, false);
   const initialArrivalFrom = seed('arrival_from', initialArrivalFromProp, false);
   const initialArrivalTo = seed('arrival_to', initialArrivalToProp, false);
+  const initialFromDayOffset = seed('from_day_offset', initialFromDayOffsetProp, false);
+  const initialToDayOffset = seed('to_day_offset', initialToDayOffsetProp, false);
+  const initialArrivalFromDayOffset = seed('arrival_from_day_offset', initialArrivalFromDayOffsetProp, false);
+  const initialArrivalToDayOffset = seed('arrival_to_day_offset', initialArrivalToDayOffsetProp, false);
+  const initialOperator = seed('operator', initialOperatorProp, false);
   const operatorLookup = useMemo(
     () => (operatorNames ? new Map(Object.entries(operatorNames)) : undefined),
     [operatorNames],
   );
+  /** The Operator field's options, by name: "SW · South Western Railway",
+   * as on `/incidents`. */
+  const operatorOptions = useMemo(
+    () =>
+      Object.entries(operatorNames ?? {})
+        .sort(([, a], [, b]) => a.localeCompare(b))
+        .map(([code, name]) => ({ value: code, label: `${code} · ${name}` })),
+    [operatorNames],
+  );
+  const [operators, setOperators] = useState<string[]>(() =>
+    parseOperatorParam(initialOperator, new Set(Object.keys(operatorNames ?? {}))),
+  );
+  const [fromNextDay, setFromNextDay] = useState(() => parseNextDayParam(initialFromDayOffset));
+  const [toNextDay, setToNextDay] = useState(() => parseNextDayParam(initialToDayOffset));
+  const [arrivalFromNextDay, setArrivalFromNextDay] = useState(() => parseNextDayParam(initialArrivalFromDayOffset));
+  const [arrivalToNextDay, setArrivalToNextDay] = useState(() => parseNextDayParam(initialArrivalToDayOffset));
   const [stationCrs, setStationCrs] = useState(initialStation);
   const [originCrs, setOriginCrs] = useState(initialOrigin);
   const [stopsAt, setStopsAt] = useState(initialStopsAt);
@@ -246,6 +326,18 @@ export function TrainSearchForm({
   const stationDisplay = stationValid ? stationCrs.trim().toUpperCase() : 'Station';
   const stopsAtDisplay = stopsAtValid && stopsAt.trim() ? stopsAt.trim().toUpperCase() : 'Stops at';
 
+  // The "Next day" boxes. A latest time is after midnight when its box is
+  // ticked or when it is earlier than its earliest time; Latest arrival's
+  // earliest time is Earliest arrival, else Earliest departure, as the API
+  // reads them.
+  const nextDayLabel = `Next day, ${nextDateLabel(dateValue || today)}`;
+  const fromOnNextDay = fromNextDay && fromTime.trim() !== '';
+  const arrivalFromOnNextDay = arrivalFromNextDay && arrivalFrom.trim() !== '';
+  const toDay = upperBoundNextDay(toTime, toNextDay, fromTime, fromOnNextDay);
+  const arrivalToDay = arrivalFrom.trim()
+    ? upperBoundNextDay(arrivalTo, arrivalToNextDay, arrivalFrom, arrivalFromOnNextDay)
+    : upperBoundNextDay(arrivalTo, arrivalToNextDay, fromTime, fromOnNextDay);
+
   /** The current filter set as query parameters. Shared by the search and
    * by "Load more" so that page 2 is unambiguously a continuation of page
    * 1's query. */
@@ -261,11 +353,26 @@ export function TrainSearchForm({
       // also clear arrivalFrom/To state -- the fields themselves unmount
       // (see the conditional render below) but their state is deliberately
       // remembered in case Stops at is filled back in.
-      if (arrivalFrom.trim()) params.set('arrival_from', arrivalFrom.trim());
-      if (arrivalTo.trim()) params.set('arrival_to', arrivalTo.trim());
+      if (arrivalFrom.trim()) {
+        params.set('arrival_from', arrivalFrom.trim());
+        if (arrivalFromNextDay) params.set('arrival_from_day_offset', '1');
+      }
+      if (arrivalTo.trim()) {
+        params.set('arrival_to', arrivalTo.trim());
+        if (arrivalToNextDay) params.set('arrival_to_day_offset', '1');
+      }
     }
-    if (fromTime.trim()) params.set('from', fromTime.trim());
-    if (toTime.trim()) params.set('to', toTime.trim());
+    if (fromTime.trim()) {
+      params.set('from', fromTime.trim());
+      if (fromNextDay) params.set('from_day_offset', '1');
+    }
+    if (toTime.trim()) {
+      params.set('to', toTime.trim());
+      // Only a box the visitor ticked: one ticked by necessity (a time
+      // earlier than Earliest departure) the API infers the same way.
+      if (toNextDay) params.set('to_day_offset', '1');
+    }
+    if (operators.length > 0) params.set('operator', operators.join(','));
     return params;
   }
 
@@ -448,47 +555,94 @@ export function TrainSearchForm({
        * `"HH:MM"` these four fields put on the wire, and an emptied field is
        * `""`, so clearing a field drops its query param. No `placeholder`:
        * a native time input paints its own `--:--` segment hints. */}
+      <MultiSelect
+        label="Operator (optional)"
+        placeholder="Any operator"
+        description="Only trains run by one of these operators."
+        data={operatorOptions}
+        value={operators}
+        onChange={setOperators}
+        searchable
+        clearable
+        // Mantine hides the whole dropdown when it has no options and no
+        // `nothingFoundMessage`, leaving the input `aria-expanded="true"`
+        // over nothing.
+        nothingFoundMessage={noOptionsFound('No matching operators')}
+        clearButtonProps={{ 'aria-label': 'Clear operator filter', className: 'iconHitArea24' }}
+        {...comboboxProps}
+      />
       <Group grow align="flex-start">
-        <TimeFilterInput
-          clockHint
-          label="Earliest departure (optional)"
-          name="earliest departure"
-          description={`Only trains at ${stationDisplay} at or after this time.`}
-          value={fromTime}
-          onChange={setFromTime}
-          onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, from: incomplete }))}
-          error={fromTime.length > 0 && !fromValid ? 'Must be a time like 09:00' : null}
-        />
-        <TimeFilterInput
-          label="Latest departure (optional)"
-          name="latest departure"
-          description={`Only trains at ${stationDisplay} at or before this time.`}
-          value={toTime}
-          onChange={setToTime}
-          onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, to: incomplete }))}
-          error={toTime.length > 0 && !toValid ? 'Must be a time like 09:00' : null}
-        />
+        <Stack gap={6}>
+          <TimeFilterInput
+            clockHint
+            label="Earliest departure (optional)"
+            name="earliest departure"
+            description={`Only trains at ${stationDisplay} at or after this time.`}
+            value={fromTime}
+            onChange={setFromTime}
+            onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, from: incomplete }))}
+            error={fromTime.length > 0 && !fromValid ? 'Must be a time like 09:00' : null}
+          />
+          <NextDayCheckbox time={fromTime} label={nextDayLabel} checked={fromNextDay} onChange={setFromNextDay} />
+        </Stack>
+        <Stack gap={6}>
+          <TimeFilterInput
+            label="Latest departure (optional)"
+            name="latest departure"
+            description={`Only trains at ${stationDisplay} at or before this time.`}
+            value={toTime}
+            onChange={setToTime}
+            onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, to: incomplete }))}
+            error={toTime.length > 0 && !toValid ? 'Must be a time like 09:00' : null}
+          />
+          <NextDayCheckbox
+            time={toTime}
+            label={nextDayLabel}
+            checked={toDay.nextDay}
+            implied={toDay.implied}
+            impliedReason="Earlier than the earliest departure, so after midnight."
+            onChange={setToNextDay}
+          />
+        </Stack>
       </Group>
       {stopsAt.trim() !== '' && (
         <Group grow align="flex-start">
-          <TimeFilterInput
-            label="Earliest arrival (optional)"
-            name="earliest arrival"
-            description={`Only trains reaching ${stopsAtDisplay} at or after this time.`}
-            value={arrivalFrom}
-            onChange={setArrivalFrom}
-            onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))}
-            error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
-          />
-          <TimeFilterInput
-            label="Latest arrival (optional)"
-            name="latest arrival"
-            description={`Only trains reaching ${stopsAtDisplay} at or before this time.`}
-            value={arrivalTo}
-            onChange={setArrivalTo}
-            onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalTo: incomplete }))}
-            error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:00' : null}
-          />
+          <Stack gap={6}>
+            <TimeFilterInput
+              label="Earliest arrival (optional)"
+              name="earliest arrival"
+              description={`Only trains reaching ${stopsAtDisplay} at or after this time.`}
+              value={arrivalFrom}
+              onChange={setArrivalFrom}
+              onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalFrom: incomplete }))}
+              error={arrivalFrom.length > 0 && !arrivalFromValid ? 'Must be a time like 09:00' : null}
+            />
+            <NextDayCheckbox
+              time={arrivalFrom}
+              label={nextDayLabel}
+              checked={arrivalFromNextDay}
+              onChange={setArrivalFromNextDay}
+            />
+          </Stack>
+          <Stack gap={6}>
+            <TimeFilterInput
+              label="Latest arrival (optional)"
+              name="latest arrival"
+              description={`Only trains reaching ${stopsAtDisplay} at or before this time.`}
+              value={arrivalTo}
+              onChange={setArrivalTo}
+              onIncompleteChange={(incomplete) => setIncompleteTimes((c) => ({ ...c, arrivalTo: incomplete }))}
+              error={arrivalTo.length > 0 && !arrivalToValid ? 'Must be a time like 09:00' : null}
+            />
+            <NextDayCheckbox
+              time={arrivalTo}
+              label={nextDayLabel}
+              checked={arrivalToDay.nextDay}
+              implied={arrivalToDay.implied}
+              impliedReason="Earlier than the earliest time above, so after midnight."
+              onChange={setArrivalToNextDay}
+            />
+          </Stack>
         </Group>
       )}
     </>
@@ -501,16 +655,22 @@ export function TrainSearchForm({
     (fromTime.trim() ? 1 : 0) +
     (toTime.trim() ? 1 : 0) +
     (stopsAt.trim() && arrivalFrom.trim() ? 1 : 0) +
-    (stopsAt.trim() && arrivalTo.trim() ? 1 : 0);
+    (stopsAt.trim() && arrivalTo.trim() ? 1 : 0) +
+    (operators.length > 0 ? 1 : 0);
 
   function clearPanelFilters() {
     setDateValue(null);
     setOriginCrs('');
     setStopsAt('');
+    setOperators([]);
     setFromTime('');
     setToTime('');
     setArrivalFrom('');
     setArrivalTo('');
+    setFromNextDay(false);
+    setToNextDay(false);
+    setArrivalFromNextDay(false);
+    setArrivalToNextDay(false);
     setIncompleteTimes({ from: false, to: false, arrivalFrom: false, arrivalTo: false });
   }
 

@@ -3,6 +3,47 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: train search operator filter and the whole train day
+
+`GET /public/trains/search`. New parameters and fields are additive; a
+request that worked before still works, but three behaviours change (the
+last three bullets). For DS-MCP: `search_trains` can pass `operator` and
+the `*_day_offset`s straight through, and `serviceDate`/`window` say what
+was searched.
+
+- **`operator=SW,GW`**: comma-separated ATOC codes, "any of" (a row's
+  `operator`). Trimmed and uppercased; repeats and empty entries ignored.
+  A code that is not two letters or digits, or not a known operator, is a
+  `400` with a plain sentence (`operator ZZ is not a known train operator
+  code`).
+- **`from_day_offset`, `to_day_offset`, `arrival_from_day_offset`,
+  `arrival_to_day_offset`** (`0` or `1`, each needing its time): `1` puts
+  that bound after `date`'s midnight, on `date`'s trains, as
+  `/Trips/plan`'s `dayOffset`. `date=FRI&from=00:30&from_day_offset=1` is
+  Friday's trains leaving from 00:30 on Saturday morning. Without one, a
+  `to` earlier than an explicit `from` is the next morning
+  (`from=22:00&to=01:30`), and likewise `arrival_to` against
+  `arrival_from` (else an explicit `from`); never against the `now`
+  default. Anything but `0`/`1`, or an offset without its time, is a `400`.
+- **New top-level `serviceDate`** (`"YYYY-MM-DD"`, the date searched) and
+  **`window`** (`{from, to, arrivalFrom, arrivalTo}`, each `{time,
+  dayOffset}` or `null`): the window as applied, with the `now` default
+  and every inferred day offset filled in.
+- **Behaviour: a search covers the whole train day of `date`**, every
+  service of that service date, so rows now run in train-day order:
+  after-midnight departures (`dayOffset: 1`) come last, after 23:59, where
+  they used to come first. The previous date's trains still running after
+  midnight are not included (search that date for them).
+- **Behaviour: time bounds compare in train-day minutes on the public
+  basis**: each row's `scheduled` (public, else working, to the minute)
+  with its `dayOffset`, and for `arrival_from`/`arrival_to` the public
+  arrival at `stops_at` (else the working one, `stopsAtWorkingArrival`).
+  They used to be wall-clock bounds on the working time, so `to=01:30`
+  never reached an after-midnight departure and `arrival_from=10:30`
+  dropped a 00:19 arrival the next morning; now it keeps it.
+- **Behaviour: `nextCursor`** gains a third part for a row after midnight.
+  It is still opaque; a cursor from before this change still works.
+
 ## 2026-10-23: `/Trips/plan` searches on live times
 
 Additive fields; one count changes meaning. Design:
