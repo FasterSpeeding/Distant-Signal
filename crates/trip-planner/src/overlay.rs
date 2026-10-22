@@ -20,6 +20,12 @@
 //! can ever be boarded -- every ready time in both searches is at least the
 //! search's `departure_min` -- so this changes no result, only how much of
 //! the day's array is walked.
+//!
+//! A large overlay (`/Trips/plan`'s in-search snapshot replaces a few
+//! thousand trains) should be [`ConnectionOverlay::indexed`] against the
+//! base array once: the searches then test one bit per base connection
+//! instead of hashing its UID, which otherwise costs a RAPTOR search up to
+//! half again its time.
 
 use std::collections::HashSet;
 
@@ -30,6 +36,29 @@ use schedule_query::Connection;
 pub struct ConnectionOverlay {
     replaced_uids: HashSet<String>,
     replacements: Vec<Connection>,
+    /// Which connections of one base array are withdrawn, when
+    /// [`ConnectionOverlay::indexed`].
+    withdrawn: Option<WithdrawnIndex>,
+}
+
+/// One bit per connection of the base array it was built on.
+#[derive(Debug, Clone)]
+struct WithdrawnIndex {
+    /// That array's address and length: the index holds for it and for any
+    /// prefix of it (the arrive-by searches walk one), nothing else.
+    base_addr: usize,
+    base_len: usize,
+    bits: Vec<u64>,
+}
+
+impl WithdrawnIndex {
+    fn covers(&self, base: &[Connection]) -> bool {
+        self.base_addr == base.as_ptr().addr() && base.len() <= self.base_len
+    }
+
+    fn is_withdrawn(&self, position: usize) -> bool {
+        self.bits[position / 64] & (1 << (position % 64)) != 0
+    }
 }
 
 fn order_key(connection: &Connection) -> (u32, &str, &str) {
@@ -54,7 +83,30 @@ impl ConnectionOverlay {
         Self {
             replaced_uids: replaced_uids.into_iter().collect(),
             replacements,
+            withdrawn: None,
         }
+    }
+
+    /// This overlay with its withdrawn connections of `base` marked, one
+    /// bit each: a search walking `base` (or a prefix of it) then skips them
+    /// without hashing each connection's UID. One pass over `base`; any
+    /// other array is still walked by UID.
+    #[must_use]
+    pub fn indexed(mut self, base: &[Connection]) -> Self {
+        let mut bits = vec![0u64; base.len().div_ceil(64)];
+        if !self.replaced_uids.is_empty() {
+            for (position, connection) in base.iter().enumerate() {
+                if self.replaced_uids.contains(&connection.uid) {
+                    bits[position / 64] |= 1 << (position % 64);
+                }
+            }
+        }
+        self.withdrawn = Some(WithdrawnIndex {
+            base_addr: base.as_ptr().addr(),
+            base_len: base.len(),
+            bits,
+        });
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -79,31 +131,42 @@ pub fn connections_from<'a>(
     from_min: u32,
 ) -> MergedConnections<'a> {
     let start = base.partition_point(|c| c.departure_min < from_min);
-    let (replaced, extra): (Option<&HashSet<String>>, &[Connection]) = match overlay {
+    let (withdrawn, extra): (Option<Withdrawn<'a>>, &[Connection]) = match overlay {
         Some(overlay) if !overlay.is_empty() => {
             let extra_start = overlay
                 .replacements
                 .partition_point(|c| c.departure_min < from_min);
-            (
-                Some(&overlay.replaced_uids),
-                &overlay.replacements[extra_start..],
-            )
+            let withdrawn = match &overlay.withdrawn {
+                Some(index) if index.covers(base) => Withdrawn::Bits(index),
+                _ => Withdrawn::Uids(&overlay.replaced_uids),
+            };
+            (Some(withdrawn), &overlay.replacements[extra_start..])
         }
         _ => (None, &[]),
     };
     MergedConnections {
         base: base[start..].iter(),
-        replaced,
+        position: start,
+        withdrawn,
         extra: extra.iter(),
         next_base: None,
         next_extra: None,
     }
 }
 
+/// How [`MergedConnections`] tells a withdrawn base connection.
+#[derive(Clone, Copy)]
+enum Withdrawn<'a> {
+    Uids(&'a HashSet<String>),
+    Bits(&'a WithdrawnIndex),
+}
+
 /// The iterator [`connections_from`] returns.
 pub struct MergedConnections<'a> {
     base: std::slice::Iter<'a, Connection>,
-    replaced: Option<&'a HashSet<String>>,
+    /// The position in the base array of `base`'s next connection.
+    position: usize,
+    withdrawn: Option<Withdrawn<'a>>,
     extra: std::slice::Iter<'a, Connection>,
     next_base: Option<&'a Connection>,
     next_extra: Option<&'a Connection>,
@@ -111,9 +174,17 @@ pub struct MergedConnections<'a> {
 
 impl<'a> MergedConnections<'a> {
     fn pull_base(&mut self) -> Option<&'a Connection> {
-        match self.replaced {
+        match self.withdrawn {
             None => self.base.next(),
-            Some(replaced) => self.base.find(|c| !replaced.contains(&c.uid)),
+            Some(Withdrawn::Uids(replaced)) => self.base.find(|c| !replaced.contains(&c.uid)),
+            Some(Withdrawn::Bits(index)) => loop {
+                let connection = self.base.next()?;
+                let position = self.position;
+                self.position += 1;
+                if !index.is_withdrawn(position) {
+                    return Some(connection);
+                }
+            },
         }
     }
 }
@@ -122,7 +193,7 @@ impl<'a> Iterator for MergedConnections<'a> {
     type Item = &'a Connection;
 
     fn next(&mut self) -> Option<&'a Connection> {
-        if self.replaced.is_none() {
+        if self.withdrawn.is_none() {
             // No overlay: a plain slice walk.
             return self.base.next();
         }
@@ -286,6 +357,45 @@ mod tests {
         assert_eq!(
             uids(connections_from(&base, Some(&overlay), 0)),
             vec![("B".to_string(), 30)]
+        );
+    }
+
+    /// An indexed overlay walks exactly as the UID one: over its own array,
+    /// from any departure time, over a prefix of it (arrive-by), and over
+    /// another array (which the index does not cover: by UID again).
+    #[test]
+    fn an_indexed_overlay_walks_exactly_as_the_uid_one() {
+        let base: Vec<Connection> = (0..200)
+            .map(|i| {
+                let uid = format!("T{}", i % 13);
+                conn(&uid, "X", "Y", i * 3, i * 3 + 10)
+            })
+            .collect();
+        let withdrawn = ["T1".to_string(), "T5".to_string(), "T12".to_string()];
+        let replacements = vec![conn("T5", "X", "Y", 47, 60), conn("T5", "Y", "Z", 61, 70)];
+        let by_uid = ConnectionOverlay::new(withdrawn.clone(), replacements.clone());
+        let indexed = by_uid.clone().indexed(&base);
+        for from in [0, 1, 45, 300, 700] {
+            assert_eq!(
+                uids(connections_from(&base, Some(&indexed), from)),
+                uids(connections_from(&base, Some(&by_uid), from)),
+                "from {from}"
+            );
+            assert_eq!(
+                uids(connections_from(&base[..90], Some(&indexed), from)),
+                uids(connections_from(&base[..90], Some(&by_uid), from)),
+                "prefix from {from}"
+            );
+        }
+        let other: Vec<Connection> = base.iter().rev().take(50).cloned().rev().collect();
+        assert_eq!(
+            uids(connections_from(&other, Some(&indexed), 0)),
+            uids(connections_from(&other, Some(&by_uid), 0)),
+        );
+        assert!(
+            !uids(connections_from(&base, Some(&indexed), 0))
+                .iter()
+                .any(|(uid, _)| uid == "T1" || uid == "T12")
         );
     }
 }

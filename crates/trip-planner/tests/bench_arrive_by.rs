@@ -1120,3 +1120,139 @@ fn bench_max_changes_cap() {
         );
     }
 }
+
+/// Cost of a live overlay as large as `/Trips/plan`'s in-search snapshot
+/// (2026-10-22): one train in ten replaced by itself running 1-30 minutes
+/// late, one in thirty withdrawn (cancelled). Each search without the
+/// overlay, with it, and with it indexed (`ConnectionOverlay::indexed`).
+#[test]
+#[ignore = "benchmark; see the module doc"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one benchmark table, read top to bottom"
+)]
+fn bench_live_overlay() {
+    use trip_planner::ConnectionOverlay;
+
+    let (connections, interchange) = network();
+    let date = NaiveDate::from_ymd_opt(2026, 9, 29).unwrap();
+    let mut uids: Vec<&str> = connections.iter().map(|c| c.uid.as_str()).collect();
+    uids.sort_unstable();
+    uids.dedup();
+    let mut rng = Rng(11);
+    let mut replaced = Vec::new();
+    let mut delays: HashMap<&str, u32> = HashMap::new();
+    for uid in &uids {
+        match rng.next(30) {
+            0..=2 => {
+                delays.insert(uid, 1 + rng.next(30) as u32);
+            }
+            3 => replaced.push((*uid).to_string()),
+            _ => {}
+        }
+    }
+    let replacements: Vec<Connection> = connections
+        .iter()
+        .filter_map(|connection| {
+            let delay = delays.get(connection.uid.as_str())?;
+            let mut late = connection.clone();
+            late.departure_min += delay;
+            late.arrival_min += delay;
+            Some(late)
+        })
+        .collect();
+    replaced.extend(delays.keys().map(|uid| (*uid).to_string()));
+    let started = Instant::now();
+    let overlay = ConnectionOverlay::new(replaced.clone(), replacements.clone());
+    println!(
+        "overlay: {} trains replaced, {} connections, built in {:.1?}",
+        replaced.len(),
+        replacements.len(),
+        started.elapsed()
+    );
+    let started = Instant::now();
+    let indexed = overlay.clone().indexed(&connections);
+    println!("indexed in {:.1?}", started.elapsed());
+
+    let mut rng = Rng(7);
+    let mut rows = Vec::new();
+    for _ in 0..10 {
+        let from = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+        let to = vec![tiploc(HUBS + rng.next(STATIONS - HUBS))];
+        let scan = |overlay: Option<&ConnectionOverlay>| {
+            usize::from(
+                scan_connections_restricted(
+                    ScanOptions {
+                        connections: &connections,
+                        interchange: &interchange,
+                        from_tiplocs: &from,
+                        to_tiplocs: &to,
+                        departure_min: 480,
+                        date,
+                    },
+                    overlay,
+                    None,
+                )
+                .is_some(),
+            )
+        };
+        let raptor = |overlay: Option<&ConnectionOverlay>| {
+            raptor_search_restricted(
+                RaptorOptions {
+                    connections: &connections,
+                    interchange: &interchange,
+                    from_tiplocs: &from,
+                    to_tiplocs: &to,
+                    departure_min: 480,
+                    date,
+                    max_rounds: 4,
+                },
+                overlay,
+                None,
+            )
+            .len()
+        };
+        let arrive = || ArriveByOptions {
+            connections: &connections,
+            interchange: &interchange,
+            from_tiplocs: &from,
+            waypoints: &[],
+            to_tiplocs: &to,
+            vias: None,
+            arrive_by_min: 720,
+            date,
+        };
+        let times = [
+            median(|| scan(None)),
+            median(|| scan(Some(&overlay))),
+            median(|| scan(Some(&indexed))),
+            median(|| raptor(None)),
+            median(|| raptor(Some(&overlay))),
+            median(|| raptor(Some(&indexed))),
+            median(|| raptor_arrive_by(arrive(), None, None, 4).len()),
+            median(|| raptor_arrive_by(arrive(), Some(&overlay), None, 4).len()),
+            median(|| raptor_arrive_by(arrive(), Some(&indexed), None, 4).len()),
+        ];
+        rows.push(times.map(|(t, _)| t));
+    }
+    let labels = [
+        "csa depart 08:00",
+        "csa depart 08:00 + overlay",
+        "csa depart 08:00 + indexed",
+        "raptor depart 08:00",
+        "raptor depart 08:00 + overlay",
+        "raptor depart 08:00 + indexed",
+        "raptor arriveBy 12:00",
+        "raptor arriveBy 12:00 + overlay",
+        "raptor arriveBy 12:00 + indexed",
+    ];
+    for (column, label) in labels.iter().enumerate() {
+        let mut values: Vec<Duration> = rows.iter().map(|row| row[column]).collect();
+        values.sort();
+        println!(
+            "{label:32} median {:>8.1?}  max {:>8.1?}",
+            values[values.len() / 2],
+            values[values.len() - 1]
+        );
+    }
+}
