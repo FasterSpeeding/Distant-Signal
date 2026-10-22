@@ -342,8 +342,10 @@ export function revisionLegLine(leg: RevisionLeg): string {
   return leg.bookedDeparture ? `${formatTime(leg.bookedDeparture)} ${route}` : route;
 }
 
-/** The one line for a traveller who missed their own train. */
-export const USER_FAULT_NOTE = 'Your ticket may not be valid on a different train. Check before you board.';
+/** The one line for "I missed this train" when the train before it was too
+ * late to make the change: the api's `faultNote` for such a break, said
+ * before anything is recorded. */
+export const LATE_INBOUND_NOTE = 'Your earlier train was late, so this counts as a missed connection.';
 
 /** Said under every list: the booked plan stays the Delay Repay baseline. */
 export const BOOKED_PLAN_SAVED_NOTE = 'Your booked plan stays saved for Delay Repay.';

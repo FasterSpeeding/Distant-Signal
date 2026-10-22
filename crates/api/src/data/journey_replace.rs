@@ -161,10 +161,13 @@ pub async fn replace(pool: &PgPool, replacement: &Replacement<'_>) -> anyhow::Re
         return Ok(Replaced::AtCap);
     }
 
-    // Still being planned (no break, not started): this is a planning edit
-    // and refreshes revision 1. Otherwise record the plan as it stands
-    // first, so the revision this writes supersedes it.
+    // Still being planned (no break, not started, not a missed train): this
+    // is a planning edit and refreshes revision 1. Otherwise record the
+    // plan as it stands first, so the revision this writes supersedes it. A
+    // train the traveller says they missed is always its own revision, with
+    // the missed leg kept, even before the journey's first departure.
     let planning = meta.break_id.is_none()
+        && meta.cause != "user_missed"
         && journey_revisions::still_planning(&mut tx, journey_id, now).await?;
     let trigger_position = if planning {
         None
