@@ -983,6 +983,14 @@ pub struct TrackedTrainState {
     /// neither backing schedule source had anything).
     #[sqlx(skip)]
     pub may_have_arrived: bool,
+    /// A predicted late start from the incoming train (DS-127,
+    /// `ds_store::trains::predicted_start`), served as `predictedStart`:
+    /// `null` unless the train has no TRUST report yet, is within 3 hours
+    /// of departure, has a previous working whose delay the booked
+    /// turnaround cannot absorb, and the origin's board shows no time of
+    /// its own. Filled by `routes::train::attach_journey_stops(_public)`.
+    #[sqlx(skip)]
+    pub predicted_start: Option<ds_store::trains::predicted_start::PredictedStart>,
     /// `serviceMode` (`train`/`replacementBus`/`bus`/`ferry`) and
     /// `liveTracking` (`false` for a bus or ferry, which TRUST never
     /// reports), from `schedule_services`; filled after the read by

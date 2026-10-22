@@ -78,8 +78,17 @@
 //!   with nothing on `JourneyStop` to say how old it was; a platform change
 //!   during the outage would be missed silently. Unknown is better.
 //! - `plannedPlatform` keeps `common::StationDeparture.planned_platform`'s
-//!   meaning (the earliest platform the poller saw for that row), and
-//!   `platformChanged` is true only when both are known and differ.
+//!   meaning (the earliest platform the poller saw for that row). Here
+//!   `platformChanged` is true only when both are known and differ;
+//!   `journey::apply_platform_basis` then compares against the timetable's
+//!   booked platform instead whenever the stop has one (DS-127).
+//!
+//! **Tracked-stop boards (DS-127).** For a tracked train, poller-ldbws's
+//! tracked-stop lane polls each of the user's stops' boards narrowed to
+//! this train's booked time (`tracked_stop_boards`). That board is tried
+//! first, with the same rules; only when it has no unique match does the
+//! station's general sample get a turn. It reaches past the general
+//! board's 10 rows and covers stations outside the sample set.
 
 use std::collections::HashMap;
 
@@ -111,11 +120,20 @@ pub struct TrainBoardKeys {
 }
 
 /// The boards a batch of journeys can match against, indexed by board CRS
-/// and by covered TIPLOC.
+/// and by covered TIPLOC, plus the tracked-stop boards by train and CRS.
 #[derive(Debug, Default)]
 pub struct BoardIndex<'a> {
     by_crs: HashMap<String, &'a BoardSampleRow>,
     by_tiploc: HashMap<String, Vec<&'a BoardSampleRow>>,
+    tracked: HashMap<(String, NaiveDate, String), &'a BoardSampleRow>,
+}
+
+/// One `tracked_stop_boards` row: a board polled for one train's stop.
+#[derive(Debug, Clone)]
+pub struct TrackedBoardRow {
+    pub train_uid: String,
+    pub service_date: NaiveDate,
+    pub board: BoardSampleRow,
 }
 
 impl<'a> BoardIndex<'a> {
@@ -136,8 +154,36 @@ impl<'a> BoardIndex<'a> {
         index
     }
 
+    /// [`BoardIndex::new`] plus the tracked-stop boards (DS-127).
+    pub fn with_tracked(rows: &'a [BoardSampleRow], tracked: &'a [TrackedBoardRow]) -> Self {
+        let mut index = Self::new(rows);
+        for row in tracked {
+            index.tracked.insert(
+                (
+                    row.train_uid.clone(),
+                    row.service_date,
+                    row.board.sample.crs.trim().to_ascii_uppercase(),
+                ),
+                &row.board,
+            );
+        }
+        index
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.by_crs.is_empty()
+        self.by_crs.is_empty() && self.tracked.is_empty()
+    }
+
+    /// The tracked-stop board polled for this train at this stop's CRS.
+    fn tracked_board(
+        &self,
+        train: Option<(&str, NaiveDate)>,
+        crs: Option<&str>,
+    ) -> Option<&'a BoardSampleRow> {
+        let (uid, date) = train?;
+        self.tracked
+            .get(&(uid.to_string(), date, crs?.trim().to_ascii_uppercase()))
+            .copied()
     }
 
     /// The boards relevant to one stop, each with whether it was found by
@@ -196,14 +242,40 @@ fn only<T>(mut items: Vec<T>) -> Option<T> {
 /// The one board row that is this train at `stop`, with its board's poll
 /// time. See the module doc for every rule; "has the train left" is the
 /// caller's, as it gates `board` but not the platform.
+fn match_stop<'a>(
+    stop: &JourneyStop,
+    boards: &BoardIndex<'a>,
+    keys: &TrainBoardKeys,
+    train: Option<(&str, NaiveDate)>,
+    terminus_crs: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<(&'a common::StationDeparture, DateTime<Utc>)> {
+    // The tracked-stop board first (DS-127): it is this stop's own board,
+    // narrowed to this train's time, so it is the board to trust.
+    if let Some(board) = boards.tracked_board(train, stop.crs.as_deref())
+        && let Some(found) = match_in_boards(stop, vec![(board, true)], keys, terminus_crs, now)
+    {
+        return Some(found);
+    }
+    match_in_boards(
+        stop,
+        boards.boards_for(stop.crs.as_deref(), stop.tiploc.as_deref()),
+        keys,
+        terminus_crs,
+        now,
+    )
+}
+
+/// [`match_stop`]'s rules over one set of boards, each with whether it was
+/// found by the stop's own CRS.
 #[expect(
     clippy::items_after_statements,
     clippy::match_same_arms,
     reason = "a local type or import sits next to its only use; separate arms document distinct cases"
 )]
-fn match_stop<'a>(
+fn match_in_boards<'a>(
     stop: &JourneyStop,
-    boards: &BoardIndex<'a>,
+    boards: Vec<(&'a BoardSampleRow, bool)>,
     keys: &TrainBoardKeys,
     terminus_crs: Option<&str>,
     now: DateTime<Utc>,
@@ -217,7 +289,7 @@ fn match_stop<'a>(
         delta: Duration,
     }
     let mut candidates: Vec<Candidate<'a>> = Vec::new();
-    for (board, by_crs) in boards.boards_for(stop.crs.as_deref(), stop_tiploc) {
+    for (board, by_crs) in boards {
         let polled_at = board.sample.polled_at;
         if now - polled_at > BOARD_FRESHNESS {
             continue;
@@ -308,6 +380,18 @@ pub fn apply_station_sample_board(
     keys: &TrainBoardKeys,
     now: DateTime<Utc>,
 ) {
+    apply_station_sample_board_for_train(stops, boards, keys, None, now);
+}
+
+/// [`apply_station_sample_board`] for a known train, whose tracked-stop
+/// boards (DS-127) are tried before the stations' general samples.
+pub fn apply_station_sample_board_for_train(
+    stops: &mut [JourneyStop],
+    boards: &BoardIndex<'_>,
+    keys: &TrainBoardKeys,
+    train: Option<(&str, NaiveDate)>,
+    now: DateTime<Utc>,
+) {
     for stop in stops.iter_mut() {
         stop.board = None;
     }
@@ -325,7 +409,8 @@ pub fn apply_station_sample_board(
         .iter()
         .rposition(|stop| stop.actual_arrival.is_some() || stop.actual_departure.is_some());
     for (index, stop) in stops.iter_mut().enumerate() {
-        let Some((row, polled_at)) = match_stop(stop, boards, keys, terminus_crs.as_deref(), now)
+        let Some((row, polled_at)) =
+            match_stop(stop, boards, keys, train, terminus_crs.as_deref(), now)
         else {
             continue;
         };
@@ -375,6 +460,45 @@ fn apply_board_platform(stop: &mut JourneyStop, row: &common::StationDeparture) 
         .is_some_and(|planned| planned != platform);
     stop.platform = Some(platform);
     stop.platform_status = Some(status);
+}
+
+/// The tracked-stop boards (`tracked_stop_boards`, DS-127) of every
+/// `(train_uid, service_date)` in `trains`. One query, on the table's key.
+pub async fn tracked_boards_for_trains(
+    pool: &PgPool,
+    trains: &[(String, NaiveDate)],
+) -> anyhow::Result<Vec<TrackedBoardRow>> {
+    if trains.is_empty() {
+        return Ok(Vec::new());
+    }
+    let uids: Vec<&str> = trains.iter().map(|(uid, _)| uid.as_str()).collect();
+    let dates: Vec<NaiveDate> = trains.iter().map(|(_, date)| *date).collect();
+    let rows: Vec<(String, NaiveDate, String, DateTime<Utc>, serde_json::Value)> = sqlx::query_as(
+        "SELECT b.train_uid, b.service_date, b.crs, b.polled_at, b.departures \
+         FROM UNNEST($1::text[], $2::date[]) AS k(train_uid, service_date) \
+         JOIN tracked_stop_boards b \
+           ON b.train_uid = k.train_uid AND b.service_date = k.service_date",
+    )
+    .bind(&uids)
+    .bind(&dates)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|(train_uid, service_date, crs, polled_at, departures)| {
+            Ok(TrackedBoardRow {
+                train_uid,
+                service_date,
+                board: BoardSampleRow {
+                    sample: common::StationSample {
+                        crs,
+                        polled_at,
+                        departures: serde_json::from_value(departures)?,
+                    },
+                    tiplocs: Vec::new(),
+                },
+            })
+        })
+        .collect()
 }
 
 /// [`TrainBoardKeys`] for every `(train_uid, service_date)`, from
@@ -821,6 +945,92 @@ mod tests {
         };
         apply(&mut stops, &rows, &keys);
         assert_eq!(stops[0].board.as_ref().unwrap().estimated, "17:02");
+    }
+
+    /// DS-127: the tracked-stop board is this train's own, narrowed board,
+    /// so its row wins over an ambiguous general board, and it reaches a
+    /// station the general sample does not cover at all.
+    #[test]
+    fn a_tracked_stop_board_is_tried_before_the_general_sample() {
+        let date: NaiveDate = "2026-09-28".parse().unwrap();
+        let mut stops = journey();
+        // The general WAT board has two rows the same RSID prefix: ambiguous.
+        let general = [sample_board(
+            "WAT",
+            "2026-09-28T15:58:00Z",
+            &["WATRLMN"],
+            vec![
+                with_platform(
+                    row("9100001WATRLMN_", "17:00", "17:06", "WOK", Some("SW123401")),
+                    Some("4"),
+                    Some("4"),
+                ),
+                with_platform(
+                    row(
+                        "9100002WATRLMN_",
+                        "17:00",
+                        "On time",
+                        "WOK",
+                        Some("SW123402"),
+                    ),
+                    Some("5"),
+                    Some("5"),
+                ),
+            ],
+        )];
+        let tracked = [
+            TrackedBoardRow {
+                train_uid: "W12345".to_string(),
+                service_date: date,
+                board: sample_board(
+                    "WAT",
+                    "2026-09-28T15:59:00Z",
+                    &[],
+                    vec![with_platform(
+                        row("9100001WATRLMN_", "17:00", "17:06", "WOK", Some("SW123400")),
+                        Some("11"),
+                        Some("11"),
+                    )],
+                ),
+            },
+            // CLJ is not sampled at all.
+            TrackedBoardRow {
+                train_uid: "W12345".to_string(),
+                service_date: date,
+                board: sample_board(
+                    "CLJ",
+                    "2026-09-28T15:59:00Z",
+                    &[],
+                    vec![with_platform(
+                        row("9100003CLPHMJM_", "17:07", "17:12", "WOK", Some("SW123400")),
+                        Some("9"),
+                        Some("9"),
+                    )],
+                ),
+            },
+        ];
+        let index = BoardIndex::with_tracked(&general, &tracked);
+        apply_station_sample_board_for_train(
+            &mut stops,
+            &index,
+            &keys(Some("SW123400")),
+            Some(("W12345", date)),
+            now(),
+        );
+        assert_eq!(stops[0].platform.as_deref(), Some("11"));
+        assert_eq!(stops[1].platform.as_deref(), Some("9"));
+        assert_eq!(stops[1].board.as_ref().unwrap().estimated, "17:12");
+
+        // Another train's tracked boards are never used.
+        let mut other = journey();
+        apply_station_sample_board_for_train(
+            &mut other,
+            &index,
+            &keys(Some("SW123400")),
+            Some(("W99999", date)),
+            now(),
+        );
+        assert_eq!(other[1].platform, None);
     }
 
     #[test]

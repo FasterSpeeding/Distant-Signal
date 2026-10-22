@@ -3,6 +3,53 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-22: booked platforms, and a predicted late start before departure
+
+Additive; one existing field's comparison changes (below). See
+docs/superpowers/specs/2026-10-21-pre-departure-prediction-design.md.
+
+- **`JourneyStop.platformBasis`** (new): `'booked' | 'board' | 'confirmed'
+  | null`, what `displayPlatform` rests on. `booked`: only the
+  timetable's platform is known, so it is provisional ("booked, not
+  confirmed"); `board`: a live departure board shows it (which is not a
+  confirmation: boards show the booked platform until it changes);
+  `confirmed` is reserved and not served yet. `null` when no platform is
+  known. Treat an unknown value as `board`.
+- **`JourneyStop.displayPlatform`** (new): the platform to show, the live
+  `platform` when known, else `bookedPlatform`. `platform` stays the live
+  value only, `bookedPlatform` the timetable's.
+- **`JourneyStop.platformChanged`** now compares the live `platform`
+  against `bookedPlatform` whenever both are known (case, spaces and a
+  sub-platform letter on one side only are ignored: "4" is "4A"). Only
+  without a booked platform does it fall back to the first platform the
+  poller saw (`plannedPlatform`). It catches a change made before the
+  poller first saw the train, and survives poller restarts.
+- **`JourneyStop.estimateSource`** (new): `'previous-working'` when the
+  stop's `estimatedArrival`/`estimatedDeparture` come from a predicted late
+  start (below), else `null`. Uses the `EtaSource` vocabulary, which gains
+  `'previous-working'`; treat an unknown value as a generic estimate.
+- **`predictedStart`** (new, nullable) on `GET /Train/{id}`, `GET
+  /Train/by-uid/{uid}/{date}` and each journey leg's `trackedTrainState`:
+  `{ lateMinutes, confidence, basis, computedAt, previousWorking }`, an
+  estimate of how late a train not yet reported by TRUST will start,
+  from its previous working (the train whose unit forms it).
+  - `confidence`: `high`, `medium` or `low`. `lateMinutes` is `null` at
+    `low`: say "may start late", never a number.
+  - `basis` is `'previous-working'`.
+  - `previousWorking`: `{ trainUid, serviceDate, link ('inferred' from the
+    timetable's platform sequence, or 'association' later), status,
+    delayMinutes, observedAt, bookedTurnaroundMinutes }`.
+  - `null` once the train has its own TRUST report, when the origin's
+    departure board shows a time for it, when the incoming train is
+    cancelled, or more than 3 hours before departure.
+- Stop platforms can also come from new targeted board polls for tracked
+  trains' own stops (off by default in the chart); nothing in the wire
+  shape changes for that.
+- **For ds-mcp.** Show `displayPlatform`, marked provisional when
+  `platformBasis` is `booked`. Mention a `predictedStart` only as an
+  estimate ("expected to start about 7 min late, based on the incoming
+  train"), and at `low` without a number.
+
 ## 2026-10-21: a Tube stop's station, and editing a journey leg's search
 
 Additive; nothing existing changes meaning.
