@@ -25,6 +25,7 @@ import { AddCustomLineToGroupButton } from '@/components/AddCustomLineToGroupBut
 import { RemoveCustomLineGrantButton } from '@/components/RemoveCustomLineGrantButton';
 import { AddJourneyToGroupButton } from '@/components/AddJourneyToGroupButton';
 import { RemoveGroupJourneyButton } from '@/components/RemoveGroupJourneyButton';
+import { FollowJourneyButton } from '@/components/FollowJourneyButton';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
 import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
@@ -482,6 +483,9 @@ function SharedJourneyRow({
   currentUserId: string | null;
 }) {
   const canRemove = canManage || (currentUserId !== null && journey.addedBy === currentUserId);
+  // Anyone but its owner (the sharer) can follow it into their own
+  // journeys (DS-146), through this group.
+  const canFollow = currentUserId !== null && journey.addedBy !== currentUserId;
   // The one journey-naming rule (`lib/journeyName.ts`), the same name the
   // owner's own Track list and the journey page show: custom name, else the
   // whole route (first leg's origin to LAST leg's destination) and date. It
@@ -516,7 +520,16 @@ function SharedJourneyRow({
           (`groupJourneyRowStatus`). */}
       <Group justify="space-between" gap="xs" mt="xs">
         <TrackedRowStatusBadge status={groupJourneyRowStatus(journey, londonDayKey(new Date()))} />
-        {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
+        <Group gap="xs" wrap="wrap">
+          {canFollow && (
+            <FollowJourneyButton
+              journeyId={journey.journeyId}
+              following={journey.following ?? false}
+              groupId={groupId}
+            />
+          )}
+          {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
+        </Group>
       </Group>
     </Card>
   );

@@ -927,12 +927,15 @@ export async function getJourneyByShareToken(token: string): Promise<JourneyDeta
 
 /** `GET /Journeys/mine` -- `null` on a `401`, same "not logged in" signal
  * `getMyTrackedTrains` already uses (no id in this route's path to
- * disambiguate a second way). Not consumed by any page in this plan (see
- * this plan's own Non-goals: no `/journeys/mine` list page yet) --
- * implemented now, independently testable, for a follow-up list page to
- * consume later without a backend change. */
-export async function getMyJourneys(): Promise<JourneyListItem[] | null> {
-  const url = `${baseUrl()}/Journeys/mine`;
+ * disambiguate a second way). With `includeFollowed`, the journeys the
+ * caller follows (DS-146) are listed with their own, in travel order, each
+ * carrying `followedFrom`: what the home page and `/journeys` show. Without
+ * it, the caller's own journeys only (what a picker of journeys to share
+ * or template wants). */
+export async function getMyJourneys({ includeFollowed = false }: { includeFollowed?: boolean } = {}): Promise<
+  JourneyListItem[] | null
+> {
+  const url = `${baseUrl()}/Journeys/mine${includeFollowed ? '?include=followed' : ''}`;
   const response = await apiFetch(url, {
     cache: 'no-store',
     ...(await cookieForwardInit()),

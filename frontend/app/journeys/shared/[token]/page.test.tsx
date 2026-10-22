@@ -162,6 +162,8 @@ describe('SharedJourneyPage', () => {
     expect(redirectMock).not.toHaveBeenCalled();
     expect(screen.getByText(/You're viewing this journey via a shared link/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument();
+    // Following needs an account (DS-146).
+    expect(screen.queryByRole('button', { name: 'Follow this journey' })).not.toBeInTheDocument();
   });
 
   it('renders the token-scoped view when the viewer is logged in but not authorized (ApiNotFoundError)', async () => {
@@ -173,6 +175,8 @@ describe('SharedJourneyPage', () => {
     expect(redirectMock).not.toHaveBeenCalled();
     expect(screen.getByText(/You're viewing this journey via a shared link/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument();
+    // Logged in: they can follow it with the link (DS-146).
+    expect(screen.getByRole('button', { name: 'Follow this journey' })).toBeInTheDocument();
   });
 
   it('propagates an unexpected error from the authorized-probe call', async () => {

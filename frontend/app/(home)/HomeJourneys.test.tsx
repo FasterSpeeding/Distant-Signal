@@ -93,7 +93,29 @@ function loneRead(id: number): HomeLoneTrain {
   return { ...entry, departure: '2026-09-17T09:05:00Z', leg: loneTrainLeg(entry.train, state) };
 }
 
+/** Who shared a followed journey (DS-146). */
+const FOLLOWED_FROM = {
+  via: 'group',
+  ownerName: 'Olive',
+  ownerTag: null,
+  groupId: 'grp-1',
+  groupName: 'Family',
+  followedAt: '2026-09-16T08:00:00Z',
+} as const;
+
 describe('CurrentJourneyCard', () => {
+  it('says whose a followed journey is', () => {
+    const followed = journey();
+    followed.item = { ...followed.item, followedFrom: FOLLOWED_FROM };
+    renderWithMantine(<CurrentJourneyCard journey={followed} now={new Date('2026-09-17T10:00:00Z')} />);
+    expect(within(screen.getByRole('link')).getByText('Shared by Olive')).toBeInTheDocument();
+  });
+
+  it("names no one on the traveller's own journey", () => {
+    renderWithMantine(<CurrentJourneyCard journey={journey()} now={new Date('2026-09-17T10:00:00Z')} />);
+    expect(screen.queryByText(/^Shared/)).not.toBeInTheDocument();
+  });
+
   it('shows the journey, its live status, the leg under way and the next change, linking to the journey', () => {
     renderWithMantine(<CurrentJourneyCard journey={journey()} now={new Date('2026-09-17T10:00:00Z')} />);
     const link = screen.getByRole('link');
@@ -324,6 +346,20 @@ describe('UpcomingJourneysSection', () => {
     const second = within(section).getByRole('link', { name: /Weekend away/ });
     expect(within(second).getByText('London Kings Cross (KGX) to York (YRK), 20 Sep 2026')).toBeInTheDocument();
     expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
+  });
+
+  it("lists a followed journey among the traveller's own, saying whose it is", () => {
+    const followed = upcoming(2, null, '2026-09-20T11:00:00Z');
+    followed.item = {
+      ...followed.item,
+      followedFrom: { ...FOLLOWED_FROM, via: 'link', ownerName: null, groupId: null, groupName: null },
+    };
+    renderWithMantine(<UpcomingJourneysSection upcoming={[upcoming(1, 'Mine'), followed]} />);
+    const section = screen.getByRole('region', { name: 'Upcoming journeys' });
+    const links = within(section).getAllByRole('link', { name: /London Kings Cross|Mine/ });
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/journeys/1', '/journeys/2']);
+    expect(within(links[1]!).getByText(/Shared with you by link/)).toBeInTheDocument();
+    expect(within(links[0]!).queryByText(/Shared/)).not.toBeInTheDocument();
   });
 
   it('offers New journey at the top of the section, as a button', () => {

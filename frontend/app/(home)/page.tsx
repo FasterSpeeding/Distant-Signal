@@ -206,7 +206,7 @@ export default async function DashboardPage() {
     // per-user, so a failure is `null`: no journeys, and every train is
     // listed as one tracked on its own (`splitJourneyTrains` folds
     // nothing then), so no train vanishes.
-    session.authenticated ? getMyJourneys().catch(() => null) : Promise.resolve(null),
+    session.authenticated ? getMyJourneys({ includeFollowed: true }).catch(() => null) : Promise.resolve(null),
   ]);
 
   // Hoisted above the anonymous/authenticated branch so both can read it:

@@ -1040,6 +1040,24 @@ describe('GroupDetailPage', () => {
       expect(screen.getByText(/Shared by a member/)).toBeInTheDocument();
     });
 
+    // DS-146: any member but its owner can follow a shared journey into
+    // their own journeys, and stop.
+    it('offers a member "Follow this journey", and "Unfollow" once they follow it', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([journey(), journey({ journeyId: 502, following: true })]);
+      await renderAsViewer('user-bystander', 'member');
+
+      expect(screen.getAllByRole('button', { name: 'Follow this journey' })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: 'Unfollow' })).toHaveLength(1);
+    });
+
+    it('offers its owner no follow', async () => {
+      vi.mocked(getGroupJourneys).mockResolvedValue([journey()]);
+      await renderAsViewer(SHARER, 'member');
+
+      expect(screen.queryByRole('button', { name: 'Follow this journey' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Unfollow' })).not.toBeInTheDocument();
+    });
+
     it('a plain member who did not share it sees no "Remove from group" control', async () => {
       vi.mocked(getGroupJourneys).mockResolvedValue([journey()]);
       await renderAsViewer('user-bystander', 'member');

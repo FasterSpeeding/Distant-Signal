@@ -590,3 +590,52 @@ describe('JourneyDetailPage break deep link', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+// DS-146: a journey shared with the caller can be followed into their own
+// lists; a followed one says whose it is, with Unfollow, and is read-only.
+describe('JourneyDetailPage following', () => {
+  const followedFrom = {
+    via: 'group',
+    ownerName: 'Olive',
+    ownerTag: null,
+    groupId: 'grp-1',
+    groupName: 'Family',
+    followedAt: '2026-09-21T08:00:00Z',
+  } as const;
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it("offers to follow a journey shared into one of the caller's groups", async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ canFollow: true }));
+    await renderPage();
+    expect(screen.getByRole('button', { name: 'Follow this journey' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unfollow' })).not.toBeInTheDocument();
+  });
+
+  it('says whose a followed journey is, offers Unfollow, and no owner controls', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ followedFrom }));
+    await renderPage();
+    expect(screen.getByText('Shared by Olive')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unfollow' })).toBeInTheDocument();
+    for (const name of ['Delete journey', 'Add a leg', 'Change train']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+  });
+
+  it('labels a journey followed through a share link without naming anyone', async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(
+      baseJourney({ followedFrom: { ...followedFrom, via: 'link', ownerName: null, groupId: null, groupName: null } }),
+    );
+    await renderPage();
+    expect(screen.getByText('Shared with you by link')).toBeInTheDocument();
+  });
+
+  it("offers no follow on the caller's own journey", async () => {
+    vi.mocked(api.getJourney).mockResolvedValue(baseJourney({ isOwner: true }));
+    await renderPage();
+    expect(screen.queryByRole('button', { name: 'Follow this journey' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unfollow' })).not.toBeInTheDocument();
+  });
+});
