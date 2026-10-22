@@ -373,61 +373,67 @@ export function PlanTripFlow({
         />
       )}
       {/* `ds-no-scroll-anchor`: the scroll position is held by
-          `restoreScrollAnchor` alone, never twice. */}
-      <Stack gap="md" ref={resultsRef} className="ds-no-scroll-anchor">
-        {plan?.segments.map((segment, segmentIndex) => {
-          // Computed once per segment -- reused for both the heading and
-          // the "no route found" alert below, so the two can never drift
-          // out of sync with each other's formatting.
-          const segmentLabel = codeRouteLabel(
-            segment.originCrs,
-            stationNames.get(segment.originCrs),
-            segment.destinationCrs,
-            stationNames.get(segment.destinationCrs),
-          );
-          return (
-            <Stack key={segmentIndex} gap="xs">
-              <Text fw={600}>{segmentLabel}</Text>
-              {segment.itineraries.length === 0 && (
-                <Alert color="yellow">
-                  No route found for {segmentLabel}.
-                  {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
-                  {segment.noResultReason && hintFor(segment.noResultReason) && (
-                    <Text size="sm" mt={4}>
-                      {hintFor(segment.noResultReason)}
-                    </Text>
-                  )}
-                </Alert>
-              )}
-              {segment.cappedByMaxChanges && (
-                <Text size="xs" c="orange">
-                  A faster route exists with more changes than shown below.
-                </Text>
-              )}
-              {segment.itineraries.map((itinerary, itineraryIndex) => (
-                <div
-                  key={list?.entries[itineraryIndex]?.key ?? itineraryIndex}
-                  {...{ [ENTRY_ATTRIBUTE]: `${segmentIndex}:${list?.entries[itineraryIndex]?.key ?? itineraryIndex}` }}
-                >
-                  <ItineraryOption
-                    itinerary={itinerary}
-                    selected={selections[segmentIndex]?.itinerary === itinerary}
-                    onSelect={() => selectItinerary(segmentIndex, itinerary)}
-                    stationNames={stationNames}
-                    viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
-                      (via) => via.segment === segmentIndex,
+          `restoreScrollAnchor` alone, never twice. Only with a plan: an
+          empty Stack still takes the outer Stack's gap, which put 16px
+          under the form before any search. */}
+      {plan && (
+        <Stack gap="md" ref={resultsRef} className="ds-no-scroll-anchor">
+          {plan.segments.map((segment, segmentIndex) => {
+            // Computed once per segment -- reused for both the heading and
+            // the "no route found" alert below, so the two can never drift
+            // out of sync with each other's formatting.
+            const segmentLabel = codeRouteLabel(
+              segment.originCrs,
+              stationNames.get(segment.originCrs),
+              segment.destinationCrs,
+              stationNames.get(segment.destinationCrs),
+            );
+            return (
+              <Stack key={segmentIndex} gap="xs">
+                <Text fw={600}>{segmentLabel}</Text>
+                {segment.itineraries.length === 0 && (
+                  <Alert color="yellow">
+                    No route found for {segmentLabel}.
+                    {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
+                    {segment.noResultReason && hintFor(segment.noResultReason) && (
+                      <Text size="sm" mt={4}>
+                        {hintFor(segment.noResultReason)}
+                      </Text>
                     )}
-                    waypointStops={plan.journeys?.[itineraryIndex]?.waypointSatisfiedBy?.filter(
-                      (stop) => stop.segment === segmentIndex,
-                    )}
-                    groups={groups}
-                  />
-                </div>
-              ))}
-            </Stack>
-          );
-        })}
-      </Stack>
+                  </Alert>
+                )}
+                {segment.cappedByMaxChanges && (
+                  <Text size="xs" c="orange">
+                    A faster route exists with more changes than shown below.
+                  </Text>
+                )}
+                {segment.itineraries.map((itinerary, itineraryIndex) => (
+                  <div
+                    key={list?.entries[itineraryIndex]?.key ?? itineraryIndex}
+                    {...{
+                      [ENTRY_ATTRIBUTE]: `${segmentIndex}:${list?.entries[itineraryIndex]?.key ?? itineraryIndex}`,
+                    }}
+                  >
+                    <ItineraryOption
+                      itinerary={itinerary}
+                      selected={selections[segmentIndex]?.itinerary === itinerary}
+                      onSelect={() => selectItinerary(segmentIndex, itinerary)}
+                      stationNames={stationNames}
+                      viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
+                        (via) => via.segment === segmentIndex,
+                      )}
+                      waypointStops={plan.journeys?.[itineraryIndex]?.waypointSatisfiedBy?.filter(
+                        (stop) => stop.segment === segmentIndex,
+                      )}
+                      groups={groups}
+                    />
+                  </div>
+                ))}
+              </Stack>
+            );
+          })}
+        </Stack>
+      )}
       {list && (
         <PageControl
           direction="later"
