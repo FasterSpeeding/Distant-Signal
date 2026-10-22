@@ -597,6 +597,14 @@ pub(crate) async fn remove_member_in_tx(
         .bind(target_user_id)
         .execute(&mut **tx)
         .await?;
+    // Their follows of journeys shared into this group (DS-146): a follow
+    // lasts only while its share lets them in. Their own journeys' shares
+    // just above take everyone else's follows of them by the cascade.
+    sqlx::query("DELETE FROM journey_follows WHERE group_id = $1 AND user_id = $2")
+        .bind(group_id)
+        .bind(target_user_id)
+        .execute(&mut **tx)
+        .await?;
 
     // A KICKED member (removed by someone else, not leaving of their own
     // accord) must not be able to walk straight back in (2026-09-26 review,
@@ -1378,6 +1386,9 @@ pub struct GroupJourney {
     pub planned_arrival: Option<DateTime<Utc>>,
     /// The untracked leg's clock-only state; `None` on a train leg.
     pub untracked_status: Option<crate::data::journeys::UntrackedStatus>,
+    /// Whether the CALLER follows this journey (DS-146,
+    /// `journey_follows`); set by the route, `false` here.
+    pub following: bool,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for GroupJourney {
@@ -1435,6 +1446,7 @@ impl From<GroupJourneyRow> for GroupJourney {
             planned_departure: row.planned_departure,
             planned_arrival: row.planned_arrival,
             untracked_status: None,
+            following: false,
         }
     }
 }
@@ -2043,6 +2055,9 @@ pub struct SharedJourney {
     pub planned_arrival: Option<DateTime<Utc>>,
     /// The untracked leg's clock-only state; `None` on a train leg.
     pub untracked_status: Option<crate::data::journeys::UntrackedStatus>,
+    /// Whether the CALLER follows this journey (DS-146,
+    /// `journey_follows`); set by the route, `false` here.
+    pub following: bool,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for SharedJourney {
@@ -2102,6 +2117,7 @@ impl From<SharedJourneyRow> for SharedJourney {
             planned_departure: row.planned_departure,
             planned_arrival: row.planned_arrival,
             untracked_status: None,
+            following: false,
         }
     }
 }
@@ -6252,6 +6268,7 @@ mod group_train_wire_shape_tests {
             planned_departure: Some("2026-10-21T08:00:00Z".parse().unwrap()),
             planned_arrival: Some("2026-10-21T08:10:00Z".parse().unwrap()),
             untracked_status: Some(crate::data::journeys::UntrackedStatus::Planned),
+            following: false,
         }
     }
 
@@ -6427,6 +6444,7 @@ mod group_train_wire_shape_tests {
             planned_departure: None,
             planned_arrival: None,
             untracked_status: None,
+            following: false,
         };
         for value in [
             serde_json::to_value(&train).unwrap(),

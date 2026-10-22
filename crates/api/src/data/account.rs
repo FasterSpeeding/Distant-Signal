@@ -48,6 +48,7 @@ pub const USER_KEYED_TABLES: &[&str] = &[
     "group_trains",
     "groups",
     "journey_breaks",
+    "journey_follows",
     "journey_idempotency_keys",
     "journey_leg_notification_state",
     "journey_templates",
@@ -180,6 +181,10 @@ pub struct AccountExport {
     pub group_memberships: Value,
     pub group_shared_trains: Value,
     pub group_shared_journeys: Value,
+    /// Journeys shared with the user that they follow (DS-146): which
+    /// journey, since when and through which group, or "link". Not the
+    /// journey itself, which is its owner's data, nor the link's hash.
+    pub journey_follows: Value,
     pub share_links: Value,
     pub group_invite_links: Value,
     /// Delegated access (docs/connected-apps.md): every grant, active or
@@ -349,6 +354,16 @@ pub async fn export_account(pool: &PgPool, user_id: &str) -> Result<Option<Accou
         group_shared_journeys: rows(
             pool,
             "SELECT to_jsonb(g) FROM group_journeys g WHERE added_by = $1 ORDER BY added_at",
+            user_id,
+        )
+        .await?,
+        journey_follows: rows(
+            pool,
+            "SELECT jsonb_build_object( \
+                 'journey_id', f.journey_id, 'followed_at', f.created_at, \
+                 'via', CASE WHEN f.group_id IS NULL THEN 'link' ELSE 'group' END, \
+                 'group_id', f.group_id) \
+             FROM journey_follows f WHERE f.user_id = $1 ORDER BY f.created_at",
             user_id,
         )
         .await?,
@@ -597,6 +612,17 @@ pub(crate) mod db_tests {
             exec(pool, &format!("INSERT INTO group_journeys (group_id, journey_id, added_by) VALUES ($1, {journey}, $2)"), &[group, user]).await;
             exec(pool, "INSERT INTO custom_line_group_grants (group_id, line_id, granted_by) VALUES ($1, 'cl-' || $2, $2)", &[group, user]).await;
         }
+        // The user follows a journey `other` shared into the group they
+        // joined (DS-146).
+        exec(
+            pool,
+            "INSERT INTO journeys (user_id, custom_name) VALUES ($1, 'Their trip')",
+            &[other],
+        )
+        .await;
+        let theirs = format!("(SELECT id FROM journeys WHERE user_id = '{other}' LIMIT 1)");
+        exec(pool, &format!("INSERT INTO group_journeys (group_id, journey_id, added_by) VALUES ($1, {theirs}, $2)"), &[&joined, other]).await;
+        exec(pool, &format!("INSERT INTO journey_follows (user_id, journey_id, group_id) VALUES ($1, {theirs}, $2)"), &[user, &joined]).await;
     }
 
     /// Every (table, column) with a foreign key to users(id), from the
@@ -791,6 +817,7 @@ pub(crate) mod db_tests {
             "groupMemberships",
             "groupSharedTrains",
             "groupSharedJourneys",
+            "journeyFollows",
             "shareLinks",
             "groupInviteLinks",
             "connectedApps",
