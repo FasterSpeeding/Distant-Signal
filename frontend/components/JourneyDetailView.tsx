@@ -9,7 +9,7 @@ import { ShareJourneyButton } from './ShareJourneyButton';
 import { ShareJourneyLinkButton } from './ShareJourneyLinkButton';
 import { TrackJourneyAgainButton } from './TrackJourneyAgainButton';
 import {
-  connectionGapMinutes,
+  connectionText,
   journeyCanAddLeg,
   journeyFirstLegStart,
   journeyPriorArrival,
@@ -99,10 +99,9 @@ function LegConnector({ leg, next }: { leg: JourneyLegDetail; next: JourneyLegDe
       ? `arrive ${formatTime(leg.plannedArrival)}`
       : legDestinationArrivalLabel(leg.destinationCrs, stops);
   // The gap to the next leg, whatever kind each is, when both times are
-  // known: no minimum interchange time is assumed.
-  const gap = next === null ? null : connectionGapMinutes(leg, next);
-  const gapText =
-    gap === null ? null : gap < 0 ? 'The next leg leaves before this one arrives' : `${gap} min to change`;
+  // known: the api's (live times, with the station's minimum change time)
+  // when it sent one, else the page's own, which assumes no minimum.
+  const gapText = next === null ? null : connectionText(leg, next);
   if (!stationName && !gapText) return null;
   return (
     <Text size="xs" c="dimmed" pl="sm" data-leg-connector>

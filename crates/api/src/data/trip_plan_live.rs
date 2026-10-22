@@ -849,6 +849,16 @@ pub fn seed_became_catchable(
     })
 }
 
+/// The one rule for whether a change works: the next train leaves at or
+/// after the traveller is ready (`ready_min`, the live arrival plus any
+/// walk) plus the change time. Shared by [`annotate`] and saved journeys
+/// (`journey_feasibility`), so the planner and a journey page never
+/// disagree. CIF publishes a minimum change time as the shortest change
+/// that IS timetabled to work, so equal is enough.
+pub fn interchange_feasible(departure_min: i64, ready_min: i64, change_minutes: u32) -> bool {
+    departure_min >= ready_min + i64::from(change_minutes)
+}
+
 fn change_minutes(interchange: &InterchangeData, tiploc: &str) -> u32 {
     match schedule_query::minimum_change_time(interchange, tiploc) {
         schedule_query::ChangeTime::Finite(minutes) => minutes,
@@ -945,7 +955,11 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                         *arrival_min = live_arr;
 
                         let interchange_feasible = previous_arrival.map(|arrival| {
-                            live_dep >= arrival + change_minutes(ctx.interchange, from_tiploc)
+                            interchange_feasible(
+                                i64::from(live_dep),
+                                i64::from(arrival),
+                                change_minutes(ctx.interchange, from_tiploc),
+                            )
                         });
                         previous_arrival = Some(live_arr);
 

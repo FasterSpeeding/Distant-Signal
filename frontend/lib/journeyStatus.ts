@@ -209,7 +209,8 @@ export function worstLegStatus(legs: JourneyLegDetail[]): LegStatusGroup | null 
 /** A journey's headline status: a leg's group, or one of three that only a
  * whole journey has. `partCancelled`: some train legs are cancelled, not
  * all. `connectionAtRisk`/`connectionMissed`: a late leg leaves little or
- * no time to make the next one (journey page only: the list row has no
+ * no time to make the next one (from a journey read in full -- the
+ * journey page and the home page's current journeys; the list row has no
  * stop times). */
 export type JourneySummaryGroup = LegStatusGroup | 'partCancelled' | 'connectionAtRisk' | 'connectionMissed';
 
@@ -229,9 +230,10 @@ const SUMMARY_RANK: Record<JourneySummaryGroup, number> = {
   partCancelled: 6.5,
 };
 
-/** A late arrival with less than this many minutes to change is "at risk".
- * No station's own minimum interchange time is known here, so this is a
- * plain margin, applied only when the arriving leg is running late. */
+/** A late arrival with less than this many minutes to change is "at risk"
+ * in the fallback check, used only when the api sent no `connection` (it
+ * knows each station's own minimum change time; this doesn't): a plain
+ * margin, applied only when the arriving leg is running late. */
 export const CONNECTION_AT_RISK_MINUTES = 5;
 
 export interface JourneySummary {
@@ -333,21 +335,34 @@ function legStarted(leg: JourneyLegDetail): boolean {
   return status === 'en_route' || status === 'completed';
 }
 
+/** One change, from `leg` onto `next`: the api's judgement
+ * (`next.connection`, live times and the station's minimum change time)
+ * when it sent one, else the journey page's own gap
+ * (`connectionGapMinutes`, no minimum change time) as before. */
+function connectionState(leg: JourneyLegDetail, next: JourneyLegDetail): 'atRisk' | 'missed' | null {
+  if (next.connection !== undefined) {
+    const state = next.connection?.state;
+    return state === 'missed' || state === 'atRisk' ? state : null;
+  }
+  const gap = connectionGapMinutes(leg, next);
+  if (gap === null) return null;
+  if (gap < 0) return 'missed';
+  const late = (leg.trackedTrainState?.delayMinutes ?? 0) > 0;
+  return late && gap < CONNECTION_AT_RISK_MINUTES ? 'atRisk' : null;
+}
+
 /** The connection the journey is most at risk on: between a leg that is
  * running (not cancelled) and a next leg that hasn't started, so a
- * connection already made, or one no longer on offer, isn't judged. Uses
- * the journey page's own gap (`connectionGapMinutes`). */
+ * connection already made, or one no longer on offer, isn't judged. */
 function worstConnection(legs: readonly JourneyLegDetail[]): 'atRisk' | 'missed' | null {
   let worst: 'atRisk' | null = null;
   for (const [index, leg] of legs.entries()) {
     const next = legs[index + 1];
     if (next === undefined) break;
     if (trainStatus(leg) === 'cancelled' || trainStatus(next) === 'cancelled' || legStarted(next)) continue;
-    const gap = connectionGapMinutes(leg, next);
-    if (gap === null) continue;
-    if (gap < 0) return 'missed';
-    const late = (leg.trackedTrainState?.delayMinutes ?? 0) > 0;
-    if (late && gap < CONNECTION_AT_RISK_MINUTES) worst = 'atRisk';
+    const state = connectionState(leg, next);
+    if (state === 'missed') return 'missed';
+    if (state === 'atRisk') worst = 'atRisk';
   }
   return worst;
 }

@@ -1,6 +1,6 @@
 import { addCalendarDays, londonCalendarDay, londonDayEndIso } from './londonWallClock';
 import { legArrivalInstant, legDepartureInstant, legExpectedDepartureInstant } from './journeyLegChaining';
-import { journeyListItemStatusGroup, worstLegStatus, type LegStatusGroup } from './journeyStatus';
+import { journeyDetailSummary, journeyListItemSummary, type JourneySummaryGroup } from './journeyStatus';
 import type { TrackedRowStatus } from './trackedRowStatus';
 import { splitTrainRows } from './upcomingPast';
 import { isUntrackedLeg } from './untrackedLeg';
@@ -80,16 +80,15 @@ export interface HomeJourneySplit {
   upcoming: HomeEntry[];
 }
 
-/** The headline status of a journey on the home page: the WHOLE journey's,
- * never only its current train's. Read in full, that is the worst of every
- * leg (`worstLegStatus`, what the journey page's own badge shows). A row
- * not read in full (a journey on a later day) has only its current leg to
- * go on (`journeyListItemStatusGroup`), which for a journey not yet under
- * way is its first leg. The one place both sections take a status from, so
- * a whole-journey summary on `GET /Journeys/mine` replaces the fallback
- * here alone. */
-export function homeJourneyStatusGroup(journey: HomeJourney): LegStatusGroup {
-  return (journey.detail && worstLegStatus(journey.detail.legs)) ?? journeyListItemStatusGroup(journey.item);
+/** The headline status of a journey on the home page: the WHOLE journey's
+ * summary (`summariseJourney`), the rule the journey page's own badge and
+ * the Journeys list use. Read in full, that includes a missed or tight
+ * connection (the api's `connection` on each leg, `journeyDetailSummary`).
+ * A row not read in full (a journey on a later day) goes by its list row
+ * (`journeyListItemSummary`), which has no connection to judge. */
+export function homeJourneyStatusGroup(journey: HomeJourney): JourneySummaryGroup {
+  const summary = journey.detail ? journeyDetailSummary(journey.detail.legs) : null;
+  return (summary ?? journeyListItemSummary(journey.item)).group;
 }
 
 function firstServiceDate(item: JourneyListItem): string {

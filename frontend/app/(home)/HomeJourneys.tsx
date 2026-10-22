@@ -28,7 +28,7 @@ import {
   journeyNameInputFromLegs,
   journeyPreviewLine,
 } from '@/lib/journeyName';
-import { legStatusGroup, type LegStatusGroup } from '@/lib/journeyStatus';
+import { legStatusGroup, type JourneySummaryGroup } from '@/lib/journeyStatus';
 import { routeLabel, stationLabel } from '@/lib/stationLabel';
 import { trackedTrainDisplayName, trackedTrainHref, trackedTrainRouteLabel } from '@/lib/trackingName';
 import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTimes, untrackedLegTitle } from '@/lib/untrackedLeg';
@@ -88,7 +88,7 @@ function legArrivalText(leg: JourneyLegDetail): string | null {
  * delay in minutes where a running train has one ("12 min late"),
  * otherwise its status badge. `null` when that would only repeat the
  * journey's own badge (`headline`). */
-function LegStatus({ leg, headline }: { leg: JourneyLegDetail; headline: LegStatusGroup }) {
+function LegStatus({ leg, headline }: { leg: JourneyLegDetail; headline: JourneySummaryGroup }) {
   const group = legStatusGroup(leg);
   const delay = leg.trackedTrainState?.delayMinutes ?? null;
   if (group === 'delayed' && delay !== null) return <DelayBadge delayMinutes={delay} />;

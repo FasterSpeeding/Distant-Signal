@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { legSearchDraftFromLeg, legSearchFromDraft, legSearchPickBody, legSearchQuery } from './legSearch';
+import {
+  legSearchDraftFromLeg,
+  legSearchFromDraft,
+  legSearchPickBody,
+  legSearchPrefill,
+  legSearchQuery,
+} from './legSearch';
+import { trainLeg } from '@/test/journeyFixtures';
 
 const leg = {
   originCrs: 'KGX',
@@ -62,5 +69,37 @@ describe('legSearch', () => {
       departWindow: { after: '08:00', before: null },
       arriveWindow: { after: '10:00', before: '11:30' },
     });
+  });
+});
+
+describe('legSearchPrefill: Change train on a leg never window-searched', () => {
+  const KGX: [string, string] = ['KGX', 'London Kings Cross'];
+  const YRK: [string, string] = ['YRK', 'York'];
+
+  it("searches the leg's stations and date, from its train's timetabled departure", () => {
+    expect(legSearchPrefill(trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z'))).toEqual({
+      originCrs: 'KGX',
+      destinationCrs: 'YRK',
+      serviceDate: '2026-09-17',
+      departAfter: '10:00',
+      departBefore: null,
+      arriveAfter: null,
+      arriveBefore: null,
+    });
+  });
+
+  it("falls back to the train's pin for stations the leg doesn't store", () => {
+    const leg = { ...trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z'), originCrs: null };
+    expect(legSearchPrefill(leg)).toMatchObject({ originCrs: 'KGX', destinationCrs: 'YRK' });
+  });
+
+  it("starts at midnight when the departure is not on the leg's date", () => {
+    const leg = { ...trainLeg(1, KGX, YRK, '2026-09-17T23:30:00Z', '2026-09-18T01:00:00Z'), serviceDate: '2026-09-17' };
+    expect(legSearchPrefill(leg)).toMatchObject({ departAfter: '00:00' });
+  });
+
+  it('is null for a window-searched leg, which has its own search', () => {
+    const leg = { ...trainLeg(1, KGX, YRK, '2026-09-17T09:00:00Z', '2026-09-17T11:00:00Z'), windowSearched: true };
+    expect(legSearchPrefill(leg)).toBeNull();
   });
 });

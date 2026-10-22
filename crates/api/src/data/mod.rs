@@ -19,6 +19,7 @@ pub mod island_of_ireland;
 pub mod journey;
 pub mod journey_alternatives;
 pub mod journey_breaks;
+pub mod journey_feasibility;
 pub mod journey_leg_proposal;
 pub mod journey_replace;
 pub mod journey_revisions;

@@ -135,6 +135,46 @@ describe('journeyDetailSummary: the journey is judged at its final destination',
     expect(journeyDetailSummary(twoLegs('2026-10-21T10:40:00Z', 40))).toMatchObject({ group: 'connectionMissed' });
   });
 
+  it("the api's connection, with the station's minimum change time, wins over the page's own gap", () => {
+    const withConnection = (legs: JourneyLegDetail[], connection: NonNullable<JourneyLegDetail['connection']>) =>
+      legs.map((l, i) => (i === 1 ? { ...l, connection } : l));
+    // 18 minutes looks fine without a minimum; the api says missed.
+    expect(
+      journeyDetailSummary(
+        withConnection(twoLegs('2026-10-21T10:12:00Z', 12), {
+          gapMinutes: 3,
+          minimumChangeMinutes: 5,
+          state: 'missed',
+        }),
+      ),
+    ).toMatchObject({ group: 'connectionMissed' });
+    // The page's gap says missed, but the next train is late too.
+    expect(
+      journeyDetailSummary(
+        withConnection(twoLegs('2026-10-21T10:40:00Z', 40), { gapMinutes: 8, minimumChangeMinutes: 5, state: 'ok' }),
+      ),
+    ).toMatchObject({ group: 'good' });
+    expect(
+      journeyDetailSummary(
+        withConnection(twoLegs('2026-10-21T10:12:00Z', 12), {
+          gapMinutes: 6,
+          minimumChangeMinutes: 5,
+          state: 'atRisk',
+        }),
+      ),
+    ).toMatchObject({ group: 'connectionAtRisk' });
+    // `unknown` is no signal, and doesn't fall back to the page's gap.
+    expect(
+      journeyDetailSummary(
+        withConnection(twoLegs('2026-10-21T10:40:00Z', 40), {
+          gapMinutes: null,
+          minimumChangeMinutes: null,
+          state: 'unknown',
+        }),
+      ),
+    ).toMatchObject({ group: 'good' });
+  });
+
   it('one cancelled leg of two is part cancelled, beside the final arrival delay', () => {
     const legs: JourneyLegDetail[] = [
       leg(1, 'KGX', 'YRK', { trackedTrainState: state({ status: 'completed', delayMinutes: 0 }) }),

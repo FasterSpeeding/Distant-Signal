@@ -222,12 +222,13 @@ describe('JourneyLegCard', () => {
     expect(screen.getByRole('button', { name: 'Change train' })).toBeInTheDocument();
   });
 
-  // A no-window leg (a direct pin/known-train pick) has nothing to
-  // re-search, so it gets "Remove leg" only -- never "Change train".
-  it('shows "Remove leg" but not "Change train" for a matched, no-window, owner-viewed leg', () => {
+  // Mid-journey phase 0: a no-window leg (a pin, "I know the train" or a
+  // planner-saved leg) gets "Change train" too, searching from what the
+  // leg knows (see the Edit search tests below).
+  it('shows both "Change train" and "Remove leg" for a matched, no-window, owner-viewed leg', () => {
     renderWithMantine(<JourneyLegCard journeyId={167} leg={baseLeg()} isOwner isOnlyLeg={false} />);
     expect(screen.getByRole('button', { name: 'Remove leg' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Change train' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Change train' })).toBeInTheDocument();
   });
 
   it('offers neither action to a non-owner (shared-group viewer)', () => {
@@ -759,6 +760,31 @@ describe('JourneyLegCard: Edit search', () => {
       destinationCrs: 'YRK',
       departWindow: { after: null, before: null },
       arriveWindow: { after: null, before: '18:00' },
+    });
+  });
+
+  it('changes the train on a leg never window-searched, from its stations, date and departure', async () => {
+    const fetchMock = mockApi();
+    renderWithMantine(<JourneyLegCard journeyId={7} isOwner isOnlyLeg={false} leg={baseLeg({ id: 5 })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change train' }));
+
+    // 16:00Z is 17:00 in London: trains from the booked one on.
+    await waitFor(() =>
+      expect(calls(fetchMock, '/candidates').map(([input]) => String(input))).toContain(
+        '/api/Journeys/7/legs/5/candidates?origin=KGX&destination=YRK&serviceDate=2026-09-22&departAfter=17%3A00',
+      ),
+    );
+    expect(screen.getByText(/^Other trains:/)).toBeInTheDocument();
+    expect(screen.getByText('Departing at or after 17:00')).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Track this train: 10:32/ }));
+    await waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    const pick = calls(fetchMock, '/train')[0];
+    expect((JSON.parse(String(pick?.[1]?.body)) as { search: unknown }).search).toEqual({
+      originCrs: 'KGX',
+      destinationCrs: 'YRK',
+      departWindow: { after: '17:00', before: null },
+      arriveWindow: { after: null, before: null },
     });
   });
 

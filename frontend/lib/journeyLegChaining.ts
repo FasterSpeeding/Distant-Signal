@@ -218,6 +218,22 @@ export function connectionGapMinutes(leg: JourneyLegDetail, next: JourneyLegDeta
   return Number.isFinite(minutes) ? Math.round(minutes) : null;
 }
 
+/** The connector's words for the change from `leg` onto `next`: "8 min to
+ * change (needs 5)", "3 min to change, not enough (needs 5)", or, without
+ * the api's `connection` (or when it couldn't measure the gap), the page's
+ * own plain gap. `null` when no gap is known. */
+export function connectionText(leg: JourneyLegDetail, next: JourneyLegDetail): string | null {
+  const connection = next.connection;
+  const gap = connection?.gapMinutes ?? connectionGapMinutes(leg, next);
+  if (gap === null) return null;
+  if (gap < 0) return 'The next leg leaves before this one arrives';
+  const needs = connection?.minimumChangeMinutes ?? null;
+  if (needs === null || needs === 0) return `${gap} min to change`;
+  if (connection?.state === 'missed') return `${gap} min to change, not enough (needs ${needs})`;
+  if (connection?.state === 'atRisk') return `${gap} min to change, tight (needs ${needs})`;
+  return `${gap} min to change (needs ${needs})`;
+}
+
 /** Where and when the journey's FIRST leg starts: what "Add a leg at the
  * start" (inserting before it, spec 2026-10-20 §2.3) seeds a new leg's
  * end from. `null` for a journey with no legs. */
@@ -236,7 +252,8 @@ export function journeyFirstLegStart(
   };
 }
 
-function londonDateTime(instant: string): LondonDateTime | null {
+/** An instant as a London date and wall-clock time; `null` if invalid. */
+export function londonDateTime(instant: string): LondonDateTime | null {
   const london = dayjs(instant).tz(LONDON_TZ);
   if (!london.isValid()) return null;
   return { date: london.format('YYYY-MM-DD'), time: london.format('HH:mm') };
