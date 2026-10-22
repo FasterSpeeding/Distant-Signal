@@ -1,6 +1,55 @@
 # Pre-departure platform and delay prediction (2026-10-21)
 
-Status: design, research only; nothing here is built yet. Work log DS-123.
+Status: design. The user answered the open questions on 2026-10-22 (see
+"Decisions" below); phases 0 and 1 are being built under DS-127. Work log
+DS-123.
+
+## Decisions (2026-10-22)
+
+The user's answers to section 11. Where they differ from the text further
+down, these win.
+
+- **Q1, inferred previous working: yes.** The platform-sequence inference
+  (same operator, terminating at the same platform 2-60 min before our
+  departure) may be used and shown, always with a confidence level. Stated
+  timetable association links replace it in phase 2.
+- **Q2, notifications: yes, at high confidence only.** A predicted late
+  start sends a push only when its confidence is `high`; otherwise it is
+  display only. The push respects the user's notification settings (the
+  train's and journey's own switches, quiet settings and push
+  subscriptions) and is deduplicated with the existing delay pushes, so a
+  user never gets a "late start" push and then a delay push for the same
+  lateness. Because phase 1 has no association links, `high` is redefined
+  for inferred links from the 2026-10-20 check (section 3), conservatively:
+  - the incoming train has eaten all of the booked turnaround's slack
+    (excess ≥ 0, so the predicted late start is at least `TURN_MIN`);
+  - the excess is at most 15 min, below the point where the rule starts
+    over-predicting;
+  - the incoming train's delay comes from a live report (arrived at, or
+    running towards, our origin) that is at most 10 min old, one link
+    deep.
+  On 2026-10-20 the excess 0-15 buckets held 325 pairs, of which about 85%
+  started at least 3 min late.
+- **Q3, new feeds: approved, subscriptions pending.** Darwin Push Port and
+  the LDBWS arrival boards are approved, but the RDM subscriptions wait on
+  the user (DS-126). Their ingests are not built now; they stay in phases
+  2-3.
+- **Q4, the incoming unit's arrival platform as "likely": the spec's
+  recommendation is taken.** It is shown only as a `changed` platform with
+  a "likely" qualifier. It needs the TRUST `platform` field kept by the
+  backlog consumer, so it is left out of phase 1 and follows with the
+  phase 2 association work.
+- **Q5, naming the incoming train: the spec's recommendation is taken.**
+  The wording says "the incoming train"; the provenance line links that
+  phrase to the incoming train's own page (the API returns its uid and
+  date). When the incoming train is cancelled, there is no prediction and
+  nothing is said about it.
+- **Q6, thresholds: the defaults.** Confidence cut-offs at 15 and 30 min of
+  excess, a 3-hour horizon, and `TURN_MIN` of 4 min.
+- **Q7, the compact booked style: a dotted underline.** A booked, not yet
+  confirmed platform shows with a dotted underline and the accessible label
+  "booked, not confirmed". A changed platform is highlighted (the existing
+  blue style, with the booked one beside it).
 
 ## The goal
 
