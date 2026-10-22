@@ -395,14 +395,17 @@ Chiltern (CH) had only 8 pairs in the band, at 50%. **Phase 1 caps both at
 medium confidence**, so neither ever sends a push, and lists them in one
 constant to revisit when phase 2's association links land.
 
-**Association links in the timetable file: not counted.** The local file
-named for this (`NLC20261009.xml.gz`) turned out to be the NLC location
-reference (TIPLOC, NLC, CRS and STANOX per location), not a CIF timetable,
-so it has no association (`AA`) records. No CIF extract is kept outside
-prod, and reading the delivered zip from the prod volume was not done
-(this measurement stays read-only against Postgres). The `NP` count is
-still open: it needs one CIF extract, which the user can supply, and
-phase 2 should start with it.
+**Association coverage (2026-10-22, read-only, aggregates).** One full
+CIF delivery (RJTTF996, 2026-10-21) carries 6,138 `AA` records: 2,149
+`JJ`, 2,045 `VV`, 1,944 STP cancellations and **no `NP` (next-working)
+records at all**. Every non-cancel record is a passenger association. So
+the timetable file states a previous working for **0 of 148,366**
+passenger origins over 2026-10-22..28, against 104,122 (70%) for the
+platform-sequence inference on the same dates. Agreement between the two
+cannot be measured. The file is no substitute for option A. `JJ`/`VV` are
+present: 3,040 of that week's passenger trains are part of an active join
+or divide, and 2,205 of the inferred pairs (2.1%) involve one. Those pairs
+are where the inference is least safe.
 
 **Not measured in this pass:** the first-seen platform lead-time histogram
 and how often the origin board's `etd` already shows the knock-on. Both
@@ -414,7 +417,7 @@ not keep today), so they are left for a follow-up.
 | Option | Accuracy | Coverage | Effort |
 |---|---|---|---|
 | **A. Platform-sequence inference** from CIF: the last same-operator terminating arrival on the same booked platform, with no other departure in between | Good where it fires (validated above), but unverified per pair. Fails on unit swaps, stock sent to sidings, through platforms shared by two units, and splits or joins | 78% of passenger origins that have a booked platform | Low: one pass over `schedule_calling_points_full` at publish time |
-| **B. CIF `AA` `NP` links** | Planned links, exact when they exist. Can be overridden on the day | **Unknown**: we drop `AA` today. Phase 0 counts `NP` links in one MCA file, offline | Medium: parse `AA` with STP overlay (associations have their own P/O/N/C layering and date ranges), plus a table |
+| **B. CIF `AA` `NP` links** (dropped) | Would be exact, but the file carries none | **None**: 0 `NP` records in a full CIF delivery (section 3a) | n/a |
 | **C. Darwin Push Port associations** | Best: they follow on-the-day changes | National | High: needs the Push Port (section 2) |
 | **D. Headcode family** (the same first two characters, arriving shortly before) | Weak; renumbering is common | Inconsistent | Low, but adds little over A |
 | **E. Unit or diagram data** | Exact | Not available in any feed DS takes | n/a |
@@ -422,10 +425,12 @@ not keep today), so they are left for a follow-up.
 **Recommendation.**
 
 1. Build **A** now. It needs no new feed and it validates acceptably.
-2. Treat **B** as a strict improvement: where an `NP` link exists for the
-   date it overrides A, and its confidence is higher. Do it once phase 0
-   shows meaningful `NP` coverage.
-3. **C** comes with the Push Port if the user takes it on (Q3).
+2. Drop **B**: the timetable file has no `NP` links (section 3a), so
+   nothing overrides A from it. Phase 2 still parses `AA` `JJ`/`VV`, with
+   the STP overlay, to cap or suppress inferred pairs that involve a join
+   or divide, where A is least safe.
+3. **C** is the real next-working source. It comes with the Push Port if
+   the user takes it on (Q3).
 4. Use D only as a tie-breaker inside A (prefer the same headcode family
    when two arrivals tie). Drop E.
 
@@ -437,8 +442,9 @@ not keep today), so they are left for a follow-up.
 - `link` (`association` or `inferred`).
 
 `schedule-ingest` writes it in the same publish as
-`schedule_calling_points_full`. Reads become a key lookup, and the
-association override is one more writer of the same table.
+`schedule_calling_points_full`. Reads become a key lookup. Push Port
+associations (option C), if taken on, are one more writer of the same
+table.
 
 ## 5. Delay rule
 
@@ -647,10 +653,13 @@ Late start (journey leg card and train page), shown while the train is
 4. `predictedStart` with the section 5 rule, shown as in section 8. No
    notifications.
 
-**Phase 2. CIF associations.** Parse `AA` with the STP overlay. `NP`
-overrides the inferred links. `JJ`/`VV` mark portions, so the UI can say
-"joins/divides at X" and we skip predictions where a split makes the unit
-ambiguous.
+**Phase 2. CIF joins and divides.** Parse `AA` `JJ`/`VV` with the STP
+overlay (associations have their own P/O/N/C layering and date ranges).
+An inferred pair that involves a join or divide is capped at medium
+confidence or suppressed, and the UI can say "joins/divides at X". The
+file has no `NP` links (section 3a), so nothing here overrides the
+inference; a real next-working source is the Darwin Push Port (option C,
+phase 3).
 
 **Phase 3. Darwin Push Port**, if Q3 is yes:
 
@@ -668,7 +677,7 @@ ambiguous.
   - confidence bands and "expected" wording;
   - nothing above 30 min of excess;
   - no notifications;
-  - associations override the inference.
+  - joins and divides cap or suppress the inference (phase 2).
 - **A booked platform read as a promise.** It must look provisional. The
   data shows a board platform is the booked one 94% of the time, so
   `board` mostly means "still the booked platform". Wording must not
