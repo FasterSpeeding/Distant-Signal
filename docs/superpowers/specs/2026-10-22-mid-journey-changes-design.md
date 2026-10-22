@@ -964,6 +964,14 @@ first one users notice.
     remaining trains still work; Undo shown for 30 s after accept.
 13. **Sweep in the api, not the notifier.** Recommended: yes (D-4).
 
+### Decisions (2026-10-22)
+
+The user accepted every recommendation above: trains are never swapped
+without a tap (1); "at risk" stays in-app only (2); a break notice
+replaces that train's own push (3); a global opt-out plus a per-journey
+mute, no quiet hours yet (4); the data decides fault when the user marks
+a train missed (5); and 6 to 13 as recommended.
+
 ## 15. Tests
 
 - **Pure engine** (`journey_feasibility`): MSN at a station, `NoInterchange`,
