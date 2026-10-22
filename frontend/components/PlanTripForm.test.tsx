@@ -1,6 +1,5 @@
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useState } from 'react';
 import { renderWithMantine } from '@/test/render';
 import { PlanTripForm } from './PlanTripForm';
 
@@ -280,29 +279,6 @@ describe('PlanTripForm', () => {
       expect(screen.getByRole('button', { name: 'Find routes' })).toBeDisabled();
       fireEvent.click(screen.getByRole('radio', { name: 'Depart at' }));
       expect(screen.getByRole('button', { name: 'Find routes' })).toBeEnabled();
-    });
-
-    it('shows a paged search in the fields, once per seq', () => {
-      const timing = { date: '2026-10-24', mode: 'arriveBy' as const, time: '07:59', seq: 1 };
-      function Harness() {
-        const [current, setCurrent] = useState<typeof timing | undefined>(undefined);
-        return (
-          <>
-            <button type="button" onClick={() => setCurrent({ ...timing })}>
-              page
-            </button>
-            <PlanTripForm onSubmit={vi.fn()} timing={current} />
-          </>
-        );
-      }
-      renderWithMantine(<Harness />);
-      fireEvent.click(screen.getByRole('button', { name: 'page' }));
-      expect(screen.getByRole('radio', { name: 'Arrive by' })).toBeChecked();
-      expect(screen.getByLabelText('Time')).toHaveValue('07:59');
-      // The visitor edits it; the same seq does not overwrite the edit.
-      fireEvent.change(screen.getByLabelText('Time'), { target: { value: '10:00' } });
-      fireEvent.click(screen.getByRole('button', { name: 'page' }));
-      expect(screen.getByLabelText('Time')).toHaveValue('10:00');
     });
   });
 });

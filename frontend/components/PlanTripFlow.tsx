@@ -1,8 +1,8 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
-import { Alert, Button, Group, List, ListItem, Stack, Text } from '@mantine/core';
-import { PlanTripForm, type PlanTripFormHandle } from './PlanTripForm';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Button, List, ListItem, Stack, Text } from '@mantine/core';
+import { PlanTripForm } from './PlanTripForm';
 import { ItineraryOption } from './ItineraryOption';
 import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
@@ -16,7 +16,9 @@ import {
   type TripPlanQuery,
 } from '@/lib/tripPlan';
 import { planPageSearch, type PlanFormInitial } from '@/lib/tripPlanUrl';
-import { apiQuery, earlierQuery, laterQuery, timingMode, timingSummary, type TimingMode } from '@/lib/tripPlanTiming';
+import { apiQuery, timingSummary } from '@/lib/tripPlanTiming';
+import { listPlan, mergePage, pageQuery, startList, type PageDirection, type PlanList } from '@/lib/tripPlanPaging';
+import { captureScrollAnchor, restoreScrollAnchor, type ScrollAnchor } from '@/lib/scrollAnchor';
 import { getStationNames } from '@/lib/suggestions';
 import { itineraryLegsForSaving } from '@/lib/tripPlanSave';
 import { groupLabels, useStationGroups } from '@/lib/stationGroups';
@@ -39,24 +41,15 @@ interface SegmentSelection {
   itinerary: TripPlanItinerary | null;
 }
 
-/** `form` with `paged`'s date and time (and so its mode). */
-function withPagedTiming(form: TripPlanQuery, paged: TripPlanQuery): TripPlanQuery {
-  const { departAfter: _depart, arriveBy: _arrive, dayOffset: _offset, acrossMidnight: _across, ...rest } = form;
-  return {
-    ...rest,
-    date: paged.date,
-    ...(paged.arriveBy ? { arriveBy: paged.arriveBy } : { departAfter: paged.departAfter }),
-  };
-}
+/** At most this many requests per "Earlier routes" or "Later routes"
+ * click: a page whose journeys are all already shown (a delay that grew
+ * between two requests) is followed by the next one, so a click always
+ * adds something unless the day has run out. */
+const MAX_REQUESTS_PER_PAGE = 3;
 
-/** A plan with the visitor's search that produced it, and the service date
- * that search was sent as (`apiQuery`: an arrive-by time after midnight is
- * the previous day's trains). */
-interface AnsweredSearch {
-  query: TripPlanQuery;
-  serviceDate: string;
-  plan: TripPlanResponse;
-}
+/** The attribute each itinerary card's wrapper carries for scroll
+ * anchoring: `<segment>:<itinerary key>`. */
+const ENTRY_ATTRIBUTE = 'data-plan-entry';
 
 /** "Plan a route for me" (design spec §5.3): the form (Task 3) → results
  * comparison (Task 4, per segment) → one `POST /Journeys/itinerary` for
@@ -89,7 +82,12 @@ export function PlanTripFlow({
   /** The date picker's range -- see `PlanTripForm`. */
   searchDates?: TrainSearchDates | null | undefined;
 }) {
-  const [plan, setPlan] = useState<TripPlanResponse | null>(null);
+  // The visitor's search's own response; `list` is it with every earlier
+  // and later page merged in (`lib/tripPlanPaging.ts`), `null` when it has
+  // no journey to page from. The results show `list` when there is one.
+  const [searchedPlan, setSearchedPlan] = useState<TripPlanResponse | null>(null);
+  const [list, setList] = useState<PlanList | null>(null);
+  const plan = useMemo(() => (list ? listPlan(list) : searchedPlan), [list, searchedPlan]);
   const [planError, setPlanError] = useState<string | null>(null);
   // The options-mode search-size 400: shown as advice, not the raw message
   // (which is the formula the API checks).
@@ -119,15 +117,13 @@ export function PlanTripFlow({
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
-  // The search the shown plan answers (for its summary line), and the last
-  // one that found a journey: earlier/later page from the plan on screen,
-  // or from this one when the page on screen is empty.
-  const [answered, setAnswered] = useState<AnsweredSearch | null>(null);
-  const [pagingAnchor, setPagingAnchor] = useState<AnsweredSearch | null>(null);
-  // A paged search's timing, pushed into the form's fields.
-  const [formTiming, setFormTiming] = useState<
-    { date: string; mode: TimingMode; time: string; seq: number } | undefined
-  >(undefined);
+  // The search the shown plan answers, for its summary line.
+  const [answeredQuery, setAnsweredQuery] = useState<TripPlanQuery | null>(null);
+  // "Earlier routes" / "Later routes" in flight, and its failure.
+  const [paging, setPaging] = useState<PageDirection | null>(null);
+  const [pagingError, setPagingError] = useState<{ direction: PageDirection; message: string } | null>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const pendingAnchor = useRef<ScrollAnchor | null>(null);
   const needsLoginState = useNeedsLogin();
   // Monotonic guard against a stale `GET /Trips/plan` response landing
   // after a newer search was already issued (I2) -- `GET /Trips/plan` can
@@ -146,7 +142,7 @@ export function PlanTripFlow({
   // identity check, together, not either alone).
   const searchRequestId = useRef(0);
 
-  async function handleSearch(query: TripPlanQuery, paged = false) {
+  async function handleSearch(query: TripPlanQuery) {
     // Whole-branch final-review finding: data correctness was already
     // covered by the `searchRequestId` guard below (a stale response can
     // never overwrite a newer one), but nothing stopped a second click
@@ -168,10 +164,10 @@ export function PlanTripFlow({
     if (syncUrl) {
       window.history.replaceState(null, '', `${window.location.pathname}?${planPageSearch(query)}`);
     }
-    setPlan(null);
-    setAnswered(null);
-    // A new search from the form starts paging afresh.
-    if (!paged) setPagingAnchor(null);
+    setSearchedPlan(null);
+    setList(null);
+    setAnsweredQuery(null);
+    setPagingError(null);
     // Clears out the PREVIOUS search's resolved names immediately (not
     // just once the new lookup resolves) -- otherwise a code the new plan
     // never mentions could keep rendering the old plan's name for the
@@ -181,10 +177,9 @@ export function PlanTripFlow({
       const sent = apiQuery(query);
       const result = await fetchTripPlan(sent);
       if (searchRequestId.current !== requestId) return; // superseded by a newer search
-      setPlan(result);
-      const search = { query, serviceDate: sent.date, plan: result };
-      setAnswered(search);
-      if ((result.journeys ?? []).length > 0) setPagingAnchor(search);
+      setSearchedPlan(result);
+      setList(startList(query, sent.date, result));
+      setAnsweredQuery(query);
       setSelections(result.segments.map(() => ({ itinerary: null })));
       // Best-effort, non-blocking: the plan itself is already fully
       // renderable with bare codes (`codeRouteLabel`'s own fallback), so
@@ -283,28 +278,53 @@ export function PlanTripFlow({
     }
   }
 
-  // Earlier/later: one request each, from the plan on screen, or from the
-  // last one with a journey when this page is empty (spec §4.3).
-  const pagingFrom = answered && (answered.plan.journeys ?? []).length > 0 ? answered : pagingAnchor;
-  const earlier = pagingFrom ? earlierQuery(pagingFrom.query, pagingFrom.serviceDate, pagingFrom.plan) : null;
-  const later = pagingFrom ? laterQuery(pagingFrom.query, pagingFrom.serviceDate, pagingFrom.plan) : null;
-
-  const formHandle = useRef<PlanTripFormHandle>(null);
-
-  function page(paged: TripPlanQuery) {
-    if (searching) return;
-    // The time comes from the results on screen; everything else from the
-    // form as it is now, so a From or To changed since that search is the
-    // one paged (and re-run), not the stale one.
-    const query = withPagedTiming(formHandle.current?.currentQuery() ?? paged, paged);
-    setFormTiming((current) => ({
-      date: query.date,
-      mode: timingMode(query),
-      time: query.arriveBy ?? query.departAfter ?? '',
-      seq: (current?.seq ?? 0) + 1,
-    }));
-    void handleSearch(query, true);
+  // Earlier/later (spec 2026-10-19 §4.3): one page at a time, merged into
+  // the list -- earlier above, later below -- so the whole span stays on
+  // screen. Each page repeats the visitor's own search with only the time
+  // changed (`pageQuery`).
+  async function loadPage(direction: PageDirection) {
+    if (!list || paging || searching) return;
+    // A new search from the form while this runs wins: its id moves on.
+    const requestId = searchRequestId.current;
+    setPaging(direction);
+    setPagingError(null);
+    let current = list;
+    const pages: TripPlanResponse[] = [];
+    try {
+      for (let request = 0; request < MAX_REQUESTS_PER_PAGE; request += 1) {
+        const sent = apiQuery(pageQuery(current, direction));
+        const result = await fetchTripPlan(sent);
+        if (searchRequestId.current !== requestId) return;
+        pages.push(result);
+        const merged = mergePage(current, direction, result, sent.date);
+        current = merged.list;
+        if (merged.added > 0 || current.earlierDone || current.laterDone) break;
+      }
+      // Hold the card on screen still while earlier ones go in above it.
+      if (direction === 'earlier') pendingAnchor.current = captureScrollAnchor(resultsRef.current, ENTRY_ATTRIBUTE);
+      setList(current);
+      void Promise.all(pages.map((page) => getStationNames(collectTripPlanStationCodes(page)))).then((found) => {
+        if (searchRequestId.current !== requestId) return;
+        setStationNames((names) => new Map([...names, ...found.flatMap((more) => [...more])]));
+      });
+    } catch (error) {
+      if (searchRequestId.current !== requestId) return;
+      setPagingError({
+        direction,
+        message:
+          error instanceof TripPlanError
+            ? error.message
+            : describeFailure('load', direction === 'earlier' ? 'earlier routes' : 'later routes'),
+      });
+    } finally {
+      setPaging(null);
+    }
   }
+
+  useLayoutEffect(() => {
+    restoreScrollAnchor(resultsRef.current, pendingAnchor.current);
+    pendingAnchor.current = null;
+  }, [list]);
 
   const hintFor = (reason: Parameters<typeof noResultHint>[0]) =>
     noResultHint(reason, (code) => codeStationLabel(code, stationNames.get(code)));
@@ -317,8 +337,6 @@ export function PlanTripFlow({
         initialOriginCrs={initialOriginCrs}
         initial={initialQuery}
         searchDates={searchDates}
-        timing={formTiming}
-        handleRef={formHandle}
       />
       {planError && (
         <Alert color="red" title="Couldn't plan this trip">
@@ -338,73 +356,87 @@ export function PlanTripFlow({
           </List>
         </Alert>
       )}
-      {plan && answered && (
+      {plan && answeredQuery && (
         <Text fw={600} data-testid="plan-timing-summary">
-          {timingSummary(answered.query)}
+          {timingSummary(answeredQuery)}
         </Text>
       )}
       {plan && <ProvisionalTimetableNote provisional={plan.provisional} />}
-      {plan?.segments.map((segment, segmentIndex) => {
-        // Computed once per segment -- reused for both the heading and
-        // the "no route found" alert below, so the two can never drift
-        // out of sync with each other's formatting.
-        const segmentLabel = codeRouteLabel(
-          segment.originCrs,
-          stationNames.get(segment.originCrs),
-          segment.destinationCrs,
-          stationNames.get(segment.destinationCrs),
-        );
-        return (
-          <Stack key={segmentIndex} gap="xs">
-            <Text fw={600}>{segmentLabel}</Text>
-            {segment.itineraries.length === 0 && (
-              <Alert color="yellow">
-                No route found for {segmentLabel}.
-                {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
-                {segment.noResultReason && hintFor(segment.noResultReason) && (
-                  <Text size="sm" mt={4}>
-                    {hintFor(segment.noResultReason)}
-                  </Text>
-                )}
-              </Alert>
-            )}
-            {segment.cappedByMaxChanges && (
-              <Text size="xs" c="orange">
-                A faster route exists with more changes than shown below.
-              </Text>
-            )}
-            {segment.itineraries.map((itinerary, itineraryIndex) => (
-              <ItineraryOption
-                key={itineraryIndex}
-                itinerary={itinerary}
-                selected={selections[segmentIndex]?.itinerary === itinerary}
-                onSelect={() => selectItinerary(segmentIndex, itinerary)}
-                stationNames={stationNames}
-                viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
-                  (via) => via.segment === segmentIndex,
-                )}
-                waypointStops={plan.journeys?.[itineraryIndex]?.waypointSatisfiedBy?.filter(
-                  (stop) => stop.segment === segmentIndex,
-                )}
-                groups={groups}
-              />
-            ))}
-          </Stack>
-        );
-      })}
-      {plan && (earlier ?? later) && (
-        <Group gap="sm">
-          {earlier && (
-            <Button variant="default" disabled={searching} onClick={() => page(earlier)}>
-              Earlier routes
-            </Button>
-          )}
-          {later && (
-            <Button variant="default" disabled={searching} onClick={() => page(later)}>
-              Later routes
-            </Button>
-          )}
-        </Group>
+      {list && (
+        <PageControl
+          direction="earlier"
+          done={list.earlierDone}
+          error={pagingError?.direction === 'earlier' ? pagingError.message : null}
+          loading={paging === 'earlier'}
+          disabled={paging !== null || searching}
+          onLoad={() => void loadPage('earlier')}
+        />
+      )}
+      {/* `ds-no-scroll-anchor`: the scroll position is held by
+          `restoreScrollAnchor` alone, never twice. */}
+      <Stack gap="md" ref={resultsRef} className="ds-no-scroll-anchor">
+        {plan?.segments.map((segment, segmentIndex) => {
+          // Computed once per segment -- reused for both the heading and
+          // the "no route found" alert below, so the two can never drift
+          // out of sync with each other's formatting.
+          const segmentLabel = codeRouteLabel(
+            segment.originCrs,
+            stationNames.get(segment.originCrs),
+            segment.destinationCrs,
+            stationNames.get(segment.destinationCrs),
+          );
+          return (
+            <Stack key={segmentIndex} gap="xs">
+              <Text fw={600}>{segmentLabel}</Text>
+              {segment.itineraries.length === 0 && (
+                <Alert color="yellow">
+                  No route found for {segmentLabel}.
+                  {segment.noResultReason && <Text size="sm">{segment.noResultReason.message}</Text>}
+                  {segment.noResultReason && hintFor(segment.noResultReason) && (
+                    <Text size="sm" mt={4}>
+                      {hintFor(segment.noResultReason)}
+                    </Text>
+                  )}
+                </Alert>
+              )}
+              {segment.cappedByMaxChanges && (
+                <Text size="xs" c="orange">
+                  A faster route exists with more changes than shown below.
+                </Text>
+              )}
+              {segment.itineraries.map((itinerary, itineraryIndex) => (
+                <div
+                  key={list?.entries[itineraryIndex]?.key ?? itineraryIndex}
+                  {...{ [ENTRY_ATTRIBUTE]: `${segmentIndex}:${list?.entries[itineraryIndex]?.key ?? itineraryIndex}` }}
+                >
+                  <ItineraryOption
+                    itinerary={itinerary}
+                    selected={selections[segmentIndex]?.itinerary === itinerary}
+                    onSelect={() => selectItinerary(segmentIndex, itinerary)}
+                    stationNames={stationNames}
+                    viaPasses={plan.journeys?.[itineraryIndex]?.viaSatisfiedBy?.filter(
+                      (via) => via.segment === segmentIndex,
+                    )}
+                    waypointStops={plan.journeys?.[itineraryIndex]?.waypointSatisfiedBy?.filter(
+                      (stop) => stop.segment === segmentIndex,
+                    )}
+                    groups={groups}
+                  />
+                </div>
+              ))}
+            </Stack>
+          );
+        })}
+      </Stack>
+      {list && (
+        <PageControl
+          direction="later"
+          done={list.laterDone}
+          error={pagingError?.direction === 'later' ? pagingError.message : null}
+          loading={paging === 'later'}
+          disabled={paging !== null || searching}
+          onLoad={() => void loadPage('later')}
+        />
       )}
       {creationError && (
         <Alert color="red" title="Couldn't track this journey">
@@ -423,6 +455,44 @@ export function PlanTripFlow({
       <LoginPromptModal opened={needsLoginState.needsLogin} onClose={needsLoginState.reset}>
         Log in to track this journey.
       </LoginPromptModal>
+    </Stack>
+  );
+}
+
+/** "Earlier routes" above the results or "Later routes" below them, or,
+ * once a page in that direction came back empty, a line saying so. */
+function PageControl({
+  direction,
+  done,
+  error,
+  loading,
+  disabled,
+  onLoad,
+}: {
+  direction: PageDirection;
+  done: boolean;
+  error: string | null;
+  loading: boolean;
+  disabled: boolean;
+  onLoad: () => void;
+}) {
+  if (done) {
+    return (
+      <Text size="sm" c="dimmed">
+        {direction === 'earlier' ? 'No earlier journeys on this day.' : 'No later journeys on this day.'}
+      </Text>
+    );
+  }
+  return (
+    <Stack gap="xs" align="flex-start">
+      {error && (
+        <Alert color="red" w="100%">
+          {error}
+        </Alert>
+      )}
+      <Button variant="default" loading={loading} disabled={disabled} onClick={onLoad}>
+        {direction === 'earlier' ? 'Earlier routes' : 'Later routes'}
+      </Button>
     </Stack>
   );
 }

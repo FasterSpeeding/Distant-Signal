@@ -1,7 +1,6 @@
 import { formatDate } from './dateFormat';
 import { addCalendarDays } from './londonWallClock';
 import type { TripPlanQuery } from './tripPlan';
-import type { TripPlanResponse } from './types';
 
 /** How the planner's time is read: the earliest departure, or the latest
  * arrival (`GET /Trips/plan`'s `departAfter` / `arriveBy`). */
@@ -42,13 +41,13 @@ function clockMinutes(time: string): number {
 
 /** Minutes from the service date's midnight, as the API's
  * `{time, dayOffset}` gives them. */
-function serviceMinutes(at: { time: string; dayOffset: number }): number {
+export function serviceMinutes(at: { time: string; dayOffset: number }): number {
   return at.dayOffset * MINUTES_PER_DAY + clockMinutes(at.time);
 }
 
 /** `minutes` from `serviceDate`'s midnight (may be negative or pass a day)
  * as a calendar date and `HH:MM`, the way the form shows them. */
-function calendarAt(serviceDate: string, minutes: number): { date: string; time: string } {
+export function calendarAt(serviceDate: string, minutes: number): { date: string; time: string } {
   const days = Math.floor(minutes / MINUTES_PER_DAY);
   const clock = minutes - days * MINUTES_PER_DAY;
   const hh = String(Math.floor(clock / 60)).padStart(2, '0');
@@ -57,28 +56,9 @@ function calendarAt(serviceDate: string, minutes: number): { date: string; time:
 }
 
 /** `query` with its timing replaced: the other time field dropped. */
-function withTiming(query: TripPlanQuery, mode: TimingMode, at: { date: string; time: string }): TripPlanQuery {
+export function withTiming(query: TripPlanQuery, mode: TimingMode, at: { date: string; time: string }): TripPlanQuery {
   const { departAfter: _depart, arriveBy: _arrive, dayOffset: _offset, acrossMidnight: _across, ...rest } = query;
   return { ...rest, date: at.date, [mode]: at.time };
-}
-
-/** "Later": depart after the earliest departure shown, plus a minute.
- * `query` is the visitor's search that `plan` answered, `serviceDate` the
- * date the API was asked for (`apiQuery(query).date`). `null` when the plan
- * has no journey to page from. */
-export function laterQuery(query: TripPlanQuery, serviceDate: string, plan: TripPlanResponse): TripPlanQuery | null {
-  const departures = (plan.journeys ?? []).map((journey) => serviceMinutes(journey.departure));
-  if (departures.length === 0) return null;
-  return withTiming(query, 'departAfter', calendarAt(serviceDate, Math.min(...departures) + 1));
-}
-
-/** "Earlier": arrive by the latest arrival shown, less a minute. As
- * [`laterQuery`]. Every journey on that page arrives before every one
- * shown, so paging always moves on. */
-export function earlierQuery(query: TripPlanQuery, serviceDate: string, plan: TripPlanResponse): TripPlanQuery | null {
-  const arrivals = (plan.journeys ?? []).map((journey) => serviceMinutes(journey.arrival));
-  if (arrivals.length === 0) return null;
-  return withTiming(query, 'arriveBy', calendarAt(serviceDate, Math.max(...arrivals) - 1));
 }
 
 /** What was searched for, above the results: "Arrive by 09:00, 23 Oct

@@ -9,7 +9,7 @@ import { test, expect, type Page } from '@playwright/test';
 // (whose first day is today) keeps the date the URL restores.
 //
 // `/Trips/plan` is rate limited per client (20 a minute, burst 10), so the
-// whole file makes seven plan requests.
+// whole file makes eight plan requests.
 
 const FIXED_NOW = new Date('2026-09-17T06:00:00Z'); // 07:00 in London
 
@@ -25,7 +25,7 @@ async function findRoutes(page: Page) {
   return planned;
 }
 
-test('plans by arrival time, then pages later and earlier', async ({ page }) => {
+test('plans by arrival time, then gathers later and earlier routes around it', async ({ page }) => {
   await openPlan(page, 'origin=ZEA&destination=ZEC&date=2026-09-17&arriveBy=09:00');
   await expect(page.getByRole('radio', { name: 'Arrive by' })).toBeChecked();
   await expect(page.getByLabel('Time', { exact: true })).toHaveValue('09:00');
@@ -37,23 +37,37 @@ test('plans by arrival time, then pages later and earlier', async ({ page }) => 
 
   // The latest train arriving by 09:00: the 08:00, arriving 08:50.
   const summary = page.getByTestId('plan-timing-summary');
+  const cards = page.locator('[data-plan-entry]');
   await expect(summary).toHaveText('Arrive by 09:00, 17 Sep 2026');
-  await expect(page.getByText(/^08:00 .*08:50$/)).toBeVisible();
+  await expect(cards).toHaveCount(1);
+  await expect(cards.nth(0).getByText(/^08:00 .*08:50$/)).toBeVisible();
   await expect(page).toHaveURL(/arriveBy=09%3A00/);
 
-  // Later: depart after 08:01, so the 08:30.
+  // Later: departs after 08:00, so the 08:30, added below.
+  let paged = page.waitForResponse((r) => r.url().includes('/api/Trips/plan'));
   await page.getByRole('button', { name: 'Later routes' }).click();
-  await expect(summary).toHaveText('Depart at 08:01, 17 Sep 2026');
-  await expect(page.getByText(/^08:30 .*09:20$/)).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Depart at' })).toBeChecked();
-  await expect(page).toHaveURL(/departAfter=08%3A01/);
-  await expect(page).not.toHaveURL(/arriveBy/);
+  expect(new URL((await paged).url()).searchParams.get('departAfter')).toBe('08:01:00');
+  await expect(cards).toHaveCount(2);
+  await expect(cards.nth(1).getByText(/^08:30 .*09:20$/)).toBeVisible();
 
-  // Earlier from there: arrive by 09:19, so the 08:00 again.
+  // Earlier: arrives before 08:50, so the 07:30, added above.
+  paged = page.waitForResponse((r) => r.url().includes('/api/Trips/plan'));
   await page.getByRole('button', { name: 'Earlier routes' }).click();
-  await expect(summary).toHaveText('Arrive by 09:19, 17 Sep 2026');
-  await expect(page.getByText(/^08:00 .*08:50$/)).toBeVisible();
+  expect(new URL((await paged).url()).searchParams.get('arriveBy')).toBe('08:49:00');
+  await expect(cards).toHaveCount(3);
+  await expect(cards.nth(0).getByText(/^07:30 .*08:20$/)).toBeVisible();
+
+  // The visitor's search is still what the page, form and URL say.
+  await expect(summary).toHaveText('Arrive by 09:00, 17 Sep 2026');
   await expect(page.getByRole('radio', { name: 'Arrive by' })).toBeChecked();
+  await expect(page).toHaveURL(/arriveBy=09%3A00/);
+
+  // Nothing earlier or later on the seed's day.
+  await page.getByRole('button', { name: 'Earlier routes' }).click();
+  await expect(page.getByText('No earlier journeys on this day.')).toBeVisible();
+  await page.getByRole('button', { name: 'Later routes' }).click();
+  await expect(page.getByText('No later journeys on this day.')).toBeVisible();
+  await expect(cards).toHaveCount(3);
 });
 
 test('the toggle switches a search from departure to arrival time', async ({ page }) => {

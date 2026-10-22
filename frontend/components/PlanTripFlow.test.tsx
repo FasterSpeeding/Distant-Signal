@@ -1159,74 +1159,194 @@ describe('PlanTripFlow arrive-by and paging (2026-10-19)', () => {
     expect(window.location.search).not.toContain('dayOffset');
   });
 
-  it('pages later by departure and earlier by arrival, updating the form, summary and URL', async () => {
+  /** A page of one-train journeys (uid, departure, arrival, live minutes late). */
+  function pageOf(...rides: [string, string, string, number?][]): TripPlanResponse {
+    const at = (time: string, late = 0) => {
+      const [h = 0, m = 0] = time.split(':').map(Number);
+      const total = h * 60 + m + late;
+      const day = Math.floor(total / 1440);
+      const rest = total - day * 1440;
+      return {
+        time: `${String(Math.floor(rest / 60)).padStart(2, '0')}:${String(rest % 60).padStart(2, '0')}:00`,
+        dayOffset: day,
+      };
+    };
+    return {
+      results: 'fastest',
+      segments: [
+        {
+          originCrs: 'EUS',
+          destinationCrs: 'MKC',
+          cappedByMaxChanges: false,
+          itineraries: rides.map(([uid, departure, arrival]) => ({
+            legs: [
+              {
+                kind: 'train' as const,
+                trainUid: uid,
+                serviceDate: DATE,
+                originCrs: 'EUS',
+                destinationCrs: 'MKC',
+                scheduledDeparture: `${departure}:00`,
+                scheduledArrival: `${arrival}:00`,
+                arrivalDayOffset: 0,
+              },
+            ],
+            changeCount: 0,
+            totalDurationMinutes: 50,
+          })),
+        },
+      ],
+      journeys: rides.map(([, departure, arrival, late]) => ({
+        changeCount: 0,
+        departure: at(departure, late),
+        arrival: at(arrival, late),
+        totalDurationMinutes: 50,
+      })),
+    };
+  }
+
+  /** The cards' trains, top to bottom. */
+  function shownTrains(): string[] {
+    return Array.from(document.querySelectorAll('[data-plan-entry]')).map(
+      (card) => /^0:(\w+)@/.exec(card.getAttribute('data-plan-entry') ?? '')?.[1] ?? '?',
+    );
+  }
+
+  it('appends later routes below and prepends earlier ones above, keeping the search, form and URL', async () => {
     window.history.replaceState(null, '', '/plan');
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])))
-      .mockResolvedValueOnce(ok(planWith(['08:30:00', 0], ['09:20:00', 0])))
-      .mockResolvedValueOnce(ok(planWith(['07:30:00', 0], ['08:20:00', 0])));
+      .mockResolvedValueOnce(ok(pageOf(['B', '08:00', '08:50'])))
+      .mockResolvedValueOnce(ok(pageOf(['C', '08:30', '09:20'])))
+      .mockResolvedValueOnce(ok(pageOf(['A', '07:30', '08:20'])));
     await searchArriveBy(fetchMock, '09:00');
+    await waitFor(() => expect(shownTrains()).toEqual(['B']));
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Later routes' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Later routes' }));
+    await waitFor(() => expect(shownTrains()).toEqual(['B', 'C']));
     let sent = sentParams(fetchMock, 1);
+    // Just after the latest departure shown.
     expect(sent.get('departAfter')).toBe('08:01:00');
     expect(sent.has('arriveBy')).toBe(false);
-    expect(await screen.findByText('Depart at 08:01, 24 Oct 2030')).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'Depart at' })).toBeChecked();
-    expect(screen.getByLabelText('Time (optional)')).toHaveValue('08:01');
-    expect(window.location.search).toContain('departAfter=08%3A01');
+    expect(sent.get('date')).toBe(DATE);
 
     fireEvent.click(screen.getByRole('button', { name: 'Earlier routes' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(shownTrains()).toEqual(['A', 'B', 'C']));
     sent = sentParams(fetchMock, 2);
-    expect(sent.get('arriveBy')).toBe('09:19:00');
+    // Just before the earliest arrival shown.
+    expect(sent.get('arriveBy')).toBe('08:49:00');
     expect(sent.has('departAfter')).toBe(false);
-    expect(await screen.findByText('Arrive by 09:19, 24 Oct 2030')).toBeInTheDocument();
+
+    // The visitor's own search stays: summary, form and address bar.
+    expect(screen.getByTestId('plan-timing-summary')).toHaveTextContent('Arrive by 09:00, 24 Oct 2030');
     expect(screen.getByRole('radio', { name: 'Arrive by' })).toBeChecked();
+    expect(screen.getByLabelText('Time')).toHaveValue('09:00');
+    expect(window.location.search).toContain('arriveBy=09%3A00');
+    expect(window.location.search).not.toContain('departAfter');
   });
 
-  it('pages from the last plan with a journey when this page has none', async () => {
+  it('pages after a late first train from its live departure and never shows it twice', async () => {
+    // B is booked 08:00 and running 10 late, so the planner had it at 08:10.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(pageOf(['B', '08:00', '08:50', 10])))
+      // Its delay grew: the same train, now after the cursor. Nothing new,
+      // so the click asks again from the new latest departure.
+      .mockResolvedValueOnce(ok(pageOf(['B', '08:00', '08:50', 13])))
+      .mockResolvedValueOnce(ok(pageOf(['C', '08:30', '09:20'])));
+    await searchArriveBy(fetchMock, '09:00');
+    await waitFor(() => expect(shownTrains()).toEqual(['B']));
+    fireEvent.click(screen.getByRole('button', { name: 'Later routes' }));
+    await waitFor(() => expect(shownTrains()).toEqual(['B', 'C']));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(sentParams(fetchMock, 1).get('departAfter')).toBe('08:11:00');
+    expect(sentParams(fetchMock, 2).get('departAfter')).toBe('08:14:00');
+  });
+
+  it('says when there is nothing earlier on this day, and keeps what is shown', async () => {
     const empty: TripPlanResponse = {
       results: 'fastest',
       segments: [
         {
           ...singleSegmentPlan.segments[0]!,
           itineraries: [],
-          noResultReason: { constraint: 'departAfter', values: ['08:01'], message: 'Nothing leaves after 08:01.' },
+          noResultReason: { constraint: 'arriveBy', values: ['07:29'], message: 'Nothing arrives by 07:29.' },
         },
       ],
       journeys: [],
     };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])))
-      .mockResolvedValueOnce(ok(empty))
-      .mockResolvedValueOnce(ok(planWith(['07:30:00', 0], ['08:20:00', 0])));
+      .mockResolvedValueOnce(ok(pageOf(['B', '08:00', '08:50'])))
+      .mockResolvedValueOnce(ok(empty));
     await searchArriveBy(fetchMock, '09:00');
-    fireEvent.click(await screen.findByRole('button', { name: 'Later routes' }));
-    expect(await screen.findByText(/Try an earlier departure time, or search by arrival time\./)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Earlier routes' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    expect(sentParams(fetchMock, 2).get('arriveBy')).toBe('08:49:00');
+    fireEvent.click(await screen.findByRole('button', { name: 'Earlier routes' }));
+    expect(await screen.findByText('No earlier journeys on this day.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Earlier routes' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Later routes' })).toBeEnabled();
+    expect(shownTrains()).toEqual(['B']);
+    expect(screen.queryByText(/No route found/)).not.toBeInTheDocument();
   });
 
-  it('pages with the stations in the form now, not the stale search', async () => {
+  it('keeps the chosen route chosen while more are loaded', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(ok(planWith(['08:00:00', 0], ['08:50:00', 0])))
-      .mockResolvedValueOnce(ok(planWith(['08:30:00', 0], ['09:20:00', 0])));
+      .mockResolvedValueOnce(ok(pageOf(['B', '08:00', '08:50'])))
+      .mockResolvedValueOnce(ok(pageOf(['A', '07:30', '08:20'])));
     await searchArriveBy(fetchMock, '09:00');
-    await screen.findByRole('button', { name: 'Later routes' });
-    // The visitor changes To but pages instead of pressing Find routes.
-    fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'PRE' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Later routes' }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    const sent = sentParams(fetchMock, 1);
-    expect(sent.get('origin')).toBe('EUS');
-    expect(sent.get('destination')).toBe('PRE');
-    expect(sent.get('departAfter')).toBe('08:01:00');
+    await waitFor(() => expect(shownTrains()).toEqual(['B']));
+    const options = () => screen.getAllByRole('radio').filter((radio) => radio.closest('[data-plan-entry]'));
+    fireEvent.click(options()[0]!);
+    expect(screen.getByRole('button', { name: 'Track this journey' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier routes' }));
+    await waitFor(() => expect(shownTrains()).toEqual(['A', 'B']));
+    expect(options()[1]).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Track this journey' })).toBeEnabled();
+  });
+
+  it('holds the card on screen still when earlier routes go in above it', async () => {
+    const scrollBy = vi.spyOn(window, 'scrollBy').mockImplementation(() => {});
+    // Each card 100px tall, the first one half scrolled past.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const cards = Array.from(document.querySelectorAll('[data-plan-entry]'));
+      const top = cards.indexOf(this) * 100 - 50;
+      return { top, bottom: top + 100, left: 0, right: 0, width: 0, height: 100, x: 0, y: top } as DOMRect;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(pageOf(['C', '08:00', '08:50'])))
+      .mockResolvedValueOnce(ok(pageOf(['A', '07:00', '07:50'], ['B', '07:30', '08:20'])));
+    await searchArriveBy(fetchMock, '09:00');
+    await waitFor(() => expect(shownTrains()).toEqual(['C']));
+    fireEvent.click(screen.getByRole('button', { name: 'Earlier routes' }));
+    await waitFor(() => expect(shownTrains()).toEqual(['A', 'B', 'C']));
+    // C moved down two cards; the window follows it.
+    expect(scrollBy).toHaveBeenCalledWith(0, 200);
+  });
+
+  it('shows a failed page by its button and keeps the results', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(pageOf(['B', '08:00', '08:50'])))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await searchArriveBy(fetchMock, '09:00');
+    fireEvent.click(await screen.findByRole('button', { name: 'Later routes' }));
+    expect(await screen.findByText(/Couldn't load later routes\./)).toBeInTheDocument();
+    expect(shownTrains()).toEqual(['B']);
+    expect(screen.getByRole('button', { name: 'Later routes' })).toBeEnabled();
+  });
+
+  it('starts afresh on a new search', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(pageOf(['B', '08:00', '08:50'])))
+      .mockResolvedValueOnce(ok(pageOf(['C', '08:30', '09:20'])))
+      .mockResolvedValueOnce(ok(pageOf(['D', '08:10', '09:00'])));
+    await searchArriveBy(fetchMock, '09:00');
+    fireEvent.click(await screen.findByRole('button', { name: 'Later routes' }));
+    await waitFor(() => expect(shownTrains()).toEqual(['B', 'C']));
+    fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+    await waitFor(() => expect(shownTrains()).toEqual(['D']));
   });
 
   it('offers no paging before a search', () => {

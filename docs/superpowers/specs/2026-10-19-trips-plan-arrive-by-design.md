@@ -175,41 +175,69 @@ lose Saturday morning's trains. Searching both dates fixes both.
 
 ### 4.3 Earlier and later
 
-Under the results there are two buttons, "Earlier routes" and "Later
-routes". Each runs one request.
+Rewritten 2026-10-22 (DS-143): pages accumulate, and their boundaries line
+up. Until then each page replaced the one before, "Later" departed after
+the **earliest** departure shown plus a minute and "Earlier" arrived by the
+**latest** arrival shown less a minute. So a page repeated most of the one
+before it on purpose ("repeating beats skipping"), and with live delays
+(2026-10-22, in-search) a fastest page from a late train's timetabled
+minute could return that same train for ever.
 
-- **Later routes**: depart after the earliest departure shown, plus one minute.
-- **Earlier routes**: arrive by the latest arrival shown, minus one minute.
+"Earlier routes" sits above the results and "Later routes" below them.
+Each click loads one page and merges it into the list
+(`lib/tripPlanPaging.ts`):
 
-So "Later routes" always switches to depart-after and "Earlier routes"
-always switches to arrive-by, in either mode. That is the only one-request way to page
-backwards from a depart-after result, and forwards from an arrive-by
-result. The form, the summary line and the URL are updated to the paged
-search, so what the visitor sees, what the URL reopens and what was asked
-for always agree.
+- **Later** appends below: depart after the **latest** departure reported
+  so far, plus one minute.
+- **Earlier** prepends above: arrive by the **earliest** arrival reported
+  so far, less one minute. Of that page, only the journeys leaving before
+  the earliest one shown are kept, so the page ends where the list begins.
+  A journey that arrives before every one shown but leaves inside the
+  span would have been the answer to the search that found the span, so
+  this drops nothing a correct plan would have offered.
+- A journey already in the list is never added again. Its identity is
+  `itineraryKey`: every train's UID, service date, boarding and alighting
+  point and **timetabled** departure, and every transfer, segment by
+  segment. Live times are not part of it, so a delay that changes between
+  two pages doesn't make a train look new.
+- The cursors are the response's `journeys[]` times, which are the times
+  the planner searched on: live where it applied live data. The API's
+  `departAfter`/`arriveBy` bound is on that same basis, so the cursor and
+  the bound agree. A timetabled cursor would ask "after 08:01" for a train
+  booked 08:00 and running at 08:10, and in fastest mode get it back
+  every time.
+- The cursors move to the page's extremes even when everything on it was
+  already shown (a delay that grew between requests), and a click makes up
+  to three requests until it adds something. Each request's journeys all
+  lie beyond its cursor, so the cursor always moves on.
+- A page with no journey ends that direction: "No earlier journeys on this
+  day." or "No later journeys on this day." in place of its button.
+- Entries are timed from the first search's service date's midnight, so
+  pages sent for another service date (§4.2, or a later page after
+  midnight) sort and page correctly. Times past midnight go through §4.2's
+  mapping like a typed time.
+- With waypoints, a list entry is a whole journey (`journeys[j]` and
+  `itineraries[j]` of every segment), so paging moves whole journeys.
 
-It always moves on. Every journey on a Later page leaves after the
-earliest departure of the page before, and every journey on an Earlier
-page arrives before the latest arrival of the page before. In `options`
-mode a page can repeat a journey from the previous page. That beats
-skipping one.
+In `options` mode a page is the best journey per number of changes, not
+every journey in a window, so a journey leaving between two shown ones can
+still be absent. Paging never adds one there: the pages never interleave.
 
-Times past midnight are anchored on `journeys[j]` with its `dayOffset`,
-then turned back into a calendar date and time, so they go through §4.2's
-mapping like a typed time. With a waypoint, `journeys` is the whole-journey
-summary, so paging moves the whole journey.
+The form, the summary line and the URL keep the visitor's own search;
+paging changes none of them. Every page repeats that search with only the
+time changed, so a From or To edited in the form since does not mix
+another route into the list. `/plan` writes the search with
+`history.replaceState`, so Back leaves the page as before. Reloading
+reruns the search, without the extra pages.
 
-The buttons show once a search has found a journey. When a page has
-nothing, both buttons page from the last plan that had a journey, so the
-visitor can step back the other way. A new search from the form starts
-afresh. The buttons are disabled while a search runs.
+Inserting above the visitor would push what they are reading down.
+`lib/scrollAnchor.ts` notes the first card on screen before an earlier page
+goes in and scrolls by however far it moved. The results opt out of the
+browser's own `overflow-anchor`, so the correction happens once.
 
-Only the time comes from the results (2026-10-20). Everything else, From
-and To included, comes from the form as it is when the button is pressed.
-So a visitor who changes To and pages without pressing Find routes gets
-the new To, at the paged time. If the form can't run as it stands (From
-or To empty, or an advanced option with a problem), the page uses the
-search that produced the results.
+The buttons show once a search has found a journey, and are disabled
+while a page or a search runs. A new search from the form starts a new
+list.
 
 ### 4.4 Results copy
 
@@ -232,7 +260,7 @@ ellipses or arrows.
 | Case | Behaviour |
 |---|---|
 | Arrive by 00:30 | Both service dates (§3.3, §4.2): Friday's late trains and Saturday's own first ones. The later departure wins. |
-| Arrive by 02:00, nothing that late | `noResultReason.arriveBy` with the earliest arrival. "Earlier routes" still works from the last plan that had a journey. |
+| Arrive by 02:00, nothing that late | `noResultReason.arriveBy` with the earliest arrival. No list, so no paging: the visitor changes the time. |
 | Later from a 23:58 departure | Depart at 23:59, then 00:00 on the next calendar day. A time before 03:00 searches both service dates (§4.2), so the previous date's trains after midnight and the new date's first trains are both offered. |
 | Same origin and destination | The same answer as depart-after: a 200 with no journeys and `noResultReason.constraint: "noRoute"`. A DB test pins it (§7). |
 | Via, OR-group via, waypoints | Unchanged engine paths (`staged_arrive_by`). The summary's anchors come from `journeys`, so paging is whole-journey. |

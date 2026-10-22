@@ -1,6 +1,6 @@
 'use client';
 
-import { type Ref, useEffect, useId, useImperativeHandle, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { londonToday, nowInLondon } from '@/lib/londonWallClock';
 import {
   Autocomplete,
@@ -71,12 +71,6 @@ function XIcon() {
       <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
-}
-
-/** What `PlanTripForm` lets its caller read. */
-export interface PlanTripFormHandle {
-  /** The search the fields describe now, or `null` when it can't run. */
-  currentQuery: () => TripPlanQuery | null;
 }
 
 /** One "Call at" stop: a station, bus stop or ferry terminal, or a station
@@ -159,8 +153,6 @@ export function PlanTripForm({
   initialOriginCrs = '',
   initial = {},
   searchDates,
-  timing,
-  handleRef,
 }: {
   onSubmit: (query: TripPlanQuery) => void;
   searching?: boolean;
@@ -175,12 +167,6 @@ export function PlanTripForm({
    * (`lib/searchDates.ts`). Absent (a caller that doesn't read the range),
    * the picker has no upper bound. */
   searchDates?: TrainSearchDates | null | undefined;
-  /** Earlier/later paging (`PlanTripFlow`): the search it just ran, shown
-   * in the date, mode and time fields. Applied once per `seq`, so the
-   * visitor can edit the fields again afterwards. */
-  timing?: { date: string; mode: TimingMode; time: string; seq: number } | undefined;
-  /** Reads the form's current search (`PlanTripFormHandle`). */
-  handleRef?: Ref<PlanTripFormHandle> | undefined;
 }) {
   const maxDate = searchDates === undefined ? undefined : searchDateBounds(searchDates, londonToday()).maxDate;
   const [originCrs, setOriginCrs] = useState(initial.originCrs ?? initialOriginCrs);
@@ -239,15 +225,6 @@ export function PlanTripForm({
   // or, with "Arrive by", the latest arrival. Switching keeps the time.
   const [mode, setMode] = useState<TimingMode>(() => timingMode(initial));
   const [time, setTime] = useState(() => initial.arriveBy ?? initial.departAfter ?? nowInLondon().format('HH:mm'));
-  // A paged search's timing, applied while rendering (React's "adjusting
-  // state when a prop changes"), once per `seq`.
-  const [appliedTimingSeq, setAppliedTimingSeq] = useState(timing?.seq);
-  if (timing && timing.seq !== appliedTimingSeq) {
-    setAppliedTimingSeq(timing.seq);
-    setDate(timing.date);
-    setMode(timing.mode);
-    setTime(timing.time);
-  }
   const timingLabelId = useId();
   const [results, setResults] = useState<'fastest' | 'options'>(initial.results ?? 'fastest');
   const resultsLabelId = useId();
@@ -332,13 +309,6 @@ export function PlanTripForm({
       ...(advanced.maxChanges !== undefined ? { maxChanges: advanced.maxChanges } : {}),
     };
   }
-
-  // Earlier/later paging (`PlanTripFlow`) reads the fields as they are now,
-  // so a From or To changed since the last search is the one it pages.
-  // `null` also when an advanced option has a problem.
-  useImperativeHandle(handleRef, () => ({
-    currentQuery: () => (firstError ? null : currentQuery()),
-  }));
 
   function handleSubmit() {
     const query = currentQuery();

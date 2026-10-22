@@ -2002,6 +2002,13 @@ a[data-text-link-tone='inherit'] {
   padding: 0;
 }
 
+/* Content inserted above it keeps its place by script (the planner's
+   "Earlier routes", lib/scrollAnchor.ts), so the browser's own scroll
+   anchoring must not adjust it a second time. */
+.ds-no-scroll-anchor {
+  overflow-anchor: none;
+}
+
 .ds-self-start {
   align-self: flex-start;
 }
