@@ -70,10 +70,14 @@ export type DeleteTrainButtonHandle = ConfirmActionButtonHandle;
  * portal wrapper with `display: none !important` (traced live), so the
  * menu item calls `ref.current.open()` instead.
  *
- * `inJourney` (the train's `journeyIds` are non-empty): since DS-93 the
- * backend keeps a train a journey leg uses and only stops tracking it on
- * its own, so the leg, its tickets and its group shares stay. The modal
- * says so instead of "cannot be undone" and the group warning. */
+ * `inJourney`: a journey other than the train's own uses it (a multi-leg
+ * journey). Since DS-93 the backend keeps that journey's train, with its
+ * tickets and group shares. The modal says so instead of "cannot be
+ * undone" and the group warning.
+ *
+ * `deletesJourney`: the train has a journey of its own (a one-leg journey,
+ * as "Track this train" makes), which stopping tracking deletes (DS-124).
+ * The modal says the journey goes too. */
 export const DeleteTrainButton = forwardRef<
   DeleteTrainButtonHandle,
   {
@@ -82,9 +86,17 @@ export const DeleteTrainButton = forwardRef<
     afterDelete?: 'redirect' | 'refresh' | undefined;
     hideTrigger?: boolean | undefined;
     inJourney?: boolean | undefined;
+    deletesJourney?: boolean | undefined;
   }
 >(function DeleteTrainButton(
-  { trackingId, sharedGroupCount, afterDelete = 'redirect', hideTrigger = false, inJourney = false },
+  {
+    trackingId,
+    sharedGroupCount,
+    afterDelete = 'redirect',
+    hideTrigger = false,
+    inJourney = false,
+    deletesJourney = false,
+  },
   ref,
 ) {
   return (
@@ -99,6 +111,7 @@ export const DeleteTrainButton = forwardRef<
       loginPrompt="Log in to stop tracking this train"
       onSuccess={(router) => (afterDelete === 'refresh' ? router.refresh() : router.push('/journeys'))}
     >
+      {deletesJourney && <Text>Its journey is deleted too.</Text>}
       {inJourney ? (
         <Text>
           This train is part of a journey, so it stays tracked there. To stop tracking it altogether, remove it from the
