@@ -1062,6 +1062,10 @@ async fn run_template_sweep_cycle(
                 );
                 continue;
             }
+            // The owner turned "needs attention" pushes off (DS-153).
+            if !leg.notify_attention {
+                continue;
+            }
             let already_notified =
                 queries::unmatched_notification_state(pool, &leg.user_id, leg.journey_leg_id)
                     .await?
