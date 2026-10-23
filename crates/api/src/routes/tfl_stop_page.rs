@@ -122,29 +122,23 @@ fn tfl_unavailable() -> Response {
 /// asked, so only real stops are fetched or cached); 503 with
 /// `{"error":"tfl_unavailable",...}` when `TfL` can't be had (down, slow,
 /// rate limiting us, or arrivals turned off).
-async fn get_arrivals(
-    State(app): State<App>,
-    Path(id): Path<String>,
-) -> Result<Json<StopArrivals>, Response> {
+async fn get_arrivals(State(app): State<App>, Path(id): Path<String>) -> Response {
     if !is_stop_id(&id) {
-        return Err(not_found(&id).into_response());
+        return not_found(&id).into_response();
     }
-    let known = tfl_stops::stops_by_id(&app.database, std::slice::from_ref(&id))
-        .await
-        .map_err(|err| internal_error(&err).into_response())?;
-    if !known.contains_key(&id) {
-        return Err(not_found(&id).into_response());
+    match tfl_stops::stops_by_id(&app.database, std::slice::from_ref(&id)).await {
+        Ok(known) if known.contains_key(&id) => {}
+        Ok(_) => return not_found(&id).into_response(),
+        Err(err) => return internal_error(&err).into_response(),
     }
-    let snapshot = app
-        .tfl_arrivals
-        .get(&id)
-        .await
-        .map_err(|_| tfl_unavailable())?;
-    Ok(Json(tfl_arrivals::group_arrivals(
-        &id,
-        &snapshot,
-        chrono::Utc::now(),
-    )))
+    match app.tfl_arrivals.get(&id).await {
+        Ok(snapshot) => {
+            let board: StopArrivals =
+                tfl_arrivals::group_arrivals(&id, &snapshot, chrono::Utc::now());
+            Json(board).into_response()
+        }
+        Err(_) => tfl_unavailable(),
+    }
 }
 
 fn internal_error(err: &anyhow::Error) -> (StatusCode, String) {
