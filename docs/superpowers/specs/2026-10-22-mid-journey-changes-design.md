@@ -1191,6 +1191,7 @@ Per alternative, computed from the itinerary and its live overlay:
 | `transfer_burden` | number of `TUBE`/`BUS`/`METRO` transfers and total `WALK` minutes |
 | `rejoins` | keeps a later booked leg (§5.5) |
 | `slack` | the tightest change's slack after MSN (§5.1); a 1-minute change is worth less than a 6-minute one |
+| `relies_on_late_departure` | a change works only because the train changed onto is running late (DS-141; in-search live spec §7) |
 | `same_operator` | every train leg run by the replaced leg's operator |
 | `crowding` | reserved, not used until loading data exists |
 
@@ -1201,6 +1202,7 @@ cost = arrival_minutes
      + change_weight   * changes            (default 10)
      + transfer_weight * tube_or_bus_transfers (default 10) + walk_minutes
      + slack_penalty   (10 when slack < AT_RISK_SLACK_MINUTES)
+     + late_departure  (5 when a change relies on a late train, DS-141)
      + fit_penalty     (Covered 0, CoveredIfCancelled 0, Check 15,
                         LikelyNewTicket 90)
      - rejoin_bonus    (15)

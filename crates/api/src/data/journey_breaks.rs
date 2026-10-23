@@ -607,6 +607,7 @@ mod tests {
             gap_minutes: Some(-3),
             minimum_change_minutes: Some(5),
             state,
+            relies_on_late_departure: None,
         })
     }
 

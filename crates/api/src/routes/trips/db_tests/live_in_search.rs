@@ -169,6 +169,25 @@ async fn a_late_onward_train_no_plan_used_yet_is_found_by_the_search() {
     assert_eq!(onward["live"]["interchangeFeasible"], true, "{onward:?}");
     // 10:00 to 11:10 on live times.
     assert_eq!(itinerary["totalDurationMinutes"], 70, "{itinerary:?}");
+    // DS-141: on time it would leave 15 minutes before the traveller could
+    // reach it (10:30 in, five to change), so the change relies on it
+    // running late.
+    assert_eq!(
+        onward["live"]["reliesOnLateDeparture"],
+        serde_json::json!({
+            "scheduledDeparture": "10:20:00",
+            "expectedDeparture": "10:40:00",
+            "delayMinutes": 20,
+            "slackIfOnTimeMinutes": -15,
+        }),
+        "{onward:?}"
+    );
+    assert!(
+        itinerary["legs"][0]["live"]
+            .get("reliesOnLateDeparture")
+            .is_none(),
+        "{itinerary:?}"
+    );
 
     // The timetable answer is still one parameter away.
     let (status, timetable) = get(
@@ -183,6 +202,132 @@ async fn a_late_onward_train_no_plan_used_yet_is_found_by_the_search() {
     assert_eq!(train_uids(&timetable, 0), ["TLVLA1", "TLVLA3"]);
 
     cleanup_live(&pool, &uids, "TLVLAT").await;
+}
+
+/// Every train leg's `live.reliesOnLateDeparture`, by train UID, across
+/// every itinerary of segment 0.
+fn reliances(body: &Value) -> Vec<(String, Value)> {
+    body["segments"][0]["itineraries"]
+        .as_array()
+        .expect("itineraries")
+        .iter()
+        .flat_map(|itinerary| itinerary["legs"].as_array().expect("legs"))
+        .filter_map(|leg| {
+            let reliance = leg["live"].get("reliesOnLateDeparture")?;
+            Some((leg["trainUid"].as_str()?.to_string(), reliance.clone()))
+        })
+        .collect()
+}
+
+/// `TLVREL` (DS-141): ZUA -> ZUB -> ZUC, TLVRE1 in at 10:30, five minutes
+/// to change. TLVRE2 is booked 10:20 on, TLVRE3 11:00. TLVRE2 running 20
+/// late makes the change only because it is late: flagged. Its delay
+/// shrinking to 16 keeps it (and the flag, on the new times); to 10 it no
+/// longer works, and the plan moves to TLVRE3, which running 5 late is
+/// late but would be caught on time too: not flagged.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn a_change_that_relies_on_a_late_train_is_flagged_until_the_delay_shrinks_too_far() {
+    let pool = connect().await;
+    let uids = ["TLVRE1", "TLVRE2", "TLVRE3"];
+    cleanup_live(&pool, &uids, "TLVREL").await;
+    seed_stations(
+        &pool,
+        "TLVREL",
+        &[("ZUA", "TLVUA"), ("ZUB", "TLVUB"), ("ZUC", "TLVUC")],
+    )
+    .await;
+    for (uid, from, to, departs, arrives) in [
+        ("TLVRE1", "TLVUA", "TLVUB", "10:00:00", "10:30:00"),
+        ("TLVRE2", "TLVUB", "TLVUC", "10:20:00", "10:50:00"),
+        ("TLVRE3", "TLVUB", "TLVUC", "11:00:00", "11:30:00"),
+    ] {
+        seed_schedule(
+            &pool,
+            uid,
+            &[
+                (0, from, "origin", None, Some(departs)),
+                (1, to, "terminate", Some(arrives), None),
+            ],
+        )
+        .await;
+    }
+    let late_id = seed_trust_state(&pool, "TLVRE2", "en_route", Some(20), live_now()).await;
+    seed_trust_state(&pool, "TLVRE3", "en_route", Some(5), live_now()).await;
+    let _now = crate::routes::pin_london_now_for_tests(live_now());
+    let uri = |results: &str| {
+        format!(
+            "/Trips/plan?origin=ZUA&destination=ZUC&date={}&departAfter=09:45&results={results}",
+            live_date()
+        )
+    };
+    let set_delay = |minutes: i32| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query("UPDATE train_current_state SET delay_minutes = $2 WHERE trains_id = $1")
+                .bind(late_id)
+                .bind(minutes)
+                .execute(&pool)
+                .await
+                .expect("set the delay");
+        }
+    };
+
+    for results in ["fastest", "options"] {
+        let (status, body) = get(test_router(test_app(pool.clone())), uri(results)).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(
+            train_uids(&body, 0),
+            ["TLVRE1", "TLVRE2"],
+            "{results}: {body:?}"
+        );
+        assert_all_live_feasible(&body);
+        let flagged = reliances(&body);
+        assert_eq!(
+            flagged,
+            [(
+                "TLVRE2".to_string(),
+                serde_json::json!({
+                    "scheduledDeparture": "10:20:00",
+                    "expectedDeparture": "10:40:00",
+                    "delayMinutes": 20,
+                    "slackIfOnTimeMinutes": -15,
+                })
+            )],
+            "{results}: {body:?}"
+        );
+    }
+
+    // Shrinks, but still enough: flagged on the new times.
+    set_delay(16).await;
+    let (status, body) = get(test_router(test_app(pool.clone())), uri("fastest")).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(train_uids(&body, 0), ["TLVRE1", "TLVRE2"], "{body:?}");
+    let flagged = reliances(&body);
+    assert_eq!(flagged.len(), 1, "{body:?}");
+    assert_eq!(flagged[0].1["expectedDeparture"], "10:36:00", "{body:?}");
+    assert_eq!(flagged[0].1["delayMinutes"], 16, "{body:?}");
+
+    // Too little: the change no longer works. The 11:00 is 5 late, but on
+    // time it is caught as well, so nothing relies on a late train.
+    set_delay(10).await;
+    for results in ["fastest", "options"] {
+        let (status, body) = get(test_router(test_app(pool.clone())), uri(results)).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        assert_eq!(
+            train_uids(&body, 0),
+            ["TLVRE1", "TLVRE3"],
+            "{results}: {body:?}"
+        );
+        assert_all_live_feasible(&body);
+        let onward = &body["segments"][0]["itineraries"][0]["legs"][1];
+        assert_eq!(onward["live"]["delayMinutes"], 5, "{onward:?}");
+        assert_eq!(onward["live"]["interchangeFeasible"], true, "{onward:?}");
+        assert!(reliances(&body).is_empty(), "{results}: {body:?}");
+    }
+
+    cleanup_live(&pool, &uids, "TLVREL").await;
 }
 
 /// `TLVCHN`: four trains in a row from ZLA are cancelled. Fastest mode's

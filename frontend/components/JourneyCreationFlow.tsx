@@ -6,7 +6,7 @@ import { Alert, Button, Card, Group, SegmentedControl, Stack, Text, VisuallyHidd
 import { AddJourneyLegButton } from './AddJourneyLegButton';
 import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
-import { UntrackedLegStartForm } from './UntrackedLegStartForm';
+import { UntrackedLegStartForm, type UntrackedLegOrigin } from './UntrackedLegStartForm';
 import {
   journeyCanAddLeg,
   journeyPriorArrival,
@@ -68,6 +68,7 @@ export function JourneyCreationFlow({
   planOrigin,
   planQuery,
   planSearchDates,
+  untrackedOrigin,
 }: {
   planOnly?: boolean;
   planOrigin?: string | undefined;
@@ -76,12 +77,17 @@ export function JourneyCreationFlow({
   /** The planner's date range (`GET /public/trains/search/dates`), read by
    * the page on the server -- both `/plan` and `/journeys/new` pass it. */
   planSearchDates?: TrainSearchDates | null | undefined;
+  /** `/journeys/new?fromTflStop=...` (a TfL stop page's "Add as a journey
+   * leg"): opens on the "Tube, bus or walk" form, starting at that stop. */
+  untrackedOrigin?: UntrackedLegOrigin | null | undefined;
 } = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
-  const [entryMode, setEntryMode] = useState<'known' | 'plan' | 'untracked'>(planOnly ? 'plan' : 'known');
+  const [entryMode, setEntryMode] = useState<'known' | 'plan' | 'untracked'>(
+    planOnly ? 'plan' : untrackedOrigin ? 'untracked' : 'known',
+  );
   const entryModeLabelId = useId();
 
   async function refreshJourney(id: number) {
@@ -161,7 +167,9 @@ export function JourneyCreationFlow({
         </VisuallyHidden>
         {entryMode === 'known' && <TrackTrainForm onCreated={handleLegOneCreated} />}
         {entryMode === 'plan' && <PlanTripFlow onCreated={handleLegOneCreated} searchDates={planSearchDates} />}
-        {entryMode === 'untracked' && <UntrackedLegStartForm onCreated={handleLegOneCreated} />}
+        {entryMode === 'untracked' && (
+          <UntrackedLegStartForm onCreated={handleLegOneCreated} origin={untrackedOrigin} />
+        )}
       </Stack>
     );
   }

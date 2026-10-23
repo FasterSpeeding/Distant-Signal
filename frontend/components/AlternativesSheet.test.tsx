@@ -86,6 +86,44 @@ describe('AlternativesSheet', () => {
     expect(screen.getByText('Your booked plan stays saved for Delay Repay.')).toBeInTheDocument();
   });
 
+  it('notes an option whose change relies on a late train, on that option only', async () => {
+    const twoLegs = replanSuggestion({
+      changeCount: 1,
+      legs: [
+        trainSuggestionLeg({
+          destinationCrs: 'NCL',
+          destinationName: 'Newcastle',
+          arrival: '2026-09-17T09:58:00Z',
+          scheduledArrival: '2026-09-17T09:58:00Z',
+        }),
+        trainSuggestionLeg({
+          trainUid: 'L22222',
+          originCrs: 'NCL',
+          originName: 'Newcastle',
+          departure: '2026-09-17T10:05:00Z',
+          scheduledDeparture: '2026-09-17T09:50:00Z',
+          reliesOnLateDeparture: {
+            scheduledDeparture: '2026-09-17T09:50:00Z',
+            expectedDeparture: '2026-09-17T10:05:00Z',
+            delayMinutes: 15,
+            slackIfOnTimeMinutes: -13,
+          },
+        }),
+      ],
+    });
+    const set = suggestionSet();
+    mockFetch({
+      [BREAK_URL]: () =>
+        json(breakResponse({ suggestions: { ...set, suggestions: [twoLegs, ...set.suggestions.slice(1)] } })),
+    });
+    renderSheet();
+    const notes = await screen.findAllByText(
+      "Relies on the train to Edinburgh running late. It's due to leave at 11:05, booked 10:50. It could leave earlier.",
+    );
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.closest('[data-suggestion]')?.getAttribute('data-suggestion')).toBe('s1');
+  });
+
   it('opens with the push source when the deep link opened it', async () => {
     const fetchMock = mockFetch({ [`${BREAK_URL}?src=push`]: () => json(breakResponse()) });
     renderSheet({ kind: 'break', breakId: 5, fromPush: true });

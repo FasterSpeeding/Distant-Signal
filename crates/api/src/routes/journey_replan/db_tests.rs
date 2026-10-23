@@ -1104,3 +1104,98 @@ async fn the_cleanup_dismisses_unconfirmed_missed_breaks_once() {
     let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
     assert!(detail["openBreak"].is_null(), "{detail}");
 }
+
+/// DS-141: a change that works only because the next train is running
+/// late. RP0001 (ZRC 10:00 to ZRD 11:00) then RP0004 (ZRD 11:10), five
+/// minutes to change at ZRD; "now" is 10:30. RP0001 30 late is in at 11:30
+/// and RP0004 30 late leaves 11:40: the change is `ok`, and flagged, since
+/// on time RP0004 would leave 25 minutes before the traveller could reach
+/// it. With RP0001 on time the change works on time too: not flagged. The
+/// alternatives from RP0001 carry the same flag on a late RP0004 boarded
+/// from RP0002 (in 11:30).
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+async fn a_change_that_relies_on_a_late_next_train_is_flagged() {
+    use chrono::TimeZone;
+    let _now = crate::routes::pin_london_now_for_tests(
+        chrono::Utc.with_ymd_and_hms(2099, 5, 5, 9, 30, 0).unwrap(),
+    );
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    seed_onward(&pool).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+    let (status, body) = call(
+        &router,
+        "POST",
+        "/Journeys/itinerary",
+        Some(&token),
+        Some(serde_json::json!({
+            "legs": [
+                { "trainUid": "RP0001", "serviceDate": DATE, "originCrs": "ZRC", "destinationCrs": "ZRD" },
+                { "trainUid": "RP0004", "serviceDate": DATE, "originCrs": "ZRD", "destinationCrs": "ZRE" }
+            ]
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let journey_id = body["journeyId"].as_i64().expect("journeyId");
+    let journey = format!("/Journeys/{journey_id}");
+
+    seed_live(&pool, "RP0001", "en_route", 30, "2099-05-05T09:29:00Z").await;
+    seed_live(&pool, "RP0004", "en_route", 30, "2099-05-05T09:29:00Z").await;
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    let connection = &detail["legs"][1]["connection"];
+    assert_eq!(connection["state"], "ok", "{detail}");
+    assert_eq!(connection["gapMinutes"], 10, "{detail}");
+    assert_eq!(
+        connection["reliesOnLateDeparture"],
+        serde_json::json!({
+            "scheduledDeparture": "2099-05-05T10:10:00Z",
+            "expectedDeparture": "2099-05-05T10:40:00Z",
+            "delayMinutes": 30,
+            "slackIfOnTimeMinutes": -25,
+        }),
+        "{detail}"
+    );
+    assert!(detail["openBreak"].is_null(), "{detail}");
+
+    seed_live(&pool, "RP0001", "en_route", 0, "2099-05-05T09:29:00Z").await;
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    let connection = &detail["legs"][1]["connection"];
+    assert_eq!(connection["state"], "ok", "{detail}");
+    assert!(
+        connection.get("reliesOnLateDeparture").is_none(),
+        "{detail}"
+    );
+
+    let leg_id = detail["legs"][0]["id"].as_i64().expect("leg id");
+    let (status, alternatives) = call(
+        &router,
+        "GET",
+        &format!("/Journeys/{journey_id}/legs/{leg_id}/alternatives?cause=choice"),
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{alternatives}");
+    let suggestions = alternatives["suggestions"].as_array().expect("suggestions");
+    let mut flagged = 0;
+    for suggestion in suggestions {
+        let legs = suggestion["legs"].as_array().expect("legs");
+        for pair in legs.windows(2) {
+            let reliance = pair[1].get("reliesOnLateDeparture");
+            if pair[0]["trainUid"] == "RP0002" && pair[1]["trainUid"] == "RP0004" {
+                let reliance = reliance.expect("RP0002 into RP0004 relies on it running late");
+                assert_eq!(reliance["delayMinutes"], 30, "{suggestion}");
+                flagged += 1;
+            } else {
+                assert!(reliance.is_none(), "{suggestion}");
+            }
+        }
+    }
+    assert!(flagged > 0, "{alternatives}");
+}

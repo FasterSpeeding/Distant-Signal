@@ -1,0 +1,60 @@
+/* Live arrivals at a TfL stop (`TflArrivalsBoard`), one bordered list per
+   line and platform, in the line pages' service-row frame
+   (`ServiceRow.module.css`). Mantine tokens only; no new colours. */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  overflow: hidden;
+}
+
+.list > li + li {
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+/* Destination and how long until it arrives on the first line; the clock
+   time and where the train is now, dimmed, under it. */
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'dest due'
+    'details details';
+  column-gap: var(--mantine-spacing-sm);
+  row-gap: 2px;
+  align-items: baseline;
+  min-height: 44px;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+}
+
+.dest {
+  grid-area: dest;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.due {
+  grid-area: due;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.details {
+  grid-area: details;
+  min-width: 0;
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clock {
+  font-variant-numeric: tabular-nums;
+}

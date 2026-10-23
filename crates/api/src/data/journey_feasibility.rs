@@ -66,6 +66,13 @@ pub struct LegConnection {
     /// next leg is untracked (a walk or a Tube ride starts when you do).
     pub minimum_change_minutes: Option<u32>,
     pub state: ConnectionState,
+    /// Set when the change works only because the next train is running
+    /// late (additive, DS-141; absent otherwise): it would not, on the
+    /// next train's timetabled departure. The state is judged as before
+    /// (usually `ok`); this says the train could leave earlier than
+    /// expected. See [`trip_plan_live::LateDepartureReliance`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relies_on_late_departure: Option<trip_plan_live::LateDepartureReliance<DateTime<Utc>>>,
 }
 
 /// One train leg's boarding and alighting calls, timetabled and live.
@@ -181,6 +188,32 @@ fn required_change(
     }
 }
 
+/// The change from `ready` onto `next`, needing `required` minutes, works
+/// only because `next` is running late ([`trip_plan_live::late_departure_slack`],
+/// the planner's rule). Never for staying aboard one train.
+fn late_departure_reliance(
+    ready: &Ready,
+    next: &TrainLegTiming,
+    required: u32,
+) -> Option<trip_plan_live::LateDepartureReliance<DateTime<Utc>>> {
+    let same_train = ready.train.as_ref() == Some(&(next.uid.clone(), next.date));
+    if same_train {
+        return None;
+    }
+    let slack = trip_plan_live::late_departure_slack(
+        whole_minutes(ready.at, next.sched_dep),
+        whole_minutes(ready.at, next.live_dep),
+        0,
+        required,
+    )?;
+    Some(trip_plan_live::LateDepartureReliance {
+        scheduled_departure: next.sched_dep,
+        expected_departure: next.live_dep,
+        delay_minutes: whole_minutes(next.sched_dep, next.live_dep),
+        slack_if_on_time_minutes: slack,
+    })
+}
+
 /// Every leg's [`LegConnection`] (`None` for the first), in order. Pure.
 ///
 /// An untracked leg is never missed: it starts when the traveller gets
@@ -196,6 +229,7 @@ pub fn evaluate_connections(
         gap_minutes,
         minimum_change_minutes: None,
         state: ConnectionState::Unknown,
+        relies_on_late_departure: None,
     };
     let mut out = Vec::with_capacity(legs.len());
     let mut ready: Option<Ready> = None;
@@ -210,6 +244,7 @@ pub fn evaluate_connections(
                         gap_minutes: Some(gap),
                         minimum_change_minutes: None,
                         state: ConnectionState::Ok,
+                        relies_on_late_departure: None,
                     },
                     None => unknown(None),
                 })
@@ -225,6 +260,7 @@ pub fn evaluate_connections(
                             gap_minutes: Some(gap),
                             minimum_change_minutes: Some(required),
                             state: classify(gap, planned_gap, required),
+                            relies_on_late_departure: late_departure_reliance(r, next, required),
                         },
                         None => unknown(Some(gap)),
                     }
@@ -685,6 +721,66 @@ mod tests {
             train("B1", ("DON", "DONC"), "SHF", 586, 586, 620, 620, true),
         ];
         assert_eq!(states(&legs)[1].unwrap().2, ConnectionState::Missed);
+    }
+
+    #[test]
+    fn a_change_made_only_by_a_late_next_train_is_ok_and_flagged() {
+        // On time into York at 10:00 (MSN 5); the 10:03 is 12 late.
+        let legs = [
+            train("A1", ("KGX", "KNGX"), "YRK", 480, 480, 600, 600, true),
+            train("B1", ("YRK", "YORK"), "EDB", 603, 615, 760, 772, true),
+        ];
+        let connection = evaluate_connections(&legs, &interchange())[1]
+            .clone()
+            .unwrap();
+        assert_eq!(connection.state, ConnectionState::Ok);
+        assert_eq!(
+            connection.relies_on_late_departure,
+            Some(trip_plan_live::LateDepartureReliance {
+                scheduled_departure: at(603),
+                expected_departure: at(615),
+                delay_minutes: 12,
+                slack_if_on_time_minutes: -2,
+            })
+        );
+        let json = serde_json::to_value(&connection).unwrap();
+        assert_eq!(json["reliesOnLateDeparture"]["delayMinutes"], 12);
+        assert_eq!(json["reliesOnLateDeparture"]["slackIfOnTimeMinutes"], -2);
+    }
+
+    #[test]
+    fn a_late_next_train_is_flagged_only_when_its_booked_time_would_be_missed() {
+        let legs = [
+            train("A1", ("KGX", "KNGX"), "YRK", 480, 480, 600, 612, true),
+            train("B1", ("YRK", "YORK"), "EDB", 615, 625, 760, 770, true),
+        ];
+        let connections = evaluate_connections(&legs, &interchange());
+        let connection = connections[1].as_ref().unwrap();
+        // 12 late in: on time, the 10:15 would be missed, so it IS flagged.
+        assert!(connection.relies_on_late_departure.is_some());
+        let legs = [
+            train("A1", ("KGX", "KNGX"), "YRK", 480, 480, 600, 600, true),
+            train("B1", ("YRK", "YORK"), "EDB", 615, 625, 760, 770, true),
+        ];
+        let connections = evaluate_connections(&legs, &interchange());
+        let connection = connections[1].as_ref().unwrap();
+        assert_eq!(connection.state, ConnectionState::Ok);
+        assert_eq!(connection.relies_on_late_departure, None);
+        let json = serde_json::to_value(connection).unwrap();
+        assert!(json.get("reliesOnLateDeparture").is_none(), "{json}");
+    }
+
+    #[test]
+    fn staying_aboard_a_late_train_is_never_flagged() {
+        let legs = [
+            train("A1", ("KGX", "KNGX"), "YRK", 480, 480, 600, 610, true),
+            train("A1", ("YRK", "YORK"), "EDB", 602, 612, 760, 770, true),
+        ];
+        let connections = evaluate_connections(&legs, &interchange());
+        assert_eq!(
+            connections[1].as_ref().unwrap().relies_on_late_departure,
+            None
+        );
     }
 
     #[test]

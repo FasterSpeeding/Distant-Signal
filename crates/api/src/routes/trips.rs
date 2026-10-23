@@ -2769,6 +2769,7 @@ mod db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             delegated: Arc::default(),
+            tfl_arrivals: Arc::default(),
             schedule_crs_line_index: std::collections::HashMap::new(),
         })
     }

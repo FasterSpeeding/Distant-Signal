@@ -14,6 +14,7 @@ import type {
 } from '@/lib/types';
 import { accessLegNote, transferLabel } from '@/lib/displayLabels';
 import { StateBadge } from './StateBadge';
+import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNote';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
  * full name -- `GET /Trips/plan` (unlike every other station-bearing
@@ -120,6 +121,9 @@ export function ItineraryOption({
                     <Text size="xs" c="dimmed" pl="sm">
                       {accessLegNote(leg.access)}
                     </Text>
+                  )}
+                  {leg.kind === 'train' && leg.live?.reliesOnLateDeparture && (
+                    <LateDepartureNote {...plannerLateDepartureTimes(leg.live.reliesOnLateDeparture)} />
                   )}
                   {viaPasses
                     .filter((via) => via.leg === index)

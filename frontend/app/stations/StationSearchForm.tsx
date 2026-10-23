@@ -8,11 +8,11 @@ import { searchNearbyStations } from '@/lib/suggestions';
 import { searchStationsAndStops } from '@/lib/stationSearch';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
-import type { NearbyStation, Suggestion, TflStop } from '@/lib/types';
+import { tflStopHref } from '@/lib/tflStops';
+import type { NearbyStation, Suggestion } from '@/lib/types';
 import { LoadingPlaceholder } from '@/components/LoadingPlaceholder';
 import { ButtonSpinner, LoadingText } from '@/components/LoadingText';
 import { NearbyStationList } from './NearbyStationList';
-import { TflStopPanel } from './TflStopPanel';
 
 /** The "near me" lookup's own state machine -- mirrors the shape
  * `IncidentSearchForm.tsx`'s `Results` type already establishes (one
@@ -47,8 +47,6 @@ export function StationSearchForm() {
   // it wrote: "Euston" the Tube stop and "Euston" the station share a
   // name, so the text alone can't say which was meant.
   const [picked, setPicked] = useState<Suggestion | null>(null);
-  // A picked TfL stop has no page to go to: it shows here instead.
-  const [tflStop, setTflStop] = useState<TflStop | null>(null);
   const [isPending, startTransition] = useTransition();
   const [nearby, setNearby] = useState<NearbyState>({ status: 'idle' });
   // `navigator.geolocation` doesn't exist during SSR (no `navigator` at
@@ -77,14 +75,18 @@ export function StationSearchForm() {
     });
   }
 
-  /** Where a search result leads: a station's page, a transit stop's page,
-   * or, for a TfL stop, the panel below the form. */
+  /** Where a search result leads: a station's page, a TfL stop's page
+   * (`/tfl/stops/[id]`, live arrivals and line status) or a tram stop's
+   * page. */
   function open(suggestion: Suggestion) {
     const place = suggestion.place;
     if (!place) {
       goToStation(suggestion.code);
     } else if (place.kind === 'tfl') {
-      setTflStop(place.stop);
+      const href = tflStopHref(place.stop.id);
+      startTransition(() => {
+        router.push(href);
+      });
     } else {
       startTransition(() => {
         router.push(`/transit/${encodeURIComponent(place.network)}/stops/${encodeURIComponent(place.stopId)}`);
@@ -94,7 +96,6 @@ export function StationSearchForm() {
 
   function handleChange(value: string) {
     setCrs(value);
-    setTflStop(null);
     // Picking writes the row's code (a station) or name (a stop) into the
     // field; any other text is a new search.
     setPicked((current) => (current && (current.place ? current.name : current.code) === value ? current : null));
@@ -163,7 +164,6 @@ export function StationSearchForm() {
           {isPending ? 'Looking up' : 'Look up'}
         </Button>
       </Group>
-      {tflStop && <TflStopPanel stop={tflStop} />}
       {isPending && (
         // Several seconds of a static, disabled button is not enough
         // feedback for where the user is actually looking — this mirrors

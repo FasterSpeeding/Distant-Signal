@@ -9,6 +9,7 @@ import type {
   JourneyLegDetail,
   JourneyListItem,
   JourneyStop,
+  LateDepartureReliance,
   TrackedTrainListItem,
   TrackedTrainState,
 } from './types';
@@ -294,6 +295,24 @@ export function currentLeg(detail: JourneyDetail, now: Date): JourneyLegDetail |
     detail.legs.at(-1) ??
     null
   );
+}
+
+/** The next change that works only because the train changed onto is
+ * running late (DS-141, `connection.reliesOnLateDeparture`), for the
+ * current journey card: the change onto the current leg while its train
+ * has not left yet (the traveller is waiting for it), else the change onto
+ * the leg after it. `null` when neither relies on a late train. */
+export function nextLateDepartureReliance(
+  detail: JourneyDetail,
+  leg: JourneyLegDetail,
+  now: Date,
+): LateDepartureReliance | null {
+  const index = detail.legs.indexOf(leg);
+  if (index < 0) return null;
+  const departure = legExpectedDepartureInstant(leg);
+  const waiting = index > 0 && departure !== null && Date.parse(departure) > now.getTime();
+  if (waiting && leg.connection?.reliesOnLateDeparture) return leg.connection.reliesOnLateDeparture;
+  return detail.legs[index + 1]?.connection?.reliesOnLateDeparture ?? null;
 }
 
 /** Where a lone train is, relative to `now`, when the api has not called

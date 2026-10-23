@@ -38,6 +38,71 @@ docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md.
   station end. `segments[].originCrs`/`destinationCrs` carry the stop id
   as given.
 
+## 2026-10-23: a TfL stop and its live arrivals
+
+Additive: two new public, unauthenticated routes for the web app's
+`/tfl/stops/{id}` page. Nothing existing changes. DS-MCP needs no change
+(it may use them).
+
+- **New: `GET /public/tfl/stops/{id}`**, one Tube, DLR or tram stop by its
+  `NaPTAN` id (`940GZZLURSQ`): `{id, name, modes, lines: [{id, name}],
+  railStations: [{crs, name}]}`. `railStations` are the National Rail
+  stations at the stop, best first (the same mapping as
+  `GET /public/tfl/stops/rail-crs`; `name` is `null` for a station with no
+  reference row), often `[]`. `404` for an id that is not a stop.
+- **New: `GET /public/tfl/stops/{id}/arrivals`**, `TfL`'s live predictions
+  for the stop: `{stopId, fetchedAt, groups: [{lineId, lineName,
+  platformName, direction?, arrivals: [{id, destination, expectedArrival,
+  timeToStationSecs, currentLocation?}]}]}`. Groups are by line, then
+  platform (`Westbound - Platform 1`; `platformName` may be `""`), ordered
+  by line name then platform; arrivals soonest first, at most 8 per group.
+  `timeToStationSecs` is counted from the response, never negative;
+  `destination` is the cleaned destination name (`Cockfosters`), else
+  `TfL`'s `towards`. `fetchedAt` is when `TfL` was asked: the api caches
+  each stop's answer for about 30 s. `404` for an id that is not a stop.
+  `503` `{"error":"tfl_unavailable","retryable":true,"message":...}` (with
+  `Retry-After`) when `TfL` cannot be reached, answers with an error, or the
+  feature is off; `message` is fit to show a user.
+- The arrivals route shares the `/Train/by-uid/*` rate limit (by default
+  120 a minute, burst 60, per client; `API_RATE_LIMIT_TRAIN_BY_UID_*`).
+
+## 2026-10-23: `reliesOnLateDeparture` on changes made only by a late train
+
+Additive; no field is removed or changes meaning. DS-MCP needs no change,
+but may show it.
+
+The live planner keeps a late train late (no recovery is modelled), so it
+can offer a change that works only because the train changed onto is
+running late. If that train makes up time it could leave before the
+traveller can reach it. Such a change is now flagged with
+`reliesOnLateDeparture`, an object absent when not set:
+
+```json
+{"scheduledDeparture": "10:20:00", "expectedDeparture": "10:35:00",
+ "delayMinutes": 15, "slackIfOnTimeMinutes": -7}
+```
+
+- `scheduledDeparture`: the train's timetabled (public) departure;
+  `expectedDeparture`: its live one, which the change was judged on;
+  `delayMinutes`: the difference; `slackIfOnTimeMinutes`: the spare
+  minutes after the minimum change time were the train on time, always
+  negative.
+- Set when the change works on the expected departure but would not on
+  the timetabled one (the traveller's live arrival, plus any walk, plus
+  the change time). A change that also works on the timetabled time is
+  never flagged, however tight. Never for staying aboard one train, or a
+  first leg.
+- `GET /Trips/plan`: on a train leg's `live` (the leg changed onto), with
+  clock times like `scheduledDeparture`. Inside the live window only, as
+  the rest of `live`. Judged on the same times as `interchangeFeasible`.
+- `GET /Journeys/{journeyId}`: on a leg's `connection`, with instants.
+  `state` is unchanged (usually `ok`, `atRisk` when also tight).
+- Alternatives (`GET .../legs/{legId}/alternatives`, the open break's
+  suggestions): on each train leg of a suggestion, with instants. The
+  ranking adds 5 minutes to such an option's `cost`, so it is never
+  Recommended over an otherwise equal one that doesn't rely on a late
+  train.
+
 ## 2026-10-23: a train leg with no stations of its own names its train's route
 
 Values only; no request or response shape changes. DS-MCP needs no change.

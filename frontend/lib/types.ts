@@ -577,6 +577,49 @@ export interface TflStop {
   lines: TflStopLine[];
 }
 
+/** A National Rail station at a TfL stop. `name` is null when the
+ * station has no reference row. */
+export interface TflStopRailStation {
+  crs: string;
+  name: string | null;
+}
+
+/** `GET /public/tfl/stops/{id}` (`crates/api/src/routes/tfl_stop_page.rs`):
+ * a stop with the National Rail stations at it, best first. */
+export interface TflStopDetail extends TflStop {
+  railStations: TflStopRailStation[];
+}
+
+/** One live prediction at a TfL stop. */
+export interface TflArrival {
+  /** TfL's prediction ID, stable across refreshes. */
+  id: string;
+  destination: string;
+  /** RFC 3339. */
+  expectedArrival: string;
+  /** From when the api answered; never negative. */
+  timeToStationSecs: number;
+  currentLocation?: string;
+}
+
+/** The predictions at one platform of one line, soonest first. */
+export interface TflArrivalGroup {
+  lineId: string;
+  lineName: string;
+  /** "Westbound - Platform 1"; may be empty. */
+  platformName: string;
+  direction?: string;
+  arrivals: TflArrival[];
+}
+
+/** `GET /public/tfl/stops/{id}/arrivals`. */
+export interface TflStopArrivals {
+  stopId: string;
+  /** When TfL was asked (the api caches for about 30 s). */
+  fetchedAt: string;
+  groups: TflArrivalGroup[];
+}
+
 /** A code/name pair from `GET /public/stations/nearby` --
  * (`crates/api/src/data/reference.rs`'s `NearbyStation`), like `Suggestion`
  * but for a "near me" physical-distance lookup rather than text search, and
@@ -1374,7 +1417,27 @@ export interface LegConnection {
    * not known, or when this leg is a walk or a Tube ride. */
   minimumChangeMinutes: number | null;
   state: ConnectionState;
+  /** Set when the change works only because this leg's train is running
+   * late (DS-141): it could leave earlier. Absent otherwise. */
+  reliesOnLateDeparture?: LateDepartureReliance;
 }
+
+/** A change that works only because the train changed onto is running
+ * late (DS-141, docs/api-changelog.md): it would not on the train's
+ * timetabled departure. Instants (RFC3339) on journeys and alternatives. */
+export interface LateDepartureReliance {
+  /** The train's timetabled (public) departure. */
+  scheduledDeparture: string;
+  /** Its live departure, which the change was judged on. */
+  expectedDeparture: string;
+  delayMinutes: number;
+  /** Spare minutes after the change time were it on time: negative. */
+  slackIfOnTimeMinutes: number;
+}
+
+/** `TripPlanLegLive.reliesOnLateDeparture`: the same, with "HH:MM:SS"
+ * clock times like the leg's `scheduledDeparture`. */
+export type TripPlanLateDepartureReliance = LateDepartureReliance;
 
 /** `GET /Journeys/{id}`'s full response. */
 export interface JourneyDetail {
@@ -1467,6 +1530,9 @@ export type ReplanSuggestionLeg =
       operatorName: string | null;
       platform: string | null;
       cancelled: boolean;
+      /** The change onto this train works only because it is running late
+       * (DS-141). Absent otherwise. */
+      reliesOnLateDeparture?: LateDepartureReliance;
     }
   | {
       kind: 'untracked';
@@ -1791,6 +1857,9 @@ export interface TripPlanLegLive {
   platform: string | null;
   observedAt: string | null; // RFC3339
   interchangeFeasible: boolean | null;
+  /** The change onto this leg works only because this train is running
+   * late (DS-141): it could leave earlier. Absent otherwise. */
+  reliesOnLateDeparture?: TripPlanLateDepartureReliance;
 }
 
 /** One origin->destination hop of a (possibly multi-waypoint) plan
