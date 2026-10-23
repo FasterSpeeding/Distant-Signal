@@ -112,7 +112,7 @@ permissions:
 jobs:
   scan:
     name: osv-scanner (blocks on critical + fixable)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       checks: write # the neutral "security findings (non-blocking)" check run
@@ -238,7 +238,7 @@ jobs:
   report-findings:
     needs: scan
     if: always() && github.event_name == 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       issues: write
     steps:
