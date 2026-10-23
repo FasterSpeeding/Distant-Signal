@@ -220,22 +220,117 @@ describe('AlternativesSheet', () => {
     expect(await screen.findByText("Couldn't update the journey. Try again.")).toBeInTheDocument();
   });
 
-  it('plans from a missed train and warns about the ticket when it was the traveller', async () => {
+  it('only looks when "I missed this train" opens: nothing recorded, nothing to refresh on close', async () => {
     const onClose = vi.fn();
-    mockFetch({
-      'POST /api/Journeys/42/legs/7/missed': () =>
-        json(breakResponse({ cause: 'user_missed', fault: 'user', faultNote: 'You missed it by 2 min.' })),
+    const fetchMock = mockFetch({
+      'GET /api/Journeys/42/legs/7/alternatives?cause=missed': () => json(suggestionSet()),
     });
     renderSheet({ kind: 'missed', legId: 7 }, onClose);
     expect(await screen.findByRole('heading', { name: 'You missed the 09:52 to Edinburgh' })).toBeInTheDocument();
+    // A first leg has no change onto it: a miss would be the traveller's.
     expect(
-      screen.getByText('Your ticket may not be valid on a different train. Check before you board.'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('You missed it by 2 min.')).toBeInTheDocument();
-    // The missed train opened a break: closing shows it on the page.
+      screen.queryByText('Your earlier train was late, so this counts as a missed connection.'),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalled();
-    expect(refreshMock).toHaveBeenCalledTimes(1);
+    // Closing without taking a train leaves the journey as it was: no
+    // break was opened, so there is no "You missed" banner to show.
+    expect(refreshMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map(([, init]) => init?.method ?? 'GET')).toEqual(['GET']);
+  });
+
+  it('records the miss only when another train is taken', async () => {
+    const fetchMock = mockFetch({
+      'GET /api/Journeys/42/legs/7/alternatives?cause=missed': () => json(suggestionSet()),
+      'POST /api/Journeys/42/legs/7/replace': () =>
+        json({ journeyId: 42, revisionNo: 2, newLegIds: [12], undoRevisionNo: 1 }),
+    });
+    renderSheet({ kind: 'missed', legId: 7 });
+    fireEvent.click(await screen.findByRole('button', { name: 'Take this one: 10:04 York to Edinburgh, direct' }));
+    expect(await screen.findByText('Journey updated. Booked plan saved.')).toBeInTheDocument();
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/replace'));
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ cause: 'missed', throughLegId: 7 });
+  });
+
+  it("says a miss after a late inbound train is the railway's", async () => {
+    mockFetch({
+      'GET /api/Journeys/42/legs/7/alternatives?cause=missed': () => json(suggestionSet()),
+    });
+    renderSheet({ kind: 'missed', legId: 7, inboundLate: true });
+    expect(
+      await screen.findByText('Your earlier train was late, so this counts as a missed connection.'),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a break's own fault note", async () => {
+    mockFetch({
+      [BREAK_URL]: () =>
+        json(breakResponse({ cause: 'user_missed', fault: 'operator', faultNote: 'You missed it by 2 min.' })),
+    });
+    renderSheet();
+    expect(await screen.findByRole('heading', { name: 'You missed the 09:52 to Edinburgh' })).toBeInTheDocument();
+    expect(screen.getByText('You missed it by 2 min.')).toBeInTheDocument();
+  });
+
+  /* The api's ticket advice (§17.5), one per variant: the sheet shows it
+   * as given, once, after the fault note and before the Delay Repay note,
+   * and adds no ticket line of its own. */
+  describe.each([
+    {
+      variant: 'railway-caused',
+      mode: { kind: 'break', breakId: 5 } as AlternativesMode,
+      route: BREAK_URL,
+      body: (hint: string) =>
+        breakResponse({
+          cause: 'user_missed',
+          fault: 'operator',
+          faultNote: 'Your earlier train was late, so this counts as a missed connection.',
+          suggestions: suggestionSet({ hint }),
+        }),
+      hint: 'Ask station staff. Your ticket should be accepted on the next suitable train because your journey was disrupted. Check before you board.',
+      faultNote: 'Your earlier train was late, so this counts as a missed connection.',
+    },
+    {
+      variant: 'user-caused',
+      mode: { kind: 'missed', legId: 7 } as AlternativesMode,
+      route: 'GET /api/Journeys/42/legs/7/alternatives?cause=missed',
+      body: (hint: string) => suggestionSet({ hint }),
+      hint: "Ask station staff if there are any. Your Advance ticket is only valid on the train you missed, so you'll likely need a new one.",
+      faultNote: null,
+    },
+    {
+      variant: 'unknown ticket',
+      mode: { kind: 'missed', legId: 7 } as AlternativesMode,
+      route: 'GET /api/Journeys/42/legs/7/alternatives?cause=missed',
+      body: (hint: string) => suggestionSet({ hint }),
+      hint: "Ask station staff if there are any. If you have an Advance ticket, you'll likely need a new one. Check before you board.",
+      faultNote: null,
+    },
+    {
+      variant: 'flexible ticket',
+      mode: { kind: 'alternatives', legId: 7, cause: 'cancelled' } as AlternativesMode,
+      route: 'GET /api/Journeys/42/legs/7/alternatives?cause=cancelled',
+      body: (hint: string) => suggestionSet({ hint }),
+      hint: 'Your ticket is usually valid on other trains on the same route.',
+      faultNote: null,
+    },
+  ])('ticket advice, $variant', ({ mode, route, body, hint, faultNote }) => {
+    it('shows the advice once, in order, and keeps the Delay Repay note', async () => {
+      mockFetch({ [route]: () => json(body(hint)) });
+      renderSheet(mode);
+      const advice = await screen.findByText(hint);
+      const booked = screen.getByText('Your booked plan stays saved for Delay Repay.');
+      expect(advice.compareDocumentPosition(booked) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      if (faultNote !== null) {
+        const note = screen.getByText(faultNote);
+        expect(note.compareDocumentPosition(advice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+      // Only the advice speaks about the ticket: no second line of its own.
+      expect(screen.getAllByText(/ticket/i).filter((el) => el.closest('[data-suggestion]') === null)).toEqual([advice]);
+      expect(screen.queryByText(/you'll likely need a new one/)).toBe(
+        hint.includes("you'll likely need a new one") ? advice : null,
+      );
+    });
   });
 
   it('replaces the leg when taking a free choice', async () => {

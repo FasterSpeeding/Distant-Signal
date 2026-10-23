@@ -30,9 +30,9 @@ import { asSentence, describeFailure, isUserFacingApiMessage } from '@/lib/failu
 import { formatTime } from '@/lib/dateFormat';
 import {
   BOOKED_PLAN_SAVED_NOTE,
+  LATE_INBOUND_NOTE,
   STALE_SUGGESTION_MESSAGE,
   UNDO_WINDOW_MS,
-  USER_FAULT_NOTE,
   breakTitle,
   suggestionBadges,
   suggestionDelay,
@@ -56,14 +56,18 @@ import type {
  *
  * - `break`: the journey's open break, its stored suggestions
  *   (`GET .../breaks/current`), refreshed when stale;
- * - `missed`: "I missed this train" (`POST .../legs/{id}/missed`), which
- *   opens a break and plans at once;
+ * - `missed`: "I missed this train": the other ways from that leg
+ *   (`GET .../legs/{id}/alternatives?cause=missed`). Looking writes
+ *   nothing; only taking one (`POST .../legs/{id}/replace`, `cause:
+ *   missed`) records the train as missed. `inboundLate`: the leg's
+ *   connection state says the train before it arrived too late, so the
+ *   miss is the railway's, not the traveller's;
  * - `alternatives`: other ways from one leg with no break
  *   (`GET .../legs/{id}/alternatives?cause=`), taken with `POST
  *   .../legs/{id}/replace`. */
 export type AlternativesMode =
   | { kind: 'break'; breakId: number; fromPush?: boolean }
-  | { kind: 'missed'; legId: number }
+  | { kind: 'missed'; legId: number; inboundLate?: boolean }
   | { kind: 'alternatives'; legId: number; cause: AlternativesCause };
 
 /** The same disclosure as `WorkingTimetable`'s: a flush `Accordion`. */
@@ -130,7 +134,7 @@ function loadRequest(journeyId: number, mode: AlternativesMode): { url: string; 
     case 'break':
       return { url: `${base}/breaks/current${mode.fromPush ? '?src=push' : ''}`, method: 'GET' };
     case 'missed':
-      return { url: `${base}/legs/${mode.legId}/missed`, method: 'POST' };
+      return { url: `${base}/legs/${mode.legId}/alternatives?cause=missed`, method: 'GET' };
     case 'alternatives':
       return { url: `${base}/legs/${mode.legId}/alternatives?cause=${mode.cause}`, method: 'GET' };
   }
@@ -262,8 +266,9 @@ function AlternativesSheetBody({
   const [muteError, setMuteError] = useState<string | null>(null);
 
   const { url, method } = loadRequest(journeyId, mode);
-  const isAlternatives = mode.kind === 'alternatives';
-  const isMissed = mode.kind === 'missed';
+  // Neither "I missed this train" nor other ways from a leg has a break:
+  // both load a suggestion set and write nothing until one is taken.
+  const isAlternatives = mode.kind === 'alternatives' || mode.kind === 'missed';
   const cause = breakInfo?.cause ?? modeCause(mode);
 
   useEffect(() => {
@@ -292,9 +297,6 @@ function AlternativesSheetBody({
         return;
       }
       const loaded = result.value;
-      // "I missed this train" opened a break: the page shows it once the
-      // sheet closes.
-      if (isMissed) onChanged(true);
       setBreakInfo(loaded);
       setSet(loaded.suggestions);
       setStatus('ready');
@@ -315,7 +317,7 @@ function AlternativesSheetBody({
     return () => {
       cancelled = true;
     };
-  }, [journeyId, url, method, isAlternatives, isMissed, onChanged]);
+  }, [journeyId, url, method, isAlternatives]);
 
   // The title follows the suggestions, which know the trigger train.
   const title = set ? breakTitle(suggestionSetTitleFacts(set, cause, stationName)) : fallbackTitle;
@@ -479,7 +481,11 @@ function AlternativesSheetBody({
   const suggestions = set?.suggestions ?? [];
   const cards = suggestions.filter((suggestion) => suggestion.card);
   const rest = suggestions.filter((suggestion) => !suggestion.card);
-  const userFault = breakInfo?.cause === 'user_missed' && breakInfo.fault === 'user';
+  // Why a miss counts as the railway's: the break's note, else (nothing
+  // recorded yet) the leg's connection state, as the api decides it (§4.2).
+  const inboundLate = mode.kind === 'missed' && mode.inboundLate === true;
+  const faultNote =
+    breakInfo !== null ? breakInfo.faultNote : cause === 'user_missed' && inboundLate ? LATE_INBOUND_NOTE : null;
 
   const card = (suggestion: ReplanSuggestion) => (
     <SuggestionCard
@@ -539,13 +545,14 @@ function AlternativesSheetBody({
           </Accordion>
         )}
       </Stack>
+      {faultNote && <Text size="sm">{faultNote}</Text>}
+      {/* The api's ticket advice (§17.5): station staff first unless the
+          ticket is flexible, worded by who broke the journey. */}
       {set?.hint && (
-        <Text size="sm" c="dimmed">
+        <Text size="sm" data-ticket-advice>
           {set.hint}
         </Text>
       )}
-      {breakInfo?.faultNote && <Text size="sm">{breakInfo.faultNote}</Text>}
-      {userFault && <Text size="sm">{USER_FAULT_NOTE}</Text>}
       <Text size="sm" c="dimmed">
         {BOOKED_PLAN_SAVED_NOTE}
       </Text>

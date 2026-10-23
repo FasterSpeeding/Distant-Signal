@@ -1757,7 +1757,8 @@ async fn build_journey_detail_response(
     crate::data::train_reasons::attach_to_tracked_states(&app.database, &mut stop_states).await;
     // Planned / awaiting / not in the timetable (spec 2026-10-20 §4.3),
     // after the stop build: a built stop list is timetable evidence.
-    let now = Utc::now();
+    // `london_now`: the wall clock, which a db test can pin.
+    let now = crate::routes::london_now().with_timezone(&Utc);
     crate::data::tracking_phase::attach(&app.database, &mut stop_states, now).await;
     for (index, state) in stop_leg_indexes.into_iter().zip(stop_states) {
         leg_states[index] = Some(state);

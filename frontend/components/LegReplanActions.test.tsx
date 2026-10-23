@@ -41,13 +41,15 @@ describe('LegReplanActions', () => {
     expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
-  it('offers "I missed this train" on the missable leg, and plans from it', async () => {
-    const fetchMock = stubFetch(breakResponse({ cause: 'user_missed', fault: 'user' }));
+  it('offers "I missed this train" on the missable leg, and only looks for other trains', async () => {
+    const fetchMock = stubFetch(suggestionSet());
     renderWithMantine(<LegReplanActions journeyId={42} leg={leg()} context={{ ...context, missable: true }} />);
     expect(screen.queryByRole('button', { name: 'Find another way' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'I missed this train' }));
     expect(await screen.findByText('10:04 York to Edinburgh, direct')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/42/legs/7/missed', { method: 'POST' });
+    // Never the old `POST .../missed`, which opened a break just by looking.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/42/legs/7/alternatives?cause=missed', { method: 'GET' });
   });
 
   it('never offers "I missed this train" on a cancelled train', () => {

@@ -32,6 +32,30 @@ Values only; no request or response shape changes. DS-MCP needs no change.
   station or pin already set is never changed. Push notifications name
   such a leg by its route too.
 
+## 2026-10-23: "I missed this train" only looks; ticket advice
+
+Cookie-only journey routes; no field is added or removed. DS-MCP needs no
+change.
+
+- The web app's "I missed this train" no longer calls `POST
+  /Journeys/{id}/legs/{legId}/missed`. It looks with `GET
+  .../legs/{legId}/alternatives?cause=missed` and records the miss only
+  when the traveller takes a train, with `POST .../legs/{legId}/replace`
+  `{cause: "missed", ...}`. The `missed` route still works as before.
+- `alternatives?cause=missed` (with no break open on the leg) ranks with
+  the fault the data decides, as `missed` does: `operator` when the change
+  onto the leg no longer works on live times, else `user`.
+- `replace` with `cause: "missed"` and no break open records a revision
+  with `cause` `user_missed` and that same fault (it was always `user`),
+  and is always its own revision with an Undo, even before the journey's
+  first departure (it was a planning edit of the booked plan then).
+- A suggestion set's `hint` is now always present and reads as ticket
+  advice: station staff first unless the ticket is flexible, worded by
+  who broke the journey (spec §8.3). "Add your ticket to see which trains
+  it covers" is gone.
+- A one-off migration dismisses (`dismissReason` `other`) every open
+  `user_missed` break: each was opened by the old sheet just by loading.
+
 ## 2026-10-23: train search across midnight, and every timetable operator
 
 `GET /public/trains/search`, plus a new `GET /public/trains/search/operators`.

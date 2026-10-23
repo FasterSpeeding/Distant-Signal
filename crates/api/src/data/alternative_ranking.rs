@@ -420,20 +420,46 @@ fn arrival_minutes(candidate: &Candidate, epoch: DateTime<Utc>) -> i64 {
     (candidate.arrival - epoch).num_minutes()
 }
 
-/// The sheet's one-line hint (§17.5, §8.3), if any.
-fn hint(context: &Context) -> Option<&'static str> {
-    match (&context.constraint, context.entitlement) {
-        (TicketConstraint::TrainSpecific { .. }, Entitlement::PassengerFault) => Some(
-            "Your Advance ticket is only valid on the train you missed. You'll likely need a new ticket.",
-        ),
-        (TicketConstraint::Unknown, Entitlement::PassengerFault) => {
-            Some("If you have an Advance ticket, you'll likely need a new one.")
+/// The sheet's ticket advice (§17.5, §8.3), from the same ticket constraint
+/// and entitlement the ranking and fit badges use.
+///
+/// Station staff have the last word on a ticket, and when the railway
+/// broke the journey (a late train, a cancellation) they must help the
+/// traveller finish it (`NRCoT` 9.4, 28.3). So unless the ticket is known to
+/// be flexible, the advice starts with asking them. A flexible ticket (any
+/// permitted route, a season) needs no staff. When the railway is at
+/// fault, the ticket should be accepted; when the traveller missed the
+/// train or chose another, an Advance ticket likely needs replacing.
+fn hint(context: &Context) -> &'static str {
+    let railway = matches!(
+        context.entitlement,
+        Entitlement::MissedConnection | Entitlement::Cancelled { .. }
+    );
+    match (&context.constraint, railway) {
+        (TicketConstraint::AnyPermitted { .. }, _) => {
+            "Your ticket is usually valid on other trains on the same route."
         }
-        (_, Entitlement::PassengerFault) => {
-            Some("Your ticket may not be valid on a different train. Check before you board.")
+        (_, true) => {
+            "Ask station staff. Your ticket should be accepted on the next suitable train \
+             because your journey was disrupted. Check before you board."
         }
-        (TicketConstraint::Unknown, _) => Some("Add your ticket to see which trains it covers."),
-        _ => None,
+        (TicketConstraint::TrainSpecific { .. }, false) => {
+            if context.entitlement == Entitlement::PassengerFault {
+                "Ask station staff if there are any. Your Advance ticket is only valid on the \
+                 train you missed, so you'll likely need a new one."
+            } else {
+                "Ask station staff if there are any. Your Advance ticket is only valid on your \
+                 booked train, so you'll likely need a new one."
+            }
+        }
+        (TicketConstraint::Unknown, false) => {
+            "Ask station staff if there are any. If you have an Advance ticket, you'll likely \
+             need a new one. Check before you board."
+        }
+        (TicketConstraint::OperatorOnly { .. }, false) => {
+            "Ask station staff if there are any. Your ticket may not be valid on a different \
+             train. Check before you board."
+        }
     }
 }
 
@@ -447,7 +473,7 @@ pub fn rank(candidates: &[Candidate], context: &Context) -> Ranking {
     let Some(epoch) = candidates.iter().map(|c| c.arrival).min() else {
         return Ranking {
             order: Vec::new(),
-            hint: hint(context),
+            hint: Some(hint(context)),
         };
     };
     let ticket_operators: &[String] = match &context.constraint {
@@ -613,7 +639,7 @@ pub fn rank(candidates: &[Candidate], context: &Context) -> Ranking {
     order.extend(ranked);
     Ranking {
         order,
-        hint: hint(context),
+        hint: Some(hint(context)),
     }
 }
 
@@ -930,10 +956,68 @@ mod tests {
         );
         assert_eq!(ranking.order[0].index, 1);
         assert_eq!(ranking.order[0].fit, None);
+        // A railway break with no ticket: staff first, then check.
+        let hint = ranking.hint.unwrap();
+        assert!(hint.starts_with("Ask station staff. "), "{hint}");
+        assert!(hint.ends_with("Check before you board."), "{hint}");
+    }
+
+    #[test]
+    fn the_ticket_advice_follows_the_ticket_and_who_broke_the_journey() {
+        let hint = |constraint: TicketConstraint, entitlement: Entitlement| {
+            rank(&[], &context(constraint, entitlement)).hint.unwrap()
+        };
+        let railway = "Ask station staff. Your ticket should be accepted on the next suitable \
+                       train because your journey was disrupted. Check before you board.";
+        let cancelled = Entitlement::Cancelled {
+            booked_departure: Utc::now(),
+        };
+        // The railway's fault: accepted, never "a new one".
+        for constraint in [advance(), TicketConstraint::Unknown] {
+            assert_eq!(
+                hint(constraint.clone(), Entitlement::MissedConnection),
+                railway
+            );
+            assert_eq!(hint(constraint, cancelled), railway);
+        }
+        // The traveller's: an Advance likely needs a new ticket, staff first.
         assert_eq!(
-            ranking.hint,
-            Some("Add your ticket to see which trains it covers.")
+            hint(advance(), Entitlement::PassengerFault),
+            "Ask station staff if there are any. Your Advance ticket is only valid on the train \
+             you missed, so you'll likely need a new one."
         );
+        assert_eq!(
+            hint(advance(), Entitlement::Choice),
+            "Ask station staff if there are any. Your Advance ticket is only valid on your \
+             booked train, so you'll likely need a new one."
+        );
+        assert_eq!(
+            hint(TicketConstraint::Unknown, Entitlement::PassengerFault),
+            "Ask station staff if there are any. If you have an Advance ticket, you'll likely \
+             need a new one. Check before you board."
+        );
+        assert_eq!(
+            hint(
+                TicketConstraint::OperatorOnly {
+                    operators: vec!["GR".into()]
+                },
+                Entitlement::PassengerFault
+            ),
+            "Ask station staff if there are any. Your ticket may not be valid on a different \
+             train. Check before you board."
+        );
+        // A flexible ticket needs no staff, whoever is at fault.
+        for entitlement in [Entitlement::PassengerFault, Entitlement::MissedConnection] {
+            for time_restricted in [false, true] {
+                assert_eq!(
+                    hint(
+                        TicketConstraint::AnyPermitted { time_restricted },
+                        entitlement
+                    ),
+                    "Your ticket is usually valid on other trains on the same route."
+                );
+            }
+        }
     }
 
     #[test]
@@ -943,7 +1027,7 @@ mod tests {
             &context(advance(), Entitlement::PassengerFault),
         );
         assert_eq!(ranking.order[0].fit, Some(Fit::LikelyNewTicket));
-        assert!(ranking.hint.unwrap().contains("likely need a new ticket"));
+        assert!(ranking.hint.unwrap().contains("likely need a new one"));
         assert!(
             rank(&[], &context(advance(), Entitlement::Choice))
                 .order

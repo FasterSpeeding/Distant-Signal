@@ -10,7 +10,7 @@
 //! | Route | What |
 //! |---|---|
 //! | `GET .../legs/{legId}/alternatives?cause=` | Ranked alternatives from one leg |
-//! | `POST .../legs/{legId}/missed` | "I missed this train": a break, planned at once |
+//! | `POST .../legs/{legId}/missed` | Mark a leg missed: a break, planned at once |
 //! | `POST .../legs/{legId}/replace` | Replace legs with given ones |
 //! | `GET .../breaks/current?src=push` | The open break, its stored suggestions, `stale` |
 //! | `POST .../breaks/{breakId}/dismiss` | Dismiss the open break |
@@ -843,9 +843,24 @@ fn plan_cause(ask: AskCause, open: Option<&BreakRow>, leg_id: i64) -> (String, S
     }
 }
 
+/// Who is at fault for missing train leg `index` (§4.2, §14 Q5): the
+/// railway when the change onto it no longer works on live times, else the
+/// traveller. A first leg has no change onto it, so it is always the
+/// traveller's.
+fn missed_fault(analysis: &Analysis, index: usize) -> &'static str {
+    let connection_onto = analysis
+        .timings
+        .as_ref()
+        .and_then(|t| t.connections.get(index).cloned().flatten());
+    journey_breaks::user_missed_fault(connection_onto.as_ref())
+}
+
 /// `GET /Journeys/{id}/legs/{legId}/alternatives?cause=missed|cancelled|connection|choice`:
 /// ranked alternatives from one train leg, live, whatever the leg's
-/// `windowSearched` (§7). Not stored.
+/// `windowSearched` (§7). Not stored, and never opens a break: "I missed
+/// this train" shows these, and only taking one (`.../replace` with
+/// `cause: missed`) records the leg as missed. Opening the sheet to look is
+/// not saying the train was missed.
 async fn get_alternatives(
     State(app): State<App>,
     user: AuthenticatedUser,
@@ -870,11 +885,14 @@ async fn get_alternatives(
             let open = journey_breaks::open_break(&app.database, journey_id)
                 .await
                 .map_err(internal("read break"))?;
-            let (cause, fault) = plan_cause(
-                params.cause.unwrap_or(AskCause::Choice),
-                open.as_ref(),
-                leg_id,
-            );
+            let on_leg = open
+                .as_ref()
+                .is_some_and(|b| b.trigger_leg_id == Some(leg_id));
+            let ask = params.cause.unwrap_or(AskCause::Choice);
+            let (cause, mut fault) = plan_cause(ask, open.as_ref(), leg_id);
+            if !on_leg && ask == AskCause::Missed {
+                fault = missed_fault(&analysis, index).to_string();
+            }
             let fingerprint = open
                 .as_ref()
                 .filter(|b| b.trigger_leg_id == Some(leg_id))
@@ -999,7 +1017,11 @@ pub(crate) async fn replan_break(
         .ok_or_else(not_found)
 }
 
-/// `POST /Journeys/{id}/legs/{legId}/missed`: "I missed this train" (§7).
+/// `POST /Journeys/{id}/legs/{legId}/missed`: mark the leg missed (§7).
+/// The web app no longer calls it when "I missed this train" opens the
+/// sheet: that only looks (`.../alternatives?cause=missed`), and an open
+/// `user_missed` break left behind by a look announced "You missed the
+/// 22:30" for a train that left on time with the traveller on it.
 /// Opens a `user_missed` break on the leg (or takes over the open one),
 /// with the fault the data decides (§4.2: the railway's when the change
 /// onto it no longer worked on live times), plans at once and answers the
@@ -1538,6 +1560,24 @@ async fn post_replace(
                 )
             } else {
                 let (cause, fault) = plan_cause(body.cause, None, leg_id);
+                let fault = if body.cause == AskCause::Missed {
+                    // Taking another train after "I missed this train" is
+                    // what records the leg as missed; the data decides
+                    // whose fault it was, as for a break (§4.2).
+                    let analysis = analyse(&app, journey_id, now_utc())
+                        .await
+                        .map_err(internal("read journey"))?;
+                    let index = analysis
+                        .legs
+                        .iter()
+                        .position(|leg| leg.id == leg_id)
+                        .ok_or_else(not_found)?;
+                    missed_fault(&analysis, index).to_string()
+                } else if fault == "user" {
+                    fault
+                } else {
+                    "none".to_string()
+                };
                 let fate = match body.cause {
                     AskCause::Missed | AskCause::Connection => "missed",
                     AskCause::Cancelled => "cancelled",
@@ -1553,11 +1593,7 @@ async fn post_replace(
                             // traveller's own call.
                             "user_choice".to_string()
                         },
-                        fault: if fault == "user" {
-                            fault
-                        } else {
-                            "none".to_string()
-                        },
+                        fault,
                         break_id: None,
                         actor: "owner",
                     },

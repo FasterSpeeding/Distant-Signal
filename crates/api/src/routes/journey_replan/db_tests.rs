@@ -57,7 +57,7 @@ async fn cleanup(pool: &PgPool) -> FixtureCleanup {
         format!("DELETE FROM trains WHERE service_date = '{DATE}'"),
         format!("DELETE FROM schedule_calling_points_full WHERE service_date = '{DATE}'"),
         format!("DELETE FROM schedule_destination_departures WHERE service_date = '{DATE}'"),
-        "DELETE FROM tiploc_crs WHERE tiploc IN ('RPTSTC', 'RPTSTD')".to_string(),
+        "DELETE FROM tiploc_crs WHERE tiploc IN ('RPTSTC', 'RPTSTD', 'RPTSTE')".to_string(),
     ]);
     FixtureCleanup::new(pool, statements).await
 }
@@ -126,6 +126,69 @@ async fn seed_timetable(pool: &PgPool) {
         )
         .await;
     }
+}
+
+/// Onward from ZRD (RPTSTD) to ZRE (RPTSTE): RP0004 11:10-12:00 and
+/// RP0005 11:40-12:30, for a two-leg journey changing at ZRD.
+async fn seed_onward(pool: &PgPool) {
+    exec(
+        pool,
+        "INSERT INTO tiploc_crs (tiploc, crs, station_name, stanox, source_sequence) VALUES \
+         ('RPTSTE', 'ZRE', 'Replan E', 'RPE', 1)",
+    )
+    .await;
+    for (uid, dep, arr) in [("RP0004", "11:10", "12:00"), ("RP0005", "11:40", "12:30")] {
+        exec(
+            pool,
+            &format!(
+                "INSERT INTO schedule_calling_points_full \
+                     (service_date, uid, seq, tiploc, kind, booked_departure, public_departure, \
+                      booked_arrival, public_arrival, day_offset, can_board, can_alight) VALUES \
+                 ('{DATE}', '{uid}', 1, 'RPTSTD', 'origin', '{dep}', '{dep}', NULL, NULL, 0, TRUE, TRUE), \
+                 ('{DATE}', '{uid}', 2, 'RPTSTE', 'terminate', NULL, NULL, '{arr}', '{arr}', 0, TRUE, TRUE)"
+            ),
+        )
+        .await;
+        exec(
+            pool,
+            &format!(
+                "INSERT INTO schedule_destination_departures \
+                     (service_date, destination_crs, scheduled, train_uid, origin_crs, \
+                      destination_arrival, operator_atoc, public_departure, \
+                      public_destination_arrival) \
+                 VALUES ('{DATE}', 'ZRE', '{dep}', '{uid}', 'ZRD', '{arr}', 'GR', '{dep}', '{arr}')"
+            ),
+        )
+        .await;
+    }
+}
+
+/// Live state for `uid`'s train: `status`, `delay` minutes late, reported
+/// at `updated_at` (an RFC 3339 instant).
+async fn seed_live(pool: &PgPool, uid: &str, status: &str, delay: i32, updated_at: &str) {
+    let train =
+        format!("SELECT id FROM trains WHERE service_date = '{DATE}' AND train_uid = '{uid}'");
+    exec(
+        pool,
+        &format!("DELETE FROM train_current_state WHERE trains_id IN ({train})"),
+    )
+    .await;
+    exec(
+        pool,
+        &format!(
+            "INSERT INTO train_current_state (trains_id, status, delay_minutes, updated_at) \
+             SELECT id, '{status}', {delay}, '{updated_at}' FROM ({train}) t"
+        ),
+    )
+    .await;
+}
+
+async fn break_count(pool: &PgPool, journey_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM journey_breaks WHERE journey_id = $1")
+        .bind(journey_id)
+        .fetch_one(pool)
+        .await
+        .expect("count breaks")
 }
 
 fn router(pool: PgPool) -> axum::Router {
@@ -532,6 +595,55 @@ async fn choosing_another_train_before_travel_updates_the_booked_plan() {
     assert_eq!(date().to_string(), DATE);
 }
 
+/// Taking another train after "I missed this train" before the journey
+/// starts is still a missed train, not a planning edit: its own revision,
+/// with the booked train kept as missed and an Undo, and no break.
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+async fn a_train_missed_before_departure_is_its_own_plan_with_undo() {
+    let _now = pin_now();
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+    let (journey_id, leg_id) = create_journey(&router, &token).await;
+
+    let (status, replaced) = call(
+        &router,
+        "POST",
+        &format!("/Journeys/{journey_id}/legs/{leg_id}/replace"),
+        Some(&token),
+        Some(serde_json::json!({
+            "cause": "missed",
+            "legs": [{
+                "trainUid": "RP0002", "serviceDate": DATE,
+                "originCrs": "ZRC", "destinationCrs": "ZRD"
+            }]
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+    assert_eq!(replaced["revisionNo"], 2, "{replaced}");
+    assert_eq!(replaced["undoRevisionNo"], 1, "{replaced}");
+    let (_, history) = call(
+        &router,
+        "GET",
+        &format!("/Journeys/{journey_id}/revisions"),
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    let revisions = history["revisions"].as_array().expect("revisions");
+    assert_eq!(revisions[0]["cause"], "user_missed", "{history}");
+    assert_eq!(revisions[0]["fault"], "user", "{history}");
+    assert_eq!(revisions[1]["legs"][0]["trainUid"], "RP0001", "{history}");
+    assert_eq!(revisions[1]["legs"][0]["fate"], "missed", "{history}");
+    assert_eq!(break_count(&pool, journey_id).await, 0);
+}
+
 #[tokio::test]
 #[ignore = "requires a live database: DATABASE_URL"]
 async fn suggestions_can_be_muted_per_journey_and_turned_off() {
@@ -761,4 +873,202 @@ async fn the_sweep_opens_a_break_plans_it_and_ends_it_once_recovered() {
             .expect("read")
             .is_none()
     );
+}
+
+/// The prod report (2026-10-22): "You missed the ..." on the first leg of a
+/// journey whose train left on time. Departure time passing is no evidence
+/// of a miss, and looking at the options "I missed this train" offers is
+/// not saying so: neither opens a break. Only taking another train records
+/// the miss, and only then as the traveller's.
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+async fn an_on_time_first_leg_after_departure_is_never_missed_until_the_traveller_says_so() {
+    use chrono::TimeZone;
+    let _now = pin_now();
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+    let (journey_id, leg_id) = create_journey(&router, &token).await;
+
+    // 10:15 London: RP0001 left on time at 10:00 and is on its way.
+    let _later = crate::routes::pin_london_now_for_tests(
+        chrono::Utc.with_ymd_and_hms(2099, 5, 5, 9, 15, 0).unwrap(),
+    );
+    seed_live(&pool, "RP0001", "en_route", 0, "2099-05-05T09:14:00Z").await;
+    let journey = format!("/Journeys/{journey_id}");
+    let (status, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert!(detail["openBreak"].is_null(), "{detail}");
+    assert!(detail["legs"][0]["connection"].is_null(), "{detail}");
+
+    // "I missed this train" shows the options, and that is all it does.
+    let (status, alternatives) = call(
+        &router,
+        "GET",
+        &format!("/Journeys/{journey_id}/legs/{leg_id}/alternatives?cause=missed"),
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{alternatives}");
+    let offered: Vec<&str> = alternatives["suggestions"]
+        .as_array()
+        .expect("suggestions")
+        .iter()
+        .filter_map(|s| s["legs"][0]["trainUid"].as_str())
+        .collect();
+    assert!(offered.contains(&"RP0002"), "{alternatives}");
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert!(detail["openBreak"].is_null(), "{detail}");
+    assert_eq!(break_count(&pool, journey_id).await, 0);
+
+    // Taking RP0002 is the traveller saying they missed RP0001: their own
+    // fault (no change onto a first leg), kept in the history, no banner.
+    let (status, replaced) = call(
+        &router,
+        "POST",
+        &format!("/Journeys/{journey_id}/legs/{leg_id}/replace"),
+        Some(&token),
+        Some(serde_json::json!({
+            "cause": "missed",
+            "legs": [{
+                "trainUid": "RP0002", "serviceDate": DATE,
+                "originCrs": "ZRC", "destinationCrs": "ZRD"
+            }]
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+    let (_, history) = call(
+        &router,
+        "GET",
+        &format!("/Journeys/{journey_id}/revisions"),
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    let revisions = history["revisions"].as_array().expect("revisions");
+    assert_eq!(revisions[0]["cause"], "user_missed", "{history}");
+    assert_eq!(revisions[0]["fault"], "user", "{history}");
+    assert_eq!(revisions[1]["legs"][0]["fate"], "missed", "{history}");
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert!(detail["openBreak"].is_null(), "{detail}");
+    assert_eq!(break_count(&pool, journey_id).await, 0);
+}
+
+/// A later leg is missed only when the inbound train's live arrival leaves
+/// too little time to change: on time, nothing; 30 minutes late into a
+/// 10-minute change, the connection is missed and the page opens the
+/// break on the later leg, never on the first.
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+async fn a_late_inbound_breaks_the_connection_onto_the_later_leg_only() {
+    let _now = pin_now();
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    seed_onward(&pool).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+    let (status, body) = call(
+        &router,
+        "POST",
+        "/Journeys/itinerary",
+        Some(&token),
+        Some(serde_json::json!({
+            "legs": [
+                { "trainUid": "RP0001", "serviceDate": DATE, "originCrs": "ZRC", "destinationCrs": "ZRD" },
+                { "trainUid": "RP0004", "serviceDate": DATE, "originCrs": "ZRD", "destinationCrs": "ZRE" }
+            ]
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let journey_id = body["journeyId"].as_i64().expect("journeyId");
+    let journey = format!("/Journeys/{journey_id}");
+
+    seed_live(&pool, "RP0001", "en_route", 0, "2099-05-05T07:00:00Z").await;
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert!(detail["openBreak"].is_null(), "{detail}");
+    assert!(detail["legs"][0]["connection"].is_null(), "{detail}");
+    assert_eq!(detail["legs"][1]["connection"]["state"], "ok", "{detail}");
+
+    seed_live(&pool, "RP0001", "en_route", 30, "2099-05-05T07:00:00Z").await;
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert!(detail["legs"][0]["connection"].is_null(), "{detail}");
+    assert_eq!(
+        detail["legs"][1]["connection"]["state"], "missed",
+        "{detail}"
+    );
+    let open = &detail["openBreak"];
+    assert_eq!(open["cause"], "connection_missed", "{detail}");
+    assert_eq!(open["triggerLegId"], detail["legs"][1]["id"], "{detail}");
+}
+
+/// The cleanup migration: an open `user_missed` break (left by the old
+/// sheet, which opened one just by loading) is dismissed, a settled one is
+/// left alone, and a second run changes nothing.
+#[tokio::test]
+#[ignore = "requires a live database: DATABASE_URL"]
+async fn the_cleanup_dismisses_unconfirmed_missed_breaks_once() {
+    let _now = pin_now();
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool).await;
+    seed_timetable(&pool).await;
+    let token = seed_session(&pool, USER).await;
+    let router = router(pool.clone());
+    let (journey_id, leg_id) = create_journey(&router, &token).await;
+    let insert = |status: &str| {
+        format!(
+            "INSERT INTO journey_breaks (journey_id, user_id, cause, fault, severity, \
+                 trigger_leg_id, break_position, fingerprint, status) \
+             VALUES ({journey_id}, '{USER}', 'user_missed', 'user', 1, {leg_id}, 1, 'f', \
+                 '{status}') RETURNING id"
+        )
+    };
+    let settled: i64 = sqlx::query_scalar(&insert("accepted"))
+        .fetch_one(&pool)
+        .await
+        .expect("settled break");
+    let open: i64 = sqlx::query_scalar(&insert("open"))
+        .fetch_one(&pool)
+        .await
+        .expect("open break");
+    let journey = format!("/Journeys/{journey_id}");
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert_eq!(detail["openBreak"]["id"], open, "{detail}");
+
+    let migration = include_str!(
+        "../../../../ds-store/migrations/20261023091000_journey_breaks_close_unconfirmed_missed.sql"
+    );
+    for _ in 0..2 {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::raw_sql(migration)
+            .execute(&mut *tx)
+            .await
+            .expect("cleanup");
+        tx.commit().await.expect("commit");
+    }
+    let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, status, dismiss_reason FROM journey_breaks WHERE journey_id = $1 ORDER BY id",
+    )
+    .bind(journey_id)
+    .fetch_all(&pool)
+    .await
+    .expect("breaks");
+    assert_eq!(
+        rows,
+        vec![
+            (settled, "accepted".to_string(), None),
+            (open, "dismissed".to_string(), Some("other".to_string())),
+        ]
+    );
+    let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
+    assert!(detail["openBreak"].is_null(), "{detail}");
 }
