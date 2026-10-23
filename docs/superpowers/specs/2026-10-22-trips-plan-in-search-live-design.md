@@ -150,7 +150,8 @@ was not.
   earlier leg and optimistic for a late onward train. A cap (for example,
   plan onto a late onward train only within the per-train read's horizon,
   or only when Darwin confirms the `etd`) would trade found routes for
-  safety; not done without a decision.
+  safety; not done without a decision. *Decided 2026-10-22 (DS-141):* keep
+  the delay (no recovery modelled) and flag the change instead; see §7.
 * **Darwin-only facts** (board cancellations and estimates for trains with
   no fresh TRUST delay, skips) are still per-train, so the re-plan budget
   can still run out on them, leaving an itinerary flagged
@@ -159,3 +160,58 @@ was not.
   stay timetable-only, as before.
 * The numbers above are synthetic; `bench_trip_plan_live` against a
   production snapshot would confirm them.
+
+## 7. Changes that rely on a late train (DS-141)
+
+The live overlay keeps a late onward train late, so it can offer a change
+that only works because that train is late. If the train makes up time,
+it leaves before the traveller can reach it. Such a change is offered but
+flagged.
+
+**Definition** (`trip_plan_live::late_departure_slack`, one rule for the
+planner and saved journeys). With `ready` the traveller's live arrival
+(plus any walk) and `change` the minimum change time (or link plus MCT
+for a saved journey's change between stations), the change onto a train
+relies on its late departure when it works on the train's expected
+departure and fails on its timetabled (public, else working) one, both by
+`interchange_feasible`:
+
+    expected >= ready + change   and   booked < ready + change
+
+The inbound train's delay is part of `ready`: an inbound and an onward
+train both late counts. Staying aboard one train never counts, and
+neither does a first leg (no change; the traveller can just be early).
+
+**The weaker case is not flagged.** A change that also works on the
+booked time is not flagged, however little slack the timetable leaves:
+if the train recovers, the traveller still makes it, so "it could leave
+earlier" is no risk to them. A tight change is already covered by
+`atRisk` (saved journeys) and the ranking's tight-slack penalty. A change
+that fails on live times is infeasible, never "relied on".
+
+**Live times used.** The planner judges it on the same times as
+`interchangeFeasible`: the leg's best profile (a per-train read, else the
+snapshot the search ran on), so the two never disagree. When a per-train
+read finds the delay has shrunk, the flag follows the read; when it has
+shrunk too far, the change is infeasible and the plan is re-planned.
+
+**Where it is served** (all additive, absent when not set):
+
+* `/Trips/plan`: `live.reliesOnLateDeparture` on the train leg changed
+  onto, `{scheduledDeparture, expectedDeparture, delayMinutes,
+  slackIfOnTimeMinutes}` (clock times like `scheduledDeparture`).
+  Only inside the live window, like the rest of `live`.
+* `GET /Journeys/{id}`: `connection.reliesOnLateDeparture`, same fields as
+  instants. The `state` is judged as before (usually `ok`).
+* Alternatives (`.../alternatives`, the sheet's saved sets): the same on
+  each train leg (`legs[].reliesOnLateDeparture`), as instants.
+
+**Ranking** (`alternative_ranking`, mid-journey changes spec §17.4): a
+light `late_departure` penalty of 5 minutes. An option that relies on a
+late train is never Recommended over an otherwise equal one that does
+not, but one arriving more than 5 minutes sooner still wins.
+
+**UI**: a calm note on the leg (planner, alternatives sheet) or the
+connection (journey page, the home page's current journey for its next
+change): "Relies on this train running late. It's due to leave at 10:35,
+booked 10:20. It could leave earlier."

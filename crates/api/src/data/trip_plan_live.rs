@@ -1011,6 +1011,10 @@ pub struct LegLive {
     /// Whether the change onto this leg from the previous train leg still
     /// works on live times; `None` for the first train leg.
     pub interchange_feasible: Option<bool>,
+    /// Set when that change works only because this train is running late
+    /// (additive, DS-141; absent otherwise): see [`LateDepartureReliance`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relies_on_late_departure: Option<LateDepartureReliance<NaiveTime>>,
 }
 
 /// Everything [`annotate`] needs.
@@ -1197,6 +1201,53 @@ pub fn interchange_feasible(departure_min: i64, ready_min: i64, change_minutes: 
     departure_min >= ready_min + i64::from(change_minutes)
 }
 
+/// A change that works only because the train it changes onto is running
+/// late (DS-141): served as a train leg's `live.reliesOnLateDeparture` on
+/// `/Trips/plan` (`T` a local clock time), and as a saved journey's
+/// `connection.reliesOnLateDeparture` and an alternative's train leg's
+/// (`T` an instant). Absent otherwise.
+///
+/// The live overlay keeps a late train late (no recovery is modelled), so
+/// such a change is offered, but the train could make up time and leave
+/// nearer its booked time, before the traveller can reach it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LateDepartureReliance<T> {
+    /// The onward train's timetabled (public, else working) departure.
+    pub scheduled_departure: T,
+    /// Its expected (live) departure, which the change was judged on.
+    pub expected_departure: T,
+    /// `expected_departure` less `scheduled_departure`, in minutes.
+    pub delay_minutes: i64,
+    /// The spare minutes the change would have, after its minimum change
+    /// time, were the train to leave on time: always negative (that many
+    /// minutes short).
+    pub slack_if_on_time_minutes: i64,
+}
+
+/// The one rule for [`LateDepartureReliance`], shared by [`annotate`] and
+/// saved journeys (`journey_feasibility`): the change works on the onward
+/// train's expected departure (`live_dep_min`) but not on its timetabled
+/// one (`sched_dep_min`), both by [`interchange_feasible`] from the same
+/// `ready_min` (the traveller's live arrival plus any walk). Returns the
+/// slack the change would have on time (negative), else `None`.
+///
+/// Only the strong case is flagged. A change that also works on the
+/// timetable is not, however little slack the timetable leaves: if the
+/// train recovers to its booked time the traveller still makes it, so
+/// "it could leave earlier" is no risk to them. A change that fails on
+/// live times is not flagged either; it is already infeasible.
+pub fn late_departure_slack(
+    sched_dep_min: i64,
+    live_dep_min: i64,
+    ready_min: i64,
+    change_minutes: u32,
+) -> Option<i64> {
+    (interchange_feasible(live_dep_min, ready_min, change_minutes)
+        && !interchange_feasible(sched_dep_min, ready_min, change_minutes))
+    .then(|| sched_dep_min - ready_min - i64::from(change_minutes))
+}
+
 fn change_minutes(interchange: &InterchangeData, tiploc: &str) -> u32 {
     match schedule_query::minimum_change_time(interchange, tiploc) {
         schedule_query::ChangeTime::Finite(minutes) => minutes,
@@ -1221,6 +1272,7 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
             // Live arrival of the previous train leg, plus transfer minutes
             // walked since.
             let mut previous_arrival: Option<u32> = None;
+            let mut previous_uid: Option<String> = None;
             for leg in &mut itinerary.legs {
                 match leg {
                     PlannedLeg::Transfer { minutes, .. } => {
@@ -1305,14 +1357,31 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                         *departure_min = live_dep;
                         *arrival_min = live_arr;
 
+                        let change = change_minutes(ctx.interchange, from_tiploc);
                         let interchange_feasible = previous_arrival.map(|arrival| {
-                            interchange_feasible(
-                                i64::from(live_dep),
-                                i64::from(arrival),
-                                change_minutes(ctx.interchange, from_tiploc),
-                            )
+                            interchange_feasible(i64::from(live_dep), i64::from(arrival), change)
                         });
+                        // Judged on the same live times as
+                        // `interchange_feasible`, so the two never disagree;
+                        // never for staying aboard one train.
+                        let relies_on_late_departure = previous_arrival
+                            .filter(|_| previous_uid.as_deref() != Some(uid))
+                            .and_then(|arrival| {
+                                let slack = late_departure_slack(
+                                    i64::from(sched_dep),
+                                    i64::from(live_dep),
+                                    i64::from(arrival),
+                                    change,
+                                )?;
+                                Some(LateDepartureReliance {
+                                    scheduled_departure: minutes_to_clock(sched_dep).0,
+                                    expected_departure: minutes_to_clock(live_dep).0,
+                                    delay_minutes: i64::from(live_dep) - i64::from(sched_dep),
+                                    slack_if_on_time_minutes: slack,
+                                })
+                            });
                         previous_arrival = Some(live_arr);
+                        previous_uid = Some(uid.to_string());
 
                         if !within_horizon(ctx.date, sched_dep, ctx.now, ctx.config) {
                             *live = Some(None);
@@ -1363,6 +1432,7 @@ pub fn annotate(segments: &mut [SegmentResult], ctx: &LiveContext<'_>) {
                                     .and_then(|f| f.observed_at)
                                     .max(train_live.trust_observed_at),
                                 interchange_feasible,
+                                relies_on_late_departure,
                             })
                         });
                         if leg_live.as_ref().is_some_and(|l| l.cancelled)
@@ -2308,5 +2378,172 @@ mod tests {
         );
         // 08:24 + 5 still makes the 08:30.
         assert_eq!(itinerary.live_feasible, Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // DS-141: a change that relies on a late onward train
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn late_departure_slack_flags_only_a_change_the_timetable_would_fail() {
+        // Ready 08:10, change 5. Booked 08:12, due 08:22: flagged, 3 short.
+        assert_eq!(late_departure_slack(492, 502, 490, 5), Some(-3));
+        // Booked exactly at ready + change: works on time, not flagged.
+        assert_eq!(late_departure_slack(495, 505, 490, 5), None);
+        // Booked with room, and late too: not flagged.
+        assert_eq!(late_departure_slack(500, 510, 490, 5), None);
+        // Fails on live times as well: infeasible, not flagged.
+        assert_eq!(late_departure_slack(492, 494, 490, 5), None);
+    }
+
+    /// U1 A 08:00 -> B 08:10, then U2 B -> C booked at `u2_booked` (B has
+    /// the default 5-minute change, so it needs 08:15). The snapshot has U2
+    /// running `u2_delay` late; `u2_read` is a later per-train read of it.
+    /// Returns the itinerary's `liveFeasible` and U2's `live`.
+    fn plan_onto_late_u2(
+        u2_booked: u32,
+        u2_delay: i32,
+        u2_read: Option<i32>,
+    ) -> (Option<bool>, Option<Box<LegLive>>) {
+        let connections = vec![
+            conn("U1", "A", "B", 480, 490),
+            conn("U2", "B", "C", u2_booked, u2_booked + 18),
+        ];
+        let snapshot = snapshot_of(&connections, &[("U2", en_route(u2_delay, None))]);
+        let mut interchange = InterchangeData {
+            modal_change: schedule_query::ModalChangeBuffer::default(),
+            change_time_by_tiploc: HashMap::new(),
+            tiploc_to_crs: HashMap::new(),
+            crs_to_tiplocs: HashMap::new(),
+            fixed_links_from_crs: HashMap::new(),
+        };
+        for (crs, tiploc) in [("AAA", "A"), ("BBB", "B"), ("CCC", "C")] {
+            interchange
+                .tiploc_to_crs
+                .insert(tiploc.to_string(), crs.to_string());
+            interchange
+                .crs_to_tiplocs
+                .insert(crs.to_string(), vec![tiploc.to_string()]);
+        }
+        let mut segments = crate::data::trip_planning_itinerary::plan_trip(
+            &crate::data::trip_planning_itinerary::TripPlanInput {
+                search: crate::data::trip_planning_itinerary::SegmentSearch {
+                    connections: &connections,
+                    interchange: &interchange,
+                    date: date(),
+                    results: "fastest",
+                    max_changes: 2,
+                    overlay: Some(&snapshot.overlay),
+                    restrictions: None,
+                },
+                passes: None,
+                avoid: &crate::data::trip_planning_itinerary::AvoidLists::default(),
+                origin_crs: "AAA",
+                waypoints: &[],
+                waypoint_codes: None,
+                destination_crs: "CCC",
+                vias: &[],
+                via_search: None,
+                time: crate::data::trip_planning_itinerary::TimeBound::DepartAfter(470),
+            },
+        )
+        .unwrap();
+        let mut lives = HashMap::new();
+        let mut chains = HashMap::new();
+        if let Some(delay) = u2_read {
+            let mut stops = vec![
+                stop("B", None, Some(u2_booked)),
+                stop("C", Some(u2_booked + 18), None),
+            ];
+            stops[0].board = Some(board("x", Some(delay), false));
+            lives.insert("U2".to_string(), profile(&stops, None, &[]));
+            chains = chains_for(&connections, &HashSet::from(["U2".to_string()]));
+        }
+        let config = LiveConfig::default();
+        annotate(
+            &mut segments,
+            &LiveContext {
+                date: date(),
+                now: utc(470),
+                config: &config,
+                interchange: &interchange,
+                chains: &chains,
+                lives: &lives,
+                snapshot: Some(&snapshot),
+                overlaid: snapshot.overlay.replaced_uids(),
+                overlaid_read: &HashSet::new(),
+            },
+        );
+        let itinerary = &segments[0].itineraries[0];
+        match &itinerary.legs[..] {
+            [_, PlannedLeg::Train { live, .. }] => {
+                (itinerary.live_feasible, live.clone().flatten())
+            }
+            legs => panic!("expected two train legs: {legs:?}"),
+        }
+    }
+
+    #[test]
+    fn a_change_made_only_by_a_late_onward_train_is_flagged() {
+        let (feasible, onward) = plan_onto_late_u2(492, 10, None);
+        assert_eq!(feasible, Some(true));
+        let onward = onward.expect("U2 has live data");
+        assert_eq!(onward.interchange_feasible, Some(true));
+        assert_eq!(
+            onward.relies_on_late_departure,
+            Some(LateDepartureReliance {
+                scheduled_departure: NaiveTime::from_hms_opt(8, 12, 0).unwrap(),
+                expected_departure: NaiveTime::from_hms_opt(8, 22, 0).unwrap(),
+                delay_minutes: 10,
+                slack_if_on_time_minutes: -3,
+            })
+        );
+        let json = serde_json::to_value(&onward).unwrap();
+        assert_eq!(
+            json["reliesOnLateDeparture"],
+            serde_json::json!({
+                "scheduledDeparture": "08:12:00",
+                "expectedDeparture": "08:22:00",
+                "delayMinutes": 10,
+                "slackIfOnTimeMinutes": -3,
+            })
+        );
+    }
+
+    #[test]
+    fn a_late_onward_train_the_change_makes_on_time_anyway_is_not_flagged() {
+        // Booked 08:20 (5 minutes over the change), 10 late.
+        let (feasible, onward) = plan_onto_late_u2(500, 10, None);
+        assert_eq!(feasible, Some(true));
+        let onward = onward.expect("U2 has live data");
+        assert_eq!(onward.delay_minutes, Some(10));
+        assert_eq!(onward.relies_on_late_departure, None);
+        let json = serde_json::to_value(&onward).unwrap();
+        assert!(json.get("reliesOnLateDeparture").is_none(), "{json}");
+    }
+
+    /// The per-train read says the delay has shrunk: still enough (4 late,
+    /// due 08:16, ready 08:15) and still flagged on the read's times; too
+    /// little (2 late) and the change fails, which is an infeasible plan
+    /// (re-planned), not a reliance.
+    #[test]
+    fn a_shrinking_delay_keeps_the_flag_until_the_change_fails() {
+        let (feasible, onward) = plan_onto_late_u2(492, 10, Some(4));
+        assert_eq!(feasible, Some(true));
+        let reliance = onward.unwrap().relies_on_late_departure.unwrap();
+        assert_eq!(
+            reliance.expected_departure,
+            NaiveTime::from_hms_opt(8, 16, 0).unwrap()
+        );
+        assert_eq!(
+            (reliance.delay_minutes, reliance.slack_if_on_time_minutes),
+            (4, -3)
+        );
+
+        let (feasible, onward) = plan_onto_late_u2(492, 10, Some(2));
+        assert_eq!(feasible, Some(false));
+        let onward = onward.unwrap();
+        assert_eq!(onward.interchange_feasible, Some(false));
+        assert_eq!(onward.relies_on_late_departure, None);
     }
 }
