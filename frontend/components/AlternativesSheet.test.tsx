@@ -226,7 +226,9 @@ describe('AlternativesSheet', () => {
       'GET /api/Journeys/42/legs/7/alternatives?cause=missed': () => json(suggestionSet()),
     });
     renderSheet({ kind: 'missed', legId: 7 }, onClose);
-    expect(await screen.findByRole('heading', { name: 'You missed the 09:52 to Edinburgh' })).toBeInTheDocument();
+    // Only looking: a neutral title, never "You missed the ...".
+    expect(await screen.findByRole('heading', { name: 'Other ways to Edinburgh' })).toBeInTheDocument();
+    expect(screen.queryByText(/You missed/)).not.toBeInTheDocument();
     // A first leg has no change onto it: a miss would be the traveller's.
     expect(
       screen.queryByText('Your earlier train was late, so this counts as a missed connection.'),

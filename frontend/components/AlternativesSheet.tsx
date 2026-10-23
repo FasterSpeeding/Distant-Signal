@@ -140,13 +140,13 @@ function loadRequest(journeyId: number, mode: AlternativesMode): { url: string; 
   }
 }
 
-/** The cause a mode stands for before the break (if any) says. */
+/** The cause a mode stands for before the break (if any) says. "I
+ * missed this train" stands for none: the sheet is titled "Other ways to
+ * ..." while the traveller only looks, never "You missed the ...". */
 function modeCause(mode: AlternativesMode): BreakCause | null {
-  if (mode.kind === 'missed') return 'user_missed';
   if (mode.kind === 'alternatives') {
     if (mode.cause === 'cancelled') return 'cancelled';
     if (mode.cause === 'connection') return 'connection_missed';
-    if (mode.cause === 'missed') return 'user_missed';
   }
   return null;
 }
@@ -484,8 +484,7 @@ function AlternativesSheetBody({
   // Why a miss counts as the railway's: the break's note, else (nothing
   // recorded yet) the leg's connection state, as the api decides it (§4.2).
   const inboundLate = mode.kind === 'missed' && mode.inboundLate === true;
-  const faultNote =
-    breakInfo !== null ? breakInfo.faultNote : cause === 'user_missed' && inboundLate ? LATE_INBOUND_NOTE : null;
+  const faultNote = breakInfo !== null ? breakInfo.faultNote : inboundLate ? LATE_INBOUND_NOTE : null;
 
   const card = (suggestion: ReplanSuggestion) => (
     <SuggestionCard

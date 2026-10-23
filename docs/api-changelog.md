@@ -32,6 +32,17 @@ Values only; no request or response shape changes. DS-MCP needs no change.
   station or pin already set is never changed. Push notifications name
   such a leg by its route too.
 
+## 2026-10-23: `POST .../legs/{legId}/missed` removed; breaks expire hourly
+
+- **Removed: `POST /Journeys/{id}/legs/{legId}/missed`.** It now answers
+  `404`. The web app stopped calling it (below); DS-MCP never did. To
+  record a missed train, take an alternative with `POST
+  .../legs/{legId}/replace` `{cause: "missed", ...}`.
+- Open journey breaks whose journey is over now expire in the api's
+  hourly maintenance (the `api-maintenance` pass and the in-process
+  loop), whether or not the break sweep (`JOURNEY_BREAKS_ENABLED`) runs.
+  Before, only the sweep expired them.
+
 ## 2026-10-23: "I missed this train" only looks; ticket advice
 
 Cookie-only journey routes; no field is added or removed. DS-MCP needs no
@@ -41,7 +52,8 @@ change.
   /Journeys/{id}/legs/{legId}/missed`. It looks with `GET
   .../legs/{legId}/alternatives?cause=missed` and records the miss only
   when the traveller takes a train, with `POST .../legs/{legId}/replace`
-  `{cause: "missed", ...}`. The `missed` route still works as before.
+  `{cause: "missed", ...}`. The `missed` route still works as before
+  (since removed, above).
 - `alternatives?cause=missed` (with no break open on the leg) ranks with
   the fault the data decides, as `missed` does: `operator` when the change
   onto the leg no longer works on live times, else `user`.

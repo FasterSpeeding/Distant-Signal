@@ -284,14 +284,26 @@ async fn a_missed_train_is_replaced_kept_in_history_and_undone() {
     assert_eq!(detail["suggestionsMuted"], false, "{detail}");
     assert_eq!(detail["legs"][0]["replacesLegIds"], serde_json::json!([]));
 
-    // "I missed this train": a break with suggestions, never the missed
-    // train itself.
+    // A traveller-marked miss left open from before "I missed this train"
+    // stopped opening breaks (an Undo can reopen one too), planned: its
+    // suggestions, never the missed train itself.
+    let seeded: i64 = sqlx::query_scalar(
+        "INSERT INTO journey_breaks (journey_id, user_id, cause, fault, severity, \
+             trigger_leg_id, break_position, fingerprint) \
+         VALUES ($1, $2, 'user_missed', 'user', 1, $3, 1, '') RETURNING id",
+    )
+    .bind(journey_id)
+    .bind(USER)
+    .bind(leg_id)
+    .fetch_one(&pool)
+    .await
+    .expect("seed break");
     let (status, missed) = call(
         &router,
         "POST",
-        &format!("/Journeys/{journey_id}/legs/{leg_id}/missed"),
+        &format!("/Journeys/{journey_id}/replan/preview"),
         Some(&token),
-        None,
+        Some(serde_json::json!({ "breakId": seeded })),
         None,
     )
     .await;
@@ -343,8 +355,14 @@ async fn a_missed_train_is_replaced_kept_in_history_and_undone() {
     .await;
     assert_eq!(status, StatusCode::OK, "{current}");
     assert_eq!(current["id"], break_id);
-    // "I missed this train" already counted as opened, in the app.
-    assert_eq!(current["openedVia"], "in_app");
+    // Stamped as first opened from the push.
+    let opened_via: Option<String> =
+        sqlx::query_scalar("SELECT opened_via FROM journey_breaks WHERE id = $1")
+            .bind(break_id)
+            .fetch_one(&pool)
+            .await
+            .expect("break");
+    assert_eq!(opened_via.as_deref(), Some("push"));
 
     // Someone else gets 404 everywhere.
     let other = seed_session(&pool, OTHER).await;
@@ -352,8 +370,8 @@ async fn a_missed_train_is_replaced_kept_in_history_and_undone() {
         ("GET", format!("/Journeys/{journey_id}/breaks/current")),
         ("GET", format!("/Journeys/{journey_id}/revisions")),
         (
-            "POST",
-            format!("/Journeys/{journey_id}/legs/{leg_id}/missed"),
+            "GET",
+            format!("/Journeys/{journey_id}/legs/{leg_id}/alternatives?cause=missed"),
         ),
     ] {
         let (status, body) = call(&router, method, &uri, Some(&other), None, None).await;
@@ -923,6 +941,20 @@ async fn an_on_time_first_leg_after_departure_is_never_missed_until_the_travelle
     assert!(offered.contains(&"RP0002"), "{alternatives}");
     let (_, detail) = call(&router, "GET", &journey, Some(&token), None, None).await;
     assert!(detail["openBreak"].is_null(), "{detail}");
+    assert_eq!(break_count(&pool, journey_id).await, 0);
+
+    // The old "mark it missed" route is gone: a stale tab calling it gets
+    // a plain 404, and nothing is written.
+    let (status, _) = call(
+        &router,
+        "POST",
+        &format!("/Journeys/{journey_id}/legs/{leg_id}/missed"),
+        Some(&token),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(break_count(&pool, journey_id).await, 0);
 
     // Taking RP0002 is the traveller saying they missed RP0001: their own

@@ -118,6 +118,9 @@ describe('JourneyDetailView missed notices', () => {
     // Opening "I missed this train" and closing it again changes nothing.
     fireEvent.click(within(legCard(1)).getByRole('button', { name: 'I missed this train' }));
     expect(await screen.findByText('10:04 York to Edinburgh, direct')).toBeInTheDocument();
+    // The open sheet itself says nothing was missed either.
+    expect(screen.getByRole('heading', { name: 'Other ways to Edinburgh' })).toBeInTheDocument();
+    expect(screen.queryByText(/You missed/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByText(/You missed/)).not.toBeInTheDocument());
     expect(document.querySelector('[data-journey-break]')).toBeNull();

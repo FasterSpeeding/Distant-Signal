@@ -56,10 +56,9 @@ export function LegReplanActions({
     context.openBreakId !== null
       ? { kind: 'break', breakId: context.openBreakId }
       : { kind: 'alternatives', legId: leg.id, cause: 'cancelled' };
-  const fallbackTitle =
-    mode?.kind === 'missed'
-      ? breakTitle({ ...facts, cause: 'user_missed' })
-      : breakTitle({ ...facts, cause: cancelled ? 'cancelled' : null });
+  // "I missed this train" only looks: "Other ways to ...", never "You
+  // missed the ...".
+  const fallbackTitle = breakTitle({ ...facts, cause: cancelled ? 'cancelled' : null });
 
   return (
     <>

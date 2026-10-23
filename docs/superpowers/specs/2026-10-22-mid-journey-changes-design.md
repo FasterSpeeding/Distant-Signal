@@ -700,7 +700,7 @@ All routes are cookie-only (`AuthenticatedUser`), owner-only (as
 | `GET /Journeys/{id}` | Gains `connections: [{fromLegId, toLegId, state: works\|atRisk\|broken, slackMinutes, changeMinutes, cause}]`, `openBreak: {id, cause, fault, severity, suggestionsReady, stale} \| null`, `revisionCount`, and per leg `replacesLegIds: number[]` (from the latest revision). Delegated readers see these too. |
 | `GET /Journeys/mine` | `connection` filled for today's journeys; gains `openBreakId`. |
 | `GET /Journeys/{id}/legs/{legId}/alternatives?cause=` | The light picker for one leg: rejoin options and to-destination options, live, from that leg. Works on **every** train leg, whatever `window_searched` is. `cause` is `missed`, `cancelled`, `connection` or `choice`. |
-| `POST /Journeys/{id}/legs/{legId}/missed` | Mark a leg missed. Opens a break (`user_missed`, fault from §4.2), plans at once, returns the break with suggestions. Refused (409 `leg_travelled`) on a travelled leg. The web app does not call it (2026-10-22 fix): "I missed this train" only looks, with `alternatives?cause=missed` (fault from §4.2), and taking one (`replace`, `cause: missed`) records the miss as its own revision. A break opened just by looking stayed open after the sheet closed and showed "You missed the ..." for a train that left on time with the traveller on it. |
+| ~~`POST /Journeys/{id}/legs/{legId}/missed`~~ | Removed (2026-10-23). "I missed this train" only looks, with `alternatives?cause=missed` (fault from §4.2), and taking one (`replace`, `cause: missed`) records the miss as its own revision. A break the old route opened just by loading the sheet stayed open after it closed and showed "You missed the ..." for a train that left on time with the traveller on it. |
 | `GET /Journeys/{id}/breaks/current?src=push` | The open break with stored suggestions and `stale`. Stamps `opened_at` once. 404 with none. |
 | `POST /Journeys/{id}/replan/preview` | `{breakId?, fromLegId, departAfter?}`. Recomputes suggestions live and stores them on the break. Rate-limited like `/Trips/plan`. |
 | `POST /Journeys/{id}/replan/accept` | `{breakId, suggestionId, fingerprint}` with `Idempotency-Key` (reusing `journey_idempotency_keys`). Writes the revision (§4.4). `409 suggestion_stale` with a fresh preview when the chosen option no longer works on live times. |
@@ -744,7 +744,9 @@ state, fixing `homeJourneyStatusGroup` (§1.2).
 - Leg cards (`JourneyLegCard.tsx`), owner only:
   - **"I missed this train"** on the current or next train leg, before
     it is travelled. One tap, no confirm (nothing is written), opens
-    the sheet. Only taking a train there records the leg as missed;
+    the sheet, titled "Other ways to {destination}" (never "You missed
+    the ..." while the traveller only looks). Only taking a train there
+    records the leg as missed;
     closing the sheet leaves no break and no banner. DS has no other
     evidence of a missed first leg: its departure time passing is not one.
   - **"Choose another train"** on every train leg, not just

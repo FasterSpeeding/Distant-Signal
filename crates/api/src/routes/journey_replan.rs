@@ -10,7 +10,6 @@
 //! | Route | What |
 //! |---|---|
 //! | `GET .../legs/{legId}/alternatives?cause=` | Ranked alternatives from one leg |
-//! | `POST .../legs/{legId}/missed` | Mark a leg missed: a break, planned at once |
 //! | `POST .../legs/{legId}/replace` | Replace legs with given ones |
 //! | `GET .../breaks/current?src=push` | The open break, its stored suggestions, `stale` |
 //! | `POST .../breaks/{breakId}/dismiss` | Dismiss the open break |
@@ -55,10 +54,6 @@ pub fn router() -> Router {
         .route(
             "/Journeys/{journey_id}/legs/{leg_id}/alternatives",
             axum::routing::get(get_alternatives),
-        )
-        .route(
-            "/Journeys/{journey_id}/legs/{leg_id}/missed",
-            axum::routing::post(post_missed),
         )
         .route(
             "/Journeys/{journey_id}/legs/{leg_id}/replace",
@@ -1015,74 +1010,6 @@ pub(crate) async fn replan_break(
         .await
         .map_err(internal("read break"))?
         .ok_or_else(not_found)
-}
-
-/// `POST /Journeys/{id}/legs/{legId}/missed`: mark the leg missed (§7).
-/// The web app no longer calls it when "I missed this train" opens the
-/// sheet: that only looks (`.../alternatives?cause=missed`), and an open
-/// `user_missed` break left behind by a look announced "You missed the
-/// 22:30" for a train that left on time with the traveller on it.
-/// Opens a `user_missed` break on the leg (or takes over the open one),
-/// with the fault the data decides (§4.2: the railway's when the change
-/// onto it no longer worked on live times), plans at once and answers the
-/// break with its suggestions. `409 leg_travelled` on a travelled leg.
-async fn post_missed(
-    State(app): State<App>,
-    user: AuthenticatedUser,
-    Path((journey_id, leg_id)): Path<(i64, i64)>,
-) -> Response {
-    render(
-        async {
-            require_owner(&app, journey_id, &user.id).await?;
-            let now = now_utc();
-            let analysis = analyse(&app, journey_id, now)
-                .await
-                .map_err(internal("read journey"))?;
-            let index = analysis
-                .legs
-                .iter()
-                .position(|leg| leg.id == leg_id)
-                .ok_or_else(not_found)?;
-            if analysis.facts[index].travelled {
-                return Err(leg_travelled());
-            }
-            if !analysis.is_train(index) {
-                return Err(RouteError::coded(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "not_a_train_leg",
-                    "Only a train leg can be missed.",
-                ));
-            }
-            let connection_onto = analysis
-                .timings
-                .as_ref()
-                .and_then(|t| t.connections.get(index).cloned().flatten());
-            let fault = journey_breaks::user_missed_fault(connection_onto.as_ref());
-            let fingerprint = analysis.timings.as_ref().map_or_else(
-                || format!("missed-{leg_id}"),
-                |t| journey_breaks::fingerprint(Cause::UserMissed, index, &t.timings),
-            );
-            let detected = Detected {
-                cause: Cause::UserMissed,
-                fault,
-                severity: Cause::UserMissed.base_severity(),
-                trigger_leg_id: Some(leg_id),
-                trigger_trains_id: analysis.facts[index].trains_id,
-                break_position: i32::try_from(index + 1).unwrap_or(i32::MAX),
-                fingerprint,
-            };
-            let (row, _) =
-                journey_breaks::upsert_open(&app.database, journey_id, &user.id, &detected, true)
-                    .await
-                    .map_err(internal("open break"))?;
-            journey_breaks::stamp_opened(&app.database, row.id, "in_app")
-                .await
-                .map_err(internal("stamp break"))?;
-            let row = replan_break(&app, &row, &analysis, ReplanSlot::Request).await?;
-            Ok(Json(BreakResponse::from_row(row, now)).into_response())
-        }
-        .await,
-    )
 }
 
 #[derive(Debug, Deserialize)]

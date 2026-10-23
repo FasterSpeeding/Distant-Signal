@@ -903,6 +903,18 @@ async fn session_cleanup_sweep_loop(app: App) {
             app.delegated.revoked_grant_retention_days,
         )
         .await;
+        // Open journey breaks whose journey is over end here too, whether
+        // or not the break sweep (`JOURNEY_BREAKS_ENABLED`) runs, so none
+        // lingers on a journey page with the sweep off.
+        match data::journey_breaks::expire_finished(&app.database).await {
+            Ok(expired) if expired > 0 => {
+                tracing::info!(expired, "maintenance sweep expired finished journey breaks");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = ?err, "journey break expiry failed; will retry next interval");
+            }
+        }
     }
 }
 

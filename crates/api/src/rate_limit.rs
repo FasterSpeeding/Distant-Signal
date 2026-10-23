@@ -221,12 +221,11 @@ pub fn classify(method: &Method, path: &str) -> Option<LimitClass> {
 }
 
 /// A mid-journey route that runs the planner (spec 2026-10-22 §7): the
-/// alternatives, "I missed this train" and the re-plan preview cost what a
-/// `/Trips/plan` does, so they share its budget.
+/// alternatives (which "I missed this train" shows) and the re-plan
+/// preview cost what a `/Trips/plan` does, so they share its budget.
 fn is_journey_replan(path: &str) -> bool {
     path.starts_with("/Journeys/")
         && (path.ends_with("/alternatives")
-            || path.ends_with("/missed")
             || path.ends_with("/replan/preview")
             || path.ends_with("/replan/accept"))
 }

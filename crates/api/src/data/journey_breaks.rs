@@ -3,8 +3,10 @@
 //! §5.3, §6). At most one is open per journey (`journey_breaks_one_open`).
 //!
 //! The api writes them: on read of a journey page and in the break sweep
-//! (a cancelled or cut-short train, a missed connection, a skipped stop),
-//! and on "I missed this train". The notifier only reads open ones and
+//! (a cancelled or cut-short train, a missed connection, a skipped stop).
+//! "I missed this train" opens none: it only shows alternatives, and taking
+//! one records the miss as a revision. A `user_missed` break is left only
+//! from before that (2026-10-23) or by an Undo reopening one. The notifier only reads open ones and
 //! stamps its push bookkeeping. A break ends `accepted` (the traveller took
 //! an alternative), `dismissed`, `recovered` (the plan works again) or
 //! `expired` (the journey is over).

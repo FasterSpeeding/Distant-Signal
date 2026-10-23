@@ -17,7 +17,9 @@
 //!    same defaults);
 //! 4. `data::delegated::run_sweep`: delegated-access grants unused for 90
 //!    days, `delegated_deletions` past 30 days, expired idempotency keys
-//!    and consent confirmation tokens.
+//!    and consent confirmation tokens;
+//! 5. `data::journey_breaks::expire_finished`: open journey breaks whose
+//!    journey is over, whether or not the break sweep is on.
 //!
 //! It connects with the shared retry (`common::startup`), giving up after
 //! `MAINTENANCE_CONNECT_DEADLINE_SECS` (default 120): a fresh pod on a
@@ -25,7 +27,7 @@
 //! otherwise fail on its first 5 s acquire.
 //!
 //! Each step runs even if an earlier one failed, as in the loop. The exit
-//! status is 0 only if all four succeeded, so a failing step fails the
+//! status is 0 only if all five succeeded, so a failing step fails the
 //! Job. Every step is idempotent. The loop stays in the api, behind
 //! `API_BACKGROUND_LOOPS`, until the `CronJob` is on.
 
@@ -81,6 +83,7 @@ struct PassReport {
     dead_links: Option<u64>,
     personal_data: Option<RetentionOutcome>,
     delegated: Option<api::data::delegated::SweepOutcome>,
+    expired_breaks: Option<u64>,
     failed: Vec<&'static str>,
 }
 
@@ -119,6 +122,7 @@ async fn run() -> anyhow::Result<()> {
         dead_links = report.dead_links,
         personal_data = ?report.personal_data,
         delegated = ?report.delegated,
+        expired_breaks = report.expired_breaks,
         failed = ?report.failed,
         "maintenance pass finished"
     );
@@ -130,7 +134,7 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The four sweeps, in the loop's order, each logged and attempted
+/// The five sweeps, in the loop's order, each logged and attempted
 /// whatever the others did.
 async fn run_pass(
     pool: &sqlx::PgPool,
@@ -164,6 +168,13 @@ async fn run_pass(
         api::data::delegated::run_sweep(pool, now, revoked_grant_retention_days).await;
     if report.delegated.is_none() {
         report.failed.push("delegated");
+    }
+    match api::data::journey_breaks::expire_finished(pool).await {
+        Ok(expired) => report.expired_breaks = Some(expired),
+        Err(err) => {
+            tracing::error!(error = ?err, "journey break expiry failed");
+            report.failed.push("expired_breaks");
+        }
     }
     report
 }
@@ -370,6 +381,76 @@ mod tests {
         assert_eq!(count(&pool, links, USER).await, 1);
         assert_eq!(count(&pool, trains, USER).await, 1);
 
+        cleanup(&pool, USER).await;
+    }
+
+    /// The pass ends an open journey break once its journey is over, with
+    /// the break sweep off (it is never started here), and leaves one on a
+    /// journey still running.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `cargo test -p api --bin maintenance \
+                -- --ignored --test-threads=1`"]
+    async fn one_pass_expires_the_breaks_of_finished_journeys() {
+        const USER: &str = "TEST-API-MAINTENANCE-BREAKS";
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+        let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+        let wipe = "DELETE FROM journeys WHERE user_id = $1";
+        sqlx::query(wipe).bind(USER).execute(&pool).await.unwrap();
+        cleanup(&pool, USER).await;
+        sqlx::query("INSERT INTO users (id, name) VALUES ($1, $1)")
+            .bind(USER)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut breaks = Vec::new();
+        for days_ago in [3, 0] {
+            let journey: i64 = sqlx::query_scalar(
+                "INSERT INTO journeys (user_id, custom_name) VALUES ($1, 'Trip') RETURNING id",
+            )
+            .bind(USER)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO journey_legs (journey_id, leg_order, service_date) \
+                 VALUES ($1, 0, CURRENT_DATE - $2::int)",
+            )
+            .bind(journey)
+            .bind(days_ago)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let id: i64 = sqlx::query_scalar(
+                "INSERT INTO journey_breaks \
+                    (journey_id, user_id, cause, fault, severity, break_position, fingerprint) \
+                 VALUES ($1, $2, 'cancelled', 'operator', 3, 1, 'f') RETURNING id",
+            )
+            .bind(journey)
+            .bind(USER)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            breaks.push(id);
+        }
+
+        let policy = RetentionPolicy {
+            past_travel_days: 548,
+            stale_push_subscription_days: 0,
+            inactive_account_days: 0,
+        };
+        let report = run_pass(&pool, policy, 365, chrono::Utc::now()).await;
+        assert!(report.failed.is_empty(), "{report:?}");
+        assert!(report.expired_breaks >= Some(1), "{report:?}");
+        let statuses: Vec<String> =
+            sqlx::query_scalar("SELECT status FROM journey_breaks WHERE id = ANY($1) ORDER BY id")
+                .bind(&breaks)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(statuses, ["expired", "open"]);
+
+        sqlx::query(wipe).bind(USER).execute(&pool).await.unwrap();
         cleanup(&pool, USER).await;
     }
 }

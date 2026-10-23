@@ -52,6 +52,17 @@ describe('LegReplanActions', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/Journeys/42/legs/7/alternatives?cause=missed', { method: 'GET' });
   });
 
+  it('titles the sheet "Other ways to ..." while it loads, never "You missed the ..."', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+    renderWithMantine(<LegReplanActions journeyId={42} leg={leg()} context={{ ...context, missable: true }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'I missed this train' }));
+    expect(screen.getByRole('heading', { name: 'Other ways to Edinburgh' })).toBeInTheDocument();
+    expect(screen.queryByText(/You missed/)).not.toBeInTheDocument();
+  });
+
   it('never offers "I missed this train" on a cancelled train', () => {
     renderWithMantine(
       <LegReplanActions journeyId={42} leg={leg({ status: 'cancelled' })} context={{ ...context, missable: true }} />,

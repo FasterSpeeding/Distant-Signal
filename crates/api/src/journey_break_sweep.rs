@@ -171,7 +171,9 @@ async fn sweep_journey(
         return Ok(());
     }
     let open = journey_breaks::open_break(&app.database, journey_id).await?;
-    // The traveller's own "I missed this train" stands until they act on it.
+    // A `user_missed` break (the traveller's own word, from before
+    // "I missed this train" stopped opening breaks, or reopened by an
+    // Undo) stands until they act on it or it expires.
     if open.as_ref().is_some_and(|b| b.cause == "user_missed") {
         return Ok(());
     }
