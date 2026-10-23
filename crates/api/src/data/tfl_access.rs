@@ -214,8 +214,7 @@ fn metres_between(a: (f64, f64), b: (f64, f64)) -> f64 {
 
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "distances and minutes here are small and positive"
+    reason = "minutes here are small and positive"
 )]
 fn whole(value: f64) -> i32 {
     value.ceil().max(1.0) as i32
@@ -244,7 +243,6 @@ fn line_tree(stops: &[StopRecord], members: &[usize]) -> Vec<(usize, usize, f64)
         return edges;
     };
     let position = |i: usize| stops[i].position.unwrap_or_default();
-    let mut inside = vec![first];
     let mut outside: Vec<usize> = rest.to_vec();
     // For each stop outside, its nearest stop inside so far.
     let mut nearest: Vec<(usize, f64)> = outside
@@ -252,16 +250,14 @@ fn line_tree(stops: &[StopRecord], members: &[usize]) -> Vec<(usize, usize, f64)
         .map(|&o| (first, metres_between(position(first), position(o))))
         .collect();
     while !outside.is_empty() {
-        let (pick, _) = nearest
+        let pick = nearest
             .iter()
             .enumerate()
             .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
-            .map(|(index, best)| (index, *best))
-            .unwrap_or((0, (first, 0.0)));
+            .map_or(0, |(index, _)| index);
         let added = outside.swap_remove(pick);
         let (from, distance) = nearest.swap_remove(pick);
         edges.push((from, added, distance));
-        inside.push(added);
         for (index, &o) in outside.iter().enumerate() {
             let d = metres_between(position(added), position(o));
             if d < nearest[index].1 {

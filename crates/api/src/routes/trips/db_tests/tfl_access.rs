@@ -191,23 +191,23 @@ fn describe(itinerary: &Value) -> Vec<String> {
         .as_array()
         .expect("legs")
         .iter()
-        .map(|leg| match leg["kind"].as_str() {
-            Some("train") => leg["trainUid"].as_str().unwrap().to_string(),
-            _ => {
-                let end = |crs: &Value, stop: &Value| {
-                    crs.as_str()
-                        .or_else(|| stop["id"].as_str())
-                        .unwrap_or("?")
-                        .to_string()
-                };
-                format!(
-                    "{} {}-{} {}",
-                    leg["mode"].as_str().unwrap(),
-                    end(&leg["originCrs"], &leg["originStop"]),
-                    end(&leg["destinationCrs"], &leg["destinationStop"]),
-                    leg["access"]["end"].as_str().unwrap_or("-"),
-                )
+        .map(|leg| {
+            if leg["kind"] == "train" {
+                return leg["trainUid"].as_str().unwrap().to_string();
             }
+            let end = |crs: &Value, stop: &Value| {
+                crs.as_str()
+                    .or_else(|| stop["id"].as_str())
+                    .unwrap_or("?")
+                    .to_string()
+            };
+            format!(
+                "{} {}-{} {}",
+                leg["mode"].as_str().unwrap(),
+                end(&leg["originCrs"], &leg["originStop"]),
+                end(&leg["destinationCrs"], &leg["destinationStop"]),
+                leg["access"]["end"].as_str().unwrap_or("-"),
+            )
         })
         .collect()
 }
