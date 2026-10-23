@@ -648,3 +648,25 @@ VALUES
   ('2099-01-05', 'KGX', '23:00', 'W61002', 'ZFX', 'ZFX', 0, '23:00', NULL),
   ('2099-01-05', 'KGX', '00:30', 'W61003', 'ZFX', 'ZFX', 1, '00:30', 'CC')
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- Two TfL stops for the /tfl/stops/{id} page (DS-136, tfl-stop.spec.ts and
+-- the `tfl-stop` visual baseline). The api asks TFL_BASE_URL for their
+-- arrivals; the frontend-e2e job points it at scripts/tfl-arrivals-stub.py,
+-- which answers King's Cross St. Pancras with a fixed board and Russell
+-- Square with a 503. King's Cross links its National Rail station (KGX,
+-- above) through the hub crosswalk. No `tfl-*` line_status rows: they
+-- would join the /status and /lines baselines, so the page lists the
+-- lines as links.
+-- ---------------------------------------------------------------------
+INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, hub_code, latitude, longitude, fetched_at)
+VALUES
+  ('940GZZLUKSX', 'King''s Cross St. Pancras', 'kings cross st pancras', '{tube}',
+   '[{"id": "victoria", "name": "Victoria"}, {"id": "piccadilly", "name": "Piccadilly"}]', 'HUBKGX', 51.5302, -0.1238, NOW()),
+  ('940GZZLURSQ', 'Russell Square', 'russell square', '{tube}',
+   '[{"id": "piccadilly", "name": "Piccadilly"}]', NULL, 51.5231, -0.1243, NOW())
+ON CONFLICT (stop_id) DO NOTHING;
+
+INSERT INTO tfl_stop_crs (stop_id, crs, source)
+VALUES ('940GZZLUKSX', 'KGX', 'hub')
+ON CONFLICT DO NOTHING;
