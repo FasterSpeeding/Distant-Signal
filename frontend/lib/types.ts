@@ -577,6 +577,49 @@ export interface TflStop {
   lines: TflStopLine[];
 }
 
+/** A National Rail station at a TfL stop. `name` is null when the
+ * station has no reference row. */
+export interface TflStopRailStation {
+  crs: string;
+  name: string | null;
+}
+
+/** `GET /public/tfl/stops/{id}` (`crates/api/src/routes/tfl_stop_page.rs`):
+ * a stop with the National Rail stations at it, best first. */
+export interface TflStopDetail extends TflStop {
+  railStations: TflStopRailStation[];
+}
+
+/** One live prediction at a TfL stop. */
+export interface TflArrival {
+  /** TfL's prediction ID, stable across refreshes. */
+  id: string;
+  destination: string;
+  /** RFC 3339. */
+  expectedArrival: string;
+  /** From when the api answered; never negative. */
+  timeToStationSecs: number;
+  currentLocation?: string;
+}
+
+/** The predictions at one platform of one line, soonest first. */
+export interface TflArrivalGroup {
+  lineId: string;
+  lineName: string;
+  /** "Westbound - Platform 1"; may be empty. */
+  platformName: string;
+  direction?: string;
+  arrivals: TflArrival[];
+}
+
+/** `GET /public/tfl/stops/{id}/arrivals`. */
+export interface TflStopArrivals {
+  stopId: string;
+  /** When TfL was asked (the api caches for about 30 s). */
+  fetchedAt: string;
+  groups: TflArrivalGroup[];
+}
+
 /** A code/name pair from `GET /public/stations/nearby` --
  * (`crates/api/src/data/reference.rs`'s `NearbyStation`), like `Suggestion`
  * but for a "near me" physical-distance lookup rather than text search, and
