@@ -2317,7 +2317,7 @@ describe('TrackTrainForm', () => {
         expect(screen.getByLabelText<HTMLInputElement>(/Scheduled departure/).value).toBe(`${today} 10:55:00`);
       });
 
-      it('LDBWS: that same row is still selectable by keyboard (Enter on the focused row)', async () => {
+      it('LDBWS: that same row is still selectable by keyboard (a native button, focused)', async () => {
         vi.setSystemTime(new Date('2026-09-05T09:00:00.000Z'));
         vi.stubGlobal(
           'fetch',
@@ -2326,13 +2326,16 @@ describe('TrackTrainForm', () => {
         renderWithMantine(<TrackTrainForm initialOrigin="WAT" />);
 
         const last = await screen.findByRole('button', { name: /10:55/ });
-        // A keyboard user reaches it by tabbing: every row is its own focus
-        // stop, so assert this one really is one rather than assuming it.
-        expect(last).toHaveAttribute('tabindex', '0');
+        // A keyboard user reaches it by tabbing: every row's target is a
+        // native `<button>` (a `ClickableCard`), so it is its own focus stop
+        // and the browser turns Enter and Space into a click. jsdom doesn't,
+        // so the click stands in for the key.
+        expect(last.tagName).toBe('BUTTON');
+        expect(last).toHaveAttribute('type', 'button');
         last.focus();
         expect(document.activeElement).toBe(last);
         const today = nowInLondon().format('YYYY-MM-DD');
-        fireEvent.keyDown(last, { key: 'Enter' });
+        fireEvent.click(last);
 
         expect(screen.getByLabelText<HTMLInputElement>(/Scheduled departure/).value).toBe(`${today} 10:55:00`);
       });
