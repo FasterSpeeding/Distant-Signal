@@ -24,8 +24,12 @@ test.describe('transit pages', () => {
 
   test('the network shows its line statuses and disruptions', async ({ page }) => {
     await page.goto('/transit/metrolink');
-    await expect(page.getByRole('link', { name: /Blue Line/ })).toContainText('Minor delays');
-    await expect(page.getByRole('link', { name: /Green Line/ })).toContainText('No reported disruption');
+    // Each line is a clickable card: its link is named by the line, the
+    // status is elsewhere in the card.
+    const card = (name: string) =>
+      page.locator('[data-clickable-card]').filter({ has: page.getByRole('link', { name, exact: true }) });
+    await expect(card('Blue Line')).toContainText('Minor delays');
+    await expect(card('Green Line')).toContainText('No reported disruption');
     const now = page.getByRole('list', { name: 'Disruptions now' });
     await expect(now).toContainText('Delays between Piccadilly and Eccles');
     await expect(page.getByRole('list', { name: 'Disruptions coming up' })).toContainText(

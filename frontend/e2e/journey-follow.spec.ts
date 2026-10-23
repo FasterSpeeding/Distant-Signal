@@ -74,7 +74,10 @@ test.describe('following a shared journey', () => {
     // And so does the home page.
     await page.goto('/');
     const home = page.getByRole('region', { name: 'Upcoming journeys' });
-    const homeRow = home.getByRole('link', { name: new RegExp(JOURNEY_NAME) });
+    // The card's link is named by the journey alone; the rest is in the card.
+    const homeRow = home
+      .locator('[data-clickable-card]')
+      .filter({ has: page.getByRole('link', { name: JOURNEY_NAME }) });
     await expect(homeRow).toBeVisible();
     await expect(homeRow.getByText(/Shared by Rider Fixture/)).toBeVisible();
 

@@ -101,7 +101,12 @@ test.describe('home page journeys (logged in)', () => {
       await page.goto('/');
 
       const current = page.getByRole('region', { name: 'Current journey' });
-      const card = current.getByRole('link', { name: new RegExp(`^${name.replace(/[()]/g, '\\$&')}`) });
+      // The card's link is named by the journey's name alone; the facts
+      // are elsewhere in the card.
+      const card = current
+        .locator('[data-clickable-card]')
+        .filter({ has: page.getByRole('link', { name, exact: true }) });
+      const link = card.getByRole('link', { name, exact: true });
       await expect(card).toBeVisible();
       await expect(card).toContainText('Now, leg 1 of 2');
       await expect(card).toContainText('Walk, Islington to Angel');
@@ -114,8 +119,8 @@ test.describe('home page journeys (logged in)', () => {
       const results = await new AxeBuilder({ page }).include('main').analyze();
       expect(results.violations).toEqual([]);
 
-      // Keyboard: the card is one link to the journey page.
-      await card.focus();
+      // Keyboard: the card's link goes to the journey page.
+      await link.focus();
       await page.keyboard.press('Enter');
       await expect(page).toHaveURL(new RegExp(`/journeys/${journeyId}$`));
     });
