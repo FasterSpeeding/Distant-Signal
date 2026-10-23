@@ -7848,7 +7848,7 @@ mod db_tests {
         assert_eq!(legs[0].destination_name.as_deref(), Some("Testbury Ell"));
         assert_eq!(legs[0].train_subscription_id, Some(tracking_id));
 
-        let mine = list_journeys_for_user(&pool, owner)
+        let mine = list_journeys_for_user(&pool, owner, false)
             .await
             .expect("list the owner's journeys");
         let row = mine
@@ -7902,6 +7902,33 @@ mod db_tests {
         assert_eq!(shared.first_origin_name.as_deref(), Some("Testbury Kay"));
         assert_eq!(
             shared.last_destination_name.as_deref(),
+            Some("Testbury Ell")
+        );
+        // A journey the viewer follows (DS-146) lists among their own by the
+        // same route.
+        assert_eq!(
+            crate::data::journey_follows::follow_journey(
+                &pool,
+                viewer,
+                journey_id,
+                crate::data::journey_follows::FollowThrough::Group(Some(&group_id)),
+            )
+            .await
+            .expect("follow the shared journey"),
+            crate::data::journey_follows::FollowOutcome::Followed
+        );
+        let followed = list_journeys_for_user(&pool, viewer, true)
+            .await
+            .expect("list the viewer's journeys with the followed ones");
+        let followed = followed
+            .iter()
+            .find(|row| row.id == journey_id)
+            .expect("the followed journey is listed");
+        assert!(followed.followed_from.is_some());
+        assert_eq!(followed.origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(followed.first_origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(
+            followed.last_destination_name.as_deref(),
             Some("Testbury Ell")
         );
 
