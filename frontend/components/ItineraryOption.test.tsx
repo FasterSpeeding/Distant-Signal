@@ -281,4 +281,78 @@ describe('ItineraryOption: station groups (2026-10-07)', () => {
     );
     expect(screen.getByText('Calls at MKC')).toBeInTheDocument();
   });
+
+  it('names a TfL stop end and says its access leg is an estimate (DS-135)', () => {
+    const uxbridge = {
+      id: '940GZZLUUXB',
+      name: 'Uxbridge',
+      modes: ['tube'],
+      lines: [{ id: 'metropolitan', name: 'Metropolitan' }],
+    };
+    const harrow = { ...uxbridge, id: '940GZZLUHOH', name: 'Harrow-on-the-Hill' };
+    renderWithMantine(
+      <ItineraryOption
+        itinerary={{
+          legs: [
+            {
+              kind: 'transfer',
+              mode: 'TUBE',
+              originCrs: null,
+              destinationCrs: 'HOH',
+              minutes: 30,
+              line: 'Metropolitan',
+              originStop: uxbridge,
+              destinationStop: harrow,
+              access: { end: 'origin', basis: 'line', distanceMetres: 11_400 },
+            },
+            {
+              ...trainItinerary.legs[0]!,
+              originCrs: 'HOH',
+              destinationCrs: 'MYB',
+            },
+          ],
+          changeCount: 0,
+          totalDurationMinutes: 70,
+        }}
+        selected={false}
+        onSelect={vi.fn()}
+        stationNames={new Map([['HOH', 'Harrow-on-the-Hill']])}
+      />,
+    );
+    expect(
+      screen.getByText(
+        byVisibleText(/Tube \(Metropolitan line\) Uxbridge \(Tube\) to HOH · Harrow-on-the-Hill, 30 min/),
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Estimated time for about 11.4 km along the line')).toBeInTheDocument();
+    // The itinerary has a train, so it can be chosen.
+    expect(screen.getByRole('radio')).not.toBeDisabled();
+  });
+
+  it('says a walk to a nearby station is an estimate', () => {
+    renderWithMantine(
+      <ItineraryOption
+        itinerary={{
+          legs: [
+            { ...trainItinerary.legs[0]!, destinationCrs: 'WRU' },
+            {
+              kind: 'transfer',
+              mode: 'WALK',
+              originCrs: 'WRU',
+              destinationCrs: null,
+              minutes: 12,
+              destinationStop: { id: '940GZZLURSM', name: 'Ruislip', modes: ['tube'], lines: [] },
+              access: { end: 'destination', basis: 'walk', distanceMetres: 650 },
+            },
+          ],
+          changeCount: 0,
+          totalDurationMinutes: 62,
+        }}
+        selected={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(byVisibleText(/Walk WRU to Ruislip \(Tube\), 12 min/))).toBeInTheDocument();
+    expect(screen.getByText('Estimated walk: the station is about 0.7 km away')).toBeInTheDocument();
+  });
 });

@@ -1,4 +1,4 @@
-import type { Suggestion } from './types';
+import type { Suggestion, TripPlanAccessLeg } from './types';
 import { ownValue } from './ownValue';
 
 /** Human labels for the `category` a `LineSummary`/`CustomLineDetail`
@@ -91,4 +91,20 @@ export function transferLabel(mode: string, line?: string | null): string {
   const modeLabel = transferModeLabel(mode);
   const lineName = transferLineName(mode, line);
   return lineName ? `${modeLabel} (${lineName})` : modeLabel;
+}
+
+/** The note under a `/Trips/plan` access leg (DS-135): the leg between a
+ * TfL stop From or To and a National Rail station, whose minutes are an
+ * estimate. Says what the estimate is from. */
+export function accessLegNote(access: TripPlanAccessLeg): string {
+  const km = (access.distanceMetres / 1000).toFixed(1);
+  switch (access.basis) {
+    case 'hub':
+      return 'Estimated time to walk between the stop and the National Rail station';
+    case 'line':
+      return `Estimated time for about ${km} km along the line`;
+    case 'walk':
+    case 'nearest':
+      return `Estimated walk: the station is about ${km} km away`;
+  }
 }

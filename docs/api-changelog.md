@@ -3,6 +3,41 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
+
+Additive. A request with station codes gets exactly the response it got
+before. DS-MCP needs no change; it may offer stops later. See
+docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md.
+
+- `origin` and `destination` of `GET /Trips/plan` may each be a TfL Tube,
+  DLR or tram stop id (`940GZZLUUXB`, Uxbridge), as `GET
+  /public/tfl/stops` lists them, as well as a CRS or a `tiploc:` code.
+  The plan runs from or to the best of the stop's candidate National Rail
+  stations, with a Tube (or DLR or tram, `METRO`) ride or a walk for the
+  part between the stop and the station. An unknown stop, a stop with no
+  station near it, and the same stop at both ends are `400`s. Waypoints,
+  vias and the avoid lists still take stations only.
+- The access leg is an ordinary `kind: "transfer"` leg (`mode` `TUBE`,
+  `METRO` or `WALK`, `minutes`, `line`), with:
+  - `originCrs` (from a stop) or `destinationCrs` (to a stop) `null`, and
+    the stop as `originStop`/`destinationStop` (`{id, name, modes,
+    lines}`); a ride also names the stop it reaches at the station end
+    (Harrow-on-the-Hill);
+  - new `access`: `{end: "origin" | "destination" | "both", basis: "hub" |
+    "line" | "walk" | "nearest", distanceMetres}`. `both` is a ride
+    straight from a stop origin to a stop destination on one line. Its
+    `minutes` are an estimate, not TfL data.
+  Saving it as an untracked leg (`originStopId` and `originName` from
+  `originStop`) works as for any Tube transfer.
+- A depart-after itinerary that starts with an access leg leaves as late
+  as still makes its first train: `journeys[].departure` and
+  `totalDurationMinutes` count from then, not from `departAfter`.
+- New top-level `access`, only when an end is a stop: `{origin,
+  destination}`, each `{stop, candidates: [{crs, mode, minutes, basis,
+  line?, stationStop?, distanceMetres}]}` quickest first, or `null` for a
+  station end. `segments[].originCrs`/`destinationCrs` carry the stop id
+  as given.
+
 ## 2026-10-23: a TfL stop and its live arrivals
 
 Additive: two new public, unauthenticated routes for the web app's

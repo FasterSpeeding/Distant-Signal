@@ -80,7 +80,8 @@ export function codeStationLabel(crs: string, name: string | null | undefined): 
   // A bus stop's or ferry terminal's `tiploc:` code means nothing to a
   // reader, and its name already says what it is ("Keswick (bus)").
   // Nor does a station group's `group:` code; its name is its label.
-  if (isTiplocCode(crs) || isGroupCode(crs)) return name ?? crs;
+  // Nor does a TfL stop's id (`940GZZLUUXB`); its name says `(Tube)`.
+  if (isTiplocCode(crs) || isGroupCode(crs) || isTflStopCode(crs)) return name ?? crs;
   return name ? `${crs} · ${name}` : crs;
 }
 
@@ -91,6 +92,25 @@ export const TIPLOC_CODE_PREFIX = 'tiploc:';
 
 export function isTiplocCode(code: string | null | undefined): boolean {
   return !!code && code.trim().toLowerCase().startsWith(TIPLOC_CODE_PREFIX);
+}
+
+/** A TfL Tube, DLR or tram stop's id (`940GZZLUUXB`, a NaPTAN stop
+ * area), which the planner takes as its From or To (DS-135): it plans from
+ * or to a nearby National Rail station. Never a CRS, so never a station
+ * page or board. */
+const TFL_STOP_CODE = /^940G[0-9A-Z]{4,16}$/i;
+
+export function isTflStopCode(code: string | null | undefined): boolean {
+  return !!code && TFL_STOP_CODE.test(code.trim());
+}
+
+const TFL_MODE_LABELS: Record<string, string> = { tube: 'Tube', dlr: 'DLR', tram: 'tram' };
+
+/** A TfL stop's name as the planner shows it, its modes in brackets the
+ * way a bus stop says `(bus)`: `Uxbridge (Tube)`, `Bank (Tube, DLR)`. */
+export function tflStopPlaceName(stop: { name: string; modes: string[] }): string {
+  const modes = stop.modes.map((mode) => TFL_MODE_LABELS[mode] ?? mode);
+  return modes.length > 0 ? `${stop.name} (${modes.join(', ')})` : stop.name;
 }
 
 /** A named station group in the planner's lists (`GET /Trips/plan`'s
@@ -149,7 +169,11 @@ export function codeRouteLabel(
   if (!originCrs || !destinationCrs) {
     return `${originCrs ?? unknownLabel} to ${destinationCrs ?? unknownLabel}`;
   }
-  return originName && destinationName
-    ? `${codeStationLabel(originCrs, originName)} to ${codeStationLabel(destinationCrs, destinationName)}`
-    : `${originCrs} to ${destinationCrs}`;
+  if (originName && destinationName) {
+    return `${codeStationLabel(originCrs, originName)} to ${codeStationLabel(destinationCrs, destinationName)}`;
+  }
+  // A TfL stop's id means nothing to a reader: its name, even beside a
+  // bare station code (DS-135).
+  const bare = (code: string, name: string | null | undefined) => (isTflStopCode(code) && name ? name : code);
+  return `${bare(originCrs, originName)} to ${bare(destinationCrs, destinationName)}`;
 }

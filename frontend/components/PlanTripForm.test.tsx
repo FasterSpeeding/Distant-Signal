@@ -81,6 +81,50 @@ describe('PlanTripForm', () => {
     );
   });
 
+  it('offers TfL stops in From and sends the stop id (DS-135)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.startsWith('/api/tfl/stops'))
+          return new Response(
+            JSON.stringify([
+              {
+                id: '940GZZLUUXB',
+                name: 'Uxbridge',
+                modes: ['tube'],
+                lines: [
+                  { id: 'metropolitan', name: 'Metropolitan' },
+                  { id: 'piccadilly', name: 'Piccadilly' },
+                ],
+              },
+            ]),
+          );
+        return new Response('[]');
+      }),
+    );
+    try {
+      const onSubmit = vi.fn();
+      renderWithMantine(<PlanTripForm onSubmit={onSubmit} />);
+      const from = screen.getByRole('combobox', { name: 'From' });
+      fireEvent.focus(from);
+      fireEvent.change(from, { target: { value: 'uxbridge' } });
+      fireEvent.click(await screen.findByRole('option', { name: 'Uxbridge (Tube) · Tube: Metropolitan, Piccadilly' }));
+      expect(from).toHaveValue('940GZZLUUXB');
+      expect(
+        await screen.findByText(
+          'Uxbridge (Tube). The route starts with the Tube or a walk to a National Rail station nearby.',
+        ),
+      ).toBeInTheDocument();
+      fireEvent.change(screen.getByRole('combobox', { name: 'To' }), { target: { value: 'MYB' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Find routes' }));
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ originCrs: '940GZZLUUXB', destinationCrs: 'MYB' }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   // Regression coverage for the "defaults to start of day, not now" bug:
   // `departAfter` used to default to `''`, which `buildTripPlanQuery`
   // (`lib/tripPlan.ts`) then omitted from the query string entirely, and

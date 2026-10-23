@@ -47,6 +47,63 @@ const itinerary = (legs: TripPlanLeg[], continuesPreviousTrain = false): TripPla
 /** Spec 2026-10-20 §2, follow-up: the planner's save keeps its transfers
  * as untracked legs instead of dropping them. */
 describe('itineraryLegsForSaving', () => {
+  it('saves the access and egress legs of a TfL stop From and To with their stops (DS-135)', () => {
+    const uxbridge = { id: '940GZZLUUXB', name: 'Uxbridge', modes: ['tube'], lines: [] };
+    const harrow = { id: '940GZZLUHOH', name: 'Harrow-on-the-Hill', modes: ['tube'], lines: [] };
+    const legs = itineraryLegsForSaving(
+      [
+        itinerary([
+          {
+            kind: 'transfer',
+            mode: 'TUBE',
+            originCrs: null,
+            destinationCrs: 'HOH',
+            minutes: 30,
+            line: 'Metropolitan',
+            originStop: uxbridge,
+            destinationStop: harrow,
+            access: { end: 'origin', basis: 'line', distanceMetres: 11_000 },
+          },
+          // Leaves Harrow 09:00 BST (08:00Z).
+          train('T1', 'HOH', 'EUS', '09:00:00', '09:30:00'),
+          {
+            kind: 'transfer',
+            mode: 'WALK',
+            originCrs: 'EUS',
+            destinationCrs: null,
+            minutes: 5,
+            destinationStop: { id: '940GZZLUEUS', name: 'Euston', modes: ['tube'], lines: [] },
+            access: { end: 'destination', basis: 'hub', distanceMetres: 0 },
+          },
+        ]),
+      ],
+      nameFor,
+    );
+    expect(legs).toEqual([
+      {
+        kind: 'untracked',
+        transitMode: 'tube',
+        originName: 'Uxbridge',
+        destinationName: 'Harrow-on-the-Hill',
+        lineName: 'Metropolitan line',
+        originStopId: '940GZZLUUXB',
+        destinationStopId: '940GZZLUHOH',
+        plannedDeparture: '2026-10-21T07:30:00.000Z',
+        plannedArrival: '2026-10-21T08:00:00.000Z',
+      },
+      { trainUid: 'T1', serviceDate: '2026-10-21', originCrs: 'HOH', destinationCrs: 'EUS' },
+      {
+        kind: 'untracked',
+        transitMode: 'walk',
+        originName: 'London Euston',
+        destinationName: 'Euston',
+        destinationStopId: '940GZZLUEUS',
+        plannedDeparture: '2026-10-21T08:30:00.000Z',
+        plannedArrival: '2026-10-21T08:35:00.000Z',
+      },
+    ]);
+  });
+
   it('saves a cross-London Tube transfer between two trains as an untracked leg (working times, no public ones)', () => {
     const legs = itineraryLegsForSaving(
       [

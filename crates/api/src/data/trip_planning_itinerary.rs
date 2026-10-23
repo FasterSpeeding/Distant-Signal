@@ -179,6 +179,13 @@ pub enum PlannedLeg {
         origin_stop: Option<Box<crate::data::tfl_stops::TflStopSummary>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         destination_stop: Option<Box<crate::data::tfl_stops::TflStopSummary>>,
+        /// Present only on an access or egress leg between a `TfL` stop end
+        /// and a National Rail station (additive, 2026-10-23, DS-135): which
+        /// end, how the station was found and how far the leg goes. Its
+        /// `minutes` are an estimate. Filled in by
+        /// `tfl_access::AccessEnds::finish_legs`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        access: Option<Box<crate::data::tfl_access::AccessLeg>>,
     },
 }
 
@@ -350,6 +357,7 @@ fn planned_leg(leg: &JourneyLeg, date: NaiveDate, interchange: &InterchangeData)
             line: None,
             origin_stop: None,
             destination_stop: None,
+            access: None,
         },
     }
 }
@@ -4218,6 +4226,7 @@ mod tests {
             line: None,
             origin_stop: None,
             destination_stop: None,
+            access: None,
         };
         let segment = |from: &str, to: &str, itineraries| SegmentResult {
             origin_crs: from.to_string(),
