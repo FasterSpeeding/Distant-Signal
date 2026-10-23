@@ -44,6 +44,7 @@ pub mod station_stats;
 pub mod stop_board;
 pub mod stop_delay;
 pub mod stop_live_status;
+pub mod tfl_access;
 pub mod tfl_stops;
 pub mod ticket_extraction;
 pub mod ticket_precheck;
