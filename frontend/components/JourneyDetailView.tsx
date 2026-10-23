@@ -1,4 +1,4 @@
-import { Group, Stack, Text, Title } from '@mantine/core';
+import { Box, Group, Stack, Text, Title } from '@mantine/core';
 import { AddJourneyLegButton } from './AddJourneyLegButton';
 import { DeleteJourneyButton } from './DeleteJourneyButton';
 import { JourneyLegCard } from './JourneyLegCard';
@@ -11,6 +11,7 @@ import { SaveAsTemplateButton } from './SaveAsTemplateButton';
 import { ShareJourneyButton } from './ShareJourneyButton';
 import { ShareJourneyLinkButton } from './ShareJourneyLinkButton';
 import { TrackJourneyAgainButton } from './TrackJourneyAgainButton';
+import { instantLateDepartureTimes, LateDepartureNote } from './LateDepartureNote';
 import {
   connectionText,
   journeyCanAddLeg,
@@ -107,12 +108,23 @@ function LegConnector({ leg, next }: { leg: JourneyLegDetail; next: JourneyLegDe
   // when it sent one, else the page's own, which assumes no minimum.
   const gapText = next === null ? null : connectionText(leg, next);
   if (!stationName && !gapText) return null;
-  return (
+  const reliance = next?.connection?.reliesOnLateDeparture;
+  const connector = (
     <Text size="xs" c="dimmed" pl="sm" data-leg-connector>
       <span aria-hidden="true">↓</span> {stationName ? `Change at ${stationName}` : 'Change'}
       {arrival ? `, ${arrival}` : ''}
       {gapText ? `. ${gapText}.` : ''}
     </Text>
+  );
+  if (!reliance) return connector;
+  // The change works only because the next train is running late (DS-141).
+  return (
+    <Stack gap={0}>
+      {connector}
+      <Box pl="sm">
+        <LateDepartureNote {...instantLateDepartureTimes(reliance)} subject="the next train" />
+      </Box>
+    </Stack>
   );
 }
 

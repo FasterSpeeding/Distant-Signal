@@ -4,6 +4,7 @@ import { CardLink } from '@/components/CardLink';
 import { DelayBadge } from '@/components/DelayBadge';
 import { JourneyBreakBanner } from '@/components/JourneyBreakBanner';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
+import { instantLateDepartureTimes, LateDepartureNote } from '@/components/LateDepartureNote';
 import { LoginControl } from '@/components/LoginControl';
 import { SectionTitle } from '@/components/SectionTitle';
 import { StatusRow } from '@/components/StatusRow';
@@ -19,6 +20,7 @@ import {
   homeJourneyStatusGroup,
   isLoneTrain,
   MAX_UPCOMING_JOURNEYS,
+  nextLateDepartureReliance,
   type HomeCurrent,
   type HomeEntry,
   type HomeJourney,
@@ -121,6 +123,7 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
   const end = leg === null ? null : legEndText(leg);
   const arrival = leg === null ? null : legArrivalText(leg);
   const endFact = [end, arrival].filter((part): part is string => part !== null).join(', ');
+  const reliance = leg === null ? null : nextLateDepartureReliance(detail, leg, now);
 
   return (
     <Box className="currentJourneyCard">
@@ -169,6 +172,7 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
               )}
             </dl>
           )}
+          {reliance && <LateDepartureNote {...instantLateDepartureTimes(reliance)} subject="the next train" />}
         </Stack>
       </CardLink>
     </Box>

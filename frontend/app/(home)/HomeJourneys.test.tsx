@@ -166,6 +166,46 @@ describe('CurrentJourneyCard', () => {
     expect(screen.getByText('Tight connection')).toBeInTheDocument();
   });
 
+  it('notes when the next change relies on the next train running late, until that train has left', () => {
+    const base = journey();
+    const legs = base.detail.legs.map((l, i) =>
+      i === 1
+        ? {
+            ...l,
+            connection: {
+              gapMinutes: 23,
+              minimumChangeMinutes: 5,
+              state: 'ok' as const,
+              reliesOnLateDeparture: {
+                scheduledDeparture: '2026-09-17T11:20:00Z',
+                expectedDeparture: '2026-09-17T11:35:00Z',
+                delayMinutes: 15,
+                slackIfOnTimeMinutes: -3,
+              },
+            },
+          }
+        : l,
+    );
+    const reliant = { ...base, detail: { ...base.detail, legs } };
+    const note =
+      "Relies on the next train running late. It's due to leave at 12:35, booked 12:20. It could leave earlier.";
+    // On the first train.
+    const first = renderWithMantine(<CurrentJourneyCard journey={reliant} now={new Date('2026-09-17T10:00:00Z')} />);
+    expect(within(screen.getByRole('link')).getByText(note)).toBeInTheDocument();
+    first.unmount();
+    // At York, waiting for it.
+    const waiting = renderWithMantine(<CurrentJourneyCard journey={reliant} now={new Date('2026-09-17T11:15:00Z')} />);
+    expect(screen.getByText(note)).toBeInTheDocument();
+    waiting.unmount();
+    // On it: nothing left to rely on.
+    const aboard = renderWithMantine(<CurrentJourneyCard journey={reliant} now={new Date('2026-09-17T12:00:00Z')} />);
+    expect(screen.queryByText(/running late/)).not.toBeInTheDocument();
+    aboard.unmount();
+    // Without the flag, no note.
+    renderWithMantine(<CurrentJourneyCard journey={journey()} now={new Date('2026-09-17T10:00:00Z')} />);
+    expect(screen.queryByText(/running late/)).not.toBeInTheDocument();
+  });
+
   it('on the last leg, gives the destination and arrival instead of a change', () => {
     renderWithMantine(<CurrentJourneyCard journey={journey()} now={new Date('2026-09-17T12:00:00Z')} />);
     expect(screen.getByText('Now, leg 2 of 2')).toBeInTheDocument();

@@ -37,6 +37,60 @@ describe('ItineraryOption', () => {
     expect(onSelect).toHaveBeenCalled();
   });
 
+  it('notes a leg whose change relies on the train running late, and only that leg', () => {
+    const live = {
+      status: 'Late' as const,
+      cancelled: false,
+      delayMinutes: 15,
+      arrivalDelayMinutes: 15,
+      reason: null,
+      reasonSource: null,
+      platform: null,
+      observedAt: null,
+      interchangeFeasible: true,
+    };
+    const first = trainItinerary.legs[0]!;
+    const onward = {
+      ...first,
+      trainUid: 'C11053',
+      originCrs: 'MKC',
+      destinationCrs: 'BHM',
+      scheduledDeparture: '08:52:00',
+      scheduledArrival: '09:40:00',
+      live: {
+        ...live,
+        reliesOnLateDeparture: {
+          scheduledDeparture: '08:52:00',
+          expectedDeparture: '09:07:00',
+          delayMinutes: 15,
+          slackIfOnTimeMinutes: -3,
+        },
+      },
+    } as typeof first;
+    const { unmount } = renderWithMantine(
+      <ItineraryOption
+        itinerary={{ ...trainItinerary, legs: [first, onward], changeCount: 1, liveFeasible: true }}
+        selected={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    const notes = screen.getAllByText(
+      "Relies on this train running late. It's due to leave at 09:07, booked 08:52. It could leave earlier.",
+    );
+    expect(notes).toHaveLength(1);
+    unmount();
+
+    // Late, but the change works on time too: no note.
+    renderWithMantine(
+      <ItineraryOption
+        itinerary={{ ...trainItinerary, legs: [first, { ...onward, live } as typeof first], changeCount: 1 }}
+        selected={false}
+        onSelect={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/Relies on this train running late/)).not.toBeInTheDocument();
+  });
+
   it('flags an itinerary that exceeds the recommended change count', () => {
     renderWithMantine(
       <ItineraryOption

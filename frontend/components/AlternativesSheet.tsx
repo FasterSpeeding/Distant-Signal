@@ -26,6 +26,7 @@ import {
 import { useMediaQuery } from '@mantine/hooks';
 import { ButtonSpinner, LoadingText } from './LoadingText';
 import { StateBadge } from './StateBadge';
+import { instantLateDepartureTimes, LateDepartureNote, trainToSubject } from './LateDepartureNote';
 import { asSentence, describeFailure, isUserFacingApiMessage } from '@/lib/failure';
 import { formatTime } from '@/lib/dateFormat';
 import {
@@ -672,6 +673,15 @@ function SuggestionCard({
               </Text>
             ))}
           </Stack>
+        )}
+        {suggestion.legs.map((leg, index) =>
+          leg.kind === 'train' && leg.reliesOnLateDeparture ? (
+            <LateDepartureNote
+              key={`late-${index}`}
+              {...instantLateDepartureTimes(leg.reliesOnLateDeparture)}
+              subject={trainToSubject(leg.destinationName)}
+            />
+          ) : null,
         )}
         <Group justify="flex-end">
           <Button
