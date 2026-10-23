@@ -1,4 +1,4 @@
-import { isGroupCode, normalizeLocationCode } from './stationLabel';
+import { isGroupCode, isTflStopCode, normalizeLocationCode, tflStopPlaceName } from './stationLabel';
 import type {
   TripPlanItinerary,
   TripPlanLeg,
@@ -15,7 +15,7 @@ const log = createLogger('lib/tripPlan');
 /** A code a station-name lookup can resolve: not a station group
  * (`group:LON`) nor a choice of several (`KGX|EUS`). */
 function isStationCode(code: string): boolean {
-  return !isGroupCode(code) && !code.includes('|');
+  return !isGroupCode(code) && !isTflStopCode(code) && !code.includes('|');
 }
 
 /** Every distinct, non-null CRS code a `GET /Trips/plan` response mentions
@@ -52,6 +52,17 @@ export function collectTripPlanStationCodes(response: TripPlanResponse): string[
     }
   }
   return Array.from(codes).filter(isStationCode);
+}
+
+/** The names of a plan's TfL stop ends (DS-135), by stop id, from its
+ * top-level `access` (`Uxbridge (Tube)`): a stop id is not a station code
+ * `getStationNames` can resolve. */
+export function tripPlanStopNames(response: TripPlanResponse): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const end of [response.access?.origin, response.access?.destination]) {
+    if (end) names.set(end.stop.id, tflStopPlaceName(end.stop));
+  }
+  return names;
 }
 
 export interface TripPlanQuery {
