@@ -27,7 +27,9 @@ test.describe('TfL stop page', () => {
       'href',
       '/lines/tfl-victoria',
     );
-    await expect(page.getByRole('main').getByText(/Powered by TfL Open Data/)).toBeVisible();
+    // TfL's credit: the site footer's, not a second copy on the page.
+    await expect(page.getByRole('main').getByText(/Powered by TfL Open Data/)).toHaveCount(0);
+    await expect(page.getByRole('contentinfo').getByText(/Powered by TfL Open Data/)).toBeVisible();
   });
 
   test('keeps the page when TfL is unavailable', async ({ page }) => {
