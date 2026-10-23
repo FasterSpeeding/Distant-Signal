@@ -278,6 +278,7 @@ mod session_revocation_db_tests {
             )
             .expect("construct placeholder internal-oauth verifier"),
             delegated: std::sync::Arc::default(),
+            tfl_arrivals: std::sync::Arc::default(),
             schedule_crs_line_index: std::collections::HashMap::new(),
         })
     }
