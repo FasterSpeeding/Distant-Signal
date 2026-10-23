@@ -23,7 +23,6 @@ import { PinnedTramLineCard } from '@/components/PinnedTramLineCard';
 import { LoginControl } from '@/components/LoginControl';
 import { OperatorStatusCard } from '@/components/OperatorStatusCard';
 import { TextLink } from '@/components/TextLink';
-import { PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { StateBadge } from '@/components/StateBadge';
 import { StatusBadge } from '@/components/StatusBadge';
 import { severityRank, worstStatus } from '@/lib/severity';
@@ -35,7 +34,7 @@ import { splitJourneyTrains } from '@/lib/journeyTrains';
 import { londonCalendarDay } from '@/lib/londonWallClock';
 import type { JourneyDetail, LineStatus, LineStatusReport, Preferences, TrackedTrainState } from '@/lib/types';
 import { pageMetadata, previewCards, SITE_NAME } from '@/lib/pageMetadata';
-import { CurrentJourneySection, UpcomingJourneysSection } from './HomeJourneys';
+import { CurrentJourneySection, UpcomingJourneysSection, UpcomingJourneysTeaser } from './HomeJourneys';
 import { notGoodServiceSummary, RightNowModule } from './RightNowModule';
 import { SharedCustomLineSummaryRow } from './SharedCustomLineSummaryRow';
 
@@ -244,12 +243,16 @@ export default async function DashboardPage() {
           </Text>
         </Stack>
 
+        {/* Where the signed-in page puts "Upcoming journeys", so a visitor
+            sees what logging in adds. It also carries "Plan a journey",
+            the one journey feature that needs no account, which used to
+            lead the quick links below. Kept short so "Right now" still
+            starts above the fold on a phone. */}
+        <UpcomingJourneysTeaser />
+
         <RightNowModule summary={rightNow} />
 
         <Group gap="lg">
-          {/* First: planning is the one journey feature that works without
-              an account, so it is the one worth offering here. */}
-          <TextLink href={PLAN_JOURNEY_DESTINATION.href}>Plan a journey</TextLink>
           <TextLink href="/lines">Browse all lines</TextLink>
           <TextLink href="/stations">Look up a station</TextLink>
           {/* Review M8: the anonymous homepage is the only place that can
