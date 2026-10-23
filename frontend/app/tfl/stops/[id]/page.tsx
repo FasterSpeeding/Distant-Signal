@@ -11,7 +11,6 @@ import { ApiNotFoundError, getLineStatus, getTflStop, getTflStopArrivals } from 
 import { createLogger } from '@/lib/logger';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { stationLabel } from '@/lib/stationLabel';
-import { TFL_CREDIT } from '@/lib/tflAttribution';
 import { journeyFromTflStopHref, TFL_LINE_ID, TFL_STOP_ID, tflLineHref, tflModeBadge } from '@/lib/tflStops';
 import type { LineStatusReport, TflStopArrivals, TflStopDetail } from '@/lib/types';
 
@@ -161,13 +160,6 @@ export default async function TflStopPage({ params }: Params) {
           )}
         </Stack>
       )}
-
-      <Text size="xs" c="dimmed">
-        {TFL_CREDIT}.{' '}
-        <TextLink href="/attribution" tone="inherit" underline="always" inline>
-          Data credits
-        </TextLink>
-      </Text>
     </Stack>
   );
 }
