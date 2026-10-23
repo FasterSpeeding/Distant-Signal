@@ -597,6 +597,14 @@ pub(crate) async fn remove_member_in_tx(
         .bind(target_user_id)
         .execute(&mut **tx)
         .await?;
+    // Their follows of journeys shared into this group (DS-146): a follow
+    // lasts only while its share lets them in. Their own journeys' shares
+    // just above take everyone else's follows of them by the cascade.
+    sqlx::query("DELETE FROM journey_follows WHERE group_id = $1 AND user_id = $2")
+        .bind(group_id)
+        .bind(target_user_id)
+        .execute(&mut **tx)
+        .await?;
 
     // A KICKED member (removed by someone else, not leaving of their own
     // accord) must not be able to walk straight back in (2026-09-26 review,
@@ -1378,6 +1386,9 @@ pub struct GroupJourney {
     pub planned_arrival: Option<DateTime<Utc>>,
     /// The untracked leg's clock-only state; `None` on a train leg.
     pub untracked_status: Option<crate::data::journeys::UntrackedStatus>,
+    /// Whether the CALLER follows this journey (DS-146,
+    /// `journey_follows`); set by the route, `false` here.
+    pub following: bool,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for GroupJourney {
@@ -1435,6 +1446,7 @@ impl From<GroupJourneyRow> for GroupJourney {
             planned_departure: row.planned_departure,
             planned_arrival: row.planned_arrival,
             untracked_status: None,
+            following: false,
         }
     }
 }
@@ -1623,6 +1635,79 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
     Ok(items)
 }
 
+/// The `fl` (first leg) and `ll` (last leg) laterals the shared-journey
+/// lists name a journey from: the first leg's origin, place and date and
+/// the last leg's destination and place, each through
+/// [`crate::data::journeys::leg_crs_sql`] and `leg_place_sql`, so a train
+/// leg saved without station codes is named by its train's route (DS-144).
+fn first_last_legs_sql() -> String {
+    use crate::data::journeys::{LegEnd, leg_crs_sql, leg_place_sql};
+    let first_origin = leg_crs_sql(LegEnd::Origin, "jl5", "fts", "ftr");
+    let first_place = leg_place_sql(LegEnd::Origin, "jl5");
+    let last_destination = leg_crs_sql(LegEnd::Destination, "jl4", "lts", "ltr");
+    let last_place = leg_place_sql(LegEnd::Destination, "jl4");
+    format!(
+        "CROSS JOIN LATERAL ( \
+             SELECT {first_origin} AS origin_crs, {first_place} AS origin_place, \
+                    jl5.service_date \
+             FROM journey_legs jl5 \
+             LEFT JOIN train_subscriptions fts ON fts.id = jl5.train_subscription_id \
+             LEFT JOIN trains ftr ON ftr.id = fts.trains_id \
+             WHERE jl5.journey_id = j.id \
+             ORDER BY jl5.leg_order LIMIT 1 \
+         ) fl \
+         CROSS JOIN LATERAL ( \
+             SELECT {last_destination} AS destination_crs, \
+                    {last_place} AS destination_place \
+             FROM journey_legs jl4 \
+             LEFT JOIN train_subscriptions lts ON lts.id = jl4.train_subscription_id \
+             LEFT JOIN trains ltr ON ltr.id = lts.trains_id \
+             WHERE jl4.journey_id = j.id \
+             ORDER BY jl4.leg_order DESC LIMIT 1 \
+         ) ll"
+    )
+}
+
+/// `list_group_journeys`'s query, with the first and last legs'
+/// ends from [`first_last_legs_sql`].
+static LIST_GROUP_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let first_last_legs = first_last_legs_sql();
+    format!(
+        "SELECT gj.journey_id, j.custom_name, \
+                (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
+                COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
+                COALESCE(ts.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
+                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
+                COALESCE(ts.pin_scheduled_departure, tr.scheduled_departure) AS pin_scheduled_departure, \
+                fl.origin_crs AS first_origin_crs, \
+                COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
+                ll.destination_crs AS last_destination_crs, \
+                COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
+                fl.service_date, ts.resolution_status, \
+                tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
+                gj.added_by, u.name AS added_by_name, u.username AS added_by_username, \
+                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row, \
+                jl.kind, jl.transit_mode, jl.planned_departure, jl.planned_arrival \
+         FROM group_journeys gj \
+         JOIN journeys j ON j.id = gj.journey_id \
+         JOIN journey_legs jl ON jl.journey_id = j.id \
+             AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
+                          ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
+         {first_last_legs} \
+         JOIN users u ON u.id = gj.added_by \
+         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+         LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
+         LEFT JOIN stations so ON so.crs = UPPER(COALESCE(ts.pin_origin_crs, tr.origin_crs))::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
+         LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
+         LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
+         WHERE gj.group_id = $1 \
+         ORDER BY gj.added_at DESC, gj.journey_id DESC \
+         LIMIT $2"
+    )
+});
+
 /// Every journey shared into `group_id`, oldest-shared first. No
 /// permission check here -- the route's own `require_member` call gates
 /// "is the caller even a member," the same split [`list_group_trains`]
@@ -1654,53 +1739,11 @@ pub async fn list_group_trains(pool: &PgPool, group_id: &str) -> Result<Vec<Grou
 /// (`owned_next_leg_order` already computes `MAX(leg_order) + 1`, gaps and
 /// all).
 pub async fn list_group_journeys(pool: &PgPool, group_id: &str) -> Result<Vec<GroupJourney>> {
-    let rows: Vec<GroupJourneyRow> = sqlx::query_as(
-        "SELECT gj.journey_id, j.custom_name, \
-                (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
-                COALESCE(ts.pin_origin_crs, tr.origin_crs) AS pin_origin_crs, \
-                COALESCE(ts.pin_destination_crs, tr.destination_crs) AS pin_destination_crs, \
-                so.name AS pin_origin_name, sd.name AS pin_destination_name, \
-                COALESCE(ts.pin_scheduled_departure, tr.scheduled_departure) AS pin_scheduled_departure, \
-                fl.origin_crs AS first_origin_crs, \
-                COALESCE(sfo.name, fl.origin_place) AS first_origin_name, \
-                ll.destination_crs AS last_destination_crs, \
-                COALESCE(sld.name, ll.destination_place) AS last_destination_name, \
-                fl.service_date, ts.resolution_status, \
-                tr.train_uid, cs.status, cs.delay_minutes, ts.trains_id, \
-                gj.added_by, u.name AS added_by_name, u.username AS added_by_username, \
-                (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) AS timetable_on_row, \
-                jl.kind, jl.transit_mode, jl.planned_departure, jl.planned_arrival \
-         FROM group_journeys gj \
-         JOIN journeys j ON j.id = gj.journey_id \
-         JOIN journey_legs jl ON jl.journey_id = j.id \
-             AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
-                          ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
-         CROSS JOIN LATERAL ( \
-             SELECT jl5.origin_crs, jl5.origin_place, jl5.service_date \
-             FROM journey_legs jl5 WHERE jl5.journey_id = j.id \
-             ORDER BY jl5.leg_order LIMIT 1 \
-         ) fl \
-         CROSS JOIN LATERAL ( \
-             SELECT jl4.destination_crs, jl4.destination_place \
-             FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
-             ORDER BY jl4.leg_order DESC LIMIT 1 \
-         ) ll \
-         JOIN users u ON u.id = gj.added_by \
-         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
-         LEFT JOIN trains tr ON tr.id = ts.trains_id \
-         LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
-         LEFT JOIN stations so ON so.crs = UPPER(COALESCE(ts.pin_origin_crs, tr.origin_crs))::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(COALESCE(ts.pin_destination_crs, tr.destination_crs))::bpchar \
-         LEFT JOIN stations sfo ON sfo.crs = UPPER(fl.origin_crs)::bpchar \
-         LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
-         WHERE gj.group_id = $1 \
-         ORDER BY gj.added_at DESC, gj.journey_id DESC \
-         LIMIT $2",
-    )
-    .bind(group_id)
-    .bind(MAX_GROUP_LIST_ITEMS)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<GroupJourneyRow> = sqlx::query_as(LIST_GROUP_JOURNEYS_SQL.as_str())
+        .bind(group_id)
+        .bind(MAX_GROUP_LIST_ITEMS)
+        .fetch_all(pool)
+        .await?;
     let mut items: Vec<GroupJourney> = rows.into_iter().rev().map(GroupJourney::from).collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
     let now = Utc::now();
@@ -2043,6 +2086,9 @@ pub struct SharedJourney {
     pub planned_arrival: Option<DateTime<Utc>>,
     /// The untracked leg's clock-only state; `None` on a train leg.
     pub untracked_status: Option<crate::data::journeys::UntrackedStatus>,
+    /// Whether the CALLER follows this journey (DS-146,
+    /// `journey_follows`); set by the route, `false` here.
+    pub following: bool,
 }
 
 impl crate::data::stop_delay::PublicDelayFields for SharedJourney {
@@ -2102,26 +2148,16 @@ impl From<SharedJourneyRow> for SharedJourney {
             planned_departure: row.planned_departure,
             planned_arrival: row.planned_arrival,
             untracked_status: None,
+            following: false,
         }
     }
 }
 
-/// Every journey shared into ANY group `user_id` belongs to, EXCLUDING the
-/// ones they own themselves -- mirrors [`list_shared_trains_for_user`]
-/// exactly, including its `LIMIT`/ordering/one-row-per-pair reasoning; see
-/// that function's own doc comment for the full justification, which
-/// applies here unchanged with `journeys`/`group_journeys` in place of
-/// `train_subscriptions`/`group_trains`.
-///
-/// The first-leg join uses `MIN(leg_order)`, not `leg_order = 1` -- same
-/// 2026-09 review finding and reasoning as [`list_group_journeys`]'s own
-/// doc comment; this query is the second (and only other) place that
-/// assumption was made.
-pub async fn list_shared_journeys_for_user(
-    pool: &PgPool,
-    user_id: &str,
-) -> Result<Vec<SharedJourney>> {
-    let rows: Vec<SharedJourneyRow> = sqlx::query_as(
+/// `list_shared_journeys_for_user`'s query, with the first and last legs'
+/// ends from [`first_last_legs_sql`].
+static LIST_SHARED_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let first_last_legs = first_last_legs_sql();
+    format!(
         "SELECT g.id AS group_id, g.name AS group_name, \
                 gj.journey_id, j.custom_name, \
                 (SELECT COUNT(*) FROM journey_legs jl2 WHERE jl2.journey_id = j.id) AS leg_count, \
@@ -2145,16 +2181,7 @@ pub async fn list_shared_journeys_for_user(
          JOIN journey_legs jl ON jl.journey_id = j.id \
              AND jl.id = (SELECT jl3.id FROM journey_legs jl3 WHERE jl3.journey_id = j.id \
                           ORDER BY (jl3.kind = 'train') DESC, jl3.leg_order LIMIT 1) \
-         CROSS JOIN LATERAL ( \
-             SELECT jl5.origin_crs, jl5.origin_place, jl5.service_date \
-             FROM journey_legs jl5 WHERE jl5.journey_id = j.id \
-             ORDER BY jl5.leg_order LIMIT 1 \
-         ) fl \
-         CROSS JOIN LATERAL ( \
-             SELECT jl4.destination_crs, jl4.destination_place \
-             FROM journey_legs jl4 WHERE jl4.journey_id = j.id \
-             ORDER BY jl4.leg_order DESC LIMIT 1 \
-         ) ll \
+         {first_last_legs} \
          JOIN users u ON u.id = gj.added_by \
          LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
          LEFT JOIN trains tr ON tr.id = ts.trains_id \
@@ -2165,12 +2192,30 @@ pub async fn list_shared_journeys_for_user(
          LEFT JOIN stations sld ON sld.crs = UPPER(ll.destination_crs)::bpchar \
          WHERE me.user_id = $1 AND j.user_id <> $1 \
          ORDER BY gj.added_at DESC, gj.journey_id DESC \
-         LIMIT $2",
+         LIMIT $2"
     )
-    .bind(user_id)
-    .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
-    .fetch_all(pool)
-    .await?;
+});
+
+/// Every journey shared into ANY group `user_id` belongs to, EXCLUDING the
+/// ones they own themselves -- mirrors [`list_shared_trains_for_user`]
+/// exactly, including its `LIMIT`/ordering/one-row-per-pair reasoning; see
+/// that function's own doc comment for the full justification, which
+/// applies here unchanged with `journeys`/`group_journeys` in place of
+/// `train_subscriptions`/`group_trains`.
+///
+/// The first-leg join uses `MIN(leg_order)`, not `leg_order = 1` -- same
+/// 2026-09 review finding and reasoning as [`list_group_journeys`]'s own
+/// doc comment; this query is the second (and only other) place that
+/// assumption was made.
+pub async fn list_shared_journeys_for_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<Vec<SharedJourney>> {
+    let rows: Vec<SharedJourneyRow> = sqlx::query_as(LIST_SHARED_JOURNEYS_SQL.as_str())
+        .bind(user_id)
+        .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
+        .fetch_all(pool)
+        .await?;
     let mut items: Vec<SharedJourney> = rows.into_iter().map(SharedJourney::from).collect();
     crate::data::stop_delay::apply_public_delays(pool, &mut items).await?;
     let now = Utc::now();
@@ -6252,6 +6297,7 @@ mod group_train_wire_shape_tests {
             planned_departure: Some("2026-10-21T08:00:00Z".parse().unwrap()),
             planned_arrival: Some("2026-10-21T08:10:00Z".parse().unwrap()),
             untracked_status: Some(crate::data::journeys::UntrackedStatus::Planned),
+            following: false,
         }
     }
 
@@ -6280,6 +6326,7 @@ mod group_train_wire_shape_tests {
                 "firstOriginCrs",
                 "firstOriginName",
                 "firstReportExpectedAt",
+                "following",
                 "journeyId",
                 "kind",
                 "lastDestinationCrs",
@@ -6427,6 +6474,7 @@ mod group_train_wire_shape_tests {
             planned_departure: None,
             planned_arrival: None,
             untracked_status: None,
+            following: false,
         };
         for value in [
             serde_json::to_value(&train).unwrap(),

@@ -1,6 +1,7 @@
 import { isPassingPoint, stopDisplayArrival, stopDisplayTime } from './stopTimes';
 import { formatTime } from './dateFormat';
 import { routeLabel } from './stationLabel';
+import { trackedTrainRouteLabel } from './trackingName';
 import type { JourneyStop } from './types';
 
 /** The subset of `TrackedTrainState`/`TrainJourneyState` this module reads
@@ -11,6 +12,9 @@ export interface JourneyLegPinNames {
   pinOriginName: string | null;
   pinDestinationCrs: string | null;
   pinDestinationName: string | null;
+  /** Names a leg with no origin ("Train W12345"), as a tracked train is
+   * named (DS-111). */
+  trainUid?: string | null;
 }
 
 function crsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -65,7 +69,17 @@ export function legRouteAndTime(
 ): string {
   const originName = legEndpointName(originCrs, stops, pin, 'origin');
   const destinationName = legEndpointName(destinationCrs, stops, pin, 'destination');
-  const route = routeLabel(originCrs, originName, destinationCrs, destinationName);
+  // No origin is a train with no timetable yet, not an unknown station
+  // (DS-144): the train names the leg, as it names a tracked train.
+  const route = originCrs
+    ? routeLabel(originCrs, originName, destinationCrs, destinationName)
+    : trackedTrainRouteLabel({
+        pinOriginCrs: null,
+        pinOriginName: null,
+        pinDestinationCrs: destinationCrs,
+        pinDestinationName: destinationName,
+        trainUid: pin?.trainUid ?? null,
+      });
   const originStop = findStop(stops, originCrs);
   const departure = originStop ? stopDisplayTime(originStop) : null;
   return departure ? `${route} · ${formatTime(departure)}` : route;

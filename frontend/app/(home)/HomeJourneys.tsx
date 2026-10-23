@@ -11,6 +11,7 @@ import { TextLink } from '@/components/TextLink';
 import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
+import { followedFromLabel } from '@/lib/followedFrom';
 import { JOURNEYS_DESTINATION, NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { tokens } from '@/lib/theme';
 import {
@@ -108,7 +109,10 @@ function LegStatus({ leg, headline }: { leg: JourneyLegDetail; headline: Journey
  * The whole card links to the journey page. */
 export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { detail: JourneyDetail }; now: Date }) {
   const { detail } = journey;
-  const name = journeyNameInputFromLegs(detail.customName, detail.legs);
+  const name = journeyNameInputFromLegs(
+    detail.customName,
+    detail.legs.map((leg) => ({ ...leg, trainUid: leg.trackedTrainState?.trainUid ?? null })),
+  );
   const preview = journeyPreviewLine(name);
   const headline = homeJourneyStatusGroup(journey);
   const leg = currentLeg(detail, now);
@@ -139,6 +143,12 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
                 {preview}
               </Text>
             )}
+            {/* A journey the traveller follows (DS-146): whose it is. */}
+            {journey.item.followedFrom && (
+              <Text size="sm" c="dimmed">
+                {followedFromLabel(journey.item.followedFrom)}
+              </Text>
+            )}
           </Stack>
           {leg !== null && (
             <dl className="keyFacts keyFacts--compact">
@@ -167,11 +177,17 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
 
 /** One journey in a compact list: its name, the route and date a custom
  * name hides (`journeyPreviewLine`), its departure time when it was read
- * in full, and its whole-journey status (`homeJourneyStatusGroup`). Links
+ * in full, whose it is when the traveller follows it rather than owns it
+ * (DS-146), and its whole-journey status (`homeJourneyStatusGroup`). Links
  * to the journey page. */
 export function HomeJourneyRow({ journey }: { journey: HomeJourney }) {
   const name = journeyListItemNameInput(journey.item);
-  const details = [journeyPreviewLine(name), journey.departure ? `Departs ${formatTime(journey.departure)}` : null]
+  const followed = journey.item.followedFrom;
+  const details = [
+    journeyPreviewLine(name),
+    journey.departure ? `Departs ${formatTime(journey.departure)}` : null,
+    followed ? followedFromLabel(followed) : null,
+  ]
     .filter((part): part is string => part !== null)
     .join(' · ');
   return (

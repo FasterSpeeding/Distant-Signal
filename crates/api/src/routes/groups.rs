@@ -740,10 +740,32 @@ async fn list_group_journeys_route(
 ) -> Result<Json<Vec<groups::GroupJourney>>, (StatusCode, String)> {
     require_member(&app, &group_id, &user.id).await?;
 
-    let journeys = groups::list_group_journeys(&app.database, &group_id)
+    let mut journeys = groups::list_group_journeys(&app.database, &group_id)
         .await
         .map_err(internal_error("list group journeys"))?;
+    mark_followed(&app, &user.id, &mut journeys, |j| {
+        (j.journey_id, &mut j.following)
+    })
+    .await?;
     Ok(Json(journeys))
+}
+
+/// Sets each row's `following` (DS-146) from the caller's follows.
+async fn mark_followed<T>(
+    app: &App,
+    user_id: &str,
+    rows: &mut [T],
+    field: impl Fn(&mut T) -> (i64, &mut bool),
+) -> Result<(), (StatusCode, String)> {
+    let ids: Vec<i64> = rows.iter_mut().map(|row| field(row).0).collect();
+    let followed = crate::data::journey_follows::followed_ids(&app.database, user_id, &ids)
+        .await
+        .map_err(internal_error("read journey follows"))?;
+    for row in rows.iter_mut() {
+        let (id, following) = field(row);
+        *following = followed.contains(&id);
+    }
+    Ok(())
 }
 
 /// `GET /groups/shared-journeys` -- every journey shared into ANY group
@@ -758,9 +780,13 @@ async fn list_shared_journeys_route(
     State(app): State<App>,
     user: AuthenticatedUser,
 ) -> Result<Json<Vec<groups::SharedJourney>>, (StatusCode, String)> {
-    let journeys = groups::list_shared_journeys_for_user(&app.database, &user.id)
+    let mut journeys = groups::list_shared_journeys_for_user(&app.database, &user.id)
         .await
         .map_err(internal_error("list shared journeys"))?;
+    mark_followed(&app, &user.id, &mut journeys, |j| {
+        (j.journey_id, &mut j.following)
+    })
+    .await?;
     Ok(Json(journeys))
 }
 

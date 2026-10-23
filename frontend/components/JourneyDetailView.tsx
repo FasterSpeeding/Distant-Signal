@@ -45,6 +45,7 @@ function journeyNameInput(journey: JourneyDetail): JourneyNameInput {
     journey.customName,
     journey.legs.map((leg) => ({
       ...leg,
+      trainUid: leg.trackedTrainState?.trainUid ?? null,
       originName:
         leg.originName ??
         legEndpointName(leg.originCrs, leg.trackedTrainState?.journeyStops, leg.trackedTrainState, 'origin'),

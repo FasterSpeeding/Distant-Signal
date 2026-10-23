@@ -3,6 +3,99 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: a train leg with no stations of its own names its train's route
+
+Values only; no request or response shape changes. DS-MCP needs no change.
+
+- A train leg saved for a train whose timetable was not known yet stored
+  no stations: its `originCrs`/`destinationCrs` stayed `null` for good,
+  and so did every name read from them. Wherever a train leg's ends are
+  served, a `null` stored end now falls back to the leg's train pin, else
+  its train's own origin or destination, as `GET /Train/mine` already
+  does. An end the leg stored still wins. This covers each leg of
+  `GET /Journeys/{journeyId}` and `GET /Journeys/shared/{token}`
+  (`originCrs`, `originName`, `destinationCrs`, `destinationName`), the
+  current leg's ends and `firstOriginCrs`/`firstOriginName`/
+  `lastDestinationCrs`/`lastDestinationName` of `GET /Journeys/mine`, and
+  `firstOriginCrs`/`firstOriginName`/`lastDestinationCrs`/
+  `lastDestinationName` of a group's and a member's shared journeys.
+  `GET /Journeys/mine`'s travel order reads the same ends.
+- An untracked leg with a `TfL` stop but no place serves the stop's name
+  as `originPlace`/`destinationPlace` (and as the names above). Saving
+  such a leg already names a blank place after its stop.
+- A new train leg on a subscription with no pins stores its train's
+  route, when the train knows it, rather than nothing.
+- The stored values follow: when a train's route arrives (schedule
+  matching, or the enrichment after tracking it), its legs' missing
+  stations and its subscriptions' missing pins are filled on the same
+  write, and a migration fills the rows saved before this release. A
+  station or pin already set is never changed. Push notifications name
+  such a leg by its route too.
+
+## 2026-10-23: "I missed this train" only looks; ticket advice
+
+Cookie-only journey routes; no field is added or removed. DS-MCP needs no
+change.
+
+- The web app's "I missed this train" no longer calls `POST
+  /Journeys/{id}/legs/{legId}/missed`. It looks with `GET
+  .../legs/{legId}/alternatives?cause=missed` and records the miss only
+  when the traveller takes a train, with `POST .../legs/{legId}/replace`
+  `{cause: "missed", ...}`. The `missed` route still works as before.
+- `alternatives?cause=missed` (with no break open on the leg) ranks with
+  the fault the data decides, as `missed` does: `operator` when the change
+  onto the leg no longer works on live times, else `user`.
+- `replace` with `cause: "missed"` and no break open records a revision
+  with `cause` `user_missed` and that same fault (it was always `user`),
+  and is always its own revision with an Undo, even before the journey's
+  first departure (it was a planning edit of the booked plan then).
+- A suggestion set's `hint` is now always present and reads as ticket
+  advice: station staff first unless the ticket is flexible, worded by
+  who broke the journey (spec §8.3). "Add your ticket to see which trains
+  it covers" is gone.
+- A one-off migration dismisses (`dismissReason` `other`) every open
+  `user_missed` break: each was opened by the old sheet just by loading.
+
+## 2026-10-24: following a shared journey
+
+Additive. A journey shared with someone, through a group or a share link,
+can be followed: it then lists among their own journeys, read-only. The
+new routes are cookie-only (a delegated token is refused, like every
+route outside the delegated list); nothing changes for a request that
+doesn't use them. DS-MCP needs no change: `GET /Journeys/mine` without
+`include` is unchanged, and a delegated caller never gets followed
+journeys.
+
+- **`POST /Journeys/{journeyId}/follow`**, optional JSON body `{"groupId"}`
+  or `{"shareToken"}` (not both: `400`). No body: through any group the
+  journey is shared into that the caller is in. `shareToken`: through the
+  journey's live share link (in the body, not the path, so it stays out of
+  logs). Idempotent. `200` with the follow's `followedFrom` (below); `404`
+  when there is no such journey or the share doesn't let the caller in;
+  `409` for the caller's own journey.
+- **`DELETE /Journeys/{journeyId}/follow`**: stops following. `204` either
+  way.
+- **`GET /Journeys/mine?include=followed`**: also lists the journeys the
+  caller follows, in the same travel order and under the same cap as their
+  own, each with **`followedFrom`**: `{via: "group" | "link", ownerName,
+  ownerTag, groupId, groupName, followedAt}`. `ownerName`/`ownerTag` follow
+  the group member label rules (`GroupJourney.addedByName`/`addedByTag`);
+  a link follow has `null` for both and for the group fields, since a share
+  link shows nothing about its owner. On such a row `createdVia` is absent
+  and `trainSubscriptionId` is `null` (they are the owner's). Any other
+  `include` value is a `400`. A delegated caller's `include` is ignored.
+- **`GET /Journeys/{journeyId}`** (session callers who don't own it): new
+  **`followedFrom`** when following, and **`canFollow: true`** when the
+  journey is shared into one of the caller's groups and not yet followed.
+  A follower who came through a share link can read the journey here too,
+  while the link lives.
+- **`GET /groups/{id}/journeys`** and **`GET /groups/shared-journeys`**:
+  new per-row **`following`** (bool).
+- A follow ends when the share does: the journey is unshared from the
+  group, the follower leaves it, the link is revoked, regenerated or
+  expires, or the journey is deleted. Every read also re-checks the share.
+- Followers get no push notifications.
+
 ## 2026-10-23: train search across midnight, and every timetable operator
 
 `GET /public/trains/search`, plus a new `GET /public/trains/search/operators`.

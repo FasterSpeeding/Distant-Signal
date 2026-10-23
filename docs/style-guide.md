@@ -307,10 +307,14 @@ used, rather than as a literal in a component.
   a train its time is a window, and a name must not change shape when a
   leg resolves. Unresolved, untracked and cancelled legs name the journey
   like any other (a leg end with a name but no code shows its name); the
-  status badge says what is wrong. No legs: "Journey with no legs yet". A
-  template has no day, so its name is the route alone. A share-link
-  preview leaves the custom name out (it is the owner's private label) and
-  uses the default name. Push notifications name a journey "'Custom
+  status badge says what is wrong. Never "Unknown station": with no
+  origin to name, the first leg's train stands in ("Train W12345, 17 Sep
+  2026", "Train W12345 to York (YRK), 17 Sep 2026"), else "Journey on 17
+  Sep 2026"; a train leg's card is titled by its train, or "Train leg"
+  before it has one. No legs: "Journey with no legs yet". A template has
+  no day, so its name is the route alone. A share-link preview leaves the
+  custom name out (it is the owner's private label) and uses the default
+  name. Push notifications name a journey "'Custom
   name'" or "your journey to Edinburgh" and a leg by its position and
   route, "Leg 2 of your journey to Edinburgh is delayed", stations by name
   ("York to Newcastle"), or codes on both ends when either name is

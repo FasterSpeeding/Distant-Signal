@@ -96,9 +96,32 @@ describe('journey names', () => {
     expect(journeyDisplayName(input)).toBe('London Kings Cross (KGX) to Canary Wharf, 17 Sep 2026');
   });
 
-  it('falls back to "Unknown station" for an end with neither code nor name', () => {
-    const input = journeyNameInputFromLegs(null, [leg(null, null, 'YRK', 'York')]);
-    expect(journeyRouteLabel(input)).toBe('Unknown station to York (YRK)');
+  it('names a journey with no origin by its first train, never "Unknown station"', () => {
+    const input = journeyNameInputFromLegs(null, [{ ...leg(null, null, 'YRK', 'York'), trainUid: 'W12345' }]);
+    expect(journeyRouteLabel(input)).toBe('Train W12345 to York (YRK)');
+    expect(journeyDisplayName(journeyNameInputFromLegs(null, [leg(null, null, 'YRK', 'York')]))).toBe(
+      'Journey to York (YRK), 17 Sep 2026',
+    );
+  });
+
+  // DS-144: journey 50's shape, a train leg saved before its train had a
+  // timetable, with no station on either end.
+  it('names a journey with no stations by its train, else by its date', () => {
+    const bare = leg(null, null, null, null, '2026-10-23');
+    expect(journeyDisplayName(journeyNameInputFromLegs(null, [{ ...bare, trainUid: 'W12345' }]))).toBe(
+      'Train W12345, 23 Oct 2026',
+    );
+    const input = journeyNameInputFromLegs(null, [bare]);
+    expect(journeyDisplayName(input)).toBe('Journey on 23 Oct 2026');
+    expect(journeyPreviewLine(journeyNameInputFromLegs('Trip', [bare]))).toBe('Journey on 23 Oct 2026');
+    expect(journeyDisplayName(input)).not.toMatch(/Unknown station/);
+  });
+
+  it('names a journey with an origin but no destination by its origin alone', () => {
+    expect(journeyDisplayName(journeyNameInputFromLegs(null, [leg('KGX', 'London Kings Cross', null, null)]))).toBe(
+      'London Kings Cross (KGX), 17 Sep 2026',
+    );
+    expect(journeyRouteLabel(journeyNameInputFromLegs(null, [leg(null, 'Bank', null, null)]))).toBe('Bank');
   });
 
   // Spec 2026-10-20 §2: a journey that starts with an untracked Tube leg

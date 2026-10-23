@@ -13,7 +13,7 @@ import { UntrackedLegCard } from './UntrackedLegCard';
 import { isUntrackedLeg } from '@/lib/untrackedLeg';
 import { legRouteAndTime } from '@/lib/journeyLegLabel';
 import { formatDate } from '@/lib/dateFormat';
-import { routeLabel } from '@/lib/stationLabel';
+import { routeLabel, stationLabel } from '@/lib/stationLabel';
 import { legSearchPrefill, type LegSearch } from '@/lib/legSearch';
 import type { JourneyLegDetail } from '@/lib/types';
 
@@ -140,6 +140,14 @@ function windowSummary(
  * UX review finding I14/2.4's own recommendation: "actions live at the
  * top-right of the thing they act on", the same rule `page.tsx`'s header
  * already applies to "Add a leg". */
+/** An open train leg's route. A leg saved with no origin (its train was
+ * released, or never had a timetable) is a "Train leg", never "Unknown
+ * station" (DS-144). */
+function openLegRouteLabel(leg: JourneyLegDetail): string {
+  if (leg.originCrs) return routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName);
+  return leg.destinationCrs ? `Train leg to ${stationLabel(leg.destinationCrs, leg.destinationName)}` : 'Train leg';
+}
+
 export function JourneyLegCard({
   journeyId,
   leg,
@@ -194,7 +202,7 @@ export function JourneyLegCard({
     // `destinationName` (resolved server-side from the `stations`
     // reference table), so this degrades to bare codes only when the
     // reference row genuinely doesn't exist.
-    const header = `${routeLabel(leg.originCrs, leg.originName, leg.destinationCrs, leg.destinationName)}, ${formatDate(leg.serviceDate)}`;
+    const header = `${openLegRouteLabel(leg)}, ${formatDate(leg.serviceDate)}`;
     // Review I18 (found independently by two reviewers): the window the
     // traveller just typed was never shown back to them -- the only place
     // it lived was inside `hasWindow`'s own boolean check below, never

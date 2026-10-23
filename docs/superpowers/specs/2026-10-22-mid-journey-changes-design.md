@@ -700,7 +700,7 @@ All routes are cookie-only (`AuthenticatedUser`), owner-only (as
 | `GET /Journeys/{id}` | Gains `connections: [{fromLegId, toLegId, state: works\|atRisk\|broken, slackMinutes, changeMinutes, cause}]`, `openBreak: {id, cause, fault, severity, suggestionsReady, stale} \| null`, `revisionCount`, and per leg `replacesLegIds: number[]` (from the latest revision). Delegated readers see these too. |
 | `GET /Journeys/mine` | `connection` filled for today's journeys; gains `openBreakId`. |
 | `GET /Journeys/{id}/legs/{legId}/alternatives?cause=` | The light picker for one leg: rejoin options and to-destination options, live, from that leg. Works on **every** train leg, whatever `window_searched` is. `cause` is `missed`, `cancelled`, `connection` or `choice`. |
-| `POST /Journeys/{id}/legs/{legId}/missed` | "I missed this train". Opens a break (`user_missed`, fault from §4.2), plans at once, returns the break with suggestions. Refused (409 `leg_travelled`) on a travelled leg. |
+| `POST /Journeys/{id}/legs/{legId}/missed` | Mark a leg missed. Opens a break (`user_missed`, fault from §4.2), plans at once, returns the break with suggestions. Refused (409 `leg_travelled`) on a travelled leg. The web app does not call it (2026-10-22 fix): "I missed this train" only looks, with `alternatives?cause=missed` (fault from §4.2), and taking one (`replace`, `cause: missed`) records the miss as its own revision. A break opened just by looking stayed open after the sheet closed and showed "You missed the ..." for a train that left on time with the traveller on it. |
 | `GET /Journeys/{id}/breaks/current?src=push` | The open break with stored suggestions and `stale`. Stamps `opened_at` once. 404 with none. |
 | `POST /Journeys/{id}/replan/preview` | `{breakId?, fromLegId, departAfter?}`. Recomputes suggestions live and stores them on the break. Rate-limited like `/Trips/plan`. |
 | `POST /Journeys/{id}/replan/accept` | `{breakId, suggestionId, fingerprint}` with `Idempotency-Key` (reusing `journey_idempotency_keys`). Writes the revision (§4.4). `409 suggestion_stale` with a fresh preview when the chosen option no longer works on live times. |
@@ -743,8 +743,10 @@ state, fixing `homeJourneyStatusGroup` (§1.2).
   "Find another way" text button.
 - Leg cards (`JourneyLegCard.tsx`), owner only:
   - **"I missed this train"** on the current or next train leg, before
-    it is travelled. One tap, no confirm (nothing is destroyed), opens
-    the sheet.
+    it is travelled. One tap, no confirm (nothing is written), opens
+    the sheet. Only taking a train there records the leg as missed;
+    closing the sheet leaves no break and no banner. DS has no other
+    evidence of a missed first leg: its departure time passing is not one.
   - **"Choose another train"** on every train leg, not just
     `windowSearched` ones. It opens the same sheet with `cause=choice`.
     Before travel this is today's Change train, without needing a
@@ -781,8 +783,29 @@ Stop suggestions for this journey
 - Errors: "Couldn't load other trains." / "Couldn't update the
   journey."; a `409 suggestion_stale` swaps in the fresh list with "That
   train no longer works. Here are the latest options."
-- A user-fault break adds one line under the list: "Your ticket may not
-  be valid on a different train. Check before you board." (§11).
+- Under the list, the ticket advice (the set's `hint`, from the same
+  ticket constraint and entitlement as the ranking and fit badges,
+  §17.3). Station staff have the last word on a ticket, and must help
+  finish a journey the railway disrupted (`NRCoT` 9.4, 28.3), so unless
+  the ticket is known to be flexible it starts with them:
+  - railway-caused (a late inbound, cancellation, part-cancellation):
+    "Ask station staff. Your ticket should be accepted on the next
+    suitable train because your journey was disrupted. Check before you
+    board.";
+  - traveller-caused, Advance: "Ask station staff if there are any. Your
+    Advance ticket is only valid on the train you missed, so you'll
+    likely need a new one." (a free choice: "... only valid on your
+    booked train, ...");
+  - traveller-caused, unknown ticket: "Ask station staff if there are
+    any. If you have an Advance ticket, you'll likely need a new one.
+    Check before you board.";
+  - traveller-caused, operator-only: "Ask station staff if there are
+    any. Your ticket may not be valid on a different train. Check before
+    you board.";
+  - flexible (any permitted, Off-Peak, Anytime, a season), any cause:
+    "Your ticket is usually valid on other trains on the same route."
+
+  Then "Your booked plan stays saved for Delay Repay."
 
 ## 9. Delay Repay
 
@@ -1193,13 +1216,13 @@ accept (§17.9).
 |---|---|---|---|---|
 | **Advance** | Missed connection (railway) | The next train of the ticket's operator to the destination, by the ticket's route (9.4); `fit_penalty` makes other operators lose unless the user prefers otherwise | "Fastest" when another operator arrives at least 15 minutes earlier | Other operators: "May need a new ticket" |
 | **Advance** | Booked train cancelled | Earliest arrival among the same operator's trains up to two before or after (28.3) and participating operators within 2 hours either side (acceptance policy) | "Same operator" if Recommended is another operator | Outside the window: "May need a new ticket" |
-| **Advance** | Passenger fault | Fastest, under a banner: "Your Advance ticket is only valid on the train you missed. You'll likely need a new ticket." | "Fewest changes" | Every option `LikelyNewTicket`, so none is singled out |
+| **Advance** | Passenger fault | Fastest, with the advice "Ask station staff if there are any. Your Advance ticket is only valid on the train you missed, so you'll likely need a new one." (§8.3) | "Fewest changes" | Every option `LikelyNewTicket`, so none is singled out |
 | **Operator only** ("X ONLY") | Any railway break | Fastest on that operator | "Fastest" on any operator if 15 minutes or more earlier | Other operators: "May need a new ticket", unless declared acceptance |
 | **Route restricted** ("VIA X", "NOT VIA Y") | Any railway break | Fastest whose calling points satisfy the route (checked on the itinerary's stations; the planner already takes `via` and `avoid`) | "Fastest" if it breaks the route | Route breakers: "May need a new ticket" |
 | **Any permitted** (Off-Peak, Anytime) | Any railway break | Lowest cost; operator is irrelevant | "Fewest changes", "No Tube" when they differ | Nothing (DS cannot check the routeing guide, §17.7) |
 | **Season** | Any | As any permitted, between the season's stations | As any permitted | A leg outside the season's stations: "Check your ticket" |
-| **Unknown** (no ticket) | Railway break | Lowest cost with `same_operator` as a 5-minute bonus, so a same-operator train wins ties | Always a "Same operator" pick when it differs, so an Advance holder can find it | Nothing; one line "Add your ticket to see which trains it covers" |
-| **Unknown** | Passenger fault | Lowest cost | "Same operator" | One line: "If you have an Advance ticket, you'll likely need a new one." |
+| **Unknown** (no ticket) | Railway break | Lowest cost with `same_operator` as a 5-minute bonus, so a same-operator train wins ties | Always a "Same operator" pick when it differs, so an Advance holder can find it | Nothing; the railway-caused advice, staff first (§8.3) |
+| **Unknown** | Passenger fault | Lowest cost | "Same operator" | The advice "Ask station staff if there are any. If you have an Advance ticket, you'll likely need a new one. Check before you board." (§8.3) |
 | **Any** | `user_choice` | The user's preference profile only | "Fastest", "Fewest changes" | As a passenger-initiated change: Advance shows "May need a new ticket" |
 
 ### 17.6 Presentation: picks with badges, not one list

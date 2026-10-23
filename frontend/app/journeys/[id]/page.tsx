@@ -1,9 +1,11 @@
-import { Stack, Title } from '@mantine/core';
+import { Group, Stack, Text, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import { getJourney, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { JourneyDetailView } from '@/components/JourneyDetailView';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
+import { FollowJourneyButton } from '@/components/FollowJourneyButton';
+import { followedFromLabel } from '@/lib/followedFrom';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import type { Metadata } from 'next';
 
@@ -92,6 +94,24 @@ export default async function JourneyDetailPage({
       <TextLink href="/journeys" underline="always">
         Back to journeys
       </TextLink>
+      {/* Following (DS-146): a journey shared with the caller can be
+          followed into their own lists, read-only. Unfollowing one
+          followed through a share link goes back to the list: the caller
+          can't open it any more. */}
+      {journey.followedFrom ? (
+        <Group gap="sm" wrap="wrap" justify="space-between">
+          <Text size="sm" c="dimmed">
+            {followedFromLabel(journey.followedFrom)}
+          </Text>
+          <FollowJourneyButton
+            journeyId={journey.id}
+            following
+            afterUnfollowHref={journey.followedFrom.via === 'link' ? '/journeys' : undefined}
+          />
+        </Group>
+      ) : (
+        journey.canFollow && <FollowJourneyButton journeyId={journey.id} following={false} />
+      )}
       <JourneyDetailView
         journey={journey}
         fetchedAt={fetchedAt}

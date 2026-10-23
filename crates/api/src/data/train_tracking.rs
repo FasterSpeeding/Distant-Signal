@@ -4912,7 +4912,7 @@ mod journey_leg_list_tests {
 
         // The root cause, pinned: `GET /Journeys/mine` names one current leg
         // per journey, so a filter built from it misses every later leg.
-        let journeys = list_journeys_for_user(&pool, user_id)
+        let journeys = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list journeys");
         let current_leg_ids: Vec<i64> = journeys

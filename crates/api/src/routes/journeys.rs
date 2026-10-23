@@ -26,8 +26,8 @@ use crate::app::{App, Router};
 use crate::auth::AuthenticatedUser;
 use crate::auth::delegated::{DelegatedOrSessionUser, DeleteScope, ReadScope};
 use crate::data::{
-    journey_feasibility, journeys, leg_validation, schedule_matching, train_tracking,
-    unlisted_links,
+    journey_feasibility, journey_follows, journeys, leg_validation, schedule_matching,
+    train_tracking, unlisted_links,
 };
 use crate::routes::journey_itinerary::RouteError;
 
@@ -107,6 +107,11 @@ pub fn router() -> Router {
         .route(
             "/Journeys/{journey_id}/share-link/extend",
             axum::routing::post(extend_journey_share_link),
+        )
+        // Following a journey shared with the caller (DS-146), cookie-only.
+        .route(
+            "/Journeys/{journey_id}/follow",
+            axum::routing::post(follow_journey).delete(unfollow_journey),
         )
         // Mid-journey changes (spec 2026-10-22 §7), cookie-only.
         .merge(super::journey_replan::router())
@@ -1266,15 +1271,43 @@ fn internal_error(operation: &'static str) -> impl Fn(anyhow::Error) -> (StatusC
     }
 }
 
+/// `GET /Journeys/mine`'s query. Not `deny_unknown_fields`: the route took
+/// no parameters before `include` and ignored any it was sent, which a
+/// client may rely on.
+#[derive(Debug, Default, Deserialize)]
+struct MyJourneysParams {
+    /// `followed`: also list the journeys the caller follows (DS-146).
+    #[serde(default)]
+    include: Option<String>,
+}
+
 /// `GET /Journeys/mine`. Also a delegated route (`journeys:read`, spec
 /// 2026-10-14 §5.8), with the same response; errors then follow the
 /// delegated JSON contract.
+///
+/// `?include=followed` (DS-146) adds the journeys the caller follows, in
+/// the same travel order and under the same cap, each with `followedFrom`.
+/// Without it the list is the caller's own journeys, as before. A delegated
+/// caller always gets its own journeys only: following is a session
+/// feature, as reading a group-shared journey is (`get_journey`).
 async fn get_my_journeys(
     State(app): State<App>,
     user: DelegatedOrSessionUser<ReadScope>,
+    Query(params): Query<MyJourneysParams>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    match journeys::list_journeys_for_user(&app.database, &user.user_id).await {
+    let include_followed = match params.include.as_deref() {
+        None | Some("") => false,
+        Some("followed") => !user.is_delegated(),
+        Some(_) => {
+            return RouteError::from((
+                StatusCode::BAD_REQUEST,
+                "include must be `followed`".to_string(),
+            ))
+            .render(user.is_delegated(), "bad_request");
+        }
+    };
+    match journeys::list_journeys_for_user(&app.database, &user.user_id, include_followed).await {
         Ok(rows) => Json(rows).into_response(),
         Err(err) => RouteError::from(internal_error("list journeys")(err))
             .render(user.is_delegated(), "bad_request"),
@@ -1313,6 +1346,17 @@ struct JourneyDetailResponse {
     /// journey via the share link itself) never sees a live, usable token
     /// this way -- design doc §4.
     share_link: Option<ShareLinkResponse>,
+    /// Set when the caller follows this journey (DS-146): who shared it and
+    /// how. Session callers only; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    followed_from: Option<journey_follows::FollowedFrom>,
+    /// Whether the caller could follow this journey through a group it is
+    /// shared into (DS-146), i.e. `POST /Journeys/{id}/follow` with no body
+    /// would succeed. Session callers who don't own or already follow it;
+    /// absent (false) otherwise. A share-link visitor follows with the
+    /// link's token instead.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    can_follow: bool,
 }
 
 /// The unlisted share link `unlisted_links::UnlistedLink` mapped onto the
@@ -1477,6 +1521,15 @@ async fn get_journey_inner(
     let mut response = build_journey_detail_response(app, journey_id, is_owner).await?;
     if user.is_delegated() {
         response.share_link = None;
+    } else if !is_owner {
+        response.followed_from =
+            journey_follows::follow_of(&app.database, &user.user_id, journey_id)
+                .await
+                .map_err(internal_error("read journey follow"))?;
+        response.can_follow = response.followed_from.is_none()
+            && journey_follows::can_follow_through_group(&app.database, &user.user_id, journey_id)
+                .await
+                .map_err(internal_error("read journey follow"))?;
     }
     Ok(response)
 }
@@ -1510,6 +1563,11 @@ async fn create_journey_share_link(
     )
     .await
     .map_err(internal_error("create journey share link"))?;
+    // A regenerate revokes the old link, and the follows through it end
+    // with it (DS-146): their followers can no longer open the journey.
+    journey_follows::drop_dead_link_follows(&app.database, journey_id)
+        .await
+        .map_err(internal_error("end follows through the old share link"))?;
 
     Ok(Json(ShareLinkResponse {
         token: Some(link.token),
@@ -1571,7 +1629,90 @@ async fn revoke_journey_share_link(
     )
     .await
     .map_err(internal_error("revoke journey share link"))?;
+    // The follows through the revoked link end with it (DS-146).
+    journey_follows::drop_dead_link_follows(&app.database, journey_id)
+        .await
+        .map_err(internal_error("end follows through the revoked share link"))?;
 
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /Journeys/{journeyId}/follow`'s optional body (DS-146). Neither
+/// field: follow through any group the journey is shared into that the
+/// caller is in.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FollowRequest {
+    /// Follow through this group's share.
+    #[serde(default)]
+    group_id: Option<String>,
+    /// Follow through the journey's share link: its token, in the body so
+    /// it stays out of access logs.
+    #[serde(default)]
+    share_token: Option<String>,
+}
+
+/// `POST /Journeys/{journeyId}/follow` (DS-146), cookie-only: the caller
+/// follows a journey shared with them, through a group they are in or the
+/// journey's live share link, so it lists among their own (`GET
+/// /Journeys/mine?include=followed`), read-only. Idempotent. `200` with
+/// `followedFrom`; `404` when there is no such journey or the share named
+/// doesn't let the caller in (indistinguishable, as every journey read);
+/// `409` for the caller's own journey; `400` for a body naming both a group
+/// and a link.
+async fn follow_journey(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Result<Json<journey_follows::FollowedFrom>, (StatusCode, String)> {
+    let request: FollowRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        FollowRequest::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|err| (StatusCode::BAD_REQUEST, format!("invalid body: {err}")))?
+    };
+    let through = match (&request.group_id, &request.share_token) {
+        (Some(_), Some(_)) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "name a group or a share link, not both".to_string(),
+            ));
+        }
+        (None, Some(token)) => journey_follows::FollowThrough::Link(token),
+        (group_id, None) => journey_follows::FollowThrough::Group(group_id.as_deref()),
+    };
+    let not_found = || (StatusCode::NOT_FOUND, "no journey with that id".to_string());
+    match journey_follows::follow_journey(&app.database, &user.id, journey_id, through)
+        .await
+        .map_err(internal_error("follow journey"))?
+    {
+        journey_follows::FollowOutcome::Followed
+        | journey_follows::FollowOutcome::AlreadyFollowing => {}
+        journey_follows::FollowOutcome::OwnJourney => {
+            return Err((StatusCode::CONFLICT, "this is your own journey".to_string()));
+        }
+        journey_follows::FollowOutcome::NotFound => return Err(not_found()),
+    }
+    // The follow just made or kept; `None` only if its share lapsed in
+    // between, which reads as not found like any other lapsed share.
+    journey_follows::follow_of(&app.database, &user.id, journey_id)
+        .await
+        .map_err(internal_error("read journey follow"))?
+        .map(Json)
+        .ok_or_else(not_found)
+}
+
+/// `DELETE /Journeys/{journeyId}/follow` (DS-146), cookie-only: stops
+/// following. `204` either way (idempotent, like revoking a share link).
+async fn unfollow_journey(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Path(journey_id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    journey_follows::unfollow_journey(&app.database, &user.id, journey_id)
+        .await
+        .map_err(internal_error("unfollow journey"))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1757,7 +1898,8 @@ async fn build_journey_detail_response(
     crate::data::train_reasons::attach_to_tracked_states(&app.database, &mut stop_states).await;
     // Planned / awaiting / not in the timetable (spec 2026-10-20 §4.3),
     // after the stop build: a built stop list is timetable evidence.
-    let now = Utc::now();
+    // `london_now`: the wall clock, which a db test can pin.
+    let now = crate::routes::london_now().with_timezone(&Utc);
     crate::data::tracking_phase::attach(&app.database, &mut stop_states, now).await;
     for (index, state) in stop_leg_indexes.into_iter().zip(stop_states) {
         leg_states[index] = Some(state);
@@ -1921,6 +2063,8 @@ async fn build_journey_detail_response(
         is_owner,
         replan,
         share_link,
+        followed_from: None,
+        can_follow: false,
     })
 }
 

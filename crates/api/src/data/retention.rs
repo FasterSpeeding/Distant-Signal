@@ -43,6 +43,9 @@ pub struct RetentionOutcome {
     pub template_skipped_dates: u64,
     pub push_subscriptions: u64,
     pub accounts: u64,
+    /// Journey follows whose share no longer lets the follower in (an
+    /// expired share link, or a cleanup that raced the follow; DS-146).
+    pub lapsed_follows: u64,
 }
 
 impl RetentionOutcome {
@@ -53,6 +56,7 @@ impl RetentionOutcome {
             + self.template_skipped_dates
             + self.push_subscriptions
             + self.accounts
+            + self.lapsed_follows
     }
 }
 
@@ -116,6 +120,11 @@ pub async fn prune_personal_data(
             }
         }
     }
+
+    // Not a retention limit, so not switchable: a follow is only ever
+    // honoured while its share is live (`journey_follows::VALID_FOLLOW`),
+    // and a share link's expiry is the one lapse no request deletes.
+    outcome.lapsed_follows = crate::data::journey_follows::prune_lapsed_follows(pool).await?;
 
     Ok(outcome)
 }
@@ -229,8 +238,9 @@ mod tests {
             template_skipped_dates: 4,
             push_subscriptions: 5,
             accounts: 6,
+            lapsed_follows: 7,
         };
-        assert_eq!(outcome.total(), 21);
+        assert_eq!(outcome.total(), 28);
     }
 }
 

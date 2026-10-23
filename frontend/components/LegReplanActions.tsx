@@ -22,8 +22,10 @@ export interface LegReplanContext {
 /** A train leg's mid-journey actions, for the owner (spec §8.2):
  *
  * - "I missed this train" on the first train leg not yet travelled (never
- *   a travelled or cancelled one): no confirm, as nothing is destroyed; it
- *   opens the sheet, which asks the api to plan from here;
+ *   a travelled or cancelled one): no confirm, as nothing is written; it
+ *   opens the sheet with the other ways from here, and only taking one
+ *   records the train as missed. Closing the sheet leaves the journey as
+ *   it was: no break, so no "You missed the ..." banner;
  * - "Find another way" on a leg whose train is cancelled or which broke
  *   the plan: the open break's suggestions, or other trains for a
  *   cancelled leg when no break is open yet.
@@ -62,7 +64,11 @@ export function LegReplanActions({
   return (
     <>
       {showMissed && (
-        <Button size="xs" variant="default" onClick={() => setMode({ kind: 'missed', legId: leg.id })}>
+        <Button
+          size="xs"
+          variant="default"
+          onClick={() => setMode({ kind: 'missed', legId: leg.id, inboundLate: leg.connection?.state === 'missed' })}
+        >
           I missed this train
         </Button>
       )}

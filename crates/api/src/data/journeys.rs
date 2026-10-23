@@ -22,6 +22,25 @@ use common::TimeWindow;
 use serde::Serialize;
 use sqlx::PgPool;
 
+// The leg's effective station code: `ds_store::trains::leg_crs_sql`
+// (DS-144), shared with the notifier.
+pub(crate) use ds_store::trains::{LegEnd, leg_crs_sql};
+
+/// SQL for a leg's effective place name at `end`: an untracked leg's own
+/// place, else the name of the `TfL` stop it was picked from (DS-144). The
+/// write path already names a blank place after its stop; this keeps a
+/// read honest if one ever reaches the table without.
+pub(crate) fn leg_place_sql(end: LegEnd, leg: &str) -> String {
+    let (place, stop) = match end {
+        LegEnd::Origin => ("origin_place", "origin_stop_id"),
+        LegEnd::Destination => ("destination_place", "destination_stop_id"),
+    };
+    format!(
+        "COALESCE({leg}.{place}, \
+         (SELECT tfs.name FROM tfl_stops tfs WHERE tfs.stop_id = {leg}.{stop}))"
+    )
+}
+
 /// Mirrors `train_tracking::tracked_train_owner` exactly -- `None` for "no
 /// journey with that id"; the route layer maps both that and a mismatch to
 /// `404`, never `403` (this codebase's universal ownership convention).
@@ -541,13 +560,7 @@ async fn insert_known_train_journey(
     let tracking_id =
         crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
             .await?;
-    let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
-    )
-    .bind(tracking_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
+    let (pin_origin_crs, pin_destination_crs) = subscription_route(&mut *tx, tracking_id).await?;
     let origin_crs = origin_crs_override.map(str::to_string).or(pin_origin_crs);
     let destination_crs = destination_crs_override
         .map(str::to_string)
@@ -570,6 +583,29 @@ async fn insert_known_train_journey(
     .await?;
     crate::data::journey_revisions::record_plan_change(&mut *tx, journey_id, Utc::now()).await?;
     Ok((journey_id, leg_id, tracking_id))
+}
+
+/// The route a new train leg on subscription `tracking_id` stores when the
+/// caller named no stations of its own: the subscription's pins, else its
+/// shared `trains` row's route (DS-144). A subscription made for a train
+/// whose row the route minted by UID moments earlier has no pins; the row
+/// may already know its route by then, and the leg should keep it. The
+/// reads fall back the same way ([`leg_crs_sql`]) for a row that learns
+/// its route only later.
+async fn subscription_route(
+    conn: &mut sqlx::PgConnection,
+    tracking_id: i64,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    let route: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT COALESCE(ts.pin_origin_crs, tr.origin_crs), \
+                COALESCE(ts.pin_destination_crs, tr.destination_crs) \
+         FROM train_subscriptions ts LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         WHERE ts.id = $1",
+    )
+    .bind(tracking_id)
+    .fetch_optional(conn)
+    .await?;
+    Ok(route.unwrap_or((None, None)))
 }
 
 /// What [`track_known_train_on_its_own`] did.
@@ -798,13 +834,7 @@ pub async fn add_known_train_leg_to_journey_at(
     let tracking_id =
         crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
             .await?;
-    let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
-    )
-    .bind(tracking_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
+    let (pin_origin_crs, pin_destination_crs) = subscription_route(&mut tx, tracking_id).await?;
     let origin_crs = origin_crs_override.map(str::to_string).or(pin_origin_crs);
     let destination_crs = destination_crs_override
         .map(str::to_string)
@@ -2334,7 +2364,9 @@ pub struct JourneyListItem {
     pub created_at: DateTime<Utc>,
     /// `'web'`, or the delegated client that saved the journey (spec
     /// 2026-10-14 §5.8). A delegated client may delete only its own
-    /// (§5.5a), so its list needs this.
+    /// (§5.5a), so its list needs this. Absent on a followed journey's row:
+    /// how its owner saved it is not the follower's business.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub created_via: String,
     pub leg_id: i64,
     pub origin_crs: Option<String>,
@@ -2464,6 +2496,12 @@ pub struct JourneyListItem {
     /// `None` when it works. Additive, 2026-10-23.
     #[sqlx(skip)]
     pub open_break_id: Option<i64>,
+    /// Set on a journey the caller follows rather than owns (DS-146,
+    /// `include=followed` only): who shared it and how. Such a row is
+    /// read-only. Absent on the caller's own journeys.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followed_from: Option<crate::data::journey_follows::FollowedFrom>,
 }
 
 /// One journey's final arrival, for [`apply_public_delays`]: the last
@@ -2568,6 +2606,12 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
     use crate::data::travel_order::{
         day_start_sql, order_by_sql, scheduled_departure_sql, train_arrived_sql,
     };
+    let k_origin = leg_crs_sql(LegEnd::Origin, "l", "ts", "ktr");
+    let k_destination = leg_crs_sql(LegEnd::Destination, "l", "ts", "ktr");
+    let r_origin = leg_crs_sql(LegEnd::Origin, "jl", "ts", "tr");
+    let r_destination = leg_crs_sql(LegEnd::Destination, "jl", "ts", "tr");
+    let r_origin_place = leg_place_sql(LegEnd::Origin, "jl");
+    let r_destination_place = leg_place_sql(LegEnd::Destination, "jl");
     format!(
         "WITH keyed AS ( \
              SELECT j.id, j.custom_name, j.created_at, j.created_via, \
@@ -2589,7 +2633,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
              CROSS JOIN LATERAL ( \
                  SELECT (array_agg(l.kind ORDER BY l.leg_order))[1] AS first_kind, \
                         (array_agg(l.service_date ORDER BY l.leg_order))[1] AS first_service_date, \
-                        (array_agg(l.origin_crs ORDER BY l.leg_order))[1] AS first_origin_crs, \
+                        (array_agg({k_origin} ORDER BY l.leg_order))[1] AS first_origin_crs, \
                         (array_agg(l.planned_departure ORDER BY l.leg_order))[1] \
                             AS first_planned_departure, \
                         (array_agg(ts.trains_id ORDER BY l.leg_order))[1] AS first_trains_id, \
@@ -2598,24 +2642,25 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
                         (array_agg(l.kind ORDER BY l.leg_order DESC))[1] AS last_kind, \
                         (array_agg(l.service_date ORDER BY l.leg_order DESC))[1] \
                             AS last_service_date, \
-                        (array_agg(l.destination_crs ORDER BY l.leg_order DESC))[1] \
+                        (array_agg({k_destination} ORDER BY l.leg_order DESC))[1] \
                             AS last_destination_crs, \
                         (array_agg(l.planned_arrival ORDER BY l.leg_order DESC))[1] \
                             AS last_planned_arrival, \
                         (array_agg(ts.trains_id ORDER BY l.leg_order DESC))[1] AS last_trains_id, \
                         (array_agg(cs.delay_minutes ORDER BY l.leg_order DESC))[1] AS last_delay, \
                         (array_agg(cs.status ORDER BY l.leg_order DESC))[1] AS last_status, \
-                        (array_agg(l.origin_crs ORDER BY l.leg_order DESC))[1] AS last_origin_crs, \
+                        (array_agg({k_origin} ORDER BY l.leg_order DESC))[1] AS last_origin_crs, \
                         bool_and(COALESCE(cs.status = 'completed', FALSE) \
                                  OR (l.kind = 'untracked' AND l.planned_arrival <= now())) \
                             AS all_finished \
                  FROM journey_legs l \
                  LEFT JOIN train_subscriptions ts ON ts.id = l.train_subscription_id \
+                 LEFT JOIN trains ktr ON ktr.id = ts.trains_id \
                  LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
                  WHERE l.journey_id = j.id \
                  HAVING COUNT(*) > 0 \
              ) s \
-             WHERE j.user_id = $1 \
+             WHERE (j.user_id = $1 OR j.id = ANY($3)) \
          ), \
          candidates AS ( \
              SELECT k.*, RANK() OVER (ORDER BY {coarse_order}) AS coarse_rank \
@@ -2640,20 +2685,22 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
              LIMIT $2 \
          ), \
          ranked_legs AS ( \
-             SELECT jl.id, jl.journey_id, jl.leg_order, jl.origin_crs, jl.destination_crs, \
+             SELECT jl.id, jl.journey_id, jl.leg_order, \
+                    {r_origin} AS origin_crs, {r_destination} AS destination_crs, \
                     jl.service_date, jl.match_mode, jl.train_subscription_id, \
                     ts.resolution_status, cs.status, cs.delay_minutes, \
                     ts.trains_id, tr.train_uid, \
-                    jl.kind, jl.transit_mode, jl.line_name, jl.origin_place, \
-                    jl.destination_place, jl.planned_departure, jl.planned_arrival, \
+                    jl.kind, jl.transit_mode, jl.line_name, {r_origin_place} AS origin_place, \
+                    {r_destination_place} AS destination_place, \
+                    jl.planned_departure, jl.planned_arrival, \
                     (tr.calling_points IS NOT NULL OR tr.origin_crs IS NOT NULL) \
                         AS timetable_on_row, \
                     COUNT(*) OVER (PARTITION BY jl.journey_id) AS leg_count, \
-                    FIRST_VALUE(jl.origin_crs) OVER first_leg AS first_origin_crs, \
-                    FIRST_VALUE(jl.origin_place) OVER first_leg AS first_origin_place, \
+                    FIRST_VALUE({r_origin}) OVER first_leg AS first_origin_crs, \
+                    FIRST_VALUE({r_origin_place}) OVER first_leg AS first_origin_place, \
                     FIRST_VALUE(jl.service_date) OVER first_leg AS first_service_date, \
-                    FIRST_VALUE(jl.destination_crs) OVER last_leg AS last_destination_crs, \
-                    FIRST_VALUE(jl.destination_place) OVER last_leg AS last_destination_place, \
+                    FIRST_VALUE({r_destination}) OVER last_leg AS last_destination_crs, \
+                    FIRST_VALUE({r_destination_place}) OVER last_leg AS last_destination_place, \
                     COUNT(*) FILTER (WHERE jl.kind = 'train') OVER journey AS train_leg_count, \
                     COUNT(*) FILTER (WHERE jl.kind = 'train' AND cs.status = 'cancelled') \
                         OVER journey AS cancelled_leg_count, \
@@ -2676,7 +2723,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
                         OVER last_train AS final_train_uid, \
                     FIRST_VALUE(CASE WHEN jl.kind = 'train' THEN jl.service_date END) \
                         OVER last_train AS final_service_date, \
-                    FIRST_VALUE(CASE WHEN jl.kind = 'train' THEN jl.destination_crs END) \
+                    FIRST_VALUE(CASE WHEN jl.kind = 'train' THEN {r_destination} END) \
                         OVER last_train AS final_destination_crs, \
                     FIRST_VALUE(CASE WHEN jl.kind = 'train' THEN cs.delay_minutes END) \
                         OVER last_train AS final_working_delay_minutes, \
@@ -2753,7 +2800,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
             "ts.trains_id",
             "tr.train_uid",
             "jl.service_date",
-            "jl.destination_crs",
+            &r_destination,
             "cs.delay_minutes",
         ),
     )
@@ -2794,13 +2841,28 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
 /// cap's very edge it is kept or dropped by that date.) With 1,500
 /// journeys (seeded, EXPLAIN ANALYZE) the query takes about 30 ms against
 /// 5 ms for the old `created_at` order.
+///
+/// **Followed journeys (DS-146).** With `include_followed`, the journeys
+/// `user_id` follows (`journey_follows`, only while the share they came
+/// through still lets them in) are ordered and capped with their own, by
+/// the same rules, and carry `followed_from`. Their `created_via` and
+/// `train_subscription_id` (the owner's) are blanked: the follower sees
+/// what the share shows and no more.
 pub async fn list_journeys_for_user(
     pool: &PgPool,
     user_id: &str,
+    include_followed: bool,
 ) -> anyhow::Result<Vec<JourneyListItem>> {
+    let mut followed = if include_followed {
+        crate::data::journey_follows::valid_follows(pool, user_id, None).await?
+    } else {
+        std::collections::HashMap::new()
+    };
+    let followed_ids: Vec<i64> = followed.keys().copied().collect();
     let rows = sqlx::query_as::<_, JourneyListItem>(LIST_JOURNEYS_SQL.as_str())
         .bind(user_id)
         .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
+        .bind(&followed_ids)
         .fetch_all(pool)
         .await?;
     let mut rows = rows;
@@ -2823,6 +2885,11 @@ pub async fn list_journeys_for_user(
     let open: std::collections::HashMap<i64, i64> = open.into_iter().collect();
     for row in &mut rows {
         row.open_break_id = open.get(&row.id).copied();
+        if let Some(from) = followed.remove(&row.id) {
+            row.followed_from = Some(from);
+            row.created_via.clear();
+            row.train_subscription_id = None;
+        }
     }
     Ok(rows)
 }
@@ -2864,7 +2931,9 @@ pub async fn get_journey_summary(
 /// Whether `user_id` may read journey `journey_id`'s full detail: either
 /// they own it outright, or it's been shared (`group_journeys`, see
 /// `crates/api/src/data/groups.rs`) into at least one group they're
-/// currently a member of. Mirrors `custom_lines::readable_custom_line_ids`'s
+/// currently a member of, or they follow it through a share link that is
+/// still live (`journey_follows`, DS-146: the link page's own read, kept
+/// for a logged-in follower so their journey list can open it). Mirrors `custom_lines::readable_custom_line_ids`'s
 /// "owned OR granted-into-a-group-I'm-in" shape (see
 /// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
 /// §3.2) -- the closest existing precedent for widening a private
@@ -2892,14 +2961,19 @@ pub async fn journey_readable_by(
     journey_id: i64,
     user_id: &str,
 ) -> anyhow::Result<bool> {
-    let (readable,): (bool,) = sqlx::query_as(
+    let (readable,): (bool,) = sqlx::query_as(&format!(
         "SELECT EXISTS (SELECT 1 FROM journeys j WHERE j.id = $1 AND j.user_id = $2) \
          OR EXISTS ( \
              SELECT 1 FROM group_journeys gj \
              JOIN group_members gm ON gm.group_id = gj.group_id AND gm.user_id = $2 \
              WHERE gj.journey_id = $1 \
+         ) \
+         OR EXISTS ( \
+             SELECT 1 FROM journey_follows f \
+             WHERE f.journey_id = $1 AND f.user_id = $2 AND {valid} \
          )",
-    )
+        valid = crate::data::journey_follows::VALID_FOLLOW,
+    ))
     .bind(journey_id)
     .bind(user_id)
     .fetch_one(pool)
@@ -2924,24 +2998,39 @@ pub async fn list_legs_for_journey(
     pool: &PgPool,
     journey_id: i64,
 ) -> anyhow::Result<Vec<JourneyLegWithNamesRow>> {
-    let rows = sqlx::query_as::<_, JourneyLegWithNamesRow>(
-        "SELECT jl.id, jl.journey_id, jl.origin_crs, so.name AS origin_name, \
-                jl.destination_crs, sd.name AS destination_name, jl.service_date, \
+    let rows = sqlx::query_as::<_, JourneyLegWithNamesRow>(LIST_LEGS_SQL.as_str())
+        .bind(journey_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+/// [`list_legs_for_journey`]'s query: each leg's station codes and places
+/// through [`leg_crs_sql`] and [`leg_place_sql`], so a train leg saved
+/// without codes is named by its train's route.
+static LIST_LEGS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let origin_crs = leg_crs_sql(LegEnd::Origin, "jl", "ts", "tr");
+    let destination_crs = leg_crs_sql(LegEnd::Destination, "jl", "ts", "tr");
+    let origin_place = leg_place_sql(LegEnd::Origin, "jl");
+    let destination_place = leg_place_sql(LegEnd::Destination, "jl");
+    format!(
+        "SELECT jl.id, jl.journey_id, {origin_crs} AS origin_crs, so.name AS origin_name, \
+                {destination_crs} AS destination_crs, sd.name AS destination_name, \
+                jl.service_date, \
                 jl.depart_after, jl.depart_before, jl.arrive_after, jl.arrive_before, \
                 jl.train_subscription_id, jl.match_mode, jl.window_searched, jl.kind, \
-                jl.transit_mode, jl.origin_place, jl.destination_place, jl.line_name, \
+                jl.transit_mode, {origin_place} AS origin_place, \
+                {destination_place} AS destination_place, jl.line_name, \
                 jl.planned_departure, jl.planned_arrival, jl.origin_stop_id, \
                 jl.destination_stop_id \
          FROM journey_legs jl \
-         LEFT JOIN stations so ON so.crs = UPPER(jl.origin_crs)::bpchar \
-         LEFT JOIN stations sd ON sd.crs = UPPER(jl.destination_crs)::bpchar \
-         WHERE jl.journey_id = $1 ORDER BY jl.leg_order",
+         LEFT JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+         LEFT JOIN trains tr ON tr.id = ts.trains_id \
+         LEFT JOIN stations so ON so.crs = UPPER({origin_crs})::bpchar \
+         LEFT JOIN stations sd ON sd.crs = UPPER({destination_crs})::bpchar \
+         WHERE jl.journey_id = $1 ORDER BY jl.leg_order"
     )
-    .bind(journey_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
-}
+});
 
 /// One leg of `POST /Journeys/itinerary`, validated and resolved to its
 /// shared `trains` row by the route (a train leg), or an untracked leg
@@ -3021,13 +3110,7 @@ pub(crate) async fn insert_itinerary_leg(
     let tracking_id =
         crate::data::train_tracking::create_subscription_for_train(&mut *tx, trains_id, user_id)
             .await?;
-    let pins: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT pin_origin_crs, pin_destination_crs FROM train_subscriptions WHERE id = $1",
-    )
-    .bind(tracking_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (pin_origin_crs, pin_destination_crs) = pins.unwrap_or((None, None));
+    let (pin_origin_crs, pin_destination_crs) = subscription_route(&mut *tx, tracking_id).await?;
     let origin_crs = origin_override.clone().or(pin_origin_crs);
     let destination_crs = destination_override.clone().or(pin_destination_crs);
     let leg_id = insert_leg(
@@ -5742,7 +5825,7 @@ mod db_tests {
         .expect("insert leg 2");
 
         // Call list_journeys_for_user and verify that leg 2 is returned
-        let journeys = list_journeys_for_user(&pool, user_id)
+        let journeys = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list journeys");
 
@@ -5857,7 +5940,7 @@ mod db_tests {
         .expect("mark leg 2 as completed");
 
         // Now both legs are completed, should still show leg 2 (the last one)
-        let journeys = list_journeys_for_user(&pool, user_id)
+        let journeys = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list journeys after all legs completed");
 
@@ -6303,7 +6386,7 @@ mod db_tests {
         // No leg: never listed.
         let _legless = journey().await;
 
-        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id)
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list")
             .iter()
@@ -6393,7 +6476,7 @@ mod db_tests {
         .await
         .expect("seed arrival report");
 
-        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id)
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list")
             .iter()
@@ -6456,7 +6539,9 @@ mod db_tests {
             .expect("seed state");
         }
 
-        let rows = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let rows = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         let row = rows.iter().find(|r| r.id == journey).expect("journey row");
         assert!(!row.travelled, "leg 2 is still running");
         assert_eq!(row.leg_count, 3);
@@ -6478,7 +6563,9 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("drop leg 3");
-        let rows = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let rows = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         let row = rows.iter().find(|r| r.id == journey).expect("journey row");
         assert_eq!(row.final_trains_id, Some(last_train));
         assert_eq!(row.final_working_delay_minutes, Some(0));
@@ -6560,7 +6647,9 @@ mod db_tests {
             .await
             .expect("seed leg-less journey");
 
-        let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let listed = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         assert_eq!(listed.len() as i64, limit, "capped");
         let got: Vec<i64> = listed.iter().map(|j| j.id).collect();
         // Upcoming soonest first (the last seeded is the soonest), then
@@ -6612,7 +6701,9 @@ mod db_tests {
         .await
         .expect("seed legs");
 
-        let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let listed = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         let row = listed.iter().find(|j| j.id == journey_id).expect("listed");
         // The current leg is still the first...
         assert_eq!(row.destination_crs.as_deref(), Some("ZZB"));
@@ -7657,5 +7748,250 @@ mod db_tests {
             .ok(); // cascades journey_template_legs + journey_template_skipped_dates
         cleanup_user(&pool, user_id).await;
         cleanup_user(&pool, bystander_id).await;
+    }
+
+    // --- DS-144: a train leg saved before its train had a route ---------
+
+    async fn seed_route_stations(pool: &PgPool) {
+        sqlx::query(
+            "INSERT INTO stations (crs, name) VALUES ('ZXK', 'Testbury Kay'), \
+             ('ZXL', 'Testbury Ell') \
+             ON CONFLICT (crs) DO UPDATE SET name = EXCLUDED.name",
+        )
+        .execute(pool)
+        .await
+        .expect("seed fixture stations");
+    }
+
+    async fn delete_train(pool: &PgPool, trains_id: i64) {
+        sqlx::query("DELETE FROM trains WHERE id = $1")
+            .bind(trains_id)
+            .execute(pool)
+            .await
+            .expect("cleanup fixture train");
+    }
+
+    async fn delete_route_stations(pool: &PgPool) {
+        sqlx::query("DELETE FROM stations WHERE crs IN ('ZXK', 'ZXL')")
+            .execute(pool)
+            .await
+            .expect("cleanup fixture stations");
+    }
+
+    /// DS-144: a one-leg journey made for a train whose `trains` row the
+    /// route had only just minted by UID stored no station codes on the
+    /// leg or the subscription; the route reached the row a moment later.
+    /// Every journey read then named it "Unknown station". The detail, the
+    /// owner's list and the group and shared lists now name it by the
+    /// train's route.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_leg_saved_before_its_train_had_a_route_is_named_by_that_route \
+                -- --ignored --test-threads=1`"]
+    async fn a_leg_saved_before_its_train_had_a_route_is_named_by_that_route() {
+        let pool = connect().await;
+        let owner = "TEST-DS144-ROUTELESS-OWNER";
+        let viewer = "TEST-DS144-ROUTELESS-VIEWER";
+        cleanup_user(&pool, owner).await;
+        cleanup_user(&pool, viewer).await;
+        seed_user(&pool, owner).await;
+        seed_user(&pool, viewer).await;
+        seed_route_stations(&pool).await;
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id =
+            crate::data::trains::find_or_create_train(&pool, "TEST-DS144-UID", service_date)
+                .await
+                .expect("a bare trains row, as the route mints it");
+        let (journey_id, leg_id, tracking_id) = create_journey_with_known_train_leg(
+            &pool,
+            owner,
+            None,
+            trains_id,
+            service_date,
+            None,
+            None,
+        )
+        .await
+        .expect("create the one-leg journey");
+        // Journey 50's shape: no codes on the leg or the subscription.
+        let (leg_origin, leg_destination, pin_origin): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT jl.origin_crs, jl.destination_crs, ts.pin_origin_crs \
+             FROM journey_legs jl JOIN train_subscriptions ts ON ts.id = jl.train_subscription_id \
+             WHERE jl.id = $1",
+        )
+        .bind(leg_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read the stored leg");
+        assert_eq!(
+            (leg_origin, leg_destination, pin_origin),
+            (None, None, None)
+        );
+        // The route reaches the shared row afterwards.
+        sqlx::query("UPDATE trains SET origin_crs = 'ZXK', destination_crs = 'zxl' WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .expect("the timetable arrives");
+
+        let legs = list_legs_for_journey(&pool, journey_id)
+            .await
+            .expect("list legs");
+        assert_eq!(legs.len(), 1);
+        assert_eq!(legs[0].origin_crs.as_deref(), Some("ZXK"));
+        assert_eq!(legs[0].origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(legs[0].destination_crs.as_deref(), Some("zxl"));
+        assert_eq!(legs[0].destination_name.as_deref(), Some("Testbury Ell"));
+        assert_eq!(legs[0].train_subscription_id, Some(tracking_id));
+
+        let mine = list_journeys_for_user(&pool, owner, false)
+            .await
+            .expect("list the owner's journeys");
+        let row = mine
+            .iter()
+            .find(|row| row.id == journey_id)
+            .expect("the journey is listed");
+        assert_eq!(row.origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(row.destination_name.as_deref(), Some("Testbury Ell"));
+        assert_eq!(row.first_origin_crs.as_deref(), Some("ZXK"));
+        assert_eq!(row.first_origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(row.last_destination_crs.as_deref(), Some("zxl"));
+        assert_eq!(row.last_destination_name.as_deref(), Some("Testbury Ell"));
+
+        let group_id = crate::data::groups::create_group(&pool, "DS-144 group", owner)
+            .await
+            .expect("create a group");
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'member')",
+        )
+        .bind(&group_id)
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .expect("seed member");
+        assert!(
+            crate::data::groups::add_journey_to_group(&pool, &group_id, journey_id, owner)
+                .await
+                .expect("share the journey")
+        );
+        let in_group = crate::data::groups::list_group_journeys(&pool, &group_id)
+            .await
+            .expect("list group journeys");
+        assert_eq!(in_group.len(), 1);
+        assert_eq!(in_group[0].first_origin_crs.as_deref(), Some("ZXK"));
+        assert_eq!(
+            in_group[0].first_origin_name.as_deref(),
+            Some("Testbury Kay")
+        );
+        assert_eq!(in_group[0].last_destination_crs.as_deref(), Some("zxl"));
+        assert_eq!(
+            in_group[0].last_destination_name.as_deref(),
+            Some("Testbury Ell")
+        );
+        let shared = crate::data::groups::list_shared_journeys_for_user(&pool, viewer)
+            .await
+            .expect("list journeys shared with the viewer");
+        let shared = shared
+            .iter()
+            .find(|item| item.journey_id == journey_id)
+            .expect("the journey is shared with the viewer");
+        assert_eq!(shared.first_origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(
+            shared.last_destination_name.as_deref(),
+            Some("Testbury Ell")
+        );
+        // A journey the viewer follows (DS-146) lists among their own by the
+        // same route.
+        assert_eq!(
+            crate::data::journey_follows::follow_journey(
+                &pool,
+                viewer,
+                journey_id,
+                crate::data::journey_follows::FollowThrough::Group(Some(&group_id)),
+            )
+            .await
+            .expect("follow the shared journey"),
+            crate::data::journey_follows::FollowOutcome::Followed
+        );
+        let followed = list_journeys_for_user(&pool, viewer, true)
+            .await
+            .expect("list the viewer's journeys with the followed ones");
+        let followed = followed
+            .iter()
+            .find(|row| row.id == journey_id)
+            .expect("the followed journey is listed");
+        assert!(followed.followed_from.is_some());
+        assert_eq!(followed.origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(followed.first_origin_name.as_deref(), Some("Testbury Kay"));
+        assert_eq!(
+            followed.last_destination_name.as_deref(),
+            Some("Testbury Ell")
+        );
+
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(&group_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup fixture group");
+        cleanup_user(&pool, owner).await;
+        cleanup_user(&pool, viewer).await;
+        delete_train(&pool, trains_id).await;
+        delete_route_stations(&pool).await;
+    }
+
+    /// DS-144: a new leg on a subscription made before its train had a
+    /// route (so with no pins) stores the route the train has since
+    /// learned, not nothing.
+    #[tokio::test]
+    #[ignore = "requires a live database; run with `DATABASE_URL=... cargo test -p api \
+                a_new_leg_on_a_pinless_subscription_stores_its_trains_route \
+                -- --ignored --test-threads=1`"]
+    async fn a_new_leg_on_a_pinless_subscription_stores_its_trains_route() {
+        let pool = connect().await;
+        let user_id = "TEST-DS144-PINLESS-LEG";
+        cleanup_user(&pool, user_id).await;
+        seed_user(&pool, user_id).await;
+        let service_date: NaiveDate = "2026-09-06".parse().unwrap();
+        let trains_id = crate::data::trains::find_or_create_train(
+            &pool,
+            "TEST-DS144-PINLESS-UID",
+            service_date,
+        )
+        .await
+        .expect("a bare trains row");
+        crate::data::train_tracking::create_subscription_for_train(&pool, trains_id, user_id)
+            .await
+            .expect("track the train before its route is known");
+        sqlx::query("UPDATE trains SET origin_crs = 'ZXK', destination_crs = 'ZXL' WHERE id = $1")
+            .bind(trains_id)
+            .execute(&pool)
+            .await
+            .expect("the timetable arrives");
+
+        let (_, leg_id, _) = create_journey_with_known_train_leg(
+            &pool,
+            user_id,
+            None,
+            trains_id,
+            service_date,
+            None,
+            None,
+        )
+        .await
+        .expect("a journey reusing the pinless subscription");
+        let stored: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT origin_crs, destination_crs FROM journey_legs WHERE id = $1")
+                .bind(leg_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read the stored leg");
+        assert_eq!(stored, (Some("ZXK".to_string()), Some("ZXL".to_string())));
+
+        cleanup_user(&pool, user_id).await;
+        delete_train(&pool, trains_id).await;
     }
 }
