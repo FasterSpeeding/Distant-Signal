@@ -23,8 +23,8 @@
 //! 3. **Nearest**: the [`NEAREST_COUNT`] nearest stations within
 //!    [`NEAREST_MAX_METRES`], on foot.
 //!
-//! **Estimates.** DS has no `TfL` timetables or line sequences, so each time
-//! is a conservative model, documented here and echoed in the response:
+//! **Estimates.** DS has no `TfL` timetables, so each time is a conservative
+//! model, documented here and echoed in the response:
 //!
 //! - A ride is [`RIDE_ENTRY_MINUTES`] (walking in and the average wait)
 //!   plus the distance along the line at the line's speed ([`line_mode`]:
@@ -34,17 +34,27 @@
 //!   include the walks at both ends (`reference-data/
 //!   supplementary-fixed-links.csv`). The planner still adds the station's
 //!   minimum change time before the train, as it does after any link.
-//! - The distance along a line follows a minimum spanning tree of the
-//!   line's stops by straight-line distance ([`line_tree`]). For a line
-//!   with branches that is close to the track: Uxbridge to Heathrow on the
-//!   Piccadilly line runs in via Acton Town, not across country. Rides
-//!   stay on one line; no change between lines is modelled.
+//! - The distance along a line follows the line's routes (DS-151,
+//!   `tfl_line_routes`: each route end to end, its stops in running order,
+//!   [`LineRoutes`]): the sum of the straight lines between consecutive
+//!   stops, and the stops ridden past. One route with both stops, in that
+//!   order, is a ride with no change. Otherwise, when a route from the
+//!   start and a route to the end share a stop, the ride changes trains
+//!   there (the junction, the shared stop that makes the ride shortest:
+//!   Harrow-on-the-Hill from Uxbridge to Rickmansworth), and costs
+//!   [`BRANCH_CHANGE_MINUTES`] plus [`BRANCH_CHANGE_WAIT_MINUTES`] more. A
+//!   ride needing two changes on one line is not offered. A line with no
+//!   routes, or a stop no route of its line has, falls back to a minimum
+//!   spanning tree of the line's stops by straight-line distance
+//!   ([`line_tree`]), as before DS-151: close to the track, but blind to
+//!   changes between branches. Rides stay on one line; no change between
+//!   lines is modelled.
 //! - A walk is the straight-line distance times [`WALK_DETOUR`], at
 //!   4.5 km/h ([`WALK_METRES_PER_MINUTE`]).
 //! - Rides run in [`SERVICE_WINDOWS`] only (about 05:30 to 00:30; the Night
 //!   Tube is not modelled); walks at any time.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use common::tfl_stops::TflStopLine;
@@ -80,6 +90,15 @@ pub const DIRECT_RIDE_MAX_MINUTES: i32 = 150;
 pub const LINE_CANDIDATES_PER_LINE: usize = 5;
 /// At most this many candidate stations in all, quickest first.
 pub const MAX_CANDIDATES: usize = 16;
+/// A ride that changes between two branches of its line (DS-151): the
+/// minimum change time at the junction (a walk along or across the
+/// platform, as `TfL`'s own planner allows for a cross-platform change).
+pub const BRANCH_CHANGE_MINUTES: i32 = 5;
+/// ... and the extra wait there: a branch runs less often than the trunk
+/// (the Metropolitan's Amersham branch every 15 minutes or so, its trunk
+/// far more often), so the second train is waited for again. Half a
+/// branch's typical 10-minute headway.
+pub const BRANCH_CHANGE_WAIT_MINUTES: i32 = 5;
 /// When a ride can be started (`HHMM`, inclusive), every day.
 pub const SERVICE_WINDOWS: [(&str, &str); 2] = [("0530", "2359"), ("0000", "0030")];
 
@@ -151,6 +170,14 @@ pub struct AccessCandidate {
     pub station_stop: Option<TflStopSummary>,
     /// Along the line for a ride, in a straight line for a walk.
     pub distance_metres: u32,
+    /// Stops ridden to the far end, for a ride measured along the line's
+    /// routes (absent for a spanning-tree estimate or a walk).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_count: Option<u32>,
+    /// Where a ride changes trains between two branches of its line
+    /// (`Harrow-on-the-Hill`); its `minutes` include the change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_at: Option<TflStopSummary>,
 }
 
 impl AccessCandidate {
@@ -198,6 +225,9 @@ pub struct AccessLeg {
     pub end: AccessLegEnd,
     pub basis: AccessBasis,
     pub distance_metres: u32,
+    /// See [`AccessCandidate::change_at`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_at: Option<TflStopSummary>,
 }
 
 fn metres_between(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -300,6 +330,227 @@ fn along_line(stops: &[StopRecord], from: usize, line: &TflStopLine) -> Vec<(usi
     out
 }
 
+/// One of a line's routes as indices into the stops, in running order,
+/// with each stop's distance along it from the first.
+#[derive(Debug, Clone, PartialEq)]
+struct Route {
+    stops: Vec<usize>,
+    along: Vec<f64>,
+}
+
+impl Route {
+    /// The route through `members` (each with a position), at least two.
+    fn new(stops: &[StopRecord], members: Vec<usize>) -> Option<Self> {
+        if members.len() < 2 {
+            return None;
+        }
+        let mut along = Vec::with_capacity(members.len());
+        let mut total = 0.0;
+        let mut previous: Option<(f64, f64)> = None;
+        for &index in &members {
+            let at = stops[index].position?;
+            if let Some(before) = previous {
+                total += metres_between(before, at);
+            }
+            along.push(total);
+            previous = Some(at);
+        }
+        Some(Self {
+            stops: members,
+            along,
+        })
+    }
+
+    /// The same track run the other way: for rides into a stop.
+    fn reversed(&self) -> Self {
+        let total = self.along.last().copied().unwrap_or_default();
+        Self {
+            stops: self.stops.iter().rev().copied().collect(),
+            along: self.along.iter().rev().map(|d| total - d).collect(),
+        }
+    }
+
+    /// Each place `stop` is on the route (the Circle passes some twice).
+    fn positions(&self, stop: usize) -> impl Iterator<Item = usize> + '_ {
+        self.stops
+            .iter()
+            .enumerate()
+            .filter(move |(_, s)| **s == stop)
+            .map(|(i, _)| i)
+    }
+}
+
+/// Every line's routes (`tfl_line_routes`, DS-151), by line id, over the
+/// stops of one request.
+#[derive(Debug, Clone, Default)]
+pub struct LineRoutes {
+    by_line: HashMap<String, Vec<Route>>,
+}
+
+impl LineRoutes {
+    /// `rows` are `(line id, stop ids in running order)`. A stop id not in
+    /// `stops`, or without a position, is passed over: the route runs
+    /// straight from the stop before it to the one after.
+    pub fn new(stops: &[StopRecord], rows: &[(String, Vec<String>)]) -> Self {
+        let index: HashMap<&str, usize> = stops
+            .iter()
+            .enumerate()
+            .filter(|(_, stop)| stop.position.is_some())
+            .map(|(i, stop)| (stop.summary.id.as_str(), i))
+            .collect();
+        let mut by_line: HashMap<String, Vec<Route>> = HashMap::new();
+        for (line, ids) in rows {
+            let members: Vec<usize> = ids
+                .iter()
+                .filter_map(|id| index.get(id.as_str()).copied())
+                .collect();
+            if let Some(route) = Route::new(stops, members) {
+                by_line.entry(line.clone()).or_default().push(route);
+            }
+        }
+        Self { by_line }
+    }
+}
+
+/// Which way the rides of [`rides`] run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Toward {
+    /// Out of the stop (a plan's origin).
+    Out,
+    /// Into the stop (a plan's destination).
+    In,
+}
+
+/// One ride along a line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Ride {
+    metres: f64,
+    /// Stops ridden, along routes; `None` on the spanning tree.
+    stops: Option<usize>,
+    /// The junction a branch change is made at.
+    change_at: Option<usize>,
+}
+
+impl Ride {
+    /// The ride's own minutes at `speed_kmh`, with a branch change's.
+    fn minutes(&self, speed_kmh: f64) -> i32 {
+        let change = if self.change_at.is_some() {
+            BRANCH_CHANGE_MINUTES + BRANCH_CHANGE_WAIT_MINUTES
+        } else {
+            0
+        };
+        whole(self.metres / 1000.0 / speed_kmh * 60.0) + change
+    }
+}
+
+/// Keeps `ride` for `stop` in `best` if it is shorter than what is there.
+fn keep_shorter(best: &mut BTreeMap<usize, Ride>, stop: usize, ride: Ride) {
+    if best.get(&stop).is_none_or(|kept| ride.metres < kept.metres) {
+        best.insert(stop, ride);
+    }
+}
+
+/// Every stop `stops[from]` can ride to on `line` (or from, for
+/// [`Toward::In`]), with the ride: along the line's routes where it has
+/// any that pass `from` (no change when one route has both stops in order,
+/// else one change at the best shared stop, else none), on the spanning
+/// tree for the rest (see the module doc).
+fn rides(
+    stops: &[StopRecord],
+    routes: &LineRoutes,
+    line: &TflStopLine,
+    from: usize,
+    toward: Toward,
+) -> Vec<(usize, Ride)> {
+    let tree = |keep: &dyn Fn(usize) -> bool| -> Vec<(usize, Ride)> {
+        along_line(stops, from, line)
+            .into_iter()
+            .filter(|(index, _)| keep(*index))
+            .map(|(index, metres)| {
+                (
+                    index,
+                    Ride {
+                        metres,
+                        stops: None,
+                        change_at: None,
+                    },
+                )
+            })
+            .collect()
+    };
+    let line_routes: Vec<Route> = routes
+        .by_line
+        .get(&line.id)
+        .map(|routes| {
+            routes
+                .iter()
+                .map(|route| match toward {
+                    Toward::Out => route.clone(),
+                    Toward::In => route.reversed(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !line_routes.iter().any(|route| route.stops.contains(&from)) {
+        return tree(&|_| true);
+    }
+
+    // No change: one route has `from`, then the other stop.
+    let mut best: BTreeMap<usize, Ride> = BTreeMap::new();
+    for route in &line_routes {
+        for i in route.positions(from) {
+            for j in i + 1..route.stops.len() {
+                let ride = Ride {
+                    metres: route.along[j] - route.along[i],
+                    stops: Some(j - i),
+                    change_at: None,
+                };
+                keep_shorter(&mut best, route.stops[j], ride);
+            }
+        }
+    }
+    best.remove(&from);
+
+    // One change, at a stop reached without one, onto a route on from it.
+    let mut changed: BTreeMap<usize, Ride> = BTreeMap::new();
+    for (&junction, first) in &best {
+        for route in &line_routes {
+            for k in route.positions(junction) {
+                for m in k + 1..route.stops.len() {
+                    let to = route.stops[m];
+                    if to == from || best.contains_key(&to) {
+                        continue;
+                    }
+                    let ride = Ride {
+                        metres: first.metres + route.along[m] - route.along[k],
+                        stops: first.stops.map(|n| n + m - k),
+                        change_at: Some(junction),
+                    };
+                    keep_shorter(&mut changed, to, ride);
+                }
+            }
+        }
+    }
+    best.extend(changed);
+
+    // Stops of the line that no route has: the tree's estimate.
+    let routed: std::collections::HashSet<usize> = line_routes
+        .iter()
+        .flat_map(|route| route.stops.iter().copied())
+        .collect();
+    let mut out: Vec<(usize, Ride)> = best.into_iter().collect();
+    out.extend(tree(&|index| index != from && !routed.contains(&index)));
+    out
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a route has at most a few hundred stops"
+)]
+fn stop_count(ride: &Ride) -> Option<u32> {
+    ride.stops.map(|n| n as u32)
+}
+
 fn hub_candidates(stop: &StopRecord) -> Vec<AccessCandidate> {
     stop.rail_crs
         .iter()
@@ -311,32 +562,44 @@ fn hub_candidates(stop: &StopRecord) -> Vec<AccessCandidate> {
             line: None,
             station_stop: None,
             distance_metres: 0,
+            stop_count: None,
+            change_at: None,
         })
         .collect()
 }
 
-/// Rides from `stops[from]` on each of its lines to the nearest
-/// [`LINE_CANDIDATES_PER_LINE`] stops with a hub station: rule 2's line
-/// half. A station may come twice (two lines); the caller keeps the
-/// quicker.
-fn line_candidates(stops: &[StopRecord], from: usize) -> Vec<AccessCandidate> {
+/// Rides from `stops[from]` on each of its lines (into it, for
+/// [`Toward::In`]) to the quickest [`LINE_CANDIDATES_PER_LINE`] stops with
+/// a hub station: rule 2's line half. A station may come twice (two
+/// lines); the caller keeps the quicker.
+fn line_candidates(
+    stops: &[StopRecord],
+    routes: &LineRoutes,
+    from: usize,
+    toward: Toward,
+) -> Vec<AccessCandidate> {
     let mut out: Vec<AccessCandidate> = Vec::new();
     if stops[from].position.is_none() {
         return out;
     }
     for line in &stops[from].summary.lines {
         let (mode, speed_kmh) = line_mode(line);
-        // The nearest stops along the line with a hub station, each with
+        // The quickest stops along the line with a hub station, each with
         // every station of its hub (King's Cross St. Pancras: KGX, STP...).
-        let mut reached: Vec<(usize, f64)> = along_line(stops, from, line)
+        let mut reached: Vec<(usize, Ride, i32)> = rides(stops, routes, line, from, toward)
             .into_iter()
             .filter(|(index, _)| *index != from && !stops[*index].rail_crs.is_empty())
+            .map(|(index, ride)| {
+                let minutes = RIDE_ENTRY_MINUTES + ride.minutes(speed_kmh) + RIDE_EXIT_MINUTES;
+                (index, ride, minutes)
+            })
             .collect();
-        reached.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
-        for (index, distance) in reached.into_iter().take(LINE_CANDIDATES_PER_LINE) {
-            let minutes = RIDE_ENTRY_MINUTES
-                + whole(distance / 1000.0 / speed_kmh * 60.0)
-                + RIDE_EXIT_MINUTES;
+        reached.sort_by(|a, b| {
+            a.2.cmp(&b.2)
+                .then(a.1.metres.total_cmp(&b.1.metres))
+                .then(a.0.cmp(&b.0))
+        });
+        for (index, ride, minutes) in reached.into_iter().take(LINE_CANDIDATES_PER_LINE) {
             if minutes > RIDE_MAX_MINUTES {
                 break;
             }
@@ -348,7 +611,9 @@ fn line_candidates(stops: &[StopRecord], from: usize) -> Vec<AccessCandidate> {
                     basis: AccessBasis::Line,
                     line: Some(line.name.clone()),
                     station_stop: Some(stops[index].summary.clone()),
-                    distance_metres: metres(distance),
+                    distance_metres: metres(ride.metres),
+                    stop_count: stop_count(&ride),
+                    change_at: ride.change_at.map(|at| stops[at].summary.clone()),
                 });
             }
         }
@@ -378,23 +643,29 @@ fn walk_candidates(
             line: None,
             station_stop: None,
             distance_metres: metres(d),
+            stop_count: None,
+            change_at: None,
         })
         .collect()
 }
 
 /// The access candidates of `stops[from]` (see the module doc), quickest
-/// first, one per station. `stations` are National Rail stations with
-/// their positions (only those within [`NEAREST_MAX_METRES`] matter).
+/// first, one per station: rides out of the stop for [`Toward::Out`] (an
+/// origin), into it for [`Toward::In`]. `stations` are National Rail
+/// stations with their positions (only those within
+/// [`NEAREST_MAX_METRES`] matter).
 pub fn access_candidates(
     stops: &[StopRecord],
+    routes: &LineRoutes,
     from: usize,
+    toward: Toward,
     stations: &[(String, (f64, f64))],
 ) -> Vec<AccessCandidate> {
     let hub = hub_candidates(&stops[from]);
     if !hub.is_empty() {
         return hub;
     }
-    let mut out = line_candidates(stops, from);
+    let mut out = line_candidates(stops, routes, from, toward);
     if let Some(position) = stops[from].position {
         out.extend(walk_candidates(
             stations,
@@ -424,20 +695,25 @@ pub fn access_candidates(
 /// the quickest, when there is one within [`DIRECT_RIDE_MAX_MINUTES`]: two stops
 /// on one line need no train between them. Its `crs` is the destination
 /// stop's id.
-pub fn direct_ride(stops: &[StopRecord], from: usize, to: usize) -> Option<AccessCandidate> {
+pub fn direct_ride(
+    stops: &[StopRecord],
+    routes: &LineRoutes,
+    from: usize,
+    to: usize,
+) -> Option<AccessCandidate> {
     stops[from].position?;
     stops[from]
         .summary
         .lines
         .iter()
         .filter_map(|line| {
-            let (_, distance) = along_line(stops, from, line)
+            let (_, ride) = rides(stops, routes, line, from, Toward::Out)
                 .into_iter()
                 .find(|(index, _)| *index == to)?;
             let (mode, speed_kmh) = line_mode(line);
             // No platform-to-station walk at the far end: the traveller
             // stays at the Tube stop.
-            let minutes = RIDE_ENTRY_MINUTES + whole(distance / 1000.0 / speed_kmh * 60.0);
+            let minutes = RIDE_ENTRY_MINUTES + ride.minutes(speed_kmh);
             (minutes <= DIRECT_RIDE_MAX_MINUTES).then(|| AccessCandidate {
                 crs: stops[to].summary.id.clone(),
                 mode: mode.to_owned(),
@@ -445,7 +721,9 @@ pub fn direct_ride(stops: &[StopRecord], from: usize, to: usize) -> Option<Acces
                 basis: AccessBasis::Line,
                 line: Some(line.name.clone()),
                 station_stop: None,
-                distance_metres: metres(distance),
+                distance_metres: metres(ride.metres),
+                stop_count: stop_count(&ride),
+                change_at: ride.change_at.map(|at| stops[at].summary.clone()),
             })
         })
         .min_by_key(|candidate| candidate.minutes)
@@ -529,6 +807,15 @@ async fn load_stops(pool: &PgPool) -> Result<Vec<StopRecord>> {
         .collect())
 }
 
+/// Every `tfl_line_routes` row (about 80) as `(line id, stop ids)`.
+async fn load_routes(pool: &PgPool) -> Result<Vec<(String, Vec<String>)>> {
+    Ok(sqlx::query_as(
+        "SELECT line_id, stop_ids FROM tfl_line_routes ORDER BY line_id, direction, route_index",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
 /// National Rail stations within `max_metres` of `position` (a bounding
 /// box read; the caller measures).
 async fn stations_near(
@@ -569,6 +856,7 @@ pub async fn load_access(
         return Ok(Ok(AccessEnds::default()));
     }
     let stops = load_stops(pool).await?;
+    let routes = LineRoutes::new(&stops, &load_routes(pool).await?);
     let mut indices = [None, None];
     let mut ends = [None, None];
     for (slot, id) in [origin, destination].into_iter().enumerate() {
@@ -580,7 +868,8 @@ pub async fn load_access(
             Some(position) => stations_near(pool, position, NEAREST_MAX_METRES).await?,
             None => Vec::new(),
         };
-        let candidates = access_candidates(&stops, index, &stations);
+        let toward = if slot == 0 { Toward::Out } else { Toward::In };
+        let candidates = access_candidates(&stops, &routes, index, toward, &stations);
         if candidates.is_empty() {
             return Ok(Err(AccessError::NoStation {
                 id: id.to_owned(),
@@ -595,7 +884,7 @@ pub async fn load_access(
     }
     let [origin, destination] = ends;
     let direct = match indices {
-        [Some(from), Some(to)] => direct_ride(&stops, from, to),
+        [Some(from), Some(to)] => direct_ride(&stops, &routes, from, to),
         _ => None,
     };
     Ok(Ok(AccessEnds {
@@ -758,6 +1047,7 @@ impl AccessEnds {
             end,
             basis: candidate.basis,
             distance_metres: candidate.distance_metres,
+            change_at: candidate.change_at.clone(),
         }));
     }
 }
@@ -892,7 +1182,7 @@ mod tests {
     #[test]
     fn a_tube_only_stop_rides_its_lines_to_hub_stations() {
         let stops = network();
-        let candidates = access_candidates(&stops, 0, &[]);
+        let candidates = access_candidates(&stops, &LineRoutes::default(), 0, Toward::Out, &[]);
         let summary: Vec<(&str, &str, i32, Option<&str>)> = candidates
             .iter()
             .map(|c| {
@@ -924,7 +1214,7 @@ mod tests {
     #[test]
     fn a_hub_stop_walks_to_its_own_station_only() {
         let stops = network();
-        let candidates = access_candidates(&stops, 5, &[]);
+        let candidates = access_candidates(&stops, &LineRoutes::default(), 5, Toward::Out, &[]);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].crs, "HOH");
         assert_eq!(candidates[0].mode, "WALK");
@@ -938,7 +1228,8 @@ mod tests {
         // West Ruislip, about 600 m from the Ruislip stop: 750 m on foot at
         // 75 m a minute, 10.02 minutes, so 11.
         let stations = vec![("WRU".to_owned(), (51.5698, -0.4296))];
-        let candidates = access_candidates(&stops, 2, &stations);
+        let candidates =
+            access_candidates(&stops, &LineRoutes::default(), 2, Toward::Out, &stations);
         let walk = candidates.iter().find(|c| c.crs == "WRU").unwrap();
         assert_eq!(walk.mode, "WALK");
         assert_eq!(walk.basis, AccessBasis::Walk);
@@ -963,7 +1254,13 @@ mod tests {
         .iter()
         .map(|(crs, dlat)| ((*crs).to_owned(), (51.60 + dlat, -0.60)))
         .collect();
-        let candidates = access_candidates(&stops, stops.len() - 1, &stations);
+        let candidates = access_candidates(
+            &stops,
+            &LineRoutes::default(),
+            stops.len() - 1,
+            Toward::Out,
+            &stations,
+        );
         let codes: Vec<&str> = candidates.iter().map(|c| c.crs.as_str()).collect();
         assert_eq!(codes, ["AAA", "BBB", "CCC"]);
         assert!(candidates.iter().all(|c| c.basis == AccessBasis::Nearest));
@@ -973,15 +1270,15 @@ mod tests {
     #[test]
     fn two_stops_on_one_line_ride_straight_there() {
         let stops = network();
-        let ride = direct_ride(&stops, 0, 3).unwrap();
+        let ride = direct_ride(&stops, &LineRoutes::default(), 0, 3).unwrap();
         assert_eq!(ride.crs, "940GRLN");
         assert_eq!(ride.mode, "TUBE");
         assert_eq!(ride.basis, AccessBasis::Line);
         // Only the Metropolitan reaches Harrow-on-the-Hill.
-        let ride = direct_ride(&stops, 0, 5).unwrap();
+        let ride = direct_ride(&stops, &LineRoutes::default(), 0, 5).unwrap();
         assert_eq!(ride.line.as_deref(), Some("Metropolitan"));
         // West Harrow and South Harrow share no line.
-        assert!(direct_ride(&stops, 4, 6).is_none());
+        assert!(direct_ride(&stops, &LineRoutes::default(), 4, 6).is_none());
     }
 
     #[test]
@@ -989,5 +1286,217 @@ mod tests {
         assert_eq!(line_mode(&line("dlr")), ("METRO", 25.0));
         assert_eq!(line_mode(&line("tram")), ("METRO", 18.0));
         assert_eq!(line_mode(&line("victoria")), ("TUBE", 30.0));
+    }
+
+    /// [`network`] with the Metropolitan's Amersham branch from
+    /// Harrow-on-the-Hill (Moor Park, then Rickmansworth, a hub `RIC`),
+    /// real positions, and the Metropolitan's routes as `TfL` runs them:
+    /// Uxbridge to the trunk, and the trunk to Rickmansworth, each both
+    /// ways. Rickmansworth is 10 km from Uxbridge as the crow flies, so
+    /// the spanning tree hangs it off the Uxbridge branch.
+    fn branched() -> (Vec<StopRecord>, LineRoutes) {
+        let mut stops = network();
+        stops.push(stop("940GMPK", &["metropolitan"], (51.6302, -0.4325), &[]));
+        stops.push(stop(
+            "940GRIC",
+            &["metropolitan"],
+            (51.6402, -0.4733),
+            &["RIC"],
+        ));
+        let uxbridge: Vec<String> = ["940GUXB", "940GICK", "940GRUI", "940GRLN", "940GWHR"]
+            .into_iter()
+            .chain(["940GHOH"])
+            .map(str::to_owned)
+            .collect();
+        let amersham: Vec<String> = ["940GHOH", "940GMPK", "940GRIC"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let rows: Vec<(String, Vec<String>)> = [uxbridge, amersham]
+            .into_iter()
+            .flat_map(|ids| {
+                let back: Vec<String> = ids.iter().rev().cloned().collect();
+                [
+                    ("metropolitan".to_owned(), ids),
+                    ("metropolitan".to_owned(), back),
+                ]
+            })
+            .collect();
+        let routes = LineRoutes::new(&stops, &rows);
+        (stops, routes)
+    }
+
+    fn index(stops: &[StopRecord], id: &str) -> usize {
+        stops.iter().position(|s| s.summary.id == id).unwrap()
+    }
+
+    fn metropolitan() -> TflStopLine {
+        line("metropolitan")
+    }
+
+    #[test]
+    fn a_ride_along_a_route_sums_its_stops_and_counts_them() {
+        let (stops, routes) = branched();
+        let rides = rides(&stops, &routes, &metropolitan(), 0, Toward::Out);
+        let (_, harrow) = rides
+            .iter()
+            .find(|(i, _)| *i == index(&stops, "940GHOH"))
+            .unwrap();
+        let expected: f64 = [
+            "940GUXB", "940GICK", "940GRUI", "940GRLN", "940GWHR", "940GHOH",
+        ]
+        .windows(2)
+        .map(|pair| {
+            metres_between(
+                stops[index(&stops, pair[0])].position.unwrap(),
+                stops[index(&stops, pair[1])].position.unwrap(),
+            )
+        })
+        .sum();
+        assert!((harrow.metres - expected).abs() < 1e-6);
+        assert_eq!(harrow.stops, Some(5));
+        assert_eq!(harrow.change_at, None);
+    }
+
+    #[test]
+    fn another_branch_is_a_change_at_the_junction() {
+        let (stops, routes) = branched();
+        let ric = index(&stops, "940GRIC");
+        let hoh = index(&stops, "940GHOH");
+        let to_ric = |routes: &LineRoutes, toward: Toward, from: usize| {
+            rides(&stops, routes, &metropolitan(), from, toward)
+                .into_iter()
+                .find(|(i, _)| *i == ric)
+                .map(|(_, ride)| ride)
+        };
+        let ride = to_ric(&routes, Toward::Out, 0).unwrap();
+        assert_eq!(ride.change_at, Some(hoh));
+        assert_eq!(ride.stops, Some(7), "5 to Harrow, 2 on");
+        // Uxbridge to Harrow, then Harrow to Rickmansworth.
+        let leg = |a: &str, b: &str| {
+            rides(
+                &stops,
+                &routes,
+                &metropolitan(),
+                index(&stops, a),
+                Toward::Out,
+            )
+            .into_iter()
+            .find(|(i, _)| *i == index(&stops, b))
+            .unwrap()
+            .1
+            .metres
+        };
+        let expected = leg("940GUXB", "940GHOH") + leg("940GHOH", "940GRIC");
+        assert!((ride.metres - expected).abs() < 1e-6);
+        // The change costs its minimum time and the extra wait.
+        assert_eq!(
+            ride.minutes(30.0),
+            whole(expected / 1000.0 / 30.0 * 60.0)
+                + BRANCH_CHANGE_MINUTES
+                + BRANCH_CHANGE_WAIT_MINUTES
+        );
+        // Into Uxbridge from Rickmansworth (an egress ride) changes there too.
+        let back = rides(&stops, &routes, &metropolitan(), 0, Toward::In)
+            .into_iter()
+            .find(|(i, _)| *i == ric)
+            .unwrap()
+            .1;
+        assert_eq!(back.change_at, Some(hoh));
+        assert!((back.metres - expected).abs() < 1.0);
+        // Before DS-151 (no routes) the tree took it as one ride, no change,
+        // and far shorter than the track.
+        let tree = to_ric(&LineRoutes::default(), Toward::Out, 0).unwrap();
+        assert_eq!(tree.change_at, None);
+        assert_eq!(tree.stops, None);
+        assert!(tree.metres < expected);
+    }
+
+    #[test]
+    fn the_branch_change_is_in_the_candidate_and_its_minutes() {
+        let (stops, routes) = branched();
+        let candidates = access_candidates(&stops, &routes, 0, Toward::Out, &[]);
+        let ric = candidates.iter().find(|c| c.crs == "RIC").unwrap();
+        assert_eq!(
+            ric.change_at.as_ref().map(|s| s.id.as_str()),
+            Some("940GHOH")
+        );
+        assert_eq!(ric.stop_count, Some(7));
+        let hoh = candidates.iter().find(|c| c.crs == "HOH").unwrap();
+        assert_eq!(hoh.change_at, None);
+        assert_eq!(hoh.stop_count, Some(5));
+        let along = |c: &AccessCandidate| f64::from(c.distance_metres);
+        assert_eq!(
+            ric.minutes,
+            RIDE_ENTRY_MINUTES
+                + whole(along(ric) / 1000.0 / 30.0 * 60.0)
+                + BRANCH_CHANGE_MINUTES
+                + BRANCH_CHANGE_WAIT_MINUTES
+                + RIDE_EXIT_MINUTES
+        );
+        // The Piccadilly has no routes here: its tree estimate stands.
+        let hxx = candidates.iter().find(|c| c.crs == "HXX").unwrap();
+        assert_eq!(hxx.minutes, 72);
+        assert_eq!(hxx.stop_count, None);
+
+        // Two stops: the direct ride changes at Harrow too.
+        let ride = direct_ride(&stops, &routes, 0, index(&stops, "940GRIC")).unwrap();
+        assert_eq!(
+            ride.change_at.as_ref().map(|s| s.id.as_str()),
+            Some("940GHOH")
+        );
+        assert_eq!(
+            ride.minutes,
+            RIDE_ENTRY_MINUTES
+                + whole(f64::from(ride.distance_metres) / 1000.0 / 30.0 * 60.0)
+                + BRANCH_CHANGE_MINUTES
+                + BRANCH_CHANGE_WAIT_MINUTES
+        );
+    }
+
+    #[test]
+    fn a_ride_needing_two_changes_is_not_offered() {
+        let (stops, _) = branched();
+        // Three routes in a chain: Uxbridge to Ickenham, Ruislip to Rayners
+        // Lane, and Rayners Lane to Harrow; nothing joins the first two.
+        let rows: Vec<(String, Vec<String>)> = [
+            ["940GUXB", "940GICK"].as_slice(),
+            &["940GRUI", "940GRLN"],
+            &["940GRLN", "940GHOH"],
+        ]
+        .iter()
+        .map(|ids| {
+            (
+                "metropolitan".to_owned(),
+                ids.iter().map(|id| (*id).to_owned()).collect(),
+            )
+        })
+        .collect();
+        let routes = LineRoutes::new(&stops, &rows);
+        let reached: Vec<usize> = rides(&stops, &routes, &metropolitan(), 0, Toward::Out)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert!(reached.contains(&index(&stops, "940GICK")));
+        assert!(!reached.contains(&index(&stops, "940GRLN")));
+        assert!(!reached.contains(&index(&stops, "940GHOH")));
+        // A stop no route has (West Harrow) keeps the tree's estimate.
+        assert!(reached.contains(&index(&stops, "940GWHR")));
+    }
+
+    #[test]
+    fn route_stops_that_are_unknown_are_passed_over() {
+        let (stops, _) = branched();
+        let rows = vec![(
+            "metropolitan".to_owned(),
+            vec!["940GUXB".into(), "940GNOPE".into(), "940GICK".into()],
+        )];
+        let routes = LineRoutes::new(&stops, &rows);
+        let ride = rides(&stops, &routes, &metropolitan(), 0, Toward::Out)
+            .into_iter()
+            .find(|(i, _)| *i == index(&stops, "940GICK"))
+            .unwrap()
+            .1;
+        assert_eq!(ride.stops, Some(1));
     }
 }
