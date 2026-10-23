@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import { JourneyCreationFlow } from './JourneyCreationFlow';
 import type { JourneyLegDetail, TripPlanResponse } from '@/lib/types';
@@ -113,15 +113,65 @@ describe('JourneyCreationFlow', () => {
 
   it('starts by rendering the leg-1 form, with no journey yet', () => {
     vi.stubGlobal('fetch', mockFetchByUrl());
-    renderWithMantine(<JourneyCreationFlow />);
+    renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
     expect(screen.getByRole('button', { name: /Track this train/ })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /journey/i })).not.toBeInTheDocument();
+  });
+
+  describe('the option it opens on', () => {
+    it('opens on the planner, listed first, when nothing asks for another', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<JourneyCreationFlow />);
+
+      const options = within(
+        screen.getByRole('radiogroup', { name: 'How do you want to start this journey?' }),
+      ).getAllByRole('radio');
+      expect(options.map((option) => option.getAttribute('value'))).toEqual(['plan', 'known', 'untracked']);
+      expect(screen.getByRole('radio', { name: 'Plan a route for me' })).toBeChecked();
+      expect(screen.getByRole('button', { name: 'Find routes' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Track this train/ })).not.toBeInTheDocument();
+    });
+
+    it('names the choice by its visible question, for screen readers', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<JourneyCreationFlow />);
+      expect(screen.getByRole('radiogroup', { name: 'How do you want to start this journey?' })).toBeInTheDocument();
+    });
+
+    it('opens on "I know my route" when asked, on the train form\'s own default half', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
+      expect(screen.getByRole('radio', { name: 'I know my route' })).toBeChecked();
+      expect(screen.getByRole('radio', { name: 'I know the train' })).toBeChecked();
+    });
+
+    it('opens "I know my route" on its time window half for knownRouteMode="window"', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<JourneyCreationFlow initialEntryMode="known" knownRouteMode="window" />);
+      expect(screen.getByRole('radio', { name: 'I know my route' })).toBeChecked();
+      expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+    });
+
+    it('opens on "Tube, bus or walk" when asked', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<JourneyCreationFlow initialEntryMode="untracked" />);
+      expect(screen.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
+      expect(screen.getByRole('button', { name: 'Start journey' })).toBeInTheDocument();
+    });
+
+    it('still switches option after opening on the planner', () => {
+      vi.stubGlobal('fetch', mockFetchByUrl());
+      renderWithMantine(<JourneyCreationFlow />);
+      fireEvent.click(screen.getByText('I know my route'));
+      expect(screen.getByRole('button', { name: /Track this train/ })).toBeInTheDocument();
+      expect(screen.getByText('Showing the I-know-my-route form.')).toHaveAttribute('aria-live', 'polite');
+    });
   });
 
   it('after leg 1 is created, fetches the journey and offers a Done link to it', async () => {
     const fetchMock = mockFetchByUrl({ journeyDetail: () => journeyDetailResponse([leg()]) });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<JourneyCreationFlow />);
+    renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
 
     await createLegOne(fetchMock);
 
@@ -136,7 +186,7 @@ describe('JourneyCreationFlow', () => {
       journeyDetail: () => journeyDetailResponse([leg({ trackedTrainState: null })]),
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<JourneyCreationFlow />);
+    renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
 
     await createLegOne(fetchMock);
     await screen.findByRole('link', { name: /view journey/i });
@@ -181,7 +231,7 @@ describe('JourneyCreationFlow', () => {
       },
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<JourneyCreationFlow />);
+    renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
 
     await createLegOne(fetchMock);
     await screen.findByRole('link', { name: /view journey/i });
@@ -206,7 +256,7 @@ describe('JourneyCreationFlow', () => {
   it('still offers the Done link even when the post-creation journey fetch fails', async () => {
     const fetchMock = mockFetchByUrl({ journeyDetail: () => new Response('boom', { status: 500 }) });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<JourneyCreationFlow />);
+    renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
 
     await createLegOne(fetchMock);
 
@@ -290,7 +340,7 @@ describe('JourneyCreationFlow', () => {
         ),
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderWithMantine(<JourneyCreationFlow />);
+    renderWithMantine(<JourneyCreationFlow initialEntryMode="known" />);
 
     fireEvent.click(screen.getByText('Plan a route for me'));
 

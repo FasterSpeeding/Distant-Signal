@@ -209,6 +209,9 @@ const PUBLIC_ROUTES: [name: string, path: string][] = [
   [`/incidents/${REAL_INCIDENT_ID}`, `/incidents/${REAL_INCIDENT_ID}`],
   ['/trains', '/trains'],
   ['/track', '/track'],
+  // Opens on the planner; `?mode=known` is the train form under it.
+  ['/journeys/new', '/journeys/new'],
+  ['/journeys/new?mode=known', '/journeys/new?mode=known'],
   ['/groups/new', '/groups/new'],
   ['/connect-claude', '/connect-claude'],
   // The retired consent bridge's "this moved" note.

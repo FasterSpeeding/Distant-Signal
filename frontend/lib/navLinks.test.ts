@@ -12,6 +12,7 @@ import {
   JOURNEYS_DESTINATION,
   NEW_JOURNEY_LABEL,
   TRACK_JOURNEY_HREF,
+  TRACK_KNOWN_ROUTE_HREF,
   TRANSIT_DESTINATION,
 } from './navLinks';
 
@@ -47,6 +48,7 @@ describe('the bar', () => {
   it('sends Journeys to /journeys, and starts new journeys on /journeys/new', () => {
     expect(JOURNEYS_DESTINATION.href).toBe('/journeys');
     expect(TRACK_JOURNEY_HREF).toBe('/journeys/new');
+    expect(TRACK_KNOWN_ROUTE_HREF).toBe('/journeys/new?mode=known');
     expect(NEW_JOURNEY_LABEL).toBe('New journey');
   });
 

@@ -41,6 +41,11 @@ export const JOURNEYS_DESTINATION: NavDestination = {
  * home page's "Upcoming journeys" (and from the planner's own copy). */
 export const TRACK_JOURNEY_HREF = '/journeys/new';
 
+/** `TRACK_JOURNEY_HREF` opened on "I know my route" rather than its default,
+ * the planner (`lib/journeyEntryMode.ts`): for a link offered to someone
+ * who already knows their train, such as `/plan`'s "Track it directly". */
+export const TRACK_KNOWN_ROUTE_HREF = `${TRACK_JOURNEY_HREF}?mode=known`;
+
 /** The words on every button that opens `TRACK_JOURNEY_HREF`, which is
  * also that page's h1 (docs/style-guide.md, "Tone"). */
 export const NEW_JOURNEY_LABEL = 'New journey';

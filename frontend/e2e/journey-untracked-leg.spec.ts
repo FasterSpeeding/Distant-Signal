@@ -186,7 +186,7 @@ async function mockApi(page: Page, firstLegs: unknown[]): Promise<Record<string,
 test.describe('untracked legs', () => {
   test('adds a Tube leg after a train leg, starting from its arrival', async ({ page }) => {
     const bodies = await mockApi(page, [TRAIN_LEG]);
-    await page.goto('/journeys/new');
+    await page.goto('/journeys/new?mode=known');
     await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
     await page.getByText('Search a time window', { exact: true }).click();
     await page.getByRole('combobox', { name: 'Destination station' }).fill('EUS');

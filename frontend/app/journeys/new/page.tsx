@@ -4,6 +4,7 @@ import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
 import type { UntrackedLegOrigin } from '@/components/UntrackedLegStartForm';
 import { getTflStop, getTrainSearchDates } from '@/lib/api';
+import { parseJourneyEntryMode } from '@/lib/journeyEntryMode';
 import { JOURNEY_FROM_TFL_STOP_PARAM, TFL_STOP_ID } from '@/lib/tflStops';
 import type { TransitMode } from '@/lib/types';
 import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
@@ -95,20 +96,27 @@ export default async function JourneysNewPage({
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 } = {}) {
+  const params = (await searchParams) ?? {};
+  // The planner is selected unless `?mode=` names another option
+  // (`lib/journeyEntryMode.ts`): `/plan`'s "Track it directly" link asks
+  // for `known`. A `?fromTflStop=` stop opens "Tube, bus or walk" whatever
+  // the mode says. Neither is read in metadata, which describes the page
+  // as a whole.
+  const { entryMode, knownRouteMode } = parseJourneyEntryMode(params.mode);
   // The planner's date picker ends where the timetable search does
   // (`getTrainSearchDates`, cached for a few minutes), as on `/plan`. A
   // failure leaves `null`, and the picker falls back to a week ahead.
   const [searchDates, untrackedOrigin] = await Promise.all([
     getTrainSearchDates().catch(() => null),
-    searchParams?.then((params) => untrackedOriginFrom(params[JOURNEY_FROM_TFL_STOP_PARAM])) ?? null,
+    untrackedOriginFrom(params[JOURNEY_FROM_TFL_STOP_PARAM]),
   ]);
 
   return (
     <Stack p="lg" gap="md">
       <Title order={1}>{NEW_JOURNEY_LABEL}</Title>
       <Text c="dimmed">
-        Track a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked
-        you can add another leg here for a change of trains, or stop now: a single train is already a complete journey.
+        Plan a route, or track a train you already know. Once the first leg is tracked you can add another here for a
+        change of trains, or stop now: a single train is already a complete journey.
       </Text>
       <Text size="sm" c="dimmed">
         Tracking a journey needs a Distant Signal account. You&apos;ll be sent to log in when you save if you
@@ -118,7 +126,12 @@ export default async function JourneysNewPage({
         </TextLink>{' '}
         (no account needed).
       </Text>
-      <JourneyCreationFlow planSearchDates={searchDates} untrackedOrigin={untrackedOrigin} />
+      <JourneyCreationFlow
+        initialEntryMode={entryMode}
+        knownRouteMode={knownRouteMode}
+        planSearchDates={searchDates}
+        untrackedOrigin={untrackedOrigin}
+      />
     </Stack>
   );
 }
