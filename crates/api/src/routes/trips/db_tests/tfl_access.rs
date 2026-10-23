@@ -87,7 +87,11 @@ async fn cleanup(pool: &PgPool) {
         .execute(pool)
         .await
         .ok();
-    for (crs, _, _) in STATIONS {
+    sqlx::query("DELETE FROM tfl_line_routes WHERE line_id IN ('testmet135', 'testpic135')")
+        .execute(pool)
+        .await
+        .ok();
+    for crs in STATIONS.iter().map(|(crs, _, _)| *crs).chain([BRANCH_CRS]) {
         sqlx::query("DELETE FROM stations WHERE crs = $1")
             .bind(crs)
             .execute(pool)
@@ -340,5 +344,162 @@ async fn tfl_stop_ends_are_checked_and_station_plans_are_unchanged() {
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert!(body.get("access").is_none(), "{body:?}");
     assert_eq!(describe(&body["segments"][0]["itineraries"][0]), ["TTUP1"]);
+    cleanup(&pool).await;
+}
+
+/// The branch of [`branch_change_costs_a_change_at_the_junction`]: `Test
+/// Ricky`, a hub (`ZTR`) on the Test Metropolitan beyond `Test Harrow`, 3.8
+/// km from `Testbridge` as the crow flies but 18 km by the line.
+const BRANCH_STOP: &str = "940GZZTSRIC";
+const BRANCH_CRS: &str = "ZTR";
+
+/// Seeds `Test Ricky`, its station and an 08:30 from it to `ZTM` (quicker
+/// than the 08:40 from `Test Harrow`); with `routes`, the Test
+/// Metropolitan's routes as two branches meeting at `Test Harrow`:
+/// Testbridge - Test Middle - Test Harrow, and Test Harrow - Test Ricky,
+/// each both ways.
+async fn seed_branch(pool: &PgPool, routes: bool) {
+    sqlx::query(
+        "INSERT INTO tfl_stops (stop_id, name, search_name, modes, lines, latitude, longitude, fetched_at) \
+         VALUES ($1, 'Test Ricky', 'test ricky', ARRAY['tube'], $2, 55.03, 2.03, now())",
+    )
+    .bind(BRANCH_STOP)
+    .bind(Value::Array(vec![line_json("testmet135")]))
+    .execute(pool)
+    .await
+    .expect("seed the branch stop");
+    sqlx::query("INSERT INTO tfl_stop_crs (stop_id, crs, source) VALUES ($1, $2, 'hub')")
+        .bind(BRANCH_STOP)
+        .bind(BRANCH_CRS)
+        .execute(pool)
+        .await
+        .expect("seed its hub");
+    sqlx::query(
+        "INSERT INTO stations (crs, name, latitude, longitude) VALUES ($1, 'Test station ZTR', 55.03, 2.03)",
+    )
+    .bind(BRANCH_CRS)
+    .execute(pool)
+    .await
+    .expect("seed its station");
+    sqlx::query(
+        "INSERT INTO stanox_crs (stanox, crs, tiploc, station_name, source_sequence) \
+         VALUES ('TESTTFLACC-ZTR', $1, 'TTRICK', $1, 1) ON CONFLICT (stanox) DO NOTHING",
+    )
+    .bind(BRANCH_CRS)
+    .execute(pool)
+    .await
+    .expect("seed its tiploc");
+    for (seq, tiploc, kind, arrival, departure) in [
+        (0, "TTRICK", "origin", None, Some("08:30:00")),
+        (1, "TTMARY", "terminate", Some("08:45:00"), None),
+    ] {
+        sqlx::query(
+            "INSERT INTO schedule_calling_points_full \
+             (service_date, uid, seq, tiploc, kind, booked_arrival, booked_departure, day_offset) \
+             VALUES ($1, 'TTUP4', $2, $3, $4, $5::time, $6::time, 0) ON CONFLICT DO NOTHING",
+        )
+        .bind(date())
+        .bind(seq)
+        .bind(tiploc)
+        .bind(kind)
+        .bind(arrival)
+        .bind(departure)
+        .execute(pool)
+        .await
+        .expect("seed the 08:30");
+    }
+    if !routes {
+        return;
+    }
+    let trunk = [UXB, "940GZZTSMID", "940GZZTSHOH"];
+    let branch = ["940GZZTSHOH", BRANCH_STOP];
+    let mut index = 0_i16;
+    for (direction, stops) in [
+        ("outbound", trunk.to_vec()),
+        ("inbound", trunk.iter().rev().copied().collect()),
+        ("outbound", branch.to_vec()),
+        ("inbound", branch.iter().rev().copied().collect()),
+    ] {
+        sqlx::query(
+            "INSERT INTO tfl_line_routes (line_id, direction, route_index, name, stop_ids, fetched_at) \
+             VALUES ('testmet135', $1, $2, 'Test', $3, now())",
+        )
+        .bind(direction)
+        .bind(index)
+        .bind(stops)
+        .execute(pool)
+        .await
+        .expect("seed a route");
+        index += 1;
+    }
+}
+
+fn candidate<'a>(body: &'a Value, crs: &str) -> &'a Value {
+    body["access"]["origin"]["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .find(|c| c["crs"] == crs)
+        .unwrap_or_else(|| panic!("no {crs} candidate: {body:?}"))
+}
+
+/// DS-151: without routes, the spanning tree takes `Test Ricky` as a short
+/// ride with no change, and the 08:30 from there wins. With the line's
+/// routes the ride runs in to `Test Harrow` and out along the other branch,
+/// with a change there (5 minutes and 5 more waiting), so it misses the
+/// 08:30 and the Tube to `Test Harrow` and the 08:40 win again. Two stops on
+/// different branches ride straight there, changing at the junction.
+#[tokio::test]
+#[ignore = "requires a live database; run with `cargo test -p api \
+            routes::trips -- --ignored --test-threads=1`"]
+async fn branch_change_costs_a_change_at_the_junction() {
+    let pool = connect().await;
+    seed(&pool).await;
+    seed_branch(&pool, false).await;
+    let router = test_router(test_app(pool.clone()));
+    let (status, before) = get(router.clone(), plan_uri(UXB, "ZTM", "departAfter=08:00")).await;
+    assert_eq!(status, StatusCode::OK, "{before:?}");
+    assert_eq!(
+        describe(&before["segments"][0]["itineraries"][0]),
+        [format!("TUBE {UXB}-ZTR origin"), "TTUP4".to_string()]
+    );
+    let tree = candidate(&before, "ZTR");
+    assert!(tree.get("changeAt").is_none(), "{tree:?}");
+    assert!(tree.get("stopCount").is_none(), "{tree:?}");
+    let tree_minutes = tree["minutes"].as_i64().unwrap();
+
+    cleanup(&pool).await;
+    seed(&pool).await;
+    seed_branch(&pool, true).await;
+    let (status, after) = get(router.clone(), plan_uri(UXB, "ZTM", "departAfter=08:00")).await;
+    assert_eq!(status, StatusCode::OK, "{after:?}");
+    assert_eq!(
+        describe(&after["segments"][0]["itineraries"][0]),
+        [format!("TUBE {UXB}-ZTH origin"), "TTUP1".to_string()]
+    );
+    let routed = candidate(&after, "ZTR");
+    assert_eq!(routed["changeAt"]["id"], "940GZZTSHOH", "{routed:?}");
+    assert_eq!(routed["stopCount"], 3);
+    // 5 in, the ride, 5 to change, 5 waiting, 3 out.
+    let metres = routed["distanceMetres"].as_f64().unwrap();
+    let ride = (metres / 1000.0 / 30.0 * 60.0).ceil();
+    assert_eq!(routed["minutes"].as_f64().unwrap(), 5.0 + ride + 10.0 + 3.0);
+    assert!(routed["minutes"].as_i64().unwrap() > tree_minutes + 10);
+    let harrow = candidate(&after, "ZTH");
+    assert!(harrow.get("changeAt").is_none());
+    assert_eq!(harrow["stopCount"], 2);
+
+    // Stop to stop across the junction: one ride, its change named.
+    let (status, body) = get(router, plan_uri(UXB, BRANCH_STOP, "departAfter=08:00")).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let itinerary = &body["segments"][0]["itineraries"][0];
+    assert_eq!(
+        describe(itinerary),
+        [format!("TUBE {UXB}-{BRANCH_STOP} both")]
+    );
+    assert_eq!(
+        itinerary["legs"][0]["access"]["changeAt"]["name"],
+        "Test Harrow"
+    );
     cleanup(&pool).await;
 }
