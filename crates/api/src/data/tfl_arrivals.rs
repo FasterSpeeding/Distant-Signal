@@ -6,17 +6,37 @@
 //! per-stop cache ([`TflArrivals`]): traffic is low and bursty (a page open
 //! on one stop refreshes every 30 s), so a poller fetching every stop all
 //! the time would spend far more of `TfL`'s rate limit than the readers do.
-//! The cache is per pod and in memory, like the rate limiter: a few hundred
-//! stops at most (a stop must be in `tfl_stops` before anything is
-//! fetched), and a second pod fetching the same stop once more is harmless.
 //!
-//! **Single flight.** Each stop has one slot holding a
+//! **Two layers.** The answer is shared between the api's replicas through
+//! Postgres (`tfl_arrivals_cache`, one row per stop: the shared layer), so
+//! N replicas cost one upstream call per stop per
+//! [`TflArrivalsSettings::cache_secs`], not N. Each pod keeps a copy in
+//! memory for a few seconds in front of it
+//! ([`TflArrivalsSettings::memory_cache_secs`]), so a burst on one pod is
+//! one row read. Postgres rather than Redis: the api already holds a pool
+//! and has had no Redis client since ingest phase 5, and the cache is a few
+//! hundred small rows. A few hundred stops at most: a stop must be in
+//! `tfl_stops` before anything is fetched.
+//!
+//! **Single flight.** In a pod, each stop has one slot holding a
 //! [`tokio::sync::OnceCell`]: concurrent requests for a stop whose entry is
-//! missing or stale share one upstream call, and the rest wait for its
-//! answer rather than stampeding `TfL`. A failure is cached too, for a
-//! shorter time ([`TflArrivalsSettings::error_cache_secs`]), so an outage
-//! costs one upstream call per stop per few seconds rather than one per
-//! request.
+//! missing or stale share one load, and the rest wait for its answer.
+//! Across pods, the pod that finds the shared row stale claims a lease on
+//! it (`lease_until`, an upsert that only succeeds while the lease is free
+//! and the answer still stale) and fetches; the others serve the previous
+//! answer while it is at most [`TflArrivalsSettings::stale_secs`] old
+//! (stale-while-revalidate), or else poll the row until the new answer
+//! lands. Best effort: a waiter that sees nothing by the fetch timeout plus
+//! a second fetches for itself, and a pod that dies mid-fetch lets its
+//! lease run out. A failure is cached too, for a shorter time
+//! ([`TflArrivalsSettings::error_cache_secs`]), so an outage costs one
+//! upstream call per stop per few seconds rather than one per request.
+//!
+//! **Postgres trouble.** A shared-layer read or write that fails (or takes
+//! over [`SHARED_DB_TIMEOUT`]) falls back to fetching directly and keeping
+//! the answer in memory for the full cache period: the per-pod cache this
+//! was before. `api_tfl_arrivals_cache_total{layer, result}` counts each
+//! layer's hits and misses.
 //!
 //! **Key.** `TfL` accepts anonymous calls at a lower rate limit; with
 //! `TFL_APP_KEY` set (the chart passes poller-tfl's key) the call carries
@@ -26,6 +46,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -64,6 +85,19 @@ pub struct TflArrivalsSettings {
     /// How long a failed fetch is remembered before the next try.
     #[arg(long, env = "TFL_ARRIVALS_ERROR_CACHE_SECS", default_value_t = 10)]
     pub error_cache_secs: u64,
+    /// Share answers between replicas through Postgres
+    /// (`tfl_arrivals_cache`). Off: each pod caches on its own.
+    #[arg(long, env = "TFL_ARRIVALS_SHARED_CACHE", default_value_t = true, action = clap::ArgAction::Set)]
+    pub shared_cache: bool,
+    /// With the shared cache: how long a pod keeps an answer in memory
+    /// before reading the shared row again (never past the answer's own
+    /// cache period).
+    #[arg(long, env = "TFL_ARRIVALS_MEMORY_CACHE_SECS", default_value_t = 5)]
+    pub memory_cache_secs: u64,
+    /// With the shared cache: how old an answer may be and still be served
+    /// while another replica fetches its replacement.
+    #[arg(long, env = "TFL_ARRIVALS_STALE_SECS", default_value_t = 120)]
+    pub stale_secs: u64,
     /// Per-request timeout. The page renders on the server and the
     /// frontend gives up on the api after 8 s, so this stays well inside.
     #[arg(long, env = "TFL_ARRIVALS_TIMEOUT_SECS", default_value_t = 5)]
@@ -87,6 +121,9 @@ impl std::fmt::Debug for TflArrivalsSettings {
             .field("app_key", &self.app_key.as_ref().map(|_| "[REDACTED]"))
             .field("cache_secs", &self.cache_secs)
             .field("error_cache_secs", &self.error_cache_secs)
+            .field("shared_cache", &self.shared_cache)
+            .field("memory_cache_secs", &self.memory_cache_secs)
+            .field("stale_secs", &self.stale_secs)
             .field("timeout_secs", &self.timeout_secs)
             .finish()
     }
@@ -94,7 +131,8 @@ impl std::fmt::Debug for TflArrivalsSettings {
 
 /// One prediction as `TfL` serves it (`Tfl.Api.Presentation.Entities.Prediction`),
 /// the fields this uses. Every text field may be missing or empty.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Serialized (same names) into the shared cache's `predictions`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TflPrediction {
     #[serde(default)]
@@ -120,8 +158,10 @@ pub struct TflPrediction {
 }
 
 /// Why `TfL`'s arrivals could not be had. Every variant is a 503 to the
-/// caller; the detail is for the log.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// caller; the detail is for the log. Serialized into the shared cache's
+/// `error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum FetchError {
     /// `TFL_ARRIVALS_ENABLED=false`.
     Disabled,
@@ -248,18 +288,229 @@ pub struct Snapshot {
 
 #[derive(Debug, Clone)]
 struct Outcome {
-    at: Instant,
+    /// When the in-memory copy stops being served.
+    expires: Instant,
     result: Result<Snapshot, FetchError>,
 }
 
 type Slot = Arc<OnceCell<Outcome>>;
 
-/// The per-stop cache in front of an [`ArrivalsSource`]. `Default` is
-/// disabled (every call a [`FetchError::Disabled`]), for test apps.
+/// The longest a shared-layer query may take before the pod gives up on
+/// it and fetches directly.
+pub const SHARED_DB_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How often a pod waiting on another replica's fetch re-reads the row.
+const SHARED_POLL: Duration = Duration::from_millis(150);
+
+/// How long a stale answer served while another replica refreshes it is
+/// kept in memory before the row is read again.
+const STALE_MEMORY_TTL: Duration = Duration::from_secs(1);
+
+/// Rows untouched this long are deleted ([`SharedCache::prune`]).
+const SHARED_RETENTION_SECS: f64 = 86_400.0;
+
+/// How often one pod prunes the shared table.
+const SHARED_PRUNE_EVERY: Duration = Duration::from_secs(3_600);
+
+fn count_cache(layer: &'static str, result: &'static str) {
+    metrics::counter!(
+        common::metrics::metric_name("api_tfl_arrivals_cache_total"),
+        "layer" => layer,
+        "result" => result
+    )
+    .increment(1);
+}
+
+/// The shared layer: `tfl_arrivals_cache` in Postgres.
+struct SharedCache {
+    pool: sqlx::PgPool,
+    /// In-memory lifetime of an answer read from (or written to) the row.
+    memory_ttl: Duration,
+    /// Oldest answer served while another replica refreshes it.
+    stale: Duration,
+    /// How long a claimed refresh is held: the fetch timeout plus slack.
+    lease: Duration,
+    /// How long to wait for another replica's refresh before fetching.
+    wait: Duration,
+    last_prune: Mutex<Option<Instant>>,
+}
+
+/// The shared row as read.
+struct SharedRow {
+    /// Seconds since `fetched_at`, by the database's clock (so replicas'
+    /// clocks do not matter). `None` until the first answer.
+    age_secs: Option<f64>,
+    result: Option<Result<Snapshot, FetchError>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct SharedRowRecord {
+    fetched_at: Option<DateTime<Utc>>,
+    predictions: Option<sqlx::types::Json<Vec<TflPrediction>>>,
+    error: Option<sqlx::types::Json<FetchError>>,
+    age_secs: Option<f64>,
+}
+
+/// A shared-layer query that failed or timed out.
+#[derive(Debug)]
+struct SharedError(String);
+
+async fn bounded<T>(query: impl Future<Output = Result<T, sqlx::Error>>) -> Result<T, SharedError> {
+    match tokio::time::timeout(SHARED_DB_TIMEOUT, query).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(SharedError(err.to_string())),
+        Err(_) => Err(SharedError(format!(
+            "no answer in {} ms",
+            SHARED_DB_TIMEOUT.as_millis()
+        ))),
+    }
+}
+
+impl SharedCache {
+    async fn read(&self, stop_id: &str) -> Result<SharedRow, SharedError> {
+        let record: Option<SharedRowRecord> = bounded(
+            sqlx::query_as(
+                "SELECT fetched_at, predictions, error, \
+                 EXTRACT(EPOCH FROM (now() - fetched_at))::float8 AS age_secs \
+                 FROM tfl_arrivals_cache WHERE stop_id = $1",
+            )
+            .bind(stop_id)
+            .fetch_optional(&self.pool),
+        )
+        .await?;
+        let Some(record) = record else {
+            return Ok(SharedRow {
+                age_secs: None,
+                result: None,
+            });
+        };
+        let result = match (record.fetched_at, record.predictions, record.error) {
+            (Some(fetched_at), Some(predictions), _) => Some(Ok(Snapshot {
+                fetched_at,
+                predictions: predictions.0.into(),
+            })),
+            (Some(_), None, Some(error)) => Some(Err(error.0)),
+            _ => None,
+        };
+        Ok(SharedRow {
+            age_secs: result.as_ref().and(record.age_secs),
+            result,
+        })
+    }
+
+    /// Claims the refresh of `stop_id`: true when this pod should fetch.
+    /// Only succeeds while no other lease is live and the answer is still
+    /// stale, so of several pods that saw it stale one wins.
+    async fn claim(
+        &self,
+        stop_id: &str,
+        ttl: Duration,
+        error_ttl: Duration,
+    ) -> Result<bool, SharedError> {
+        let claimed: Option<bool> = bounded(
+            sqlx::query_scalar(
+                "INSERT INTO tfl_arrivals_cache AS c (stop_id, lease_until) \
+                 VALUES ($1, now() + make_interval(secs => $2)) \
+                 ON CONFLICT (stop_id) DO UPDATE SET lease_until = EXCLUDED.lease_until \
+                 WHERE (c.lease_until IS NULL OR c.lease_until <= now()) \
+                   AND (c.fetched_at IS NULL OR c.fetched_at <= now() - make_interval(secs => \
+                        CASE WHEN c.error IS NULL THEN $3 ELSE $4 END)) \
+                 RETURNING true",
+            )
+            .bind(stop_id)
+            .bind(self.lease.as_secs_f64())
+            .bind(ttl.as_secs_f64())
+            .bind(error_ttl.as_secs_f64())
+            .fetch_optional(&self.pool),
+        )
+        .await?;
+        Ok(claimed.unwrap_or(false))
+    }
+
+    /// Stores the answer and frees the lease; the snapshot's time becomes
+    /// the database's.
+    async fn store(
+        &self,
+        stop_id: &str,
+        result: &Result<Vec<TflPrediction>, FetchError>,
+    ) -> Result<DateTime<Utc>, SharedError> {
+        let (predictions, error) = match result {
+            Ok(predictions) => (Some(sqlx::types::Json(predictions)), None),
+            Err(error) => (None, Some(sqlx::types::Json(error))),
+        };
+        let fetched_at = bounded(
+            sqlx::query_scalar(
+                "INSERT INTO tfl_arrivals_cache AS c \
+                 (stop_id, fetched_at, predictions, error, lease_until) \
+                 VALUES ($1, now(), $2, $3, NULL) \
+                 ON CONFLICT (stop_id) DO UPDATE SET fetched_at = EXCLUDED.fetched_at, \
+                 predictions = EXCLUDED.predictions, error = EXCLUDED.error, lease_until = NULL \
+                 RETURNING fetched_at",
+            )
+            .bind(stop_id)
+            .bind(predictions)
+            .bind(error)
+            .fetch_one(&self.pool),
+        )
+        .await?;
+        self.prune_now_and_then().await;
+        Ok(fetched_at)
+    }
+
+    /// Deletes rows untouched for a day (a stop no longer in `tfl_stops`),
+    /// at most once per [`SHARED_PRUNE_EVERY`] per pod.
+    async fn prune_now_and_then(&self) {
+        {
+            let mut last = self
+                .last_prune
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if last.is_some_and(|at| at.elapsed() < SHARED_PRUNE_EVERY) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        if let Err(err) = self.prune().await {
+            tracing::warn!(error = %err.0, "TfL arrivals cache prune failed");
+        }
+    }
+
+    async fn prune(&self) -> Result<u64, SharedError> {
+        let done = bounded(
+            sqlx::query(
+                "DELETE FROM tfl_arrivals_cache \
+                 WHERE COALESCE(fetched_at, lease_until, '-infinity') \
+                       < now() - make_interval(secs => $1) \
+                   AND (lease_until IS NULL OR lease_until < now())",
+            )
+            .bind(SHARED_RETENTION_SECS)
+            .execute(&self.pool),
+        )
+        .await?;
+        Ok(done.rows_affected())
+    }
+}
+
+/// The shared layer's knobs ([`TflArrivals::shared`]).
+#[derive(Debug, Clone, Copy)]
+pub struct SharedOptions {
+    /// In-memory lifetime in front of the shared row.
+    pub memory_ttl: Duration,
+    /// Oldest answer served while another replica refreshes it.
+    pub stale: Duration,
+    /// The upstream fetch timeout: sets the lease and the wait.
+    pub fetch_timeout: Duration,
+}
+
+/// The per-stop cache in front of an [`ArrivalsSource`]: in memory, and
+/// shared through Postgres when built with [`TflArrivals::shared`].
+/// `Default` is disabled (every call a [`FetchError::Disabled`]), for test
+/// apps.
 pub struct TflArrivals {
     source: Option<Arc<dyn ArrivalsSource>>,
     ttl: Duration,
     error_ttl: Duration,
+    shared: Option<SharedCache>,
     slots: Mutex<HashMap<String, Slot>>,
 }
 
@@ -273,6 +524,7 @@ impl std::fmt::Debug for TflArrivals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TflArrivals")
             .field("enabled", &self.source.is_some())
+            .field("shared", &self.shared.is_some())
             .field("ttl", &self.ttl)
             .field("error_ttl", &self.error_ttl)
             .finish_non_exhaustive()
@@ -285,96 +537,248 @@ impl TflArrivals {
             source: None,
             ttl: Duration::ZERO,
             error_ttl: Duration::ZERO,
+            shared: None,
             slots: Mutex::new(HashMap::new()),
         }
     }
 
+    /// In memory only: each pod fetches for itself.
     pub fn new(source: Arc<dyn ArrivalsSource>, ttl: Duration, error_ttl: Duration) -> Self {
         Self {
             source: Some(source),
             ttl,
             error_ttl,
+            shared: None,
             slots: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn from_settings(settings: &TflArrivalsSettings) -> Result<Self> {
+    /// In memory in front of `tfl_arrivals_cache` on `pool`.
+    pub fn shared(
+        source: Arc<dyn ArrivalsSource>,
+        ttl: Duration,
+        error_ttl: Duration,
+        pool: sqlx::PgPool,
+        options: SharedOptions,
+    ) -> Self {
+        let slack = Duration::from_secs(1);
+        Self {
+            source: Some(source),
+            ttl,
+            error_ttl,
+            shared: Some(SharedCache {
+                pool,
+                memory_ttl: options.memory_ttl,
+                stale: options.stale,
+                lease: options.fetch_timeout + 2 * slack,
+                wait: options.fetch_timeout + slack,
+                last_prune: Mutex::new(None),
+            }),
+            slots: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Shared through `pool` unless `TFL_ARRIVALS_SHARED_CACHE=false`.
+    pub fn from_settings(settings: &TflArrivalsSettings, pool: &sqlx::PgPool) -> Result<Self> {
         if !settings.enabled {
             return Ok(Self::disabled());
         }
-        let source = HttpArrivalsSource::new(
+        let timeout = Duration::from_secs(settings.timeout_secs.max(1));
+        let source = Arc::new(HttpArrivalsSource::new(
             &settings.base_url,
             settings.app_key.as_deref(),
-            Duration::from_secs(settings.timeout_secs.max(1)),
-        )?;
-        Ok(Self::new(
-            Arc::new(source),
-            Duration::from_secs(settings.cache_secs),
-            Duration::from_secs(settings.error_cache_secs),
+            timeout,
+        )?);
+        let ttl = Duration::from_secs(settings.cache_secs);
+        let error_ttl = Duration::from_secs(settings.error_cache_secs);
+        if !settings.shared_cache {
+            return Ok(Self::new(source, ttl, error_ttl));
+        }
+        Ok(Self::shared(
+            source,
+            ttl,
+            error_ttl,
+            pool.clone(),
+            SharedOptions {
+                memory_ttl: Duration::from_secs(settings.memory_cache_secs),
+                stale: Duration::from_secs(settings.stale_secs),
+                fetch_timeout: timeout,
+            },
         ))
     }
 
-    fn expired(&self, outcome: &Outcome, now: Instant) -> bool {
-        let ttl = if outcome.result.is_ok() {
+    fn ttl_for<T>(&self, result: &Result<T, FetchError>) -> Duration {
+        if result.is_ok() {
             self.ttl
         } else {
             self.error_ttl
-        };
-        now.duration_since(outcome.at) >= ttl
+        }
     }
 
     /// The slot to read `stop_id` from: the current one while it is in
     /// flight or fresh, else a new, empty one.
     fn slot(&self, stop_id: &str) -> Slot {
         let now = Instant::now();
+        let expired = |slot: &Slot| slot.get().is_some_and(|outcome| now >= outcome.expires);
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(slot) = slots.get(stop_id)
-            && !slot.get().is_some_and(|outcome| self.expired(outcome, now))
+            && !expired(slot)
         {
             return Arc::clone(slot);
         }
         if slots.len() >= MAX_SLOTS {
-            slots.retain(|_, slot| !slot.get().is_some_and(|outcome| self.expired(outcome, now)));
+            slots.retain(|_, slot| !expired(slot));
         }
         let slot: Slot = Arc::new(OnceCell::new());
         slots.insert(stop_id.to_owned(), Arc::clone(&slot));
         slot
     }
 
-    /// `stop_id`'s predictions: from the cache while fresh, else from one
-    /// shared upstream call. A request dropped mid-fetch hands the fetch to
-    /// the next waiter (`OnceCell::get_or_init`).
+    /// `stop_id`'s predictions: from memory while fresh, else from the
+    /// shared row while fresh, else from one upstream call. A request
+    /// dropped mid-load hands the load to the next waiter
+    /// (`OnceCell::get_or_init`).
     pub async fn get(&self, stop_id: &str) -> Result<Snapshot, FetchError> {
         let Some(source) = &self.source else {
             return Err(FetchError::Disabled);
         };
         let slot = self.slot(stop_id);
+        let loaded = AtomicBool::new(false);
         let outcome = slot
             .get_or_init(|| async {
-                let result = source.fetch(stop_id).await;
-                let label = match &result {
-                    Ok(_) => "success",
-                    Err(err) => err.label(),
-                };
-                metrics::counter!(
-                    common::metrics::metric_name("api_tfl_arrivals_fetch_total"),
-                    "outcome" => label
-                )
-                .increment(1);
-                if let Err(err) = &result {
-                    tracing::warn!(stop_id, error = %err, "TfL arrivals fetch failed");
-                }
-                Outcome {
-                    at: Instant::now(),
-                    result: result.map(|predictions| Snapshot {
-                        fetched_at: Utc::now(),
-                        predictions: predictions.into(),
-                    }),
+                loaded.store(true, Ordering::Relaxed);
+                match &self.shared {
+                    Some(shared) => self.load_shared(shared, source.as_ref(), stop_id).await,
+                    None => self.fetch_locally(source.as_ref(), stop_id).await,
                 }
             })
             .await;
+        // A request that joined another's load counts as a hit.
+        let result = if loaded.load(Ordering::Relaxed) {
+            "miss"
+        } else {
+            "hit"
+        };
+        count_cache("memory", result);
         outcome.result.clone()
     }
+
+    /// One upstream call, its answer kept in memory for the full period.
+    async fn fetch_locally(&self, source: &dyn ArrivalsSource, stop_id: &str) -> Outcome {
+        let result = fetch_counted(source, stop_id)
+            .await
+            .map(|predictions| Snapshot {
+                fetched_at: Utc::now(),
+                predictions: predictions.into(),
+            });
+        Outcome {
+            expires: Instant::now() + self.ttl_for(&result),
+            result,
+        }
+    }
+
+    async fn load_shared(
+        &self,
+        shared: &SharedCache,
+        source: &dyn ArrivalsSource,
+        stop_id: &str,
+    ) -> Outcome {
+        // Kept in memory for the memory TTL, never past `left` (the
+        // answer's own remaining freshness).
+        let remembered = |result: Result<Snapshot, FetchError>, left: Duration| Outcome {
+            expires: Instant::now() + shared.memory_ttl.min(left),
+            result,
+        };
+        let deadline = Instant::now() + shared.wait;
+        loop {
+            let row = match shared.read(stop_id).await {
+                Ok(row) => row,
+                Err(err) => return self.shared_failed(source, stop_id, &err).await,
+            };
+            let age = row
+                .age_secs
+                .map(|secs| Duration::from_secs_f64(secs.max(0.0)));
+            if let (Some(result), Some(age)) = (&row.result, age) {
+                let ttl = self.ttl_for(result);
+                if age < ttl {
+                    count_cache("shared", "hit");
+                    return remembered(result.clone(), ttl.saturating_sub(age));
+                }
+            }
+            match shared.claim(stop_id, self.ttl, self.error_ttl).await {
+                Err(err) => return self.shared_failed(source, stop_id, &err).await,
+                Ok(true) => {
+                    count_cache("shared", "miss");
+                    let fetched = fetch_counted(source, stop_id).await;
+                    let fetched_at = match shared.store(stop_id, &fetched).await {
+                        Ok(at) => at,
+                        Err(err) => {
+                            count_cache("shared", "error");
+                            tracing::warn!(stop_id, error = %err.0, "TfL arrivals cache write failed");
+                            Utc::now()
+                        }
+                    };
+                    let ttl = self.ttl_for(&fetched);
+                    let result = fetched.map(|predictions| Snapshot {
+                        fetched_at,
+                        predictions: predictions.into(),
+                    });
+                    return remembered(result, ttl);
+                }
+                Ok(false) => {}
+            }
+            // Another replica is fetching: serve the last answer while it
+            // is recent enough, else wait for the new one.
+            if let (Some(Ok(snapshot)), Some(age)) = (&row.result, age)
+                && age <= shared.stale
+            {
+                count_cache("shared", "stale");
+                return remembered(Ok(snapshot.clone()), STALE_MEMORY_TTL);
+            }
+            if Instant::now() >= deadline {
+                count_cache("shared", "wait_timeout");
+                tracing::warn!(
+                    stop_id,
+                    "no TfL arrivals from the replica fetching them; fetching here"
+                );
+                return self.fetch_locally(source, stop_id).await;
+            }
+            tokio::time::sleep(SHARED_POLL).await;
+        }
+    }
+
+    /// The shared layer is unavailable: fetch here, as a per-pod cache.
+    async fn shared_failed(
+        &self,
+        source: &dyn ArrivalsSource,
+        stop_id: &str,
+        err: &SharedError,
+    ) -> Outcome {
+        count_cache("shared", "error");
+        tracing::warn!(stop_id, error = %err.0, "TfL arrivals cache unavailable; fetching here");
+        self.fetch_locally(source, stop_id).await
+    }
+}
+
+/// One upstream call, counted and logged.
+async fn fetch_counted(
+    source: &dyn ArrivalsSource,
+    stop_id: &str,
+) -> Result<Vec<TflPrediction>, FetchError> {
+    let result = source.fetch(stop_id).await;
+    let label = match &result {
+        Ok(_) => "success",
+        Err(err) => err.label(),
+    };
+    metrics::counter!(
+        common::metrics::metric_name("api_tfl_arrivals_fetch_total"),
+        "outcome" => label
+    )
+    .increment(1);
+    if let Err(err) = &result {
+        tracing::warn!(stop_id, error = %err, "TfL arrivals fetch failed");
+    }
+    result
 }
 
 /// One arrival as the api serves it.
@@ -840,6 +1244,259 @@ pub(crate) mod tests {
             TflArrivals::default().get("940GZZLURSQ").await.unwrap_err(),
             FetchError::Disabled
         );
+    }
+
+    fn shared_options() -> SharedOptions {
+        SharedOptions {
+            memory_ttl: Duration::from_secs(5),
+            stale: Duration::from_secs(120),
+            fetch_timeout: Duration::from_secs(1),
+        }
+    }
+
+    fn shared_pod(source: &Arc<FakeSource>, pool: &sqlx::PgPool) -> TflArrivals {
+        TflArrivals::shared(
+            source.clone(),
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+            pool.clone(),
+            shared_options(),
+        )
+    }
+
+    #[test]
+    fn errors_round_trip_through_json() {
+        for error in [
+            FetchError::Status(429),
+            FetchError::Transport("timed out".to_owned()),
+            FetchError::Decode("not a list".to_owned()),
+        ] {
+            let json = serde_json::to_value(&error).unwrap();
+            assert_eq!(serde_json::from_value::<FetchError>(json).unwrap(), error);
+        }
+        let predictions = parse_predictions(RUSSELL_SQUARE.as_bytes()).unwrap();
+        let json = serde_json::to_value(&predictions).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Vec<TflPrediction>>(json).unwrap(),
+            predictions
+        );
+    }
+
+    /// Postgres down: each pod fetches for itself and keeps the answer in
+    /// memory for the full period, as before the shared layer.
+    #[tokio::test]
+    async fn an_unreachable_database_falls_back_to_a_per_pod_cache() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://nobody@127.0.0.1:9/nothing")
+            .unwrap();
+        let source = FakeSource::new(Ok(one_prediction()));
+        let pods = [shared_pod(&source, &pool), shared_pod(&source, &pool)];
+        for pod in &pods {
+            for _ in 0..3 {
+                assert_eq!(pod.get("940GZZLURSQ").await.unwrap().predictions.len(), 1);
+            }
+        }
+        assert_eq!(source.calls(), 2, "one fetch per pod, then memory");
+    }
+
+    #[test]
+    fn settings_default_to_the_shared_cache() {
+        use clap::Parser;
+        let settings = TflArrivalsSettings::try_parse_from(std::iter::empty::<String>()).unwrap();
+        assert!(settings.shared_cache);
+        assert_eq!(settings.memory_cache_secs, 5);
+        assert_eq!(settings.stale_secs, 120);
+    }
+
+    /// Against `tfl_arrivals_cache`: pods are `TflArrivals` values sharing
+    /// one pool. Stop ids are made up (the table has no foreign key).
+    mod shared_db {
+        use sqlx::PgPool;
+        use sqlx::postgres::PgPoolOptions;
+
+        use super::*;
+
+        async fn connect() -> PgPool {
+            let database_url =
+                std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run this test");
+            PgPoolOptions::new()
+                .max_connections(4)
+                .connect(&database_url)
+                .await
+                .expect("connect to postgres")
+        }
+
+        async fn clear(pool: &PgPool, stop_id: &str) {
+            sqlx::query("DELETE FROM tfl_arrivals_cache WHERE stop_id = $1")
+                .bind(stop_id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+
+        async fn run(pool: &PgPool, sql: &str, stop_id: &str) {
+            sqlx::query(sql)
+                .bind(stop_id)
+                .execute(pool)
+                .await
+                .unwrap_or_else(|err| panic!("{sql}: {err}"));
+        }
+
+        #[tokio::test]
+        #[ignore = "requires a live database (DATABASE_URL)"]
+        async fn two_pods_share_one_fetch() {
+            const STOP: &str = "940GZZTESTSA";
+            let pool = connect().await;
+            clear(&pool, STOP).await;
+            let source = FakeSource::new(Ok(one_prediction()));
+            let pods = [
+                Arc::new(shared_pod(&source, &pool)),
+                Arc::new(shared_pod(&source, &pool)),
+            ];
+            let mut tasks = Vec::new();
+            for _ in 0..10 {
+                for pod in &pods {
+                    let pod = Arc::clone(pod);
+                    tasks.push(tokio::spawn(async move { pod.get(STOP).await }));
+                }
+            }
+            let mut fetched_at = std::collections::HashSet::new();
+            for task in tasks {
+                let snapshot = task.await.unwrap().unwrap();
+                assert_eq!(snapshot.predictions.len(), 1);
+                fetched_at.insert(snapshot.fetched_at);
+            }
+            assert_eq!(source.calls(), 1, "one upstream call for both pods");
+            assert_eq!(fetched_at.len(), 1, "both pods serve the same answer");
+
+            // A third pod, with nothing in memory, reads the shared row.
+            shared_pod(&source, &pool).get(STOP).await.unwrap();
+            assert_eq!(source.calls(), 1);
+
+            // Once the row is stale, the next pod to look refreshes it.
+            run(
+                &pool,
+                "UPDATE tfl_arrivals_cache SET fetched_at = now() - interval '1 minute' \
+                 WHERE stop_id = $1",
+                STOP,
+            )
+            .await;
+            let fresh = shared_pod(&source, &pool).get(STOP).await.unwrap();
+            assert_eq!(source.calls(), 2);
+            assert!(fetched_at.iter().all(|at| fresh.fetched_at > *at));
+            clear(&pool, STOP).await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires a live database (DATABASE_URL)"]
+        async fn a_stale_answer_is_served_while_another_pod_refreshes() {
+            const STOP: &str = "940GZZTESTSB";
+            let pool = connect().await;
+            clear(&pool, STOP).await;
+            let source = FakeSource::new(Ok(one_prediction()));
+            let first = shared_pod(&source, &pool).get(STOP).await.unwrap();
+            assert_eq!(source.calls(), 1);
+
+            // Stale, and another pod holds the refresh: the old answer.
+            run(
+                &pool,
+                "UPDATE tfl_arrivals_cache SET fetched_at = fetched_at - interval '1 minute', \
+                 lease_until = now() + interval '1 minute' WHERE stop_id = $1",
+                STOP,
+            )
+            .await;
+            let stale = shared_pod(&source, &pool).get(STOP).await.unwrap();
+            assert_eq!(source.calls(), 1, "served stale, not fetched");
+            assert!(stale.fetched_at < first.fetched_at);
+
+            // Too old to serve, and the refresh never lands: after the wait
+            // (fetch timeout plus a second) the pod fetches for itself.
+            run(
+                &pool,
+                "UPDATE tfl_arrivals_cache SET fetched_at = now() - interval '10 minutes' \
+                 WHERE stop_id = $1",
+                STOP,
+            )
+            .await;
+            let started = Instant::now();
+            shared_pod(&source, &pool).get(STOP).await.unwrap();
+            assert_eq!(source.calls(), 2);
+            assert!(started.elapsed() >= Duration::from_secs(2));
+
+            // An expired lease (its pod died) is claimed straight away.
+            run(
+                &pool,
+                "UPDATE tfl_arrivals_cache SET fetched_at = now() - interval '10 minutes', \
+                 lease_until = now() - interval '1 second' WHERE stop_id = $1",
+                STOP,
+            )
+            .await;
+            let started = Instant::now();
+            shared_pod(&source, &pool).get(STOP).await.unwrap();
+            assert_eq!(source.calls(), 3);
+            assert!(started.elapsed() < Duration::from_secs(1));
+            clear(&pool, STOP).await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires a live database (DATABASE_URL)"]
+        async fn a_failure_is_shared_briefly() {
+            const STOP: &str = "940GZZTESTSC";
+            let pool = connect().await;
+            clear(&pool, STOP).await;
+            let source = FakeSource::new(Err(FetchError::Status(503)));
+            for _ in 0..2 {
+                assert_eq!(
+                    shared_pod(&source, &pool).get(STOP).await.unwrap_err(),
+                    FetchError::Status(503)
+                );
+            }
+            assert_eq!(source.calls(), 1, "the second pod reads the failure");
+
+            // Past the error period it is fetched again.
+            *source.answer.lock().unwrap() = Ok(one_prediction());
+            run(
+                &pool,
+                "UPDATE tfl_arrivals_cache SET fetched_at = now() - interval '11 seconds' \
+                 WHERE stop_id = $1",
+                STOP,
+            )
+            .await;
+            assert!(shared_pod(&source, &pool).get(STOP).await.is_ok());
+            assert_eq!(source.calls(), 2);
+            clear(&pool, STOP).await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires a live database (DATABASE_URL)"]
+        async fn rows_untouched_for_a_day_are_pruned() {
+            const OLD: &str = "940GZZTESTSD";
+            const NEW: &str = "940GZZTESTSE";
+            let pool = connect().await;
+            for stop in [OLD, NEW] {
+                clear(&pool, stop).await;
+            }
+            run(
+                &pool,
+                "INSERT INTO tfl_arrivals_cache (stop_id, fetched_at, predictions) \
+                 VALUES ($1, now() - interval '2 days', '[]')",
+                OLD,
+            )
+            .await;
+            let source = FakeSource::new(Ok(one_prediction()));
+            // The first write on a pod prunes.
+            shared_pod(&source, &pool).get(NEW).await.unwrap();
+            let left: Vec<String> = sqlx::query_scalar(
+                "SELECT stop_id FROM tfl_arrivals_cache WHERE stop_id = ANY($1) ORDER BY 1",
+            )
+            .bind([OLD, NEW])
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(left, [NEW]);
+            clear(&pool, NEW).await;
+        }
     }
 
     mod http {

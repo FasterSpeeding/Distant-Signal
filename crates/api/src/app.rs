@@ -283,10 +283,11 @@ impl AppState {
         )?);
 
         // `TfL` arrivals (DS-136): on by default, keyless unless
-        // TFL_APP_KEY is set.
+        // TFL_APP_KEY is set, shared between replicas through `db`.
         let tfl_arrivals_settings = crate::data::tfl_arrivals::TflArrivalsSettings::from_env()?;
         let tfl_arrivals = Arc::new(crate::data::tfl_arrivals::TflArrivals::from_settings(
             &tfl_arrivals_settings,
+            &db,
         )?);
 
         Ok(Arc::new(Self {
