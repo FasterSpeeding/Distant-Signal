@@ -6326,6 +6326,7 @@ mod group_train_wire_shape_tests {
                 "firstOriginCrs",
                 "firstOriginName",
                 "firstReportExpectedAt",
+                "following",
                 "journeyId",
                 "kind",
                 "lastDestinationCrs",
