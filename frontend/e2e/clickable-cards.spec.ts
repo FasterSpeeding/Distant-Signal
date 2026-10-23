@@ -100,6 +100,22 @@ test.describe('clickable cards', () => {
     });
   }
 
+  for (const colorScheme of ['light', 'dark'] as const) {
+    test(`at rest a clickable card differs from a static one (${colorScheme})`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme });
+      await page.goto('/journeys');
+      const card = cardWithLink(page, 'Fixture door to door');
+      const flat = page.locator('.mantine-Card-root[data-with-border]:not([data-clickable-card])').first();
+      const look = (target: Locator) =>
+        target.evaluate((el) => {
+          const style = getComputedStyle(el);
+          return `${style.borderTopColor} ${style.boxShadow}`;
+        });
+      await expect(flat).toBeVisible();
+      expect(await look(card)).not.toBe(await look(flat));
+    });
+  }
+
   test('a click anywhere on a card opens it, and its link is named by the title alone', async ({ page }) => {
     await page.goto('/journeys');
     const link = page.getByRole('link', { name: 'Fixture door to door', exact: true });

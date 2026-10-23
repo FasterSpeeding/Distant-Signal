@@ -165,6 +165,16 @@ describe('clickable card rules in globals.css', () => {
     );
   });
 
+  it('has a resting cue in dark, where Mantine draws no shadow: a lighter border', () => {
+    expect(css).toMatch(
+      /\[data-mantine-color-scheme='dark'\] \[data-clickable-card\] \{[^}]*border-color: var\(--mantine-color-dark-3\);/,
+    );
+    // Before the hover rule, so hover still wins.
+    expect(css.indexOf('border-color: var(--mantine-color-dark-3);')).toBeLessThan(
+      css.indexOf('[data-clickable-card]:hover {'),
+    );
+  });
+
   it('only animates under prefers-reduced-motion: no-preference', () => {
     const transition = css.indexOf('transition:\n      border-color 120ms ease');
     expect(transition).toBeGreaterThan(-1);

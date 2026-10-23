@@ -542,7 +542,10 @@ behaves the same and none is a `div` with an `onClick`.
   `data-card-raise` to stay hoverable. Nothing between the card and its
   target may be positioned (the card is the containing block).
 - **Looks clickable at rest**: `tokens.card.link` (border plus the `sm`
-  shadow) and `cursor: pointer` on the whole box.
+  shadow) and `cursor: pointer` on the whole box. Mantine draws no shadow
+  in dark, so there the border is one shade lighter than a static card's
+  (dark 3 rather than dark 4: 2.5:1 on the card against 1.4:1), and a
+  clickable card still differs from a flat one at rest in both themes.
 - **Hover**: the link-colour border, `--ds-card-hover-bg` (gray 0; in
   dark, halfway between dark 6 and dark 5) and, in light, the `md`
   shadow; a link card's title is underlined. The background is as far as

@@ -380,7 +380,8 @@ a[data-card-link] {
    text link, a tooltip trigger marked `[data-card-raise]`) is lifted above
    the stretched area, so it works on its own and never triggers the card.
 
-   Resting: `tokens.card.link`'s border and `sm` shadow, and the pointer.
+   Resting: `tokens.card.link`'s border and `sm` shadow, and the pointer;
+   in dark, where Mantine draws no shadow, a lighter border (dark 3).
    Hover: the link-colour border, a background one step off the card's
    (`--ds-card-hover-bg`) and, in the light scheme, the `md` shadow
    (Mantine drops shadows in dark, where the border and background carry
@@ -402,6 +403,14 @@ a[data-card-link] {
 
 [data-mantine-color-scheme='dark'] [data-clickable-card] {
   --ds-card-hover-bg: color-mix(in srgb, var(--mantine-color-dark-5) 50%, var(--mantine-color-dark-6));
+
+  /* The dark resting cue. Mantine drops shadows in dark, so the `sm`
+     shadow that marks a clickable card in light is gone; a border one
+     shade lighter than a static card's (dark 3, 2.5:1 on the dark 6 card
+     and 2.8:1 on the body, against dark 4's 1.4:1 and 1.5:1) does the
+     same job. Declared before the hover, focus, pressed and selected
+     rules so each of those still wins. */
+  border-color: var(--mantine-color-dark-3);
 }
 
 @media (prefers-reduced-motion: no-preference) {
