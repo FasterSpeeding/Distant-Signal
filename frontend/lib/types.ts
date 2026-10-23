@@ -1011,6 +1011,10 @@ export interface TrackedTrainState extends TrainJourneyState {
    * on the owner's `GET /Train/{trackingId}`; absent from an older backend. */
   journeyIds?: number[];
   singleLegJourneyIds?: number[];
+  /** Whether this train's delay, cancellation and skipped-stop pushes are
+   * on (`PATCH /Train/{trackingId}`). Only on the owner's view (the train
+   * page, and the owner's journey); absent otherwise. */
+  notificationsEnabled?: boolean;
 }
 
 /** Exactly the fields `components/TrainJourney.tsx` reads -- notably NOT

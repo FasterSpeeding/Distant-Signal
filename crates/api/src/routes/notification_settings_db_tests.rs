@@ -93,6 +93,7 @@ async fn subscription_exists(pool: &PgPool, endpoint: &str) -> bool {
 
 fn router(pool: PgPool) -> axum::Router {
     crate::app::Router::new()
+        .merge(crate::routes::train::router())
         .nest(
             "/public",
             crate::app::Router::new()
@@ -203,4 +204,102 @@ async fn turning_off_this_device_deletes_only_the_callers_own_subscription() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(subscription_exists(&pool, THEIRS).await);
+}
+
+/// A pending (unresolved) tracked train of `user_id`'s: no `trains` row.
+async fn seed_tracked_train(pool: &PgPool, user_id: &str) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO train_subscriptions \
+            (user_id, service_date, pin_origin_crs, pin_scheduled_departure, pin_destination_crs, \
+             resolution_status) \
+         VALUES ($1, '2099-06-01', 'KGX', '2099-06-01T12:00:00Z', 'EDB', 'pending') \
+         RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .expect("seed tracked train")
+}
+
+async fn notifications_enabled(pool: &PgPool, tracking_id: i64) -> bool {
+    sqlx::query_scalar("SELECT notifications_enabled FROM train_subscriptions WHERE id = $1")
+        .bind(tracking_id)
+        .fetch_one(pool)
+        .await
+        .expect("read notifications_enabled")
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn the_owner_turns_a_tracked_trains_pushes_off_and_on() {
+    const OWNER: &str = "TEST-NOTIFSET-TRAIN-OWNER";
+    const OTHER: &str = "TEST-NOTIFSET-TRAIN-OTHER";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, &[OWNER, OTHER]).await;
+    let token = seed_session(&pool, OWNER).await;
+    let other_token = seed_session(&pool, OTHER).await;
+    let tracking_id = seed_tracked_train(&pool, OWNER).await;
+    let router = router(pool.clone());
+    let uri = format!("/Train/{tracking_id}");
+
+    // Someone else, and a train that doesn't exist: 404, nothing changes.
+    let (status, body) = call(
+        &router,
+        "PATCH",
+        &uri,
+        Some(&other_token),
+        Some(json!({ "notificationsEnabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(notifications_enabled(&pool, tracking_id).await);
+    let (status, _) = call(
+        &router,
+        "PATCH",
+        "/Train/999999999999",
+        Some(&token),
+        Some(json!({ "notificationsEnabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An unknown field is refused.
+    let (status, body) = call(
+        &router,
+        "PATCH",
+        &uri,
+        Some(&token),
+        Some(json!({ "notificationsEnabled": false, "customName": "x" })),
+    )
+    .await;
+    // axum refuses a body serde refuses with a 422, as every route here does.
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(notifications_enabled(&pool, tracking_id).await);
+
+    // The owner: off, then on again; the owner's view says so.
+    let (status, body) = call(
+        &router,
+        "PATCH",
+        &uri,
+        Some(&token),
+        Some(json!({ "notificationsEnabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "notificationsEnabled": false }));
+    assert!(!notifications_enabled(&pool, tracking_id).await);
+    let (status, body) = call(&router, "GET", &uri, Some(&token), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["notificationsEnabled"], json!(false), "{body}");
+
+    let (status, _) = call(
+        &router,
+        "PATCH",
+        &uri,
+        Some(&token),
+        Some(json!({ "notificationsEnabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(notifications_enabled(&pool, tracking_id).await);
 }

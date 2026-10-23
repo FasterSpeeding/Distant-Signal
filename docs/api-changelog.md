@@ -12,6 +12,14 @@ routes. DS-MCP needs no change.
   only): forgets the caller's push subscription for that endpoint, "Turn
   off on this device". `204`; `404` when the caller has none for it
   (including another user's endpoint). Unknown fields are refused (`422`).
+- **New: `PATCH /Train/{trackingId}`** `{notificationsEnabled}` (session
+  only, owner only): turns that tracked train's pushes (delay,
+  cancellation, skipped stop, predicted late start) on or off. `200` with
+  the body echoed; `404` for a train that is not the caller's. Unknown
+  fields are refused (`422`).
+- `GET /Train/{trackingId}` and the owner's `GET /Journeys/{id}` (each
+  leg's `trackedTrainState`) gain `notificationsEnabled`. Absent on every
+  other reader's view.
 
 ## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
 

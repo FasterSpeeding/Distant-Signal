@@ -1917,6 +1917,26 @@ async fn build_journey_detail_response(
         None => leg_rows.iter().map(|_| None).collect(),
     };
 
+    // The owner's per-train push switch (`PATCH /Train/{trackingId}`), on
+    // the owner's read only, as `GET /Train/{trackingId}` serves it.
+    let notifications_enabled: std::collections::HashMap<i64, bool> = if is_owner {
+        let subscription_ids: Vec<i64> = leg_rows
+            .iter()
+            .filter_map(|leg| leg.train_subscription_id)
+            .collect();
+        sqlx::query_as::<_, (i64, bool)>(
+            "SELECT id, notifications_enabled FROM train_subscriptions WHERE id = ANY($1)",
+        )
+        .bind(&subscription_ids)
+        .fetch_all(&app.database)
+        .await
+        .map_err(|err| internal_error("read train push switches")(err.into()))?
+        .into_iter()
+        .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
     let mut legs = Vec::with_capacity(leg_rows.len());
     for ((leg, tracked_train_state), connection) in
         leg_rows.into_iter().zip(leg_states).zip(connections)
@@ -1939,6 +1959,7 @@ async fn build_journey_detail_response(
             if !is_owner {
                 state.shared_group_count = 0;
             }
+            state.notifications_enabled = notifications_enabled.get(&state.id).copied();
             state
         });
 

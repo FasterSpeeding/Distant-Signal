@@ -6,6 +6,7 @@ import { Button, Card, Group, Stack, Text } from '@mantine/core';
 import { TrainJourney } from './TrainJourney';
 import { JourneyLegCandidates } from './JourneyLegCandidates';
 import { LegSearchForm } from './LegSearchForm';
+import { TrainNotificationsSwitch } from './TrainNotificationsSwitch';
 import { TextLink } from './TextLink';
 import { RemoveJourneyLegButton } from './RemoveJourneyLegButton';
 import { LegReplanActions, type LegReplanContext } from './LegReplanActions';
@@ -343,6 +344,9 @@ export function JourneyLegCard({
           legDestinationCrs={leg.destinationCrs}
           suppressTrainUidHeading
         />
+        {isOwner && state.notificationsEnabled !== undefined && (
+          <TrainNotificationsSwitch trackingId={state.id} initiallyEnabled={state.notificationsEnabled} />
+        )}
         {isOwner && changingTrain && (
           <LegTrainPicker
             journeyId={journeyId}
