@@ -17,6 +17,9 @@ import type { LineStatusReport, TflStopArrivals, TflStopDetail } from '@/lib/typ
 
 const log = createLogger('app/tfl/stops/[id]');
 
+/** National Rail stations named at most: a hub's own, not every one near. */
+const MAX_RAIL_STATIONS = 3;
+
 interface Params {
   params: Promise<{ id: string }>;
 }
@@ -83,7 +86,8 @@ export default async function TflStopPage({ params }: Params) {
   const [arrivals, lineStatus] = await Promise.all([loadArrivals(stop.id), loadLineStatus(stop)]);
   const reported = new Set(lineStatus.map((report) => report.id));
   const unreported = stop.lines.filter((line) => TFL_LINE_ID.test(line.id) && !reported.has(`tfl-${line.id}`));
-  const rail = stop.railStations[0];
+  // The stations at the stop, best first (King's Cross St. Pancras has two).
+  const rail = stop.railStations.slice(0, MAX_RAIL_STATIONS);
 
   return (
     <Stack p="lg" gap="lg">
@@ -96,12 +100,17 @@ export default async function TflStopPage({ params }: Params) {
             </Badge>
           ))}
         </Group>
-        {rail && (
+        {rail.length > 0 && (
           <Text size="sm">
-            National Rail station here:{' '}
-            <TextLink href={`/stations/${encodeURIComponent(rail.crs)}`} underline="always" inline>
-              {stationLabel(rail.crs, rail.name)}
-            </TextLink>
+            {rail.length > 1 ? 'National Rail stations here: ' : 'National Rail station here: '}
+            {rail.map((station, index) => (
+              <span key={station.crs}>
+                {index > 0 && ', '}
+                <TextLink href={`/stations/${encodeURIComponent(station.crs)}`} underline="always" inline>
+                  {stationLabel(station.crs, station.name)}
+                </TextLink>
+              </span>
+            ))}
           </Text>
         )}
         <Group>

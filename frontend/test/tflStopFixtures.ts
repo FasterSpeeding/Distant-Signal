@@ -18,7 +18,10 @@ export const KINGS_CROSS: TflStopDetail = {
     { id: 'northern', name: 'Northern' },
     { id: 'victoria', name: 'Victoria' },
   ],
-  railStations: [{ crs: 'KGX', name: 'London Kings Cross' }],
+  railStations: [
+    { crs: 'KGX', name: 'London Kings Cross' },
+    { crs: 'STP', name: 'London St Pancras International' },
+  ],
 };
 
 /** `GET /public/tfl/stops/940GZZLURSQ/arrivals`, two platforms. */

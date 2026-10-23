@@ -73,7 +73,12 @@ describe('/tfl/stops/[id]', () => {
   it('links the National Rail station at the stop, and offers to start a journey leg from it', async () => {
     vi.mocked(api.getTflStop).mockResolvedValue(KINGS_CROSS);
     await render('940GZZLUKSX');
+    expect(screen.getByText(/National Rail stations here/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'London Kings Cross (KGX)' })).toHaveAttribute('href', '/stations/KGX');
+    expect(screen.getByRole('link', { name: 'London St Pancras International (STP)' })).toHaveAttribute(
+      'href',
+      '/stations/STP',
+    );
     expect(screen.getByRole('link', { name: 'Add as a journey leg' })).toHaveAttribute(
       'href',
       '/journeys/new?fromTflStop=940GZZLUKSX',
