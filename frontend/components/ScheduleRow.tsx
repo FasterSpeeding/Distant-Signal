@@ -1,4 +1,5 @@
 import { Box, Group, Text, VisuallyHidden } from '@mantine/core';
+import { CardTitleButton, ClickableCard, StaticCard } from './ClickableCard';
 import { StatusRow } from './StatusRow';
 import { PlatformBadge } from './PlatformBadge';
 import { stationLabel } from '@/lib/stationLabel';
@@ -62,11 +63,14 @@ function statusBadge(row: ScheduleRowData) {
  * `StatusRow` for the same shrink-safe title/trailing layout every other
  * row in this codebase uses (WCAG 2.5.3).
  *
- * Interactive (a `role="button"`, keyboard-activatable row, mirroring
- * `TrackTrainForm.tsx`'s picker rows) only when BOTH `onSelect` is given
- * AND the row isn't cancelled -- a cancelled service was never selectable
- * there either (nothing to track), and this component keeps that same
- * rule rather than becoming a second, divergently-behaved copy of it. */
+ * Interactive only when BOTH `onSelect` is given AND the row isn't
+ * cancelled -- a cancelled service was never selectable there either
+ * (nothing to track), and this component keeps that same rule rather than
+ * becoming a second, divergently-behaved copy of it. An interactive row is
+ * a `ClickableCard` whose title is a real `<button>` stretched over the
+ * card (named by the time, destination and operator); a cancelled row in
+ * the same picker is the same box, flat. Without `onSelect` it is a plain
+ * row. */
 export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?: () => void }) {
   const clickable = onSelect !== undefined && !row.isCancelled;
   // A cancelled row is NOT dimmed: the `opacity: 0.6` it used to carry
@@ -77,8 +81,10 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
   // visually hidden "(cancelled)" puts it in the row text itself, since a
   // screen reader announces neither the strike-through nor the colour.
   // Text stays full body colour in both schemes (21:1 light, 8.2:1+ dark).
+  // A `span` (drawn as a block): it goes inside the row's `<button>`,
+  // which may only hold phrasing content.
   const title = (
-    <Text size="sm" data-cancelled={row.isCancelled || undefined}>
+    <Text component="span" display="block" size="sm" data-cancelled={row.isCancelled || undefined}>
       {row.isCancelled ? (
         <>
           <s>{row.scheduled}</s>
@@ -102,29 +108,20 @@ export function ScheduleRow({ row, onSelect }: { row: ScheduleRowData; onSelect?
     </Group>
   );
 
-  return (
-    // `Box`, not `Group`: this wraps `StatusRow` (itself a `Group
-    // justify="space-between"`) as its ONLY child, and a flex child
-    // doesn't stretch to its container's full width by default -- a `Group`
-    // wrapper here would let `StatusRow`'s own "space-between" collapse
-    // down to content width instead of spanning the row. `Box` is a plain
-    // block element, so it's full-width by default, same as this
-    // component's own `role="button"` predecessor at
-    // `TrackTrainForm.tsx`'s picker rows.
-    <Box
-      role={clickable ? 'button' : undefined}
-      tabIndex={clickable ? 0 : undefined}
-      onClick={clickable ? onSelect : undefined}
-      onKeyDown={
-        clickable
-          ? (event) => {
-              if (event.key === 'Enter' || event.key === ' ') onSelect();
-            }
-          : undefined
-      }
-      {...(clickable && { className: 'ds-clickable' })}
-    >
-      <StatusRow title={title} trailing={trailing} />
-    </Box>
-  );
+  if (clickable) {
+    return (
+      <ClickableCard padding="xs">
+        <StatusRow title={<CardTitleButton onClick={onSelect}>{title}</CardTitleButton>} trailing={trailing} />
+      </ClickableCard>
+    );
+  }
+  const statusRow = <StatusRow title={title} trailing={trailing} />;
+  if (onSelect !== undefined) {
+    // A cancelled row in a picker: the same box as its neighbours, flat.
+    return <StaticCard padding="xs">{statusRow}</StaticCard>;
+  }
+  // `Box`, not `Group`: this wraps `StatusRow` (itself a `Group
+  // justify="space-between"`) as its ONLY child, and a flex child doesn't
+  // stretch to its container's full width by default.
+  return <Box>{statusRow}</Box>;
 }

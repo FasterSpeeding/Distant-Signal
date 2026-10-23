@@ -357,39 +357,152 @@ a[data-text-link]:focus-visible {
   text-decoration: underline;
 }
 
-/* `components/CardLink.tsx`: a `<Link data-card-link>` wrapping a
-   `<Card data-card>` (review §3.2.5: a card link used to be a bare `<a>`
-   with an inline `textDecoration: 'none'; color: 'inherit'` and nothing
-   besides the cursor to say it was clickable). The card keeps its own text
-   colour and no underline; its border turns to the link colour on hover
-   and keyboard focus, and the focus ring goes round the card (an inline
-   `<a>` around a block card draws a broken outline of its own).
-
-   A `data-card-link` anchor with no card inside (a heading link in a row
-   that holds other controls) gets the same reset and keeps the browser's
-   own focus ring. */
+/* A link that keeps its surroundings' text colour and no underline: the
+   nav bar's wordmark (`AppNavBar`). It keeps the browser's own focus
+   ring. A clickable card is `[data-clickable-card]` below, not this. */
 a[data-card-link] {
   display: block;
   color: inherit;
   text-decoration: none;
 }
 
-a[data-card-link][data-card-fill] {
-  height: 100%;
+/* Clickable cards (`components/ClickableCard.tsx`, docs/style-guide.md
+   "Clickable cards"). A card the whole of which is clickable holds one
+   primary target, `[data-card-primary]`: a real `<a>` or `<button>`
+   around the card's title, or a selectable card's radio. Its `::after`
+   (for a radio, its label's, `.ds-card-stretch`) is stretched over the
+   card, so the whole box is the target while the target's accessible name
+   stays the title alone. The Card is the containing block (Mantine's Card
+   is `position: relative; overflow: hidden`), so nothing between the two
+   may be positioned.
+
+   Every other control inside the card (Follow, a menu, a remove button, a
+   text link, a tooltip trigger marked `[data-card-raise]`) is lifted above
+   the stretched area, so it works on its own and never triggers the card.
+
+   Resting: `tokens.card.link`'s border and `sm` shadow, and the pointer.
+   Hover: the link-colour border, a background one step off the card's
+   (`--ds-card-hover-bg`) and, in the light scheme, the `md` shadow
+   (Mantine drops shadows in dark, where the border and background carry
+   it). Pressed: the border doubled and the shadow gone, plus a 1px press
+   under `no-preference` motion. Keyboard focus on the target draws the
+   app's focus ring (2px link colour, 2px offset, as `.skip-link`) round
+   the whole card.
+
+   The hover background is as far as it can go while the text a card may
+   hold stays AA on it: link colour (grape 7) on gray 0 is 4.60:1, and in
+   dark grape 4 on halfway between dark 6 and dark 5 is 4.68:1 (on dark 5
+   itself it would be 4.22:1). Dimmed text is over 6:1 on both. So the
+   pressed state changes the border, not the background. */
+[data-clickable-card] {
+  --ds-card-hover-bg: var(--mantine-color-gray-0);
+
+  cursor: pointer;
 }
 
-a[data-card-link]:hover [data-card],
-a[data-card-link]:focus-visible [data-card] {
+[data-mantine-color-scheme='dark'] [data-clickable-card] {
+  --ds-card-hover-bg: color-mix(in srgb, var(--mantine-color-dark-5) 50%, var(--mantine-color-dark-6));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-clickable-card] {
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      box-shadow 120ms ease,
+      transform 120ms ease;
+  }
+}
+
+[data-clickable-card]:hover {
   border-color: var(--mantine-color-anchor);
+  background-color: var(--ds-card-hover-bg);
+  box-shadow: var(--mantine-shadow-md);
 }
 
-a[data-card-link]:focus-visible:has([data-card]) {
+/* Pressed: only while the card's own target is (the stretched area belongs
+   to it), not while an inner control is. */
+[data-clickable-card]:has([data-card-primary]:active, .ds-card-stretch:active) {
+  border-color: var(--mantine-color-anchor);
+  box-shadow: inset 0 0 0 1px var(--mantine-color-anchor);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-clickable-card]:has([data-card-primary]:active, .ds-card-stretch:active) {
+    transform: translateY(1px);
+  }
+}
+
+[data-clickable-card]:has([data-card-primary]:focus-visible) {
+  border-color: var(--mantine-color-anchor);
+  outline: 2px solid var(--mantine-color-anchor);
+  outline-offset: 2px;
+}
+
+/* A selectable card's chosen option: the link-colour border, doubled, so
+   it reads as chosen at rest (the checked radio says it too). */
+[data-clickable-card][data-selected] {
+  border-color: var(--mantine-color-anchor);
+  box-shadow: inset 0 0 0 1px var(--mantine-color-anchor);
+}
+
+[data-card-primary] {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* A Mantine Button target is `position: relative`, which would make it the
+   stretched area's containing block, and presses down by moving, which
+   would shrink the area under the pointer mid-click. */
+.mantine-Button-root[data-card-primary] {
+  position: static;
+}
+
+.mantine-Button-root[data-card-primary]:active {
+  transform: none;
+}
+
+a[data-card-primary]:focus-visible,
+button[data-card-title-button]:focus-visible {
   outline: none;
 }
 
-a[data-card-link]:focus-visible [data-card] {
-  outline: 2px solid var(--mantine-color-anchor);
-  outline-offset: 2px;
+[data-card-primary]::after,
+[data-clickable-card] .ds-card-stretch::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* A link card's title is underlined on hover, like any text link. */
+[data-clickable-card]:hover a[data-card-primary] {
+  text-decoration: underline;
+  text-decoration-color: var(--mantine-color-anchor);
+  text-underline-offset: 0.2em;
+  text-decoration-skip-ink: none;
+}
+
+/* `CardTitleButton`: a button that reads as the card's title text. */
+button[data-card-title-button] {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+[data-clickable-card]
+  :is(a, button, input, select, textarea, summary, [role='button'], [tabindex], [data-card-raise]):not(
+    [data-card-primary]
+  ) {
+  position: relative;
+  z-index: 1;
 }
 
 /* The pride flags' stripe gradients, defined once. Every flag-shaped
@@ -1829,7 +1942,7 @@ a[data-text-link-tone='inherit'] {
    scheme too, where filled grape is left at its Mantine default (grape 8,
    white text 5.82:1 -- already compliant, see the comment above). The
    focus outline reuses `--mantine-color-anchor`, the same focus-ring
-   colour `a[data-card-link]:focus-visible` already uses. */
+   colour a clickable card (`[data-clickable-card]`) uses. */
 .skip-link {
   position: absolute;
   left: -9999px;
@@ -2168,15 +2281,11 @@ svg[data-icon='external-link'] {
 /* The home page's current-journey card (`app/(home)/HomeJourneys.tsx`):
    the one card on the page drawn with a 2px brand border, so the journey
    under way reads first. Its "Current journey" heading says the same in
-   words. Hover and focus keep `[data-card-link]`'s grape border and add the
-   raised shadow, since the border is already grape. */
-.currentJourneyCard [data-card] {
+   words. Hover, press and focus are the clickable card's
+   (`[data-clickable-card]`); the border stays grape throughout. */
+.currentJourneyCard[data-clickable-card] {
   border-width: 2px;
   border-color: var(--mantine-color-grape-filled);
-}
-
-.currentJourneyCard a[data-card-link]:hover [data-card] {
-  box-shadow: var(--mantine-shadow-md);
 }
 
 /* `.keyFacts` with short terms ("Now", "Next change"): a narrower term

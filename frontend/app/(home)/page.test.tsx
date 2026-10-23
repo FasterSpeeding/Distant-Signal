@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { cardOf } from '@/test/clickableCard';
 import { expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
 import DashboardPage, { metadata } from './page';
 import * as api from '@/lib/api';
@@ -277,8 +278,8 @@ describe('DashboardPage', () => {
     renderWithMantine(await DashboardPage());
     const card = screen.getByRole('link', { name: /Blue Line/ });
     expect(card).toHaveAttribute('href', '/transit/metrolink/lines/blue');
-    expect(card.textContent).toContain('Manchester Metrolink');
-    expect(card.textContent).toContain('Minor delays');
+    expect(cardOf(card).textContent).toContain('Manchester Metrolink');
+    expect(cardOf(card).textContent).toContain('Minor delays');
     expect(screen.queryByText(/You haven't pinned any lines yet/)).not.toBeInTheDocument();
     cleanup();
     vi.mocked(api.getTransitNetwork).mockRejectedValue(new Error('404'));
@@ -1348,8 +1349,8 @@ describe('DashboardPage -- journey sections', () => {
     const current = screen.getByRole('region', { name: 'Current journey' });
     const card = within(current).getByRole('link', { name: /Work trip/ });
     expect(card).toHaveAttribute('href', '/journeys/10');
-    expect(within(card).getByText('Delayed')).toBeInTheDocument();
-    expect(within(card).getByText('12 min late')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('Delayed')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('12 min late')).toBeInTheDocument();
 
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
     const rows = within(upcoming)
@@ -1401,14 +1402,14 @@ describe('DashboardPage -- journey sections', () => {
     const current = screen.getByRole('region', { name: 'Current journey' });
     const card = within(current).getByRole('link', { name: /Work trip/ });
     expect(card).toHaveAttribute('href', '/journeys/10');
-    expect(within(card).getByText('Shared by Olive')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('Shared by Olive')).toBeInTheDocument();
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
     const rows = within(upcoming)
       .getAllByRole('link')
       .filter((link) => link.getAttribute('href')?.match(/^\/journeys\/\d+$/));
     expect(rows.map((link) => link.getAttribute('href'))).toEqual(['/journeys/11', '/journeys/12']);
-    expect(within(rows[0]!).queryByText(/Shared by/)).not.toBeInTheDocument();
-    expect(within(rows[1]!).getByText(/Shared by Olive/)).toBeInTheDocument();
+    expect(within(cardOf(rows[0]!)).queryByText(/Shared by/)).not.toBeInTheDocument();
+    expect(within(cardOf(rows[1]!)).getByText(/Shared by Olive/)).toBeInTheDocument();
   });
 
   it('logged in with upcoming journeys only: no current section', async () => {
@@ -1483,10 +1484,10 @@ describe('DashboardPage -- journey sections', () => {
       name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep 2026 · 10:00/,
     });
     expect(card).toHaveAttribute('href', '/train/W5/2026-09-17');
-    expect(within(card).getByText(/12 min late/)).toBeInTheDocument();
-    expect(within(card).getByText('Destination')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText(/12 min late/)).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('Destination')).toBeInTheDocument();
     // The list row has no arrival time.
-    expect(within(card).getByText('York (YRK)')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('York (YRK)')).toBeInTheDocument();
     const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
     expect(within(upcoming).getByText('No upcoming journeys.')).toBeInTheDocument();
   });
@@ -1516,7 +1517,7 @@ describe('DashboardPage -- journey sections', () => {
     );
     renderWithMantine(await DashboardPage());
     const card = within(screen.getByRole('region', { name: 'Current journey' })).getByRole('link');
-    expect(within(card).getByText('York (YRK), arrive est. 13:37')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('York (YRK), arrive est. 13:37')).toBeInTheDocument();
   });
 
   it('keeps a lone train late leaving out of Current journey until it goes', async () => {
@@ -1564,8 +1565,10 @@ describe('DashboardPage -- journey sections', () => {
       .filter((href) => href !== '/journeys/new' && href !== '/journeys');
     expect(rows).toEqual(['/train/W5/2026-09-17', '/journeys/11', '/train/W6/2026-09-20', '/journeys/12']);
     const lunch = within(upcoming).getByRole('link', { name: /^Lunch train/ });
-    expect(within(lunch).getByText('London Kings Cross (KGX) to York (YRK), 17 Sep 2026 · 14:00')).toBeInTheDocument();
-    expect(within(lunch).getByText('Planned')).toBeInTheDocument();
+    expect(
+      within(cardOf(lunch)).getByText('London Kings Cross (KGX) to York (YRK), 17 Sep 2026 · 14:00'),
+    ).toBeInTheDocument();
+    expect(within(cardOf(lunch)).getByText('Planned')).toBeInTheDocument();
     expect(within(upcoming).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
     expect(within(upcoming).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
   });

@@ -44,9 +44,13 @@ export function LastUpdated({
     </Text>
   );
 
+  // `data-card-raise`: inside a `ClickableCard` the line stays above the
+  // card's stretched link, so its tooltip still opens on hover and touch.
   return withTooltip ? (
     <Tooltip label={exact} events={{ hover: true, focus: true, touch: true }}>
-      {text}
+      <Text size="xs" c="dimmed" data-card-raise>
+        {label} {displayed}
+      </Text>
     </Tooltip>
   ) : (
     text

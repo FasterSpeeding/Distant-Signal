@@ -155,8 +155,8 @@ export default async function NetworkStatusPage() {
  * 2026-09-22 UX review §2.1: every tile was a `next/link` styled
  * `textDecoration: 'none'; color: 'inherit'` with no hover cue, no focus
  * ring, no chevron and no link colour -- five identical white cards on the
- * one page whose entire purpose is drill-down. `CardLink` gives each
- * tile the app's card-as-link treatment (`app/globals.css`): a hover/focus
+ * one page whose entire purpose is drill-down. `ClickableCard` gives each
+ * tile the app's clickable-card treatment (`app/globals.css`): a hover/focus
  * border-colour change plus a visible focus ring, since Mantine's own focus
  * ring only ever applies to Mantine interactive components, not a bare
  * `<a>`. Sizes come from `tokens.statusTile`.

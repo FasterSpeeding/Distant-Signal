@@ -1,4 +1,4 @@
-import { Box, Card, Group, Stack } from '@mantine/core';
+import { Card, Group, Stack } from '@mantine/core';
 import {
   PageSkeleton,
   SkeletonCardGrid,
@@ -25,20 +25,18 @@ export default function HomeLoading() {
   return (
     <PageSkeleton label="Loading the home page" gap="xl">
       <SkeletonSection>
-        <Box className="currentJourneyCard">
-          <Card {...tokens.card.static} padding="lg" data-card>
-            <Stack gap="sm">
-              <Stack gap={4}>
-                <Group justify="space-between" wrap="nowrap" gap="xs">
-                  <SkeletonText width="45%" />
-                  <SkeletonPill width={88} />
-                </Group>
-                <SkeletonText size="sm" width="40%" />
-              </Stack>
-              <SkeletonText lines={2} size="sm" width="70%" />
+        <Card {...tokens.card.static} padding="lg" className="currentJourneyCard">
+          <Stack gap="sm">
+            <Stack gap={4}>
+              <Group justify="space-between" wrap="nowrap" gap="xs">
+                <SkeletonText width="45%" />
+                <SkeletonPill width={88} />
+              </Group>
+              <SkeletonText size="sm" width="40%" />
             </Stack>
-          </Card>
-        </Box>
+            <SkeletonText lines={2} size="sm" width="70%" />
+          </Stack>
+        </Card>
       </SkeletonSection>
       <SkeletonSection>
         <SkeletonRows count={2} />

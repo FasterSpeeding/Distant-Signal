@@ -1,6 +1,6 @@
-import { Box, Card, Group, Stack, Text } from '@mantine/core';
+import { Card, Group, Stack, Text } from '@mantine/core';
 import { ButtonLink } from '@/components/ButtonLink';
-import { CardLink } from '@/components/CardLink';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { DelayBadge } from '@/components/DelayBadge';
 import { JourneyBreakBanner } from '@/components/JourneyBreakBanner';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
@@ -126,56 +126,54 @@ export function CurrentJourneyCard({ journey, now }: { journey: HomeJourney & { 
   const reliance = leg === null ? null : nextLateDepartureReliance(detail, leg, now);
 
   return (
-    <Box className="currentJourneyCard">
-      <CardLink href={`/journeys/${detail.id}`} padding="lg">
-        <Stack gap="sm">
-          {/* The preview line sits under the row, not beside the badge, so
+    <ClickableCard padding="lg" className="currentJourneyCard">
+      <Stack gap="sm">
+        {/* The preview line sits under the row, not beside the badge, so
               on a phone it gets the card's full width. */}
-          <Stack gap={4}>
-            <StatusRow
-              align="flex-start"
-              title={
-                <Text fw={700} fz="lg" lineClamp={2} miw={0}>
-                  {journeyDisplayName(name)}
-                </Text>
-              }
-              trailing={<JourneyStatusGroupBadge group={headline} />}
-            />
-            {preview && (
-              <Text size="sm" c="dimmed">
-                {preview}
+        <Stack gap={4}>
+          <StatusRow
+            align="flex-start"
+            title={
+              <Text fw={700} fz="lg" lineClamp={2} miw={0}>
+                <CardTitleLink href={`/journeys/${detail.id}`}>{journeyDisplayName(name)}</CardTitleLink>
               </Text>
-            )}
-            {/* A journey the traveller follows (DS-146): whose it is. */}
-            {journey.item.followedFrom && (
-              <Text size="sm" c="dimmed">
-                {followedFromLabel(journey.item.followedFrom)}
-              </Text>
-            )}
-          </Stack>
-          {leg !== null && (
-            <dl className="keyFacts keyFacts--compact">
-              <div>
-                <dt>{detail.legs.length > 1 ? `Now, leg ${legIndex + 1} of ${detail.legs.length}` : 'Now'}</dt>
-                <dd>
-                  <Group gap="xs" wrap="wrap">
-                    <span>{legNowText(leg)}</span>
-                    <LegStatus leg={leg} headline={headline} />
-                  </Group>
-                </dd>
-              </div>
-              {endFact !== '' && (
-                <div>
-                  <dt>{isLastLeg ? 'Destination' : 'Next change'}</dt>
-                  <dd>{endFact}</dd>
-                </div>
-              )}
-            </dl>
+            }
+            trailing={<JourneyStatusGroupBadge group={headline} />}
+          />
+          {preview && (
+            <Text size="sm" c="dimmed">
+              {preview}
+            </Text>
           )}
-          {reliance && <LateDepartureNote {...instantLateDepartureTimes(reliance)} subject="the next train" />}
+          {/* A journey the traveller follows (DS-146): whose it is. */}
+          {journey.item.followedFrom && (
+            <Text size="sm" c="dimmed">
+              {followedFromLabel(journey.item.followedFrom)}
+            </Text>
+          )}
         </Stack>
-      </CardLink>
-    </Box>
+        {leg !== null && (
+          <dl className="keyFacts keyFacts--compact">
+            <div>
+              <dt>{detail.legs.length > 1 ? `Now, leg ${legIndex + 1} of ${detail.legs.length}` : 'Now'}</dt>
+              <dd>
+                <Group gap="xs" wrap="wrap">
+                  <span>{legNowText(leg)}</span>
+                  <LegStatus leg={leg} headline={headline} />
+                </Group>
+              </dd>
+            </div>
+            {endFact !== '' && (
+              <div>
+                <dt>{isLastLeg ? 'Destination' : 'Next change'}</dt>
+                <dd>{endFact}</dd>
+              </div>
+            )}
+          </dl>
+        )}
+        {reliance && <LateDepartureNote {...instantLateDepartureTimes(reliance)} subject="the next train" />}
+      </Stack>
+    </ClickableCard>
   );
 }
 
@@ -195,10 +193,14 @@ export function HomeJourneyRow({ journey }: { journey: HomeJourney }) {
     .filter((part): part is string => part !== null)
     .join(' · ');
   return (
-    <CardLink href={`/journeys/${journey.item.id}`}>
+    <ClickableCard>
       <StatusRow
         align="flex-start"
-        title={journeyDisplayName(name)}
+        title={
+          <Text fw={500} lineClamp={2} miw={0}>
+            <CardTitleLink href={`/journeys/${journey.item.id}`}>{journeyDisplayName(name)}</CardTitleLink>
+          </Text>
+        }
         subtitle={
           details !== '' && (
             <Text size="sm" c="dimmed">
@@ -208,7 +210,7 @@ export function HomeJourneyRow({ journey }: { journey: HomeJourney }) {
         }
         trailing={<JourneyStatusGroupBadge group={homeJourneyStatusGroup(journey)} />}
       />
-    </CardLink>
+    </ClickableCard>
   );
 }
 
@@ -240,40 +242,38 @@ export function CurrentTrainCard({ entry }: { entry: HomeLoneTrain }) {
     .filter((part): part is string => part !== null)
     .join(', ');
   return (
-    <Box className="currentJourneyCard">
-      <CardLink href={trackedTrainHref(train)} padding="lg">
-        <Stack gap="sm">
-          <Stack gap={4}>
-            <StatusRow
-              align="flex-start"
-              title={
-                <Text fw={700} fz="lg" lineClamp={2} miw={0}>
-                  {trackedTrainDisplayName(train)}
-                </Text>
-              }
-              trailing={<TrackedRowStatusBadge status={entry.status} />}
-            />
-            {train.customName && (
-              <Text size="sm" c="dimmed">
-                {loneTrainDefaultName(entry)}
+    <ClickableCard padding="lg" className="currentJourneyCard">
+      <Stack gap="sm">
+        <Stack gap={4}>
+          <StatusRow
+            align="flex-start"
+            title={
+              <Text fw={700} fz="lg" lineClamp={2} miw={0}>
+                <CardTitleLink href={trackedTrainHref(train)}>{trackedTrainDisplayName(train)}</CardTitleLink>
               </Text>
-            )}
-          </Stack>
-          <dl className="keyFacts keyFacts--compact">
-            <div>
-              <dt>Now</dt>
-              <dd>{nowText}</dd>
-            </div>
-            {destination !== '' && (
-              <div>
-                <dt>Destination</dt>
-                <dd>{destination}</dd>
-              </div>
-            )}
-          </dl>
+            }
+            trailing={<TrackedRowStatusBadge status={entry.status} />}
+          />
+          {train.customName && (
+            <Text size="sm" c="dimmed">
+              {loneTrainDefaultName(entry)}
+            </Text>
+          )}
         </Stack>
-      </CardLink>
-    </Box>
+        <dl className="keyFacts keyFacts--compact">
+          <div>
+            <dt>Now</dt>
+            <dd>{nowText}</dd>
+          </div>
+          {destination !== '' && (
+            <div>
+              <dt>Destination</dt>
+              <dd>{destination}</dd>
+            </div>
+          )}
+        </dl>
+      </Stack>
+    </ClickableCard>
   );
 }
 
@@ -283,10 +283,14 @@ export function CurrentTrainCard({ entry }: { entry: HomeLoneTrain }) {
 export function HomeTrainRow({ entry }: { entry: HomeLoneTrain }) {
   const { train } = entry;
   return (
-    <CardLink href={trackedTrainHref(train)}>
+    <ClickableCard>
       <StatusRow
         align="flex-start"
-        title={trackedTrainDisplayName(train)}
+        title={
+          <Text fw={500} lineClamp={2} miw={0}>
+            <CardTitleLink href={trackedTrainHref(train)}>{trackedTrainDisplayName(train)}</CardTitleLink>
+          </Text>
+        }
         subtitle={
           train.customName && (
             <Text size="sm" c="dimmed">
@@ -296,7 +300,7 @@ export function HomeTrainRow({ entry }: { entry: HomeLoneTrain }) {
         }
         trailing={<TrackedRowStatusBadge status={entry.status} />}
       />
-    </CardLink>
+    </ClickableCard>
   );
 }
 

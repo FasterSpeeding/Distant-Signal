@@ -35,7 +35,15 @@ export function AiGeneratedBadge({ note }: { note: string }) {
   return (
     <>
       <Tooltip label={note} multiline w={280} events={{ hover: true, focus: true, touch: true }}>
-        <Badge data-ai-badge variant="outline" color="gray" size="sm" tt="none" aria-describedby={noteId}>
+        <Badge
+          data-ai-badge
+          data-card-raise
+          variant="outline"
+          color="gray"
+          size="sm"
+          tt="none"
+          aria-describedby={noteId}
+        >
           {AI_BADGE_LABEL}
         </Badge>
       </Tooltip>

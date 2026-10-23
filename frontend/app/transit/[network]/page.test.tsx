@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { cardOf } from '@/test/clickableCard';
 import { MINOR_DELAYS, NETWORK, NOTHING_REPORTED, SITUATIONS, STATUS_UNAVAILABLE, STOPS } from '@/test/transitFixtures';
 import * as api from '@/lib/api';
 import { ApiNotFoundError } from '@/lib/api';
@@ -67,8 +68,8 @@ describe('/transit/[network]', () => {
     });
     vi.mocked(api.getTransitSituations).mockResolvedValue(SITUATIONS);
     renderWithMantine(await TransitNetworkPage(params('metrolink')));
-    expect(screen.getByRole('link', { name: /Blue Line/ }).textContent).toContain('Minor delays');
-    expect(screen.getByRole('link', { name: /Green Line/ }).textContent).toContain('No reported disruption');
+    expect(cardOf(screen.getByRole('link', { name: 'Blue Line' })).textContent).toContain('Minor delays');
+    expect(cardOf(screen.getByRole('link', { name: 'Green Line' })).textContent).toContain('No reported disruption');
     expect(screen.getByRole('heading', { name: 'Disruptions' })).toBeTruthy();
     expect(screen.getByText(SITUATIONS.current[0]!.summary)).toBeTruthy();
     expect(screen.getByText(SITUATIONS.upcoming[0]!.summary)).toBeTruthy();
@@ -96,7 +97,7 @@ describe('/transit/[network]', () => {
       upcoming: [],
     });
     renderWithMantine(await TransitNetworkPage(params('metrolink')));
-    expect(screen.getByRole('link', { name: /Blue Line/ }).textContent).toContain('Status unavailable');
+    expect(cardOf(screen.getByRole('link', { name: 'Blue Line' })).textContent).toContain('Status unavailable');
     expect(screen.getByText('Status unavailable. Last read at 09:00.')).toBeTruthy();
   });
 

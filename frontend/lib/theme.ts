@@ -213,7 +213,7 @@ export const theme = createTheme({
  * spread into (`shadow: 'sm'`, not `string`). */
 export const tokens = {
   /** Card elevation. Borders do the work; a shadow marks a card the whole
-   * of which is a link (`CardLink`, `LineStatusCard`, a linked status
+   * of which is clickable (`ClickableCard`: `LineStatusCard`, a linked status
    * tile). A card that only holds content, or holds its own controls
    * (`OperatorStatusCard`), stays flat. Mantine drops shadows in dark
    * mode, so the border carries the edge there. */

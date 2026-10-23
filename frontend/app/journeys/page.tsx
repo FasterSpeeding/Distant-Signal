@@ -1,6 +1,6 @@
 import { Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
-import Link from 'next/link';
+import { CardTitleLink, ClickableCard, StaticCard } from '@/components/ClickableCard';
 import {
   getMyTrackedTrains,
   getMyTickets,
@@ -396,16 +396,14 @@ function JourneyListRow({
   const preview = journeyPreviewLine(name);
 
   return (
-    <Card withBorder>
+    <ClickableCard>
       <Stack gap={4}>
         <StatusRow
           align="flex-start"
           title={
-            <Link href={`/journeys/${journey.id}`} data-card-link>
-              <Text fw={500} lineClamp={2} miw={0}>
-                {journeyDisplayName(name)}
-              </Text>
-            </Link>
+            <Text fw={500} lineClamp={2} miw={0}>
+              <CardTitleLink href={`/journeys/${journey.id}`}>{journeyDisplayName(name)}</CardTitleLink>
+            </Text>
           }
           trailing={<TrackedRowStatusBadge status={status} />}
         />
@@ -426,7 +424,7 @@ function JourneyListRow({
         )}
         <AttachedTickets tickets={tickets} />
       </Stack>
-    </Card>
+    </ClickableCard>
   );
 }
 
@@ -488,34 +486,38 @@ function TrackedTrainListRow({
   const defaultName = `${route}, ${when}`;
 
   return (
-    <Card withBorder>
+    <ClickableCard>
       <Stack gap="sm">
-        {/* Only the header row itself is the link -- attached tickets
-            below render their own outbound Delay Repay link
-            (DelayRepayEstimate), and nesting an <a> inside another <a>
-            (wrapping the whole card, as the trains-only predecessor page
-            did) is invalid HTML once that's a real possibility.
-            RenameTrainButton sits outside the <Link> for the same reason. */}
+        {/* The train's name is the card's link, stretched over the card
+            (`ClickableCard`). Attached tickets below render their own
+            outbound Delay Repay link (DelayRepayEstimate) and buttons, and
+            the row menu sits beside the title: each is lifted above the
+            stretched link, so none nests inside it or follows it. */}
         <StatusRow
           align="flex-start"
           title={
-            <Link href={href} data-card-link>
-              <Stack gap={4}>
-                <StatusRow title={displayName} trailing={<TrackedRowStatusBadge status={status} />} />
-                {/* Task 3.6.8: `displayName` (`trackedTrainDisplayName`)
+            <Stack gap={4}>
+              <StatusRow
+                title={
+                  <Text fw={500} lineClamp={2} miw={0}>
+                    <CardTitleLink href={href}>{displayName}</CardTitleLink>
+                  </Text>
+                }
+                trailing={<TrackedRowStatusBadge status={status} />}
+              />
+              {/* Task 3.6.8: `displayName` (`trackedTrainDisplayName`)
                     already falls back to `${route}, ${when}` -- the exact
                     same `when` string -- whenever no custom name is set,
                     so printing this dimmed line unconditionally repeated
                     the date/time on screen twice for every train without
                     one. It's only new information once a custom name has
                     replaced the default title above. */}
-                {train.customName && (
-                  <Text size="sm" c="dimmed">
-                    {when}
-                  </Text>
-                )}
-              </Stack>
-            </Link>
+              {train.customName && (
+                <Text size="sm" c="dimmed">
+                  {when}
+                </Text>
+              )}
+            </Stack>
           }
           trailing={
             // Task 3.6.7: one overflow kebab instead of a standalone
@@ -543,7 +545,7 @@ function TrackedTrainListRow({
         />
         <AttachedTickets tickets={tickets} />
       </Stack>
-    </Card>
+    </ClickableCard>
   );
 }
 
@@ -592,26 +594,16 @@ function SharedTrainListRow({ row, status }: { row: MergedSharedTrain; status: T
   const href = train.trainUid ? `/train/${train.trainUid}/${train.serviceDate}` : null;
   const heading = (
     <Text fw={500} lineClamp={2} miw={0}>
-      {displayName}
+      {href ? <CardTitleLink href={href}>{displayName}</CardTitleLink> : displayName}
     </Text>
   );
+  // Clickable only when it links somewhere: a uid-less row stays flat.
+  const Frame = href ? ClickableCard : StaticCard;
 
   return (
-    <Card withBorder>
+    <Frame>
       <Stack gap={4}>
-        <StatusRow
-          align="flex-start"
-          title={
-            href ? (
-              <Link href={href} data-card-link>
-                {heading}
-              </Link>
-            ) : (
-              heading
-            )
-          }
-          trailing={<TrackedRowStatusBadge status={status} />}
-        />
+        <StatusRow align="flex-start" title={heading} trailing={<TrackedRowStatusBadge status={status} />} />
         {/* Task 3.6.8: same fix as the caller's own row above -- `heading`
             already falls back to `${route}, ${when}` whenever this
             sharer never set a custom name, so print the dimmed line only
@@ -642,7 +634,7 @@ function SharedTrainListRow({ row, status }: { row: MergedSharedTrain; status: T
           </Text>
         </Group>
       </Stack>
-    </Card>
+    </Frame>
   );
 }
 
@@ -657,16 +649,14 @@ function SharedJourneyListRow({ row, status }: { row: MergedSharedJourney; statu
   const name = groupJourneyNameInput(journey);
   const preview = journeyPreviewLine(name);
   return (
-    <Card withBorder>
+    <ClickableCard>
       <Stack gap={4}>
         <StatusRow
           align="flex-start"
           title={
-            <Link href={`/journeys/${String(journey.journeyId)}`} data-card-link>
-              <Text fw={500} lineClamp={2} miw={0}>
-                {journeyDisplayName(name)}
-              </Text>
-            </Link>
+            <Text fw={500} lineClamp={2} miw={0}>
+              <CardTitleLink href={`/journeys/${String(journey.journeyId)}`}>{journeyDisplayName(name)}</CardTitleLink>
+            </Text>
           }
           trailing={<TrackedRowStatusBadge status={status} />}
         />
@@ -690,7 +680,7 @@ function SharedJourneyListRow({ row, status }: { row: MergedSharedJourney; statu
             here (`mergeSharedJourneys` drops the ids of `GET /Journeys/mine`). */}
         <FollowJourneyButton journeyId={journey.journeyId} following={false} groupId={journey.groupId} />
       </Stack>
-    </Card>
+    </ClickableCard>
   );
 }
 

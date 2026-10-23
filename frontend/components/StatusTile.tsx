@@ -1,5 +1,5 @@
 import { Card, Text } from '@mantine/core';
-import { CardLink } from './CardLink';
+import { CardTitleLink, ClickableCard } from './ClickableCard';
 import { tokens } from '@/lib/theme';
 import { severityGroupTextColor, type SeverityGroup } from '@/lib/severity';
 
@@ -13,8 +13,9 @@ import { severityGroupTextColor, type SeverityGroup } from '@/lib/severity';
  * orientation; the card itself carries no padding so the body can change
  * it with the layout.
  *
- * With `href` (a non-zero count) the tile is one link, raised like every
- * clickable card, and `ariaLabel` names where it goes. A zero tile is flat
+ * With `href` (a non-zero count) the tile is a `ClickableCard`: the label
+ * is the link, stretched over the tile, and `ariaLabel` names where it
+ * goes. A zero tile is flat
  * and dimmed: there is nothing to view.
  *
  * `severity` colours a linked tile's count in its group's hue
@@ -48,7 +49,13 @@ export function StatusTile({
         {count}
       </Text>
       <Text size={tokens.statusTile.labelSize} c="dimmed" className="statusTile__label">
-        {label}
+        {href === undefined ? (
+          label
+        ) : (
+          <CardTitleLink href={href} ariaLabel={ariaLabel}>
+            {label}
+          </CardTitleLink>
+        )}
       </Text>
       {!muted && (
         // The link's own name already says where it goes; this is the
@@ -67,8 +74,8 @@ export function StatusTile({
     );
   }
   return (
-    <CardLink href={href} padding={0} ariaLabel={ariaLabel} fill>
+    <ClickableCard padding={0} fill>
       {body}
-    </CardLink>
+    </ClickableCard>
   );
 }

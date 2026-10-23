@@ -1,5 +1,5 @@
-import { Anchor, Card, Group, Stack, Text, Title } from '@mantine/core';
-import Link from 'next/link';
+import { Group, Stack, Text, Title } from '@mantine/core';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { getMyJourneyTemplates } from '@/lib/api';
 import { LoginControl } from '@/components/LoginControl';
 import { TextLink } from '@/components/TextLink';
@@ -61,12 +61,12 @@ function TemplateCard({ template }: { template: JourneyTemplateListItem }) {
   const route = journeyRouteLabel(name);
   const title = journeyDisplayName(name);
   return (
-    <Card withBorder>
+    <ClickableCard>
       <Group justify="space-between">
         <Stack gap={2}>
-          <Anchor component={Link} href={`/journeys/templates/${template.id}`} fw={600}>
-            {title}
-          </Anchor>
+          <Text fw={600}>
+            <CardTitleLink href={`/journeys/templates/${template.id}`}>{title}</CardTitleLink>
+          </Text>
           {template.customName?.trim() && (
             <Text size="sm" c="dimmed">
               {route}
@@ -77,6 +77,6 @@ function TemplateCard({ template }: { template: JourneyTemplateListItem }) {
           </Text>
         </Stack>
       </Group>
-    </Card>
+    </ClickableCard>
   );
 }

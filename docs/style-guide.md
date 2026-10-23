@@ -126,9 +126,10 @@ list-row titles 500.
   section cards, `gap="xs"` or `"sm"` inside a card.
 - Radius: xs 2 · sm 4 · md 8 (default) · lg 16 · xl 32 px. Cards, buttons,
   inputs and alerts are 8px; badges are pills. Nothing overrides radius.
-- Elevation: borders do the work. `shadow="sm"` only on a card that is
-  itself a link (`CardLink`, `LineStatusCard`, the linked /status tiles);
-  a card holding its own controls (`OperatorStatusCard`) is flat. No
+- Elevation: borders do the work. `shadow="sm"` only on a clickable card
+  (`ClickableCard`: journey and train rows, `LineStatusCard`, the linked
+  /status tiles); a card that only holds content or its own controls
+  (`OperatorStatusCard`, a ticket) is flat. No
   coloured left-border accents (the open-leg card's is its one,
   deliberate, non-colour-only exception; see Accessibility). Mantine drops
   shadows in dark mode.
@@ -141,7 +142,7 @@ Mantine's theme. Spread them; don't repeat the numbers.
 | Token | Value | Use |
 | --- | --- | --- |
 | `tokens.card.static` | `withBorder` | A card that only holds content or its own controls |
-| `tokens.card.link` | `withBorder`, `shadow="sm"` | A card that is one link (`CardLink`, `LineStatusCard`) |
+| `tokens.card.link` | `withBorder`, `shadow="sm"` | A clickable card (`ClickableCard`) |
 | `tokens.statusTile` | gap 4, value xl/700, label sm | `StatusTile`, a count and its label (`/status` top strip) |
 | `tokens.statusCard` | padding lg, title clamp 2, reason clamp 3 | `StatusCard` (lines, operators, the /status mode cards) |
 | `tokens.iconButton.field` | 36px | An `ActionIcon` beside a 36px input (`CopyableLink`) |
@@ -258,13 +259,8 @@ used, rather than as a literal in a component.
   `variant="button"` for a page whose one anonymous action is logging in
   (`/groups/join`, `/groups`, `/account`), followed by the LEG-1 consent
   note.
-- **CardLink** (`components/CardLink.tsx`): a whole card that is one link
-  (home page rows, `/groups`, `/status` tiles). It takes
-  `tokens.card.link`; `[data-card-link]`/`[data-card]` in `globals.css`
-  keep the text its own colour, turn the border grape on hover and focus,
-  and draw the focus ring on the card. A heading link inside a card that
-  holds other controls is a plain `<Link data-card-link>` around just the
-  heading. Never `style={{ textDecoration: 'none', color: 'inherit' }}`.
+- **ClickableCard**: every box the whole of which is clickable. See
+  [Clickable cards](#clickable-cards).
 - **ButtonLink** (`components/ButtonLink.tsx`): an in-app link drawn as a
   button ("Create a group", "Edit line", "Back to chat"). One `<a>`, never
   a `<button>` inside a `<Link>`; usable from Server Components.
@@ -342,8 +338,8 @@ used, rather than as a literal in a component.
 - **StatusCard** (`components/StatusCard.tsx`): the one status card. A
   name (600, clamped to 2 lines) with its `StatusBadge` on a row that never
   wraps, the reason (sm dimmed, clamped to 3), detail lines, then a footer
-  pinned to the bottom edge. With `href` the whole card is one link
-  (`CardLink`, raised); without, it is flat because it holds its own
+  pinned to the bottom edge. With `href` it is a `ClickableCard` whose
+  name is the link; without, it is flat because it holds its own
   controls. `LineStatusCard`, `OperatorStatusCard` and the /status mode
   cards are built on it. A mode card's badge is the worst severity in the
   slice, and the count is a sentence ("2 of 120 lines affected.").
@@ -410,7 +406,7 @@ used, rather than as a literal in a component.
   still to come, soonest first, five then "View all"). "Current journey"
   renders only when there is one; "Upcoming journeys" always does, with a
   light "New journey" button in its header, and says "No upcoming
-  journeys." when it is empty. The current journey is one `CardLink` with a 2px
+  journeys." when it is empty. The current journey is one `ClickableCard` with a 2px
   grape border (`.currentJourneyCard`), the only such card on the page:
   its name, its worst status (`JourneyStatusGroupBadge`), the leg under
   way ("Now, leg 1 of 2") with its delay, and the next change or the
@@ -517,6 +513,60 @@ used, rather than as a literal in a component.
   preview beside it: the swatch in a round badge with the flag's spinning
   ring and sparkles, the old nav toggle's look. All of it follows
   `body[data-pride]`, so it shows logged in or out.
+
+## Clickable cards
+
+A box that does one thing when you click it (a journey, train or line
+row, a status card or tile, a group, a planner route, an alternative to
+take, a departure to pick) is a **`ClickableCard`**
+(`components/ClickableCard.tsx`, rules in `globals.css` under
+`[data-clickable-card]`). One pattern, so every clickable box looks and
+behaves the same and none is a `div` with an `onClick`.
+
+- **A real target.** The card holds exactly one primary target: a
+  `CardTitleLink` (Next `Link`, an `<a>`) to go somewhere, or a
+  `CardTitleButton` (`<button type="button">`) to act in place. It wraps
+  the card's **title**, so the target is named by the title alone ("Woking
+  to York, 17 Sep 2026"), not every word in the box. `ariaLabel` only
+  where the title doesn't say where it goes (a /status tile, "3 lines with
+  minor delays, view in Lines"). A visible button that acts for the whole
+  card takes `CARD_PRIMARY` (the alternatives sheet's "Take this one",
+  named with the option's summary); a selectable card's `Radio` takes
+  `selectableCardRadioProps` and the card `selected`.
+- **Stretched, not nested.** The target's `::after` covers the card, so a
+  click anywhere on it follows the target. Every other control inside
+  (Follow, the row menu, Remove, a ticket's buttons, a text link, a badge
+  that explains itself) is lifted above that area by the stylesheet, so
+  it works on its own, never triggers the card and never sits inside the
+  link. A tooltip on something that isn't focusable takes
+  `data-card-raise` to stay hoverable. Nothing between the card and its
+  target may be positioned (the card is the containing block).
+- **Looks clickable at rest**: `tokens.card.link` (border plus the `sm`
+  shadow) and `cursor: pointer` on the whole box.
+- **Hover**: the link-colour border, `--ds-card-hover-bg` (gray 0; in
+  dark, halfway between dark 6 and dark 5) and, in light, the `md`
+  shadow; a link card's title is underlined. The background is as far as
+  link-colour text inside the card stays AA (4.60:1 light, 4.68:1 dark).
+- **Pressed** (the target, not an inner control): the border doubled in
+  the link colour and the shadow gone, plus a 1px press.
+- **Focus**: Tab lands on the target; `:focus-visible` draws the focus
+  ring (2px link colour, 2px offset) round the whole card, not the title.
+  Enter follows a link; Enter or Space presses a button.
+- **Motion** only under `prefers-reduced-motion: no-preference` (the
+  120ms transitions and the press).
+- A card of the same list that can't be clicked (a shared train with no
+  train ID, a cancelled departure, a route with no train, an option while
+  another is being taken) is a `StaticCard`: the same box, flat.
+- Not clickable cards: a card whose controls do separate things with no
+  one destination (a ticket, an operator card, an earlier plan) stays
+  flat, and so do section cards. Rows in a bordered list
+  (`ServiceRowList`: service rows, nearby stations) are whole-row links
+  with their own hover and inset focus ring, not cards.
+
+Do: `<ClickableCard><Text fw={500}><CardTitleLink href=…>{name}</CardTitleLink></Text>…</ClickableCard>`.
+Don't: a `<Link>` around a whole `Card` (one long link name, and any
+control inside is nested in it), `onClick` or `role="button"` on a `Card`,
+`Box` or `Group`, or a heading link alone in an otherwise dead card.
 
 ## States
 
@@ -780,7 +830,7 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
   `maw="70ch"`, `fz`, `lh`, `c`, `display`); a token; one of the small
   helpers in `globals.css` (`.ds-nowrap`, `.ds-pre-wrap`,
   `.ds-break-anywhere`, `.ds-plain-list`, `.ds-self-start`,
-  `.ds-pass-through`, `.ds-clickable`, `.ds-column`); or a named class
+  `.ds-pass-through`, `.ds-column`); or a named class
   there. The allowlist is per line, an
   `// eslint-disable-next-line react/forbid-component-props -- <why>` for a
   value only known at render time that CSS can't express. Today there are
@@ -790,7 +840,7 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
   `lib/previewImage.tsx`, whose JSX next/og renders to a PNG and which can
   only be styled with style objects.
 - Global CSS in `app/globals.css`, as BEM-ish classes or `data-*` hooks
-  (`[data-text-link]`, `[data-card-link]`, `[data-status-badge]`).
+  (`[data-text-link]`, `[data-clickable-card]`, `[data-status-badge]`).
 - Theme config is one object in `lib/theme.ts`, shared by the app and tests.
 - Icons are hand-inlined 16px Feather-style SVGs (`stroke-width 2`,
   `currentColor`, `aria-hidden`); no icon library *(convention)*. No
@@ -892,3 +942,11 @@ Journeys (DS-115, 21 Oct 2026): the Track entry and page became Journeys
 home page's "Upcoming journeys", and `/journeys/new` took its words as
 its h1; the Journeys list splits into Upcoming and Past, with "Your
 reliability" between them.
+
+Clickable cards (23 Oct 2026): `ClickableCard` replaces `CardLink` (a
+link around the whole card) and the title-only `<Link data-card-link>`
+rows. Every clickable box is now a stretched title link or button with
+the same rest, hover, pressed and focus states; the `/journeys`, group,
+template, planner, alternatives and departure-picker cards became
+clickable as a whole, and the picker's `role="button"` rows became
+buttons.

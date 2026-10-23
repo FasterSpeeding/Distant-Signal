@@ -10,7 +10,6 @@ import {
   Alert,
   Box,
   Button,
-  Card,
   Drawer,
   Group,
   Modal,
@@ -25,6 +24,7 @@ import {
 } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
 import { ButtonSpinner, LoadingText } from './LoadingText';
+import { CARD_PRIMARY, ClickableCard, StaticCard } from './ClickableCard';
 import { StateBadge } from './StateBadge';
 import { instantLateDepartureTimes, LateDepartureNote, trainToSubject } from './LateDepartureNote';
 import { asSentence, describeFailure, isUserFacingApiMessage } from '@/lib/failure';
@@ -625,7 +625,12 @@ function SuggestionBadgeView({ badge }: { badge: SuggestionBadge }) {
 
 /** One way to carry on: its badges, the summary ("10:04 York to
  * Edinburgh, direct"), its times and delay against the booked arrival, its
- * legs when it has changes, and "Take this one". */
+ * legs when it has changes, and "Take this one".
+ *
+ * A `ClickableCard` whose target is the "Take this one" button (named
+ * with the summary), so a tap anywhere on the option takes it, as on the
+ * planner's result cards; a badge that explains itself stays its own
+ * control. While no option can be taken the card is flat. */
 function SuggestionCard({
   suggestion,
   set,
@@ -643,8 +648,9 @@ function SuggestionCard({
   const delay = suggestionDelay(suggestion.delayMinutes);
   const summary = suggestionSummary(suggestion, set ?? undefined);
   const legLines = suggestion.legs.length > 1 ? suggestionLegLines(suggestion) : [];
+  const Frame = disabled ? StaticCard : ClickableCard;
   return (
-    <Card withBorder padding="sm" data-suggestion={suggestion.id}>
+    <Frame padding="sm" data-suggestion={suggestion.id}>
       <Stack gap="xs">
         {badges.length > 0 && (
           <Group gap={6} wrap="wrap" data-badge-row>
@@ -685,6 +691,7 @@ function SuggestionCard({
         )}
         <Group justify="flex-end">
           <Button
+            {...(!disabled && CARD_PRIMARY)}
             size="sm"
             onClick={onTake}
             disabled={disabled}
@@ -695,6 +702,6 @@ function SuggestionCard({
           </Button>
         </Group>
       </Stack>
-    </Card>
+    </Frame>
   );
 }

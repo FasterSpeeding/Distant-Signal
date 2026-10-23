@@ -1,4 +1,5 @@
-import { Card, Group, Radio, Stack, Text } from '@mantine/core';
+import { Group, Radio, Stack, Text } from '@mantine/core';
+import { ClickableCard, selectableCardRadioProps, StaticCard } from './ClickableCard';
 import { codeRouteLabel } from '@/lib/stationLabel';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
@@ -89,10 +90,14 @@ export function ItineraryOption({
       (code) => groups.find((group) => group.code === code)?.name,
     );
 
-  return (
-    <Card withBorder>
+  // A route with a train is a selectable card: its radio is the target and
+  // a click anywhere on the card picks it. One with no train can't be
+  // picked, so it is flat.
+  const content = (
+    <>
       <Group justify="space-between" wrap="wrap">
         <Radio
+          {...(hasTrainLeg && selectableCardRadioProps)}
           checked={selected}
           onChange={onSelect}
           disabled={!hasTrainLeg}
@@ -148,6 +153,11 @@ export function ItineraryOption({
           This route needs no train, so there is nothing to track.
         </Text>
       )}
-    </Card>
+    </>
+  );
+  return hasTrainLeg ? (
+    <ClickableCard selected={selected}>{content}</ClickableCard>
+  ) : (
+    <StaticCard>{content}</StaticCard>
   );
 }

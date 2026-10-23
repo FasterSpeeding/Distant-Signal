@@ -77,12 +77,13 @@ describe('GroupsPage', () => {
   // Review §3.2.5: the card used to be a bare `<Link>` with
   // `textDecoration: 'none'; color: 'inherit'` and no other signal that it
   // was clickable besides the cursor.
-  it('signals that each group card is clickable with the card-link hover/focus hook, and no arrow glyph', async () => {
+  it('makes each group a clickable card named by the group, with no arrow glyph', async () => {
     vi.mocked(getMyGroups).mockResolvedValue([{ id: 'grp-1', name: 'Family', role: 'owner', memberCount: 3 }]);
     renderWithMantine(await GroupsPage());
-    const link = screen.getByRole('link', { name: /Family/ });
-    expect(link).toHaveAttribute('data-card-link', 'true');
-    expect(link.querySelector('[data-card]')).not.toBeNull();
+    const link = screen.getByRole('link', { name: 'Family' });
+    expect(link).toHaveAttribute('href', '/groups/grp-1');
+    expect(link).toHaveAttribute('data-card-primary');
+    expect(link.closest('[data-clickable-card]')).not.toBeNull();
     // No "›": arrow glyphs are banned on screen (docs/style-guide.md).
     expect(screen.queryByText('›')).toBeNull();
   });

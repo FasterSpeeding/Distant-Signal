@@ -116,17 +116,23 @@ describe('ScheduleRow', () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onSelect on Enter/Space when a clickable row is focused', () => {
-    const onSelect = vi.fn();
-    renderWithMantine(<ScheduleRow row={row()} onSelect={onSelect} />);
-    fireEvent.keyDown(screen.getByRole('button'), { key: 'Enter' });
-    expect(onSelect).toHaveBeenCalledTimes(1);
+  // A real `<button>` (Enter and Space come from the browser), not a
+  // `role="button"` div, named by the row's title rather than every badge.
+  it('is a clickable card whose target is a native button named by the time and destination', () => {
+    const { container } = renderWithMantine(<ScheduleRow row={row()} onSelect={vi.fn()} />);
+    const button = screen.getByRole('button');
+    expect(button.tagName).toBe('BUTTON');
+    expect(button).toHaveAttribute('type', 'button');
+    expect(button).toHaveAccessibleName(/^10:00 · /);
+    expect(button.closest('[data-clickable-card]')).not.toBeNull();
+    expect(container.querySelector('[role="button"]:not(button)')).toBeNull();
   });
 
   it('is not interactive at all when the row is cancelled, even with onSelect provided', () => {
     const onSelect = vi.fn();
-    renderWithMantine(<ScheduleRow row={row({ isCancelled: true })} onSelect={onSelect} />);
+    const { container } = renderWithMantine(<ScheduleRow row={row({ isCancelled: true })} onSelect={onSelect} />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-clickable-card]')).toBeNull();
   });
 
   it('is not interactive when no onSelect is given at all (a plain display row)', () => {

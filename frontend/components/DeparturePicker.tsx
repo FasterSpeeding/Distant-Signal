@@ -6,6 +6,7 @@ import dayjs from 'dayjs';
 import { NationalRailCredit } from './NationalRailCredit';
 import { ScheduleRow } from './ScheduleRow';
 import { TextLink } from './TextLink';
+import { CardTitleButton, ClickableCard } from './ClickableCard';
 import { LoadingText } from '@/components/LoadingText';
 import { stationLabel } from '@/lib/stationLabel';
 import {
@@ -285,29 +286,21 @@ export function DeparturePicker({
         // copy of this note. Same `role="button"` rows, same defect.
         <Stack gap="xs" data-departure-picker-rows>
           {filtered.map((row) => (
-            <Group
-              key={row.uid}
-              justify="space-between"
-              wrap="nowrap"
-              role="button"
-              tabIndex={0}
-              onClick={() => pickCifDeparture(row)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') pickCifDeparture(row);
-              }}
-              className="ds-clickable"
-            >
-              <Text size="sm">
-                {/* Public time shown; `pickCifDeparture` pins the
+            <ClickableCard key={row.uid} padding="xs">
+              <Group justify="space-between" wrap="nowrap">
+                <CardTitleButton onClick={() => pickCifDeparture(row)}>
+                  <Text component="span" display="block" size="sm">
+                    {/* Public time shown; `pickCifDeparture` pins the
                     working time (`cifDepartureDateTime`). */}
-                {row.publicDeparture ?? row.scheduled}
-                {/* `stationLabel` -- same "Name (CODE)", bare-code-fallback
+                    {row.publicDeparture ?? row.scheduled}
+                    {/* `stationLabel` -- same "Name (CODE)", bare-code-fallback
                     convention as everywhere else in this app (item 5,
                     2026-09-22 UX review follow-up): this used to always
                     show the raw code alone. */}
-                {row.destinationCrs ? ` · ${stationLabel(row.destinationCrs, row.destinationName)}` : ''}
-              </Text>
-              {/* A secondary action, deliberately separate from the row's
+                    {row.destinationCrs ? ` · ${stationLabel(row.destinationCrs, row.destinationName)}` : ''}
+                  </Text>
+                </CardTitleButton>
+                {/* A secondary action, deliberately separate from the row's
                   own click-to-select behaviour above: this navigates to
                   the train's own public status page
                   (`/train/[uid]/[date]`) WITHOUT filling/submitting the
@@ -342,14 +335,9 @@ export function DeparturePicker({
                   or a 404. `serviceDate` is a London date captured at
                   fetch time (2026-09-26 review, finding M8; see
                   `CifPickerRow`). */}
-              <TextLink
-                href={`/train/${encodeURIComponent(row.uid)}/${row.serviceDate}`}
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={(event) => event.stopPropagation()}
-              >
-                View live status
-              </TextLink>
-            </Group>
+                <TextLink href={`/train/${encodeURIComponent(row.uid)}/${row.serviceDate}`}>View live status</TextLink>
+              </Group>
+            </ClickableCard>
           ))}
         </Stack>
       )}

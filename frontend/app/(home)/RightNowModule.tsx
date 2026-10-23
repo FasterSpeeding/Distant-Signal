@@ -1,5 +1,5 @@
 import { Group, Stack, Text } from '@mantine/core';
-import { CardLink } from '@/components/CardLink';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { SectionTitle } from '@/components/SectionTitle';
 import { StatusBadge } from '@/components/StatusBadge';
 import { TextLink } from '@/components/TextLink';
@@ -67,12 +67,14 @@ export function RightNowModule({ summary }: { summary: ReturnType<typeof notGood
           </Text>
           <Stack gap="xs">
             {worst.map((report) => (
-              <CardLink key={report.id} href={`/lines/${report.id}`}>
+              <ClickableCard key={report.id}>
                 <Group justify="space-between">
-                  <Text fw={600}>{report.name}</Text>
+                  <Text fw={600}>
+                    <CardTitleLink href={`/lines/${report.id}`}>{report.name}</CardTitleLink>
+                  </Text>
                   <StatusBadge severity={worstStatus(report).statusSeverity} />
                 </Group>
-              </CardLink>
+              </ClickableCard>
             ))}
           </Stack>
           {hidden > 0 && (

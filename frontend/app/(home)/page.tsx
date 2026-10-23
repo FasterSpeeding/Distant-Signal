@@ -1,5 +1,5 @@
 import { Stack, Title, SimpleGrid, Text, Group, VisuallyHidden } from '@mantine/core';
-import { CardLink } from '@/components/CardLink';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { SectionTitle } from '@/components/SectionTitle';
 import type { Metadata } from 'next';
 import {
@@ -527,10 +527,12 @@ export default async function DashboardPage() {
             {pinnedStationEntries.map(({ crs, name, reports, coverage }) => {
               const representative = representativeStatusAcrossReports(reports);
               return (
-                <CardLink key={crs} href={`/stations/${crs}`}>
+                <ClickableCard key={crs}>
                   <Stack gap={4}>
                     <Group justify="space-between">
-                      <Text fw={600}>{name ? `${name} (${crs})` : crs}</Text>
+                      <Text fw={600}>
+                        <CardTitleLink href={`/stations/${crs}`}>{name ? `${name} (${crs})` : crs}</CardTitleLink>
+                      </Text>
                       {coverage === 'none' ? (
                         <StateBadge tone="neutral">Not tracked</StateBadge>
                       ) : (
@@ -549,7 +551,7 @@ export default async function DashboardPage() {
                       )
                     )}
                   </Stack>
-                </CardLink>
+                </ClickableCard>
               );
             })}
           </Stack>

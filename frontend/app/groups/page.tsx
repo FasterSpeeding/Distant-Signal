@@ -8,7 +8,7 @@ import { TextLink } from '@/components/TextLink';
 import type { GroupSummary } from '@/lib/types';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { ButtonLink } from '@/components/ButtonLink';
-import { CardLink } from '@/components/CardLink';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 
 // See app/page.tsx's own `revalidate = 0` comment: no dynamic segment on
 // this route, so without this Next.js tries to prerender it during `next
@@ -125,13 +125,16 @@ export default async function GroupsPage() {
 }
 
 function GroupRow({ group }: { group: GroupSummary }) {
-  // `CardLink` (review §3.2.5): a hover/focus border change marks the
-  // whole card as the link. The member count and role are dimmed text, not
-  // badges (round 2): neither is a state.
+  // `ClickableCard` (review §3.2.5): the name is the link, stretched over
+  // the card, with the clickable card's hover, press and focus states.
+  // The member count and role are dimmed text, not badges (round 2):
+  // neither is a state.
   return (
-    <CardLink href={`/groups/${group.id}`}>
+    <ClickableCard>
       <Group justify="space-between" wrap="nowrap">
-        <Text fw={500}>{group.name}</Text>
+        <Text fw={500}>
+          <CardTitleLink href={`/groups/${group.id}`}>{group.name}</CardTitleLink>
+        </Text>
         <Group gap={6} wrap="nowrap">
           <Text size="sm" c="dimmed">
             {group.memberCount} member{group.memberCount === 1 ? '' : 's'}
@@ -144,6 +147,6 @@ function GroupRow({ group }: { group: GroupSummary }) {
           </Text>
         </Group>
       </Group>
-    </CardLink>
+    </ClickableCard>
   );
 }

@@ -1,5 +1,5 @@
 import { ColorSwatch, Group, Stack, Text } from '@mantine/core';
-import { CardLink } from '@/components/CardLink';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { TransitStatusBadge } from '@/components/TransitStatusBadge';
 import { lineColour, type PinnedTramLine } from '@/lib/transit';
 
@@ -9,17 +9,19 @@ import { lineColour, type PinnedTramLine } from '@/lib/transit';
 export function PinnedTramLineCard({ pinned }: { pinned: PinnedTramLine }) {
   const { network, networkName, line } = pinned;
   return (
-    <CardLink href={`/transit/${network}/lines/${line.lineId}`}>
+    <ClickableCard>
       <Stack gap={6} align="flex-start">
         <Group gap="xs" wrap="nowrap">
           <ColorSwatch color={lineColour(line)} size={14} withShadow={false} aria-hidden="true" />
-          <Text fw={600}>{line.name}</Text>
+          <Text fw={600}>
+            <CardTitleLink href={`/transit/${network}/lines/${line.lineId}`}>{line.name}</CardTitleLink>
+          </Text>
         </Group>
         <Text size="sm" c="dimmed">
           {networkName}
         </Text>
         <TransitStatusBadge status={line.status} />
       </Stack>
-    </CardLink>
+    </ClickableCard>
   );
 }

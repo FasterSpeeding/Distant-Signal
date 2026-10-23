@@ -1,5 +1,5 @@
 import { Group, Stack, Text } from '@mantine/core';
-import { CardLink } from '@/components/CardLink';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { StateBadge } from '@/components/StateBadge';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusRow } from '@/components/StatusRow';
@@ -32,10 +32,14 @@ export function SharedCustomLineSummaryRow({
 }) {
   const { line, groupNames } = row;
   return (
-    <CardLink href={`/lines/${line.lineId}`}>
+    <ClickableCard>
       <Stack gap={4}>
         <StatusRow
-          title={line.lineName}
+          title={
+            <Text fw={500} lineClamp={2} miw={0}>
+              <CardTitleLink href={`/lines/${line.lineId}`}>{line.lineName}</CardTitleLink>
+            </Text>
+          }
           trailing={report && <StatusBadge severity={worstStatus(report).statusSeverity} />}
         />
         <Group gap="xs" wrap="wrap">
@@ -58,6 +62,6 @@ export function SharedCustomLineSummaryRow({
           </Text>
         </Group>
       </Stack>
-    </CardLink>
+    </ClickableCard>
   );
 }

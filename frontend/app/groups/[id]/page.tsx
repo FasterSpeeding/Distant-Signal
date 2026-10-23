@@ -1,6 +1,6 @@
 import { Card, Divider, Group, Stack, Text, Title } from '@mantine/core';
 import { SectionTitle } from '@/components/SectionTitle';
-import Link from 'next/link';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import {
   getGroup,
   getGroupCustomLines,
@@ -494,12 +494,12 @@ function SharedJourneyRow({
   const name = groupJourneyNameInput(journey);
   const preview = journeyPreviewLine(name);
   return (
-    <Card withBorder>
+    <ClickableCard>
       <StatusRow
         title={
-          <Link href={`/journeys/${journey.journeyId}`} data-card-link>
-            <Text fw={500}>{journeyDisplayName(name)}</Text>
-          </Link>
+          <Text fw={500}>
+            <CardTitleLink href={`/journeys/${journey.journeyId}`}>{journeyDisplayName(name)}</CardTitleLink>
+          </Text>
         }
         subtitle={
           <>
@@ -531,7 +531,7 @@ function SharedJourneyRow({
           {canRemove && <RemoveGroupJourneyButton groupId={groupId} journeyId={journey.journeyId} />}
         </Group>
       </Group>
-    </Card>
+    </ClickableCard>
   );
 }
 
@@ -562,15 +562,13 @@ function SharedCustomLineRow({
 }) {
   const canRemove = canManage || (currentUserId !== null && line.grantedBy === currentUserId);
   return (
-    <Card withBorder>
+    <ClickableCard>
       <StatusRow
         align="flex-start"
         title={
-          <Link href={`/lines/${line.lineId}`} data-card-link>
-            <Text fw={500} lineClamp={2} miw={0}>
-              {line.lineName}
-            </Text>
-          </Link>
+          <Text fw={500} lineClamp={2} miw={0}>
+            <CardTitleLink href={`/lines/${line.lineId}`}>{line.lineName}</CardTitleLink>
+          </Text>
         }
         subtitle={
           <Text size="sm" c="dimmed">
@@ -590,6 +588,6 @@ function SharedCustomLineRow({
           </Group>
         }
       />
-    </Card>
+    </ClickableCard>
   );
 }

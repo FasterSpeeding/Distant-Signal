@@ -1,7 +1,7 @@
 import { Stack, Text, Title } from '@mantine/core';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { CardLink } from '@/components/CardLink';
+import { CardTitleLink, ClickableCard } from '@/components/ClickableCard';
 import { getTransitNetworks } from '@/lib/api';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -19,9 +19,11 @@ export default async function TransitPage() {
       <Text c="dimmed">Scheduled times from the published timetable. We don&apos;t have live tram times.</Text>
       <Stack gap="sm">
         {networks.map((network) => (
-          <CardLink key={network.id} href={`/transit/${network.id}`}>
-            <Text fw={600}>{network.name}</Text>
-          </CardLink>
+          <ClickableCard key={network.id}>
+            <Text fw={600}>
+              <CardTitleLink href={`/transit/${network.id}`}>{network.name}</CardTitleLink>
+            </Text>
+          </ClickableCard>
         ))}
       </Stack>
     </Stack>

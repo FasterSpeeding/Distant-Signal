@@ -158,7 +158,7 @@ export function SkeletonCardGrid({ count = 3 }: { count?: number }) {
   );
 }
 
-/** A list of row cards (`CardLink` rows on the home page and /journeys):
+/** A list of row cards (`ClickableCard` rows on the home page and /journeys):
  * a title line with a badge, and a dimmed detail line under it. */
 export function SkeletonRows({ count = 3 }: { count?: number }) {
   return (

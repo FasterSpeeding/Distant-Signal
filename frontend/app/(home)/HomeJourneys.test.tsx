@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
+import { cardOf } from '@/test/clickableCard';
 import { expectNoUnguardedNowrapBadges } from '@/test/shrinkGuard';
 import {
   journeyDetail,
@@ -108,7 +109,7 @@ describe('CurrentJourneyCard', () => {
     const followed = journey();
     followed.item = { ...followed.item, followedFrom: FOLLOWED_FROM };
     renderWithMantine(<CurrentJourneyCard journey={followed} now={new Date('2026-09-17T10:00:00Z')} />);
-    expect(within(screen.getByRole('link')).getByText('Shared by Olive')).toBeInTheDocument();
+    expect(within(cardOf(screen.getByRole('link'))).getByText('Shared by Olive')).toBeInTheDocument();
   });
 
   it("names no one on the traveller's own journey", () => {
@@ -120,16 +121,20 @@ describe('CurrentJourneyCard', () => {
     renderWithMantine(<CurrentJourneyCard journey={journey()} now={new Date('2026-09-17T10:00:00Z')} />);
     const link = screen.getByRole('link');
     expect(link).toHaveAttribute('href', '/journeys/7');
-    expect(within(link).getByText('London Kings Cross (KGX) to Edinburgh (EDB), 17 Sep 2026')).toBeInTheDocument();
+    // Named by the journey's name alone, not every word on the card.
+    expect(link).toHaveAccessibleName('London Kings Cross (KGX) to Edinburgh (EDB), 17 Sep 2026');
+    expect(
+      within(cardOf(link)).getByText('London Kings Cross (KGX) to Edinburgh (EDB), 17 Sep 2026'),
+    ).toBeInTheDocument();
     // The whole journey's status (judged at the final destination, as on
     // the journey page: the change at York still works), then the leg's
     // own delay in minutes.
-    expect(within(link).getByText('On time')).toBeInTheDocument();
-    expect(within(link).getByText('12 min late')).toBeInTheDocument();
-    expect(within(link).getByText('Now, leg 1 of 2')).toBeInTheDocument();
-    expect(within(link).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
-    expect(within(link).getByText('Next change')).toBeInTheDocument();
-    expect(within(link).getByText('York (YRK), arrive est. 12:12')).toBeInTheDocument();
+    expect(within(cardOf(link)).getByText('On time')).toBeInTheDocument();
+    expect(within(cardOf(link)).getByText('12 min late')).toBeInTheDocument();
+    expect(within(cardOf(link)).getByText('Now, leg 1 of 2')).toBeInTheDocument();
+    expect(within(cardOf(link)).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
+    expect(within(cardOf(link)).getByText('Next change')).toBeInTheDocument();
+    expect(within(cardOf(link)).getByText('York (YRK), arrive est. 12:12')).toBeInTheDocument();
   });
 
   it("headlines the whole journey's status, with the train under way's own status second", () => {
@@ -191,7 +196,7 @@ describe('CurrentJourneyCard', () => {
       "Relies on the next train running late. It's due to leave at 12:35, booked 12:20. It could leave earlier.";
     // On the first train.
     const first = renderWithMantine(<CurrentJourneyCard journey={reliant} now={new Date('2026-09-17T10:00:00Z')} />);
-    expect(within(screen.getByRole('link')).getByText(note)).toBeInTheDocument();
+    expect(within(cardOf(screen.getByRole('link'))).getByText(note)).toBeInTheDocument();
     first.unmount();
     // At York, waiting for it.
     const waiting = renderWithMantine(<CurrentJourneyCard journey={reliant} now={new Date('2026-09-17T11:15:00Z')} />);
@@ -305,9 +310,9 @@ describe('CurrentJourneySection', () => {
     const card = within(screen.getByRole('region', { name: 'Current journey' })).getByRole('link', {
       name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep/,
     });
-    expect(within(card).getByText('Destination')).toBeInTheDocument();
-    expect(within(card).getByText('York (YRK), arrive est. 12:07')).toBeInTheDocument();
-    expect(within(card).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('Destination')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('York (YRK), arrive est. 12:07')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
   });
 
   it('gives a lone train known only by its list row its destination, without an arrival', () => {
@@ -319,8 +324,8 @@ describe('CurrentJourneySection', () => {
       />,
     );
     const card = within(screen.getByRole('region', { name: 'Current journey' })).getByRole('link');
-    expect(within(card).getByText('York (YRK)')).toBeInTheDocument();
-    expect(within(card).queryByText(/arrive/)).not.toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('York (YRK)')).toBeInTheDocument();
+    expect(within(cardOf(card)).queryByText(/arrive/)).not.toBeInTheDocument();
   });
 
   it('draws a lone train under way as the current journey, linking to its train page', () => {
@@ -335,10 +340,12 @@ describe('CurrentJourneySection', () => {
     const card = within(section).getByRole('link', { name: /^Commute/ });
     expect(card).toHaveAttribute('href', '/train/W5/2026-09-17');
     expect(card.closest('.currentJourneyCard')).not.toBeNull();
-    expect(within(card).getByText('London Kings Cross (KGX) to York (YRK), 17 Sep 2026 · 10:00')).toBeInTheDocument();
-    expect(within(card).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
-    expect(within(card).getByText('York (YRK)')).toBeInTheDocument();
-    expect(within(card).getByText('6 min late')).toBeInTheDocument();
+    expect(
+      within(cardOf(card)).getByText('London Kings Cross (KGX) to York (YRK), 17 Sep 2026 · 10:00'),
+    ).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('London Kings Cross (KGX) to York (YRK) · 10:00')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('York (YRK)')).toBeInTheDocument();
+    expect(within(cardOf(card)).getByText('6 min late')).toBeInTheDocument();
     expect(within(section).getByRole('link', { name: /Second trip/ })).toHaveAttribute('href', '/journeys/8');
   });
 
@@ -381,10 +388,10 @@ describe('UpcomingJourneysSection', () => {
       name: /^London Kings Cross \(KGX\) to York \(YRK\), 20 Sep 2026/,
     });
     expect(first).toHaveAttribute('href', '/journeys/1');
-    expect(within(first).getByText('Departs 10:00')).toBeInTheDocument();
-    expect(within(first).getByText('Planned')).toBeInTheDocument();
+    expect(within(cardOf(first)).getByText('Departs 10:00')).toBeInTheDocument();
+    expect(within(cardOf(first)).getByText('Planned')).toBeInTheDocument();
     const second = within(section).getByRole('link', { name: /Weekend away/ });
-    expect(within(second).getByText('London Kings Cross (KGX) to York (YRK), 20 Sep 2026')).toBeInTheDocument();
+    expect(within(cardOf(second)).getByText('London Kings Cross (KGX) to York (YRK), 20 Sep 2026')).toBeInTheDocument();
     expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
   });
 
@@ -398,8 +405,8 @@ describe('UpcomingJourneysSection', () => {
     const section = screen.getByRole('region', { name: 'Upcoming journeys' });
     const links = within(section).getAllByRole('link', { name: /London Kings Cross|Mine/ });
     expect(links.map((link) => link.getAttribute('href'))).toEqual(['/journeys/1', '/journeys/2']);
-    expect(within(links[1]!).getByText(/Shared with you by link/)).toBeInTheDocument();
-    expect(within(links[0]!).queryByText(/Shared/)).not.toBeInTheDocument();
+    expect(within(cardOf(links[1]!)).getByText(/Shared with you by link/)).toBeInTheDocument();
+    expect(within(cardOf(links[0]!)).queryByText(/Shared/)).not.toBeInTheDocument();
   });
 
   it('offers New journey at the top of the section, as a button', () => {
@@ -443,7 +450,7 @@ describe('UpcomingJourneysSection', () => {
     const section = screen.getByRole('region', { name: 'Upcoming journeys' });
     const train = within(section).getByRole('link', { name: /^London Kings Cross \(KGX\) to York \(YRK\), 17 Sep/ });
     expect(train).toHaveAttribute('href', '/train/W5/2026-09-17');
-    expect(within(train).getByText('Cancelled')).toBeInTheDocument();
+    expect(within(cardOf(train)).getByText('Cancelled')).toBeInTheDocument();
     expect(within(section).queryByText('No upcoming journeys.')).not.toBeInTheDocument();
     expect(within(section).getByRole('link', { name: 'View all' })).toHaveAttribute('href', '/journeys');
   });
