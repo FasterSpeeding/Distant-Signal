@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 use crate::app::App;
 use crate::data::station_groups::{self, StationChoice};
-use crate::data::{trip_plan_live, trip_planning, trip_planning_itinerary};
+use crate::data::{tfl_access, trip_plan_live, trip_planning, trip_planning_itinerary};
 
 /// Hard cap on `?waypoints=`, enforced before any database read (2026-09-25
 /// review, High 4b): before it, `?waypoints=YRK,YRK,YRK,...` repeated a few
@@ -452,6 +452,16 @@ fn default_results() -> String {
 ///   passed by ANY of them; `viaSatisfiedBy[k].matchedCrs` names which. See
 ///   [`parse_vias`], [`check_via_conflicts`] and
 ///   docs/superpowers/specs/2026-10-07-trips-plan-or-group-vias-design.md.
+/// - `origin`/`destination` may be a `TfL` Tube, DLR or tram stop id
+///   (`940GZZLUUXB`, 2026-10-23, DS-135): the plan runs from or to the best
+///   of the stop's candidate National Rail stations, with an access leg (a
+///   `TUBE`, `METRO` or `WALK` transfer carrying `access`, its minutes an
+///   estimate) between the stop and the station, and the response gains a
+///   top-level `access` listing the candidates. The stop becomes a virtual
+///   end with one-way links on a per-request copy of the interchange data
+///   (`trip_planner::access`, `data::tfl_access`); the cached graph is not
+///   changed, and a station-only request does no extra work. See
+///   docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md.
 /// - A segment with no itineraries carries `noResultReason`
 ///   (`{constraint, values, message}`, see
 ///   [`trip_planning_itinerary::NoResultReason`]) naming the constraint that
@@ -599,6 +609,9 @@ async fn get_trip_plan(
     let waypoints: Vec<String> = waypoints.into_iter().map(|w| w.label).collect();
     let vias: Vec<String> = via_choices.iter().map(|via| via.label.clone()).collect();
     let via_codes: Vec<Vec<String>> = via_choices.into_iter().map(|via| via.codes).collect();
+    // A `TfL` stop end (DS-135): its access candidates, read before the
+    // permit like the other checks (a few hundred `tfl_stops` rows).
+    let access = load_access_ends(&app, &origin, &destination).await?;
 
     // Acquired BEFORE the reads below, not just around the search: the
     // whole-day row read and the graph built from it are the memory half of
@@ -628,6 +641,15 @@ async fn get_trip_plan(
             ),
         ));
     };
+    let access = match access {
+        Some(mut access) => {
+            access
+                .retain_known(&graph.interchange)
+                .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+            Some(Arc::new(access))
+        }
+        None => None,
+    };
     let inputs = DateInputs {
         origin,
         destination,
@@ -640,6 +662,7 @@ async fn get_trip_plan(
         max_changes,
         live_requested,
         allowed_uids: None,
+        access: access.clone(),
     };
     // `acrossMidnight` (2026-10-20): the next service date's trains too,
     // from the same clock time, merged in (`data::trip_plan_overnight`).
@@ -719,7 +742,7 @@ async fn get_trip_plan(
     let waypoint_stops = if request.waypoint_codes.is_some() {
         trip_planning_itinerary::waypoint_satisfied_by(
             &segments,
-            &graph.interchange,
+            request.interchange(&graph),
             &request.origin,
             &request.waypoints,
             request.waypoint_codes.as_deref(),
@@ -780,7 +803,7 @@ async fn get_trip_plan(
         // Additive (2026-09-29): the whole journeys, aligned with every
         // segment's `itineraries` -- journey `j` is `itineraries[j]` of each
         // segment -- with their end-to-end change count.
-        "journeys": trip_planning_itinerary::journey_summaries(&segments, &graph.interchange)
+        "journeys": trip_planning_itinerary::journey_summaries(&segments, request.interchange(&graph))
             .iter()
             .enumerate()
             .map(|(j, journey)| {
@@ -814,6 +837,11 @@ async fn get_trip_plan(
     if let Some(summary) = live_summary {
         body["live"] = summary;
     }
+    // Additive (2026-10-23, DS-135), only when an end is a `TfL` stop: each
+    // stop end with its access candidates (`null` for a station end).
+    if let Some(access) = &access {
+        body["access"] = access.to_json();
+    }
     // Additive (2026-10-08): whether `date`'s timetable is still
     // provisional. Once per response, not per journey or leg. With
     // `acrossMidnight`, the later of the two dates: it is the one that can
@@ -826,6 +854,32 @@ async fn get_trip_plan(
         .insert_into(object);
     }
     Ok(Json(body))
+}
+
+/// The access candidates of a `TfL` stop origin or destination (DS-135),
+/// `None` when both ends are stations. An unknown stop, a stop with no
+/// National Rail station near it, and the same stop at both ends are 400s.
+async fn load_access_ends(
+    app: &App,
+    origin: &str,
+    destination: &str,
+) -> Result<Option<tfl_access::AccessEnds>, (StatusCode, String)> {
+    let origin_stop = tfl_access::is_tfl_stop_id(origin).then_some(origin);
+    let destination_stop = tfl_access::is_tfl_stop_id(destination).then_some(destination);
+    if origin_stop.is_none() && destination_stop.is_none() {
+        return Ok(None);
+    }
+    if origin == destination {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "origin and destination must differ".to_string(),
+        ));
+    }
+    tfl_access::load_access(&app.database, origin_stop, destination_stop)
+        .await
+        .map_err(internal_error("read the TfL stops"))?
+        .map(Some)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))
 }
 
 /// One request's planning inputs, shared with every blocking search.
@@ -845,6 +899,9 @@ struct DateInputs {
     /// Ride only these trains (a journey alternative's "same operator"
     /// search, `plan_for_journey`); `None` for `/Trips/plan`.
     allowed_uids: Option<Arc<std::collections::HashSet<String>>>,
+    /// The `TfL` stop ends and their access candidates (DS-135); `None`
+    /// when both ends are stations.
+    access: Option<Arc<tfl_access::AccessEnds>>,
 }
 
 /// One service date's finished plan: searched, live-checked (when asked)
@@ -977,7 +1034,14 @@ async fn plan_on_date(
                 .with_allowed_uids((**uids).clone()),
         )),
     };
+    // A `TfL` stop end (DS-135): this request's own copy of the interchange
+    // data with the stop's access links; the cached graph is not changed.
+    let interchange = inputs
+        .access
+        .as_ref()
+        .map(|access| Arc::new(access.interchange(&graph.interchange)));
     let request = Arc::new(PlanRequest {
+        interchange,
         date,
         origin: inputs.origin.clone(),
         destination: inputs.destination.clone(),
@@ -1073,6 +1137,13 @@ async fn plan_on_date(
         .map_err(internal_error("attach trip leg details"))?;
     crate::data::tfl_stops::attach_transfer_stops(&app.database, &mut segments).await;
     crate::data::tfl_stops::attach_transfer_lines(&mut segments);
+    if let Some(access) = &inputs.access {
+        access.finish_legs(
+            &mut segments,
+            request.interchange(graph),
+            matches!(time, trip_planning_itinerary::TimeBound::DepartAfter(_)),
+        );
+    }
     crate::data::tfl_stops::merge_transfer_rides(&app.database, &mut segments).await;
     Ok(DatePlan {
         request,
@@ -1101,6 +1172,9 @@ fn combine_live(
 }
 
 struct PlanRequest {
+    /// The interchange data with a `TfL` stop end's access links
+    /// (DS-135); `None` to plan on the graph's own.
+    interchange: Option<Arc<schedule_query::InterchangeData>>,
     date: NaiveDate,
     origin: String,
     destination: String,
@@ -1122,6 +1196,17 @@ struct PlanRequest {
     max_changes: u32,
 }
 
+impl PlanRequest {
+    /// The interchange data this request plans on: `graph`'s own, or the
+    /// copy with its access links.
+    fn interchange<'a>(
+        &'a self,
+        graph: &'a trip_planning::PlanningGraph,
+    ) -> &'a schedule_query::InterchangeData {
+        self.interchange.as_deref().unwrap_or(&graph.interchange)
+    }
+}
+
 type PlanPermit = Arc<tokio::sync::SemaphorePermit<'static>>;
 
 /// One planning pass on the blocking pool, holding a clone of the permit.
@@ -1140,7 +1225,7 @@ async fn run_plan(
         trip_planning_itinerary::plan_trip(&trip_planning_itinerary::TripPlanInput {
             search: trip_planning_itinerary::SegmentSearch {
                 connections: &graph.connections,
-                interchange: &graph.interchange,
+                interchange: request.interchange(&graph),
                 date: request.date,
                 results: &request.results,
                 max_changes: request.max_changes,
@@ -1292,7 +1377,7 @@ async fn plan_live(
                 date,
                 now,
                 config,
-                interchange: &graph.interchange,
+                interchange: request.interchange(graph),
                 chains: &chains,
                 lives: &lives,
                 snapshot,
@@ -1300,7 +1385,7 @@ async fn plan_live(
                 overlaid_read: &overlay_read,
             },
         );
-        let invalidated = trip_plan_live::plan_invalidated(&probe, &graph.interchange)
+        let invalidated = trip_plan_live::plan_invalidated(&probe, request.interchange(graph))
             || depart_min.is_some_and(|depart_min| {
                 trip_plan_live::seed_became_catchable(
                     &seeds,
@@ -1341,7 +1426,7 @@ async fn plan_live(
             date,
             now,
             config,
-            interchange: &graph.interchange,
+            interchange: request.interchange(graph),
             chains: &chains,
             lives: &lives,
             snapshot,
@@ -1356,7 +1441,7 @@ async fn plan_live(
             .windows(2)
             .all(|pair| pair[0].itineraries.len() == pair[1].itineraries.len())
     {
-        trip_planning_itinerary::set_waypoint_ready_mins(&mut segments, &graph.interchange);
+        trip_planning_itinerary::set_waypoint_ready_mins(&mut segments, request.interchange(graph));
     }
     metrics::counter!(common::metrics::metric_name(
         "api_trip_plan_live_replans_total"
@@ -1458,6 +1543,7 @@ pub(crate) async fn plan_for_journey(
             .min(trip_planning_itinerary::MAX_CHANGES_LIMIT),
         live_requested: true,
         allowed_uids: query.allowed_uids.clone(),
+        access: None,
     };
     let plan = plan_on_date(
         app,
@@ -2613,6 +2699,7 @@ mod tests {
 )]
 mod db_tests {
     mod live_in_search;
+    mod tfl_access;
 
     use axum::body::Body;
     use axum::http::Request;

@@ -832,6 +832,7 @@ mod tests {
             line: line.map(str::to_owned),
             origin_stop: Some(Box::new(stop(from, &[]))),
             destination_stop: Some(Box::new(stop(to, &[]))),
+            access: None,
         }
     }
 
@@ -1257,6 +1258,7 @@ mod db_tests {
             line: None,
             origin_stop: None,
             destination_stop: None,
+            access: None,
         }
     }
 
@@ -1348,6 +1350,7 @@ mod db_tests {
                 line: Some("Testline".to_owned()),
                 origin_stop: Some(Box::new(stops[from].clone())),
                 destination_stop: Some(Box::new(stops[to].clone())),
+                access: None,
             },
             PlannedLeg::Train { .. } => unreachable!(),
         };

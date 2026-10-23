@@ -8,6 +8,7 @@ import { useNeedsLogin } from './useNeedsLogin';
 import { LoginPromptModal } from './LoginPromptModal';
 import {
   collectTripPlanStationCodes,
+  tripPlanStopNames,
   fetchTripPlan,
   isTooLargeSearchError,
   noResultHint,
@@ -187,7 +188,7 @@ export function PlanTripFlow({
       // going back to `false` -- a slow/failed name lookup must never
       // hold up the actual route results.
       void getStationNames(collectTripPlanStationCodes(result)).then((names) => {
-        if (searchRequestId.current === requestId) setStationNames(names);
+        if (searchRequestId.current === requestId) setStationNames(new Map([...names, ...tripPlanStopNames(result)]));
       });
     } catch (error) {
       if (searchRequestId.current !== requestId) return;
@@ -305,7 +306,8 @@ export function PlanTripFlow({
       setList(current);
       void Promise.all(pages.map((page) => getStationNames(collectTripPlanStationCodes(page)))).then((found) => {
         if (searchRequestId.current !== requestId) return;
-        setStationNames((names) => new Map([...names, ...found.flatMap((more) => [...more])]));
+        const stops = pages.flatMap((page) => [...tripPlanStopNames(page)]);
+        setStationNames((names) => new Map([...names, ...found.flatMap((more) => [...more]), ...stops]));
       });
     } catch (error) {
       if (searchRequestId.current !== requestId) return;

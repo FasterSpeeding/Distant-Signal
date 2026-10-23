@@ -1745,7 +1745,41 @@ export type TripPlanLeg =
        * its stop id. */
       originStop?: TflStop;
       destinationStop?: TflStop;
+      /** Only on the leg between a TfL stop From or To and a National
+       * Rail station (DS-135): which end, how the station was found, and
+       * how far it goes. Its `minutes` are an estimate. */
+      access?: TripPlanAccessLeg;
     };
+
+/** How a `GET /Trips/plan` access candidate was found: the stop's own
+ * station (`hub`), a ride on one of its lines (`line`), a short walk
+ * (`walk`), or, with neither, one of the nearest stations (`nearest`). */
+export type TripPlanAccessBasis = 'hub' | 'line' | 'walk' | 'nearest';
+
+export interface TripPlanAccessLeg {
+  /** `both`: a ride straight from a From stop to a To stop. */
+  end: 'origin' | 'destination' | 'both';
+  basis: TripPlanAccessBasis;
+  /** Along the line for a ride, in a straight line for a walk. */
+  distanceMetres: number;
+}
+
+/** One station a TfL stop end can be left for or reached from. */
+export interface TripPlanAccessCandidate {
+  crs: string;
+  mode: string;
+  minutes: number;
+  basis: TripPlanAccessBasis;
+  line?: string;
+  stationStop?: TflStop;
+  distanceMetres: number;
+}
+
+/** A TfL stop From or To and its candidates, quickest first. */
+export interface TripPlanStopAccess {
+  stop: TflStop;
+  candidates: TripPlanAccessCandidate[];
+}
 
 /** One candidate itinerary for one segment
  * (`crates/api/src/data/trip_planning_itinerary.rs::PlannedItinerary`).
@@ -1910,6 +1944,12 @@ export interface TripPlanResponse extends TimetableCertaintyFields {
     inSearch?: boolean;
     /** How many trains those changed. */
     snapshotTrains?: number;
+  };
+  /** Only when From or To is a TfL stop (DS-135): each such end and its
+   * candidate stations; `null` for a station end. */
+  access?: {
+    origin: TripPlanStopAccess | null;
+    destination: TripPlanStopAccess | null;
   };
 }
 

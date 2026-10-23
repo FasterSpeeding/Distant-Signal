@@ -19,7 +19,8 @@ import { getStationNames, searchPlannerLocations } from '@/lib/suggestions';
 import { useSuggestions } from '@/lib/useSuggestions';
 import { suggestionAutocompleteProps } from '@/lib/suggestionAutocomplete';
 import { groupLabels, useStationGroups, withGroupSuggestions } from '@/lib/stationGroups';
-import { isGroupCode, normalizeLocationCode } from '@/lib/stationLabel';
+import { isGroupCode, isTflStopCode, normalizeLocationCode } from '@/lib/stationLabel';
+import { searchPlannerEnds } from '@/lib/plannerEnds';
 import type { Suggestion, TrainSearchDates } from '@/lib/types';
 import { searchDateBounds } from '@/lib/searchDates';
 import type { TripPlanAdvancedOptions, TripPlanQuery } from '@/lib/tripPlan';
@@ -230,15 +231,33 @@ export function PlanTripForm({
   const resultsLabelId = useId();
 
   // The two ends may also be a bus stop or ferry terminal (a `tiploc:` code,
-  // shown as "Keswick (bus)"): `searchPlannerLocations`.
+  // shown as "Keswick (bus)"), or a TfL Tube, DLR or tram stop (its stop id,
+  // shown as "Uxbridge (Tube)"; DS-135): `searchPlannerEnds`.
   const { suggestions: originSuggestions, loading: originSuggestionsLoading } = useSuggestions(
     originCrs,
-    searchPlannerLocations,
+    searchPlannerEnds,
   );
   const { suggestions: destinationSuggestions, loading: destinationSuggestionsLoading } = useSuggestions(
     destinationCrs,
-    searchPlannerLocations,
+    searchPlannerEnds,
   );
+
+  /** Keeps a picked TfL stop's name, so the field can say what its stop
+   * id stands for once the suggestions have moved on. */
+  function rememberStop(code: string, suggestions: Suggestion[]) {
+    const picked = suggestions.find((s) => s.code === code);
+    if (picked && isTflStopCode(picked.code)) addNames(new Map([[picked.code, picked.name]]));
+  }
+
+  /** Under From or To when it holds a TfL stop's id: what it is, and that
+   * the route runs from or to a station nearby. */
+  function stopDescription(code: string, end: 'from' | 'to'): string | undefined {
+    if (!isTflStopCode(code)) return undefined;
+    const name = labels.get(normalizeLocationCode(code)) ?? 'A Tube, DLR or tram stop';
+    return end === 'from'
+      ? `${name}. The route starts with the Tube or a walk to a National Rail station nearby.`
+      : `${name}. The route ends with the Tube or a walk from a National Rail station nearby.`;
+  }
 
   // Names for the advanced options restored from the URL (read once, like
   // every other `initial` field).
@@ -333,6 +352,8 @@ export function PlanTripForm({
         placeholder="Station name or code"
         value={originCrs}
         onChange={setOriginCrs}
+        onOptionSubmit={(code) => rememberStop(code, originSuggestions)}
+        description={stopDescription(originCrs, 'from')}
         // Mirrors `TrackTrainForm.tsx`'s own Origin `Autocomplete`: the
         // shared `data`/`filter`/`renderOption` trio every CRS/TOC-code
         // `Autocomplete` field in this app needs (see
@@ -344,7 +365,7 @@ export function PlanTripForm({
         {...suggestionAutocompleteProps(originSuggestions, {
           query: originCrs,
           loading: originSuggestionsLoading,
-          noMatchMessage: 'No matching stations',
+          noMatchMessage: 'No matching stations or stops',
         })}
       />
       <Autocomplete
@@ -352,10 +373,12 @@ export function PlanTripForm({
         placeholder="Station name or code"
         value={destinationCrs}
         onChange={setDestinationCrs}
+        onOptionSubmit={(code) => rememberStop(code, destinationSuggestions)}
+        description={stopDescription(destinationCrs, 'to')}
         {...suggestionAutocompleteProps(destinationSuggestions, {
           query: destinationCrs,
           loading: destinationSuggestionsLoading,
-          noMatchMessage: 'No matching stations',
+          noMatchMessage: 'No matching stations or stops',
         })}
       />
       {waypoints.map((waypoint, index) => (

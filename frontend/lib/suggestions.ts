@@ -44,12 +44,18 @@ export function tflStopDetail(stop: TflStop): string {
  * `searchStations`; a failed request is no suggestions, so the field stays
  * free text. */
 export async function searchTflStops(q: string, modes: readonly string[], signal?: AbortSignal): Promise<Suggestion[]> {
+  const stops = await fetchTflStops(q, modes, signal);
+  return stops.map((stop) => ({ code: stop.id, name: stop.name, detail: tflStopDetail(stop) }));
+}
+
+/** The TfL stops of `modes` matching `q` (`GET /public/tfl/stops`), as
+ * served; `[]` for a blank `q` or a failed request. */
+export async function fetchTflStops(q: string, modes: readonly string[], signal?: AbortSignal): Promise<TflStop[]> {
   if (!q.trim()) return [];
   const params = new URLSearchParams({ q, modes: modes.join(',') });
   const response = await fetch(`/api/tfl/stops?${params.toString()}`, signal ? { signal } : {});
   if (!response.ok) return [];
-  const stops = (await response.json()) as TflStop[];
-  return stops.map((stop) => ({ code: stop.id, name: stop.name, detail: tflStopDetail(stop) }));
+  return (await response.json()) as TflStop[];
 }
 
 /** The National Rail station a TfL stop serves, best first

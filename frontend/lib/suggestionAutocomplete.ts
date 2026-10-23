@@ -1,7 +1,7 @@
 import type { AutocompleteProps } from '@mantine/core';
 import type { Suggestion } from './types';
 import { noMatchOptionContent, withNoMatchPlaceholder } from './autocompleteNoMatch';
-import { codeStationLabel } from './stationLabel';
+import { codeStationLabel, isTflStopCode } from './stationLabel';
 
 /** The `data`/`filter`/`renderOption` trio every CRS/TOC-code `Autocomplete`
  * field in this app (station pickers, operator pickers) needs around a live
@@ -93,6 +93,8 @@ export function suggestionAutocompleteProps(
       // A stop that is not a National Rail station (`place`) has no CRS to
       // show: its name and mode, and its name is what picking it writes.
       if (fill === 'name' || match.place) return match.detail ? `${match.name} · ${match.detail}` : match.name;
+      // A TfL stop in the planner's From and To (DS-135): its name and lines.
+      if (isTflStopCode(match.code) && match.detail) return `${match.name} · ${match.detail}`;
       return suggestionOptionLabel(match);
     },
   };

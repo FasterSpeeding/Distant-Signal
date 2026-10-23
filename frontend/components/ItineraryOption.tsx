@@ -1,6 +1,6 @@
 import { Group, Radio, Stack, Text } from '@mantine/core';
 import { ClickableCard, selectableCardRadioProps, StaticCard } from './ClickableCard';
-import { codeRouteLabel } from '@/lib/stationLabel';
+import { codeRouteLabel, tflStopPlaceName } from '@/lib/stationLabel';
 import { ServiceModeBadge } from './ServiceModeBadge';
 import { satisfiedStationLabel, viaSatisfiedLabel, waypointSatisfiedLabel } from '@/lib/tripPlan';
 import { CANCELLED_LABEL, delayLabel } from '@/lib/serviceStatus';
@@ -11,8 +11,9 @@ import type {
   TripPlanLegLive,
   TripPlanViaSatisfied,
   TripPlanWaypointSatisfied,
+  TflStop,
 } from '@/lib/types';
-import { transferLabel } from '@/lib/displayLabels';
+import { accessLegNote, transferLabel } from '@/lib/displayLabels';
 import { StateBadge } from './StateBadge';
 import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNote';
 
@@ -27,9 +28,19 @@ import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNot
  * renders the bare-code fallback `codeRouteLabel` already provides for an
  * unresolved code. */
 function legSummary(leg: TripPlanLeg, stationNames: Map<string, string>): string {
-  const originName = leg.originCrs ? stationNames.get(leg.originCrs) : undefined;
-  const destinationName = leg.destinationCrs ? stationNames.get(leg.destinationCrs) : undefined;
-  const route = codeRouteLabel(leg.originCrs, originName, leg.destinationCrs, destinationName);
+  // A TfL stop From or To (DS-135) is no station: its access leg has no
+  // code at that end, only the stop, named `Uxbridge (Tube)`.
+  const end = (code: string | null, stop: TflStop | undefined): [string | null, string | undefined] => {
+    if (code) return [code, stationNames.get(code)];
+    if (stop) return [stop.id, tflStopPlaceName(stop)];
+    return [null, undefined];
+  };
+  const [originCode, originName] = end(leg.originCrs, leg.kind === 'transfer' ? leg.originStop : undefined);
+  const [destinationCode, destinationName] = end(
+    leg.destinationCrs,
+    leg.kind === 'transfer' ? leg.destinationStop : undefined,
+  );
+  const route = codeRouteLabel(originCode, originName, destinationCode, destinationName);
   if (leg.kind === 'train') {
     // Public (timetable) times first; the working times only for a response
     // without them.
@@ -111,6 +122,11 @@ export function ItineraryOption({
                     <Text size="sm">{legSummary(leg, stationNames)}</Text>
                     {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
                   </Group>
+                  {leg.kind === 'transfer' && leg.access && (
+                    <Text size="xs" c="dimmed" pl="sm">
+                      {accessLegNote(leg.access)}
+                    </Text>
+                  )}
                   {leg.kind === 'train' && leg.live?.reliesOnLateDeparture && (
                     <LateDepartureNote {...plannerLateDepartureTimes(leg.live.reliesOnLateDeparture)} />
                   )}
