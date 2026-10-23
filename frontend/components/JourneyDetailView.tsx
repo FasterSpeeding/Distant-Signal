@@ -3,6 +3,7 @@ import { AddJourneyLegButton } from './AddJourneyLegButton';
 import { DeleteJourneyButton } from './DeleteJourneyButton';
 import { JourneyLegCard } from './JourneyLegCard';
 import { JourneyBreakBanner } from './JourneyBreakBanner';
+import { JourneySuggestionsUnmute } from './JourneySuggestionsUnmute';
 import { EarlierPlans } from './EarlierPlans';
 import { missableLegId } from '@/lib/journeyBreak';
 import { JourneyStatusBadge } from './JourneyStatusBadge';
@@ -263,6 +264,7 @@ export function JourneyDetailView({
         </Text>
       )}
       <LastUpdated timestamp={fetchedAt} label="Data as of" />
+      {journey.isOwner && journey.suggestionsMuted === true && <JourneySuggestionsUnmute journeyId={journey.id} />}
       {openBreak && (
         <JourneyBreakBanner
           journeyId={journey.id}
