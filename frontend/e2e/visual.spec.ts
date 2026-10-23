@@ -90,6 +90,11 @@ const PAGES: [name: string, path: string][] = [
   ['transit-line', '/transit/metrolink/lines/blue'],
   ['transit-stop', '/transit/metrolink/stops/9400ZZMAPIC?date=2026-09-17'],
   ['transit-timetable', '/transit/metrolink/lines/blue/timetable?date=2026-09-17&direction=outbound&from=07:00'],
+  // A TfL stop's live arrivals (DS-136): the seed's King's Cross St. Pancras,
+  // whose board scripts/tfl-arrivals-stub.py answers relative to the
+  // server's clock, so each train's expected time is masked; its "2 min"
+  // stays put.
+  ['tfl-stop', '/tfl/stops/940GZZLUKSX'],
 ];
 
 /** The pages shot with the seed's session cookie (E2E_SESSION_COOKIE). */
@@ -122,7 +127,9 @@ const SCHEMES = ['light', 'dark'] as const;
  *    2026."): the searchable range is the server's, around its own today,
  *    while the browser's today is FIXED_NOW;
  *  - a group's invite link expiry ("Expires 27 Oct 2026."): the seed
- *    dates it a week after the seeding. */
+ *    dates it a week after the seeding;
+ *  - a TfL arrival's expected time ("Expected 10:02"): the TfL stub
+ *    answers relative to the server's clock. */
 function volatile(page: Page) {
   return [
     page.getByText(/\b(updated|last updated|fetched)\b.*\d/i),
@@ -132,6 +139,9 @@ function volatile(page: Page) {
     // The group's invite link expiry: the seed sets it a week after seeding.
     page.getByText(/^Expires \d{1,2} [A-Z][a-z]{2,3} \d{4}\.$/),
     page.locator('.mantine-DatePickerInput-input, .mantine-TimeInput-input, input[type="date"], input[type="time"]'),
+    // A TfL arrival's expected time and where the train is: the stub sets
+    // them from the server's clock.
+    page.locator('[data-arrival-details]'),
   ];
 }
 

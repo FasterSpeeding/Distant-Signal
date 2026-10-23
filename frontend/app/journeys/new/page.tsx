@@ -2,7 +2,10 @@ import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
-import { getTrainSearchDates } from '@/lib/api';
+import type { UntrackedLegOrigin } from '@/components/UntrackedLegStartForm';
+import { getTflStop, getTrainSearchDates } from '@/lib/api';
+import { JOURNEY_FROM_TFL_STOP_PARAM, TFL_STOP_ID } from '@/lib/tflStops';
+import type { TransitMode } from '@/lib/types';
 import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -74,11 +77,31 @@ const METADATA_DESCRIPTION = 'Track a journey of one or more trains, from start 
 
 export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
-export default async function JourneysNewPage() {
+/** The TfL stop `?fromTflStop=` names (a stop page's "Add as a journey
+ * leg"), as the untracked form's starting point: its first mode and its
+ * name. `null` for no stop, a malformed ID or one the api doesn't know,
+ * which leaves the page as it always opens. */
+async function untrackedOriginFrom(raw: string | string[] | undefined): Promise<UntrackedLegOrigin | null> {
+  const id = Array.isArray(raw) ? raw[0] : raw;
+  if (!id || !TFL_STOP_ID.test(id)) return null;
+  const stop = await getTflStop(id).catch(() => null);
+  if (!stop) return null;
+  const mode: TransitMode = (['tube', 'dlr', 'tram'] as const).find((m) => stop.modes.includes(m)) ?? 'tube';
+  return { stopId: stop.id, name: stop.name, mode };
+}
+
+export default async function JourneysNewPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+} = {}) {
   // The planner's date picker ends where the timetable search does
   // (`getTrainSearchDates`, cached for a few minutes), as on `/plan`. A
   // failure leaves `null`, and the picker falls back to a week ahead.
-  const searchDates = await getTrainSearchDates().catch(() => null);
+  const [searchDates, untrackedOrigin] = await Promise.all([
+    getTrainSearchDates().catch(() => null),
+    searchParams?.then((params) => untrackedOriginFrom(params[JOURNEY_FROM_TFL_STOP_PARAM])) ?? null,
+  ]);
 
   return (
     <Stack p="lg" gap="md">
@@ -95,7 +118,7 @@ export default async function JourneysNewPage() {
         </TextLink>{' '}
         (no account needed).
       </Text>
-      <JourneyCreationFlow planSearchDates={searchDates} />
+      <JourneyCreationFlow planSearchDates={searchDates} untrackedOrigin={untrackedOrigin} />
     </Stack>
   );
 }

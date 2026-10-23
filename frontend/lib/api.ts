@@ -68,6 +68,8 @@ import type {
   TransitStopDetail,
   TransitBoard,
   TransitLineTimetable,
+  TflStopArrivals,
+  TflStopDetail,
 } from './types';
 import { createLogger } from './logger';
 import { lineTimetableQuery } from './lineTrains';
@@ -1327,4 +1329,24 @@ export async function getConnectedAppNotice(init?: Pick<RequestInit, 'signal'>):
   } catch {
     return null;
   }
+}
+
+/** `GET /public/tfl/stops/{id}`: a TfL Tube, DLR or tram stop, its lines
+ * and the National Rail stations at it. `ApiNotFoundError` for an unknown
+ * stop. Stop data changes daily at most, so it is cached for a few
+ * minutes. */
+export async function getTflStop(id: string): Promise<TflStopDetail> {
+  return fetchJson<TflStopDetail>(`${baseUrl()}/public/tfl/stops/${encodeURIComponent(id)}`, {
+    next: { revalidate: 300 },
+  });
+}
+
+/** `GET /public/tfl/stops/{id}/arrivals`: TfL's live predictions, by line
+ * and platform. Live, so never cached here (the api keeps each stop's
+ * answer for about 30 s); `ApiUnavailableError` when TfL can't be
+ * reached. */
+export async function getTflStopArrivals(id: string): Promise<TflStopArrivals> {
+  return fetchJson<TflStopArrivals>(`${baseUrl()}/public/tfl/stops/${encodeURIComponent(id)}/arrivals`, {
+    cache: 'no-store',
+  });
 }

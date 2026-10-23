@@ -246,7 +246,7 @@ export const DATA_SOURCES: readonly DataSource[] = [
   {
     id: 'tfl',
     title: 'Transport for London',
-    use: 'Transport for London line status, and the Tube, DLR and tram stops offered when you add a leg we do not track.',
+    use: 'Transport for London line status, live arrivals at Tube, DLR and tram stops, and the stops offered when you add a leg we do not track.',
     statement: TFL_STOPS_ATTRIBUTION,
     licence: (
       <>

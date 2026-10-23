@@ -23,7 +23,9 @@
 //! - login: `/public/auth/login` and `/public/auth/callback` (each login
 //!   writes an `oidc_login_state` row and sweeps expired ones);
 //! - `/Trips/plan` (the most expensive anonymous read);
-//! - `/Train/by-uid/*` (anonymous, and a cache miss runs schedule matching);
+//! - `/Train/by-uid/*` (anonymous, and a cache miss runs schedule matching),
+//!   and `/public/tfl/stops/{id}/arrivals` in the same budget (a cache miss
+//!   calls `TfL`);
 //! - every other public write (non-GET/HEAD/OPTIONS), with a generous
 //!   default, as a backstop for anonymous write amplification.
 //!
@@ -211,13 +213,22 @@ pub fn classify(method: &Method, path: &str) -> Option<LimitClass> {
     if path == "/Trips/plan" || is_journey_replan(path) {
         return Some(LimitClass::TripPlan);
     }
-    if path.starts_with("/Train/by-uid/") {
+    if path.starts_with("/Train/by-uid/") || is_tfl_arrivals(path) {
         return Some(LimitClass::TrainByUid);
     }
     if !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return Some(LimitClass::PublicWrite);
     }
     None
+}
+
+/// `GET /public/tfl/stops/{id}/arrivals` (DS-136): a cache miss calls
+/// `TfL`, so it shares the `/Train/by-uid/*` budget, which is sized for an
+/// anonymous page that refreshes itself.
+fn is_tfl_arrivals(path: &str) -> bool {
+    path.strip_prefix("/public/tfl/stops/")
+        .and_then(|rest| rest.strip_suffix("/arrivals"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
 /// A mid-journey route that runs the planner (spec 2026-10-22 §7): the
@@ -1331,6 +1342,15 @@ mod tests {
             Some(LimitClass::PublicWrite)
         );
         assert_eq!(classify(&Method::GET, "/public/lines"), None);
+        assert_eq!(
+            classify(&Method::GET, "/public/tfl/stops/940GZZLURSQ/arrivals"),
+            Some(LimitClass::TrainByUid)
+        );
+        assert_eq!(
+            classify(&Method::GET, "/public/tfl/stops/940GZZLURSQ"),
+            None
+        );
+        assert_eq!(classify(&Method::GET, "/public/tfl/stops//arrivals"), None);
         assert_eq!(
             classify(&Method::GET, "/Line/Mode/national-rail/Status"),
             None

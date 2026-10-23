@@ -3,6 +3,34 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: a TfL stop and its live arrivals
+
+Additive: two new public, unauthenticated routes for the web app's
+`/tfl/stops/{id}` page. Nothing existing changes. DS-MCP needs no change
+(it may use them).
+
+- **New: `GET /public/tfl/stops/{id}`**, one Tube, DLR or tram stop by its
+  `NaPTAN` id (`940GZZLURSQ`): `{id, name, modes, lines: [{id, name}],
+  railStations: [{crs, name}]}`. `railStations` are the National Rail
+  stations at the stop, best first (the same mapping as
+  `GET /public/tfl/stops/rail-crs`; `name` is `null` for a station with no
+  reference row), often `[]`. `404` for an id that is not a stop.
+- **New: `GET /public/tfl/stops/{id}/arrivals`**, `TfL`'s live predictions
+  for the stop: `{stopId, fetchedAt, groups: [{lineId, lineName,
+  platformName, direction?, arrivals: [{id, destination, expectedArrival,
+  timeToStationSecs, currentLocation?}]}]}`. Groups are by line, then
+  platform (`Westbound - Platform 1`; `platformName` may be `""`), ordered
+  by line name then platform; arrivals soonest first, at most 8 per group.
+  `timeToStationSecs` is counted from the response, never negative;
+  `destination` is the cleaned destination name (`Cockfosters`), else
+  `TfL`'s `towards`. `fetchedAt` is when `TfL` was asked: the api caches
+  each stop's answer for about 30 s. `404` for an id that is not a stop.
+  `503` `{"error":"tfl_unavailable","retryable":true,"message":...}` (with
+  `Retry-After`) when `TfL` cannot be reached, answers with an error, or the
+  feature is off; `message` is fit to show a user.
+- The arrivals route shares the `/Train/by-uid/*` rate limit (by default
+  120 a minute, burst 60, per client; `API_RATE_LIMIT_TRAIN_BY_UID_*`).
+
 ## 2026-10-23: `reliesOnLateDeparture` on changes made only by a late train
 
 Additive; no field is removed or changes meaning. DS-MCP needs no change,
