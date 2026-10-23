@@ -125,7 +125,7 @@ export function useDeparturePicker(
  *
  * That is worse here than in the two list pages with the same defect
  * (`IncidentSearchForm.tsx`, since fixed, and `TrainSearchForm.tsx`):
- * these rows are `role="button"` pickers, not text. A row is ~30px of
+ * these rows are pickers (each a button), not text. A row is ~30px of
  * pitch (a `size="sm"` line -- 14px at Mantine's `--mantine-line-height-
  * sm: 1.45`, so ~20px -- plus the `Stack`'s 10px `xs` gap), so the 220px
  * cap landed after about seven of them, and every row past that was
@@ -228,7 +228,7 @@ export function DeparturePicker({
     return (
       // Deliberately NOT wrapped in a `ScrollArea` -- see
       // `DeparturePicker`'s own doc comment for the full reasoning. This
-      // branch's rows are `role="button"` pickers, so the clipping this
+      // branch's rows are pickers (each a button), so the clipping this
       // used to cause made them literally unselectable.
       //
       // Rows render via the shared `ScheduleRow` component (not
@@ -283,7 +283,7 @@ export function DeparturePicker({
       ) : (
         // Deliberately NOT wrapped in a `ScrollArea` -- see
         // `DeparturePicker`'s own doc comment, and the LDBWS branch's own
-        // copy of this note. Same `role="button"` rows, same defect.
+        // copy of this note. Same picker rows, same defect.
         <Stack gap="xs" data-departure-picker-rows>
           {filtered.map((row) => (
             <ClickableCard key={row.uid} padding="xs">
@@ -313,17 +313,12 @@ export function DeparturePicker({
                   so that branch has nothing honest to link this action
                   to and doesn't render it).
 
-                  `stopPropagation` on BOTH handlers, not just `onClick`:
-                  this link sits inside the row's own `role="button"`
-                  `onClick`/`onKeyDown`, so without it, either activation
-                  path would ALSO select the row for tracking --
-                  a plain click bubbles up to the row's `onClick`, and an
-                  Enter/Space keydown on the focused link bubbles up to
-                  the row's `onKeyDown` before the browser's own
-                  synthesized click on the anchor even fires. The link
-                  keeps its own native Enter-to-follow behaviour and
-                  remains a normal, independently tab-reachable focus
-                  stop -- only the *bubbling into the row* is stopped.
+                  The row is a `ClickableCard` whose target is the
+                  picking button, stretched over the row; this link is a
+                  sibling of that button, not inside it, and is lifted
+                  above the stretched area, so a click or Enter on it
+                  follows the link and never picks the row. It is its own
+                  tab stop.
 
                   The linked date is the row's own `serviceDate`, with no `row.dayOffset` added: the public train
                   page is keyed by `(train_uid, service_date)`, the CIF
