@@ -2,9 +2,11 @@
 //! `schedule_query::InterchangeData` -- Connection Scan (`csa`, Phase 3)
 //! and RAPTOR (`raptor`, Phase 4), plus the differential test asserting
 //! they agree; arrive-by (`reverse`), waypoints (`staged`), avoid lists
-//! (`restrictions`) and pass-through vias (`via`). See
+//! (`restrictions`), pass-through vias (`via`) and
+//! virtual access stops for ends with no train of their own (`access`). See
 //! docs/superpowers/specs/2026-09-22-dynamic-trip-planning-design.md §1.
 
+pub mod access;
 pub mod csa;
 pub mod overlay;
 pub mod raptor;
@@ -13,6 +15,7 @@ pub mod reverse;
 pub mod staged;
 pub mod via;
 
+pub use access::{AccessEnd, AccessLink, with_access};
 pub use csa::{
     Journey, JourneyLeg, ScanOptions, TrainLeg, TransferLeg, scan_connections,
     scan_connections_restricted, scan_connections_with_overlay,
