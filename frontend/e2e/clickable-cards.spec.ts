@@ -67,11 +67,18 @@ test.describe('clickable cards', () => {
       await page.goto(path);
       const cards = page.locator('[data-clickable-card]');
       await expect(cards.first()).toBeVisible();
-      for (const card of await cards.all()) {
-        const targets = card.locator('[data-card-primary]');
-        await expect(targets).toHaveCount(1);
-        expect(['A', 'BUTTON', 'INPUT']).toContain(await targets.evaluate((el) => el.tagName));
-        expect(await card.evaluate((el) => getComputedStyle(el).cursor)).toBe('pointer');
+      // One snapshot of every card, so a list that re-renders (the page
+      // refreshes itself) can't shift the cards between checks.
+      const found = await cards.evaluateAll((all) =>
+        all.map((card) => ({
+          targets: [...card.querySelectorAll('[data-card-primary]')].map((el) => el.tagName),
+          cursor: getComputedStyle(card).cursor,
+        })),
+      );
+      for (const card of found) {
+        expect(card.targets).toHaveLength(1);
+        expect(['A', 'BUTTON', 'INPUT']).toContain(card.targets[0]);
+        expect(card.cursor).toBe('pointer');
       }
       // Card markup only: the full-page sweep is e2e/accessibility.spec.ts.
       const results = await new AxeBuilder({ page }).include('[data-clickable-card]').analyze();
