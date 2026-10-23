@@ -426,16 +426,21 @@ pub(crate) async fn run_break_notice_cycle(
             severity = row.severity,
             "journey break notice"
         );
-        queue.enqueue(crate::push_queue::PushJob {
-            user_id: row.user_id.clone(),
-            payload: build_break_payload(&row),
-            delivered: crate::push_queue::Delivered::JourneyBreak {
-                break_id: row.id,
-                severity: row.severity,
-                trigger,
+        crate::hold::dispatch(
+            pool,
+            queue,
+            crate::push_queue::PushJob {
+                user_id: row.user_id.clone(),
+                payload: build_break_payload(&row),
+                delivered: crate::push_queue::Delivered::JourneyBreak {
+                    break_id: row.id,
+                    severity: row.severity,
+                    trigger,
+                },
+                decided_at: now,
             },
-            decided_at: now,
-        });
+        )
+        .await?;
     }
     Ok(())
 }

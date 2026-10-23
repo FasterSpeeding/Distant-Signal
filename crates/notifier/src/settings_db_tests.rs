@@ -53,9 +53,9 @@ async fn cleanup(pool: &PgPool, user: &str, uid: &str) -> ds_store::test_support
 
 /// One user with a one-leg journey on a train of their own.
 struct Fixture {
-    trains_id: i64,
-    subscription_id: i64,
-    journey_leg_id: i64,
+    train: i64,
+    subscription: i64,
+    leg: i64,
 }
 
 async fn seed(pool: &PgPool, user: &str, uid: &str) -> Fixture {
@@ -104,9 +104,9 @@ async fn seed(pool: &PgPool, user: &str, uid: &str) -> Fixture {
     .await
     .expect("seed leg");
     Fixture {
-        trains_id,
-        subscription_id,
-        journey_leg_id,
+        train: trains_id,
+        subscription: subscription_id,
+        leg: journey_leg_id,
     }
 }
 
@@ -127,26 +127,18 @@ async fn a_train_with_its_pushes_off_gets_no_skipped_stop_check() {
     let pool = connect().await;
     let _cleanup = cleanup(&pool, USER, UID).await;
     let fixture = seed(&pool, USER, UID).await;
-    assert!(
-        skip_checked_legs(&pool)
-            .await
-            .contains(&fixture.journey_leg_id)
-    );
+    assert!(skip_checked_legs(&pool).await.contains(&fixture.leg));
 
     exec(
         &pool,
         &format!(
             "UPDATE train_subscriptions SET notifications_enabled = FALSE WHERE id = {}",
-            fixture.subscription_id
+            fixture.subscription
         ),
     )
     .await;
-    assert!(
-        !skip_checked_legs(&pool)
-            .await
-            .contains(&fixture.journey_leg_id)
-    );
-    assert!(fixture.trains_id > 0);
+    assert!(!skip_checked_legs(&pool).await.contains(&fixture.leg));
+    assert!(fixture.train > 0);
 }
 
 /// Replaces `user`'s `notification_preferences` row with `columns` =
@@ -201,44 +193,28 @@ async fn the_delay_and_cancel_switches_and_the_users_threshold_gate_train_pushes
     let fixture = seed(&pool, USER, UID).await;
 
     // 20 minutes late, no settings row: today's behaviour, a delay push.
-    set_train_state(&pool, fixture.trains_id, "en_route", 20).await;
-    assert_eq!(train_candidate_ranks(&pool, fixture.trains_id).await, [1]);
+    set_train_state(&pool, fixture.train, "en_route", 20).await;
+    assert_eq!(train_candidate_ranks(&pool, fixture.train).await, [1]);
 
     // Delays off.
     set_prefs(&pool, USER, "train_delay", "FALSE").await;
-    assert!(
-        train_candidate_ranks(&pool, fixture.trains_id)
-            .await
-            .is_empty()
-    );
+    assert!(train_candidate_ranks(&pool, fixture.train).await.is_empty());
 
     // The user's own threshold replaces the default: 30 holds a 20-minute
     // delay back, 10 lets a 12-minute one through that 15 would not.
     set_prefs(&pool, USER, "delay_threshold_minutes", "30").await;
-    assert!(
-        train_candidate_ranks(&pool, fixture.trains_id)
-            .await
-            .is_empty()
-    );
-    set_train_state(&pool, fixture.trains_id, "en_route", 12).await;
-    assert!(
-        train_candidate_ranks(&pool, fixture.trains_id)
-            .await
-            .is_empty()
-    );
+    assert!(train_candidate_ranks(&pool, fixture.train).await.is_empty());
+    set_train_state(&pool, fixture.train, "en_route", 12).await;
+    assert!(train_candidate_ranks(&pool, fixture.train).await.is_empty());
     set_prefs(&pool, USER, "delay_threshold_minutes", "10").await;
-    assert_eq!(train_candidate_ranks(&pool, fixture.trains_id).await, [1]);
+    assert_eq!(train_candidate_ranks(&pool, fixture.train).await, [1]);
 
     // Cancellations off: no cancel push, whatever the delay switch says.
-    set_train_state(&pool, fixture.trains_id, "cancelled", 0).await;
+    set_train_state(&pool, fixture.train, "cancelled", 0).await;
     set_prefs(&pool, USER, "train_cancel", "FALSE").await;
-    assert!(
-        train_candidate_ranks(&pool, fixture.trains_id)
-            .await
-            .is_empty()
-    );
+    assert!(train_candidate_ranks(&pool, fixture.train).await.is_empty());
     set_prefs(&pool, USER, "train_delay, train_cancel", "FALSE, TRUE").await;
-    assert_eq!(train_candidate_ranks(&pool, fixture.trains_id).await, [2]);
+    assert_eq!(train_candidate_ranks(&pool, fixture.train).await, [2]);
 }
 
 #[tokio::test]
@@ -251,17 +227,11 @@ async fn skipped_stop_pushes_respect_the_station_skip_switch() {
     let fixture = seed(&pool, USER, UID).await;
     set_prefs(&pool, USER, "train_delay", "FALSE").await;
     assert!(
-        skip_checked_legs(&pool)
-            .await
-            .contains(&fixture.journey_leg_id),
+        skip_checked_legs(&pool).await.contains(&fixture.leg),
         "another switch off leaves skipped stops on"
     );
     set_prefs(&pool, USER, "station_skip", "FALSE").await;
-    assert!(
-        !skip_checked_legs(&pool)
-            .await
-            .contains(&fixture.journey_leg_id)
-    );
+    assert!(!skip_checked_legs(&pool).await.contains(&fixture.leg));
 }
 
 #[tokio::test]
@@ -399,7 +369,7 @@ async fn predicted_late_starts_respect_their_switch_and_the_users_threshold() {
             .await
             .expect("predicted_start_candidates")
             .into_iter()
-            .filter(|candidate| candidate.tracked_train_id == fixture.subscription_id)
+            .filter(|candidate| candidate.tracked_train_id == fixture.subscription)
             .count()
     };
     assert_eq!(candidates().await, 1);
@@ -409,4 +379,255 @@ async fn predicted_late_starts_respect_their_switch_and_the_users_threshold() {
     assert_eq!(candidates().await, 0, "15 late is under the user's 30");
     set_prefs(&pool, USER, "delay_threshold_minutes", "10").await;
     assert_eq!(candidates().await, 1);
+}
+
+/// Quiet hours from an hour before `now` to an hour after it, in UTC.
+async fn quiet_around(pool: &PgPool, user: &str, now: chrono::DateTime<chrono::Utc>) {
+    let start = (now - chrono::Duration::hours(1)).format("%H:%M:%S");
+    let end = (now + chrono::Duration::hours(1)).format("%H:%M:%S");
+    set_prefs(
+        pool,
+        user,
+        "quiet_hours_start, quiet_hours_end, quiet_hours_timezone",
+        &format!("'{start}', '{end}', 'UTC'"),
+    )
+    .await;
+}
+
+/// The holds `user` has: (target, train status, delay).
+async fn holds(pool: &PgPool, user: &str) -> Vec<(String, Option<String>, Option<i32>)> {
+    sqlx::query_as(
+        "SELECT target, train_status, train_delay_minutes FROM notification_holds \
+         WHERE user_id = $1 ORDER BY target",
+    )
+    .bind(user)
+    .fetch_all(pool)
+    .await
+    .expect("read holds")
+}
+
+/// What the last delivered train push recorded: (status, delay).
+async fn delivered_train_state(pool: &PgPool, user: &str) -> Option<(String, Option<i32>)> {
+    sqlx::query_as(
+        "SELECT last_notified_status, last_notified_delay_minutes \
+         FROM train_notification_state WHERE user_id = $1",
+    )
+    .bind(user)
+    .fetch_optional(pool)
+    .await
+    .expect("read train_notification_state")
+}
+
+/// Decides `trains_id`'s train pushes at `now` as the cycles do, and waits
+/// for whatever reached the queue (no push subscription: delivered).
+async fn decide_train(pool: &PgPool, trains_id: i64, now: chrono::DateTime<chrono::Utc>) {
+    let queue = crate::drain_support::test_queue(pool);
+    let candidates = queries::candidates_for_trains_id(pool, trains_id, 15)
+        .await
+        .expect("candidates");
+    crate::notify_train_candidates(pool, &queue, &candidates, now)
+        .await
+        .expect("notify_train_candidates");
+    crate::drain_support::drain(queue).await;
+}
+
+async fn release(pool: &PgPool, now: chrono::DateTime<chrono::Utc>) {
+    let queue = crate::drain_support::test_queue(pool);
+    crate::hold::run_release_cycle(pool, &queue, now, 15)
+        .await
+        .expect("run_release_cycle");
+    crate::drain_support::drain(queue).await;
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn quiet_hours_hold_a_delay_and_release_only_its_latest_state() {
+    const USER: &str = "TEST-NOTIFSET-QUIET-HOLD";
+    const UID: &str = "TEST-NOTIFSET-QUIET1";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, USER, UID).await;
+    let fixture = seed(&pool, USER, UID).await;
+    let now = chrono::Utc::now();
+    quiet_around(&pool, USER, now).await;
+    let target = format!("train:{}", fixture.subscription);
+
+    // Late twice during quiet hours: one hold, with the later delay.
+    set_train_state(&pool, fixture.train, "en_route", 20).await;
+    decide_train(&pool, fixture.train, now).await;
+    set_train_state(&pool, fixture.train, "en_route", 25).await;
+    decide_train(&pool, fixture.train, now).await;
+    assert_eq!(
+        holds(&pool, USER).await,
+        [(target.clone(), Some("en_route".to_string()), Some(25))]
+    );
+    assert_eq!(
+        delivered_train_state(&pool, USER).await,
+        None,
+        "nothing sent yet"
+    );
+
+    // Still quiet: kept.
+    release(&pool, now + chrono::Duration::minutes(30)).await;
+    assert_eq!(holds(&pool, USER).await.len(), 1);
+    assert_eq!(delivered_train_state(&pool, USER).await, None);
+
+    // Quiet hours over: the latest state goes, once.
+    release(&pool, now + chrono::Duration::hours(2)).await;
+    assert!(holds(&pool, USER).await.is_empty());
+    assert_eq!(
+        delivered_train_state(&pool, USER).await,
+        Some(("en_route".to_string(), Some(25)))
+    );
+    // And the escalation rule still holds afterwards: the same lateness
+    // decides nothing new.
+    decide_train(&pool, fixture.train, now + chrono::Duration::hours(2)).await;
+    assert!(holds(&pool, USER).await.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn a_cancellation_goes_through_quiet_hours_and_outranks_the_held_delay() {
+    const USER: &str = "TEST-NOTIFSET-QUIET-CANCEL";
+    const UID: &str = "TEST-NOTIFSET-QUIET2";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, USER, UID).await;
+    let fixture = seed(&pool, USER, UID).await;
+    let now = chrono::Utc::now();
+    quiet_around(&pool, USER, now).await;
+
+    set_train_state(&pool, fixture.train, "en_route", 20).await;
+    decide_train(&pool, fixture.train, now).await;
+    assert_eq!(holds(&pool, USER).await.len(), 1);
+
+    set_train_state(&pool, fixture.train, "cancelled", 20).await;
+    decide_train(&pool, fixture.train, now).await;
+    assert_eq!(
+        delivered_train_state(&pool, USER).await,
+        Some(("cancelled".to_string(), Some(20))),
+        "the cancellation is sent in quiet hours"
+    );
+    assert!(
+        holds(&pool, USER).await.is_empty(),
+        "and replaces the held delay"
+    );
+    release(&pool, now + chrono::Duration::hours(2)).await;
+    assert_eq!(
+        delivered_train_state(&pool, USER).await,
+        Some(("cancelled".to_string(), Some(20)))
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn a_held_push_that_is_no_longer_news_is_dropped_unsent() {
+    const USER: &str = "TEST-NOTIFSET-QUIET-STALE";
+    const UID: &str = "TEST-NOTIFSET-QUIET3";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, USER, UID).await;
+    let fixture = seed(&pool, USER, UID).await;
+    let now = chrono::Utc::now();
+    quiet_around(&pool, USER, now).await;
+
+    set_train_state(&pool, fixture.train, "en_route", 20).await;
+    decide_train(&pool, fixture.train, now).await;
+    assert_eq!(holds(&pool, USER).await.len(), 1);
+    // The train finished before quiet hours ended.
+    set_train_state(&pool, fixture.train, "completed", 20).await;
+    release(&pool, now + chrono::Duration::hours(2)).await;
+    assert!(holds(&pool, USER).await.is_empty());
+    assert_eq!(delivered_train_state(&pool, USER).await, None);
+
+    // Held again, then the user turns the train's pushes off.
+    set_train_state(&pool, fixture.train, "en_route", 30).await;
+    decide_train(&pool, fixture.train, now).await;
+    assert_eq!(holds(&pool, USER).await.len(), 1);
+    exec(
+        &pool,
+        &format!(
+            "UPDATE train_subscriptions SET notifications_enabled = FALSE WHERE id = {}",
+            fixture.subscription
+        ),
+    )
+    .await;
+    release(&pool, now + chrono::Duration::hours(2)).await;
+    assert!(holds(&pool, USER).await.is_empty());
+    assert_eq!(delivered_train_state(&pool, USER).await, None);
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL (a migrated database)"]
+async fn quiet_hours_hold_a_line_push_and_skip_full_poll_pushes_until_they_end() {
+    use crate::push_queue::{Delivered, PushJob};
+    use crate::send::NotificationPayload;
+
+    const USER: &str = "TEST-NOTIFSET-QUIET-LINE";
+    const UID: &str = "TEST-NOTIFSET-QUIET4";
+    const LINE: &str = "test-notifset-quiet-line";
+    let pool = connect().await;
+    let _cleanup = cleanup(&pool, USER, UID).await;
+    let fixture = seed(&pool, USER, UID).await;
+    exec(
+        &pool,
+        &format!("INSERT INTO pinned_lines (user_id, line_id) VALUES ('{USER}', '{LINE}')"),
+    )
+    .await;
+    let now = chrono::Utc::now();
+    quiet_around(&pool, USER, now).await;
+    let payload = || NotificationPayload {
+        title: "t".to_string(),
+        body: "b".to_string(),
+        url: "/u".to_string(),
+        tag: "x".to_string(),
+    };
+
+    let queue = crate::drain_support::test_queue(&pool);
+    for delivered in [
+        Delivered::Line {
+            line_id: LINE.to_string(),
+            rank: 2,
+        },
+        Delivered::SkippedStop {
+            journey_leg_id: fixture.leg,
+        },
+    ] {
+        crate::hold::dispatch(
+            &pool,
+            &queue,
+            PushJob {
+                user_id: USER.to_string(),
+                payload: payload(),
+                delivered,
+                decided_at: now,
+            },
+        )
+        .await
+        .expect("dispatch");
+    }
+    crate::drain_support::drain(queue).await;
+    assert_eq!(
+        holds(&pool, USER).await,
+        [(format!("line:{LINE}"), None, None)],
+        "the line push is held; the skipped stop is not kept (its cycle decides it again)"
+    );
+    let skip_state: Option<bool> = sqlx::query_scalar(
+        "SELECT last_notified_skipped FROM journey_leg_notification_state WHERE user_id = $1",
+    )
+    .bind(USER)
+    .fetch_optional(&pool)
+    .await
+    .expect("read skip state");
+    assert_eq!(skip_state, None, "nothing was sent for the skipped stop");
+
+    release(&pool, now + chrono::Duration::hours(2)).await;
+    let line_rank: Option<i16> = sqlx::query_scalar(
+        "SELECT last_notified_severity_rank FROM line_notification_state \
+         WHERE user_id = $1 AND line_id = $2",
+    )
+    .bind(USER)
+    .bind(LINE)
+    .fetch_optional(&pool)
+    .await
+    .expect("read line state");
+    assert_eq!(line_rank, Some(2));
+    assert!(holds(&pool, USER).await.is_empty());
 }
