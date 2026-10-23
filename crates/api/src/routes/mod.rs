@@ -17,6 +17,12 @@ pub mod health;
 pub mod history_retention;
 pub mod incidents;
 pub mod island_of_ireland;
+#[cfg(test)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test code: scenario tests read top to bottom"
+)]
+mod journey_follows_db_tests;
 pub mod journey_itinerary;
 pub mod journey_replan;
 pub mod journey_templates;

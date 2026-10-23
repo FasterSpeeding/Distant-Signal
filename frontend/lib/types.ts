@@ -1283,6 +1283,24 @@ export interface JourneyListItem extends UntrackedLegFields, TrackingPhaseFields
   /** The journey's open break (mid-journey changes spec 2026-10-22 §7),
    * `null` with none. Optional: absent from an older backend. */
   openBreakId?: number | null;
+  /** Set on a journey the caller follows rather than owns (DS-146, only
+   * with `include=followed`): who shared it and how. Such a row is
+   * read-only. */
+  followedFrom?: FollowedFrom;
+}
+
+/** Who shared a followed journey, and how (`crates/api/src/data/
+ * journey_follows.rs::FollowedFrom`, DS-146). A link shows nothing about
+ * its owner, so a link follow has no owner or group. */
+export interface FollowedFrom {
+  via: 'group' | 'link';
+  /** The owner's display name, by the member label rules
+   * (`lib/memberLabel.ts`); `null` for a link or with no name on file. */
+  ownerName: string | null;
+  ownerTag: string | null;
+  groupId: string | null;
+  groupName: string | null;
+  followedAt: string;
 }
 
 /** `GET /Journeys/{id}`'s per-leg `legSkip` field
@@ -1387,6 +1405,11 @@ export interface JourneyDetail {
   revisionCount?: number;
   /** Whether the owner muted suggestions for this journey (owner only). */
   suggestionsMuted?: boolean;
+  /** Set when the caller follows this journey (DS-146). */
+  followedFrom?: FollowedFrom;
+  /** Whether the caller can follow it through a group it is shared into
+   * (DS-146): a non-owner who doesn't follow it yet. */
+  canFollow?: boolean;
 }
 
 /* Mid-journey changes (docs/superpowers/specs/2026-10-22-mid-journey-changes-design.md
@@ -2580,6 +2603,9 @@ export interface GroupJourney extends ServiceModeFields, TrackingPhaseFields, Om
   addedByName: string | null;
   /** Same contract as `GroupMember.displayTag`, for the sharer. */
   addedByTag: string | null;
+  /** Whether the caller follows this journey (DS-146). Optional: absent
+   * from an older backend. */
+  following?: boolean;
 }
 
 /** `GET /public/groups/shared-journeys`'s per-item shape

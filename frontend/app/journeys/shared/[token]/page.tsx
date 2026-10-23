@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import type { Metadata } from 'next';
 import { getJourney, getJourneyByShareToken, ApiNotFoundError, ApiUnauthorizedError } from '@/lib/api';
 import { JourneyDetailView } from '@/components/JourneyDetailView';
+import { FollowJourneyButton } from '@/components/FollowJourneyButton';
 import { getSiteOrigin } from '@/lib/siteOrigin';
 import { formatDate } from '@/lib/dateFormat';
 import { journeyDefaultName, journeyNameInputFromLegs } from '@/lib/journeyName';
@@ -195,6 +196,10 @@ export default async function SharedJourneyPage({ params }: { params: Promise<{ 
   // into the journey. Success means they're the owner or a member of a
   // group it's shared to (`journey_readable_by`, unchanged) -- send them to
   // the real page, never a second, degraded rendering of the same data.
+  // A logged-in visitor who can't open it otherwise (the probe's 404) can
+  // follow it with the link's token (DS-146), and is then sent to the real
+  // page; a logged-out one (401) is not offered it.
+  let loggedIn = false;
   try {
     await getJourney(journey.id);
     redirect(`/journeys/${journey.id}`);
@@ -202,6 +207,7 @@ export default async function SharedJourneyPage({ params }: { params: Promise<{ 
     if (!(err instanceof ApiNotFoundError) && !(err instanceof ApiUnauthorizedError)) {
       throw err;
     }
+    loggedIn = err instanceof ApiNotFoundError;
     // Falls through: this viewer is relying on the token itself, either
     // because they aren't logged in at all (`ApiUnauthorizedError`) or
     // because they're logged in but neither own this journey nor belong to
@@ -229,6 +235,14 @@ export default async function SharedJourneyPage({ params }: { params: Promise<{ 
       <Text size="xs" c="dimmed">
         You&apos;re viewing this journey via a shared link.
       </Text>
+      {loggedIn && (
+        <FollowJourneyButton
+          journeyId={journey.id}
+          following={false}
+          shareToken={token}
+          afterFollowHref={`/journeys/${journey.id}`}
+        />
+      )}
       <JourneyDetailView journey={journey} fetchedAt={fetchedAt} origin={origin} />
     </Stack>
   );

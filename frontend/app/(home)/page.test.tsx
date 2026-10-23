@@ -1336,6 +1336,48 @@ describe('DashboardPage -- journey sections', () => {
     ).toEqual([10, 11, 13]);
   });
 
+  it('lists followed journeys with their own: current and upcoming, saying whose they are', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    vi.mocked(api.getMyJourneys).mockClear();
+    const followedFrom = {
+      via: 'group',
+      ownerName: 'Olive',
+      ownerTag: null,
+      groupId: 'grp-1',
+      groupName: 'Family',
+      followedAt: '2026-09-16T08:00:00Z',
+    } as const;
+    // A followed journey's detail is a non-owner's read (DS-146).
+    const followedUnderWay = { ...underWay, isOwner: false, followedFrom };
+    vi.mocked(api.getMyJourneys).mockResolvedValue([
+      { ...journeyListItem(followedUnderWay), followedFrom },
+      journeyListItem(laterToday),
+      {
+        ...journeyListItem(nextWeek, undefined, { firstServiceDate: '2026-09-24', serviceDate: '2026-09-24' }),
+        followedFrom,
+      },
+    ]);
+    vi.mocked(api.getJourney).mockImplementation(async (id) => {
+      const detail = [followedUnderWay, laterToday].find((candidate) => candidate.id === id);
+      if (!detail) throw new Error(`no journey ${id}`);
+      return detail;
+    });
+    renderWithMantine(await DashboardPage());
+
+    expect(api.getMyJourneys).toHaveBeenCalledWith({ includeFollowed: true });
+    const current = screen.getByRole('region', { name: 'Current journey' });
+    const card = within(current).getByRole('link', { name: /Work trip/ });
+    expect(card).toHaveAttribute('href', '/journeys/10');
+    expect(within(card).getByText('Shared by Olive')).toBeInTheDocument();
+    const upcoming = screen.getByRole('region', { name: 'Upcoming journeys' });
+    const rows = within(upcoming)
+      .getAllByRole('link')
+      .filter((link) => link.getAttribute('href')?.match(/^\/journeys\/\d+$/));
+    expect(rows.map((link) => link.getAttribute('href'))).toEqual(['/journeys/11', '/journeys/12']);
+    expect(within(rows[0]!).queryByText(/Shared by/)).not.toBeInTheDocument();
+    expect(within(rows[1]!).getByText(/Shared by Olive/)).toBeInTheDocument();
+  });
+
   it('logged in with upcoming journeys only: no current section', async () => {
     vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
     mockJourneys([laterToday]);

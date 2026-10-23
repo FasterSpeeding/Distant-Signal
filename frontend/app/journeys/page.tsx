@@ -15,6 +15,8 @@ import { StateBadge } from '@/components/StateBadge';
 import { pageMetadata } from '@/lib/pageMetadata';
 import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
 import { TicketSummary } from '@/components/TicketSummary';
+import { FollowJourneyButton } from '@/components/FollowJourneyButton';
+import { followedFromLabel } from '@/lib/followedFrom';
 import { ReliabilityDigest } from '@/components/ReliabilityDigest';
 import { DelayRepayEstimate } from '@/components/DelayRepayEstimate';
 import { AttachTicketAction } from '@/components/AttachTicketAction';
@@ -127,7 +129,7 @@ export default async function JourneysPage() {
     getMyTrackedTrains(),
     getMyTickets(),
     getSharedGroupTrains().catch(() => null),
-    getMyJourneys().catch(() => null),
+    getMyJourneys({ includeFollowed: true }).catch(() => null),
     // Journeys other members shared into the caller's groups. Since
     // DS-124 a shared tracked train is its one-leg journey, so this is
     // where most shares now arrive; auxiliary like the shared trains.
@@ -412,6 +414,16 @@ function JourneyListRow({
             {preview}
           </Text>
         )}
+        {/* A journey the caller follows (DS-146): whose it is, and the way
+            to stop. It is read-only, and holds none of their tickets. */}
+        {journey.followedFrom && (
+          <Group gap="xs" wrap="wrap" justify="space-between">
+            <Text size="sm" c="dimmed">
+              {followedFromLabel(journey.followedFrom)}
+            </Text>
+            <FollowJourneyButton journeyId={journey.id} following />
+          </Group>
+        )}
         <AttachedTickets tickets={tickets} />
       </Stack>
     </Card>
@@ -673,6 +685,10 @@ function SharedJourneyListRow({ row, status }: { row: MergedSharedJourney; statu
             Shared by {memberLabel(journey.addedByName, journey.addedByTag, MEMBER_PLACEHOLDER_INLINE)}
           </Text>
         </Group>
+        {/* Following moves it in with the caller's own journeys (DS-146),
+            labelled with whose it is: a followed journey is never listed
+            here (`mergeSharedJourneys` drops the ids of `GET /Journeys/mine`). */}
+        <FollowJourneyButton journeyId={journey.journeyId} following={false} groupId={journey.groupId} />
       </Stack>
     </Card>
   );

@@ -2364,7 +2364,9 @@ pub struct JourneyListItem {
     pub created_at: DateTime<Utc>,
     /// `'web'`, or the delegated client that saved the journey (spec
     /// 2026-10-14 §5.8). A delegated client may delete only its own
-    /// (§5.5a), so its list needs this.
+    /// (§5.5a), so its list needs this. Absent on a followed journey's row:
+    /// how its owner saved it is not the follower's business.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub created_via: String,
     pub leg_id: i64,
     pub origin_crs: Option<String>,
@@ -2494,6 +2496,12 @@ pub struct JourneyListItem {
     /// `None` when it works. Additive, 2026-10-23.
     #[sqlx(skip)]
     pub open_break_id: Option<i64>,
+    /// Set on a journey the caller follows rather than owns (DS-146,
+    /// `include=followed` only): who shared it and how. Such a row is
+    /// read-only. Absent on the caller's own journeys.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followed_from: Option<crate::data::journey_follows::FollowedFrom>,
 }
 
 /// One journey's final arrival, for [`apply_public_delays`]: the last
@@ -2652,7 +2660,7 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
                  WHERE l.journey_id = j.id \
                  HAVING COUNT(*) > 0 \
              ) s \
-             WHERE j.user_id = $1 \
+             WHERE (j.user_id = $1 OR j.id = ANY($3)) \
          ), \
          candidates AS ( \
              SELECT k.*, RANK() OVER (ORDER BY {coarse_order}) AS coarse_rank \
@@ -2833,13 +2841,28 @@ static LIST_JOURNEYS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new
 /// cap's very edge it is kept or dropped by that date.) With 1,500
 /// journeys (seeded, EXPLAIN ANALYZE) the query takes about 30 ms against
 /// 5 ms for the old `created_at` order.
+///
+/// **Followed journeys (DS-146).** With `include_followed`, the journeys
+/// `user_id` follows (`journey_follows`, only while the share they came
+/// through still lets them in) are ordered and capped with their own, by
+/// the same rules, and carry `followed_from`. Their `created_via` and
+/// `train_subscription_id` (the owner's) are blanked: the follower sees
+/// what the share shows and no more.
 pub async fn list_journeys_for_user(
     pool: &PgPool,
     user_id: &str,
+    include_followed: bool,
 ) -> anyhow::Result<Vec<JourneyListItem>> {
+    let mut followed = if include_followed {
+        crate::data::journey_follows::valid_follows(pool, user_id, None).await?
+    } else {
+        std::collections::HashMap::new()
+    };
+    let followed_ids: Vec<i64> = followed.keys().copied().collect();
     let rows = sqlx::query_as::<_, JourneyListItem>(LIST_JOURNEYS_SQL.as_str())
         .bind(user_id)
         .bind(crate::data::train_tracking::MINE_LIST_LIMIT)
+        .bind(&followed_ids)
         .fetch_all(pool)
         .await?;
     let mut rows = rows;
@@ -2862,6 +2885,11 @@ pub async fn list_journeys_for_user(
     let open: std::collections::HashMap<i64, i64> = open.into_iter().collect();
     for row in &mut rows {
         row.open_break_id = open.get(&row.id).copied();
+        if let Some(from) = followed.remove(&row.id) {
+            row.followed_from = Some(from);
+            row.created_via.clear();
+            row.train_subscription_id = None;
+        }
     }
     Ok(rows)
 }
@@ -2903,7 +2931,9 @@ pub async fn get_journey_summary(
 /// Whether `user_id` may read journey `journey_id`'s full detail: either
 /// they own it outright, or it's been shared (`group_journeys`, see
 /// `crates/api/src/data/groups.rs`) into at least one group they're
-/// currently a member of. Mirrors `custom_lines::readable_custom_line_ids`'s
+/// currently a member of, or they follow it through a share link that is
+/// still live (`journey_follows`, DS-146: the link page's own read, kept
+/// for a logged-in follower so their journey list can open it). Mirrors `custom_lines::readable_custom_line_ids`'s
 /// "owned OR granted-into-a-group-I'm-in" shape (see
 /// docs/superpowers/specs/2026-09-12-custom-line-group-sharing-design.md
 /// §3.2) -- the closest existing precedent for widening a private
@@ -2931,14 +2961,19 @@ pub async fn journey_readable_by(
     journey_id: i64,
     user_id: &str,
 ) -> anyhow::Result<bool> {
-    let (readable,): (bool,) = sqlx::query_as(
+    let (readable,): (bool,) = sqlx::query_as(&format!(
         "SELECT EXISTS (SELECT 1 FROM journeys j WHERE j.id = $1 AND j.user_id = $2) \
          OR EXISTS ( \
              SELECT 1 FROM group_journeys gj \
              JOIN group_members gm ON gm.group_id = gj.group_id AND gm.user_id = $2 \
              WHERE gj.journey_id = $1 \
+         ) \
+         OR EXISTS ( \
+             SELECT 1 FROM journey_follows f \
+             WHERE f.journey_id = $1 AND f.user_id = $2 AND {valid} \
          )",
-    )
+        valid = crate::data::journey_follows::VALID_FOLLOW,
+    ))
     .bind(journey_id)
     .bind(user_id)
     .fetch_one(pool)
@@ -5790,7 +5825,7 @@ mod db_tests {
         .expect("insert leg 2");
 
         // Call list_journeys_for_user and verify that leg 2 is returned
-        let journeys = list_journeys_for_user(&pool, user_id)
+        let journeys = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list journeys");
 
@@ -5905,7 +5940,7 @@ mod db_tests {
         .expect("mark leg 2 as completed");
 
         // Now both legs are completed, should still show leg 2 (the last one)
-        let journeys = list_journeys_for_user(&pool, user_id)
+        let journeys = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list journeys after all legs completed");
 
@@ -6351,7 +6386,7 @@ mod db_tests {
         // No leg: never listed.
         let _legless = journey().await;
 
-        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id)
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list")
             .iter()
@@ -6441,7 +6476,7 @@ mod db_tests {
         .await
         .expect("seed arrival report");
 
-        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id)
+        let listed: Vec<i64> = list_journeys_for_user(&pool, user_id, false)
             .await
             .expect("list")
             .iter()
@@ -6504,7 +6539,9 @@ mod db_tests {
             .expect("seed state");
         }
 
-        let rows = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let rows = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         let row = rows.iter().find(|r| r.id == journey).expect("journey row");
         assert!(!row.travelled, "leg 2 is still running");
         assert_eq!(row.leg_count, 3);
@@ -6526,7 +6563,9 @@ mod db_tests {
             .execute(&pool)
             .await
             .expect("drop leg 3");
-        let rows = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let rows = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         let row = rows.iter().find(|r| r.id == journey).expect("journey row");
         assert_eq!(row.final_trains_id, Some(last_train));
         assert_eq!(row.final_working_delay_minutes, Some(0));
@@ -6608,7 +6647,9 @@ mod db_tests {
             .await
             .expect("seed leg-less journey");
 
-        let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let listed = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         assert_eq!(listed.len() as i64, limit, "capped");
         let got: Vec<i64> = listed.iter().map(|j| j.id).collect();
         // Upcoming soonest first (the last seeded is the soonest), then
@@ -6660,7 +6701,9 @@ mod db_tests {
         .await
         .expect("seed legs");
 
-        let listed = list_journeys_for_user(&pool, user_id).await.expect("list");
+        let listed = list_journeys_for_user(&pool, user_id, false)
+            .await
+            .expect("list");
         let row = listed.iter().find(|j| j.id == journey_id).expect("listed");
         // The current leg is still the first...
         assert_eq!(row.destination_crs.as_deref(), Some("ZZB"));

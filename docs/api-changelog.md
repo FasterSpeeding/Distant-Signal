@@ -56,6 +56,46 @@ change.
 - A one-off migration dismisses (`dismissReason` `other`) every open
   `user_missed` break: each was opened by the old sheet just by loading.
 
+## 2026-10-24: following a shared journey
+
+Additive. A journey shared with someone, through a group or a share link,
+can be followed: it then lists among their own journeys, read-only. The
+new routes are cookie-only (a delegated token is refused, like every
+route outside the delegated list); nothing changes for a request that
+doesn't use them. DS-MCP needs no change: `GET /Journeys/mine` without
+`include` is unchanged, and a delegated caller never gets followed
+journeys.
+
+- **`POST /Journeys/{journeyId}/follow`**, optional JSON body `{"groupId"}`
+  or `{"shareToken"}` (not both: `400`). No body: through any group the
+  journey is shared into that the caller is in. `shareToken`: through the
+  journey's live share link (in the body, not the path, so it stays out of
+  logs). Idempotent. `200` with the follow's `followedFrom` (below); `404`
+  when there is no such journey or the share doesn't let the caller in;
+  `409` for the caller's own journey.
+- **`DELETE /Journeys/{journeyId}/follow`**: stops following. `204` either
+  way.
+- **`GET /Journeys/mine?include=followed`**: also lists the journeys the
+  caller follows, in the same travel order and under the same cap as their
+  own, each with **`followedFrom`**: `{via: "group" | "link", ownerName,
+  ownerTag, groupId, groupName, followedAt}`. `ownerName`/`ownerTag` follow
+  the group member label rules (`GroupJourney.addedByName`/`addedByTag`);
+  a link follow has `null` for both and for the group fields, since a share
+  link shows nothing about its owner. On such a row `createdVia` is absent
+  and `trainSubscriptionId` is `null` (they are the owner's). Any other
+  `include` value is a `400`. A delegated caller's `include` is ignored.
+- **`GET /Journeys/{journeyId}`** (session callers who don't own it): new
+  **`followedFrom`** when following, and **`canFollow: true`** when the
+  journey is shared into one of the caller's groups and not yet followed.
+  A follower who came through a share link can read the journey here too,
+  while the link lives.
+- **`GET /groups/{id}/journeys`** and **`GET /groups/shared-journeys`**:
+  new per-row **`following`** (bool).
+- A follow ends when the share does: the journey is unshared from the
+  group, the follower leaves it, the link is revoked, regenerated or
+  expires, or the journey is deleted. Every read also re-checks the share.
+- Followers get no push notifications.
+
 ## 2026-10-23: train search across midnight, and every timetable operator
 
 `GET /public/trains/search`, plus a new `GET /public/trains/search/operators`.

@@ -1114,6 +1114,8 @@ mod tests {
             (Method::DELETE, "/Journeys/{journey_id}/legs/{leg_id}"),
             (Method::POST, "/Journeys/{journey_id}/share-link"),
             (Method::GET, "/Journeys/shared/{token}"),
+            (Method::POST, "/Journeys/{journey_id}/follow"),
+            (Method::DELETE, "/Journeys/{journey_id}/follow"),
             (Method::GET, "/public/groups/shared-journeys"),
             (Method::POST, "/public/admin/users/revoke-sessions"),
             (Method::GET, "/public/preferences"),

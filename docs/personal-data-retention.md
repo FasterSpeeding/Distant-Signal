@@ -43,7 +43,8 @@ Every foreign key to `users(id)` has an explicit `ON DELETE` action (migrations 
    - For an owned group with other members, ownership passes to the longest-standing admin, or if there is none, the longest-standing member.
    - An owned group with no other members is deleted.
    - The user's shared trains and journeys in that group are removed.
-3. Deletes share links that point at the user's journeys. `unlisted_links` is polymorphic and has no foreign key to `journeys`.
+   - The user's follows of journeys shared into that group are removed, and so are other members' follows of the user's journeys there.
+3. Deletes share links that point at the user's journeys. `unlisted_links` is polymorphic and has no foreign key to `journeys`. Anyone following those journeys through the link stops following them (`journey_follows` cascades from the link and from the journey).
 4. Runs `DELETE FROM users`. Everything else cascades.
 
 The inactive-account sweep (below) uses the same function.
@@ -75,6 +76,7 @@ The inactive-account sweep (below) uses the same function.
 | `groups` | Group name. `created_by` is the creator. | The group survives for other members, and `created_by` becomes NULL. A group the user owned alone is deleted. | Life of the group | `groupMemberships` (name, role, `group_created_by_you`) |
 | `group_members` | The user's membership and role | Cascade, after ownership hand-over | Life of the membership | `groupMemberships` |
 | `group_trains`, `group_journeys` | Trains and journeys the user shared into a group (`added_by`) | Cascade | Deleted when the user leaves, or with the train or journey | `groupSharedTrains`, `groupSharedJourneys` |
+| `journey_follows` | Journeys shared with the user (through a group or a share link) that they follow: which journey, when, and through which group or link (hashed token) | Cascade | Deleted when the user unfollows or leaves the group, when the journey is unshared from the group or deleted, when the link is revoked or regenerated, and by the hourly sweep once the link has expired | `journeyFollows` (journey id, time, group or `link`; no token) |
 | `group_invite_links` | Invite links the user created (hashed token) | Cascade | Expire after 7 days. Revoked or expired rows are deleted 30 days later. | `groupInviteLinks` (without token) |
 | `unlisted_links` | Share links the user created (hashed token) | Cascade, plus any link naming the user's journeys | Revoked or expired rows are deleted after 30 days, and with their journey | `shareLinks` (without token) |
 | `delegated_grants` | Apps the user connected on the Connected apps page: client, scopes, created, last-used and revoked times ([connected-apps.md](connected-apps.md)) | Cascade | Revoked after 90 days unused; revoked rows are deleted 365 days after revocation (`DELEGATED_REVOKED_GRANT_RETENTION_DAYS`) | `connectedApps` |
