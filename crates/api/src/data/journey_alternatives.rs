@@ -64,6 +64,11 @@ pub enum SuggestionLeg {
         operator_name: Option<String>,
         platform: Option<String>,
         cancelled: bool,
+        /// Set when the change onto this train works only because it is
+        /// running late (additive, DS-141): it could leave earlier. Absent
+        /// otherwise, and from a set saved before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relies_on_late_departure: Option<trip_plan_live::LateDepartureReliance<DateTime<Utc>>>,
     },
     Untracked {
         transit_mode: String,
@@ -395,6 +400,15 @@ fn suggestion_legs(
                         .and_then(|code| operator_names.get(code).cloned()),
                     platform: leg_live.and_then(|l| l.platform.clone()),
                     cancelled: leg_live.is_some_and(|l| l.cancelled),
+                    relies_on_late_departure: leg_live
+                        .and_then(|l| l.relies_on_late_departure.as_ref())
+                        .map(|r| trip_plan_live::LateDepartureReliance {
+                            scheduled_departure: scheduled_dep,
+                            expected_departure: instant(date, *departure_min)
+                                .unwrap_or(scheduled_dep),
+                            delay_minutes: r.delay_minutes,
+                            slack_if_on_time_minutes: r.slack_if_on_time_minutes,
+                        }),
                 });
             }
             PlannedLeg::Transfer {
@@ -469,6 +483,15 @@ fn candidate(planned: &Planned, legs: &[SuggestionLeg]) -> Option<Candidate> {
         walk_minutes,
         min_slack_minutes: None,
         rejoins: planned.rejoins_leg_id.is_some(),
+        relies_on_late_departure: legs.iter().any(|leg| {
+            matches!(
+                leg,
+                SuggestionLeg::Train {
+                    relies_on_late_departure: Some(_),
+                    ..
+                }
+            )
+        }),
         trains: legs
             .iter()
             .filter_map(|leg| match leg {

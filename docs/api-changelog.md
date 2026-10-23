@@ -31,6 +31,43 @@ Additive: two new public, unauthenticated routes for the web app's
 - The arrivals route shares the `/Train/by-uid/*` rate limit (by default
   120 a minute, burst 60, per client; `API_RATE_LIMIT_TRAIN_BY_UID_*`).
 
+## 2026-10-23: `reliesOnLateDeparture` on changes made only by a late train
+
+Additive; no field is removed or changes meaning. DS-MCP needs no change,
+but may show it.
+
+The live planner keeps a late train late (no recovery is modelled), so it
+can offer a change that works only because the train changed onto is
+running late. If that train makes up time it could leave before the
+traveller can reach it. Such a change is now flagged with
+`reliesOnLateDeparture`, an object absent when not set:
+
+```json
+{"scheduledDeparture": "10:20:00", "expectedDeparture": "10:35:00",
+ "delayMinutes": 15, "slackIfOnTimeMinutes": -7}
+```
+
+- `scheduledDeparture`: the train's timetabled (public) departure;
+  `expectedDeparture`: its live one, which the change was judged on;
+  `delayMinutes`: the difference; `slackIfOnTimeMinutes`: the spare
+  minutes after the minimum change time were the train on time, always
+  negative.
+- Set when the change works on the expected departure but would not on
+  the timetabled one (the traveller's live arrival, plus any walk, plus
+  the change time). A change that also works on the timetabled time is
+  never flagged, however tight. Never for staying aboard one train, or a
+  first leg.
+- `GET /Trips/plan`: on a train leg's `live` (the leg changed onto), with
+  clock times like `scheduledDeparture`. Inside the live window only, as
+  the rest of `live`. Judged on the same times as `interchangeFeasible`.
+- `GET /Journeys/{journeyId}`: on a leg's `connection`, with instants.
+  `state` is unchanged (usually `ok`, `atRisk` when also tight).
+- Alternatives (`GET .../legs/{legId}/alternatives`, the open break's
+  suggestions): on each train leg of a suggestion, with instants. The
+  ranking adds 5 minutes to such an option's `cost`, so it is never
+  Recommended over an otherwise equal one that doesn't rely on a late
+  train.
+
 ## 2026-10-23: a train leg with no stations of its own names its train's route
 
 Values only; no request or response shape changes. DS-MCP needs no change.

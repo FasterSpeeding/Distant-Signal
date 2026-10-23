@@ -203,6 +203,9 @@ pub struct Candidate {
     pub min_slack_minutes: Option<i64>,
     /// Keeps a later booked leg (§5.5).
     pub rejoins: bool,
+    /// A change in it works only because the train it changes onto is
+    /// running late (DS-141): that train could leave earlier.
+    pub relies_on_late_departure: bool,
     pub trains: Vec<CandidateTrain>,
 }
 
@@ -250,6 +253,10 @@ pub struct Weights {
     pub transfer: i64,
     pub tight_slack: i64,
     pub rejoin_bonus: i64,
+    /// An option whose change relies on a late train (DS-141): light, so a
+    /// much quicker one can still win, but enough that an otherwise equal
+    /// option that doesn't is always Recommended over it.
+    pub late_departure: i64,
     /// With no ticket on a railway break, a same-operator train wins ties.
     pub unknown_same_operator_bonus: i64,
     /// "Fastest" is shown only when it arrives this much earlier.
@@ -263,6 +270,7 @@ impl Default for Weights {
             transfer: 10,
             tight_slack: 10,
             rejoin_bonus: 15,
+            late_departure: 5,
             unknown_same_operator_bonus: 5,
             fastest_margin_minutes: 15,
         }
@@ -525,6 +533,9 @@ pub fn rank(candidates: &[Candidate], context: &Context) -> Ranking {
             {
                 cost += weights.tight_slack;
             }
+            if candidate.relies_on_late_departure {
+                cost += weights.late_departure;
+            }
             if candidate.rejoins {
                 cost -= weights.rejoin_bonus;
             }
@@ -661,6 +672,7 @@ mod tests {
             walk_minutes: 0,
             min_slack_minutes: None,
             rejoins: false,
+            relies_on_late_departure: false,
             trains: operators
                 .iter()
                 .map(|op| CandidateTrain {
@@ -944,6 +956,32 @@ mod tests {
         assert_eq!(second.index, 1);
         assert_eq!(second.picks, vec![Pick::Fastest, Pick::FewestChanges]);
         assert!(ranking.order.iter().filter(|r| r.card).count() <= MAX_CARDS);
+    }
+
+    #[test]
+    fn an_option_relying_on_a_late_train_never_beats_an_equal_one_that_does_not() {
+        let any = || TicketConstraint::AnyPermitted {
+            time_restricted: false,
+        };
+        // Listed first (input order would win a tie), and otherwise equal.
+        let mut reliant = candidate((10, 0), (12, 0), 1, &["XC", "XC"]);
+        reliant.relies_on_late_departure = true;
+        let steady = candidate((10, 0), (12, 0), 1, &["XC", "XC"]);
+        let ranking = rank(
+            &[reliant.clone(), steady],
+            &context(any(), Entitlement::MissedConnection),
+        );
+        assert_eq!(ranking.order[0].index, 1, "{ranking:?}");
+        assert_eq!(ranking.order[0].picks, vec![Pick::Recommended]);
+        assert_eq!(ranking.order[1].cost, ranking.order[0].cost + 5);
+
+        // Lightly: a reliant option arriving 10 minutes sooner still wins.
+        let later = candidate((10, 0), (12, 10), 1, &["XC", "XC"]);
+        let ranking = rank(
+            &[later, reliant],
+            &context(any(), Entitlement::MissedConnection),
+        );
+        assert_eq!(ranking.order[0].index, 1, "{ranking:?}");
     }
 
     #[test]

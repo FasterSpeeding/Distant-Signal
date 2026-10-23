@@ -1417,7 +1417,27 @@ export interface LegConnection {
    * not known, or when this leg is a walk or a Tube ride. */
   minimumChangeMinutes: number | null;
   state: ConnectionState;
+  /** Set when the change works only because this leg's train is running
+   * late (DS-141): it could leave earlier. Absent otherwise. */
+  reliesOnLateDeparture?: LateDepartureReliance;
 }
+
+/** A change that works only because the train changed onto is running
+ * late (DS-141, docs/api-changelog.md): it would not on the train's
+ * timetabled departure. Instants (RFC3339) on journeys and alternatives. */
+export interface LateDepartureReliance {
+  /** The train's timetabled (public) departure. */
+  scheduledDeparture: string;
+  /** Its live departure, which the change was judged on. */
+  expectedDeparture: string;
+  delayMinutes: number;
+  /** Spare minutes after the change time were it on time: negative. */
+  slackIfOnTimeMinutes: number;
+}
+
+/** `TripPlanLegLive.reliesOnLateDeparture`: the same, with "HH:MM:SS"
+ * clock times like the leg's `scheduledDeparture`. */
+export type TripPlanLateDepartureReliance = LateDepartureReliance;
 
 /** `GET /Journeys/{id}`'s full response. */
 export interface JourneyDetail {
@@ -1510,6 +1530,9 @@ export type ReplanSuggestionLeg =
       operatorName: string | null;
       platform: string | null;
       cancelled: boolean;
+      /** The change onto this train works only because it is running late
+       * (DS-141). Absent otherwise. */
+      reliesOnLateDeparture?: LateDepartureReliance;
     }
   | {
       kind: 'untracked';
@@ -1800,6 +1823,9 @@ export interface TripPlanLegLive {
   platform: string | null;
   observedAt: string | null; // RFC3339
   interchangeFeasible: boolean | null;
+  /** The change onto this leg works only because this train is running
+   * late (DS-141): it could leave earlier. Absent otherwise. */
+  reliesOnLateDeparture?: TripPlanLateDepartureReliance;
 }
 
 /** One origin->destination hop of a (possibly multi-waypoint) plan

@@ -13,6 +13,7 @@ import type {
 } from '@/lib/types';
 import { transferLabel } from '@/lib/displayLabels';
 import { StateBadge } from './StateBadge';
+import { LateDepartureNote, plannerLateDepartureTimes } from './LateDepartureNote';
 
 /** `stationNames` resolves a leg's bare `originCrs`/`destinationCrs` to a
  * full name -- `GET /Trips/plan` (unlike every other station-bearing
@@ -105,6 +106,9 @@ export function ItineraryOption({
                     <Text size="sm">{legSummary(leg, stationNames)}</Text>
                     {leg.kind === 'train' && <ServiceModeBadge mode={leg.serviceMode} />}
                   </Group>
+                  {leg.kind === 'train' && leg.live?.reliesOnLateDeparture && (
+                    <LateDepartureNote {...plannerLateDepartureTimes(leg.live.reliesOnLateDeparture)} />
+                  )}
                   {viaPasses
                     .filter((via) => via.leg === index)
                     .map((via, viaIndex) => (
