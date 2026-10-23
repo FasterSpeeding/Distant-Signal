@@ -19,8 +19,8 @@ import { OWN_PREVIEW_IMAGE, pageMetadata } from '@/lib/pageMetadata';
  * 2. Nav active state is a pathname match (`isActiveNavHref`). A query-param
  *    mode would light up "Track a Journey" and "Plan a Journey" together, or
  *    need `useSearchParams` (and its `<Suspense>` requirement) in the nav.
- * 3. A path is the stable thing to share. `/journeys/new?mode=plan` still
- *    works: `next.config.mjs` redirects it here.
+ * 3. A path is the stable thing to share. (`/journeys/new?mode=plan` is
+ *    not redirected here: it stays on New journey, on its planner option.)
  *
  * The page renders `JourneyCreationFlow` in `planOnly` mode, so once a
  * planned route is saved the visitor gets the same "add a leg / Done" view

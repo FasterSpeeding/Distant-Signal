@@ -43,9 +43,8 @@ describe('/tfl/stops/[id]', () => {
     expect(screen.getByRole('list', { name: 'Piccadilly, Eastbound - Platform 1' })).toBeInTheDocument();
     expect(screen.getByText(/^Updated/)).toBeInTheDocument();
     expect(api.getTflStopArrivals).toHaveBeenCalledWith('940GZZLURSQ');
-    // TfL's credit, wherever its data is shown.
-    expect(screen.getByText(/Powered by TfL Open Data/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Data credits' })).toHaveAttribute('href', '/attribution');
+    // TfL's credit is the site footer's (on every page), not the page's own.
+    expect(screen.queryByText(/Powered by TfL Open Data/)).not.toBeInTheDocument();
   });
 
   it("shows its lines' status, linking each line's page", async () => {
