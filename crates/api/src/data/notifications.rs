@@ -118,6 +118,22 @@ async fn evict_push_subscriptions_over_cap(pool: &PgPool, user_id: &str) -> Resu
     Ok(())
 }
 
+/// "Turn off on this device": deletes `user_id`'s subscription for
+/// `endpoint`. `false` when they have none for it (never another user's:
+/// the endpoint alone does not identify the owner to the caller).
+pub async fn delete_push_subscription_by_endpoint(
+    pool: &PgPool,
+    user_id: &str,
+    endpoint: &str,
+) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2")
+        .bind(user_id)
+        .bind(endpoint)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,

@@ -20,8 +20,51 @@ pub fn router() -> Router {
         )
         .route(
             "/notifications/subscribe",
-            axum::routing::post(post_subscribe),
+            axum::routing::post(post_subscribe).delete(delete_subscribe),
         )
+}
+
+/// `DELETE /notifications/subscribe` `{endpoint}`: "Turn off on this
+/// device". The browser unsubscribes its own `PushSubscription`; this
+/// forgets the server's copy so nothing is sent to it again.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UnsubscribeRequest {
+    endpoint: String,
+}
+
+/// 204 once deleted; 404 when the caller has no subscription for that
+/// endpoint (already removed, or never theirs).
+async fn delete_subscribe(
+    State(app): State<App>,
+    user: AuthenticatedUser,
+    Json(body): Json<UnsubscribeRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    super::validate_short_text("The push endpoint", &body.endpoint, MAX_PUSH_ENDPOINT_CHARS)
+        .map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    match notifications::delete_push_subscription_by_endpoint(
+        &app.database,
+        &user.id,
+        &body.endpoint,
+    )
+    .await
+    {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((
+            StatusCode::NOT_FOUND,
+            "No notifications are on for that device.".to_string(),
+        )),
+        Err(err) => {
+            if let Some(unavailable) = crate::unavailable::response_for(&err) {
+                return Err(unavailable);
+            }
+            tracing::error!(error = ?err, "failed to delete push subscription");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to turn off notifications".to_string(),
+            ))
+        }
+    }
 }
 
 /// Unauthenticated on purpose -- the browser needs this key BEFORE it has

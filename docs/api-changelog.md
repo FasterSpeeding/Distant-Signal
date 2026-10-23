@@ -3,6 +3,16 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-23: notification settings
+
+Additive. Nothing existing changes for a client that does not use the new
+routes. DS-MCP needs no change.
+
+- **New: `DELETE /public/notifications/subscribe`** `{endpoint}` (session
+  only): forgets the caller's push subscription for that endpoint, "Turn
+  off on this device". `204`; `404` when the caller has none for it
+  (including another user's endpoint). Unknown fields are refused (`422`).
+
 ## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
 
 Additive. A request with station codes gets exactly the response it got

@@ -33,6 +33,8 @@ pub mod line_status;
 pub mod line_timetable;
 pub mod line_trains_summary;
 pub mod lines;
+#[cfg(test)]
+mod notification_settings_db_tests;
 pub mod notifications;
 pub mod operator_history;
 pub mod operators;
