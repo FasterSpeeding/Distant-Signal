@@ -1411,6 +1411,10 @@ pub(crate) struct CommittedLeg {
 /// per leg, already carrying everything `skip_check::leg_is_skipped`
 /// (Task 9) needs -- no further per-leg query required.
 ///
+/// A leg whose train has its pushes turned off
+/// (`train_subscriptions.notifications_enabled`, `PATCH /Train/{trackingId}`)
+/// is left out, as the delay and cancellation pushes leave it out.
+///
 /// A leg committed to a bus or ferry (`schedule_services.mode <> 'train'`)
 /// is left out (2026-10-06): it is timetable-only, gets no live alerts, and
 /// Darwin's board would only ever pair it with some other service.
@@ -1435,6 +1439,7 @@ static COMMITTED_LEGS_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::ne
          LEFT JOIN train_current_state cs ON cs.trains_id = ts.trains_id \
          WHERE jl.train_subscription_id IS NOT NULL \
            AND ts.trains_id IS NOT NULL \
+           AND ts.notifications_enabled \
            AND jl.service_date = $1 \
            AND {origin} IS NOT NULL \
            AND {destination} IS NOT NULL \

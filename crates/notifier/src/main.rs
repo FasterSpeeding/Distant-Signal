@@ -9,6 +9,8 @@ mod decision;
 mod push_queue;
 mod queries;
 mod send;
+#[cfg(test)]
+mod settings_db_tests;
 mod skip_check;
 mod vapid_key;
 
