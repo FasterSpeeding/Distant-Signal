@@ -2955,7 +2955,7 @@ dependencies = [
  "ds-store",
  "futures-util",
  "health-http",
- "http 0.2.12",
+ "http 1.5.0",
  "metrics",
  "metrics-exporter-prometheus",
  "reqwest 0.13.4",
