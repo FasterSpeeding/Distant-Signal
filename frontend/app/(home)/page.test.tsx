@@ -1287,15 +1287,48 @@ describe('DashboardPage -- journey sections', () => {
     });
   }
 
-  it('logged out: no journey sections, and the journeys are never fetched', async () => {
+  it('logged out: no real journey sections, and the journeys are never fetched', async () => {
     vi.mocked(api.getMyJourneys).mockClear();
     vi.mocked(api.getJourney).mockClear();
     renderWithMantine(await DashboardPage());
     expect(screen.queryByRole('heading', { name: 'Current journey' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Upcoming journeys' })).not.toBeInTheDocument();
+    expect(screen.queryByText('No upcoming journeys.')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'New journey' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'View all' })).not.toBeInTheDocument();
     expect(api.getMyJourneys).not.toHaveBeenCalled();
     expect(api.getJourney).not.toHaveBeenCalled();
+  });
+
+  // The teaser: the signed-in "Upcoming journeys" frame, saying what
+  // tracking a journey gives you, with the one login flow (it also signs
+  // new visitors up) and the planner, which needs no account.
+  it('logged out: an Upcoming journeys teaser with a log in or sign up button and the planner', async () => {
+    renderWithMantine(await DashboardPage());
+    const headings = screen.getAllByRole('heading').map((heading) => heading.textContent);
+    expect(headings.slice(0, 3)).toEqual(['Live UK rail status', 'Upcoming journeys', 'Right now']);
+    expect(screen.getByRole('heading', { name: 'Upcoming journeys', level: 2 })).toBeInTheDocument();
+
+    const teaser = screen.getByRole('region', { name: 'Upcoming journeys' });
+    expect(within(teaser).getByText('Track a journey to see it here')).toBeInTheDocument();
+    expect(within(teaser).getByText(/platform changes for every leg/)).toHaveTextContent(
+      /connection is at risk.*Delay Repay/,
+    );
+    expect(within(teaser).getByRole('link', { name: 'Log in or sign up' })).toHaveAttribute(
+      'href',
+      '/api/auth/login?return_to=%2F',
+    );
+    expect(within(teaser).getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
+    // The planner moved here from the quick links: one link, not two.
+    expect(screen.getAllByRole('link', { name: 'Plan a journey' })).toHaveLength(1);
+  });
+
+  it('logged in: no teaser, and no log in or sign up button', async () => {
+    vi.mocked(api.getSessionOrLoggedOut).mockResolvedValue(LOGGED_IN);
+    mockJourneys([thisMorning]);
+    renderWithMantine(await DashboardPage());
+    expect(screen.queryByText('Track a journey to see it here')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Log in or sign up' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('region', { name: 'Upcoming journeys' })).toHaveLength(1);
   });
 
   it('logged in with a journey under way and others to come: current first, then upcoming, then the pins', async () => {

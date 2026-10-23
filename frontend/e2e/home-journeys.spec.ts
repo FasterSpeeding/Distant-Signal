@@ -121,3 +121,31 @@ test.describe('home page journeys (logged in)', () => {
     });
   }
 });
+
+// Logged out, the same section is a teaser: what tracking a journey gives
+// you, the one login flow (which also signs new visitors up) and the
+// planner. On a phone it must leave "Right now" starting above the fold.
+test.describe('home page journeys teaser (logged out)', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  for (const colorScheme of ['light', 'dark'] as const) {
+    test(`offers log in or sign up, and keeps Right now above the fold (${colorScheme})`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme });
+      await page.goto('/');
+
+      const teaser = page.getByRole('region', { name: 'Upcoming journeys' });
+      await expect(teaser.getByRole('heading', { level: 2, name: 'Upcoming journeys' })).toBeVisible();
+      await expect(teaser.getByRole('link', { name: 'Log in or sign up' })).toHaveAttribute(
+        'href',
+        '/api/auth/login?return_to=%2F',
+      );
+      await expect(teaser.getByRole('link', { name: 'Plan a journey' })).toHaveAttribute('href', '/plan');
+
+      const rightNow = await page.getByRole('heading', { name: 'Right now' }).boundingBox();
+      expect(rightNow && rightNow.y + rightNow.height <= 844).toBe(true);
+
+      const results = await new AxeBuilder({ page }).include('main').analyze();
+      expect(results.violations).toEqual([]);
+    });
+  }
+});

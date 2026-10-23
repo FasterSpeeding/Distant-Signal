@@ -1,9 +1,10 @@
-import { Box, Group, Stack, Text } from '@mantine/core';
+import { Box, Card, Group, Stack, Text } from '@mantine/core';
 import { ButtonLink } from '@/components/ButtonLink';
 import { CardLink } from '@/components/CardLink';
 import { DelayBadge } from '@/components/DelayBadge';
 import { JourneyBreakBanner } from '@/components/JourneyBreakBanner';
 import { JourneyStatusGroupBadge } from '@/components/JourneyStatusBadge';
+import { LoginControl } from '@/components/LoginControl';
 import { SectionTitle } from '@/components/SectionTitle';
 import { StatusRow } from '@/components/StatusRow';
 import { TextLink } from '@/components/TextLink';
@@ -11,7 +12,8 @@ import { TrackedRowStatusBadge } from '@/components/TrackedRowStatusBadge';
 import { formatTime } from '@/lib/dateFormat';
 import { describeFailure } from '@/lib/failure';
 import { followedFromLabel } from '@/lib/followedFrom';
-import { JOURNEYS_DESTINATION, NEW_JOURNEY_LABEL, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
+import { JOURNEYS_DESTINATION, NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION, TRACK_JOURNEY_HREF } from '@/lib/navLinks';
+import { tokens } from '@/lib/theme';
 import {
   currentLeg,
   homeJourneyStatusGroup,
@@ -390,6 +392,41 @@ export function UpcomingJourneysSection({
           {hidden} more upcoming {hidden === 1 ? 'journey is' : 'journeys are'} on the Journeys page.
         </Text>
       )}
+    </Stack>
+  );
+}
+
+/** The logged-out home page's "Upcoming journeys": the signed-in section's
+ * frame (same heading and id, a link where "View all" sits) around one flat
+ * card in the place the journey rows would be, saying what tracking a
+ * journey gives you and offering the way in. No example row: the page shows
+ * real data or nothing (docs/style-guide.md, "Honest data" and the Empty
+ * state), so the card describes a journey rather than drawing a made-up
+ * one. Not dismissible: no other prompt on the site is.
+ *
+ * One button, "Log in or sign up": Authentik's one flow both logs in and
+ * enrols a new account (`crates/api/src/routes/auth.rs`), so there is no
+ * separate sign-up entry to link. The planner needs no account, so it is a
+ * plain link beside the heading. */
+export function UpcomingJourneysTeaser() {
+  return (
+    <Stack component="section" aria-labelledby="upcoming-journeys-heading" gap="md">
+      <Group justify="space-between" gap="sm">
+        <SectionTitle id="upcoming-journeys-heading">Upcoming journeys</SectionTitle>
+        <TextLink href={PLAN_JOURNEY_DESTINATION.href}>{PLAN_JOURNEY_DESTINATION.label}</TextLink>
+      </Group>
+      <Card {...tokens.card.static}>
+        <Stack gap="sm" align="flex-start">
+          <Stack gap={4}>
+            <Text fw={600}>Track a journey to see it here</Text>
+            <Text c="dimmed" size="sm">
+              Live delays and platform changes for every leg, a warning when a connection is at risk, other trains if it
+              breaks, and help claiming Delay Repay.
+            </Text>
+          </Stack>
+          <LoginControl variant="button">Log in or sign up</LoginControl>
+        </Stack>
+      </Card>
     </Stack>
   );
 }

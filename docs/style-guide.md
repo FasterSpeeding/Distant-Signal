@@ -167,7 +167,10 @@ used, rather than as a literal in a component.
   stays marked current on `/track`, `/trains` and every `/journeys` page.
   Starting a journey is not a nav entry: "New journey" (`/journeys/new`)
   is a button on the Journeys page and at the top of the home page's
-  "Upcoming journeys". No settings live in the bar: the theme and pride flag are
+  "Upcoming journeys". Logged out, that section is a teaser in the same
+  frame: one flat card saying what tracking a journey gives you, a "Log
+  in or sign up" `LoginControl` button and a "Plan a journey" link
+  (`UpcomingJourneysTeaser`). No settings live in the bar: the theme and pride flag are
   on `/account/preferences`, reached from the account menu, the drawer and
   the footer.
 - One exception: a logged-out visitor at `md` and up gets a gear
