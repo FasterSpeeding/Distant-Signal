@@ -408,20 +408,18 @@ describe('StationSearchForm', () => {
       lines: [{ id: 'northern', name: 'Northern' }],
     };
 
-    /** Answers each backend path the merged search and the stop panel call. */
+    /** Answers each backend path the merged search calls. */
     function routeFetch(routes: {
       stations?: unknown[];
       tflStops?: unknown[];
       networks?: unknown[];
       transitStops?: unknown[];
-      railCrs?: Record<string, string[]>;
     }) {
       vi.stubGlobal(
         'fetch',
         vi.fn(async (url: string) => {
           const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
           if (url.startsWith('/api/stations')) return json(routes.stations ?? []);
-          if (url.startsWith('/api/tfl/stops/rail-crs')) return json(routes.railCrs ?? {});
           if (url.startsWith('/api/tfl/stops')) return json(routes.tflStops ?? []);
           if (url.startsWith('/api/transit/networks')) return json({ networks: routes.networks ?? [] });
           if (/^\/api\/transit\/[^/]+\/stops/.test(url)) return json({ stops: routes.transitStops ?? [] });
@@ -454,7 +452,7 @@ describe('StationSearchForm', () => {
       expect(input).toHaveValue('Uxbridge');
     });
 
-    it('shows a picked Tube stop on the page, with its line status links, instead of a station page', async () => {
+    it("goes to a picked Tube stop's own page", async () => {
       routeFetch({ tflStops: [uxbridge] });
       renderWithProvider();
       await search('uxbridge');
@@ -466,15 +464,13 @@ describe('StationSearchForm', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
       });
 
-      expect(pushMock).not.toHaveBeenCalled();
-      expect(screen.getByRole('heading', { name: 'Uxbridge' })).toBeInTheDocument();
-      expect(screen.getByText('Underground')).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'Metropolitan' })).toHaveAttribute('href', '/lines/tfl-metropolitan');
-      expect(screen.getByRole('link', { name: 'Piccadilly' })).toHaveAttribute('href', '/lines/tfl-piccadilly');
-      expect(screen.queryByText(/National Rail station here/)).not.toBeInTheDocument();
+      expect(pushMock).toHaveBeenCalledWith('/tfl/stops/940GZZLUUXB');
+      await act(async () => {
+        resolveNavigation();
+      });
     });
 
-    it('typing a Tube-only stop name and pressing Look up also shows it', async () => {
+    it('typing a Tube-only stop name and pressing Look up also goes to its page', async () => {
       routeFetch({ tflStops: [uxbridge] });
       renderWithProvider();
       await search('Uxbridge');
@@ -483,8 +479,10 @@ describe('StationSearchForm', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
       });
 
-      expect(pushMock).not.toHaveBeenCalled();
-      expect(screen.getByRole('heading', { name: 'Uxbridge' })).toBeInTheDocument();
+      expect(pushMock).toHaveBeenCalledWith('/tfl/stops/940GZZLUUXB');
+      await act(async () => {
+        resolveNavigation();
+      });
     });
 
     it('a typed name shared by a station and a Tube stop goes to the station', async () => {
@@ -502,12 +500,8 @@ describe('StationSearchForm', () => {
       });
     });
 
-    it('a picked Tube stop that shares a station name stays the Tube stop, and links its station', async () => {
-      routeFetch({
-        stations: [{ code: 'EUS', name: 'Euston' }],
-        tflStops: [eustonTube],
-        railCrs: { '940GZZLUEUS': ['EUS'] },
-      });
+    it('a picked Tube stop that shares a station name stays the Tube stop', async () => {
+      routeFetch({ stations: [{ code: 'EUS', name: 'Euston' }], tflStops: [eustonTube] });
       renderWithProvider();
       await search('Euston');
       expect(await screen.findByRole('option', { name: 'EUS · Euston', hidden: true })).toBeInTheDocument();
@@ -517,22 +511,10 @@ describe('StationSearchForm', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
       });
 
-      expect(pushMock).not.toHaveBeenCalled();
-      expect(await screen.findByRole('link', { name: 'Euston (EUS)' })).toHaveAttribute('href', '/stations/EUS');
-    });
-
-    it('editing the field after picking a Tube stop hides its panel', async () => {
-      routeFetch({ tflStops: [uxbridge] });
-      renderWithProvider();
-      const input = await search('Uxbridge');
+      expect(pushMock).toHaveBeenCalledWith('/tfl/stops/940GZZLUEUS');
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+        resolveNavigation();
       });
-      expect(screen.getByRole('heading', { name: 'Uxbridge' })).toBeInTheDocument();
-
-      fireEvent.change(input, { target: { value: 'Woking' } });
-
-      expect(screen.queryByRole('heading', { name: 'Uxbridge' })).not.toBeInTheDocument();
     });
 
     it("goes to a served transit network's stop page", async () => {

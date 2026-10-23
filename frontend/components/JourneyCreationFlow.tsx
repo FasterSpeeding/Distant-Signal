@@ -6,7 +6,7 @@ import { Alert, Button, Card, Group, SegmentedControl, Stack, Text, VisuallyHidd
 import { AddJourneyLegButton } from './AddJourneyLegButton';
 import { PlanTripFlow } from './PlanTripFlow';
 import { TrackTrainForm } from './TrackTrainForm';
-import { UntrackedLegStartForm } from './UntrackedLegStartForm';
+import { UntrackedLegStartForm, type UntrackedLegOrigin } from './UntrackedLegStartForm';
 import {
   journeyCanAddLeg,
   journeyPriorArrival,
@@ -67,6 +67,7 @@ import { LoadingText } from '@/components/LoadingText';
  *
  * `initialEntryMode` is the option selected on first render: the planner
  * unless the page's `?mode=` named another (`lib/journeyEntryMode.ts`).
+ * An `untrackedOrigin` overrides it with "Tube, bus or walk".
  * `knownRouteMode` opens "I know my route" on `TrackTrainForm`'s pick or
  * window half. */
 export function JourneyCreationFlow({
@@ -76,6 +77,7 @@ export function JourneyCreationFlow({
   planOrigin,
   planQuery,
   planSearchDates,
+  untrackedOrigin,
 }: {
   initialEntryMode?: JourneyEntryMode;
   knownRouteMode?: KnownRouteMode | undefined;
@@ -86,12 +88,17 @@ export function JourneyCreationFlow({
   /** The planner's date range (`GET /public/trains/search/dates`), read by
    * the page on the server -- both `/plan` and `/journeys/new` pass it. */
   planSearchDates?: TrainSearchDates | null | undefined;
+  /** `/journeys/new?fromTflStop=...` (a TfL stop page's "Add as a journey
+   * leg"): opens on the "Tube, bus or walk" form, starting at that stop. */
+  untrackedOrigin?: UntrackedLegOrigin | null | undefined;
 } = {}) {
   const [journeyId, setJourneyId] = useState<number | null>(null);
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
-  const [entryMode, setEntryMode] = useState<JourneyEntryMode>(planOnly ? 'plan' : initialEntryMode);
+  const [entryMode, setEntryMode] = useState<JourneyEntryMode>(
+    planOnly ? 'plan' : untrackedOrigin ? 'untracked' : initialEntryMode,
+  );
   const entryModeLabelId = useId();
 
   async function refreshJourney(id: number) {
@@ -187,7 +194,9 @@ export function JourneyCreationFlow({
           />
         )}
         {entryMode === 'plan' && <PlanTripFlow onCreated={handleLegOneCreated} searchDates={planSearchDates} />}
-        {entryMode === 'untracked' && <UntrackedLegStartForm onCreated={handleLegOneCreated} />}
+        {entryMode === 'untracked' && (
+          <UntrackedLegStartForm onCreated={handleLegOneCreated} origin={untrackedOrigin} />
+        )}
       </Stack>
     );
   }

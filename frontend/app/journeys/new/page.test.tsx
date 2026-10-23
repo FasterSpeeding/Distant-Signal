@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
-import { getTrainSearchDates } from '@/lib/api';
+import { getTflStop, getTrainSearchDates } from '@/lib/api';
+import { ApiNotFoundError } from '@/lib/api';
+import { KINGS_CROSS } from '@/test/tflStopFixtures';
 import JourneysNewPage, { metadata } from './page';
 
 // The page mounts JourneyCreationFlow, a client component that renders
@@ -33,6 +35,7 @@ vi.mock('@/lib/api', async () => {
     getTrainSearchDates: vi.fn(async () => {
       throw new Error('not stubbed');
     }),
+    getTflStop: vi.fn(),
   };
 });
 
@@ -132,6 +135,40 @@ describe('JourneysNewPage', () => {
       openPlannerDatePicker();
       expect(await dayButton('12 September 2026')).not.toBeDisabled();
       expect(await dayButton('13 September 2026')).toBeDisabled();
+    });
+  });
+
+  // A TfL stop page's "Add as a journey leg".
+  describe('from a TfL stop', () => {
+    async function renderFrom(stop: string) {
+      renderWithMantine(await JourneysNewPage({ searchParams: Promise.resolve({ fromTflStop: stop }) }));
+    }
+
+    it('opens the Tube, bus or walk form starting at that stop', async () => {
+      vi.mocked(getTflStop).mockResolvedValue(KINGS_CROSS);
+      await renderFrom('940GZZLUKSX');
+      expect(getTflStop).toHaveBeenCalledWith('940GZZLUKSX');
+      expect(screen.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
+      expect(screen.getByLabelText('How', { selector: 'input' })).toHaveValue('Tube');
+      expect(screen.getByRole('combobox', { name: 'From (optional)' })).toHaveValue("King's Cross St. Pancras");
+    });
+
+    it('opens on that stop even when ?mode= names another option', async () => {
+      vi.mocked(getTflStop).mockResolvedValue(KINGS_CROSS);
+      renderWithMantine(
+        await JourneysNewPage({ searchParams: Promise.resolve({ fromTflStop: '940GZZLUKSX', mode: 'known' }) }),
+      );
+      expect(screen.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
+    });
+
+    it('opens as usual for an unknown or malformed stop', async () => {
+      vi.mocked(getTflStop).mockReset().mockRejectedValue(new ApiNotFoundError('404'));
+      await renderFrom('940GZZLUNOPE');
+      expect(screen.getByRole('radio', { name: 'Plan a route for me' })).toBeChecked();
+
+      vi.mocked(getTflStop).mockClear();
+      await renderFrom('not a stop');
+      expect(getTflStop).not.toHaveBeenCalled();
     });
   });
 

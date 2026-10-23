@@ -39,6 +39,9 @@ pub struct AppState {
     /// Delegated access: the registered clients and their verifiers
     /// (`crate::auth::delegated`). `Default` is inert.
     pub delegated: Arc<crate::auth::delegated::DelegatedAuth>,
+    /// Live arrivals at `TfL` stops, fetched on demand behind a short
+    /// per-stop cache (`crate::data::tfl_arrivals`). `Default` is disabled.
+    pub tfl_arrivals: Arc<crate::data::tfl_arrivals::TflArrivals>,
 }
 
 /// Dead-client detection (`client_connection_check_interval` and TCP
@@ -108,6 +111,7 @@ impl std::fmt::Debug for AppState {
             .field("internal_oauth_verifier", &"ServiceTokenVerifier { .. }")
             .field("schedule_crs_line_index", &self.schedule_crs_line_index)
             .field("delegated", &self.delegated)
+            .field("tfl_arrivals", &self.tfl_arrivals)
             .finish()
     }
 }
@@ -278,6 +282,13 @@ impl AppState {
             delegated_clients,
         )?);
 
+        // `TfL` arrivals (DS-136): on by default, keyless unless
+        // TFL_APP_KEY is set.
+        let tfl_arrivals_settings = crate::data::tfl_arrivals::TflArrivalsSettings::from_env()?;
+        let tfl_arrivals = Arc::new(crate::data::tfl_arrivals::TflArrivals::from_settings(
+            &tfl_arrivals_settings,
+        )?);
+
         Ok(Arc::new(Self {
             config,
             database: db,
@@ -286,6 +297,7 @@ impl AppState {
             schedule_crs_line_index,
             line_matcher,
             delegated,
+            tfl_arrivals,
         }))
     }
 }

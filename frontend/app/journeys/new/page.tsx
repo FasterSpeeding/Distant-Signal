@@ -2,8 +2,11 @@ import { Stack, Title, Text } from '@mantine/core';
 import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
-import { getTrainSearchDates } from '@/lib/api';
+import type { UntrackedLegOrigin } from '@/components/UntrackedLegStartForm';
+import { getTflStop, getTrainSearchDates } from '@/lib/api';
 import { parseJourneyEntryMode } from '@/lib/journeyEntryMode';
+import { JOURNEY_FROM_TFL_STOP_PARAM, TFL_STOP_ID } from '@/lib/tflStops';
+import type { TransitMode } from '@/lib/types';
 import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -75,21 +78,38 @@ const METADATA_DESCRIPTION = 'Track a journey of one or more trains, from start 
 
 export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
+/** The TfL stop `?fromTflStop=` names (a stop page's "Add as a journey
+ * leg"), as the untracked form's starting point: its first mode and its
+ * name. `null` for no stop, a malformed ID or one the api doesn't know,
+ * which leaves the page as it always opens. */
+async function untrackedOriginFrom(raw: string | string[] | undefined): Promise<UntrackedLegOrigin | null> {
+  const id = Array.isArray(raw) ? raw[0] : raw;
+  if (!id || !TFL_STOP_ID.test(id)) return null;
+  const stop = await getTflStop(id).catch(() => null);
+  if (!stop) return null;
+  const mode: TransitMode = (['tube', 'dlr', 'tram'] as const).find((m) => stop.modes.includes(m)) ?? 'tube';
+  return { stopId: stop.id, name: stop.name, mode };
+}
+
 export default async function JourneysNewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ mode?: string | string[] }>;
-}) {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+} = {}) {
+  const params = (await searchParams) ?? {};
   // The planner is selected unless `?mode=` names another option
   // (`lib/journeyEntryMode.ts`): `/plan`'s "Track it directly" link asks
-  // for `known`. Not read in metadata, which describes the page as a
-  // whole.
-  const { mode } = await searchParams;
-  const { entryMode, knownRouteMode } = parseJourneyEntryMode(mode);
+  // for `known`. A `?fromTflStop=` stop opens "Tube, bus or walk" whatever
+  // the mode says. Neither is read in metadata, which describes the page
+  // as a whole.
+  const { entryMode, knownRouteMode } = parseJourneyEntryMode(params.mode);
   // The planner's date picker ends where the timetable search does
   // (`getTrainSearchDates`, cached for a few minutes), as on `/plan`. A
   // failure leaves `null`, and the picker falls back to a week ahead.
-  const searchDates = await getTrainSearchDates().catch(() => null);
+  const [searchDates, untrackedOrigin] = await Promise.all([
+    getTrainSearchDates().catch(() => null),
+    untrackedOriginFrom(params[JOURNEY_FROM_TFL_STOP_PARAM]),
+  ]);
 
   return (
     <Stack p="lg" gap="md">
@@ -106,7 +126,12 @@ export default async function JourneysNewPage({
         </TextLink>{' '}
         (no account needed).
       </Text>
-      <JourneyCreationFlow initialEntryMode={entryMode} knownRouteMode={knownRouteMode} planSearchDates={searchDates} />
+      <JourneyCreationFlow
+        initialEntryMode={entryMode}
+        knownRouteMode={knownRouteMode}
+        planSearchDates={searchDates}
+        untrackedOrigin={untrackedOrigin}
+      />
     </Stack>
   );
 }

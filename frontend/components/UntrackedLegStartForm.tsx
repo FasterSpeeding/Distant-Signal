@@ -12,7 +12,15 @@ import {
 } from './UntrackedLegFields';
 import { describeFailure, failureFromResponse } from '@/lib/failure';
 import { londonToday } from '@/lib/londonWallClock';
-import type { CreateJourneyResponse } from '@/lib/types';
+import type { CreateJourneyResponse, TransitMode } from '@/lib/types';
+
+/** Where an untracked first leg starts when the page was opened from a TfL
+ * stop's "Add as a journey leg" (`/journeys/new?fromTflStop=...`). */
+export interface UntrackedLegOrigin {
+  stopId: string;
+  name: string;
+  mode: TransitMode;
+}
 
 /** Starts a journey with an untracked leg (a Tube ride, a bus, a walk) on
  * `/journeys/new`: the "Tube, bus or walk" option (spec
@@ -20,8 +28,20 @@ import type { CreateJourneyResponse } from '@/lib/types';
  * §2.3), for a trip that begins away from the railway. `POST /Journeys`
  * with `mode: "untracked"`, then hands the new journey to `onCreated`, as
  * `TrackTrainForm` and `PlanTripFlow` do for a first train leg. */
-export function UntrackedLegStartForm({ onCreated }: { onCreated: (result: CreateJourneyResponse) => void }) {
-  const [draft, setDraft] = useState<UntrackedLegDraft>(() => newUntrackedLegDraft({ date: londonToday() }));
+export function UntrackedLegStartForm({
+  onCreated,
+  origin,
+}: {
+  onCreated: (result: CreateJourneyResponse) => void;
+  /** Pre-fills the mode and the From stop. */
+  origin?: UntrackedLegOrigin | null | undefined;
+}) {
+  const [draft, setDraft] = useState<UntrackedLegDraft>(() => {
+    const fresh = newUntrackedLegDraft({ date: londonToday() });
+    return origin
+      ? { ...fresh, transitMode: origin.mode, originName: origin.name, originStopId: origin.stopId }
+      : fresh;
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const needsLoginState = useNeedsLogin();
