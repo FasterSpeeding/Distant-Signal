@@ -18,6 +18,7 @@ import { isUntrackedLeg, untrackedLegPlaces, untrackedLegTitle } from '@/lib/unt
 import { routeLabel } from '@/lib/stationLabel';
 import type { CreateJourneyResponse, JourneyDetail, TrainSearchDates } from '@/lib/types';
 import type { PlanFormInitial } from '@/lib/tripPlanUrl';
+import { DEFAULT_JOURNEY_ENTRY_MODE, type JourneyEntryMode, type KnownRouteMode } from '@/lib/journeyEntryMode';
 import { LoadingText } from '@/components/LoadingText';
 
 /** The `/journeys/new` page's own interactive body -- see that page's doc
@@ -62,13 +63,22 @@ import { LoadingText } from '@/components/LoadingText';
  * my route" toggle (that page's job is planning; "Track a Journey" is one
  * link away). `planOrigin` pre-fills the planner's From field, for
  * `/plan?from=CRS` links such as a station page's "Plan a journey from
- * here". Both leave the after-creation view above unchanged. */
+ * here". Both leave the after-creation view above unchanged.
+ *
+ * `initialEntryMode` is the option selected on first render: the planner
+ * unless the page's `?mode=` named another (`lib/journeyEntryMode.ts`).
+ * `knownRouteMode` opens "I know my route" on `TrackTrainForm`'s pick or
+ * window half. */
 export function JourneyCreationFlow({
+  initialEntryMode = DEFAULT_JOURNEY_ENTRY_MODE,
+  knownRouteMode,
   planOnly = false,
   planOrigin,
   planQuery,
   planSearchDates,
 }: {
+  initialEntryMode?: JourneyEntryMode;
+  knownRouteMode?: KnownRouteMode | undefined;
   planOnly?: boolean;
   planOrigin?: string | undefined;
   /** `/plan` only: the search its URL restores (`lib/tripPlanUrl.ts`). */
@@ -81,7 +91,7 @@ export function JourneyCreationFlow({
   const [journey, setJourney] = useState<JourneyDetail | null>(null);
   const [loadingJourney, setLoadingJourney] = useState(false);
   const [journeyLoadError, setJourneyLoadError] = useState(false);
-  const [entryMode, setEntryMode] = useState<'known' | 'plan' | 'untracked'>(planOnly ? 'plan' : 'known');
+  const [entryMode, setEntryMode] = useState<JourneyEntryMode>(planOnly ? 'plan' : initialEntryMode);
   const entryModeLabelId = useId();
 
   async function refreshJourney(id: number) {
@@ -136,13 +146,24 @@ export function JourneyCreationFlow({
         <Text id={entryModeLabelId} size="xs" fw={600} c="dimmed">
           How do you want to start this journey?
         </Text>
+        {/* Three options don't fit side by side on a phone: Mantine keeps
+            each label on one line, so at 390px the third ran past the
+            control's edge and was cut off.
+            `.ds-entry-mode-control` (globals.css) stacks them below `xs`,
+            as `AddJourneyLegButton`'s dialog always does, and lets a label
+            wrap rather than clip at any width. No item borders: Mantine
+            draws them for the orientation it was given, not the one the
+            CSS shows. */}
         <SegmentedControl
+          className="ds-entry-mode-control"
           aria-labelledby={entryModeLabelId}
           value={entryMode}
           onChange={(value) => setEntryMode(value)}
+          withItemsBorders={false}
           data={[
-            { label: 'I know my route', value: 'known' },
+            // The default first (`DEFAULT_JOURNEY_ENTRY_MODE`).
             { label: 'Plan a route for me', value: 'plan' },
+            { label: 'I know my route', value: 'known' },
             // Spec 2026-10-20 §2.3: a trip that starts away from the
             // railway (a Tube ride or a walk to the station).
             { label: 'Tube, bus or walk', value: 'untracked' },
@@ -159,7 +180,12 @@ export function JourneyCreationFlow({
               ? 'Showing the Tube, bus or walk form.'
               : 'Showing the I-know-my-route form.'}
         </VisuallyHidden>
-        {entryMode === 'known' && <TrackTrainForm onCreated={handleLegOneCreated} />}
+        {entryMode === 'known' && (
+          <TrackTrainForm
+            onCreated={handleLegOneCreated}
+            {...(knownRouteMode === undefined ? {} : { initialMode: knownRouteMode })}
+          />
+        )}
         {entryMode === 'plan' && <PlanTripFlow onCreated={handleLegOneCreated} searchDates={planSearchDates} />}
         {entryMode === 'untracked' && <UntrackedLegStartForm onCreated={handleLegOneCreated} />}
       </Stack>

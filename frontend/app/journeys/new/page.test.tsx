@@ -36,8 +36,8 @@ vi.mock('@/lib/api', async () => {
   };
 });
 
-async function renderPage() {
-  renderWithMantine(await JourneysNewPage());
+async function renderPage(searchParams: { mode?: string | string[] } = {}) {
+  renderWithMantine(await JourneysNewPage({ searchParams: Promise.resolve(searchParams) }));
 }
 
 // By aria-label, not role: the dropdown is still mid-transition (not yet
@@ -50,18 +50,51 @@ function dayButton(label: string): Promise<HTMLElement> {
   });
 }
 
+// The planner is the page's default, so its Date field is already there.
 function openPlannerDatePicker() {
-  fireEvent.click(screen.getByText('Plan a route for me'));
   fireEvent.focus(screen.getByLabelText('Date'));
 }
 
 describe('JourneysNewPage', () => {
-  it('renders the heading, an account hint, and the leg-1 tracking form', async () => {
+  it('renders the heading, an account hint, and opens on the planner', async () => {
     await renderPage();
 
     expect(screen.getByRole('heading', { name: 'New journey', level: 1 })).toBeInTheDocument();
     expect(screen.getByText(/needs a Distant Signal account/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Plan a route for me' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Find routes' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Track this train' })).not.toBeInTheDocument();
+  });
+
+  describe('?mode=', () => {
+    it('opens on "I know my route" for ?mode=known, the link /plan offers', async () => {
+      await renderPage({ mode: 'known' });
+      expect(screen.getByRole('radio', { name: 'I know my route' })).toBeChecked();
+      expect(screen.getByRole('button', { name: 'Track this train' })).toBeInTheDocument();
+    });
+
+    it('opens on the time window search for ?mode=window, as /track does', async () => {
+      await renderPage({ mode: 'window' });
+      expect(screen.getByRole('radio', { name: 'I know my route' })).toBeChecked();
+      expect(screen.getByRole('radio', { name: 'Search a time window' })).toBeChecked();
+      expect(screen.getByRole('button', { name: 'Search for a train' })).toBeInTheDocument();
+    });
+
+    it('opens on "I know the train" for ?mode=pick', async () => {
+      await renderPage({ mode: 'pick' });
+      expect(screen.getByRole('radio', { name: 'I know the train' })).toBeChecked();
+    });
+
+    it('opens on "Tube, bus or walk" for ?mode=untracked', async () => {
+      await renderPage({ mode: 'untracked' });
+      expect(screen.getByRole('radio', { name: 'Tube, bus or walk' })).toBeChecked();
+      expect(screen.getByRole('button', { name: 'Start journey' })).toBeInTheDocument();
+    });
+
+    it('falls back to the planner for a mode it does not know', async () => {
+      await renderPage({ mode: 'teleport' });
+      expect(screen.getByRole('radio', { name: 'Plan a route for me' })).toBeChecked();
+    });
   });
 
   it('points a visitor who only wants routes at /plan, which needs no account', async () => {

@@ -146,7 +146,7 @@ async function mockApi(page: Page, firstLeg: object = MATCHED_LEG): Promise<unkn
 /** Tracks leg 1 (a time-window search) and opens the "Add a leg" modal,
  * as the API left it. */
 async function openPrefilledAddLeg(page: Page) {
-  await page.goto('/journeys/new');
+  await page.goto('/journeys/new?mode=known');
   await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
   await page.getByText('Search a time window', { exact: true }).click();
   await page.getByRole('combobox', { name: 'Destination station' }).fill('EUS');
@@ -211,7 +211,7 @@ test.describe('add a leg', () => {
       windowSearched: false,
       trackedTrainState: null,
     });
-    await page.goto('/journeys/new');
+    await page.goto('/journeys/new?mode=known');
     await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
     await page.getByText('Search a time window', { exact: true }).click();
     await page.getByRole('combobox', { name: 'Destination station' }).fill('EUS');
@@ -249,7 +249,7 @@ test.describe('add a leg', () => {
       windowSearched: false,
       trackedTrainState: null,
     });
-    await page.goto('/journeys/new');
+    await page.goto('/journeys/new?mode=known');
     await page.getByRole('combobox', { name: 'Origin station' }).fill('MKC');
     await page.getByText('Search a time window', { exact: true }).click();
     await page.getByRole('combobox', { name: 'Destination station' }).fill('EUS');

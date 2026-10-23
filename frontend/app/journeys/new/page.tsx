@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { JourneyCreationFlow } from '@/components/JourneyCreationFlow';
 import { TextLink } from '@/components/TextLink';
 import { getTrainSearchDates } from '@/lib/api';
+import { parseJourneyEntryMode } from '@/lib/journeyEntryMode';
 import { NEW_JOURNEY_LABEL, PLAN_JOURNEY_DESTINATION } from '@/lib/navLinks';
 import { pageMetadata } from '@/lib/pageMetadata';
 
@@ -74,7 +75,17 @@ const METADATA_DESCRIPTION = 'Track a journey of one or more trains, from start 
 
 export const metadata: Metadata = pageMetadata(METADATA_TITLE, METADATA_DESCRIPTION);
 
-export default async function JourneysNewPage() {
+export default async function JourneysNewPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ mode?: string | string[] }>;
+}) {
+  // The planner is selected unless `?mode=` names another option
+  // (`lib/journeyEntryMode.ts`): `/plan`'s "Track it directly" link asks
+  // for `known`. Not read in metadata, which describes the page as a
+  // whole.
+  const { mode } = await searchParams;
+  const { entryMode, knownRouteMode } = parseJourneyEntryMode(mode);
   // The planner's date picker ends where the timetable search does
   // (`getTrainSearchDates`, cached for a few minutes), as on `/plan`. A
   // failure leaves `null`, and the picker falls back to a week ahead.
@@ -84,8 +95,8 @@ export default async function JourneysNewPage() {
     <Stack p="lg" gap="md">
       <Title order={1}>{NEW_JOURNEY_LABEL}</Title>
       <Text c="dimmed">
-        Track a specific train, or search a time window if you&apos;re not sure which one yet. Once it&apos;s tracked
-        you can add another leg here for a change of trains, or stop now: a single train is already a complete journey.
+        Plan a route, or track a train you already know. Once the first leg is tracked you can add another here for a
+        change of trains, or stop now: a single train is already a complete journey.
       </Text>
       <Text size="sm" c="dimmed">
         Tracking a journey needs a Distant Signal account. You&apos;ll be sent to log in when you save if you
@@ -95,7 +106,7 @@ export default async function JourneysNewPage() {
         </TextLink>{' '}
         (no account needed).
       </Text>
-      <JourneyCreationFlow planSearchDates={searchDates} />
+      <JourneyCreationFlow initialEntryMode={entryMode} knownRouteMode={knownRouteMode} planSearchDates={searchDates} />
     </Stack>
   );
 }

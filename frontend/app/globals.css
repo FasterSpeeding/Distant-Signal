@@ -2332,3 +2332,29 @@ svg[data-icon='external-link'] {
 .journeyProgressNode [data-platform-badge] .mantine-Badge-label {
   white-space: normal;
 }
+
+/* `JourneyCreationFlow`'s "How do you want to start this journey?" choice.
+   Three options side by side need about 430px, so below `xs` they stack,
+   one full-width row each, the way `AddJourneyLegButton`'s dialog shows
+   the same choice. The floating indicator follows: Mantine re-measures it
+   whenever an option resizes. Mantine keeps each label on one line and
+   each option at least as wide as it, and the control hides its overflow,
+   so the third option was cut off at the control's edge. Above `xs` an
+   option may now shrink and its label wrap onto a second line when it
+   still runs out of room (a large default font). */
+.ds-entry-mode-control .mantine-SegmentedControl-control {
+  min-width: 0;
+}
+
+.ds-entry-mode-control .mantine-SegmentedControl-label {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .ds-entry-mode-control.mantine-SegmentedControl-root {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+}

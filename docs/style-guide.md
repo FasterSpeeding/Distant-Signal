@@ -335,6 +335,11 @@ used, rather than as a literal in a component.
   `StatusBadge`, `DelayBadge` and `PlatformBadge` (`globals.css`): a
   badge is as wide as its words, and a layout too narrow for them shortens
   the words (`compact`) or moves the badge, never trims it.
+- **Segmented controls are never cut short either.** Mantine keeps each
+  label to one line with an ellipsis, so three or more options that don't
+  fit a phone stack: `orientation="vertical"` in a dialog
+  (`AddJourneyLegButton`), or below `xs` only with `.ds-entry-mode-control`
+  (New journey), whose labels also wrap rather than clip.
 - **Calling-point table** (`JourneyTimeline`): below `sm` the delay sits
   under the Actual time instead of in its own column, cells have 6px side
   padding, and the table only scrolls sideways (inside its own box) when a
@@ -801,13 +806,13 @@ and ESLint flags it in any string literal or JSX text. So is the ellipsis.
 
 `frontend/e2e/visual.spec.ts` screenshots home, Status, Lines, a line,
 Stations, a station, Trains (empty and searched), a train, Incidents, the
-plan form (Depart at and Arrive by), Account (logged in),
+plan form (Depart at and Arrive by), New journey, Account (logged in),
 Preferences (logged out, logged in and with a pride flag), home logged in, a tracked train
 not in the timetable, a planned tracked train, a journey with an untracked
 walk, the Journeys page and a group with shared trains and journeys (all
 logged in) and the tram pages at 390 and 1366px, light and dark,
 plus the /lines filter bar's stuck and open states and the /incidents
-filters open: 120 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
+filters open: 124 images in `frontend/e2e/visual-baselines/`. It runs against the seeded e2e
 stack (`frontend/e2e/fixtures/seed.sql`), in its own Playwright project
 (`visual`), which the ordinary e2e run skips.
 

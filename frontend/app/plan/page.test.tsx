@@ -86,7 +86,7 @@ describe('PlanPage (/plan)', () => {
     await renderPage();
     expect(screen.getByText(/You don.t need an account to plan/)).toBeInTheDocument();
     expect(screen.queryByText(/needs a Distant Signal account/)).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Track it directly' })).toHaveAttribute('href', '/journeys/new');
+    expect(screen.getByRole('link', { name: 'Track it directly' })).toHaveAttribute('href', '/journeys/new?mode=known');
   });
 
   it('pre-fills From from ?origin=, the same parameter /track takes', async () => {
