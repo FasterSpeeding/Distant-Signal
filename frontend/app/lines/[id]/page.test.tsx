@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, vi, beforeEach } from 'vitest';
-import { cleanup, screen } from '@testing-library/react';
+import { act, cleanup, screen } from '@testing-library/react';
 import { renderWithMantine } from '@/test/render';
 import LineDetailPage, { generateMetadata } from './page';
 import * as api from '@/lib/api';
@@ -146,7 +146,12 @@ function halfHourlyCoverageStatsRow(overrides: Partial<LineHalfHourlyCoverageSta
 
 async function renderPage(id = 'custom-my-commute', search: Record<string, string> = {}) {
   const element = await LineDetailPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve(search) });
-  return renderWithMantine(element);
+  // An awaited (async) act(): the trains and trends panels are async
+  // components behind Suspense, and React warns that one "suspended inside
+  // an `act` scope, but the `act` call was not awaited" otherwise. Since
+  // Mantine 9.7 a plain synchronous render no longer lets them settle
+  // before the findBy* calls give up.
+  return act(() => Promise.resolve(renderWithMantine(element)));
 }
 
 // TrendsCharts loads its Recharts half on demand (next/dynamic); load it once

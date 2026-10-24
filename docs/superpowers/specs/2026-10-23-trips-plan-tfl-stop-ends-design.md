@@ -44,9 +44,9 @@ timetable is dropped; a stop left with none is the second error.
 
 ## 3. Estimates
 
-DS has no TfL timetables, journey times or line sequences, so each time
-is a model, conservative and stated in the response (`access.basis`,
-`distanceMetres`):
+DS has no TfL timetables or journey times, so each time is a model,
+conservative and stated in the response (`access.basis`,
+`distanceMetres`, and since DS-151 `stopCount` and `changeAt`):
 
 - **Ride**: 5 minutes to walk in and wait (the average wait), the
   distance along the line at the line's speed, and 3 minutes from the
@@ -56,20 +56,61 @@ is a model, conservative and stated in the response (`access.basis`,
   (`reference-data/supplementary-fixed-links.csv`: a link's minutes
   include the walks at both ends); the planner still adds the station's
   minimum change time before the train, as after any link.
-- **Distance along a line**: the path in a minimum spanning tree of the
-  line's stops by straight-line distance (Prim's, over a few dozen stops).
-  For a line with branches that is close to the track. Uxbridge to
-  Heathrow is 8.5 km apart but about 33 km by the Piccadilly line, round
-  by Acton Town; a straight line would have offered Heathrow as nearer
-  than Harrow. A loop (the Circle) loses one edge, which only makes a
-  ride longer. A ride stays on one line; changes between lines are not
-  modelled.
+- **Distance along a line** (DS-151): along the line's routes, TfL's
+  route sequences (below). A ride's distance is the sum of the straight
+  lines between consecutive stops of a route, and `stopCount` the stops
+  it rides. The rule:
+  1. One route with the start and then the end (either may come twice,
+     as on the Circle; the shortest pair counts): a ride with no change.
+  2. Otherwise a route from the start and a route on to the end that
+     share a stop: one ride that changes trains at the shared stop making
+     it shortest, the branch junction (Harrow-on-the-Hill for Uxbridge to
+     Rickmansworth, Acton Town for Uxbridge to Heathrow). It costs 5
+     minutes to change (`BRANCH_CHANGE_MINUTES`) and 5 more waiting
+     (`BRANCH_CHANGE_WAIT_MINUTES`, half a branch's typical 10-minute
+     headway, as the second train is waited for again), and names the
+     junction as `changeAt`.
+  3. Otherwise (it would take two changes on one line): no ride; the
+     candidate is not offered.
+  A line with no routes stored, or a start or end no route of its line
+  has, keeps the pre-DS-151 estimate: the path in a minimum spanning tree
+  of the line's stops by straight-line distance (Prim's), which is close
+  to the track but blind to changes between branches. A route stop that
+  `tfl_stops` does not have (or has no position for) is passed over.
+  Rides into a stop (a destination) run the routes the other way, so a
+  direction-only route is honoured. A ride stays on one line; changes
+  between lines are not modelled. The rule-2 candidates per line are now
+  the quickest 5, not the nearest 5, so a branch change can drop out.
 - **Walk**: the straight-line distance times 1.25, at 4.5 km/h.
 - **Hours**: rides can be started from 05:30 to 00:30 every day (two
   link windows); the Night Tube is not modelled. Walks at any time.
 - **Two stops on one line** (origin and destination both stops): also a
   ride straight between them (5 minutes in, then the ride; no walk at the
   far end), up to 150 minutes.
+
+### Route sequences (DS-151)
+
+poller-tfl's route-sequences job (`TFL_ROUTES_ENABLED`, chart
+`pollers.tfl.stops.routes`, off by default, only beside the stops job)
+reads `GET /Line/Mode/tube,dlr,tram`, then each line's `GET
+/Line/{id}/Route/Sequence/{inbound,outbound}` (about 27 calls), and keeps
+each sequence's `orderedLineRoutes` of service type `Regular`: a route end
+to end (`Uxbridge ↔ Aldgate`), its NaPTAN stop areas in running order. The
+ordered routes, not the `stopPointSequences` branches, because a route is
+what one train runs: "one route has both stops in order" is exactly "no
+change". A route with an id that is not a stop area, fewer than 2 or more
+than 200 stops is dropped whole (a missing stop would measure short). The
+run publishes `tfl-line-routes/1` (about 80 routes, one part) on
+`ds:ingest:tfl-stops` with its own producer and cursor (`cycle =
+"tfl-routes"`), at the stops job's interval and under its feed guard: an
+empty run, a line with no routes, or a route count down more than
+`maxDropFraction` on the last snapshot is refused
+(`distant_signal_tfl_routes_refused_total{reason}`) and the stored routes
+stay. The ingest-writer (`tfl-stops: apply` covers both schemas) replaces
+`tfl_line_routes` (`line_id, direction, route_index, name, stop_ids
+TEXT[], fetched_at`; writer SID, api S; freshness `tfl-line-routes`),
+skipping an older snapshot. The api reads the table with `tfl_stops` for
+each stop request.
 
 ## 4. Search
 
@@ -157,6 +198,31 @@ plans 8 to 47 ms (`fastest`) and 540 to 570 ms (`options`), as before;
 Uxbridge plans 43 to 58 ms and 610 to 620 ms. The extra is reading
 `tfl_stops` and copying the interchange data.
 
+### After DS-151
+
+The same 356 stops (a read-only copy of production's `tfl_stops` on
+2026-10-23) with TfL's route sequences of that day (82 routes). Uxbridge's
+candidates, before (spanning tree) and after (routes):
+
+| Station | Line | Before | After |
+| --- | --- | --- | --- |
+| Harrow-on-the-Hill (HOH) | Metropolitan | 11.7 km, 32 min | 11.0 km, 8 stops, 30 min |
+| King's Cross, St Pancras (KGX, STP, SPL) | Metropolitan | 29.1 km, 67 min | 28.2 km, 16 stops, 65 min |
+| Rickmansworth (RIC) | Metropolitan | 21.5 km, 52 min | 23.3 km, 14 stops, change at Harrow-on-the-Hill, 65 min |
+| Farringdon (FDX, ZFD) | Metropolitan | not offered | 30.0 km, 17 stops, 68 min |
+| Moorgate (MOG) | Metropolitan | not offered | 31.1 km, 19 stops, 71 min |
+| Chorleywood (CLW), Chalfont & Latimer (CFO) | Metropolitan | 58, 65 min | not offered (change at Harrow; not in the quickest 5) |
+| Finsbury Park (FPK) | Piccadilly | 37.4 km, 83 min | 37.4 km, 33 stops, 83 min |
+| Heathrow Terminal 4 (HAF) | Piccadilly | 31.6 km, 72 min | 32.8 km, 23 stops, change at Acton Town, 84 min |
+| Heathrow Terminals 2 and 3 (HXX) | Piccadilly | 33.1 km, 75 min | 33.1 km, 23 stops, change at Acton Town, 85 min |
+| Heathrow Terminal 5 (HWV) | Piccadilly | 35.8 km, 80 min | 35.7 km, 24 stops, change at Acton Town, 90 min |
+
+Uxbridge's Piccadilly trains run to Cockfosters, and its Metropolitan
+trains to Aldgate, so Rickmansworth and Heathrow each take a change, now
+charged. Stop to stop, Uxbridge to Cockfosters is still one ride (49.0 km,
+41 stops, 104 minutes), and Uxbridge to Rickmansworth is one ride with a
+change at Harrow-on-the-Hill, 62 minutes (49 before).
+
 ## 7. Frontend
 
 The planner's From and To search (`lib/plannerEnds.ts`) adds TfL stops
@@ -172,7 +238,7 @@ untracked leg with the stop's name and id, as for any Tube transfer.
 
 - TfL's own journey times (`/Journey/JourneyResults` or the line
   timetables) would replace the model, at the cost of a new feed.
-- Line sequences (`/Line/{id}/Route/Sequence`) would replace the spanning
-  tree and could model a change between lines.
+- Line sequences now measure rides and charge a change between branches
+  (DS-151); they could also model a change between lines.
 - Buses to a station (Uxbridge's buses to West Drayton or Denham) are not
   offered; DS-77 is buses.
