@@ -3,6 +3,35 @@
 Changes to the Distant Signal (DS) HTTP API that a client such as DS-MCP
 needs to know about. Newest first. Field names are as served (camelCase).
 
+## 2026-10-24: Tube access legs charge a change between branches
+
+Additive fields, changed estimates. DS-MCP needs no change. See
+docs/superpowers/specs/2026-10-23-trips-plan-tfl-stop-ends-design.md §3.
+
+- Once TfL's route sequences are loaded (`pollers.tfl.stops.routes`), an
+  access ride is measured along the line's routes, and a ride that no one
+  route covers (Uxbridge to Rickmansworth, Uxbridge to Heathrow) changes
+  trains at the branch junction: its `minutes` include 10 more (5 to
+  change, 5 waiting). A ride needing two changes on one line is no longer
+  offered. So `access.*.candidates`, their `minutes` and
+  `distanceMetres`, and the plans built on them can differ.
+- New on each `access.origin/destination.candidates[]` entry: `stopCount`
+  (stops ridden, when measured along routes) and `changeAt` (the junction
+  stop, `{id, name, modes, lines}`, when the ride changes). Both absent
+  otherwise.
+- New on an access leg's `access`: `changeAt`, as above, absent when the
+  ride has no change.
+
+## 2026-10-23: no `email` in the account export
+
+A field removed. `GET /public/account/export`'s `account` object (the user's
+`users` row, keys as stored) no longer has `email`: the column is dropped
+(`20261026090000_drop_users_email.sql`). Nothing has written one since
+2026-09-30, when the app stopped requesting the `email` scope, and it was
+`null` for every production account.
+Nothing else changes; `/auth/session` has served `username` instead of
+`email` since then. **For ds-mcp:** nothing to change, it never read it.
+
 ## 2026-10-23: `/Trips/plan` takes a TfL stop as its origin or destination
 
 Additive. A request with station codes gets exactly the response it got
