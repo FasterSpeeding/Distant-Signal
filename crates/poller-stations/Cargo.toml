@@ -24,7 +24,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 # `serde_json::Value` tree per station -- see its doc comment.
 serde_json = { version = "1.0.149", features = ["raw_value"] }
 # The ingest-writer's features (the pool type, the Postgres wait).
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time"] }
 tracing = "0.1.44"
 

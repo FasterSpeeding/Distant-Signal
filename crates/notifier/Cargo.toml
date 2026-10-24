@@ -10,7 +10,7 @@ health-http = { path = "../health-http" }
 anyhow = "1.0.102"
 # VAPID key parsing (`vapid_key`): raw base64/base64url keys and the
 # public-key check. Same version `api` already uses, so no new crate.
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4.44", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4.6.1", features = ["derive", "env"] }
@@ -21,7 +21,7 @@ ds-store = { path = "../ds-store" }
 futures-util = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-sqlx = { version = "0.8.6", features = ["chrono", "json", "macros", "postgres", "runtime-tokio", "tls-native-tls"] }
+sqlx = { version = "0.9.0", features = ["chrono", "json", "macros", "postgres", "runtime-tokio", "tls-native-tls"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 metrics = "0.24"
 tracing = "0.1.44"
@@ -42,17 +42,17 @@ http = "0.2"
 # `PUSH_SEND_TIMEOUT` regression test (M2, 2026-09 security/bug review):
 # a local wiremock server whose delayed response outlasts a short injected
 # per-attempt timeout. Same version `common` already uses.
-wiremock = "0.6"
+wiremock = "=0.6.5"
 # Paused (virtual) time for push-queue tests with time bounds
 # (`#[tokio::test(start_paused = true)]`), so no test asserts on wall-clock
 # time a loaded CI runner can blow. Same tokio, one more feature.
-tokio = { version = "1.52.3", features = ["test-util"] }
+tokio = { version = "=1.54.1", features = ["test-util"] }
 # Only the query-count tests' `SqlxQueryCounter` layer; the binary's own
 # subscriber is `common::logging`.
-tracing-subscriber = "0.3.23"
+tracing-subscriber = "=0.3.23"
 # The stale line-history counter's test (ingest plan 3c.4) reads a local
 # recorder. Already in Cargo.lock, at the version the other crates use.
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
 
 [lints]
 workspace = true

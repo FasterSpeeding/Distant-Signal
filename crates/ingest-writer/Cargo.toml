@@ -39,17 +39,17 @@ health-http = { path = "../health-http" }
 ingest-stream = { path = "../ingest-stream" }
 # The writer's own gauges (`telemetry`: ingest_freshness).
 metrics = "0.24"
-redis ={ version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis ={ version = "0.32", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1.0.228", features = ["derive"] }
 # `raw_value`: the payload of rejected rows for the dead-letter stream.
 serde_json = { version = "1.0.149", features = ["raw_value"] }
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
 # The clamp counter's and the gauges' unit tests read a local recorder.
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
 
 [lints]
 workspace = true

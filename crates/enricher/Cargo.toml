@@ -22,13 +22,13 @@ ds-store = { path = "../ds-store" }
 metrics = "0.24"
 # The output checks' text patterns (`src/checks.rs`).
 regex = "1"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "form", "multipart", "native-tls", "gzip"] }
 serde = { version = "1.0.228", features = ["derive"] }
 # `raw_value`: a batch request is held as its serialised body
 # (`llm::batch_api::BatchRequest`), not a `Value` tree three times its size.
 serde_json = { version = "1.0.149", features = ["raw_value"] }
-sqlx = { version = "0.8.6", features = ["chrono", "json", "macros", "postgres", "runtime-tokio", "tls-native-tls"] }
+sqlx = { version = "0.9.0", features = ["chrono", "json", "macros", "postgres", "runtime-tokio", "tls-native-tls"] }
 futures-util = "0.3"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
 # Parses the model-eval harness's targets file (`src/eval/target.rs`), for
@@ -37,12 +37,12 @@ toml = { version = "1.1.2", features = ["serde"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
-wiremock = "0.6"
+wiremock = "=0.6.5"
 # Workload identity tests (`src/auth.rs`, `src/config.rs`): the projected
 # token file, the token-exchange metrics and the "no token in the logs" check.
-tempfile = "3"
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tempfile = "=3.27.0"
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 
 [lints]
 workspace = true

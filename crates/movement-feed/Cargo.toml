@@ -13,11 +13,11 @@ clap = { version = "4.6.6", features = ["derive"] }
 common = { path = "../common", features = ["redis"] }
 health-http = { path = "../health-http" }
 metrics = "0.24"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.32", features = ["tokio-comp", "connection-manager"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "test-util", "net", "io-util"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "test-util", "net", "io-util"] }
 # `common::redis_group::fake::FakeConn` for the group-position tests.
 common = { path = "../common", features = ["redis", "redis-test-util"] }
 
