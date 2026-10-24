@@ -55,7 +55,7 @@ The inactive-account sweep (below) uses the same function.
 
 | Table | Personal data | On account deletion | Retention while the account exists | Export |
 |---|---|---|---|---|
-| `users` | OIDC subject id, name, username, IdP groups (the legacy `email` column is no longer written or read, and is dropped in the release after this code), created and last-login times | Deleted | Kept while the account exists. Optional inactive-account deletion is **off by default** (`INACTIVE_ACCOUNT_RETENTION_DAYS`). | `account` |
+| `users` | OIDC subject id, name, username, IdP groups (no email: the legacy column is dropped by `20261026090000_drop_users_email.sql`), created and last-login times | Deleted | Kept while the account exists. Optional inactive-account deletion is **off by default** (`INACTIVE_ACCOUNT_RETENTION_DAYS`). | `account` |
 | `sessions` | Hashed session token, expiry | Cascade | Deleted when expired (`session_ttl_days`, 14), hourly | `sessions` (without id or token) |
 | `oidc_login_state` | PKCE verifier, nonce, CSRF state, return path. Not linked to a user. | n/a | Deleted after 15 minutes | n/a |
 | `push_subscriptions` | Push endpoint URL, encryption keys, timestamps (including the last push delivered), a device label worked out from the browser's User-Agent ("Chrome on Android"; the header itself is not kept) | Cascade | Deleted when the push service reports it gone, beyond 20 per user, or when the user has not logged in **and** the subscription has not been renewed for `STALE_PUSH_SUBSCRIPTION_DAYS` (365) | `pushSubscriptions` (without keys) |

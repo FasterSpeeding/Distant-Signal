@@ -756,11 +756,16 @@ async fn post_track(
     // outcome only, same as the plan's own Task 5 Step 3 sketch -- a
     // successful backlog match still lands correctly in the database, a
     // subsequent GET just sees it a moment sooner than this response does.
-    if let Err(err) = crate::data::trust_event_backlog_match::attempt_backlog_match(
+    // Since DS-118 the replayed history is queued in train_event_outbox
+    // (the api's role may only read the shared train state) and lands when
+    // the writer's outbox loop applies it, 5 s by default.
+    if let Err(err) = crate::data::trust_event_backlog_match::attempt_backlog_match_via(
         &app.database,
         tracking_id,
         &pin.origin_crs,
         pin.scheduled_departure,
+        // Queued for the writer's outbox loop (DS-118).
+        crate::data::trust_event_backlog_match::ReplayWrite::Outbox,
     )
     .await
     {
@@ -1466,11 +1471,14 @@ pub(crate) async fn enrich_shared_train(
         return;
     }
 
-    let outcome = match crate::data::trust_event_backlog_match::attempt_backlog_match_by_uid(
+    let outcome = match crate::data::trust_event_backlog_match::attempt_backlog_match_by_uid_via(
         &app.database,
         tracking_id,
         train_uid,
         date,
+        // Queued for the writer's outbox loop (DS-118); the schedule match
+        // below needs only the origin departure it returns.
+        crate::data::trust_event_backlog_match::ReplayWrite::Outbox,
     )
     .await
     {
@@ -6553,6 +6561,10 @@ mod db_tests {
         let user_id = "TEST-NR-ENRICH-USER";
         cleanup_user(&pool, user_id).await;
         let token = seed_session(&pool, user_id).await;
+        // Reference data, schedule products and the TRUST backlog are other
+        // roles' writes: seeded as the owner when the suite runs as the
+        // api's role (DS-118: CI runs this test with that role narrowed).
+        let fixtures = ds_store::test_support::schedule_fixture_pool(&pool).await;
         let train_uid = "ZTU007";
         let train_id = "TEST-NR-ENRICH-TRAINID";
 
@@ -6561,7 +6573,7 @@ mod db_tests {
              VALUES ('TEST-NR-ENRICH-STANOX', 'EUS', 'EUSTON', 'LONDON EUSTON', 1) \
              ON CONFLICT (stanox) DO NOTHING",
         )
-        .execute(&pool)
+        .execute(&fixtures)
         .await
         .expect("seed stanox_crs");
         sqlx::query(
@@ -6569,7 +6581,7 @@ mod db_tests {
              VALUES ('TEST-NR-ENRICH-STANOX-2', 'MKC', 'MKNSCEN', 'MILTON KEYNES CENTRAL', 1) \
              ON CONFLICT (stanox) DO NOTHING",
         )
-        .execute(&pool)
+        .execute(&fixtures)
         .await
         .expect("seed destination stanox_crs");
 
@@ -6610,7 +6622,7 @@ mod db_tests {
                 }
             ]
         }]))
-        .execute(&pool)
+        .execute(&fixtures)
         .await
         .expect("seed schedule_line_population");
 
@@ -6643,7 +6655,7 @@ mod db_tests {
             .bind(event_type)
             .bind(departure)
             .bind(dedup)
-            .execute(&pool)
+            .execute(&fixtures)
             .await
             .expect("seed trust_event_backlog row");
         }
@@ -6722,6 +6734,29 @@ mod db_tests {
             "calling points: {calling_points:?}"
         );
 
+        // The replayed history is queued for the writer (DS-118): the api's
+        // role may only read the shared train state. Nothing is on the
+        // shared tables until the writer's outbox loop applies it.
+        let (queued,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM train_event_outbox WHERE tracked_train_id = $1")
+                .bind(tracking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count queued replay events");
+        assert_eq!(queued, 2, "both Movement rows are queued, in order");
+        let (event_count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM train_movement_events WHERE trains_id = $1")
+                .bind(trains_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count movement events before the outbox loop");
+        assert_eq!(event_count, 0, "the api wrote no movement event itself");
+        let writer = ds_store::test_support::writer_pool(&pool).await;
+        let tick = ds_store::tracking::outbox::apply_train_event_outbox(&writer)
+            .await
+            .expect("the writer applies the queued replay");
+        assert!(tick.rejected.is_empty(), "rejected: {:?}", tick.rejected);
+
         // And the replayed movement history itself landed on the shared
         // tables, keyed on trains_id.
         let (event_count,): (i64,) =
@@ -6734,14 +6769,18 @@ mod db_tests {
             event_count, 2,
             "both Movement rows must be replayed (the Activation itself posts no event)"
         );
-        let (last_location,): (Option<String>,) = sqlx::query_as(
-            "SELECT last_reported_location FROM train_current_state WHERE trains_id = $1",
+        let (last_location, state): (Option<String>, String) = sqlx::query_as(
+            "SELECT last_reported_location, status FROM train_current_state WHERE trains_id = $1",
         )
         .bind(trains_id)
         .fetch_one(&pool)
         .await
         .expect("the shared current-state row must exist");
         assert_eq!(last_location, Some("MKC".to_string()));
+        // The replay was derived before the api's schedule match supplied
+        // the destination, so its ARRIVAL at MKC was queued `en_route`; the
+        // outbox loop completes it once applied.
+        assert_eq!(state, "completed");
 
         // The subscription itself flipped to resolved off the same replay.
         let (resolution_status,): (String,) =
@@ -6754,16 +6793,16 @@ mod db_tests {
 
         sqlx::query("DELETE FROM trust_event_backlog WHERE train_id = $1")
             .bind(train_id)
-            .execute(&pool)
+            .execute(&fixtures)
             .await
             .ok();
         sqlx::query("DELETE FROM schedule_line_population WHERE line_id = 'west-coast-main-line' AND service_date = $1")
             .bind(service_date)
-            .execute(&pool)
+            .execute(&fixtures)
             .await
             .ok();
         sqlx::query("DELETE FROM stanox_crs WHERE stanox LIKE 'TEST-NR-ENRICH-STANOX%'")
-            .execute(&pool)
+            .execute(&fixtures)
             .await
             .ok();
         cleanup_user(&pool, user_id).await;

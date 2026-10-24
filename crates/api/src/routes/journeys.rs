@@ -830,11 +830,13 @@ async fn post_journey(
             // (and in production did) replay a different train's history
             // onto a correctly-matched leg and repoint its `trains_id` --
             // see that function's own comment.
-            if let Err(err) = crate::data::trust_event_backlog_match::attempt_backlog_match(
+            if let Err(err) = crate::data::trust_event_backlog_match::attempt_backlog_match_via(
                 &app.database,
                 tracking_id,
                 &pin.origin_crs,
                 pin.scheduled_departure,
+                // Queued for the writer's outbox loop (DS-118).
+                crate::data::trust_event_backlog_match::ReplayWrite::Outbox,
             )
             .await
             {

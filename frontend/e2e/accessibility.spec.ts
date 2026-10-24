@@ -284,6 +284,66 @@ test.describe('accessibility: anonymous, dark scheme', () => {
   }
 });
 
+// Every severity pill (`StatusBadge`), rendered for real, in both schemes.
+// The route sweep above only ever saw the seed's current statuses, minor
+// delays and good service, so the red, blue and gray pills were never
+// checked by axe at all; the worst of them (black on red) was the one
+// people reported. The seed's line history carries one past status in each
+// of the other three groups, and this asserts all five are on the page
+// before it runs axe, so the coverage can't quietly lapse with the data.
+// `app/globals.test.ts` ("status pill contrast") is still the primary
+// net: axe only checks WCAG 2's ratio, which those black-on-colour pills
+// passed.
+test.describe('accessibility: every severity pill', () => {
+  test.skip(!process.env.E2E_REAL_LINE_ID, 'needs the seeded line history (frontend/e2e/fixtures/seed.sql)');
+  for (const colorScheme of ['light', 'dark'] as const) {
+    test.describe(colorScheme, () => {
+      test.use({ colorScheme });
+      test(`/lines/${REAL_LINE_ID}/history shows and passes every severity group`, async ({ page }) => {
+        await page.goto(`/lines/${REAL_LINE_ID}/history`);
+        for (const group of ['good', 'informational', 'planned', 'mild', 'severe']) {
+          await expect(page.locator(`[data-status-badge][data-severity-group="${group}"]`).first()).toBeVisible();
+        }
+        await expectNoViolations(page);
+      });
+    });
+  }
+});
+
+// The nav's data freshness panel (`DataFreshnessInfo`), open, in both
+// schemes. A Mantine tooltip only exists while it is open, so the route
+// sweep never saw it, and every row in it was dimmed text at under 2:1 on
+// the tooltip's inverted surface (app/globals.css, `.mantine-Tooltip-tooltip`).
+// Opened by focusing its button, as a keyboard user would: the trigger is
+// a real button in the tab order and the tooltip opens on focus.
+test.describe('accessibility: data freshness panel open', () => {
+  for (const colorScheme of ['light', 'dark'] as const) {
+    test.describe(colorScheme, () => {
+      test.use({ colorScheme });
+      test('opened from the keyboard', async ({ page }) => {
+        // A short page: the panel is in the nav on every one.
+        await page.goto('/attribution');
+        const trigger = page.getByRole('button', { name: 'Data freshness' });
+        // Tabbed to rather than `focus()`ed: the tooltip opens on
+        // keyboard focus (`:focus-visible`), not on a scripted focus.
+        for (
+          let presses = 0;
+          presses < 20 && !(await trigger.evaluate((el) => el === document.activeElement));
+          presses++
+        ) {
+          await page.keyboard.press('Tab');
+        }
+        await expect(trigger).toBeFocused();
+        await expect(page.locator('.mantine-Tooltip-tooltip').filter({ hasText: 'Stations' })).toBeVisible();
+        // `region` only, as for the account menu: Mantine portals the open
+        // tooltip under <body>, outside every landmark. `color-contrast`
+        // stays live, and is the rule this test is for.
+        await expectNoViolations(page, MENU_PORTAL_WAIVERS);
+      });
+    });
+  }
+});
+
 test.describe('accessibility: logged in', () => {
   test.skip(!SESSION_COOKIE, 'set E2E_SESSION_COOKIE to a raw distant_signal_session value');
   test.use({ storageState: SESSION_COOKIE ? sessionState(SESSION_COOKIE) : undefined });
