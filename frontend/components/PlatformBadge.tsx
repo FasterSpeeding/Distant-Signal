@@ -7,6 +7,7 @@ import {
   type PlatformDisplay,
   type PlatformFacts,
 } from '@/lib/platformLabel';
+import { statusBadgeColors } from '@/lib/severity';
 import { PhoneLabel } from './PhoneLabel';
 
 /** The app's one platform badge: every National Rail platform on screen
@@ -46,10 +47,16 @@ export function PlatformBadge({ compact = false, ...facts }: PlatformFacts & { c
   const { color, variant } = BADGE_LOOK[display.state];
   const confirmed = (display.state === 'live' || display.state === 'changed') && display.confirmed;
   const suffix = spokenSuffix(display);
+  // A confirmed platform is a filled pill, painted from the same measured
+  // fill and label tokens as `StatusBadge` (`--ds-status-badge-*`, white on
+  // gray 7/8 or blue 9/8), not Mantine's filled shade with `autoContrast`,
+  // whose black-on-gray and black-on-blue labels read poorly at badge size.
+  const filled = confirmed ? statusBadgeColors(display.state === 'changed' ? 'planned' : 'informational') : null;
   return (
     <Badge
-      color={color}
-      variant={confirmed ? 'filled' : variant}
+      color={filled?.fill ?? color}
+      {...(filled ? { c: filled.text } : {})}
+      variant={filled ? 'filled' : variant}
       tt="none"
       data-platform-badge
       data-platform-state={display.state}

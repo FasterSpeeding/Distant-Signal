@@ -62,6 +62,8 @@ filled grape in the light scheme only.
 | Error text | `--ds-color-error-text` | red 9 | red 4 | App-owned token |
 | Good / bad icon | `--ds-color-good-icon`, `--ds-color-bad-icon` | green 7 / red 7 | green 4 / red 4 | Non-text glyphs |
 | Severity text | `--ds-severity-<group>-text` (`severityGroupTextColor`) | green `#267b37`, gray 7, blue 9, yellow `#a85700`, red 9 | shade 4 of each | Same hue as the group's `StatusBadge`; each ≥5.2:1 on a card |
+| Dimmed text in a tooltip | `--ds-tooltip-dimmed-text` (as `--mantine-color-dimmed` inside `.mantine-Tooltip-tooltip`) | gray 4 on the gray 9 tooltip | gray 7 on the gray 2 tooltip | The page's dimmed shade was under 2:1 there (`DataFreshnessInfo`) |
+| Severity pill | `--ds-status-badge-<group>-fill`, `-text` (`statusBadgeColors`) | green `#287f39`, gray 7, blue 9, red 9, each with white; yellow 5 with black | green `#287f39`, gray 8, blue 8, red 9 with white; yellow 5 with black | `StatusBadge` only; each ≥5:1 and APCA Lc 75 |
 | Light-variant text | `--mantine-color-*-light-color` | yellow `#a85700`, orange `#bb3e0d`, green `#267b37`, teal `#087a57` | shade 0 | Off-palette hexes, each ≥4.6:1 on its shade-1 background |
 
 App-owned tokens are prefixed `--ds-`. The overrides use
@@ -102,7 +104,7 @@ list-row titles 500.
 | md | 16 / 1.55 | Body copy |
 | sm | 14 / 1.45 | Supporting copy inside cards |
 | xs | 12 / 1.4 | Timestamps, credits, freshness rows (dimmed) |
-| badge | 11 / 700 | Platform 4 |
+| badge | 11 / 700 (`StatusBadge` 12 / 700) | Platform 4 |
 
 - Heading level and visual size are set separately. Pick the level for the
   outline; the size follows from it (see [Heading rules](#heading-rules)).
@@ -319,9 +321,11 @@ used, rather than as a literal in a component.
   for the primary action, light for secondary, default for neutral, red
   filled for destructive (text via `autoContrast`). Icon buttons are
   `ActionIcon` subtle or outline with 16px SVGs.
-- **StatusBadge**: filled, sentence case ("Part suspended"), severity colour; text colour by
-  `autoContrast` at threshold 0.179; gray and blue use `light-dark()` so
-  dark mode gets white.
+- **StatusBadge**: filled, sentence case ("Part suspended"), 12px/700, in its
+  severity group's hue. Fill and label come from `--ds-status-badge-<group>-*`
+  (`statusBadgeColors`), not `autoContrast`: black text on a red, blue, gray
+  or green fill passes WCAG 2's ratio but is hard to read at badge size, so
+  every fill takes white except yellow, which takes black.
 - **PlatformBadge**: the one badge for every National Rail platform,
   sentence case. The variant says how sure it is, the colour whether it
   changed, a strike-through what no longer applies; the spoken words say
@@ -331,8 +335,8 @@ used, rather than as a literal in a component.
   | --- | --- | --- | --- |
   | Booked (timetable only) | gray outline, number underlined in dots | Platform 4 (booked) ("4") | Platform 4 (booked, not confirmed) |
   | Live (on a board, unchanged) | gray light | Platform 4 ("4") | Platform 4 |
-  | Confirmed | gray filled | Platform 4 ("4") | Platform 4 (confirmed) |
-  | Changed | blue light, filled once confirmed; old number struck through | Platform ~~6~~ 9 ("~~6~~ 9") | Platform 9 (changed from 6) |
+  | Confirmed | filled gray (`StatusBadge`'s informational fill and label tokens) | Platform 4 ("4") | Platform 4 (confirmed) |
+  | Changed | blue light, filled once confirmed (`StatusBadge`'s planned tokens); old number struck through | Platform ~~6~~ 9 ("~~6~~ 9") | Platform 9 (changed from 6) |
   | Cancelled | red light, struck through | ~~Platform 4~~ ("~~4~~") | Platform 4 (cancelled) |
 
   Every state but a plain live one has a `title` tooltip, which only
@@ -657,7 +661,10 @@ bar (a `header`, not a `nav`), the 8px Button-sm metrics and the grape wash.
 ## Accessibility
 
 - 4.5:1 for all text, including badge labels and placeholders. Filled
-  surfaces pick text via `autoContrast` at `luminanceThreshold: 0.179`.
+  surfaces pick text via `autoContrast` at `luminanceThreshold: 0.179`,
+  except the severity pill, whose pairs also clear APCA Lc 75
+  (`app/globals.test.ts`, "status pill contrast", checks every pill in both
+  schemes).
 - Focus: Mantine's 2px outline in filled primary, 2px offset.
 - Not colour alone: every status badge has a text label; cancelled
   platforms are struck through and say "(cancelled)"; changed platforms
@@ -972,3 +979,12 @@ the same rest, hover, pressed and focus states; the `/journeys`, group,
 template, planner, alternatives and departure-picker cards became
 clickable as a whole, and the picker's `role="button"` rows became
 buttons.
+
+Status pill contrast (24 Oct 2026): the severity `StatusBadge` paints its
+own `--ds-status-badge-*` fill and label tokens instead of Mantine's
+filled shade with `autoContrast`, which had put black text on red, blue,
+gray and green. Those passed WCAG 2's ratio, so axe never flagged them,
+but read poorly at badge size; every pair now also clears APCA Lc 75, and
+the label is 12px. Dimmed text inside a tooltip (the nav's data freshness
+panel) gets its own shade, `--ds-tooltip-dimmed-text`: the page's was
+under 2:1 on the tooltip's inverted surface.

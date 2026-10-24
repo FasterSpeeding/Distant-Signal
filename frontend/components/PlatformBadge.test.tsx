@@ -85,12 +85,12 @@ describe('PlatformBadge', () => {
   });
 
   describe('confirmed', () => {
-    it('is a filled gray badge, spoken as confirmed', () => {
+    it('is a filled gray pill in the StatusBadge tokens, spoken as confirmed', () => {
       const root = badge({ ...LIVE, platformBasis: 'confirmed' });
       expect(root).toHaveAttribute('data-platform-state', 'live');
       expect(root).toHaveAttribute('data-platform-confirmed', 'true');
       expect(root).toHaveAttribute('data-variant', 'filled');
-      expect(colourOf(root)).toMatch(/gray/);
+      expect(colourOf(root)).toMatch(/--ds-status-badge-informational-fill/);
       expect(drawnText(root)).toBe('Platform 4');
       expect(spokenText(root)).toBe('Platform 4 (confirmed)');
       expect(root).toHaveAttribute('title', 'Confirmed platform');
@@ -137,11 +137,11 @@ describe('PlatformBadge', () => {
       expect(spokenText(root)).toBe('Platform 9 (changed from 6)');
     });
 
-    it('is filled blue once confirmed', () => {
+    it('is a filled blue pill in the StatusBadge tokens once confirmed', () => {
       const root = badge({ ...CHANGED, bookedPlatform: '6', platformBasis: 'confirmed' });
       expect(root).toHaveAttribute('data-variant', 'filled');
       expect(root).toHaveAttribute('data-platform-confirmed', 'true');
-      expect(colourOf(root)).toMatch(/blue/);
+      expect(colourOf(root)).toMatch(/--ds-status-badge-planned-fill/);
       expect(spokenText(root)).toBe('Platform 9 (confirmed, changed from 6)');
     });
   });
