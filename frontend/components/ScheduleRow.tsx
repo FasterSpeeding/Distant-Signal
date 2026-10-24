@@ -45,8 +45,8 @@ export interface ScheduleRowData {
  * "3 min early" teal, "On time" green, "Cancelled" red. `tt="none"` for the same reason `TrainJourney.tsx`
  * gives -- Mantine's default 11px uppercase measured borderline, and these
  * are phrases with units. Every light-variant text colour here is pinned
- * in `app/globals.css` to >= 4.5:1 on its own tint (orange #bb3e0d 4.64:1,
- * teal #087a57 4.62:1, green #267b37 4.61:1, red 9 #c92a2a 4.51:1); the
+ * in `app/globals.css` to >= 5.5:1 on its own tint (orange #a5370b 5.61:1,
+ * teal #076b4c 5.65:1, green #226c30 5.62:1, red #ad2424 5.68:1); the
  * dark scheme's light variants invert to a pale shade-0 text on a deep
  * tint. Each state is a different word, never colour alone. */
 function statusBadge(row: ScheduleRowData) {
