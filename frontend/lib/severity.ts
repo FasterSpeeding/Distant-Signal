@@ -71,6 +71,16 @@ export function severityGroupTextColor(group: SeverityGroup): string {
   return `var(--ds-severity-${group}-text)`;
 }
 
+/** A severity group's `StatusBadge` colours: `--ds-status-badge-<group>-fill`
+ * and `-text` in `app/globals.css`, defined per colour scheme. The one
+ * place a pill's fill and label colour are chosen, in the group's hue
+ * (`SEVERITY_GROUP_COLORS`), each pair measured in `app/globals.test.ts`.
+ * Not Mantine's filled shade with `autoContrast`: that put black text on
+ * red, blue, gray and green, which passed WCAG 2's ratio but read poorly. */
+export function statusBadgeColors(group: SeverityGroup): { fill: string; text: string } {
+  return { fill: `var(--ds-status-badge-${group}-fill)`, text: `var(--ds-status-badge-${group}-text)` };
+}
+
 // TfL's `statusSeverity` codes are NOT monotonic with actual severity (e.g.
 // 10 GoodService sits in the middle of the numeric range, while 21 Diverted
 // and 11 PartClosed are severe but numerically high). This rank reflects
