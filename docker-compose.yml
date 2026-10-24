@@ -101,7 +101,7 @@ services:
       start_period: 5s
 
   redis:
-    image: redis:7.4.11@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
+    image: redis:8.10.2@sha256:97ec88159e6d7cfb5ddef9015386087d58a912de80112f06ebdfa78fa5989901
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
